@@ -81,9 +81,9 @@ For local deploy rehearsal (no ACS live send), use
 
 ## Contracts Package
 
-`Amane.Mailer.Contracts` is published manually to GitHub Packages via
-[`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml).
-Use `workflow_dispatch` with an explicit version (e.g. `1.0.0-alpha.1`).
+`Amane.Mailer.Contracts` is intended to be published to nuget.org.
+Publish it manually with [`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml)
+and pass an explicit `workflow_dispatch` version (for example, `0.1.0`).
 
 ## Consumer Quick Start
 

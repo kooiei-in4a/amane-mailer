@@ -77,10 +77,9 @@ commit しないでください。
 
 ## Contracts パッケージ
 
-`Amane.Mailer.Contracts` は
-[`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml) から
-GitHub Packages へ手動 publish します。`workflow_dispatch` で明示的な version
-（例: `1.0.0-alpha.1`）を指定してください。
+`Amane.Mailer.Contracts` は nuget.org へ公開する想定です。
+公開は [`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml)
+から手動で行い、`workflow_dispatch` で明示的な version（例: `0.1.0`）を指定します。
 
 ## Consumer クイックスタート
 

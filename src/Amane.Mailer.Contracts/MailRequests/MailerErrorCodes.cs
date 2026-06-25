@@ -1,4 +1,4 @@
-namespace Mailer.Contracts.MailRequests;
+namespace Amane.Mailer.Contracts.MailRequests;
 
 public static class MailerErrorCodes
 {

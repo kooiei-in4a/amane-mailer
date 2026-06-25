@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
-using Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.MailRequests;
 
-namespace Mailer.Contracts.Json;
+namespace Amane.Mailer.Contracts.Json;
 
 [JsonSerializable(typeof(MailRequestCreateRequest))]
 [JsonSerializable(typeof(MailRequestCreateResponse))]

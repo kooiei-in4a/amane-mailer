@@ -307,7 +307,7 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | ID | Topic | Current State / Direction |
 |---|---|---|
 | O-04 | Canonical HTTP contract | **OpenAPI (this yaml)** |
-| O-02 | Contracts distribution | OpenAPI + `Mailer.Contracts` |
+| O-02 | Contracts distribution | OpenAPI + `Amane.Mailer.Contracts` |
 | O-03 | source_service registration | tenants.json allowlist |
 | O-06 | Multiple products × ACS | Currently one ACS connection per service |
 | O-13 | `from` override | Not allowed |

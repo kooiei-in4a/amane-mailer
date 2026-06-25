@@ -3,7 +3,7 @@ using System.Text;
 using Amane.Mailer.Api;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Tests.Fixtures;
-using Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.MailRequests;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -260,7 +260,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         };
         request = request with
         {
-            PayloadHash = global::Mailer.Contracts.Security.MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+            PayloadHash = global::Amane.Mailer.Contracts.Security.MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
         };
 
         using var response = await client.PostAsync(

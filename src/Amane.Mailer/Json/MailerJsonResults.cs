@@ -1,4 +1,4 @@
-using Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.MailRequests;
 
 namespace Amane.Mailer.Json;
 

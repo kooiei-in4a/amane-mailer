@@ -2,10 +2,10 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Mailer.Contracts.Json;
-using Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.Json;
+using Amane.Mailer.Contracts.MailRequests;
 
-namespace Mailer.Contracts.Security;
+namespace Amane.Mailer.Contracts.Security;
 
 public static class MailPayloadHasher
 {

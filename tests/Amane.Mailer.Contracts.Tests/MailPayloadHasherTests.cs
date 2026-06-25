@@ -1,10 +1,10 @@
-using Mailer.Contracts.Json;
-using Mailer.Contracts.MailRequests;
-using Mailer.Contracts.Security;
+using Amane.Mailer.Contracts.Json;
+using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.Security;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Mailer.Contracts.Tests;
+namespace Amane.Mailer.Contracts.Tests;
 
 public sealed class MailPayloadHasherTests
 {

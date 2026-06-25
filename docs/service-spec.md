@@ -307,7 +307,7 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | ID | 論点 | 現状 / 方針 |
 |---|---|---|
 | O-04 | HTTP 契約の正本 | **OpenAPI（本 yaml）** |
-| O-02 | Contracts 配布 | OpenAPI ＋ `Mailer.Contracts` |
+| O-02 | Contracts 配布 | OpenAPI ＋ `Amane.Mailer.Contracts` |
 | O-03 | source_service 登録制 | tenants.json allowlist |
 | O-06 | 複数プロダクト × ACS | 現状サービス単位 1 本 |
 | O-13 | `from` 上書き | 不可 |
