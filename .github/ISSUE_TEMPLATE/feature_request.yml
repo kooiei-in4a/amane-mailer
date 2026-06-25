@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest an improvement or new capability.
+title: "[feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Please avoid including private tenant names,
+        credentials, production addresses, or other operational details.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operator problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternate designs?
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - API
+        - Contracts package
+        - Worker or delivery
+        - Admin UI
+        - Docker or deployment
+        - Documentation
+        - Security
+        - Other
