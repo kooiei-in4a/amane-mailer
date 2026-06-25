@@ -1,0 +1,10 @@
+# Default ownership for the public repository.
+* @kooiei-in4a
+
+# Keep workflow, release, and deployment-sensitive paths reviewed by the owner.
+.github/ @kooiei-in4a
+infra/ @kooiei-in4a
+config/ @kooiei-in4a
+docs/ops/ @kooiei-in4a
+src/ @kooiei-in4a
+tests/ @kooiei-in4a

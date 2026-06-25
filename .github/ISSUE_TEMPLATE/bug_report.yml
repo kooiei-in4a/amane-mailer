@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible problem in Amane Mailer.
+title: "[bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not include secrets, tokens, real tenant
+        configuration, production email addresses, database files, or private
+        infrastructure details.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest set of steps that reproduces the issue.
+      placeholder: |
+        1. Run ...
+        2. Send ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release tag, image tag, or commit SHA.
+      placeholder: v0.1.0
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Docker compose local
+        - Docker image
+        - dotnet run
+        - Tests
+        - Other
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste minimal redacted logs. Remove secrets and private data.
+      render: text
