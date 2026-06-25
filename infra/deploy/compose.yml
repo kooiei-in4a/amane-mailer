@@ -1,0 +1,100 @@
+name: ${COMPOSE_PROJECT_NAME}
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${LOG_MAX_SIZE:-10m}"
+    max-file: "${LOG_MAX_FILE:-5}"
+
+services:
+  mailer-migrate:
+    image: ${MAILER_IMAGE_REPOSITORY}:${MAILER_IMAGE_TAG}
+    pull_policy: ${MAILER_PULL_POLICY}
+    profiles:
+      - ops
+    restart: "no"
+    logging: *default-logging
+    mem_limit: ${MAILER_MEM_LIMIT}
+    cpus: ${MAILER_CPUS}
+    command: ["db", "migrate"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Mailer: ${MAILER_CONNECTION_STRING:-Data Source=/app/data/mailer.db}
+      MAILER_TENANTS_PATH: ${MAILER_TENANTS_CONTAINER_PATH:-/app/config/mailer/tenants.json}
+      MAIL_SERVICE_TOKEN: ${MAIL_SERVICE_TOKEN}
+      MAIL_SERVICE_TOKEN_DEVELOP: ${MAIL_SERVICE_TOKEN_DEVELOP:-}
+      MAIL_SERVICE_TOKEN_STAGING: ${MAIL_SERVICE_TOKEN_STAGING:-}
+      MAIL_SERVICE_TOKEN_PRODUCTION: ${MAIL_SERVICE_TOKEN_PRODUCTION:-}
+      MAILER_PROVIDER: ${MAILER_PROVIDER:-}
+      ACS_CONNECTION_STRING: ${ACS_CONNECTION_STRING:-}
+    volumes:
+      - ${MAILER_DATA_PATH:-./data}:/app/data
+      - ${MAILER_TENANTS_HOST_PATH:-./tenants.json}:${MAILER_TENANTS_CONTAINER_PATH:-/app/config/mailer/tenants.json}:ro
+    networks:
+      - internal
+
+  mailer:
+    image: ${MAILER_IMAGE_REPOSITORY}:${MAILER_IMAGE_TAG}
+    pull_policy: ${MAILER_PULL_POLICY}
+    restart: unless-stopped
+    stop_grace_period: ${MAILER_STOP_GRACE_PERIOD:-120s}
+    logging: *default-logging
+    mem_limit: ${MAILER_MEM_LIMIT}
+    cpus: ${MAILER_CPUS}
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:${MAILER_HTTP_PORT:-8080}
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: ${ASPNETCORE_FORWARDEDHEADERS_ENABLED:-false}
+      ConnectionStrings__Mailer: ${MAILER_CONNECTION_STRING:-Data Source=/app/data/mailer.db}
+      MAILER_TENANTS_PATH: ${MAILER_TENANTS_CONTAINER_PATH:-/app/config/mailer/tenants.json}
+      MAIL_SERVICE_TOKEN: ${MAIL_SERVICE_TOKEN}
+      MAIL_SERVICE_TOKEN_DEVELOP: ${MAIL_SERVICE_TOKEN_DEVELOP:-}
+      MAIL_SERVICE_TOKEN_STAGING: ${MAIL_SERVICE_TOKEN_STAGING:-}
+      MAIL_SERVICE_TOKEN_PRODUCTION: ${MAIL_SERVICE_TOKEN_PRODUCTION:-}
+      MAILER_PROVIDER: ${MAILER_PROVIDER:-}
+      ACS_CONNECTION_STRING: ${ACS_CONNECTION_STRING:-}
+      Mailer__Retention__Days: ${MAILER_RETENTION_DAYS:-90}
+      Mailer__Retention__SweepIntervalHours: ${MAILER_RETENTION_SWEEP_INTERVAL_HOURS:-24}
+      AMANE_ADMIN_ENABLED: ${AMANE_ADMIN_ENABLED:-false}
+      AMANE_ADMIN_USERNAME: ${AMANE_ADMIN_USERNAME:-admin}
+      AMANE_ADMIN_PASSWORD_HASH: ${AMANE_ADMIN_PASSWORD_HASH:-}
+      AMANE_ADMIN_BIND: ${AMANE_ADMIN_BIND:-127.0.0.1}
+      AMANE_ADMIN_ALLOW_HTTP: ${AMANE_ADMIN_ALLOW_HTTP:-false}
+      AMANE_ADMIN_PII_LIST_MODE: ${AMANE_ADMIN_PII_LIST_MODE:-masked}
+    volumes:
+      - ${MAILER_DATA_PATH:-./data}:/app/data
+      - ${MAILER_TENANTS_HOST_PATH:-./tenants.json}:${MAILER_TENANTS_CONTAINER_PATH:-/app/config/mailer/tenants.json}:ro
+    networks:
+      internal:
+      mailer:
+        aliases:
+          - ${MAILER_NETWORK_ALIAS:-mailer}
+    healthcheck:
+      test: ["CMD", "/app/Amane.Mailer", "healthcheck"]
+      interval: ${MAILER_HEALTHCHECK_INTERVAL:-30s}
+      timeout: ${MAILER_HEALTHCHECK_TIMEOUT:-5s}
+      retries: ${MAILER_HEALTHCHECK_RETRIES:-5}
+      start_period: ${MAILER_HEALTHCHECK_START_PERIOD:-20s}
+
+# ── Consumer app compose integration ──────────────────────────────────────────
+# To send requests from a Consumer app running in a separate compose stack,
+# join the external mailer network and use the alias as the hostname:
+#
+#   # consumer-app/compose.yml
+#   networks:
+#     amane_mailer:            # must match MAILER_NETWORK_NAME in Mailer's .env
+#       external: true
+#
+#   services:
+#     my-app:
+#       environment:
+#         MAILER_BASE_URL: "http://mailer:8080"        # MAILER_NETWORK_ALIAS default
+#         MAIL_SERVICE_TOKEN: "${MAIL_SERVICE_TOKEN}"  # same value as Mailer's .env
+#       networks:
+#         - amane_mailer
+# ──────────────────────────────────────────────────────────────────────────────
+networks:
+  internal:
+    internal: true
+  mailer:
+    name: ${MAILER_NETWORK_NAME}

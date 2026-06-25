@@ -1,0 +1,75 @@
+name: Publish Amane.Mailer.Contracts
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: NuGet package version (e.g. 1.0.0-alpha.1)
+        required: true
+        default: "1.0.0-alpha.1"
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-contracts-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  CONFIGURATION: Release
+  PACKAGE_PROJECT: src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj
+  CONTRACTS_TEST_PROJECT: tests/Amane.Mailer.Contracts.Tests/Amane.Mailer.Contracts.Tests.csproj
+  PACKAGE_VERSION: ${{ inputs.package_version }}
+
+jobs:
+  publish:
+    name: Pack and push ${{ inputs.package_version }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2
+        with:
+          global-json-file: global.json
+
+      - name: Validate package version
+        shell: bash
+        run: |
+          if ! [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::Invalid package version format: $PACKAGE_VERSION"
+            exit 1
+          fi
+
+      - name: Restore
+        run: |
+          dotnet restore "$PACKAGE_PROJECT" --locked-mode
+          dotnet restore "$CONTRACTS_TEST_PROJECT" --locked-mode
+
+      - name: Build
+        run: |
+          dotnet build "$PACKAGE_PROJECT" -c "$CONFIGURATION" --no-restore
+          dotnet build "$CONTRACTS_TEST_PROJECT" -c "$CONFIGURATION" --no-restore
+
+      - name: Test contracts
+        run: dotnet test "$CONTRACTS_TEST_PROJECT" -c "$CONFIGURATION" --no-build --verbosity normal
+
+      - name: Pack
+        run: >
+          dotnet pack "$PACKAGE_PROJECT"
+          -c "$CONFIGURATION"
+          --no-build
+          -o artifacts/nuget
+          -p:PackageVersion="$PACKAGE_VERSION"
+
+      - name: Push to GitHub Packages
+        run: >
+          dotnet nuget push artifacts/nuget/*.nupkg
+          --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          --api-key "${{ secrets.GITHUB_TOKEN }}"
+          --skip-duplicate

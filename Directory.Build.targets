@@ -1,0 +1,8 @@
+<Project>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <KnownWebAssemblySdkPack
+      Update="Microsoft.NET.Sdk.WebAssembly.Pack">
+      <WebAssemblySdkPackVersion>10.0.9</WebAssemblySdkPackVersion>
+    </KnownWebAssemblySdkPack>
+  </ItemGroup>
+</Project>

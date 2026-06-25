@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "environment": "develop",
+  "tenants": [
+    {
+      "tenant_id": "00000000-0000-0000-0000-000000000101",
+      "name": "example-develop",
+      "source_services": ["example-service"],
+      "default_from": {
+        "email": "noreply@example.com",
+        "display_name": "Example Service"
+      },
+      "token_env": "MAIL_SERVICE_TOKEN",
+      "provider": "mailpit",
+      "live_sending": false,
+      "metadata_max_bytes": 4096,
+      "retry": {
+        "max_attempts": 10,
+        "initial_delay_seconds": 10,
+        "max_delay_seconds": 300
+      }
+    }
+  ]
+}

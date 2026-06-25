@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kooiei-in4a/amane-mailer/config/mailer/tenants.schema.json",
+  "title": "Mailer tenant configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "environment", "tenants"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "environment": {
+      "type": "string",
+      "enum": ["develop", "staging", "production", "shared"]
+    },
+    "tenants": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/tenant" }
+    }
+  },
+  "$defs": {
+    "tenant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tenant_id",
+        "name",
+        "source_services",
+        "default_from",
+        "token_env",
+        "provider",
+        "live_sending",
+        "retry"
+      ],
+      "properties": {
+        "tenant_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_services": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{1,62}$"
+          }
+        },
+        "default_from": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["email"],
+          "properties": {
+            "email": {
+              "type": "string",
+              "format": "email"
+            },
+            "display_name": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "token_env": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["mailpit", "acs"]
+        },
+        "live_sending": {
+          "type": "boolean"
+        },
+        "metadata_max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 4096
+        },
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_attempts", "initial_delay_seconds"],
+          "properties": {
+            "max_attempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            },
+            "initial_delay_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_delay_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 300
+            }
+          }
+        }
+      }
+    }
+  }
+}

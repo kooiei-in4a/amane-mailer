@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "environment": "shared",
+  "tenants": [
+    {
+      "tenant_id": "00000000-0000-0000-0000-000000000101",
+      "name": "example-develop",
+      "source_services": ["example-service"],
+      "default_from": {
+        "email": "noreply@example.com",
+        "display_name": "Example Service (develop)"
+      },
+      "token_env": "MAIL_SERVICE_TOKEN_DEVELOP",
+      "provider": "acs",
+      "live_sending": false,
+      "metadata_max_bytes": 4096,
+      "retry": {
+        "max_attempts": 10,
+        "initial_delay_seconds": 10,
+        "max_delay_seconds": 300
+      }
+    },
+    {
+      "tenant_id": "00000000-0000-0000-0000-000000000201",
+      "name": "example-staging",
+      "source_services": ["example-service"],
+      "default_from": {
+        "email": "noreply@example.com",
+        "display_name": "Example Service (staging)"
+      },
+      "token_env": "MAIL_SERVICE_TOKEN_STAGING",
+      "provider": "acs",
+      "live_sending": false,
+      "metadata_max_bytes": 4096,
+      "retry": {
+        "max_attempts": 10,
+        "initial_delay_seconds": 10,
+        "max_delay_seconds": 300
+      }
+    },
+    {
+      "tenant_id": "00000000-0000-0000-0000-000000000301",
+      "name": "example-production",
+      "source_services": ["example-service"],
+      "default_from": {
+        "email": "noreply@example.com",
+        "display_name": "Example Service"
+      },
+      "token_env": "MAIL_SERVICE_TOKEN_PRODUCTION",
+      "provider": "acs",
+      "live_sending": false,
+      "metadata_max_bytes": 4096,
+      "retry": {
+        "max_attempts": 10,
+        "initial_delay_seconds": 10,
+        "max_delay_seconds": 300
+      }
+    }
+  ]
+}

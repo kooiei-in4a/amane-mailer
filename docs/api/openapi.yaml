@@ -1,0 +1,287 @@
+openapi: 3.1.0
+info:
+  title: Amane Mailer Service API
+  version: "1.0.0"
+  description: >-
+    汎用メール送信マイクロサービス。送信依頼を受け付けて永続化し、
+    バックグラウンド Worker が ACS (Azure Communication Services) または Mailpit
+    経由で非同期に配送する。利用側（App）が本文を組み立て、本サービスは「配送専用」。
+
+    - 認証: テナント単位の Bearer トークン
+    - 冪等性: (tenant_id, source_service, mail_request_id) の一意制約。再送は 202 already_accepted、
+      同一IDで内容差異は 409。
+    - 本文/宛先/件名は利用側が組み立て、payload に載せて渡す（テンプレートは持たない）。
+  contact:
+    name: Amane Mailer
+servers:
+  - url: http://mailer:8080
+    description: コンテナ内部ネットワーク（internal）からの呼び出し
+
+tags:
+  - name: mail-requests
+    description: 送信依頼の受付
+  - name: health
+    description: ヘルス/レディネス
+
+paths:
+  /internal/mail-requests:
+    post:
+      tags: [mail-requests]
+      summary: メール送信依頼を受け付ける
+      description: >-
+        送信依頼を Mailer DB に永続化し 202 を返す（ACS 送信完了ではない）。
+        実際の送信は Worker が非同期に行う。リクエストボディ上限は 256,000 バイト。
+      operationId: createMailRequest
+      security:
+        - tenantBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailRequestCreateRequest'
+      responses:
+        '202':
+          description: 受付済み（初回 accepted / 再送 already_accepted）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailRequestCreateResponse'
+        '400':
+          description: ボディが不正な JSON、または空
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                invalid:
+                  value: { code: INVALID_REQUEST, message: "Request body is not valid JSON." }
+        '401':
+          description: テナント/トークン不一致
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unauthorized: { value: { code: UNAUTHORIZED_TENANT } }
+        '403':
+          description: source_service がテナントの許可リスト外
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
+        '409':
+          description: 同一 mail_request_id で payload_hash が異なる（冪等性衝突）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                conflict: { value: { code: IDEMPOTENCY_CONFLICT } }
+        '413':
+          description: リクエストボディが上限（256,000 バイト）超過
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                tooLarge: { value: { code: REQUEST_TOO_LARGE } }
+        '422':
+          description: バリデーション失敗
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                tooManyRecipients: { value: { code: TOO_MANY_RECIPIENTS } }
+                invalidMetadata: { value: { code: INVALID_METADATA } }
+                invalidPayloadHash: { value: { code: INVALID_PAYLOAD_HASH } }
+                invalidRecipient: { value: { code: INVALID_REQUEST, message: "A valid recipient is required." } }
+        '503':
+          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+
+  /healthz:
+    get:
+      tags: [health]
+      summary: 生存確認（liveness）
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          description: 稼働中
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  healthy: { type: boolean, const: true }
+
+  /readyz:
+    get:
+      tags: [health]
+      summary: 受付可否（readiness、DB schema + Worker/Sweep 稼働確認）
+      operationId: readyz
+      security: []
+      responses:
+        '200':
+          description: >-
+            受付可能（DB schema OK、Worker 有効時は Worker/Sweep 両サービス稼働中）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready: { type: boolean, const: true }
+        '503':
+          description: >-
+            DB 未接続・schema 未適用、または Worker/Sweep BackgroundService が停止中
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready: { type: boolean, const: false }
+
+components:
+  securitySchemes:
+    tenantBearer:
+      type: http
+      scheme: bearer
+      description: >-
+        テナント単位の共有シークレット。トークンの実体はサーバー側環境変数
+        （tenants.json の token_env が指す名前、例: MAIL_SERVICE_TOKEN_PRODUCTION）に格納。
+        ボディの tenant_id とトークンの組が一致しなければ 401。
+
+  schemas:
+    MailRequestCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - tenant_id
+        - source_service
+        - mail_request_id
+        - purpose
+        - to
+        - subject
+        - payload_hash
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: 環境×プロダクト単位の識別子。Bearer トークンと対で認可される。
+        source_service:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
+          description: 呼び出し元サービス名。テナントの source_services 許可リストに含まれる必要がある。
+          example: example-service
+        mail_request_id:
+          type: string
+          format: uuid
+          description: 利用側が生成する配送単位 ID。冪等キーの一部（推奨 UUIDv7）。
+        purpose:
+          type: string
+          description: 用途識別（例 FormResponseNotification）。
+          example: FormResponseNotification
+        to:
+          type: array
+          description: 宛先。配列形は前方互換のため。MVP は最大 1 件（超過は 422 TOO_MANY_RECIPIENTS）。
+          minItems: 1
+          maxItems: 1
+          items:
+            $ref: '#/components/schemas/MailRecipient'
+        subject:
+          type: string
+          minLength: 1
+        html_body:
+          type: [string, "null"]
+          description: html_body / text_body の少なくとも一方は必須。
+        text_body:
+          type: [string, "null"]
+        reply_to:
+          type: [string, "null"]
+          format: email
+        metadata:
+          type: [object, "null"]
+          additionalProperties:
+            type: string
+          description: >-
+            付随情報。tenant の metadata_max_bytes（既定 4096）以内。
+            キーに token / password / secret / url を含むものは拒否（422 INVALID_METADATA）。
+        payload_hash:
+          type: string
+          description: >-
+            配送ペイロードの SHA-256（hex）。サーバー側で再計算し不一致なら 422。
+            同一 mail_request_id で hash が違えば 409。
+            hash 対象は MailPayloadHashContract.IncludedFields と同じ
+            source_service, purpose, to, subject, html_body, text_body,
+            reply_to, metadata。tenant_id, mail_request_id, payload_hash は
+            routing envelope / 自己参照のため除外する。
+            計算手順: 対象フィールドのみ抽出する。任意フィールドは payload JSON に
+            存在する場合だけ含め、明示的な null は null として含める。
+            省略された任意フィールドは hash 対象外。キーをアルファベット昇順でソートし、スペースなし canonical JSON
+            （MailPayloadHasher.BuildDeliveryPayloadJson() の独自エスケープ）へ
+            直列化する。UTF-8 エンコード後に SHA-256 を計算し、小文字 hex で出力する。
+            テストベクトルは tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json。
+            ADR は docs/adr/0012-mail-via-mailer-microservice.md D-05。
+            .NET Consumer は MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request) を使用し、
+            送信 JSON は null 任意フィールドを省略する設定に合わせる。
+      example:
+        tenant_id: "00000000-0000-0000-0000-000000000301"
+        source_service: example-service
+        mail_request_id: "018f7c2a-0000-7000-8000-000000000000"
+        purpose: FormResponseNotification
+        to:
+          - email: user@example.com
+            display_name: 山田太郎
+        subject: お問い合わせを受け付けました
+        text_body: "ご回答ありがとうございました。"
+        html_body: "<p>ご回答ありがとうございました。</p>"
+        metadata:
+          form_id: "42"
+        payload_hash: "9c24a8154fa03970c9a6512e680af20e2d64fa5555849b80525215a74388b8fe"
+
+    MailRecipient:
+      type: object
+      additionalProperties: false
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        display_name:
+          type: [string, "null"]
+
+    MailRequestCreateResponse:
+      type: object
+      required: [mail_request_id, status]
+      properties:
+        mail_request_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [accepted, already_accepted]
+          description: API 受付ステータス（Worker の配送ステータスとは別）。
+
+    Error:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          enum:
+            - INVALID_REQUEST
+            - REQUEST_TOO_LARGE
+            - SOURCE_SERVICE_NOT_ALLOWED
+            - TOO_MANY_RECIPIENTS
+            - IDEMPOTENCY_CONFLICT
+            - INVALID_PAYLOAD_HASH
+            - INVALID_METADATA
+            - UNAUTHORIZED_TENANT
+            - MAILER_TEMPORARILY_UNAVAILABLE
+        message:
+          type: string
+        retryable:
+          type: boolean
+          description: true の場合、呼び出し側はバックオフ後にリトライしてよい。

@@ -1,0 +1,16 @@
+# Optional override for local deploy rehearsal without GHCR access.
+# Build from the repo Dockerfile and tag a local-only image.
+services:
+  mailer-migrate:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    image: amane-mailer:local-rehearsal
+    pull_policy: never
+
+  mailer:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile
+    image: amane-mailer:local-rehearsal
+    pull_policy: never

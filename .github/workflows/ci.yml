@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+      - staging
+      - "codex/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  CONFIGURATION: Release
+
+jobs:
+  build-test:
+    name: Restore, build, and test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Build
+        run: dotnet build Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-restore
+
+      - name: Test
+        run: dotnet test Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-build --verbosity normal
+
+  native-aot-smoke:
+    name: Native AOT publish smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2
+        with:
+          global-json-file: global.json
+
+      - name: Install Native AOT prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang zlib1g-dev
+
+      - name: Restore
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Publish linux-x64 Native AOT
+        run: >
+          dotnet publish src/Amane.Mailer/Amane.Mailer.csproj
+          -c ${{ env.CONFIGURATION }}
+          -r linux-x64
+          --self-contained
+          --no-restore
+          -o artifacts/publish/aot-linux-x64
+          /p:PublishAot=true
+          /p:IlcTreatWarningsAsErrors=true
+
+      - name: Run published binary
+        run: |
+          test -x artifacts/publish/aot-linux-x64/Amane.Mailer
+          artifacts/publish/aot-linux-x64/Amane.Mailer --help
+
+  docker-build-smoke:
+    name: Docker build smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Build Mailer image
+        run: docker build --file infra/docker/Dockerfile --tag amane-mailer:ci-smoke .
+
+      - name: Run Mailer image
+        run: docker run --rm amane-mailer:ci-smoke --help
+
+  openapi-validation:
+    name: OpenAPI validation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: "22"
+
+      - name: Validate OpenAPI YAML
+        run: node scripts/validate-openapi.mjs docs/api/openapi.yaml

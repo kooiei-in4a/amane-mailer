@@ -1,0 +1,4 @@
+services:
+  mailer:
+    ports:
+      - "127.0.0.1:5281:${MAILER_HTTP_PORT:-8080}"

@@ -1,0 +1,61 @@
+[
+  {
+    "name": "form-response-notification",
+    "input": {
+      "source_service": "example-service",
+      "purpose": "FormResponseNotification",
+      "subject": "New response",
+      "to": [
+        {
+          "email": "admin@example.com"
+        }
+      ],
+      "text_body": "A new response arrived."
+    },
+    "expected_canonical_json": "{\"purpose\":\"FormResponseNotification\",\"source_service\":\"example-service\",\"subject\":\"New response\",\"text_body\":\"A new response arrived.\",\"to\":[{\"email\":\"admin@example.com\"}]}",
+    "expected_sha256_hex": "7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9"
+  },
+  {
+    "name": "japanese-html-with-null-reply-to",
+    "input": {
+      "source_service": "example-service",
+      "purpose": "FormResponseNotification",
+      "to": [
+        {
+          "email": "admin@example.com",
+          "display_name": "管理者"
+        }
+      ],
+      "subject": "新しい回答が届きました",
+      "html_body": "<p>回答が届きました。</p>",
+      "reply_to": null,
+      "metadata": {
+        "locale": "ja-JP",
+        "form_id": "form-001"
+      }
+    },
+    "expected_canonical_json": "{\"html_body\":\"<p>回答が届きました。</p>\",\"metadata\":{\"form_id\":\"form-001\",\"locale\":\"ja-JP\"},\"purpose\":\"FormResponseNotification\",\"reply_to\":null,\"source_service\":\"example-service\",\"subject\":\"新しい回答が届きました\",\"to\":[{\"display_name\":\"管理者\",\"email\":\"admin@example.com\"}]}",
+    "expected_sha256_hex": "eb75c06d341af9d87fc0f7863782e26f9ff5681bdc2f8ccaafb3ca394d2ecfe2"
+  },
+  {
+    "name": "metadata-and-display-name",
+    "input": {
+      "metadata": {
+        "campaign": "launch",
+        "form_id": "form-002"
+      },
+      "text_body": "Plain text only.",
+      "subject": "Metadata example",
+      "to": [
+        {
+          "display_name": "Operations",
+          "email": "ops@example.com"
+        }
+      ],
+      "purpose": "FormResponseNotification",
+      "source_service": "example-service"
+    },
+    "expected_canonical_json": "{\"metadata\":{\"campaign\":\"launch\",\"form_id\":\"form-002\"},\"purpose\":\"FormResponseNotification\",\"source_service\":\"example-service\",\"subject\":\"Metadata example\",\"text_body\":\"Plain text only.\",\"to\":[{\"display_name\":\"Operations\",\"email\":\"ops@example.com\"}]}",
+    "expected_sha256_hex": "cfb39646d0068b82ce85b8fd8f52d534f786ea8e6253710bd0e62fc35856b838"
+  }
+]

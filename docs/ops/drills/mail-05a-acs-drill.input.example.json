@@ -1,0 +1,5 @@
+{
+  "connection_string": "endpoint=https://replace-with-acs-resource.communication.azure.com/;accesskey=replace-with-private-access-key",
+  "sender_email": "verified-sender@example.com",
+  "recipient_email": "approved-recipient@example.com"
+}

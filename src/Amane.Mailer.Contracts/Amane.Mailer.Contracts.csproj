@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Mailer.Contracts</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>Amane.Mailer.Contracts</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>in4a</Authors>
+    <Description>HTTP contract DTOs, status constants, and payload hash helpers for the Amane Mailer service.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/kooiei-in4a/amane-mailer</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/kooiei-in4a/amane-mailer</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

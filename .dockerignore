@@ -1,0 +1,36 @@
+# Keep Docker build contexts small and free of local/private data.
+.git/
+.github/
+.agents/
+.codex/
+.vs/
+docs/
+tests/
+artifacts/
+.artifacts/
+.env
+.env.*
+*.user
+# Deploy-time secrets and local databases — never include in build context
+infra/deploy/data/
+infra/deploy/tenants.json
+*.db
+*.db-wal
+*.db-shm
+
+!Directory.Build.props
+!Directory.Build.targets
+!Directory.Packages.props
+!src/
+!src/**
+!config/
+!config/mailer/
+!config/mailer/tenants.example.json
+!config/mailer/tenants.local-acs.json.example
+!config/mailer/tenants.schema.json
+
+# Keep generated build outputs excluded after the source re-include rules.
+**/bin/
+**/bin/**
+**/obj/
+**/obj/**

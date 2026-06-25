@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj" />
+    <Project Path="src/Amane.Mailer/Amane.Mailer.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Amane.Mailer.Contracts.Tests/Amane.Mailer.Contracts.Tests.csproj" />
+    <Project Path="tests/Amane.Mailer.Tests/Amane.Mailer.Tests.csproj" />
+  </Folder>
+</Solution>
