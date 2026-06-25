@@ -1,4 +1,4 @@
-namespace Mailer.Contracts.Security;
+namespace Amane.Mailer.Contracts.Security;
 
 public static class MailPayloadHashContract
 {

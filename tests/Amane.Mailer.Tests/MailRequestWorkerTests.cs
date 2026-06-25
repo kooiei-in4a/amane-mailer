@@ -5,7 +5,7 @@ using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
 using Amane.Mailer.Tests.Fixtures;
-using Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.MailRequests;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;

@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace Mailer.Contracts.MailRequests;
+namespace Amane.Mailer.Contracts.MailRequests;
 
 public sealed record MailRequestCreateRequest
 {

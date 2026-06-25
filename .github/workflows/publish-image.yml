@@ -2,6 +2,17 @@ name: Publish Amane Mailer Image
 
 on:
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref to build, for example v0.1.0. Defaults to the workflow ref.
+        required: false
+        default: ""
+        type: string
+      version_tag:
+        description: Optional image version tag to publish, for example v0.1.0.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -13,15 +24,45 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/amane-mailer
-  IMAGE_TAG: sha-${{ github.sha }}
 
 jobs:
   publish:
-    name: Build and push ${{ github.sha }}
+    name: Build and push image
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+
+      - name: Resolve image tags
+        id: image
+        shell: bash
+        run: |
+          revision="$(git rev-parse HEAD)"
+          tags="${IMAGE_NAME}:sha-${revision}"
+
+          if [ -n "${{ inputs.version_tag }}" ]; then
+            case "${{ inputs.version_tag }}" in
+              v[0-9]*.[0-9]*.[0-9]*)
+                tags="${tags}"$'\n'"${IMAGE_NAME}:${{ inputs.version_tag }}"
+                ;;
+              *)
+                echo "::error::version_tag must look like v0.1.0"
+                exit 1
+                ;;
+            esac
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tags="${tags}"$'\n'"${IMAGE_NAME}:${GITHUB_REF_NAME}"
+          fi
+
+          {
+            echo "revision=${revision}"
+            echo "sha_tag=sha-${revision}"
+            echo "tags<<EOF"
+            echo "${tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
@@ -39,18 +80,18 @@ jobs:
           context: .
           file: infra/docker/Dockerfile
           push: true
-          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          tags: ${{ steps.image.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ steps.image.outputs.revision }}
             org.opencontainers.image.description=Amane Mailer runtime image
 
       - name: Run pushed image
-        run: docker run --rm "${IMAGE_NAME}:${IMAGE_TAG}" --help
+        run: docker run --rm "${IMAGE_NAME}:${{ steps.image.outputs.sha_tag }}" --help
 
       - name: Verify image config contents
         run: |
-          container_id="$(docker create "${IMAGE_NAME}:${IMAGE_TAG}" --help)"
+          container_id="$(docker create "${IMAGE_NAME}:${{ steps.image.outputs.sha_tag }}" --help)"
           trap 'docker rm -f "$container_id" >/dev/null' EXIT
 
           mkdir -p /tmp/mailer-config
@@ -66,4 +107,4 @@ jobs:
           diff -u /tmp/expected-mailer-config-files.txt /tmp/mailer-config-files.txt
 
       - name: Inspect published image
-        run: docker buildx imagetools inspect "${IMAGE_NAME}:${IMAGE_TAG}"
+        run: docker buildx imagetools inspect "${IMAGE_NAME}:${{ steps.image.outputs.sha_tag }}"

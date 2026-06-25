@@ -6,8 +6,8 @@ using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Json;
 using Amane.Mailer.Queue;
-using Mailer.Contracts.MailRequests;
-using Mailer.Contracts.Security;
+using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.Security;
 using Microsoft.Data.Sqlite;
 
 namespace Amane.Mailer.Api;

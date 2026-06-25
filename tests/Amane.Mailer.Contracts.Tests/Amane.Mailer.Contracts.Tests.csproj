@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
-    <RootNamespace>Mailer.Contracts.Tests</RootNamespace>
+    <RootNamespace>Amane.Mailer.Contracts.Tests</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

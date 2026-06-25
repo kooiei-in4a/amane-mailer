@@ -3,34 +3,12 @@
 NuGet package containing Mailer HTTP contract DTOs, status constants, and the
 delivery payload hash helper for use by consumer applications and the Mailer service.
 
-The C# root namespace is `Mailer.Contracts`.
+The C# root namespace is `Amane.Mailer.Contracts`.
 
-## Configure the NuGet source
+## NuGet source
 
-The package is published to GitHub Packages. GitHub Packages requires
-authentication with a GitHub PAT that has the `read:packages` scope.
-
-```xml
-<!-- nuget.config (place at solution root or in %AppData%\NuGet\NuGet.Config) -->
-<configuration>
-  <packageSources>
-    <add key="github-kooiei-in4a"
-         value="https://nuget.pkg.github.com/kooiei-in4a/index.json" />
-  </packageSources>
-</configuration>
-```
-
-Or add the source with the CLI:
-
-```bash
-dotnet nuget add source https://nuget.pkg.github.com/kooiei-in4a/index.json \
-  --name github-kooiei-in4a \
-  --username YOUR_GITHUB_USERNAME \
-  --password YOUR_GITHUB_PAT   # read:packages scope required
-```
-
-On Linux or macOS, `dotnet nuget add source` may also require
-`--store-password-in-clear-text` if no credential provider is available.
+The package is published to nuget.org. No custom package source or
+package-read authentication is required when the default nuget.org source is enabled.
 
 ## Install
 
@@ -42,12 +20,12 @@ dotnet add package Amane.Mailer.Contracts
 
 | Type | Namespace | Purpose |
 |---|---|---|
-| `MailRequestCreateRequest` | `Mailer.Contracts.MailRequests` | POST request DTO |
-| `MailRequestCreateResponse` | `Mailer.Contracts.MailRequests` | 202 response DTO |
-| `MailRecipientDto` | `Mailer.Contracts.MailRequests` | Recipient in `to` array |
-| `MailPayloadHasher` | `Mailer.Contracts.Security` | `payload_hash` computation helper |
-| `MailRequestAcceptanceStatus` | `Mailer.Contracts.MailRequests` | Response `status` constants |
-| `MailerErrorCodes` | `Mailer.Contracts.MailRequests` | Error code constants |
+| `MailRequestCreateRequest` | `Amane.Mailer.Contracts.MailRequests` | POST request DTO |
+| `MailRequestCreateResponse` | `Amane.Mailer.Contracts.MailRequests` | 202 response DTO |
+| `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient in `to` array |
+| `MailPayloadHasher` | `Amane.Mailer.Contracts.Security` | `payload_hash` computation helper |
+| `MailRequestAcceptanceStatus` | `Amane.Mailer.Contracts.MailRequests` | Response `status` constants |
+| `MailerErrorCodes` | `Amane.Mailer.Contracts.MailRequests` | Error code constants |
 
 ## Minimal Example
 
@@ -57,9 +35,9 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using Mailer.Contracts.Json;
-using Mailer.Contracts.MailRequests;
-using Mailer.Contracts.Security;
+using Amane.Mailer.Contracts.Json;
+using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.Security;
 
 var request = new MailRequestCreateRequest
 {

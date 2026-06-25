@@ -1,8 +1,8 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Mailer.Contracts.MailRequests;
-using Mailer.Contracts.Security;
+using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.Security;
 
 namespace Amane.Mailer.Tests;
 

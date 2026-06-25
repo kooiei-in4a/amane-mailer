@@ -4,14 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       package_version:
-        description: NuGet package version (e.g. 1.0.0-alpha.1)
+        description: NuGet package version (e.g. 0.1.0)
         required: true
-        default: "1.0.0-alpha.1"
+        default: "0.1.0"
         type: string
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: publish-contracts-${{ github.ref }}
@@ -67,9 +66,16 @@ jobs:
           -o artifacts/nuget
           -p:PackageVersion="$PACKAGE_VERSION"
 
-      - name: Push to GitHub Packages
+      - name: Push package to nuget.org
         run: >
           dotnet nuget push artifacts/nuget/*.nupkg
-          --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
-          --api-key "${{ secrets.GITHUB_TOKEN }}"
+          --source "https://api.nuget.org/v3/index.json"
+          --api-key "${{ secrets.NUGET_API_KEY }}"
+          --skip-duplicate
+
+      - name: Push symbols to nuget.org
+        run: >
+          dotnet nuget push artifacts/nuget/*.snupkg
+          --source "https://api.nuget.org/v3/index.json"
+          --api-key "${{ secrets.NUGET_API_KEY }}"
           --skip-duplicate
