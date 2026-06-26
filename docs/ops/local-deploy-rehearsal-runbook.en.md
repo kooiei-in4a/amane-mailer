@@ -36,7 +36,7 @@ cd infra/deploy
 .\scripts\local-rehearsal.ps1 -Build
 ```
 
-The MAIL-05a no-send smoke is **not run by default**. Add `-RunSmoke` only when needed
+The no-send shared Mailer smoke (`mail-05a-no-send-smoke.sh`) is **not run by default**. Add `-RunSmoke` only when needed
 (requires bash / python3 and the same Docker context as PowerShell).
 
 ```powershell
@@ -259,7 +259,7 @@ docker compose --env-file .env -f compose.yml -f compose.local-rehearsal.yml dow
 
 To reset the DB, delete `infra/deploy/data/` and repeat from step 4.
 
-## Optional: MAIL-05a no-send smoke
+## Optional: no-send shared Mailer smoke
 
 No-send API / auth / SQLite DB verification. ACS is not required (`ACS_CONNECTION_STRING` stays empty).
 **Not run in quick start.** `local-rehearsal.ps1` invokes it only when you explicitly pass `-RunSmoke`.

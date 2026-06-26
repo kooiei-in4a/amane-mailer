@@ -1,6 +1,6 @@
 [English](service-spec.en.md)
 
-# Amane Mailer Service — サービス仕様（Phase A / SQLite + Native AOT）
+# Amane Mailer Service — サービス仕様（SQLite + Native AOT）
 
 - **位置づけ:** 汎用メール送信マイクロサービス
 - **正本契約:** [openapi.yaml](api/openapi.yaml)（HTTP 契約を OpenAPI で定義 — O-04 決定）
@@ -83,7 +83,7 @@ App ──HTTP(Bearer)──▶ POST /internal/mail-requests
 | `payload_json` | TEXT | 受信 JSON 原文 |
 | `payload_hash` | TEXT | SHA-256 hex（64 文字） |
 | `subject` / `html_body` / `text_body` / `reply_to` | TEXT | 配送内容 |
-| `recipient_email` / `recipient_display_name` | TEXT | 宛先（Phase A は 1 件） |
+| `recipient_email` / `recipient_display_name` | TEXT | 宛先（現在の API は 1 件） |
 | `metadata_json` | TEXT NULL | 任意 metadata |
 | `status` | INTEGER | 状態（下表） |
 | `attempt_count` / `max_attempts` | INTEGER | 試行回数 |
@@ -188,7 +188,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `worker_heartbeat_age_seconds` | Worker の最終 heartbeat からの経過秒数（行未存在は `-1`） |
 | `sweep_heartbeat_age_seconds` | Sweep の最終 heartbeat からの経過秒数（行未存在は `-1`） |
 
-`db request-state` は MAIL-05a などの drill 用 read-only 検証コマンド。出力は
+`db request-state` は no-send / ACS deploy drill などの read-only 検証コマンド。出力は
 `tenant_id`, `source_service`, `mail_request_id`, `found`, `status`,
 `status_code`, `attempt_count`, `attempt_rows`, `last_provider`,
 `last_attempt_status`, `last_attempt_status_code`,
@@ -274,7 +274,7 @@ docker compose --env-file .env -f compose.yml up -d mailer
 **バックアップ（PostgreSQL / pg_dump 廃止後）:**
 
 `infra/deploy/backup-mailer.sh` で SQLite バックアップ → age 暗号化 → rclone アップロードを一括実施する。
-手順は [docs/ops/backup-operations.md](docs/ops/backup-operations.md) を参照。
+手順は [docs/ops/backup-operations.md](ops/backup-operations.md) を参照。
 
 ---
 
@@ -320,5 +320,5 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | Date | 内容 |
 |---|---|
 | 2026-06-22 | 初版。実装から OpenAPI 正本と設定仕様を起こす |
-| 2026-06-23 | Phase A 完了に追随: SQLite / Native AOT / chiseled 単一コンテナ / CLI / Retention / 状態遷移 DDL |
-| 2026-06-24 | Worker/Sweep heartbeat liveness 追加（#169）: `worker_heartbeats` テーブル、CLI heartbeat 鮮度チェック、`/readyz` Worker 稼働確認、`db stats` heartbeat age keys |
+| 2026-06-23 | 初回 SQLite / Native AOT リリース仕様に追随: chiseled 単一コンテナ / CLI / Retention / 状態遷移 DDL |
+| 2026-06-24 | Worker/Sweep heartbeat liveness 追加: `worker_heartbeats` テーブル、CLI heartbeat 鮮度チェック、`/readyz` Worker 稼働確認、`db stats` heartbeat age keys |

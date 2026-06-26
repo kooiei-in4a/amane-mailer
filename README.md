@@ -69,17 +69,17 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
-`infra/deploy/drills/` 配下の MAIL-05a drill helper script は、SQLite Mailer CLI
-（`healthcheck`、`db stats`、`db request-state`）と一時的な curl compose client を使います。
+`infra/deploy/drills/` 配下の no-send / ACS deploy drill helper script（`mail-05a-*`）は、
+SQLite Mailer CLI（`healthcheck`、`db stats`、`db request-state`）と一時的な curl compose client を使います。
 詳細は [docs/ops/drills/mail-05a-drill-guide.html](docs/ops/drills/mail-05a-drill-guide.html)
 を参照してください。ACS 実送信なしの local deploy rehearsal は
 [ローカル deploy rehearsal runbook](docs/ops/local-deploy-rehearsal-runbook.md) [(en)](docs/ops/local-deploy-rehearsal-runbook.en.md) を使います。
 
 ## Contracts パッケージ
 
-`Amane.Mailer.Contracts` は nuget.org へ公開する想定です。
-公開は [`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml)
-から手動で行い、`workflow_dispatch` で明示的な version（例: `0.1.0`）を指定します。
+`Amane.Mailer.Contracts` 0.1.0 は nuget.org で公開済みです。
+追加 version の公開は [`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml)
+から手動で行い、`workflow_dispatch` で明示的な version を指定します。
 
 ## Consumer クイックスタート
 
