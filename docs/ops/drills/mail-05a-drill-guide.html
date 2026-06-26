@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MAIL-05a Shared Mailer Drill Guide</title>
+  <title>Shared Mailer Deployment Drill Guide</title>
   <style>
     :root {
       color-scheme: light;
@@ -200,10 +200,10 @@
 <body>
   <main>
     <header>
-      <h1>MAIL-05a Shared Mailer Drill Guide</h1>
+      <h1>Shared Mailer Deployment Drill Guide</h1>
       <p class="lead">
         Deploy host 上の shared Mailer で、送信なし smoke と ACS 1 通ドリルを安全に再実行するための手順です。
-        production ACS 常時有効化前の MAIL-05a ゲート専用で、通常状態の <code>ACS_CONNECTION_STRING</code> が空であることを前提にします。
+        production ACS 常時有効化前の no-send / ACS drill 用で、通常状態の <code>ACS_CONNECTION_STRING</code> が空であることを前提にします。
         connection string、Bearer token、実宛先は GitHub issue、PR、ログ、コミットに残さないでください。
       </p>
       <div>
@@ -385,7 +385,7 @@ vi mail-05a-acs-drill.input.json</code></pre>
 
     <section>
       <h2>Record</h2>
-      <p>#151 / #165 には、秘密情報なしで次だけ記録します。</p>
+      <p>drill record、PR comment、または運用メモには、秘密情報なしで次だけ記録します。</p>
       <ul>
         <li>実施日時と <code>MAILER_IMAGE_TAG</code>。</li>
         <li>request id。</li>
@@ -430,7 +430,7 @@ vi mail-05a-acs-drill.input.json</code></pre>
         <div class="card">
           <h3>ACS precheck is not empty</h3>
           <p>
-            <code>ACS_CONNECTION_STRING must be empty before MAIL-05a drill</code> が出る場合、この MAIL-05a ゲート手順の前提外です。
+            ACS precheck が connection string の事前設定を検出した場合、この no-send / ACS drill の前提外です。
             production ACS 有効後は別の runbook で扱います。
           </p>
         </div>

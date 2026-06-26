@@ -14,9 +14,9 @@ promise of exact scope or dates.
 
 ## v0.2.x
 
-- Publish the contracts package when the DTO surface is stable enough for early
-  consumers.
-- Add compatibility notes for package consumers and image users.
+- Keep compatibility notes current for the published `Amane.Mailer.Contracts`
+  package, starting from version `0.1.0`.
+- Document package/API/image versioning expectations for consumers.
 - Expand CI coverage around container publishing, schema validation, and
   migration compatibility.
 - Improve release automation while keeping actions pinned to full-length SHAs.

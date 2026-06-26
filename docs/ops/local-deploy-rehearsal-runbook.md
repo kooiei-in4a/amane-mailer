@@ -38,7 +38,7 @@ cd infra/deploy
 .\scripts\local-rehearsal.ps1 -Build
 ```
 
-MAIL-05a no-send smoke は **デフォルトでは実行しません**。必要なときだけ `-RunSmoke` を付けます
+No-send shared Mailer smoke（`mail-05a-no-send-smoke.sh`）は **デフォルトでは実行しません**。必要なときだけ `-RunSmoke` を付けます
 （bash / python3 と、PowerShell と同じ Docker コンテキストが必要）。
 
 ```powershell
@@ -261,7 +261,7 @@ docker compose --env-file .env -f compose.yml -f compose.local-rehearsal.yml dow
 
 DB を空にし直す場合は `infra/deploy/data/` を削除してから手順 4 をやり直します。
 
-## 任意: MAIL-05a no-send smoke
+## 任意: no-send shared Mailer smoke
 
 送信なしの API / 認証 / SQLite DB 検証です。ACS は不要（`ACS_CONNECTION_STRING` は空のまま）。
 **クイックスタートでは実行しません。** 明示的に `-RunSmoke` を付けたときだけ
