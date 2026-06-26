@@ -74,7 +74,8 @@ Current implementation limits:
   [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6).
 - **Login throttle**: In-memory only; resets on process restart
   (no durable throttle).
-- **Session revocation**: Immediate revocation of existing sessions on admin
+- **Session store / revocation**: No durable server-side session store
+  (cookie auth only). Immediate revocation of existing sessions on admin
   disable or credential change is not implemented. Sessions remain valid
   until the default idle timeout (30 min) or default absolute lifetime (12 h)
   expires.
