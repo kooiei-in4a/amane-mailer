@@ -58,7 +58,7 @@ Current CI validates OpenAPI structure with `scripts/validate-openapi.mjs`. Unti
 |---|---|---|
 | First acceptance | 202 | `status: accepted` |
 | Retry of same request | 202 | `status: already_accepted` |
-| Invalid JSON / empty body | 400 | `INVALID_REQUEST` |
+| Invalid JSON / empty body / unknown property / duplicate property | 400 | `INVALID_REQUEST` |
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Same ID, different content | 409 | `IDEMPOTENCY_CONFLICT` |
