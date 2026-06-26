@@ -511,6 +511,36 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
+    public async Task Structural_rejection_precedes_authorization()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(token: "wrong-token");
+        using var content = RawJsonContent(
+            $$"""
+            {
+              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
+              "source_service": "{{MailerWebApplicationFixtureBase.SourceService}}",
+              "mail_request_id": "{{Guid.NewGuid()}}",
+              "purpose": "FormResponseNotification",
+              "to": [{ "email": "recipient@example.com" }],
+              "subject": "Subject",
+              "subject": "Tampered subject",
+              "text_body": "Body",
+              "payload_hash": "{{new string('0', 64)}}"
+            }
+            """);
+
+        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+
+        // A malformed body is rejected as 400 before tenant authorization (401) is evaluated,
+        // matching the existing invalid-JSON path.
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
     public async Task Oversized_request_body_returns_413()
     {
         var ct = TestContext.Current.CancellationToken;
