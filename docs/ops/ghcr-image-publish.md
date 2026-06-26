@@ -21,6 +21,7 @@ GitHub Actions で Mailer ランタイムイメージを GitHub Container Regist
 - pre-release は `vX.Y.Z-rc.1` のような `-` 付き識別子を許可します。
 - workflow input はありません。image version tag は選択された `GITHUB_REF_NAME` から決まります。
 - publish されるタグは `sha-<git-sha>` と release tag（例: `v0.1.1`）だけです。
+- `sha-<git-sha>` または release tag が GHCR に既に存在する場合、workflow は上書きせず失敗します。
 - branch ref、形式不正な tag、tag が指す commit と checked-out commit / workflow event commit が一致しない実行は失敗します。
 - deploy では可能な限り不変タグ `sha-<git-sha>` または digest を使います。
 
@@ -37,7 +38,7 @@ publish ジョブは次を使います:
 
 ## Release publish
 
-1. release commit に `vX.Y.Z` tag を作成します。Contracts package を同じ release で publish する場合は、`src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` の `<Version>` が `X.Y.Z` と一致している必要があります。
+1. release commit に `vX.Y.Z` tag を作成します。tag commit はこの hardened workflow を含む必要があるため、この変更を merge した後の commit に tag を切ってください。Contracts package を同じ release で publish する場合は、`src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` の `<Version>` が `X.Y.Z` と一致している必要があります。
 2. GitHub Actions の `Publish Amane Mailer Image` を release tag ref から実行します。
 3. `release` environment の承認後、workflow が `sha-<git-sha>` と `vX.Y.Z` を publish します。
 4. ワークフローの image run、config-content チェック、digest / platform / OCI label / attestation チェックが通ることを確認します。
@@ -69,7 +70,7 @@ image publish と NuGet package publish はどちらも GitHub Environment `rele
 - `sbom: true`
 - `platforms: linux/amd64`
 
-workflow は build action の digest output が空でないこと、`sha-<git-sha>` tag と release tag の digest が build digest と一致すること、`docker buildx imagetools inspect --raw` に attestation manifest があることを gate します。さらに pulled image の OCI labels を検証します:
+workflow は publish 前に `sha-<git-sha>` tag と release tag が GHCR に存在しないことを確認します。publish 後は build action の digest output が空でないこと、`sha-<git-sha>` tag と release tag の digest が build digest と一致すること、`docker buildx imagetools inspect --raw` に attestation manifest があることを gate します。さらに pulled image の OCI labels を検証します:
 
 - `org.opencontainers.image.source`
 - `org.opencontainers.image.revision`

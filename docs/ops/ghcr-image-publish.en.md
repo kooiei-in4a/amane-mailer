@@ -24,6 +24,8 @@ The image name is derived from `${{ github.repository_owner }}` at publish time.
   `GITHUB_REF_NAME`.
 - The only pushed tags are `sha-<git-sha>` and the release tag, for example
   `v0.1.1`.
+- If either `sha-<git-sha>` or the release tag already exists in GHCR, the
+  workflow fails instead of overwriting it.
 - Branch refs, malformed tags, or runs where the tag commit does not match the
   checked-out commit / workflow event commit fail before publishing.
 - Deploy with the immutable `sha-<git-sha>` tag or the digest whenever possible.
@@ -41,9 +43,11 @@ The workflow builds the Mailer image from `infra/docker/Dockerfile`.
 
 ## Release publish
 
-1. Create a `vX.Y.Z` tag on the release commit. If the Contracts package is
-   published for the same release, `src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj`
-   `<Version>` must match `X.Y.Z`.
+1. Create a `vX.Y.Z` tag on the release commit. The tag commit must contain this
+   hardened workflow, so create the tag on a commit after this change is merged.
+   If the Contracts package is published for the same release,
+   `src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` `<Version>` must
+   match `X.Y.Z`.
 2. Run `Publish Amane Mailer Image` from the release tag ref in GitHub Actions.
 3. After the `release` environment approval, the workflow publishes
    `sha-<git-sha>` and `vX.Y.Z`.
@@ -85,10 +89,11 @@ Image publishing and NuGet package publishing both use the GitHub Environment
 - `sbom: true`
 - `platforms: linux/amd64`
 
-The workflow verifies that the build action returned a non-empty digest, that
-the `sha-<git-sha>` tag and release tag digests match the build digest, and that
-`docker buildx imagetools inspect --raw` contains an attestation manifest. It
-also validates OCI labels on the pulled image:
+Before publishing, the workflow verifies that neither the `sha-<git-sha>` tag
+nor the release tag exists in GHCR. After publishing, it verifies that the build
+action returned a non-empty digest, that both tag digests match the build digest,
+and that `docker buildx imagetools inspect --raw` contains an attestation
+manifest. It also validates OCI labels on the pulled image:
 
 - `org.opencontainers.image.source`
 - `org.opencontainers.image.revision`

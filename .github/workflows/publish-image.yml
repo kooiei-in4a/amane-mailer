@@ -85,6 +85,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Ensure image tags are unpublished
+        env:
+          SHA_IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.sha_tag }}
+          VERSION_IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for image_ref in "${SHA_IMAGE_REF}" "${VERSION_IMAGE_REF}"; do
+            if inspect_output="$(docker buildx imagetools inspect "$image_ref" 2>&1)"; then
+              echo "::error::Image tag already exists and will not be overwritten: ${image_ref}"
+              printf '%s\n' "$inspect_output"
+              exit 1
+            fi
+
+            if ! printf '%s\n' "$inspect_output" | grep -Eiq 'not found|manifest unknown|name unknown'; then
+              echo "::error::Could not confirm image tag is absent: ${image_ref}"
+              printf '%s\n' "$inspect_output"
+              exit 1
+            fi
+          done
+
       - name: Build and push image
         id: build
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
