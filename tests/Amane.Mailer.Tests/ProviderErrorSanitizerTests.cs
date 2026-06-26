@@ -120,6 +120,43 @@ public sealed class ProviderErrorSanitizerTests
         Assert.Equal(raw, result);
     }
 
+    // Reviewer PoC cases — secrets that leaked before the regex fixes.
+
+    [Theory]
+    [InlineData(@"password=""hunter2"" failed", "hunter2")]
+    [InlineData(@"SharedAccessKey='Zm9vYmFy' failed", "Zm9vYmFy")]
+    [InlineData("api-key: sk_test_1234567890 failed", "sk_test_1234567890")]
+    [InlineData("token=eyJhbGci\r\npayload.signature failed", "payload.signature")]
+    [InlineData("550 recipient ユーザー@例え.テスト does not exist", "ユーザー@例え.テスト")]
+    public void Sanitize_masks_credential_and_email_variants(string raw, string leaked)
+    {
+        var result = ProviderErrorSanitizer.Sanitize(raw);
+
+        Assert.DoesNotContain(leaked, result, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Sanitize_handles_colon_separator_for_header_style_credentials()
+    {
+        const string raw = "api-key: sk_test_1234567890abcdef failed";
+
+        var result = ProviderErrorSanitizer.Sanitize(raw);
+
+        Assert.DoesNotContain("sk_test_1234567890abcdef", result, StringComparison.Ordinal);
+        Assert.Contains("failed", result, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Sanitize_masks_idn_email_address()
+    {
+        const string raw = "550 recipient ユーザー@例え.テスト does not exist";
+
+        var result = ProviderErrorSanitizer.Sanitize(raw);
+
+        Assert.DoesNotContain("ユーザー@例え.テスト", result, StringComparison.Ordinal);
+        Assert.Contains("does not exist", result, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Sanitize_is_idempotent()
     {

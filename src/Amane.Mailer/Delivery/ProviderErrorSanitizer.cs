@@ -30,11 +30,13 @@ public static partial class ProviderErrorSanitizer
             return EmptyPlaceholder;
         }
 
-        // Collapse newlines and control whitespace so multi-line provider dumps
-        // cannot smuggle secrets past a per-line reviewer or break log lines.
-        var text = WhitespaceRegex().Replace(raw, " ").Trim();
+        // Mask secrets BEFORE collapsing whitespace so:
+        // (a) quoted values with embedded spaces are handled correctly, and
+        // (b) tokens split across a line break are fully masked.
+        var text = raw;
 
-        // Connection-string / credential assignments: endpoint=..., accesskey=..., token=..., password=...
+        // Connection-string / credential assignments:
+        //   endpoint=..., accesskey=..., token=..., api-key: ..., password="...", etc.
         text = CredentialAssignmentRegex().Replace(text, m => $"{m.Groups["key"].Value}={Mask}");
 
         // URL query strings can carry SAS signatures and tokens.
@@ -43,12 +45,14 @@ public static partial class ProviderErrorSanitizer
         // Bearer / authorization tokens.
         text = BearerRegex().Replace(text, $"Bearer {Mask}");
 
-        // Recipient / sender email addresses.
+        // Recipient / sender email addresses — broad pattern to cover IDN/EAI.
         text = EmailRegex().Replace(text, Mask);
+
+        // Collapse newlines and control whitespace to a single space.
+        text = WhitespaceRegex().Replace(text, " ").Trim();
 
         // Masks always leave a token (e.g. "***"), so non-blank input cannot
         // collapse to an empty string here; blank input was handled above.
-        text = text.Trim();
         if (text.Length > MaxLength)
         {
             text = text[..MaxLength].TrimEnd() + "...";
@@ -60,8 +64,11 @@ public static partial class ProviderErrorSanitizer
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex WhitespaceRegex();
 
+    // Matches key=value or key: value, with optional quoting.
+    // The unquoted value continuation `(?:[\r\n]+[^;,""'\s]+)*` catches tokens
+    // split across a provider line break (e.g. long base64 access keys).
     [GeneratedRegex(
-        @"\b(?<key>endpoint|accesskey|accountkey|sharedaccesskey|secret|secretkey|token|sastoken|password|pwd|sig|signature|apikey|api_key|key)\s*=\s*[^;,\s""']+",
+        @"\b(?<key>endpoint|accesskey|accountkey|sharedaccesskey|secret|secretkey|token|sastoken|password|pwd|sig|signature|apikey|api[-_]key|key)\s*[=:]\s*(?:""[^""]*""|'[^']*'|[^;,""'\s]+(?:[\r\n]+[^;,""'\s]+)*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex CredentialAssignmentRegex();
 
@@ -75,8 +82,10 @@ public static partial class ProviderErrorSanitizer
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex BearerRegex();
 
+    // Broad pattern: covers ASCII emails and IDN/EAI addresses (e.g. ユーザー@例え.テスト).
+    // Requires at least one dot in the domain to reduce false positives.
     [GeneratedRegex(
-        @"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+        @"[^\s@<>""',;]+@[^\s@<>""',;.]+(?:\.[^\s@<>""',;]+)+",
+        RegexOptions.CultureInvariant)]
     private static partial Regex EmailRegex();
 }

@@ -141,6 +141,31 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
     }
 
     [Fact]
+    public async Task Worker_sanitizes_raw_provider_error_before_persisting_to_db()
+    {
+        // CapturingMailDeliveryProvider.QueueResult bypasses the real provider catch
+        // blocks, so raw secrets in the queued MailDeliveryResult reach the worker
+        // without provider-layer sanitization. This test verifies the worker's own
+        // defense-in-depth layer strips secrets before writing to the DB.
+        var ct = TestContext.Current.CancellationToken;
+        const string rawError = "SMTP connect failed: password=hunter2 sender=admin@acme.example.com";
+        fixture.DeliveryProvider.QueueResult(MailDeliveryResult.Failure(
+            "SMTP_CONNECT_FAILED",
+            rawError,
+            retryable: false));
+        var request = await SeedQueuedRequestAsync(attemptCount: 0, ct);
+
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Failed, minAttemptCount: 1, ct);
+
+        Assert.DoesNotContain("hunter2", stored.LastErrorMessage ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("admin@acme.example.com", stored.LastErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+
+        var attempt = await ReadSingleAttemptAsync(stored.Id, ct);
+        Assert.DoesNotContain("hunter2", attempt.ErrorMessage ?? string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("admin@acme.example.com", attempt.ErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Worker_marks_request_failed_when_tenant_is_not_configured()
     {
         var ct = TestContext.Current.CancellationToken;
