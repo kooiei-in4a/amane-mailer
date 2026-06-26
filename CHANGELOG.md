@@ -6,6 +6,11 @@ This project follows semantic versioning while the public API is stabilizing.
 During the 0.x series, breaking changes may still occur, but they will be
 called out in release notes and migration guidance.
 
+Service release versions, Docker image tags (`vX.Y.Z` + immutable `sha-<git-sha>`),
+NuGet package versions (`Amane.Mailer.Contracts`), and OpenAPI `info.version` are
+kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
+`docs/service-spec.md` for details.
+
 ## [0.1.0] - 2026-06-25
 
 ### Added
