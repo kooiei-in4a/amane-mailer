@@ -13,10 +13,10 @@ or secret values.
 | Credential | Required action | Status | Evidence without values |
 | --- | --- | --- | --- |
 | NuGet publishing for `Amane.Mailer.Contracts` | Migrate to nuget.org Trusted Publishing for `kooiei-in4a/amane-mailer`, workflow `publish-contracts.yml`, environment `release`. Remove GitHub secret `NUGET_API_KEY`. Revoke/delete the older broader NuGet API key. | DONE | Trusted Publishing policy `Amane.Mailer.Contracts GitHub Actions` is active on nuget.org. Workflow run `28214950412` successfully exchanged the GitHub OIDC token for a temporary NuGet API key. GitHub repository secret `NUGET_API_KEY` has been deleted. Older broader NuGet API key `amane-mailer-contracts-publish-2026` has been revoked. |
-| GitHub tokens / PATs used before publication | Confirm no broad PAT remains in active use. Rotate or delete any token that was used during publication prep. | TODO | Record only token name, provider UI confirmation, and completion date. |
+| GitHub tokens / PATs used before publication | Confirm no broad PAT remains in active use. Rotate or delete any token that was used during publication prep. | DONE | Classic PATs, fine-grained PATs, owned OAuth Apps, and Authorized OAuth Apps reviewed on 2026-06-26 JST. Obsolete classic `read:packages` tokens were deleted. Active OAuth grants are retained because they are still in use. |
 | ACS connection string | Review whether ACS access key or connection string rotation is required for live sending. If rotation is required, update deploy host secret storage. | REVIEWED | Owner reviewed on 2026-06-26 JST and determined rotation is not required. No ACS connection string value was recorded. |
-| Tenant bearer token(s) | Rotate production/shared tenant token values. Update deploy host tenant secret storage and consumer app config. | TODO | Record only tenant id/name and completion date. |
-| Backup / rclone credentials | Rotate rclone remote credentials and any backup encryption/deploy credentials used before publication. | TODO | Record only remote name, credential class, and completion date. |
+| Tenant bearer token(s) | Rotate production/shared tenant token values. Update deploy host tenant secret storage and consumer app config. | NOT APPLICABLE | Owner reviewed on 2026-06-26 JST and confirmed there are no production/shared tenant bearer tokens for this repository to rotate. |
+| Backup / rclone credentials | Rotate rclone remote credentials and any backup encryption/deploy credentials used before publication. | NOT APPLICABLE | Owner reviewed on 2026-06-26 JST and confirmed there are no backup/rclone credentials for this repository to rotate. |
 
 Credential inventory snapshot on 2026-06-26 JST:
 
@@ -36,13 +36,11 @@ Credential inventory snapshot on 2026-06-26 JST:
   example local tokens, test tokens, and operational warnings. No real
   credential value was recorded.
 
-Credential inventory remaining manual checks:
+Credential inventory review notes:
 
-- GitHub account: review Developer settings for personal access tokens,
-  fine-grained tokens, OAuth apps, and GitHub Apps. Revoke or rotate any token
-  used before public release and still not needed. In particular, rotate the
-  GitHub CLI authorization if it was used during private publication prep and a
-  fresh post-public token is desired.
+- DONE: GitHub account Developer settings were reviewed for personal access
+  tokens, fine-grained tokens, owned OAuth Apps, and Authorized OAuth Apps.
+  GitHub CLI authorization is actively used and is retained without rotation.
 - DONE: GitHub personal access tokens (classic) reviewed on 2026-06-26 JST.
   The classic PAT list is empty after deleting obsolete `read:packages` tokens.
 - DONE: GitHub fine-grained personal access tokens reviewed on 2026-06-26 JST.
@@ -55,16 +53,12 @@ Credential inventory remaining manual checks:
   GitHub CLI, GitHub Desktop, Visual Studio, and Visual Studio Code.
 - DONE: ACS connection string reviewed on 2026-06-26 JST. Owner determined
   rotation is not required. No ACS connection string value was recorded.
-- Tenant bearer tokens: rotate production/shared tenant tokens, update
-  consumer configuration and the deploy host, then record only tenant names and
-  completion date here.
-- Backup / rclone: rotate the minimum-scope upload credential and any backup
-  encryption/deploy credentials used before publication, update the private
-  host configuration and 1Password Amane.Mailer item, then record only the
-  remote name, credential class, and completion date here.
-- GHCR deploy-host pull token, if any: confirm it is read-only
-  `read:packages`, rotate/delete if created before publication, and record only
-  token label and completion date here.
+- DONE: Owner confirmed there are no production/shared tenant bearer tokens to
+  rotate for this repository.
+- DONE: Owner confirmed there are no backup/rclone credentials to rotate for
+  this repository.
+- DONE: Owner confirmed there is no GHCR deploy-host pull token to rotate for
+  this repository.
 
 Trusted Publishing follow-up:
 
