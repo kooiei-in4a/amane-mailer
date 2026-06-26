@@ -69,6 +69,15 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
+公開済みの GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.1.0`）を clean state から
+pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
+conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh` を使います。手順と設定は
+[公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
+
+```bash
+bash scripts/release-smoke.sh
+```
+
 `infra/deploy/drills/` 配下の no-send / ACS deploy drill helper script（`mail-05a-*`）は、
 SQLite Mailer CLI（`healthcheck`、`db stats`、`db request-state`）と一時的な curl compose client を使います。
 詳細は [docs/ops/drills/mail-05a-drill-guide.html](docs/ops/drills/mail-05a-drill-guide.html)
