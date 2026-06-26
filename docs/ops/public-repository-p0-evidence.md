@@ -147,6 +147,8 @@ Alert record:
 
 Status: verified on 2026-06-26 JST.
 
+Release record: [docs/releases/v0.1.0.md](../releases/v0.1.0.md)
+
 Release:
 
 - Release tag: `v0.1.0`
