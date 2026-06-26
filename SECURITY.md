@@ -51,13 +51,35 @@ not stored anywhere.
 
 ## Admin Audit Logging
 
-When the Admin UI is enabled and an authenticated admin opens a stored
-`html_body`, `text_body`, or `metadata_json` field, Amane Mailer writes a
-structured audit log event named `AdminMailRequestBodyViewed`.
+Admin operation audit events are persisted to the Mailer SQLite database
+(`admin_audit_events` table) as the source of truth, so the trail survives
+restart and deployment (ADR 0013 D-08). Each event is also mirrored to a
+structured stdout log as a secondary channel.
 
-The event records only the admin username, mail request id, field name, and
-remote address. It must not include the message body, recipient address,
-subject, or metadata values.
+Persisted events:
+
+| Event type | When | Persistence policy |
+| --- | --- | --- |
+| `mail_request.body_viewed` | An authenticated admin opens a stored `html_body`, `text_body`, or `metadata_json` field | **Fail closed** — if the audit event cannot be persisted, the body view is denied with HTTP 500 and the content is not returned. |
+| `auth.login_succeeded` | A successful admin login | **Best effort** — a persistence failure is logged but does not block the auth flow. |
+| `auth.login_failed` | A rejected admin login | **Best effort** — bounded per IP/account by the login throttle. |
+
+Each row records only the event type, actor, timestamp, source IP, a truncated
+user-agent summary, the target reference (type / id / field name), the result,
+and an optional error code. It must never include the message body, recipient
+address, subject, metadata values, or payload JSON. For a failed login the
+actor is the submitted username, length-bounded and never accompanied by the
+password.
+
+The body-view event keeps its dedicated structured stdout log
+(`AdminMailRequestBodyViewed`) in addition to the database row.
+
+Not yet implemented (tracked for follow-up): logout / session-expired /
+login-rate-limited events, retention sweep
+(`MAILER_ADMIN_AUDIT_RETENTION_DAYS`), and optional hashing of network
+identifiers (`MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS`). The
+`admin_audit_events` table is part of the Mailer SQLite database and is
+therefore included in `Amane.Mailer db backup` output.
 
 ## Admin UI Security Scope
 
@@ -69,9 +91,10 @@ limits before enabling the admin UI in any non-local environment.
 
 Current implementation limits:
 
-- **Audit log**: Body-view events (`AdminMailRequestBodyViewed`) are written
-  to structured log (stdout) only. SQLite persistence is tracked in
-  [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6).
+- **Audit log**: Body-view and login success/failure events are persisted to
+  the `admin_audit_events` SQLite table (and mirrored to stdout). Logout,
+  session-expired, and login-rate-limited events, plus a retention sweep, are
+  not yet implemented. See the Admin Audit Logging section above.
 - **Login throttle**: In-memory only; resets on process restart
   (no durable throttle).
 - **Session store / revocation**: No durable server-side session store

@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Net;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -177,9 +179,12 @@ public static class MailerAdminExtensions
         IAntiforgery antiforgery,
         MailerAdminOptions options,
         AdminLoginThrottle throttle,
+        AdminAuditRepository auditRepository,
+        ILoggerFactory loggerFactory,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
+        var auditLogger = loggerFactory.CreateLogger(AdminAuditLog.LoggerCategory);
         if (!await ValidateAntiforgeryAsync(context, antiforgery))
             return Results.Text("Invalid CSRF token.", statusCode: StatusCodes.Status400BadRequest);
 
@@ -203,6 +208,17 @@ public static class MailerAdminExtensions
         if (!string.Equals(username, options.Username, StringComparison.Ordinal)
             || !AdminPasswordHasher.Verify(password, options.PasswordHash))
         {
+            await AdminAuditLog.WriteBestEffortAsync(
+                auditRepository,
+                auditLogger,
+                BuildAuthAuditEvent(
+                    context,
+                    timeProvider,
+                    AdminAuditLog.EventTypes.LoginFailed,
+                    AdminAuditLog.Results.Failure,
+                    AdminAuditLog.NormalizeActor(username)),
+                cancellationToken);
+
             if (throttle.RecordFailure(username, remoteAddress, options, out retryAfter))
                 return TooManyRequests(context, retryAfter);
 
@@ -234,8 +250,36 @@ public static class MailerAdminExtensions
             new ClaimsPrincipal(identity),
             properties);
 
+        await AdminAuditLog.WriteBestEffortAsync(
+            auditRepository,
+            auditLogger,
+            BuildAuthAuditEvent(
+                context,
+                timeProvider,
+                AdminAuditLog.EventTypes.LoginSucceeded,
+                AdminAuditLog.Results.Success,
+                options.Username),
+            cancellationToken);
+
         return Results.Redirect("/admin");
     }
+
+    private static AdminAuditEvent BuildAuthAuditEvent(
+        HttpContext context,
+        TimeProvider timeProvider,
+        string eventType,
+        string result,
+        string actor) =>
+        new()
+        {
+            EventType = eventType,
+            Actor = actor,
+            OccurredAt = timeProvider.GetUtcNow(),
+            SourceIp = AdminAuditLog.ResolveSourceIp(context),
+            UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
+            TargetType = AdminAuditLog.TargetTypes.AdminSession,
+            Result = result,
+        };
 
     private static async Task<IResult> LogoutAsync(
         HttpContext context,

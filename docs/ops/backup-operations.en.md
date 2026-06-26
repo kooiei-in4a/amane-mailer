@@ -36,7 +36,7 @@ Back up these Mailer-owned items:
 
 | Item | Default location | Notes |
 | --- | --- | --- |
-| SQLite database | `./data/mailer.db` mounted at `/app/data/mailer.db` | Covered by `backup-mailer.sh`. Use `Amane.Mailer db backup`; do not copy a live WAL database file directly. |
+| SQLite database | `./data/mailer.db` mounted at `/app/data/mailer.db` | Covered by `backup-mailer.sh`. Use `Amane.Mailer db backup`; do not copy a live WAL database file directly. The admin audit log (`admin_audit_events`) lives in the same database and is preserved by backup/restore together with mail data. |
 | Tenant configuration | `./tenants.json` | Manual operator backup. Contains routing and token env names. It may include operational metadata and should be reviewed before restore. |
 | Compose env | `./.env` | Manual operator backup. Contains secrets or secret references. Store only in a private secret manager or host backup, never in Git. |
 | Deploy template | `compose.yml` plus image tag in `.env` | Manual operator backup for host-local state. The checked-in template is reusable; the active image tag is host state. |

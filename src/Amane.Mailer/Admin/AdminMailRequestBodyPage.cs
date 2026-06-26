@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using System.Security.Claims;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
 
 namespace Amane.Mailer.Admin;
 
@@ -11,6 +12,8 @@ public static class AdminMailRequestBodyPage
         ["html_body", "text_body", "metadata_json"];
     private const string AuditLoggerCategoryName = "Amane.Mailer.Admin.BodyAccessAudit";
     private static readonly EventId BodyViewedEvent = new(1001, "AdminMailRequestBodyViewed");
+    private static readonly EventId BodyViewAuditWriteFailedEvent =
+        new(1002, "AdminMailRequestBodyViewAuditWriteFailed");
 
     public static async Task<IResult> RenderAsync(
         string id,
@@ -18,6 +21,8 @@ public static class AdminMailRequestBodyPage
         HttpContext context,
         ILoggerFactory loggerFactory,
         MailRequestRepository repository,
+        AdminAuditRepository auditRepository,
+        TimeProvider timeProvider,
         AdminDeadLetterCountCache deadLetterCountCache,
         CancellationToken cancellationToken)
     {
@@ -43,6 +48,39 @@ public static class AdminMailRequestBodyPage
             return Results.NotFound();
 
         var logger = loggerFactory.CreateLogger(AuditLoggerCategoryName);
+
+        // Persist the body-view audit event to SQLite first and fail closed:
+        // viewing PII without a durable audit record is the exact risk ADR 0013
+        // D-06/D-08 guard against, so deny the view when the write cannot land.
+        try
+        {
+            await auditRepository.WriteAsync(
+                new AdminAuditEvent
+                {
+                    EventType = AdminAuditLog.EventTypes.MailRequestBodyViewed,
+                    Actor = AdminAuditLog.ResolveActor(context),
+                    OccurredAt = timeProvider.GetUtcNow(),
+                    SourceIp = AdminAuditLog.ResolveSourceIp(context),
+                    UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
+                    TargetType = AdminAuditLog.TargetTypes.MailRequest,
+                    TargetId = requestId.ToString("D"),
+                    FieldName = field,
+                    Result = AdminAuditLog.Results.Success,
+                },
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(
+                BodyViewAuditWriteFailedEvent,
+                ex,
+                "Admin mail request body view denied because the audit event could not be persisted.");
+            return Results.Text(
+                "Audit log write failed.",
+                "text/plain; charset=utf-8",
+                statusCode: StatusCodes.Status500InternalServerError);
+        }
+
         RecordBodyViewedAuditLog(context, logger, requestId, field);
 
         var deadLetterCount = await deadLetterCountCache.GetCountAsync(repository, cancellationToken);
