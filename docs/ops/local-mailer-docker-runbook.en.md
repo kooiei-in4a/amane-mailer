@@ -6,6 +6,20 @@ This runbook covers starting Mailer and Mailpit on local Docker, and verifying t
 
 For deploy compose rehearsal on a deploy host (3 tenants / shared network), see [local-deploy-rehearsal-runbook.en.md](local-deploy-rehearsal-runbook.en.md).
 
+## About the Admin UI
+
+The Admin UI (`/admin`) is an **internal-network-only, experimental** operational aid.
+Direct exposure to the public internet is not a supported configuration.
+Outside of local verification, always use a reverse proxy, firewall, or Docker port
+publish restriction as the network boundary.
+
+Current limitations ([ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md) goals not yet implemented):
+
+- Login throttle is in-memory only (resets on process restart)
+- No durable server-side session store (cookie auth only); immediate session revocation on admin disable or credential change is not implemented
+- No per-admin tenant scope (single `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`)
+- Audit log is structured log (stdout) only; SQLite persistence is tracked in [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6)
+
 ## Prerequisites
 
 - Docker Desktop is running.

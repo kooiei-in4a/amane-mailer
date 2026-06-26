@@ -53,6 +53,20 @@ For the full smoke procedure, including Admin UI setup, ACS switching, and Dead
 Letter checks, see
 [Local Mailer Docker runbook](docs/ops/local-mailer-docker-runbook.en.md) [(ja)](docs/ops/local-mailer-docker-runbook.md).
 
+## Admin UI
+
+Setting `AMANE_ADMIN_ENABLED=true` enables `/admin` (disabled by default).
+The admin UI is an **internal-network-only, experimental** operational aid.
+Direct exposure to the public internet is not a supported configuration.
+In production, use a reverse proxy, firewall, or Docker port publish restriction as the network boundary.
+
+**Current limitations ([ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md) goals not yet implemented)**
+
+- Login throttle is in-memory only (resets on process restart)
+- No durable server-side session store (cookie auth only); immediate session revocation on admin disable or credential change is not implemented
+- No per-admin tenant scope (single `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`)
+- Audit log is structured log (stdout) only; SQLite persistence is tracked in [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6)
+
 ## Deployment Notes
 
 The runtime image includes only safe examples and the tenant schema. Real tenant

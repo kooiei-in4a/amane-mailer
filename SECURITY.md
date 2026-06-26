@@ -58,3 +58,27 @@ structured audit log event named `AdminMailRequestBodyViewed`.
 The event records only the admin username, mail request id, field name, and
 remote address. It must not include the message body, recipient address,
 subject, or metadata values.
+
+## Admin UI Security Scope
+
+The Admin UI is an **internal-network-only, experimental** operational tool
+(see [ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md)).
+Do not expose `/admin` directly to the public internet.
+Restrict access via a reverse proxy, VPN, firewall, or Docker port publish
+limits before enabling the admin UI in any non-local environment.
+
+Current implementation limits:
+
+- **Audit log**: Body-view events (`AdminMailRequestBodyViewed`) are written
+  to structured log (stdout) only. SQLite persistence is tracked in
+  [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6).
+- **Login throttle**: In-memory only; resets on process restart
+  (no durable throttle).
+- **Session store / revocation**: No durable server-side session store
+  (cookie auth only). Immediate revocation of existing sessions on admin
+  disable or credential change is not implemented. Sessions remain valid
+  until the default idle timeout (30 min) or default absolute lifetime (12 h)
+  expires.
+- **Tenant scope**: No per-admin tenant scope. A single
+  `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH` credential has
+  access to all tenants.

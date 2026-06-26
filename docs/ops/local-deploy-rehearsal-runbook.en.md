@@ -161,6 +161,12 @@ The old `AMANE_ADMIN_BIND` / `MAILER_ADMIN_BIND` names remain as deprecated alia
 This is for local HTTP verification only. On deploy hosts, keep `AMANE_ADMIN_ALLOW_HTTP=false`
 under the HTTPS reverse-proxy setup.
 
+The Admin UI is an **internal-network-only, experimental** operational aid. Current limits:
+login throttle is in-memory only (resets on process restart);
+no durable server-side session store (cookie auth only) and immediate session revocation on admin disable or credential change is not implemented;
+no per-admin tenant scope; audit log is structured log (stdout) only
+(SQLite persistence is tracked in [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6)).
+
 ```powershell
 $composeFiles = @("-f", "compose.yml", "-f", "compose.local-rehearsal.yml")
 # Run the next line only when verifying with local-rehearsal.ps1 -Build.

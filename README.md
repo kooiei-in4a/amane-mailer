@@ -50,6 +50,20 @@ docker compose -f infra/docker/docker-compose.local.yml up -d --build --wait mai
 Admin UI setup、ACS 切替、Dead Letter 確認を含む smoke 手順は
 [ローカル Mailer Docker runbook](docs/ops/local-mailer-docker-runbook.md) [(en)](docs/ops/local-mailer-docker-runbook.en.md) を参照してください。
 
+## Admin UI
+
+`AMANE_ADMIN_ENABLED=true` を設定すると `/admin` が有効になります（既定は無効）。
+管理画面は **内部ネットワーク向け・experimental** な運用補助ツールです。公開インターネットへの
+直接公開は想定していません。production では reverse proxy、firewall、または Docker port publish
+制限をネットワーク境界として設定してください。
+
+**現時点の制約（[ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md) の方針に対して未実装）**
+
+- login throttle は in-memory のみ（プロセス再起動でリセット）
+- server-side session store なし（cookie auth のみ）、管理者無効化・認証情報変更時の即時 session 失効は未実装
+- 管理者ごとの tenant scope なし（単一 `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`）
+- audit log は structured log（stdout）のみ。SQLite 永続化は [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) で追跡中
+
 ## デプロイ時の注意
 
 runtime image には安全な example と tenant schema だけを含めます。実 tenant JSON は
