@@ -28,7 +28,7 @@ P1 issues use `[P1]` in the issue title, not a GitHub label. Search by title or 
 Run the smallest useful check first, then broaden before finishing.
 
 ```powershell
-# Default loop (matches README / CI)
+# Default local loop (matches README; CI uses normal test verbosity)
 dotnet restore Amane.Mailer.slnx --locked-mode
 dotnet build Amane.Mailer.slnx -c Release --no-restore
 dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
@@ -71,6 +71,7 @@ Native AOT and full trimming are mandatory (`PublishAot`, `IsTrimmable`, `TrimMo
 - Until #21 is resolved, do not update only one of OpenAPI (`docs/api/openapi.yaml`), Contracts, or runtime DTOs for contract changes.
 - After #21 is resolved, follow the resulting ADR and any CI drift checks added there.
 - Mail request JSON behavior must stay consistent across OpenAPI, runtime, and tests — including unknown and duplicate property handling (#22).
+- Note: `docs/service-spec.md` currently names OpenAPI as canonical. This is the inconsistency tracked by #21; do not treat that wording as settled until #21 is closed.
 
 ### Provider errors (#26)
 
@@ -84,8 +85,9 @@ Native AOT and full trimming are mandatory (`PublishAot`, `IsTrimmable`, `TrimMo
 
 ### Release and CI
 
-- Changes to `.github/workflows/` must preserve tag/version validation, safe workflow inputs (no unvalidated shell interpolation), SHA-pinned actions, and release approval boundaries (`release` environment for publish workflows).
-- Do not weaken SBOM/provenance/digest tracking added for release hardening (#23).
+- Changes to `.github/workflows/` must preserve existing SHA-pinned actions, existing validation, and any existing approval boundaries.
+- Publish workflow hardening is tracked by #23. Until #23 is closed, treat tag/version consistency, safe input handling, `release` environment alignment, and SBOM/provenance/digest tracking as required work items, not completed guarantees.
+- Do not assume release hardening from #23 is complete until that issue is closed.
 
 ## Documentation map
 
