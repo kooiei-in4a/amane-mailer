@@ -45,6 +45,14 @@ Credential inventory remaining manual checks:
   fresh post-public token is desired.
 - DONE: GitHub personal access tokens (classic) reviewed on 2026-06-26 JST.
   The classic PAT list is empty after deleting obsolete `read:packages` tokens.
+- DONE: GitHub fine-grained personal access tokens reviewed on 2026-06-26 JST.
+  No fine-grained tokens are present.
+- DONE: GitHub owned OAuth Apps reviewed on 2026-06-26 JST. No owned OAuth
+  Apps are present.
+- DONE: GitHub Authorized OAuth Apps reviewed on 2026-06-26 JST. The listed
+  grants are all still in use and were retained: Azure App Service
+  Authentication, Azure App Service Creates, Cursor, Git Credential Manager,
+  GitHub CLI, GitHub Desktop, Visual Studio, and Visual Studio Code.
 - ACS: rotate the ACS key or connection string used for live sending, update
   the deploy host and 1Password Amane.Mailer item, then record only the Azure
   resource name, key slot, and completion date here.
