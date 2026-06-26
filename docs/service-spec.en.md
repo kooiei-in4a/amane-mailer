@@ -3,7 +3,8 @@
 # Amane Mailer Service — Service Specification (SQLite + Native AOT)
 
 - **Role:** General-purpose mail delivery microservice
-- **Canonical contract:** [openapi.yaml](api/openapi.yaml) (HTTP contract defined in OpenAPI — O-04 decision)
+- **HTTP contract source of truth:** `src/Amane.Mailer.Contracts/` (ADR 0012 D-01)
+- **Public HTTP reference:** [openapi.yaml](api/openapi.yaml) (public schema synchronized with Contracts / runtime)
 - **Related:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md) (Mailer microservice extraction)
 - **Runtime:** Native AOT single binary (`Amane.Mailer`) + chiseled container. PostgreSQL is not used.
 
@@ -37,13 +38,19 @@ App ──HTTP(Bearer)──▶ POST /internal/mail-requests
 
 ## 2. Interface (HTTP)
 
-Canonical source: [openapi.yaml](api/openapi.yaml). Summary:
+The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contracts/`. The Mailer runtime references the same DTOs / constants, and [openapi.yaml](api/openapi.yaml) is the Consumer-facing HTTP reference / public schema synchronized with Contracts / runtime. Summary:
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
 | `POST` | `/internal/mail-requests` | Accept send request | Tenant Bearer |
 | `GET` | `/healthz` | Liveness check | None |
 | `GET` | `/readyz` | Readiness (includes DB schema check) | None |
+
+### Contract Sync and Drift Review
+
+When changing the contract, review drift across `src/Amane.Mailer.Contracts/`, the runtime implementation, [openapi.yaml](api/openapi.yaml), and related tests in the same change. The review covers Request/Response DTO property names, required / nullable fields, `MailerErrorCodes`, `MailRequestAcceptanceStatus`, `MailRequestStatus`, payload hash fields, and JSON unknown / duplicate property behavior.
+
+Current CI validates OpenAPI structure with `scripts/validate-openapi.mjs`. Until automated drift checks are added, every HTTP-contract-changing PR must record validation notes comparing Contracts DTOs / constants, runtime behavior, OpenAPI schemas / examples, and related tests / test vectors. If OpenAPI changes, the notes must include the result of `node scripts/validate-openapi.mjs docs/api/openapi.yaml`. Automated drift checks between DTOs / enums / error codes and the OpenAPI schema remain follow-up work. JSON strictness for unknown / duplicate properties is connected to #22, and the Contracts package / API versioning policy is connected to #5.
 
 ### Acceptance Responses
 
@@ -306,12 +313,12 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 
 | ID | Topic | Current State / Direction |
 |---|---|---|
-| O-04 | Canonical HTTP contract | **OpenAPI (this yaml)** |
-| O-02 | Contracts distribution | OpenAPI + `Amane.Mailer.Contracts` |
+| O-04 | HTTP contract source of truth | **`src/Amane.Mailer.Contracts/`** (ADR 0012 D-01) |
+| O-02 | Contracts distribution | `Amane.Mailer.Contracts` NuGet. OpenAPI is the Consumer-facing HTTP reference |
 | O-03 | source_service registration | tenants.json allowlist |
 | O-06 | Multiple products × ACS | Currently one ACS connection per service |
 | O-13 | `from` override | Not allowed |
-| — | Contract versioning | OpenAPI semver + backward compatibility rules |
+| — | Contract versioning | Package / API versioning policy is finalized in #5. OpenAPI `info.version` follows as the public reference version |
 
 ---
 
@@ -319,6 +326,6 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 
 | Date | Content |
 |---|---|
-| 2026-06-22 | Initial version. Derived OpenAPI canonical contract and configuration spec from implementation |
+| 2026-06-22 | Initial version. Derived the HTTP contract and configuration spec from implementation |
 | 2026-06-23 | Followed the initial SQLite / Native AOT release shape: chiseled single container / CLI / Retention / state transition DDL |
 | 2026-06-24 | Added Worker/Sweep heartbeat liveness: `worker_heartbeats` table, CLI heartbeat freshness check, `/readyz` Worker running check, `db stats` heartbeat age keys |
