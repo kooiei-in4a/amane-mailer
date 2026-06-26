@@ -64,6 +64,16 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     }
 
     [Fact]
+    public void Configured_ipv6_any_allows_non_null_ipv6_local_address()
+    {
+        var allowed = MailerAdminExtensions.IsAllowedLocalAddress(
+            IPAddress.Parse("2001:db8::10"),
+            "::");
+
+        Assert.True(allowed);
+    }
+
+    [Fact]
     public void Null_local_address_is_rejected()
     {
         var allowed = MailerAdminExtensions.IsAllowedLocalAddress(
@@ -92,6 +102,18 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         var options = LoadAdminOptions(new Dictionary<string, string?>
         {
             ["MAILER_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "192.0.2.10",
+        });
+
+        Assert.Equal("192.0.2.10", options.AllowedLocalAddress);
+    }
+
+    [Fact]
+    public void Mailer_prefixed_allowed_local_address_env_var_takes_precedence_over_deprecated_alias()
+    {
+        var options = LoadAdminOptions(new Dictionary<string, string?>
+        {
+            ["MAILER_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "192.0.2.10",
+            ["AMANE_ADMIN_BIND"] = "0.0.0.0",
         });
 
         Assert.Equal("192.0.2.10", options.AllowedLocalAddress);
