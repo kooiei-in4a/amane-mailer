@@ -12,7 +12,7 @@ or secret values.
 
 | Credential | Required action | Status | Evidence without values |
 | --- | --- | --- | --- |
-| NuGet publishing for `Amane.Mailer.Contracts` | Migrate to nuget.org Trusted Publishing for `kooiei-in4a/amane-mailer`, workflow `publish-contracts.yml`, environment `release`. Remove GitHub secret `NUGET_API_KEY`. Revoke/delete the older broader NuGet API key. | IN PROGRESS | Trusted Publishing policy `Amane.Mailer.Contracts GitHub Actions` is active on nuget.org. Workflow updated to use `NuGet/login` OIDC instead of `secrets.NUGET_API_KEY`. |
+| NuGet publishing for `Amane.Mailer.Contracts` | Migrate to nuget.org Trusted Publishing for `kooiei-in4a/amane-mailer`, workflow `publish-contracts.yml`, environment `release`. Remove GitHub secret `NUGET_API_KEY`. Revoke/delete the older broader NuGet API key. | IN PROGRESS | Trusted Publishing policy `Amane.Mailer.Contracts GitHub Actions` is active on nuget.org. Workflow run `28214950412` successfully exchanged the GitHub OIDC token for a temporary NuGet API key. GitHub repository secret `NUGET_API_KEY` has been deleted. Older broader NuGet API key revoke remains TODO. |
 | GitHub tokens / PATs used before publication | Confirm no broad PAT remains in active use. Rotate or delete any token that was used during publication prep. | TODO | Record only token name, provider UI confirmation, and completion date. |
 | ACS connection string | Rotate the ACS access key or connection string used for live sending. Update deploy host secret storage. | TODO | Record only Azure resource name, key slot rotated, and completion date. |
 | Tenant bearer token(s) | Rotate production/shared tenant token values. Update deploy host tenant secret storage and consumer app config. | TODO | Record only tenant id/name and completion date. |
@@ -24,8 +24,11 @@ Trusted Publishing follow-up:
   `kooiei-in4a/amane-mailer` with required reviewer `kooiei-in4a`,
   `prevent_self_review=false`, admin bypass enabled, and deployment branch/tag
   policies for `main` and `v*`.
-- TODO: Delete the GitHub repository secret `NUGET_API_KEY` after the
-  Trusted Publishing workflow succeeds.
+- DONE: Trusted Publishing verification run `28214950412` completed
+  successfully on 2026-06-26 JST. The `NuGet login` step exchanged the GitHub
+  OIDC token for a temporary NuGet API key, and the package push steps completed
+  with existing `0.1.0` artifacts skipped as duplicates.
+- DONE: GitHub repository secret `NUGET_API_KEY` has been deleted.
 - TODO: Revoke/delete the older broader NuGet API key after the
   Trusted Publishing workflow succeeds.
 
