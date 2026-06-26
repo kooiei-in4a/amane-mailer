@@ -31,7 +31,7 @@ Mailer が所有する次の項目をバックアップします:
 
 | 項目 | 既定の場所 | 備考 |
 | --- | --- | --- |
-| SQLite データベース | `/app/data/mailer.db` に mount される `./data/mailer.db` | `backup-mailer.sh` の対象。`Amane.Mailer db backup` を使い、稼働中の WAL DB ファイルを直接コピーしない |
+| SQLite データベース | `/app/data/mailer.db` に mount される `./data/mailer.db` | `backup-mailer.sh` の対象。`Amane.Mailer db backup` を使い、稼働中の WAL DB ファイルを直接コピーしない。管理操作監査ログ（`admin_audit_events`）も同一 DB に含まれ、バックアップ・リストアで一緒に保全される |
 | tenant 設定 | `./tenants.json` | オペレータによる手動バックアップ。ルーティングと token env 名を含む。運用 metadata を含む場合があり、復元前に確認する |
 | compose env | `./.env` | オペレータによる手動バックアップ。secret または secret 参照を含む。Git ではなく非公開 secret manager やホストバックアップにのみ保存 |
 | deploy テンプレート | `compose.yml` と `.env` の image tag | ホストローカル状態の手動バックアップ。チェックイン済みテンプレートは再利用可能。有効 image tag はホスト状態 |

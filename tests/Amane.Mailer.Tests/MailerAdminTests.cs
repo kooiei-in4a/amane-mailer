@@ -732,6 +732,245 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         Assert.Contains("detail-link-test", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Successful_login_persists_audit_event()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(fixture.Factory);
+
+        await LoginAsync(client, ct);
+
+        var row = Assert.Single(await ReadAuditEventsAsync(fixture.ConnectionString, "auth.login_succeeded", ct));
+        Assert.Equal(MailerAdminFixture.Username, row.Actor);
+        Assert.Equal("admin_session", row.TargetType);
+        Assert.Equal("success", row.Result);
+        Assert.Null(row.TargetId);
+        Assert.Null(row.FieldName);
+    }
+
+    [Fact]
+    public async Task Failed_login_persists_audit_event_without_password()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(fixture.Factory);
+        var csrfToken = await ReadCsrfTokenAsync(client, ct);
+
+        using var response = await client.PostAsync(
+            "/admin/api/login",
+            CreateLoginContent(csrfToken, MailerAdminFixture.Username, "totally-wrong-password"),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        var row = Assert.Single(await ReadAuditEventsAsync(fixture.ConnectionString, "auth.login_failed", ct));
+        Assert.Equal(MailerAdminFixture.Username, row.Actor);
+        Assert.Equal("failure", row.Result);
+        foreach (var value in row.AllValues)
+        {
+            if (value is not null)
+                Assert.DoesNotContain("totally-wrong-password", value, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Body_view_persists_audit_event_without_pii()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        const string htmlBody = "secret-body-content-XYZ";
+        const string metadataJson = "{\"internal\":\"metadata-value-XYZ\"}";
+        const string recipient = "audit-recipient@example.com";
+        const string subject = "Sensitive Audit Subject XYZ";
+        var id = await SeedMailRequestWithBodyAsync(
+            fixture.ConnectionString,
+            htmlBody: htmlBody,
+            textBody: "text-" + htmlBody,
+            metadataJson: metadataJson,
+            recipientEmail: recipient,
+            subject: subject,
+            ct);
+
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync($"/admin/mail-requests/{id:D}/body?field=html_body", ct);
+        var content = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(htmlBody, content, StringComparison.Ordinal);
+
+        var row = Assert.Single(await ReadAuditEventsAsync(fixture.ConnectionString, "mail_request.body_viewed", ct));
+        Assert.Equal(MailerAdminFixture.Username, row.Actor);
+        Assert.Equal("mail_request", row.TargetType);
+        Assert.Equal(id.ToString("D"), row.TargetId);
+        Assert.Equal("html_body", row.FieldName);
+        Assert.Equal("success", row.Result);
+
+        foreach (var value in row.AllValues)
+        {
+            if (value is null)
+                continue;
+            Assert.DoesNotContain(htmlBody, value, StringComparison.Ordinal);
+            Assert.DoesNotContain("metadata-value-XYZ", value, StringComparison.Ordinal);
+            Assert.DoesNotContain(recipient, value, StringComparison.Ordinal);
+            Assert.DoesNotContain(subject, value, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Body_view_records_metadata_json_field()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var id = await SeedMailRequestWithBodyAsync(
+            fixture.ConnectionString,
+            htmlBody: "html",
+            textBody: "text",
+            metadataJson: "{\"k\":\"v\"}",
+            recipientEmail: "audit2@example.com",
+            subject: "Subject 2",
+            ct);
+
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync($"/admin/mail-requests/{id:D}/body?field=metadata_json", ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var row = Assert.Single(await ReadAuditEventsAsync(fixture.ConnectionString, "mail_request.body_viewed", ct));
+        Assert.Equal("metadata_json", row.FieldName);
+    }
+
+    [Fact]
+    public async Task Body_view_fails_closed_when_audit_event_cannot_be_persisted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var brokenFixture = new MailerAdminFixture();
+        await brokenFixture.InitializeAsync();
+
+        const string htmlBody = "secret-should-not-leak-on-failure";
+        var id = await SeedMailRequestWithBodyAsync(
+            brokenFixture.ConnectionString,
+            htmlBody: htmlBody,
+            textBody: "text",
+            metadataJson: "{}",
+            recipientEmail: "closed@example.com",
+            subject: "Fail Closed Subject",
+            ct);
+
+        // Remove the audit store so the fail-closed write cannot land.
+        await using (var connection = new SqliteConnection(brokenFixture.ConnectionString))
+        {
+            await connection.OpenAsync(ct);
+            await using var drop = connection.CreateCommand();
+            drop.CommandText = "DROP TABLE admin_audit_events;";
+            await drop.ExecuteNonQueryAsync(ct);
+        }
+
+        using var client = CreateClient(brokenFixture.Factory);
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync($"/admin/mail-requests/{id:D}/body?field=html_body", ct);
+        var content = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.DoesNotContain(htmlBody, content, StringComparison.Ordinal);
+    }
+
+    private static async Task<List<AuditRow>> ReadAuditEventsAsync(
+        string connectionString,
+        string? eventType,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<AuditRow>();
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT event_type, actor, occurred_at, source_ip, user_agent_summary,
+                   target_type, target_id, field_name, result, error_code
+            FROM admin_audit_events
+            WHERE (@EventType IS NULL OR event_type = @EventType)
+            ORDER BY id DESC;
+            """;
+        command.Parameters.AddWithValue("@EventType", (object?)eventType ?? DBNull.Value);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new AuditRow(
+                reader.GetString(0),
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.IsDBNull(6) ? null : reader.GetString(6),
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.GetString(8),
+                reader.IsDBNull(9) ? null : reader.GetString(9)));
+        }
+
+        return rows;
+    }
+
+    private static async Task<Guid> SeedMailRequestWithBodyAsync(
+        string connectionString,
+        string htmlBody,
+        string textBody,
+        string metadataJson,
+        string recipientEmail,
+        string subject,
+        CancellationToken cancellationToken)
+    {
+        var id = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 6, 27, 12, 0, 0, TimeSpan.Zero);
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO mail_requests (
+                id, tenant_id, source_service, mail_request_id, purpose,
+                payload_json, payload_hash, subject, html_body, text_body, metadata_json, recipient_email,
+                status, attempt_count, max_attempts,
+                accepted_at, created_at, updated_at)
+            VALUES (
+                @Id, @TenantId, @SourceService, @MailRequestId, 'AdminAuditBodyTest',
+                '{}', @PayloadHash, @Subject, @HtmlBody, @TextBody, @MetadataJson, @RecipientEmail,
+                @Status, 0, 3,
+                @At, @At, @At);
+            """;
+        command.Parameters.AddWithValue("@Id", id.ToString("D"));
+        command.Parameters.AddWithValue("@TenantId", MailerWebApplicationFixtureBase.TenantId.ToString("D"));
+        command.Parameters.AddWithValue("@SourceService", MailerWebApplicationFixtureBase.SourceService);
+        command.Parameters.AddWithValue("@MailRequestId", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@PayloadHash", new string('0', 64));
+        command.Parameters.AddWithValue("@Subject", subject);
+        command.Parameters.AddWithValue("@HtmlBody", htmlBody);
+        command.Parameters.AddWithValue("@TextBody", textBody);
+        command.Parameters.AddWithValue("@MetadataJson", metadataJson);
+        command.Parameters.AddWithValue("@RecipientEmail", recipientEmail);
+        command.Parameters.AddWithValue("@Status", (int)MailRequestState.Queued);
+        command.Parameters.AddWithValue("@At", SqliteTime.ToStorageUtc(now));
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return id;
+    }
+
+    private sealed record AuditRow(
+        string EventType,
+        string Actor,
+        string OccurredAt,
+        string? SourceIp,
+        string? UserAgentSummary,
+        string? TargetType,
+        string? TargetId,
+        string? FieldName,
+        string Result,
+        string? ErrorCode)
+    {
+        public IEnumerable<string?> AllValues =>
+            [EventType, Actor, OccurredAt, SourceIp, UserAgentSummary, TargetType, TargetId, FieldName, Result, ErrorCode];
+    }
+
     private static HttpClient CreateClient(WebApplicationFactory<global::Program> factory) =>
         factory.CreateClient(new WebApplicationFactoryClientOptions
         {

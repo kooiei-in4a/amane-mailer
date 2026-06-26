@@ -63,6 +63,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
         command.CommandText = """
             DELETE FROM mail_attempts;
             DELETE FROM mail_requests;
+            DELETE FROM admin_audit_events;
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

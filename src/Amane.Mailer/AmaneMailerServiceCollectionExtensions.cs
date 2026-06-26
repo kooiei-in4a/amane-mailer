@@ -67,6 +67,7 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<SqliteConnectionFactory>();
 
         services.AddSingleton<MailRequestRepository>();
+        services.AddSingleton<AdminAuditRepository>();
         services.AddSingleton<ExpiredProcessingReaper>();
 
         services.AddSingleton<SqlMigrationRunner>();
