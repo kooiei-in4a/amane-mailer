@@ -110,9 +110,13 @@ public sealed class MailRequestSweepServiceTests(MailerSweepFixture fixture)
         }
         finally
         {
-            unavailableFactory?.Dispose();
+            if (unavailableFactory is not null)
+            {
+                await unavailableFactory.DisposeAsync();
+            }
+
             SqliteConnection.ClearAllPools();
-            Directory.Delete(root, recursive: true);
+            MailerWebApplicationFixtureBase.DeleteDirectoryWithRetry(root);
         }
     }
 

@@ -88,7 +88,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
         }
     }
 
-    private static void DeleteDirectoryWithRetry(string path)
+    internal static void DeleteDirectoryWithRetry(string path)
     {
         for (var attempt = 0; attempt < 5; attempt++)
         {
