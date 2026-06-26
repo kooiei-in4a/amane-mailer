@@ -147,6 +147,12 @@ Alert record:
 
 Status: verified on 2026-06-26 JST.
 
+Future image publishes are gated by `.github/workflows/publish-image.yml` on a
+release tag ref and the GitHub Environment `release`. The workflow records the
+published digest, platform, OCI labels, and SBOM/provenance attestation manifest
+status in the workflow summary before the release record is updated manually.
+It refuses to overwrite an existing GHCR `sha-<git-sha>` tag or release tag.
+
 Release record: [docs/releases/v0.1.0.md](../releases/v0.1.0.md)
 
 Release:

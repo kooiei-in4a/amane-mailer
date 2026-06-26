@@ -7,7 +7,7 @@ GitHub Actions will publish the Mailer runtime image to GitHub Container Registr
 Workflow:
 
 - `.github/workflows/publish-image.yml`
-- Trigger: manual `workflow_dispatch`
+- Trigger: manual `workflow_dispatch` (succeeds only from a release tag ref)
 
 ## Image
 
@@ -17,12 +17,18 @@ The image name is derived from `${{ github.repository_owner }}` at publish time.
 
 ## Tags
 
-- Manual publishes via `workflow_dispatch` produce an immutable `sha-<git-sha>` tag.
-- After CI is stable, pushes to `develop` may publish `sha-<git-sha>` and the
-  mutable `develop` tag.
-- Protected release branches may publish immutable `sha-<git-sha>` tags after
-  environment approvals are configured.
-- `staging` and `main` should be deployed by immutable `sha-<git-sha>` tags.
+- Run `workflow_dispatch` from the GitHub UI/API with a release tag such as
+  `vX.Y.Z`.
+- Pre-release tags such as `vX.Y.Z-rc.1` are allowed.
+- The workflow has no inputs. The image version tag is derived from
+  `GITHUB_REF_NAME`.
+- The only pushed tags are `sha-<git-sha>` and the release tag, for example
+  `v0.1.1`.
+- If either `sha-<git-sha>` or the release tag already exists in GHCR, the
+  workflow fails instead of overwriting it.
+- Branch refs, malformed tags, or runs where the tag commit does not match the
+  checked-out commit / workflow event commit fail before publishing.
+- Deploy with the immutable `sha-<git-sha>` tag or the digest whenever possible.
 
 ## GitHub Actions permissions
 
@@ -35,11 +41,23 @@ No repository secret is needed for pushing images. The workflow uses `GITHUB_TOK
 
 The workflow builds the Mailer image from `infra/docker/Dockerfile`.
 
-## First publish
+## Release publish
 
-1. Run `Publish Amane Mailer Image` from the `main` branch via `workflow_dispatch`.
-2. Use the generated immutable tag: `sha-<git-sha>`.
-3. Confirm the workflow's image run and config-content checks pass.
+1. Create a `vX.Y.Z` tag on the release commit. The tag commit must contain this
+   hardened workflow, so create the tag on a commit after this change is merged.
+   If the Contracts package is published for the same release,
+   `src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` `<Version>` must
+   match `X.Y.Z`.
+2. Run `Publish Amane Mailer Image` from the release tag ref in GitHub Actions.
+3. After the `release` environment approval, the workflow publishes
+   `sha-<git-sha>` and `vX.Y.Z`.
+4. Confirm that the image run, config-content check, digest / platform / OCI
+   label checks, and attestation check pass.
+5. Copy the digest and `sha-<git-sha>` from the workflow summary into the
+   GitHub Release notes or release evidence.
+
+The existing `v0.1.0` image already has manual digest / provenance evidence. Do
+not republish existing artifacts just because the workflow changed.
 
 The runtime image includes only safe files from `config/mailer`:
 
@@ -52,16 +70,38 @@ mount a host-owned tenant file with `MAILER_TENANTS_HOST_PATH` and
 `MAILER_TENANTS_CONTAINER_PATH` from `infra/deploy/compose.yml`. A tenant JSON
 change is therefore a config deploy, not an image rebuild.
 
-## GitHub Environments
+## GitHub Environment
 
-The environments below are planned deployment gates:
+Image publishing and NuGet package publishing both use the GitHub Environment
+`release`.
 
-- `development`: used by pushes to `develop`.
-- `staging`: used by pushes to `staging`.
-- `production`: used by pushes to `main`.
+- Configure the `release` environment with a required reviewer.
+- The environment deployment branch/tag policy should allow release tags, for
+  example `v*`.
+- Publish attempts from branch refs still fail inside the workflow tag
+  validation.
 
-Configure the `production` environment in GitHub with a required reviewer before
-allowing production image publication.
+## SBOM / provenance / digest
+
+`docker/build-push-action` runs with:
+
+- `provenance: true`
+- `sbom: true`
+- `platforms: linux/amd64`
+
+Before publishing, the workflow verifies that neither the `sha-<git-sha>` tag
+nor the release tag exists in GHCR. After publishing, it verifies that the build
+action returned a non-empty digest, that both tag digests match the build digest,
+and that `docker buildx imagetools inspect --raw` contains an attestation
+manifest. It also validates OCI labels on the pulled image:
+
+- `org.opencontainers.image.source`
+- `org.opencontainers.image.revision`
+- `org.opencontainers.image.version`
+
+The digest, platform, OCI labels, and inspect output are written to the workflow
+summary. Release notes are not updated automatically, so copy the summary digest
+and `sha-<git-sha>` into the release record after publishing.
 
 ## Deploy host pull access
 
