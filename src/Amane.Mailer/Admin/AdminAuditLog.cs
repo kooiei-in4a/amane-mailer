@@ -67,17 +67,68 @@ public static class AdminAuditLog
     }
 
     /// <summary>
+    /// Strips CR/LF and other control characters from audit field values so
+    /// user-supplied login input cannot forge stdout log lines (CWE-117).
+    /// </summary>
+    internal static string? SanitizeAuditLogValue(string? value)
+    {
+        if (value is null)
+            return null;
+
+        var needsWork = false;
+        foreach (var ch in value)
+        {
+            if (ch is '\r' or '\n' or '\t' || char.IsControl(ch))
+            {
+                needsWork = true;
+                break;
+            }
+        }
+
+        if (!needsWork)
+            return value;
+
+        var chars = new char[value.Length];
+        var length = 0;
+        foreach (var ch in value)
+        {
+            if (ch is '\r' or '\n' or '\t')
+                chars[length++] = ' ';
+            else if (!char.IsControl(ch))
+                chars[length++] = ch;
+        }
+
+        return length == 0 ? string.Empty : new string(chars, 0, length);
+    }
+
+    /// <summary>
     /// Bounds an actor value so an attacker-supplied login name cannot bloat the
-    /// audit row. Never used for PII fields.
+    /// audit row or forge log lines. Never used for PII fields.
     /// </summary>
     internal static string NormalizeActor(string? actor)
     {
         if (string.IsNullOrWhiteSpace(actor))
             return "unknown";
 
-        var trimmed = actor.Trim();
-        return trimmed.Length <= ActorMaxLength ? trimmed : trimmed[..ActorMaxLength];
+        var sanitized = SanitizeAuditLogValue(actor.Trim());
+        if (string.IsNullOrWhiteSpace(sanitized))
+            return "unknown";
+
+        return sanitized.Length <= ActorMaxLength ? sanitized : sanitized[..ActorMaxLength];
     }
+
+    internal static AdminAuditEvent SanitizeForOutput(AdminAuditEvent auditEvent) =>
+        auditEvent with
+        {
+            Actor = NormalizeActor(auditEvent.Actor),
+            SourceIp = SanitizeAuditLogValue(auditEvent.SourceIp),
+            UserAgentSummary = auditEvent.UserAgentSummary is null
+                ? null
+                : SummarizeUserAgent(auditEvent.UserAgentSummary),
+            TargetId = SanitizeAuditLogValue(auditEvent.TargetId),
+            FieldName = SanitizeAuditLogValue(auditEvent.FieldName),
+            ErrorCode = SanitizeAuditLogValue(auditEvent.ErrorCode),
+        };
 
     /// <summary>
     /// Writes an audit event best-effort: always emit the structured stdout log,
@@ -91,11 +142,12 @@ public static class AdminAuditLog
         AdminAuditEvent auditEvent,
         CancellationToken cancellationToken)
     {
-        LogToStdout(logger, auditEvent);
+        var sanitized = SanitizeForOutput(auditEvent);
+        LogToStdout(logger, sanitized);
 
         try
         {
-            await repository.WriteAsync(auditEvent, cancellationToken);
+            await repository.WriteAsync(sanitized, cancellationToken);
         }
         catch (Exception ex)
         {
@@ -107,15 +159,18 @@ public static class AdminAuditLog
         }
     }
 
-    public static void LogToStdout(ILogger logger, AdminAuditEvent auditEvent) =>
+    public static void LogToStdout(ILogger logger, AdminAuditEvent auditEvent)
+    {
+        var sanitized = SanitizeForOutput(auditEvent);
         logger.LogInformation(
             AuditEvent,
             "Admin audit event {EventType} by {Actor} result {Result} target {TargetType}/{TargetId} field {FieldName} from {SourceIp}.",
-            auditEvent.EventType,
-            auditEvent.Actor,
-            auditEvent.Result,
-            auditEvent.TargetType,
-            auditEvent.TargetId,
-            auditEvent.FieldName,
-            auditEvent.SourceIp);
+            sanitized.EventType,
+            sanitized.Actor,
+            sanitized.Result,
+            sanitized.TargetType,
+            sanitized.TargetId,
+            sanitized.FieldName,
+            sanitized.SourceIp);
+    }
 }

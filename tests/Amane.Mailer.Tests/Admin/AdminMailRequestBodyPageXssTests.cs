@@ -100,6 +100,32 @@ public sealed class AdminMailRequestBodyPageXssTests
         Assert.DoesNotContain(metadataValue, entry.FormattedMessage, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Body_view_audit_log_sanitizes_actor_control_characters()
+    {
+        var logger = new CapturingLogger();
+        var requestId = Guid.NewGuid();
+        var context = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(
+                new ClaimsIdentity(
+                    [new Claim(ClaimTypes.Name, "admin\r\nFORGED")],
+                    AdminAuthenticationConstants.Scheme)),
+        };
+
+        AdminMailRequestBodyPage.RecordBodyViewedAuditLog(
+            context,
+            logger,
+            requestId,
+            "text_body");
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal("admin  FORGED", entry.State["AdminUsername"]);
+        Assert.Equal(
+            $"Admin mail request body field viewed by admin  FORGED for {requestId} field text_body from unknown.",
+            entry.FormattedMessage);
+    }
+
     private sealed class CapturingLogger : ILogger
     {
         public List<LogEntry> Entries { get; } = [];

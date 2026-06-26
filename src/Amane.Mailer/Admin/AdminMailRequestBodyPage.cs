@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Encodings.Web;
-using System.Security.Claims;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 
@@ -55,18 +54,19 @@ public static class AdminMailRequestBodyPage
         try
         {
             await auditRepository.WriteAsync(
-                new AdminAuditEvent
-                {
-                    EventType = AdminAuditLog.EventTypes.MailRequestBodyViewed,
-                    Actor = AdminAuditLog.ResolveActor(context),
-                    OccurredAt = timeProvider.GetUtcNow(),
-                    SourceIp = AdminAuditLog.ResolveSourceIp(context),
-                    UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
-                    TargetType = AdminAuditLog.TargetTypes.MailRequest,
-                    TargetId = requestId.ToString("D"),
-                    FieldName = field,
-                    Result = AdminAuditLog.Results.Success,
-                },
+                AdminAuditLog.SanitizeForOutput(
+                    new AdminAuditEvent
+                    {
+                        EventType = AdminAuditLog.EventTypes.MailRequestBodyViewed,
+                        Actor = AdminAuditLog.ResolveActor(context),
+                        OccurredAt = timeProvider.GetUtcNow(),
+                        SourceIp = AdminAuditLog.ResolveSourceIp(context),
+                        UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
+                        TargetType = AdminAuditLog.TargetTypes.MailRequest,
+                        TargetId = requestId.ToString("D"),
+                        FieldName = field,
+                        Result = AdminAuditLog.Results.Success,
+                    }),
                 cancellationToken);
         }
         catch (Exception ex)
@@ -126,11 +126,10 @@ public static class AdminMailRequestBodyPage
         Guid requestId,
         string field)
     {
-        var adminUsername =
-            context.User.FindFirstValue(ClaimTypes.Name)
-            ?? context.User.Identity?.Name
+        var adminUsername = AdminAuditLog.NormalizeActor(AdminAuditLog.ResolveActor(context));
+        var remoteAddress =
+            AdminAuditLog.SanitizeAuditLogValue(AdminAuditLog.ResolveSourceIp(context))
             ?? "unknown";
-        var remoteAddress = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
         logger.LogInformation(
             BodyViewedEvent,
