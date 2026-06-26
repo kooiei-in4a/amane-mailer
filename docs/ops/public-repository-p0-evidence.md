@@ -47,10 +47,6 @@ Status: verified on 2026-06-26 JST.
 | `cs/user-controlled-bypass` | False positive, dismissed | Request body size is enforced during read, not only from `Content-Length`. |
 | `cs/log-forging` | True positive, fixed ([#48](https://github.com/kooiei-in4a/amane-mailer/issues/48)) | Admin audit logging sanitizes control characters before stdout output. |
 
-Public alert records:
-[alert 1](https://github.com/kooiei-in4a/amane-mailer/security/code-scanning/1),
-[alert 2](https://github.com/kooiei-in4a/amane-mailer/security/code-scanning/2).
-
 ## Scope
 
 This summary is intended for OSS consumers. Maintainer-only verification
