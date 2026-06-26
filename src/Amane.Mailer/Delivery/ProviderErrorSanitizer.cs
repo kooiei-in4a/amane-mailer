@@ -64,11 +64,11 @@ public static partial class ProviderErrorSanitizer
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex WhitespaceRegex();
 
-    // Matches key=value or key: value, with optional quoting.
+    // Matches key=value, key: value, or JSON-style "key":"value", with optional quoting.
     // The unquoted value continuation `(?:[\r\n]+[^;,""'\s]+)*` catches tokens
     // split across a provider line break (e.g. long base64 access keys).
     [GeneratedRegex(
-        @"\b(?<key>endpoint|accesskey|accountkey|sharedaccesskey|secret|secretkey|token|sastoken|password|pwd|sig|signature|apikey|api[-_]key|key)\s*[=:]\s*(?:""[^""]*""|'[^']*'|[^;,""'\s]+(?:[\r\n]+[^;,""'\s]+)*)",
+        @"(?<![A-Za-z0-9_])[""']?(?<key>endpoint|accesskey|accountkey|sharedaccesskey|secret|secretkey|token|sastoken|password|pwd|sig|signature|apikey|api[-_]key|key)[""']?\s*[=:]\s*(?:""[^""]*""|'[^']*'|[^;,""'\s]+(?:[\r\n]+[^;,""'\s]+)*)",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex CredentialAssignmentRegex();
 
@@ -78,7 +78,7 @@ public static partial class ProviderErrorSanitizer
     private static partial Regex UrlQueryRegex();
 
     [GeneratedRegex(
-        @"Bearer\s+[A-Za-z0-9\-._~+/]+=*",
+        @"Bearer\s+[A-Za-z0-9\-._~+/=]+(?:[\r\n]+[A-Za-z0-9\-._~+/=]+)*",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex BearerRegex();
 

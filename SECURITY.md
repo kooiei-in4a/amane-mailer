@@ -31,7 +31,9 @@ Raw provider exception text is never persisted, logged, or shown in the Admin UI
 
 The delivery layer (`AcsMailDeliveryProvider`, `MailpitMailDeliveryProvider`)
 routes every raw exception message through `ProviderErrorSanitizer.Sanitize`
-before building the `MailDeliveryResult`. As a result, the
+before building the `MailDeliveryResult`. The worker also re-runs the sanitizer
+immediately before persisting or logging delivery failures as defense-in-depth.
+As a result, the
 `mail_requests.last_error_message` / `mail_attempts.error_message` columns,
 stdout logs, and the Admin UI all consume a single sanitized summary.
 

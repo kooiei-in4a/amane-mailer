@@ -135,6 +135,17 @@ public sealed class ProviderErrorSanitizerTests
         Assert.DoesNotContain(leaked, result, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(@"{""token"":""sk_live_1234567890""}", "sk_live_1234567890")]
+    [InlineData(@"{""accessKey"":""Zm9vYmFy==""}", "Zm9vYmFy")]
+    [InlineData("Authorization failed: Bearer eyJhbGciOiJIUzI1Ni.\r\npayload.signature rejected", "payload.signature")]
+    public void Sanitize_masks_json_credentials_and_folded_bearer_tokens(string raw, string leaked)
+    {
+        var result = ProviderErrorSanitizer.Sanitize(raw);
+
+        Assert.DoesNotContain(leaked, result, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Sanitize_handles_colon_separator_for_header_style_credentials()
     {
