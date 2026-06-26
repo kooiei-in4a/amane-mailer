@@ -274,7 +274,7 @@ docker compose --env-file .env -f compose.yml up -d mailer
 **バックアップ（PostgreSQL / pg_dump 廃止後）:**
 
 `infra/deploy/backup-mailer.sh` で SQLite バックアップ → age 暗号化 → rclone アップロードを一括実施する。
-手順は [docs/ops/backup-operations.md](ops/backup-operations.md) を参照。
+手順は [バックアップ運用 runbook](ops/backup-operations.md) を参照。
 
 ---
 

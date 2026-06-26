@@ -274,7 +274,7 @@ docker compose --env-file .env -f compose.yml up -d mailer
 **Backup (after PostgreSQL / pg_dump deprecation):**
 
 `infra/deploy/backup-mailer.sh` performs SQLite backup → age encryption → rclone upload in one step.
-See [docs/ops/backup-operations.en.md](ops/backup-operations.en.md) for procedures.
+See the [backup operations runbook](ops/backup-operations.en.md) for procedures.
 
 ---
 
