@@ -117,6 +117,8 @@ Recommended additional scope:
 
 ## CodeQL alert review
 
+### Alert 1 — `cs/user-controlled-bypass`
+
 Status: reviewed on 2026-06-26 JST; no code fix required.
 
 Alert record:
@@ -142,6 +144,33 @@ Alert record:
 - Regression coverage: `Oversized_request_body_without_content_length_returns_413`
   verifies the body-size limit still returns 413 when the request has no
   computable content length.
+
+### Alert 2 — `cs/log-forging`
+
+Status: reviewed on 2026-06-27 JST; code fix applied ([#48](https://github.com/kooiei-in4a/amane-mailer/issues/48)).
+
+Alert record:
+
+- Alert URL:
+  `https://github.com/kooiei-in4a/amane-mailer/security/code-scanning/2`
+- Rule id: `cs/log-forging`
+- Location: `src/Amane.Mailer/Admin/AdminAuditLog.cs:115`
+- CodeQL category: `/language:csharp`
+- Source: admin login form `username` flows into `AdminAuditEvent.Actor` and
+  structured stdout logging on login failure.
+- Risk: attacker-supplied CR/LF/control characters in the login name could forge
+  additional stdout log lines when logs are viewed as plain text (CWE-117).
+- Fix: `SanitizeAuditLogValue` strips CR/LF/tabs and other control characters;
+  `NormalizeActor` and `SanitizeForOutput` apply this before persistence and
+  `LogToStdout`. No passwords, tokens, recipient email, subject, body, metadata
+  values, or provider raw errors are logged.
+- Disposition: true positive, fixed in code.
+- GitHub state: open until the next CodeQL workflow run on `main` re-scans the
+  fixed commit.
+- Regression coverage: `Normalize_actor_strips_control_characters_from_login_input`,
+  `Sanitize_audit_log_value_strips_control_characters`, and
+  `Sanitize_for_output_normalizes_actor_before_logging_fields` in
+  `AdminAuditLogTests`.
 
 ## GHCR image provenance
 

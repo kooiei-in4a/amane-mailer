@@ -55,18 +55,19 @@ public static class AdminMailRequestBodyPage
         try
         {
             await auditRepository.WriteAsync(
-                new AdminAuditEvent
-                {
-                    EventType = AdminAuditLog.EventTypes.MailRequestBodyViewed,
-                    Actor = AdminAuditLog.ResolveActor(context),
-                    OccurredAt = timeProvider.GetUtcNow(),
-                    SourceIp = AdminAuditLog.ResolveSourceIp(context),
-                    UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
-                    TargetType = AdminAuditLog.TargetTypes.MailRequest,
-                    TargetId = requestId.ToString("D"),
-                    FieldName = field,
-                    Result = AdminAuditLog.Results.Success,
-                },
+                AdminAuditLog.SanitizeForOutput(
+                    new AdminAuditEvent
+                    {
+                        EventType = AdminAuditLog.EventTypes.MailRequestBodyViewed,
+                        Actor = AdminAuditLog.ResolveActor(context),
+                        OccurredAt = timeProvider.GetUtcNow(),
+                        SourceIp = AdminAuditLog.ResolveSourceIp(context),
+                        UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
+                        TargetType = AdminAuditLog.TargetTypes.MailRequest,
+                        TargetId = requestId.ToString("D"),
+                        FieldName = field,
+                        Result = AdminAuditLog.Results.Success,
+                    }),
                 cancellationToken);
         }
         catch (Exception ex)
