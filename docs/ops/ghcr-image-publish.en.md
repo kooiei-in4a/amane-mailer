@@ -54,7 +54,9 @@ The workflow builds the Mailer image from `infra/docker/Dockerfile`.
 4. Confirm that the image run, config-content check, digest / platform / OCI
    label checks, and attestation check pass.
 5. Copy the digest and `sha-<git-sha>` from the workflow summary into the
-   GitHub Release notes or release evidence.
+   GitHub Release notes or release evidence. Use the
+   [release notes checklist](release-notes-checklist.en.md) for the artifact
+   and operational-constraint entries.
 
 The existing `v0.1.0` image already has manual digest / provenance evidence. Do
 not republish existing artifacts just because the workflow changed.
@@ -101,7 +103,10 @@ manifest. It also validates OCI labels on the pulled image:
 
 The digest, platform, OCI labels, and inspect output are written to the workflow
 summary. Release notes are not updated automatically, so copy the summary digest
-and `sha-<git-sha>` into the release record after publishing.
+and `sha-<git-sha>` into the release record after publishing, and reflect the
+artifact and operational-constraint items from the
+[release notes checklist](release-notes-checklist.en.md) in the GitHub Release
+notes.
 
 ## Deploy host pull access
 
