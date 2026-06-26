@@ -12,7 +12,7 @@ or secret values.
 
 | Credential | Required action | Status | Evidence without values |
 | --- | --- | --- | --- |
-| NuGet publishing for `Amane.Mailer.Contracts` | Migrate to nuget.org Trusted Publishing for `kooiei-in4a/amane-mailer`, workflow `publish-contracts.yml`, environment `release`. Remove GitHub secret `NUGET_API_KEY`. Revoke/delete the older broader NuGet API key. | IN PROGRESS | Trusted Publishing policy `Amane.Mailer.Contracts GitHub Actions` is active on nuget.org. Workflow run `28214950412` successfully exchanged the GitHub OIDC token for a temporary NuGet API key. GitHub repository secret `NUGET_API_KEY` has been deleted. Older broader NuGet API key revoke remains TODO. |
+| NuGet publishing for `Amane.Mailer.Contracts` | Migrate to nuget.org Trusted Publishing for `kooiei-in4a/amane-mailer`, workflow `publish-contracts.yml`, environment `release`. Remove GitHub secret `NUGET_API_KEY`. Revoke/delete the older broader NuGet API key. | DONE | Trusted Publishing policy `Amane.Mailer.Contracts GitHub Actions` is active on nuget.org. Workflow run `28214950412` successfully exchanged the GitHub OIDC token for a temporary NuGet API key. GitHub repository secret `NUGET_API_KEY` has been deleted. Older broader NuGet API key `amane-mailer-contracts-publish-2026` has been revoked. |
 | GitHub tokens / PATs used before publication | Confirm no broad PAT remains in active use. Rotate or delete any token that was used during publication prep. | TODO | Record only token name, provider UI confirmation, and completion date. |
 | ACS connection string | Rotate the ACS access key or connection string used for live sending. Update deploy host secret storage. | TODO | Record only Azure resource name, key slot rotated, and completion date. |
 | Tenant bearer token(s) | Rotate production/shared tenant token values. Update deploy host tenant secret storage and consumer app config. | TODO | Record only tenant id/name and completion date. |
@@ -29,8 +29,8 @@ Trusted Publishing follow-up:
   OIDC token for a temporary NuGet API key, and the package push steps completed
   with existing `0.1.0` artifacts skipped as duplicates.
 - DONE: GitHub repository secret `NUGET_API_KEY` has been deleted.
-- TODO: Revoke/delete the older broader NuGet API key after the
-  Trusted Publishing workflow succeeds.
+- DONE: Older broader NuGet API key `amane-mailer-contracts-publish-2026`
+  has been revoked on nuget.org.
 
 ## Git history secret scan
 
