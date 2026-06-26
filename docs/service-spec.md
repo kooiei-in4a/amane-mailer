@@ -3,7 +3,8 @@
 # Amane Mailer Service — サービス仕様（SQLite + Native AOT）
 
 - **位置づけ:** 汎用メール送信マイクロサービス
-- **正本契約:** [openapi.yaml](api/openapi.yaml)（HTTP 契約を OpenAPI で定義 — O-04 決定）
+- **HTTP 契約の正本:** `src/Amane.Mailer.Contracts/`（ADR 0012 D-01）
+- **公開 HTTP reference:** [openapi.yaml](api/openapi.yaml)（Contracts / runtime に同期される公開 schema）
 - **関連:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md)（Mailer マイクロサービス化）
 - **ランタイム:** Native AOT 単一バイナリ（`Amane.Mailer`）＋ chiseled コンテナ。PostgreSQL は使用しない。
 
@@ -37,13 +38,19 @@ App ──HTTP(Bearer)──▶ POST /internal/mail-requests
 
 ## 2. インターフェース（HTTP）
 
-正本は [openapi.yaml](api/openapi.yaml)。要約：
+HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer runtime は同じ DTO / constants を参照し、[openapi.yaml](api/openapi.yaml) は Consumer 向けの HTTP reference / 公開 schema として Contracts / runtime に同期する。要約：
 
 | メソッド | パス | 用途 | 認証 |
 |---|---|---|---|
 | `POST` | `/internal/mail-requests` | 送信依頼の受付 | テナント Bearer |
 | `GET` | `/healthz` | 生存確認（liveness） | なし |
 | `GET` | `/readyz` | 受付可否（DB schema 確認込み readiness） | なし |
+
+### 契約同期と drift review
+
+契約変更時は、同一変更内で `src/Amane.Mailer.Contracts/`、runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テストの drift を確認する。対象は Request/Response DTO の property 名・required / nullable、`MailerErrorCodes`、`MailRequestAcceptanceStatus`、`MailRequestStatus`、payload hash 対象、JSON unknown / duplicate property 挙動を含む。
+
+現行 CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証する。自動 drift check 追加までの運用として、HTTP 契約変更 PR は Contracts DTO / constants、runtime 実装、OpenAPI schema / examples、関連テスト・test vectors を比較した結果を validation notes に残す。OpenAPI を変更した場合は `node scripts/validate-openapi.mjs docs/api/openapi.yaml` の結果も残す。DTO / enum / error code と OpenAPI schema の自動 drift check は後続タスクとして追加する。JSON strictness（unknown / duplicate property）は #22、Contracts package / API versioning policy は #5 で確定する前提をここに接続する。
 
 ### 受付レスポンス
 
@@ -306,12 +313,12 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 
 | ID | 論点 | 現状 / 方針 |
 |---|---|---|
-| O-04 | HTTP 契約の正本 | **OpenAPI（本 yaml）** |
-| O-02 | Contracts 配布 | OpenAPI ＋ `Amane.Mailer.Contracts` |
+| O-04 | HTTP 契約の正本 | **`src/Amane.Mailer.Contracts/`**（ADR 0012 D-01） |
+| O-02 | Contracts 配布 | `Amane.Mailer.Contracts` NuGet。OpenAPI は Consumer 向け HTTP reference |
 | O-03 | source_service 登録制 | tenants.json allowlist |
 | O-06 | 複数プロダクト × ACS | 現状サービス単位 1 本 |
 | O-13 | `from` 上書き | 不可 |
-| — | 契約バージョニング | OpenAPI semver + 後方互換ルール |
+| — | 契約バージョニング | package / API versioning policy は #5 で確定。OpenAPI `info.version` は公開 reference として追随 |
 
 ---
 
@@ -319,6 +326,6 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 
 | Date | 内容 |
 |---|---|
-| 2026-06-22 | 初版。実装から OpenAPI 正本と設定仕様を起こす |
+| 2026-06-22 | 初版。実装から HTTP 契約と設定仕様を起こす |
 | 2026-06-23 | 初回 SQLite / Native AOT リリース仕様に追随: chiseled 単一コンテナ / CLI / Retention / 状態遷移 DDL |
 | 2026-06-24 | Worker/Sweep heartbeat liveness 追加: `worker_heartbeats` テーブル、CLI heartbeat 鮮度チェック、`/readyz` Worker 稼働確認、`db stats` heartbeat age keys |

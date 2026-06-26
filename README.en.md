@@ -11,7 +11,7 @@ Mailer handles transport.
 ## Layout
 
 - `src/Amane.Mailer`: ASP.NET Core / Native AOT Mailer service.
-- `src/Amane.Mailer.Contracts`: DTOs, error constants, and payload hash helper (NuGet package).
+- `src/Amane.Mailer.Contracts`: source of truth for HTTP contract DTOs, error constants, and payload hash helper (NuGet package).
 - `tests/`: Mailer and Contracts test suites.
 - `config/mailer`: Safe tenant examples and JSON schema.
 - `infra/docker`: Local Docker build and Mailpit compose.
@@ -96,6 +96,8 @@ For local deploy rehearsal (no ACS live send), use
 Publish additional versions manually with [`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml)
 and pass an explicit `workflow_dispatch` version.
 
+The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contracts/`. The Mailer runtime references the same DTOs / constants, and [OpenAPI](docs/api/openapi.yaml) is the Consumer-facing HTTP reference / public schema synchronized with them.
+
 ## Consumer Quick Start
 
 Minimum information to POST a mail request to a running Mailer:
@@ -143,7 +145,7 @@ For the Consumer app compose network setup, see the comments in [infra/deploy/co
 ## Key Docs
 
 - [Service spec](docs/service-spec.en.md) [(ja)](docs/service-spec.md)
-- [OpenAPI contract](docs/api/openapi.yaml)
+- [OpenAPI HTTP reference](docs/api/openapi.yaml)
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
 - [GHCR image publishing](docs/ops/ghcr-image-publish.en.md) [(ja)](docs/ops/ghcr-image-publish.md)
 - [Configuration README](config/mailer/README.en.md) [(ja)](config/mailer/README.md)

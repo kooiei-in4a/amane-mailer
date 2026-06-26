@@ -5,6 +5,30 @@ delivery payload hash helper for use by consumer applications and the Mailer ser
 
 The C# root namespace is `Amane.Mailer.Contracts`.
 
+## HTTP Contract Source of Truth
+
+This package is the code-level source of truth for Mailer HTTP request/response
+DTOs, error code constants, acceptance status constants, delivery status
+constants, JSON serialization context, and payload hash helper. The Mailer
+runtime references this package directly, and consumer applications should use
+the published NuGet package.
+
+`docs/api/openapi.yaml` is the Consumer-facing HTTP reference / public schema.
+It is kept synchronized with this package and the runtime implementation, but it
+is not the source of truth. Current CI validates OpenAPI structure with
+`scripts/validate-openapi.mjs`.
+
+When changing the contract, review drift across this package, runtime behavior,
+OpenAPI, and tests for DTO JSON property names, required / nullable fields,
+`MailerErrorCodes`, `MailRequestAcceptanceStatus`, `MailRequestStatus`, payload
+hash fields, and JSON unknown / duplicate property behavior. Until automated
+drift checks are added, every HTTP-contract-changing PR must record validation
+notes comparing Contracts DTOs / constants, runtime behavior, OpenAPI schemas /
+examples, and related tests / test vectors. If OpenAPI changes, include the
+result of `node scripts/validate-openapi.mjs docs/api/openapi.yaml`. Automated
+drift checks remain follow-up work; JSON strictness is tracked in #22, and
+package / API versioning policy is tracked in #5.
+
 ## NuGet source
 
 The package is published to nuget.org. No custom package source or
@@ -25,6 +49,7 @@ dotnet add package Amane.Mailer.Contracts
 | `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient in `to` array |
 | `MailPayloadHasher` | `Amane.Mailer.Contracts.Security` | `payload_hash` computation helper |
 | `MailRequestAcceptanceStatus` | `Amane.Mailer.Contracts.MailRequests` | Response `status` constants |
+| `MailRequestStatus` | `Amane.Mailer.Contracts.MailRequests` | Worker delivery status constants |
 | `MailerErrorCodes` | `Amane.Mailer.Contracts.MailRequests` | Error code constants |
 
 ## Minimal Example

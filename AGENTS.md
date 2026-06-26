@@ -65,13 +65,13 @@ Native AOT and full trimming are mandatory (`PublishAot`, `IsTrimmable`, `TrimMo
 - `JsonSerializerIsReflectionEnabledByDefault` is `false`; new serializers must stay source-generated.
 - Treat IL trim/AOT analyzer warnings (`IL2026`, `IL3050`, `IL2104`) as errors.
 
-### HTTP contract (issue #21)
+### HTTP contract
 
-- HTTP contract source of truth is **unresolved** until issue #21 is closed.
-- Until #21 is resolved, do not update only one of OpenAPI (`docs/api/openapi.yaml`), Contracts, or runtime DTOs for contract changes.
-- After #21 is resolved, follow the resulting ADR and any CI drift checks added there.
+- HTTP contract source of truth is `src/Amane.Mailer.Contracts/` (ADR 0012 D-01).
+- OpenAPI (`docs/api/openapi.yaml`) is the Consumer-facing HTTP reference / public schema synchronized with Contracts and runtime.
+- Do not update only one of OpenAPI, Contracts, or runtime DTOs for HTTP contract changes.
+- For HTTP-contract-changing PRs, record validation notes comparing Contracts DTOs/constants, runtime behavior, OpenAPI schemas/examples, and related tests/test vectors. If OpenAPI changes, include `node scripts/validate-openapi.mjs docs/api/openapi.yaml`.
 - Mail request JSON behavior must stay consistent across OpenAPI, runtime, and tests — including unknown and duplicate property handling (#22).
-- Note: `docs/service-spec.md` currently names OpenAPI as canonical. This is the inconsistency tracked by #21; do not treat that wording as settled until #21 is closed.
 
 ### Provider errors (#26)
 
@@ -115,11 +115,12 @@ State the mode at the start of a session, or infer from the human's request.
 
 1. Agent files (this guide) — done when `AGENTS.md` and `CLAUDE.md` exist
 2. #28 — public docs cleanup (stale private refs, ROADMAP)
-3. #21 — contract source of truth (blocks #22, #5, drift CI)
+3. #21 — contract source of truth — done when ADR/service spec/README agree on Contracts as source of truth
 4. #5 — package/API/versioning policy
 5. #22 — JSON strictness (unknown/duplicate properties)
-6. #26 — provider error sanitize
-7. #23 — release workflow hardening
-8. #27, #11 — release notes and clean-state smoke
+6. Drift CI — automate Contracts/runtime/OpenAPI drift checks after #21
+7. #26 — provider error sanitize
+8. #23 — release workflow hardening
+9. #27, #11 — release notes and clean-state smoke
 
 Scoped Cursor rules (`contracts-api.mdc`, `admin-security.mdc`) may be added under `.cursor/rules/` only after #21 or before Admin-heavy work — not in the initial commit.
