@@ -8,6 +8,7 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 ## Artifact
 
 - Release tag（例: `v0.1.0`）
+- Annotated tag object（annotated tag の場合）
 - Tag target commit SHA
 - Docker image（例: `ghcr.io/kooiei-in4a/amane-mailer:vX.Y.Z`）
 - Image digest / index digest
@@ -45,6 +46,7 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 - `docs/service-spec.md` / `docs/service-spec.en.md`
 - `docs/adr/0012-mail-via-mailer-microservice.md`
 - `docs/adr/0013-admin-threat-model-and-pii-policy.md`
+- `docs/ops/ghcr-image-publish.md` / `.en.md`
 - `docs/ops/backup-operations.md` / `.en.md`
 - `docs/ops/restore-procedure.md` / `.en.md`
 - GitHub Release body (`gh release view vX.Y.Z --repo kooiei-in4a/amane-mailer`)

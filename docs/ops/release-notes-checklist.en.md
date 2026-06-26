@@ -9,6 +9,7 @@ after publishing a release, verify and record the following items.
 ## Artifacts
 
 - Release tag, for example `v0.1.0`
+- Annotated tag object when the release uses an annotated tag
 - Tag target commit SHA
 - Docker image, for example `ghcr.io/kooiei-in4a/amane-mailer:vX.Y.Z`
 - Image digest / index digest
@@ -49,6 +50,7 @@ after publishing a release, verify and record the following items.
 - `docs/service-spec.md` / `docs/service-spec.en.md`
 - `docs/adr/0012-mail-via-mailer-microservice.md`
 - `docs/adr/0013-admin-threat-model-and-pii-policy.md`
+- `docs/ops/ghcr-image-publish.md` / `.en.md`
 - `docs/ops/backup-operations.md` / `.en.md`
 - `docs/ops/restore-procedure.md` / `.en.md`
 - GitHub Release body (`gh release view vX.Y.Z --repo kooiei-in4a/amane-mailer`)
