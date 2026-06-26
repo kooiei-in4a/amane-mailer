@@ -62,7 +62,10 @@ if ($hash -notlike "pbkdf2:sha256:*") {
 ## 5. Start Mailer / Mailpit
 
 Even if `.env` contains ACS values, the PowerShell session below overrides them to Mailpit.
-Set `AMANE_ADMIN_BIND=0.0.0.0` so the admin UI is reachable via Docker port publish.
+Set `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=0.0.0.0` so the admin UI is reachable via Docker port publish.
+This is a `/admin` request `Connection.LocalIpAddress` allowlist, not a socket bind.
+The actual host exposure is still limited by compose `ports` (`127.0.0.1:5280:8080` in this runbook).
+The old `AMANE_ADMIN_BIND` / `MAILER_ADMIN_BIND` names remain as deprecated aliases.
 `AMANE_ADMIN_ALLOW_HTTP=true` and `AMANE_ADMIN_PII_LIST_MODE=visible` are for local verification only.
 Do not enable HTTP or PII display on production or develop deploy hosts.
 Switching steps from section 5 onward assume the same PowerShell session.
@@ -72,7 +75,7 @@ If you resume in a new session, regenerate `$hash` in section 4 and reconfigure 
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
-$env:AMANE_ADMIN_BIND = "0.0.0.0"
+$env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"       # local Docker HTTP only
 $env:AMANE_ADMIN_PII_LIST_MODE = "visible" # local UI verification only
 
@@ -298,7 +301,7 @@ Run this in the same PowerShell session as section 5, or regenerate `$hash` in s
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
-$env:AMANE_ADMIN_BIND = "0.0.0.0"
+$env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"
 $env:AMANE_ADMIN_PII_LIST_MODE = "visible"
 

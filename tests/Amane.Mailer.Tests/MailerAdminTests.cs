@@ -5,6 +5,7 @@ using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
 using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Amane.Mailer.Tests;
@@ -21,6 +22,131 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    [Fact]
+    public void Allowed_local_address_matches_exact_address()
+    {
+        var allowed = MailerAdminExtensions.IsAllowedLocalAddress(
+            IPAddress.Parse("192.0.2.10"),
+            "192.0.2.10");
+
+        Assert.True(allowed);
+    }
+
+    [Fact]
+    public void Configured_loopback_allows_loopback_local_address()
+    {
+        var allowed = MailerAdminExtensions.IsAllowedLocalAddress(
+            IPAddress.IPv6Loopback,
+            "127.0.0.1");
+
+        Assert.True(allowed);
+    }
+
+    [Fact]
+    public void Configured_loopback_rejects_non_loopback_local_address()
+    {
+        var allowed = MailerAdminExtensions.IsAllowedLocalAddress(
+            IPAddress.Parse("192.0.2.10"),
+            "127.0.0.1");
+
+        Assert.False(allowed);
+    }
+
+    [Fact]
+    public void Configured_any_allows_non_null_local_address()
+    {
+        var allowed = MailerAdminExtensions.IsAllowedLocalAddress(
+            IPAddress.Parse("192.0.2.10"),
+            "0.0.0.0");
+
+        Assert.True(allowed);
+    }
+
+    [Fact]
+    public void Configured_ipv6_any_allows_non_null_ipv6_local_address()
+    {
+        var allowed = MailerAdminExtensions.IsAllowedLocalAddress(
+            IPAddress.Parse("2001:db8::10"),
+            "::");
+
+        Assert.True(allowed);
+    }
+
+    [Fact]
+    public void Null_local_address_is_rejected()
+    {
+        var allowed = MailerAdminExtensions.IsAllowedLocalAddress(
+            requestLocalAddress: null,
+            configuredAllowedLocalAddress: "0.0.0.0");
+
+        Assert.False(allowed);
+    }
+
+    [Theory]
+    [InlineData("AMANE_ADMIN_BIND")]
+    [InlineData("MAILER_ADMIN_BIND")]
+    public void Deprecated_admin_bind_aliases_still_configure_allowed_local_address(string key)
+    {
+        var options = LoadAdminOptions(new Dictionary<string, string?>
+        {
+            [key] = "0.0.0.0",
+        });
+
+        Assert.Equal("0.0.0.0", options.AllowedLocalAddress);
+    }
+
+    [Fact]
+    public void Mailer_prefixed_allowed_local_address_env_var_configures_allowed_local_address()
+    {
+        var options = LoadAdminOptions(new Dictionary<string, string?>
+        {
+            ["MAILER_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "192.0.2.10",
+        });
+
+        Assert.Equal("192.0.2.10", options.AllowedLocalAddress);
+    }
+
+    [Fact]
+    public void Mailer_prefixed_allowed_local_address_env_var_takes_precedence_over_deprecated_alias()
+    {
+        var options = LoadAdminOptions(new Dictionary<string, string?>
+        {
+            ["MAILER_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "192.0.2.10",
+            ["AMANE_ADMIN_BIND"] = "0.0.0.0",
+        });
+
+        Assert.Equal("192.0.2.10", options.AllowedLocalAddress);
+    }
+
+    [Fact]
+    public void New_allowed_local_address_env_var_takes_precedence_over_deprecated_alias()
+    {
+        var options = LoadAdminOptions(new Dictionary<string, string?>
+        {
+            ["AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "192.0.2.10",
+            ["AMANE_ADMIN_BIND"] = "0.0.0.0",
+            ["MAILER_ADMIN_BIND"] = "127.0.0.1",
+        });
+
+        Assert.Equal("192.0.2.10", options.AllowedLocalAddress);
+    }
+
+    [Fact]
+    public void Invalid_allowed_local_address_validation_names_new_env_var()
+    {
+        var options = new MailerAdminOptions
+        {
+            Enabled = true,
+            Username = "admin",
+            PasswordHash = AdminPasswordHasher.Hash("password"),
+            AllowedLocalAddress = "not-an-ip",
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(options.Validate);
+
+        Assert.Contains("AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS", exception.Message, StringComparison.Ordinal);
+    }
 
     [Fact]
     public async Task Disabled_admin_returns_404()
@@ -649,6 +775,12 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
             ["username"] = username,
             ["password"] = password,
         });
+
+    private static MailerAdminOptions LoadAdminOptions(IReadOnlyDictionary<string, string?> settings) =>
+        MailerAdminOptions.Load(
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(settings)
+                .Build());
 
     private async Task<Guid> SeedMailRequestAsync(
         string sourceService,

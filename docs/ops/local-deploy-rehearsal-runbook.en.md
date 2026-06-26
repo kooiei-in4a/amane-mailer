@@ -153,7 +153,11 @@ It does not conflict with `5280` in `infra/docker/docker-compose.local.yml` (Mai
 
 To verify the Admin UI, set `AMANE_ADMIN_*` in the same PowerShell session where you start
 `local-rehearsal.ps1`. For access via Docker port publish during local rehearsal, explicitly set
-`AMANE_ADMIN_BIND=0.0.0.0` and `AMANE_ADMIN_ALLOW_HTTP=true`.
+`AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=0.0.0.0` and `AMANE_ADMIN_ALLOW_HTTP=true`.
+`AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` is a `/admin` request `Connection.LocalIpAddress`
+allowlist, not a socket bind. Actual host exposure is still limited by
+`compose.local-rehearsal.yml` `ports` (`127.0.0.1:5281`).
+The old `AMANE_ADMIN_BIND` / `MAILER_ADMIN_BIND` names remain as deprecated aliases.
 This is for local HTTP verification only. On deploy hosts, keep `AMANE_ADMIN_ALLOW_HTTP=false`
 under the HTTPS reverse-proxy setup.
 
@@ -177,7 +181,7 @@ if ($hash -notlike "pbkdf2:sha256:*") {
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
-$env:AMANE_ADMIN_BIND = "0.0.0.0"
+$env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"
 $env:AMANE_ADMIN_PII_LIST_MODE = "masked"
 

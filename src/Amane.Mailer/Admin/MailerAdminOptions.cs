@@ -4,13 +4,18 @@ namespace Amane.Mailer.Admin;
 
 public sealed record MailerAdminOptions
 {
+    private const string AllowedLocalAddressKey = "AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS";
+    private const string AllowedLocalAddressFallbackKey = "MAILER_ADMIN_ALLOWED_LOCAL_ADDRESS";
+    private const string DeprecatedBindAddressKey = "AMANE_ADMIN_BIND";
+    private const string DeprecatedBindAddressFallbackKey = "MAILER_ADMIN_BIND";
+
     public bool Enabled { get; init; }
 
     public string Username { get; init; } = "admin";
 
     public string PasswordHash { get; init; } = string.Empty;
 
-    public string BindAddress { get; init; } = "127.0.0.1";
+    public string AllowedLocalAddress { get; init; } = "127.0.0.1";
 
     public int LoginFailureLimit { get; init; } = 5;
 
@@ -38,7 +43,13 @@ public sealed record MailerAdminOptions
             Enabled = enabled,
             Username = ReadString(configuration, "AMANE_ADMIN_USERNAME", "MAILER_ADMIN_USERNAME", "admin"),
             PasswordHash = ReadString(configuration, "AMANE_ADMIN_PASSWORD_HASH", "MAILER_ADMIN_PASSWORD_HASH", string.Empty),
-            BindAddress = ReadString(configuration, "AMANE_ADMIN_BIND", "MAILER_ADMIN_BIND", "127.0.0.1"),
+            AllowedLocalAddress = ReadString(
+                configuration,
+                "127.0.0.1",
+                AllowedLocalAddressKey,
+                AllowedLocalAddressFallbackKey,
+                DeprecatedBindAddressKey,
+                DeprecatedBindAddressFallbackKey),
             MaskRecipients = ReadBoolean(configuration, "AMANE_ADMIN_MASK_RECIPIENTS", "MAILER_ADMIN_MASK_RECIPIENTS")
                 ?? defaultMaskPii,
             MaskSubjects = ReadBoolean(configuration, "AMANE_ADMIN_MASK_SUBJECTS", "MAILER_ADMIN_MASK_SUBJECTS")
@@ -60,8 +71,11 @@ public sealed record MailerAdminOptions
         if (!AdminPasswordHasher.IsSupportedHash(PasswordHash))
             throw new InvalidOperationException("AMANE_ADMIN_PASSWORD_HASH must use the pbkdf2:sha256 format.");
 
-        if (!IPAddress.TryParse(BindAddress, out _))
-            throw new InvalidOperationException("AMANE_ADMIN_BIND must be an IP address.");
+        if (!IPAddress.TryParse(AllowedLocalAddress, out _))
+            throw new InvalidOperationException(
+                "AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS must be an IP address. " +
+                "MAILER_ADMIN_ALLOWED_LOCAL_ADDRESS and deprecated AMANE_ADMIN_BIND / MAILER_ADMIN_BIND aliases " +
+                "use the same value.");
 
         if (LoginFailureLimit <= 0)
             throw new InvalidOperationException("AMANE_ADMIN_LOGIN_FAILURE_LIMIT must be greater than zero.");
@@ -88,6 +102,21 @@ public sealed record MailerAdminOptions
 
         value = configuration[fallbackKey];
         return string.IsNullOrWhiteSpace(value) ? defaultValue : value;
+    }
+
+    private static string ReadString(
+        IConfiguration configuration,
+        string defaultValue,
+        params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            var value = configuration[key];
+            if (!string.IsNullOrWhiteSpace(value))
+                return value;
+        }
+
+        return defaultValue;
     }
 
     private static bool? ReadBoolean(IConfiguration configuration, string primaryKey, string fallbackKey)

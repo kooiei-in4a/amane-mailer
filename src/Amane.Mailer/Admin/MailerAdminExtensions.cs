@@ -74,7 +74,7 @@ public static class MailerAdminExtensions
         {
             branch.Use(async (context, next) =>
             {
-                if (!IsAllowedBindAddress(context, options))
+                if (!IsAllowedLocalAddress(context, options))
                 {
                     context.Response.StatusCode = StatusCodes.Status404NotFound;
                     return;
@@ -287,13 +287,16 @@ public static class MailerAdminExtensions
             && Path.GetExtension(remaining.Value).Length > 0;
     }
 
-    private static bool IsAllowedBindAddress(HttpContext context, MailerAdminOptions options)
-    {
-        var localAddress = NormalizeIpAddress(context.Connection.LocalIpAddress);
-        if (localAddress is null)
-            return true;
+    private static bool IsAllowedLocalAddress(HttpContext context, MailerAdminOptions options) =>
+        IsAllowedLocalAddress(context.Connection.LocalIpAddress, options.AllowedLocalAddress);
 
-        if (!IPAddress.TryParse(options.BindAddress, out var configuredAddress))
+    internal static bool IsAllowedLocalAddress(IPAddress? requestLocalAddress, string configuredAllowedLocalAddress)
+    {
+        var localAddress = NormalizeIpAddress(requestLocalAddress);
+        if (localAddress is null)
+            return false;
+
+        if (!IPAddress.TryParse(configuredAllowedLocalAddress, out var configuredAddress))
             return false;
 
         configuredAddress = NormalizeRequiredIpAddress(configuredAddress);
