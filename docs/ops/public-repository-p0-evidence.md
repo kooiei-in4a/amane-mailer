@@ -117,30 +117,31 @@ Recommended additional scope:
 
 ## CodeQL alert review
 
-Status: TODO
+Status: reviewed on 2026-06-26 JST; no code fix required.
 
-The GitHub API request for code scanning alerts returned `404 Not Found` from
-this local `gh` session on 2026-06-26 JST. Do not dismiss
-`cs/user-controlled-bypass` without opening the alert location and confirming
-the dataflow.
-
-Suggested commands after refreshing GitHub CLI scopes or checking the GitHub UI:
-
-```powershell
-gh auth refresh -h github.com -s security_events
-gh api repos/kooiei-in4a/amane-mailer/code-scanning/alerts -f state=open -f per_page=100
-```
-
-For the alert record:
+Alert record:
 
 - Alert URL:
+  `https://github.com/kooiei-in4a/amane-mailer/security/code-scanning/1`
 - Rule id: `cs/user-controlled-bypass`
-- Location:
-- Source:
-- Sink / bypass condition:
-- Disposition: fix required / false positive
-- Reason:
-- Fix or dismissal date:
+- Location: `src/Amane.Mailer/Api/MailRequestEndpoints.cs:35`
+- Alert commit SHA: `dd9c29c9947f262da941d793b2c8d6fe1c534879`
+- CodeQL category: `/language:csharp`
+- Source: `HttpRequest.ContentLength`, which is controlled by the HTTP client.
+- Guard condition: the early reject check returns `413 Payload Too Large` when
+  the declared `Content-Length` is over `MaxRequestBodyBytes`.
+- Sensitive action under review: request body processing before creating the
+  mail request.
+- Actual enforcement: `ReadRequestBodyAsync` reads the body in chunks, counts
+  the actual bytes read, and throws `RequestBodyTooLargeException` when
+  `totalBytes > MaxRequestBodyBytes`. That exception is handled as
+  `413 Payload Too Large`.
+- Disposition: false positive. A missing or understated `Content-Length` can
+  bypass only the optimization at line 35, not the actual body-size limit.
+- GitHub state: dismissed as false positive on 2026-06-25 16:56 UTC.
+- Regression coverage: `Oversized_request_body_without_content_length_returns_413`
+  verifies the body-size limit still returns 413 when the request has no
+  computable content length.
 
 ## GHCR image provenance
 
