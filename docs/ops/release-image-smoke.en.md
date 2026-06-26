@@ -66,6 +66,12 @@ Smoke a different tag:
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
 ```
 
+## Recorded smoke results
+
+Value-free smoke results for `v0.1.0` (digest, date, environment, per-check pass/fail)
+are recorded in [docs/releases/v0.1.0.md](../releases/v0.1.0.md).
+See the [GitHub Release v0.1.0](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v0.1.0).
+
 ## How it differs from the deploy drills
 
 - `scripts/release-smoke.sh`: a release smoke that validates the **published image's**

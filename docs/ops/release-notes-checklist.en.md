@@ -17,6 +17,7 @@ after publishing a release, verify and record the following items.
 - Runtime manifest digest
 - Attestation manifest digest
 - Platform (currently `linux/amd64`)
+- Release image smoke result (`docs/releases/vX.Y.Z.md`: digest, date, environment, pass/fail summary)
 - OCI source label and revision label
 - NuGet package name / version / package URL
 - .NET SDK version from `global.json` and roll-forward policy

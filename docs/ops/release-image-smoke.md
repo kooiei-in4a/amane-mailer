@@ -66,6 +66,12 @@ bash scripts/release-smoke.sh
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
 ```
 
+## 記録済み smoke 結果
+
+`v0.1.0` の value-free smoke 結果（digest、日付、環境、各 check の pass/fail）は
+[docs/releases/v0.1.0.md](../releases/v0.1.0.md) に記録しています。
+GitHub Release は [v0.1.0](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v0.1.0) を参照してください。
+
 ## deploy drill との使い分け
 
 - `scripts/release-smoke.sh`: **公開イメージ** の HTTP / 冪等性 / Mailpit delivery を
