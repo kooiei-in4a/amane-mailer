@@ -285,6 +285,13 @@ public sealed class MailRequestWorker : BackgroundService
                 : MailRequestState.Failed;
         }
 
+        // Defense-in-depth: sanitize before persisting or logging even though
+        // provider catch blocks already sanitize. This guards against callers
+        // (e.g. test stubs) that pass raw messages into MailDeliveryResult.Failure.
+        var sanitizedError = result.ErrorMessage is null
+            ? null
+            : ProviderErrorSanitizer.Sanitize(result.ErrorMessage);
+
         var attempt = new MailAttemptInsert
         {
             RequestId = row.Id,
@@ -293,7 +300,7 @@ public sealed class MailRequestWorker : BackgroundService
             Status = attemptStatus,
             ProviderMessageId = result.ProviderMessageId,
             ErrorCode = result.ErrorCode,
-            ErrorMessage = result.ErrorMessage,
+            ErrorMessage = sanitizedError,
             Retryable = result.Retryable,
             LockToken = row.LockToken,
             StartedAt = startedAt,
@@ -307,7 +314,7 @@ public sealed class MailRequestWorker : BackgroundService
             completedAt,
             outcome,
             nextAttemptAt,
-            result.ErrorMessage,
+            sanitizedError,
             attempt,
             finalizeTimeout.Token);
 
@@ -328,7 +335,7 @@ public sealed class MailRequestWorker : BackgroundService
                 row.AttemptCount,
                 providerName,
                 result.ErrorCode,
-                result.ErrorMessage);
+                sanitizedError);
         }
         else if (outcome == MailRequestFinalizeOutcome.Failed)
         {
@@ -338,7 +345,7 @@ public sealed class MailRequestWorker : BackgroundService
                 row.AttemptCount,
                 providerName,
                 result.ErrorCode,
-                result.ErrorMessage);
+                sanitizedError);
         }
     }
 

@@ -23,6 +23,32 @@ reverse proxy setup are outside this repository's scope.
 - Keep `ACS_CONNECTION_STRING` empty in checked-in files.
 - Use placeholder values (`replace-with-*`) in examples and templates.
 
+## Provider Error Sanitization
+
+ACS/Mailpit delivery exceptions can embed connection strings, access keys, SAS
+tokens, bearer credentials, URL query secrets, and recipient email addresses.
+Raw provider exception text is never persisted, logged, or shown in the Admin UI.
+
+The delivery layer (`AcsMailDeliveryProvider`, `MailpitMailDeliveryProvider`)
+routes every raw exception message through `ProviderErrorSanitizer.Sanitize`
+before building the `MailDeliveryResult`. The worker also re-runs the sanitizer
+immediately before persisting or logging delivery failures as defense-in-depth.
+As a result, the
+`mail_requests.last_error_message` / `mail_attempts.error_message` columns,
+stdout logs, and the Admin UI all consume a single sanitized summary.
+
+The sanitizer:
+
+- Masks credential assignments (`endpoint=`, `accesskey=`, `token=`,
+  `password=`, `SharedAccessKey=`, etc.) and URL query strings.
+- Masks bearer tokens and email addresses.
+- Collapses multi-line text to one line and truncates overlong messages.
+
+The classification `error_code` (for example `ACS_REQUEST_FAILED`,
+`ACS_SEND_FAILED`, `SEND_TIMEOUT`, or the exception type name) is preserved so
+operators can still triage failures. Raw provider responses are intentionally
+not stored anywhere.
+
 ## Admin Audit Logging
 
 When the Admin UI is enabled and an authenticated admin opens a stored

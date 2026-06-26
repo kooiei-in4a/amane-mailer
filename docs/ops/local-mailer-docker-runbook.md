@@ -231,6 +231,7 @@ $textBody = "Hello from local Docker Mailer via ACS."
 
 投入後、管理画面 `/admin/mail-requests` で `Local Mailer ACS smoke` が `Delivered` になることを確認します。
 ACS 側で拒否された場合は `Failed` または retry 後の `DeadLettered` になり、詳細画面の attempt に provider error が表示されます。
+表示・保存される error message は分類・サニタイズ済みのサマリです（connection string・token・URL query・メールアドレス等はマスクされ、原因分類用の `error_code` は残ります）。raw provider response は保存しません。詳細は [SECURITY.md](../../SECURITY.md) の "Provider Error Sanitization" を参照してください。
 
 ## 11. Dead Letter を確認する
 
