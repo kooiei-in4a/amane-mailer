@@ -43,6 +43,8 @@ Credential inventory remaining manual checks:
   used before public release and still not needed. In particular, rotate the
   GitHub CLI authorization if it was used during private publication prep and a
   fresh post-public token is desired.
+- DONE: GitHub personal access tokens (classic) reviewed on 2026-06-26 JST.
+  The classic PAT list is empty after deleting obsolete `read:packages` tokens.
 - ACS: rotate the ACS key or connection string used for live sending, update
   the deploy host and 1Password Amane.Mailer item, then record only the Azure
   resource name, key slot, and completion date here.
