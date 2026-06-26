@@ -94,9 +94,9 @@ For local deploy rehearsal (no ACS live send), use
 
 `Amane.Mailer.Contracts` 0.1.0 has been published to nuget.org.
 Publish additional versions manually with [`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml)
-and pass an explicit `workflow_dispatch` version.
+by running it from a release tag ref. The package version is derived from the tag and validated against the csproj `<Version>`.
 
-The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contracts/`. The Mailer runtime references the same DTOs / constants, and [OpenAPI](docs/api/openapi.yaml) is the Consumer-facing HTTP reference / public schema synchronized with them.
+The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contracts/`. The Mailer runtime references the same DTOs / constants, and [OpenAPI](docs/api/openapi.yaml) is the Consumer-facing HTTP reference / public schema synchronized with them. Service release versions, Docker image tags, NuGet package versions, and OpenAPI `info.version` are all kept in sync under the same `X.Y.Z` (see [Versioning Policy](docs/service-spec.en.md#versioning-policy)).
 
 ## Consumer Quick Start
 

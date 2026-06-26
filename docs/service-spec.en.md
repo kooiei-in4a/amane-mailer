@@ -85,6 +85,8 @@ The service release (GitHub Release tag), Docker image tag, `Amane.Mailer.Contra
 
 Prefer the immutable `sha-<git-sha>` tag or digest for deployment. The `vX.Y.Z` tag serves as the human-readable release identifier.
 
+Publish procedures: [docs/ops/ghcr-image-publish.en.md](ops/ghcr-image-publish.en.md), [`.github/workflows/publish-contracts.yml`](../.github/workflows/publish-contracts.yml)
+
 **0.x compatibility expectations**
 
 Releases in the 0.x line are still stabilizing the public API and contract. Backward compatibility is not guaranteed, but breaking changes are documented in CHANGELOG release notes with migration guidance. Starting from 1.0.0, semver backward-compatibility guarantees apply.

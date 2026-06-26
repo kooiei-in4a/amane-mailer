@@ -85,6 +85,8 @@ service release（GitHub Release tag）、Docker image tag、`Amane.Mailer.Contr
 
 deploy では不変タグ `sha-<git-sha>` または digest を優先する。`vX.Y.Z` タグは人が参照する際の識別子として使う。
 
+publish 手順: [docs/ops/ghcr-image-publish.md](ops/ghcr-image-publish.md)、[`.github/workflows/publish-contracts.yml`](../.github/workflows/publish-contracts.yml)
+
 **0.x ラインの互換性期待値**
 
 0.x リリースは公開 API・contract をまだ安定化中である。後方互換性は保証しないが、破壊的変更は CHANGELOG のリリースノートと移行ガイダンスで明記する。1.0.0 以降は semver の後方互換保証を適用する。
