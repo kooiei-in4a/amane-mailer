@@ -19,7 +19,7 @@ firewall、または Docker port publish 制限をネットワーク境界とし
 - login throttle は in-memory のみ（プロセス再起動でリセット）
 - server-side session store なし（cookie auth のみ）、管理者無効化・認証情報変更時の即時 session 失効は未実装
 - 管理者ごとの tenant scope なし（単一 `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`）
-- audit log は structured log（stdout）のみ。SQLite 永続化は [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) で追跡中
+- audit log は body view と login 成功/失敗を `admin_audit_events` SQLite テーブルに永続化（stdout にもミラー）。logout / session expired / login rate limited、retention sweep、network identifier の hash 化は未実装（[#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) で追跡中）
 
 ## 前提
 

@@ -65,7 +65,7 @@ In production, use a reverse proxy, firewall, or Docker port publish restriction
 - Login throttle is in-memory only (resets on process restart)
 - No durable server-side session store (cookie auth only); immediate session revocation on admin disable or credential change is not implemented
 - No per-admin tenant scope (single `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`)
-- Audit log is structured log (stdout) only; SQLite persistence is tracked in [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6)
+- Audit log persists body-view and login success/failure events to the `admin_audit_events` SQLite table (and mirrors them to stdout). Logout, session-expired, and login-rate-limited events, plus retention sweep and optional network identifier hashing, are not yet implemented (tracked in [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6))
 
 ## Deployment Notes
 

@@ -164,8 +164,10 @@ under the HTTPS reverse-proxy setup.
 The Admin UI is an **internal-network-only, experimental** operational aid. Current limits:
 login throttle is in-memory only (resets on process restart);
 no durable server-side session store (cookie auth only) and immediate session revocation on admin disable or credential change is not implemented;
-no per-admin tenant scope; audit log is structured log (stdout) only
-(SQLite persistence is tracked in [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6)).
+no per-admin tenant scope; audit log persists body-view and login success/failure events
+to `admin_audit_events` (mirrored to stdout). Logout, session-expired, and login-rate-limited
+events, plus retention sweep and optional network identifier hashing, are not yet implemented
+(tracked in [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6)).
 
 ```powershell
 $composeFiles = @("-f", "compose.yml", "-f", "compose.local-rehearsal.yml")
