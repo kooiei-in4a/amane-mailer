@@ -18,6 +18,45 @@ or secret values.
 | Tenant bearer token(s) | Rotate production/shared tenant token values. Update deploy host tenant secret storage and consumer app config. | TODO | Record only tenant id/name and completion date. |
 | Backup / rclone credentials | Rotate rclone remote credentials and any backup encryption/deploy credentials used before publication. | TODO | Record only remote name, credential class, and completion date. |
 
+Credential inventory snapshot on 2026-06-26 JST:
+
+- GitHub repository secrets: none.
+- GitHub `release` environment secrets: none.
+- Dependabot secrets: none.
+- GitHub repository variables: none.
+- GitHub `release` environment variables: none.
+- GitHub CLI auth: active OAuth token for account `kooiei-in4a`; token value
+  was not displayed or recorded. Observed scopes were `gist`, `read:org`,
+  `repo`, and `workflow`.
+- Local ignored files in this checkout: Visual Studio and build artifacts only.
+  No ignored deploy `.env`, private tenant JSON, rclone config, backup key
+  directory, restore directory, or local database file was present in this
+  checkout.
+- Repository content scan: keyword review found only documented placeholders,
+  example local tokens, test tokens, and operational warnings. No real
+  credential value was recorded.
+
+Credential inventory remaining manual checks:
+
+- GitHub account: review Developer settings for personal access tokens,
+  fine-grained tokens, OAuth apps, and GitHub Apps. Revoke or rotate any token
+  used before public release and still not needed. In particular, rotate the
+  GitHub CLI authorization if it was used during private publication prep and a
+  fresh post-public token is desired.
+- ACS: rotate the ACS key or connection string used for live sending, update
+  the deploy host and 1Password Amane.Mailer item, then record only the Azure
+  resource name, key slot, and completion date here.
+- Tenant bearer tokens: rotate production/shared tenant tokens, update
+  consumer configuration and the deploy host, then record only tenant names and
+  completion date here.
+- Backup / rclone: rotate the minimum-scope upload credential and any backup
+  encryption/deploy credentials used before publication, update the private
+  host configuration and 1Password Amane.Mailer item, then record only the
+  remote name, credential class, and completion date here.
+- GHCR deploy-host pull token, if any: confirm it is read-only
+  `read:packages`, rotate/delete if created before publication, and record only
+  token label and completion date here.
+
 Trusted Publishing follow-up:
 
 - DONE: GitHub Actions environment `release` is configured in
