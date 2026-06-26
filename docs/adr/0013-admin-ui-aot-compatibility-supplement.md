@@ -28,11 +28,11 @@ weaken the Native AOT gate that the Mailer service relies on.
 
 ## Validation
 
-PoC location:
+The disposable PoC project used for this decision is not part of the public
+repository. The validated behavior is summarized here so readers do not need a
+missing repository path to understand the decision.
 
-- [spike/Amane.Mailer.AotSpike](../../spike/Amane.Mailer.AotSpike)
-
-The PoC adds:
+The validated PoC exercised:
 
 - `AddAuthentication().AddCookie()`
 - `AddAntiforgery()`
@@ -54,15 +54,6 @@ Validation results on 2026-06-24:
 | PBKDF2 hash CLI | PASS | Native AOT Docker image emits `pbkdf2:sha256:600000:...` |
 | Razor Pages registration | FAIL | `AddRazorPages()` fails build with IL2026 when warnings are errors |
 
-Commands used:
-
-```powershell
-dotnet build spike\Amane.Mailer.AotSpike\Amane.Mailer.AotSpike.csproj -c Release
-docker build -f spike\Amane.Mailer.AotSpike\Dockerfile -t amane-mailer-aot-spike:admin-poc .
-docker run --rm -d -p 18080:8080 --name amane-admin-aot-poc amane-mailer-aot-spike:admin-poc
-docker run --rm amane-mailer-aot-spike:admin-poc admin hash-password --password test-password
-```
-
 ## Alternatives
 
 | Option | AOT result | Decision |
@@ -74,9 +65,9 @@ docker run --rm amane-mailer-aot-spike:admin-poc admin hash-password --password 
 | Separate admin container | AOT-compatible for Mailer | Reserved as fallback if static UI becomes too costly |
 | Disable AOT / self-contained JIT | Would avoid AOT issue | Rejected; weakens the Mailer deployment constraint |
 
-## Consequences for #175
+## Consequences for the Admin Foundation
 
-#175 should implement the admin foundation using the selected static UI shape:
+The admin foundation should use the selected static UI shape:
 
 - keep `AMANE_ADMIN_ENABLED=false` as the default fail-closed mode
 - map `/admin` and `/admin/api/*` only when admin is enabled
@@ -96,16 +87,13 @@ a release requirement.
 
 ## PoC Boundaries
 
-The spike intentionally keeps a few development-only shortcuts so that the native
+The disposable PoC intentionally kept a few development-only shortcuts so that the native
 container can be exercised over local HTTP:
 
 - `CookieSecurePolicy.SameAsRequest` is used only so the Docker PoC works at
-  `http://127.0.0.1:18080`. #175 should use secure cookies for real deployments.
+  `http://127.0.0.1:18080`. Production deployments should use secure cookies.
 - the fallback `admin` / `password` credential exists only for the Hello Admin PoC.
-  #175 must fail closed when the admin password hash is missing.
+  Production implementation must fail closed when the admin password hash is missing.
 - login and logout call `.DisableAntiforgery()` only to avoid the middleware's
   automatic 400 response; both handlers still call `ValidateRequestAsync()`
   manually before changing authentication state.
-- the root `.dockerignore` allows the spike directory so the existing spike
-  Dockerfile can build from the repository root. If the spike is removed later,
-  this exception should be removed with it.

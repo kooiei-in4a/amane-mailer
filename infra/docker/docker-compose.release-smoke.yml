@@ -1,0 +1,82 @@
+# Clean-state release smoke for the published Mailer image (issue #11).
+#
+# Unlike infra/docker/docker-compose.local.yml (which builds from source), this
+# file pulls the published GHCR image and exercises the public release runtime
+# path with Mailpit. It is driven by scripts/release-smoke.sh and is not meant
+# for day-to-day local development.
+#
+# Tenant config is the safe example baked into the image
+# (/app/config/mailer/tenants.example.json), so no host tenant JSON is mounted.
+# Mailer state lives in a named volume that `docker compose down -v` removes.
+name: ${RELEASE_SMOKE_PROJECT:-amane-mailer-release-smoke}
+
+services:
+  mailpit:
+    image: ${MAILPIT_IMAGE:-axllent/mailpit:latest}
+    restart: "no"
+    ports:
+      # Mailpit HTTP API/UI, for host-side delivery verification only.
+      - "127.0.0.1:${MAILPIT_HTTP_PORT:-18025}:8025"
+
+  # The runtime image is chiseled and runs as a non-root user, but a fresh named
+  # volume is created root-owned. This throwaway init makes the smoke data volume
+  # writable so Mailer can keep running as its non-root user.
+  data-init:
+    image: ${RELEASE_SMOKE_INIT_IMAGE:-busybox:1.37}
+    user: "0:0"
+    command: ["sh", "-c", "chmod 0777 /app/data"]
+    volumes:
+      - mailer-data:/app/data
+    restart: "no"
+
+  mailer-migrate:
+    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v0.1.0}
+    pull_policy: ${MAILER_PULL_POLICY:-always}
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
+    command: ["db", "migrate"]
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Mailer: "Data Source=/app/data/mailer.db"
+      MAILER_TENANTS_PATH: /app/config/mailer/tenants.example.json
+      MAIL_SERVICE_TOKEN: ${MAIL_SERVICE_TOKEN:-local-mail-service-token}
+      MAILER_PROVIDER: mailpit
+      ACS_CONNECTION_STRING: ""
+    volumes:
+      - mailer-data:/app/data
+    restart: "no"
+
+  mailer:
+    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v0.1.0}
+    pull_policy: ${MAILER_PULL_POLICY:-always}
+    depends_on:
+      mailer-migrate:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Mailer: "Data Source=/app/data/mailer.db"
+      MAILER_TENANTS_PATH: /app/config/mailer/tenants.example.json
+      MAIL_SERVICE_TOKEN: ${MAIL_SERVICE_TOKEN:-local-mail-service-token}
+      MAILER_PROVIDER: mailpit
+      MAILPIT_SMTP_HOST: mailpit
+      MAILPIT_SMTP_PORT: "1025"
+      MAILPIT_SMTP_USE_SSL: "false"
+      ACS_CONNECTION_STRING: ""
+    volumes:
+      - mailer-data:/app/data
+    ports:
+      - "127.0.0.1:${MAILER_HTTP_PORT:-15280}:8080"
+    healthcheck:
+      test: ["CMD", "/app/Amane.Mailer", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: "no"
+
+volumes:
+  mailer-data:

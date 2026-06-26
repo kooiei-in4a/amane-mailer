@@ -372,6 +372,27 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
+    public async Task Oversized_request_body_without_content_length_returns_413()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        using var content = new UnknownLengthStringContent(
+            "{\"html_body\":\"" + new string('x', 260_000) + "\"}",
+            Encoding.UTF8,
+            "application/json");
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            content,
+            ct);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.RequestTooLarge,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
     public async Task Temporary_database_unavailable_returns_503_retryable()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -448,6 +469,18 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         });
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return client;
+    }
+
+    private sealed class UnknownLengthStringContent(
+        string content,
+        Encoding encoding,
+        string mediaType) : StringContent(content, encoding, mediaType)
+    {
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
     }
 
     private static string TenantConfigJson =>

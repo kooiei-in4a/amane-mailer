@@ -1,6 +1,6 @@
 [日本語](service-spec.md)
 
-# Amane Mailer Service — Service Specification (Phase A / SQLite + Native AOT)
+# Amane Mailer Service — Service Specification (SQLite + Native AOT)
 
 - **Role:** General-purpose mail delivery microservice
 - **Canonical contract:** [openapi.yaml](api/openapi.yaml) (HTTP contract defined in OpenAPI — O-04 decision)
@@ -83,7 +83,7 @@ Canonical DDL: `src/Amane.Mailer/Data/Migrations/001_initial.sql`
 | `payload_json` | TEXT | Received JSON verbatim |
 | `payload_hash` | TEXT | SHA-256 hex (64 characters) |
 | `subject` / `html_body` / `text_body` / `reply_to` | TEXT | Delivery content |
-| `recipient_email` / `recipient_display_name` | TEXT | Recipient (Phase A: single recipient) |
+| `recipient_email` / `recipient_display_name` | TEXT | Recipient (current API accepts one recipient) |
 | `metadata_json` | TEXT NULL | Optional metadata |
 | `status` | INTEGER | State (see table below) |
 | `attempt_count` / `max_attempts` | INTEGER | Attempt counts |
@@ -188,7 +188,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `worker_heartbeat_age_seconds` | Seconds since Worker last heartbeat (`-1` if row missing) |
 | `sweep_heartbeat_age_seconds` | Seconds since Sweep last heartbeat (`-1` if row missing) |
 
-`db request-state` is a read-only verification command for drills such as MAIL-05a. Output keys:
+`db request-state` is a read-only verification command for no-send / ACS deploy drills. Output keys:
 `tenant_id`, `source_service`, `mail_request_id`, `found`, `status`,
 `status_code`, `attempt_count`, `attempt_rows`, `last_provider`,
 `last_attempt_status`, `last_attempt_status_code`,
@@ -274,7 +274,7 @@ docker compose --env-file .env -f compose.yml up -d mailer
 **Backup (after PostgreSQL / pg_dump deprecation):**
 
 `infra/deploy/backup-mailer.sh` performs SQLite backup → age encryption → rclone upload in one step.
-See [docs/ops/backup-operations.en.md](docs/ops/backup-operations.en.md) for procedures.
+See the [backup operations runbook](ops/backup-operations.en.md) for procedures.
 
 ---
 
@@ -320,5 +320,5 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | Date | Content |
 |---|---|
 | 2026-06-22 | Initial version. Derived OpenAPI canonical contract and configuration spec from implementation |
-| 2026-06-23 | Followed Phase A completion: SQLite / Native AOT / chiseled single container / CLI / Retention / state transition DDL |
-| 2026-06-24 | Added Worker/Sweep heartbeat liveness (#169): `worker_heartbeats` table, CLI heartbeat freshness check, `/readyz` Worker running check, `db stats` heartbeat age keys |
+| 2026-06-23 | Followed the initial SQLite / Native AOT release shape: chiseled single container / CLI / Retention / state transition DDL |
+| 2026-06-24 | Added Worker/Sweep heartbeat liveness: `worker_heartbeats` table, CLI heartbeat freshness check, `/readyz` Worker running check, `db stats` heartbeat age keys |

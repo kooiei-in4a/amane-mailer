@@ -1,0 +1,8 @@
+title = "Amane Mailer gitleaks config"
+
+[[allowlists]]
+description = "Allow the documented local-only Mailer sample bearer token."
+condition = "AND"
+regexTarget = "match"
+regexes = ['''Authorization: Bearer local-mail-service-token''']
+paths = ['''README(\.en)?\.md''']
