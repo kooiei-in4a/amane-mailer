@@ -7,7 +7,7 @@ GitHub Actions で Mailer ランタイムイメージを GitHub Container Regist
 ワークフロー:
 
 - `.github/workflows/publish-image.yml`
-- トリガー: 手動 `workflow_dispatch`
+- トリガー: 手動 `workflow_dispatch`（release tag ref からのみ成功）
 
 ## イメージ
 
@@ -17,10 +17,12 @@ GitHub Actions で Mailer ランタイムイメージを GitHub Container Regist
 
 ## タグ
 
-- 手動 `workflow_dispatch` では不変タグ `sha-<git-sha>` を付与します。
-- CI が安定したら、`develop` への push で `sha-<git-sha>` と可変タグ `develop` を publish できます。
-- 保護されたリリースブランチでは、environment 承認設定後に不変タグ `sha-<git-sha>` を publish できます。
-- `staging` と `main` は不変タグ `sha-<git-sha>` でデプロイしてください。
+- `workflow_dispatch` は GitHub UI/API で release tag `vX.Y.Z` を選んで実行します。
+- pre-release は `vX.Y.Z-rc.1` のような `-` 付き識別子を許可します。
+- workflow input はありません。image version tag は選択された `GITHUB_REF_NAME` から決まります。
+- publish されるタグは `sha-<git-sha>` と release tag（例: `v0.1.1`）だけです。
+- branch ref、形式不正な tag、tag が指す commit と checked-out commit / workflow event commit が一致しない実行は失敗します。
+- deploy では可能な限り不変タグ `sha-<git-sha>` または digest を使います。
 
 ## GitHub Actions 権限
 
@@ -33,11 +35,15 @@ publish ジョブは次を使います:
 
 ワークフローは `infra/docker/Dockerfile` から Mailer イメージをビルドします。
 
-## 初回 publish
+## Release publish
 
-1. `main` ブランチから `workflow_dispatch` で `Publish Amane Mailer Image` を実行します。
-2. 生成された不変タグ `sha-<git-sha>` を使います。
-3. ワークフローの image run と config-content チェックが通ることを確認します。
+1. release commit に `vX.Y.Z` tag を作成します。Contracts package を同じ release で publish する場合は、`src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` の `<Version>` が `X.Y.Z` と一致している必要があります。
+2. GitHub Actions の `Publish Amane Mailer Image` を release tag ref から実行します。
+3. `release` environment の承認後、workflow が `sha-<git-sha>` と `vX.Y.Z` を publish します。
+4. ワークフローの image run、config-content チェック、digest / platform / OCI label / attestation チェックが通ることを確認します。
+5. workflow summary の digest と `sha-<git-sha>` を GitHub Release notes または release evidence に転記します。
+
+既存の `v0.1.0` image は手動 evidence で digest / provenance を確認済みです。workflow 変更だけで既存 artifact を再発行しません。
 
 ランタイムイメージに含まれる `config/mailer` のファイルは安全なものだけです:
 
@@ -47,15 +53,29 @@ publish ジョブは次を使います:
 
 deploy 固有の tenant JSON はイメージに焼き込みません。共有 deploy では `infra/deploy/compose.yml` の `MAILER_TENANTS_HOST_PATH` と `MAILER_TENANTS_CONTAINER_PATH` でホスト所有の tenant ファイルを mount します。tenant JSON の変更はイメージ再ビルドではなく config deploy です。
 
-## GitHub Environments
+## GitHub Environment
 
-以下の environment はデプロイゲートとして計画されています:
+image publish と NuGet package publish はどちらも GitHub Environment `release` を使います。
 
-- `development`: `develop` への push で使用
-- `staging`: `staging` への push で使用
-- `production`: `main` への push で使用
+- `release` environment に必須 reviewer を設定します。
+- environment の deployment branch/tag policy は release tag（例: `v*`）を許可します。
+- branch ref から実行した publish は workflow 内の tag 検証で失敗します。
 
-本番イメージ publish を許可する前に、GitHub で `production` environment に必須レビュアーを設定してください。
+## SBOM / provenance / digest
+
+`docker/build-push-action` は次を明示して実行します:
+
+- `provenance: true`
+- `sbom: true`
+- `platforms: linux/amd64`
+
+workflow は build action の digest output が空でないこと、`sha-<git-sha>` tag と release tag の digest が build digest と一致すること、`docker buildx imagetools inspect --raw` に attestation manifest があることを gate します。さらに pulled image の OCI labels を検証します:
+
+- `org.opencontainers.image.source`
+- `org.opencontainers.image.revision`
+- `org.opencontainers.image.version`
+
+digest、platform、OCI labels、inspect 結果は workflow summary に出力されます。Release notes を自動更新しないため、publish 後は summary の digest と `sha-<git-sha>` を release record に転記してください。
 
 ## Deploy host pull 認証
 

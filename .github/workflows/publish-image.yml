@@ -2,17 +2,6 @@ name: Publish Amane Mailer Image
 
 on:
   workflow_dispatch:
-    inputs:
-      source_ref:
-        description: Git ref to build, for example v0.1.0. Defaults to the workflow ref.
-        required: false
-        default: ""
-        type: string
-      version_tag:
-        description: Optional image version tag to publish, for example v0.1.0.
-        required: false
-        default: ""
-        type: string
 
 permissions:
   contents: read
@@ -29,34 +18,56 @@ jobs:
   publish:
     name: Build and push image
     runs-on: ubuntu-24.04
+    environment: release
+    outputs:
+      digest: ${{ steps.metadata.outputs.digest }}
+      platform: ${{ steps.metadata.outputs.platform }}
+      attestation_manifest: ${{ steps.metadata.outputs.attestation_manifest }}
+      release_tag: ${{ steps.image.outputs.release_tag }}
+      revision: ${{ steps.image.outputs.revision }}
+      sha_tag: ${{ steps.image.outputs.sha_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
-          ref: ${{ inputs.source_ref || github.ref }}
+          fetch-depth: 0
 
-      - name: Resolve image tags
+      - name: Validate release tag and resolve image tags
         id: image
         shell: bash
         run: |
-          revision="$(git rev-parse HEAD)"
-          tags="${IMAGE_NAME}:sha-${revision}"
+          set -euo pipefail
 
-          if [ -n "${{ inputs.version_tag }}" ]; then
-            case "${{ inputs.version_tag }}" in
-              v[0-9]*.[0-9]*.[0-9]*)
-                tags="${tags}"$'\n'"${IMAGE_NAME}:${{ inputs.version_tag }}"
-                ;;
-              *)
-                echo "::error::version_tag must look like v0.1.0"
-                exit 1
-                ;;
-            esac
-          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            tags="${tags}"$'\n'"${IMAGE_NAME}:${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "::error::Publish must run from a release tag ref, not ${GITHUB_REF_TYPE}."
+            exit 1
           fi
 
+          release_tag="${GITHUB_REF_NAME}"
+          if ! [[ "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z-]*(\.[0-9A-Za-z][0-9A-Za-z-]*)*)?$ ]]; then
+            echo "::error::Release tag must look like v0.1.0 or v0.1.0-rc.1: ${release_tag}"
+            exit 1
+          fi
+
+          revision="$(git rev-parse HEAD)"
+          tag_commit="$(git rev-parse "${release_tag}^{commit}")"
+          event_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+
+          if [ "${revision}" != "${tag_commit}" ]; then
+            echo "::error::Checked-out commit ${revision} does not match ${release_tag} commit ${tag_commit}."
+            exit 1
+          fi
+
+          if [ "${revision}" != "${event_commit}" ]; then
+            echo "::error::Checked-out commit ${revision} does not match workflow event commit ${event_commit}."
+            exit 1
+          fi
+
+          tags="${IMAGE_NAME}:sha-${revision}"
+          tags="${tags}"$'\n'"${IMAGE_NAME}:${release_tag}"
+
           {
+            echo "release_tag=${release_tag}"
             echo "revision=${revision}"
             echo "sha_tag=sha-${revision}"
             echo "tags<<EOF"
@@ -75,23 +86,32 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
         with:
           context: .
           file: infra/docker/Dockerfile
+          platforms: linux/amd64
           push: true
+          provenance: true
+          sbom: true
           tags: ${{ steps.image.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.image.outputs.revision }}
+            org.opencontainers.image.version=${{ steps.image.outputs.release_tag }}
             org.opencontainers.image.description=Amane Mailer runtime image
 
       - name: Run pushed image
-        run: docker run --rm "${IMAGE_NAME}:${{ steps.image.outputs.sha_tag }}" --help
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.sha_tag }}
+        run: docker run --rm "$IMAGE_REF" --help
 
       - name: Verify image config contents
+        env:
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.sha_tag }}
         run: |
-          container_id="$(docker create "${IMAGE_NAME}:${{ steps.image.outputs.sha_tag }}" --help)"
+          container_id="$(docker create "$IMAGE_REF" --help)"
           trap 'docker rm -f "$container_id" >/dev/null' EXIT
 
           mkdir -p /tmp/mailer-config
@@ -106,5 +126,93 @@ jobs:
 
           diff -u /tmp/expected-mailer-config-files.txt /tmp/mailer-config-files.txt
 
-      - name: Inspect published image
-        run: docker buildx imagetools inspect "${IMAGE_NAME}:${{ steps.image.outputs.sha_tag }}"
+      - name: Inspect published image metadata
+        id: metadata
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.sha_tag }}
+          VERSION_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.release_tag }}
+          RELEASE_TAG: ${{ steps.image.outputs.release_tag }}
+          REVISION: ${{ steps.image.outputs.revision }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${IMAGE_DIGEST}" ]; then
+            echo "::error::docker/build-push-action did not return an image digest."
+            exit 1
+          fi
+
+          inspect_text="$(docker buildx imagetools inspect "$IMAGE_REF")"
+          version_inspect_text="$(docker buildx imagetools inspect "$VERSION_REF")"
+          inspect_raw="$(docker buildx imagetools inspect --raw "$IMAGE_REF")"
+          printf '%s\n' "$inspect_text"
+
+          sha_tag_digest="$(printf '%s\n' "$inspect_text" | awk '/^Digest:/ { print $2; exit }')"
+          version_tag_digest="$(printf '%s\n' "$version_inspect_text" | awk '/^Digest:/ { print $2; exit }')"
+
+          if [ -z "${sha_tag_digest}" ] || [ -z "${version_tag_digest}" ]; then
+            echo "::error::Could not resolve digest for ${IMAGE_REF} or ${VERSION_REF}."
+            exit 1
+          fi
+
+          if [ "${sha_tag_digest}" != "${IMAGE_DIGEST}" ]; then
+            echo "::error::Build digest ${IMAGE_DIGEST} does not match ${IMAGE_REF} digest ${sha_tag_digest}."
+            exit 1
+          fi
+
+          if [ "${version_tag_digest}" != "${IMAGE_DIGEST}" ]; then
+            echo "::error::Build digest ${IMAGE_DIGEST} does not match ${VERSION_REF} digest ${version_tag_digest}."
+            exit 1
+          fi
+
+          if ! printf '%s\n' "$inspect_raw" | grep -Eq '"vnd\.docker\.reference\.type"[[:space:]]*:[[:space:]]*"attestation-manifest"'; then
+            echo "::error::Expected SBOM/provenance attestation manifest was not found for $IMAGE_REF."
+            exit 1
+          fi
+
+          platform="$(docker image inspect "$IMAGE_REF" --format '{{.Os}}/{{.Architecture}}')"
+          source_label="$(docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')"
+          revision_label="$(docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          version_label="$(docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
+          expected_source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+
+          if [ "${source_label}" != "${expected_source}" ]; then
+            echo "::error::OCI source label mismatch: ${source_label}"
+            exit 1
+          fi
+
+          if [ "${revision_label}" != "${REVISION}" ]; then
+            echo "::error::OCI revision label mismatch: ${revision_label}"
+            exit 1
+          fi
+
+          if [ "${version_label}" != "${RELEASE_TAG}" ]; then
+            echo "::error::OCI version label mismatch: ${version_label}"
+            exit 1
+          fi
+
+          {
+            echo "digest=${IMAGE_DIGEST}"
+            echo "platform=${platform}"
+            echo "attestation_manifest=present"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Published image"
+            echo
+            echo "- Image: \`${IMAGE_REF}\`"
+            echo "- Release tag: \`${RELEASE_TAG}\`"
+            echo "- SHA tag: \`sha-${REVISION}\`"
+            echo "- Digest: \`${IMAGE_DIGEST}\`"
+            echo "- Release tag digest: \`${version_tag_digest}\`"
+            echo "- Platform: \`${platform}\`"
+            echo "- OCI source label: \`${source_label}\`"
+            echo "- OCI revision label: \`${revision_label}\`"
+            echo "- OCI version label: \`${version_label}\`"
+            echo "- SBOM/provenance: \`sbom: true\` and \`provenance: true\`; attestation manifest present"
+            echo
+            echo '```'
+            printf '%s\n' "$inspect_text"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

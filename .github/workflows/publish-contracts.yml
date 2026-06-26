@@ -2,12 +2,6 @@ name: Publish Amane.Mailer.Contracts
 
 on:
   workflow_dispatch:
-    inputs:
-      package_version:
-        description: NuGet package version (e.g. 0.1.0)
-        required: true
-        default: "0.1.0"
-        type: string
 
 permissions:
   contents: read
@@ -23,29 +17,77 @@ env:
   CONFIGURATION: Release
   PACKAGE_PROJECT: src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj
   CONTRACTS_TEST_PROJECT: tests/Amane.Mailer.Contracts.Tests/Amane.Mailer.Contracts.Tests.csproj
-  PACKAGE_VERSION: ${{ inputs.package_version }}
 
 jobs:
   publish:
-    name: Pack and push ${{ inputs.package_version }}
+    name: Pack and push release package
     runs-on: ubuntu-24.04
     environment: release
+    outputs:
+      package_version: ${{ steps.release.outputs.package_version }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      revision: ${{ steps.release.outputs.revision }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@9a946fdbd5fb07b82b2f5a4466058b876ab72bb2
         with:
           global-json-file: global.json
 
-      - name: Validate package version
+      - name: Validate release tag and package version
+        id: release
         shell: bash
         run: |
-          if ! [[ "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo "::error::Invalid package version format: $PACKAGE_VERSION"
+          set -euo pipefail
+
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "::error::Publish must run from a release tag ref, not ${GITHUB_REF_TYPE}."
             exit 1
           fi
+
+          release_tag="${GITHUB_REF_NAME}"
+          if ! [[ "${release_tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z-]*(\.[0-9A-Za-z][0-9A-Za-z-]*)*)?$ ]]; then
+            echo "::error::Release tag must look like v0.1.0 or v0.1.0-rc.1: ${release_tag}"
+            exit 1
+          fi
+
+          package_version="${release_tag#v}"
+          if ! [[ "${package_version}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z-]*(\.[0-9A-Za-z][0-9A-Za-z-]*)*)?$ ]]; then
+            echo "::error::Invalid package version derived from ${release_tag}: ${package_version}"
+            exit 1
+          fi
+
+          revision="$(git rev-parse HEAD)"
+          tag_commit="$(git rev-parse "${release_tag}^{commit}")"
+          event_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+
+          if [ "${revision}" != "${tag_commit}" ]; then
+            echo "::error::Checked-out commit ${revision} does not match ${release_tag} commit ${tag_commit}."
+            exit 1
+          fi
+
+          if [ "${revision}" != "${event_commit}" ]; then
+            echo "::error::Checked-out commit ${revision} does not match workflow event commit ${event_commit}."
+            exit 1
+          fi
+
+          project_version="$(dotnet msbuild "$PACKAGE_PROJECT" -getProperty:Version)"
+          project_version="${project_version//$'\r'/}"
+
+          if [ "${project_version}" != "${package_version}" ]; then
+            echo "::error::Project Version ${project_version} must match release tag package version ${package_version}."
+            exit 1
+          fi
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "package_version=${package_version}"
+            echo "revision=${revision}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Restore
         run: |
@@ -61,6 +103,8 @@ jobs:
         run: dotnet test "$CONTRACTS_TEST_PROJECT" -c "$CONFIGURATION" --no-build --verbosity normal
 
       - name: Pack
+        env:
+          PACKAGE_VERSION: ${{ steps.release.outputs.package_version }}
         run: >
           dotnet pack "$PACKAGE_PROJECT"
           -c "$CONFIGURATION"
@@ -75,15 +119,35 @@ jobs:
           user: kooiei-in4a
 
       - name: Push package to nuget.org
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: >
           dotnet nuget push artifacts/nuget/*.nupkg
           --source "https://api.nuget.org/v3/index.json"
-          --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
+          --api-key "$NUGET_API_KEY"
           --skip-duplicate
 
       - name: Push symbols to nuget.org
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: >
           dotnet nuget push artifacts/nuget/*.snupkg
           --source "https://api.nuget.org/v3/index.json"
-          --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}"
+          --api-key "$NUGET_API_KEY"
           --skip-duplicate
+
+      - name: Write package summary
+        env:
+          PACKAGE_VERSION: ${{ steps.release.outputs.package_version }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          REVISION: ${{ steps.release.outputs.revision }}
+        run: |
+          {
+            echo "## Published contracts package"
+            echo
+            echo "- Package: \`Amane.Mailer.Contracts\`"
+            echo "- Package version: \`${PACKAGE_VERSION}\`"
+            echo "- Release tag: \`${RELEASE_TAG}\`"
+            echo "- Revision: \`${REVISION}\`"
+            echo "- Version source: \`${RELEASE_TAG}\` and project \`<Version>\` matched before packing"
+          } >> "$GITHUB_STEP_SUMMARY"
