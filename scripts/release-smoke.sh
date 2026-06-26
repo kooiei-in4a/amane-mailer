@@ -194,11 +194,10 @@ else
   fail "GET /healthz" "no 200 from $MAILER_URL/healthz within timeout"
 fi
 
-READYZ_STATUS="$(http_get_status /readyz)"
-if [ "$READYZ_STATUS" = "200" ]; then
+if wait_for_http "/readyz"; then
   pass "GET /readyz -> 200"
 else
-  fail "GET /readyz" "expected 200, got $READYZ_STATUS"
+  fail "GET /readyz" "no 200 from $MAILER_URL/readyz within timeout"
 fi
 
 # Happy path: 202 accepted.
