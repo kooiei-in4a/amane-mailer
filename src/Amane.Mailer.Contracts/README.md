@@ -26,8 +26,12 @@ drift checks are added, every HTTP-contract-changing PR must record validation
 notes comparing Contracts DTOs / constants, runtime behavior, OpenAPI schemas /
 examples, and related tests / test vectors. If OpenAPI changes, include the
 result of `node scripts/validate-openapi.mjs docs/api/openapi.yaml`. Automated
-drift checks remain follow-up work; JSON strictness is tracked in #22, and
-package / API versioning policy is tracked in #5.
+drift checks remain follow-up work; JSON strictness is tracked in #22.
+Service release versions, Docker image tags, NuGet package versions, and
+OpenAPI `info.version` are all kept in sync under the same `X.Y.Z`.
+During the 0.x series, backward compatibility is not guaranteed; breaking
+changes are documented in CHANGELOG release notes. See the Versioning Policy
+section in `docs/service-spec.md` for full details.
 
 ## NuGet source
 

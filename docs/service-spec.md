@@ -50,7 +50,7 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 
 契約変更時は、同一変更内で `src/Amane.Mailer.Contracts/`、runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テストの drift を確認する。対象は Request/Response DTO の property 名・required / nullable、`MailerErrorCodes`、`MailRequestAcceptanceStatus`、`MailRequestStatus`、payload hash 対象、JSON unknown / duplicate property 挙動を含む。
 
-現行 CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証する。自動 drift check 追加までの運用として、HTTP 契約変更 PR は Contracts DTO / constants、runtime 実装、OpenAPI schema / examples、関連テスト・test vectors を比較した結果を validation notes に残す。OpenAPI を変更した場合は `node scripts/validate-openapi.mjs docs/api/openapi.yaml` の結果も残す。DTO / enum / error code と OpenAPI schema の自動 drift check は後続タスクとして追加する。JSON strictness（unknown / duplicate property）は #22、Contracts package / API versioning policy は #5 で確定する前提をここに接続する。
+現行 CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証する。自動 drift check 追加までの運用として、HTTP 契約変更 PR は Contracts DTO / constants、runtime 実装、OpenAPI schema / examples、関連テスト・test vectors を比較した結果を validation notes に残す。OpenAPI を変更した場合は `node scripts/validate-openapi.mjs docs/api/openapi.yaml` の結果も残す。DTO / enum / error code と OpenAPI schema の自動 drift check は後続タスクとして追加する。JSON strictness（unknown / duplicate property）は #22 を参照。Contracts package / API versioning policy については「バージョニングポリシー」節を参照。
 
 ### 受付レスポンス
 
@@ -71,6 +71,25 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 - 一意キーは **`(tenant_id, source_service, mail_request_id)`**。
 - 同一キーの再送は 202 `already_accepted`、内容（`payload_hash`）が違えば 409。
 - `mail_request_id` は利用側生成（UUIDv7 推奨）。
+
+### バージョニングポリシー
+
+service release（GitHub Release tag）、Docker image tag、`Amane.Mailer.Contracts` NuGet package、OpenAPI `info.version` はすべて同一の `X.Y.Z` を使用する。1 つのリリースで 4 つが揃う。
+
+| アーティファクト | バージョン形式 | 例 |
+|---|---|---|
+| GitHub Release / Git tag | `vX.Y.Z` | `v0.1.0` |
+| Docker image tag | `vX.Y.Z`（可変）+ `sha-<git-sha>`（不変） | `v0.1.0`, `sha-abc1234` |
+| NuGet package (`Amane.Mailer.Contracts`) | `X.Y.Z` | `0.1.0` |
+| OpenAPI `info.version` | `X.Y.Z` | `0.1.0` |
+
+deploy では不変タグ `sha-<git-sha>` または digest を優先する。`vX.Y.Z` タグは人が参照する際の識別子として使う。
+
+publish 手順: [docs/ops/ghcr-image-publish.md](ops/ghcr-image-publish.md)、[`.github/workflows/publish-contracts.yml`](../.github/workflows/publish-contracts.yml)
+
+**0.x ラインの互換性期待値**
+
+0.x リリースは公開 API・contract をまだ安定化中である。後方互換性は保証しないが、破壊的変更は CHANGELOG のリリースノートと移行ガイダンスで明記する。1.0.0 以降は semver の後方互換保証を適用する。
 
 ---
 
@@ -318,7 +337,7 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | O-03 | source_service 登録制 | tenants.json allowlist |
 | O-06 | 複数プロダクト × ACS | 現状サービス単位 1 本 |
 | O-13 | `from` 上書き | 不可 |
-| — | 契約バージョニング | package / API versioning policy は #5 で確定。OpenAPI `info.version` は公開 reference として追随 |
+| — | 契約バージョニング | service release / Docker image / NuGet package / OpenAPI `info.version` はすべて同一の `X.Y.Z` を使用。詳細は「バージョニングポリシー」節を参照 |
 
 ---
 
@@ -329,3 +348,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-06-22 | 初版。実装から HTTP 契約と設定仕様を起こす |
 | 2026-06-23 | 初回 SQLite / Native AOT リリース仕様に追随: chiseled 単一コンテナ / CLI / Retention / 状態遷移 DDL |
 | 2026-06-24 | Worker/Sweep heartbeat liveness 追加: `worker_heartbeats` テーブル、CLI heartbeat 鮮度チェック、`/readyz` Worker 稼働確認、`db stats` heartbeat age keys |
+| 2026-06-27 | バージョニングポリシー節追加（#5）。OpenAPI `info.version` を release/package と同一の `0.1.0` に修正 |

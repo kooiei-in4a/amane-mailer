@@ -11,12 +11,13 @@ promise of exact scope or dates.
   deploy rehearsal.
 - Add more OSS-facing examples for tenant configuration and consumer integration.
 - Continue hardening admin UI masking, audit behavior, and operational defaults.
+- Document package/API/image versioning expectations for consumers (done: see
+  `docs/service-spec.md` Versioning Policy section).
 
 ## v0.2.x
 
 - Keep compatibility notes current for the published `Amane.Mailer.Contracts`
   package, starting from version `0.1.0`.
-- Document package/API/image versioning expectations for consumers.
 - Expand CI coverage around container publishing, schema validation, and
   migration compatibility.
 - Improve release automation while keeping actions pinned to full-length SHAs.
