@@ -351,6 +351,225 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
+    public async Task Unknown_top_level_property_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        using var content = RawJsonContent(
+            $$"""
+            {
+              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
+              "source_service": "{{MailerWebApplicationFixtureBase.SourceService}}",
+              "mail_request_id": "{{Guid.NewGuid()}}",
+              "purpose": "FormResponseNotification",
+              "to": [{ "email": "recipient@example.com" }],
+              "subject": "Subject",
+              "text_body": "Body",
+              "payload_hash": "{{new string('0', 64)}}",
+              "unexpected": "value"
+            }
+            """);
+
+        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Unknown_recipient_property_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        using var content = RawJsonContent(
+            $$"""
+            {
+              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
+              "source_service": "{{MailerWebApplicationFixtureBase.SourceService}}",
+              "mail_request_id": "{{Guid.NewGuid()}}",
+              "purpose": "FormResponseNotification",
+              "to": [{ "email": "recipient@example.com", "role": "admin" }],
+              "subject": "Subject",
+              "text_body": "Body",
+              "payload_hash": "{{new string('0', 64)}}"
+            }
+            """);
+
+        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Duplicate_top_level_property_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        using var content = RawJsonContent(
+            $$"""
+            {
+              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
+              "source_service": "{{MailerWebApplicationFixtureBase.SourceService}}",
+              "mail_request_id": "{{Guid.NewGuid()}}",
+              "purpose": "FormResponseNotification",
+              "to": [{ "email": "recipient@example.com" }],
+              "subject": "Subject",
+              "subject": "Tampered subject",
+              "text_body": "Body",
+              "payload_hash": "{{new string('0', 64)}}"
+            }
+            """);
+
+        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Duplicate_recipient_property_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        using var content = RawJsonContent(
+            $$"""
+            {
+              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
+              "source_service": "{{MailerWebApplicationFixtureBase.SourceService}}",
+              "mail_request_id": "{{Guid.NewGuid()}}",
+              "purpose": "FormResponseNotification",
+              "to": [{ "email": "recipient@example.com", "email": "tamper@example.com" }],
+              "subject": "Subject",
+              "text_body": "Body",
+              "payload_hash": "{{new string('0', 64)}}"
+            }
+            """);
+
+        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Duplicate_metadata_property_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        using var content = RawJsonContent(
+            $$"""
+            {
+              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
+              "source_service": "{{MailerWebApplicationFixtureBase.SourceService}}",
+              "mail_request_id": "{{Guid.NewGuid()}}",
+              "purpose": "FormResponseNotification",
+              "to": [{ "email": "recipient@example.com" }],
+              "subject": "Subject",
+              "text_body": "Body",
+              "metadata": { "form_id": "1", "form_id": "2" },
+              "payload_hash": "{{new string('0', 64)}}"
+            }
+            """);
+
+        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Distinct_metadata_keys_are_accepted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest(metadata: new Dictionary<string, string>
+        {
+            ["form_id"] = "42",
+            ["campaign"] = "spring",
+        });
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(
+            MailRequestAcceptanceStatus.Accepted,
+            await MailRequestTestData.ReadStatusAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Structural_rejection_precedes_authorization()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(token: "wrong-token");
+        using var content = RawJsonContent(
+            $$"""
+            {
+              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
+              "source_service": "{{MailerWebApplicationFixtureBase.SourceService}}",
+              "mail_request_id": "{{Guid.NewGuid()}}",
+              "purpose": "FormResponseNotification",
+              "to": [{ "email": "recipient@example.com" }],
+              "subject": "Subject",
+              "subject": "Tampered subject",
+              "text_body": "Body",
+              "payload_hash": "{{new string('0', 64)}}"
+            }
+            """);
+
+        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+
+        // A malformed body is rejected as 400 before tenant authorization (401) is evaluated,
+        // matching the existing invalid-JSON path.
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Unknown_property_rejection_precedes_authorization()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(token: "wrong-token");
+        using var content = RawJsonContent(
+            $$"""
+            {
+              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
+              "source_service": "{{MailerWebApplicationFixtureBase.SourceService}}",
+              "mail_request_id": "{{Guid.NewGuid()}}",
+              "purpose": "FormResponseNotification",
+              "to": [{ "email": "recipient@example.com" }],
+              "subject": "Subject",
+              "text_body": "Body",
+              "payload_hash": "{{new string('0', 64)}}",
+              "unexpected": "value"
+            }
+            """);
+
+        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+
+        // Unknown properties throw during deserialize, before authorization is evaluated.
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
     public async Task Oversized_request_body_returns_413()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -457,6 +676,9 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         Assert.Equal(HttpStatusCode.OK, health.StatusCode);
         Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
     }
+
+    private static StringContent RawJsonContent(string json) =>
+        new(json, Encoding.UTF8, "application/json");
 
     private HttpClient CreateAuthorizedClient() =>
         CreateClient(MailerWebApplicationFixtureBase.Token);

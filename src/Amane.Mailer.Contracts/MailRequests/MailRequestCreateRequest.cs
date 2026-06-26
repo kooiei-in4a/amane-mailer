@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace Amane.Mailer.Contracts.MailRequests;
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record MailRequestCreateRequest
 {
     [JsonPropertyName("tenant_id")]

@@ -58,7 +58,7 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 |---|---|---|
 | 初回受付 | 202 | `status: accepted` |
 | 同一依頼の再送 | 202 | `status: already_accepted` |
-| ボディ不正 JSON / 空 | 400 | `INVALID_REQUEST` |
+| ボディ不正 JSON / 空 / 未知 property / 重複 property | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 同一ID・内容差異 | 409 | `IDEMPOTENCY_CONFLICT` |

@@ -72,6 +72,14 @@ public static class MailRequestEndpoints
                 StatusCodes.Status400BadRequest);
         }
 
+        if (JsonDuplicatePropertyDetector.HasDuplicateProperty(requestBody))
+        {
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                "Request body contains a duplicate JSON property.",
+                StatusCodes.Status400BadRequest);
+        }
+
         var bearerToken = ReadBearerToken(httpRequest);
         var tenant = tenantRegistry.Authorize(request.TenantId, bearerToken);
         if (tenant is null)
