@@ -14,7 +14,7 @@ or secret values.
 | --- | --- | --- | --- |
 | NuGet publishing for `Amane.Mailer.Contracts` | Migrate to nuget.org Trusted Publishing for `kooiei-in4a/amane-mailer`, workflow `publish-contracts.yml`, environment `release`. Remove GitHub secret `NUGET_API_KEY`. Revoke/delete the older broader NuGet API key. | DONE | Trusted Publishing policy `Amane.Mailer.Contracts GitHub Actions` is active on nuget.org. Workflow run `28214950412` successfully exchanged the GitHub OIDC token for a temporary NuGet API key. GitHub repository secret `NUGET_API_KEY` has been deleted. Older broader NuGet API key `amane-mailer-contracts-publish-2026` has been revoked. |
 | GitHub tokens / PATs used before publication | Confirm no broad PAT remains in active use. Rotate or delete any token that was used during publication prep. | TODO | Record only token name, provider UI confirmation, and completion date. |
-| ACS connection string | Rotate the ACS access key or connection string used for live sending. Update deploy host secret storage. | TODO | Record only Azure resource name, key slot rotated, and completion date. |
+| ACS connection string | Review whether ACS access key or connection string rotation is required for live sending. If rotation is required, update deploy host secret storage. | REVIEWED | Owner reviewed on 2026-06-26 JST and determined rotation is not required. No ACS connection string value was recorded. |
 | Tenant bearer token(s) | Rotate production/shared tenant token values. Update deploy host tenant secret storage and consumer app config. | TODO | Record only tenant id/name and completion date. |
 | Backup / rclone credentials | Rotate rclone remote credentials and any backup encryption/deploy credentials used before publication. | TODO | Record only remote name, credential class, and completion date. |
 
@@ -53,9 +53,8 @@ Credential inventory remaining manual checks:
   grants are all still in use and were retained: Azure App Service
   Authentication, Azure App Service Creates, Cursor, Git Credential Manager,
   GitHub CLI, GitHub Desktop, Visual Studio, and Visual Studio Code.
-- ACS: rotate the ACS key or connection string used for live sending, update
-  the deploy host and 1Password Amane.Mailer item, then record only the Azure
-  resource name, key slot, and completion date here.
+- DONE: ACS connection string reviewed on 2026-06-26 JST. Owner determined
+  rotation is not required. No ACS connection string value was recorded.
 - Tenant bearer tokens: rotate production/shared tenant tokens, update
   consumer configuration and the deploy host, then record only tenant names and
   completion date here.
