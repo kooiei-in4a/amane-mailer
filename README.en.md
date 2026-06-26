@@ -72,6 +72,17 @@ Operational runbooks:
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
 
+To smoke the published GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.1.0`)
+from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
+`/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
+run `scripts/release-smoke.sh`. See
+[Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
+for steps and configuration.
+
+```bash
+bash scripts/release-smoke.sh
+```
+
 No-send / ACS deploy drill helper scripts under `infra/deploy/drills/`
 (`mail-05a-*`) use the SQLite Mailer CLI (`healthcheck`, `db stats`,
 `db request-state`) and a temporary curl compose client. See
