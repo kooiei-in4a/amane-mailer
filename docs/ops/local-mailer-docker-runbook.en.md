@@ -229,6 +229,7 @@ $textBody = "Hello from local Docker Mailer via ACS."
 
 After submission, confirm `Local Mailer ACS smoke` shows `Delivered` on `/admin/mail-requests`.
 If ACS rejects the send, status becomes `Failed` or `DeadLettered` after retries, and the detail view shows the provider error on the attempt.
+The displayed and stored error message is a classified, sanitized summary (connection strings, tokens, URL query strings, and email addresses are masked, while the triage `error_code` is kept). Raw provider responses are not stored. See "Provider Error Sanitization" in [SECURITY.md](../../SECURITY.md) for details.
 
 ## 11. Verify Dead Letter
 

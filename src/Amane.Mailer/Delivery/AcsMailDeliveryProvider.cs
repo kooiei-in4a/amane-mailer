@@ -68,11 +68,17 @@ public sealed class AcsMailDeliveryProvider(MailerOptions options)
         catch (RequestFailedException ex)
         {
             var retryable = ex.Status is 408 or 429 or >= 500;
-            return MailDeliveryResult.Failure("ACS_REQUEST_FAILED", ex.Message, retryable);
+            return MailDeliveryResult.Failure(
+                "ACS_REQUEST_FAILED",
+                ProviderErrorSanitizer.Sanitize(ex.Message),
+                retryable);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return MailDeliveryResult.Failure(ex.GetType().Name, ex.Message, retryable: true);
+            return MailDeliveryResult.Failure(
+                ex.GetType().Name,
+                ProviderErrorSanitizer.Sanitize(ex.Message),
+                retryable: true);
         }
     }
 }

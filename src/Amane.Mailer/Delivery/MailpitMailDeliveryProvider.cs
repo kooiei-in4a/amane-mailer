@@ -31,7 +31,10 @@ public sealed class MailpitMailDeliveryProvider(MailerOptions options)
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return MailDeliveryResult.Failure(ex.GetType().Name, ex.Message, retryable: true);
+            return MailDeliveryResult.Failure(
+                ex.GetType().Name,
+                ProviderErrorSanitizer.Sanitize(ex.Message),
+                retryable: true);
         }
     }
 }
