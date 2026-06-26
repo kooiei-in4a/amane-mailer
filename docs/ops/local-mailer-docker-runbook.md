@@ -64,7 +64,10 @@ if ($hash -notlike "pbkdf2:sha256:*") {
 ## 5. Mailer / Mailpit を起動する
 
 `.env` に ACS 用の値が入っていても、以下の PowerShell セッションでは Mailpit 固定で上書きします。
-Docker の port publish 経由で管理画面へ入るため、`AMANE_ADMIN_BIND=0.0.0.0` を指定します。
+Docker の port publish 経由で管理画面へ入るため、`AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=0.0.0.0` を指定します。
+これは `/admin` request の `Connection.LocalIpAddress` allowlist であり、socket bind ではありません。
+実際の host 側公開範囲は compose の `ports`（この runbook では `127.0.0.1:5280:8080`）で制限します。
+旧 `AMANE_ADMIN_BIND` / `MAILER_ADMIN_BIND` は deprecated alias として残っています。
 `AMANE_ADMIN_ALLOW_HTTP=true` と `AMANE_ADMIN_PII_LIST_MODE=visible` はローカル確認専用です。
 本番・develop deploy host では HTTP 許可や PII 表示を有効にしないでください。
 手順 5 以降の切替手順は、同じ PowerShell セッションで実行する前提です。
@@ -74,7 +77,7 @@ Docker の port publish 経由で管理画面へ入るため、`AMANE_ADMIN_BIND
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
-$env:AMANE_ADMIN_BIND = "0.0.0.0"
+$env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"       # local Docker HTTP only
 $env:AMANE_ADMIN_PII_LIST_MODE = "visible" # local UI verification only
 
@@ -300,7 +303,7 @@ dead_lettered_total=1
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
-$env:AMANE_ADMIN_BIND = "0.0.0.0"
+$env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"
 $env:AMANE_ADMIN_PII_LIST_MODE = "visible"
 

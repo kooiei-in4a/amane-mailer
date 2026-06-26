@@ -155,8 +155,13 @@ docker compose --env-file .env -f compose.yml -f compose.local-rehearsal.yml `
 
 Admin UI を確認する場合は、`local-rehearsal.ps1` を起動する PowerShell セッションで
 `AMANE_ADMIN_*` を設定します。Docker の port publish 経由で管理画面へ入るため、
-ローカル rehearsal では `AMANE_ADMIN_BIND=0.0.0.0` と `AMANE_ADMIN_ALLOW_HTTP=true` を
-明示します。これはローカル HTTP 確認専用です。deploy host では HTTPS リバースプロキシ前提で
+ローカル rehearsal では `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=0.0.0.0` と
+`AMANE_ADMIN_ALLOW_HTTP=true` を明示します。
+`AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` は `/admin` request の `Connection.LocalIpAddress`
+allowlist であり、socket bind ではありません。実際の host 側公開範囲は
+`compose.local-rehearsal.yml` の `ports`（`127.0.0.1:5281`）で制限します。
+旧 `AMANE_ADMIN_BIND` / `MAILER_ADMIN_BIND` は deprecated alias として残っています。
+これはローカル HTTP 確認専用です。deploy host では HTTPS リバースプロキシ前提で
 `AMANE_ADMIN_ALLOW_HTTP=false` を維持してください。
 
 ```powershell
@@ -179,7 +184,7 @@ if ($hash -notlike "pbkdf2:sha256:*") {
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
-$env:AMANE_ADMIN_BIND = "0.0.0.0"
+$env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"
 $env:AMANE_ADMIN_PII_LIST_MODE = "masked"
 
