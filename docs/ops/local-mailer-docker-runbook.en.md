@@ -16,7 +16,7 @@ publish restriction as the network boundary.
 Current limitations ([ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md) goals not yet implemented):
 
 - Login throttle is in-memory only (resets on process restart)
-- Session store is in-memory cookie auth only (no durable store); immediate session revocation on admin disable or credential change is not implemented
+- No durable server-side session store (cookie auth only); immediate session revocation on admin disable or credential change is not implemented
 - No per-admin tenant scope (single `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`)
 - Audit log is structured log (stdout) only; SQLite persistence is tracked in [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6)
 

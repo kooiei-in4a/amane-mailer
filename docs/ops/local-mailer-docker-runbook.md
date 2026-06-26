@@ -17,7 +17,7 @@ firewall、または Docker port publish 制限をネットワーク境界とし
 現時点の制約（[ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md) の方針に対して未実装）:
 
 - login throttle は in-memory のみ（プロセス再起動でリセット）
-- session store は in-memory cookie auth のみ（durable store なし）、管理者無効化・認証情報変更時の即時 session 失効は未実装
+- server-side session store なし（cookie auth のみ）、管理者無効化・認証情報変更時の即時 session 失効は未実装
 - 管理者ごとの tenant scope なし（単一 `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`）
 - audit log は structured log（stdout）のみ。SQLite 永続化は [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) で追跡中
 
