@@ -30,6 +30,36 @@ firewall、または Docker port publish 制限をネットワーク境界とし
 - 既定は `MAILER_PROVIDER=mailpit` です。ACS 実送信は、承認済み ACS リソース、送信元アドレス、送信先アドレスがある場合だけ実行します。
 - `config/mailer/tenants.local*.json` は `.gitignore` 対象です。実送信用の tenant JSON や接続文字列をコミットしないでください。
 
+## データディレクトリ権限（fresh checkout）
+
+local compose の SQLite は `data/mailer/` を bind mount します（named volume ではありません）。
+`data/mailer` は `.gitignore` 対象のため、clone 直後の checkout には存在しません。
+
+| 環境 | fresh checkout での挙動 |
+|------|-------------------------|
+| Linux / macOS | Docker が bind mount 先を **root 所有 mode 755** で自動作成する。Mailer イメージは non-root ユーザのため、このままでは SQLite を作成できない（`SQLite Error 14: unable to open database file`）。 |
+| Windows Docker Desktop | ホスト側ディレクトリが permissive に作成されることが多く、手動 setup なしでも migrate が通る場合がある。 |
+
+`infra/docker/docker-compose.local.yml` の `data-init` サービスが migrate 前に
+`data/mailer` を world-writable（mode 777）にし、non-root コンテナから SQLite を
+作成できるようにします。通常の `docker compose up` / runbook 手順では追加操作は不要です。
+
+Linux/macOS で fresh checkout を検証する場合:
+
+```bash
+bash scripts/local-compose-fresh-data-check.sh
+```
+
+手動で bind mount 先を用意する場合（`data-init` を使わない場合）:
+
+```bash
+mkdir -p data/mailer
+chmod 0777 data/mailer
+```
+
+release smoke（公開 GHCR イメージ + named volume）の `data-init` については
+[release-image-smoke.md](release-image-smoke.md) を参照してください。
+
 ## 1. Mailer を停止する
 
 ```powershell
