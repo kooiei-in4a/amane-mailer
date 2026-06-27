@@ -50,7 +50,9 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 
 契約変更時は、同一変更内で `src/Amane.Mailer.Contracts/`、runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テストの drift を確認する。対象は Request/Response DTO の property 名・required / nullable、`MailerErrorCodes`、`MailRequestAcceptanceStatus`、`MailRequestStatus`、payload hash 対象、JSON unknown / duplicate property 挙動を含む。
 
-現行 CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証する。自動 drift check 追加までの運用として、HTTP 契約変更 PR は Contracts DTO / constants、runtime 実装、OpenAPI schema / examples、関連テスト・test vectors を比較した結果を validation notes に残す。OpenAPI を変更した場合は `node scripts/validate-openapi.mjs docs/api/openapi.yaml` の結果も残す。DTO / enum / error code と OpenAPI schema の自動 drift check は後続タスクとして追加する。JSON strictness（unknown / duplicate property）は #22 を参照。Contracts package / API versioning policy については「バージョニングポリシー」節を参照。
+CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scripts/check-contract-drift.mjs` で Contracts / runtime / OpenAPI の drift-specific assertion を実行する。drift check は Contracts DTO / constants を正本として、OpenAPI schema / enum、payload hash 対象、runtime の source-generated JSON 利用、JSON unknown / duplicate property の runtime/test coverage hook を検証する。
+
+契約を意図的に変更する場合は、まず `src/Amane.Mailer.Contracts/` の DTO / constants / payload hash contract を更新し、同じ変更で runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テストを同期する。現時点では再生成が必要な別 snapshot はなく、drift check は DTO / constants の期待値を source から導出する。OpenAPI example の `payload_hash` が変わる場合は再計算し、canonicalization fixture が変わる場合は `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` も更新する。ローカル確認は `node scripts/validate-openapi.mjs docs/api/openapi.yaml` と `node scripts/check-contract-drift.mjs` を実行する。Contracts package / API versioning policy については「バージョニングポリシー」節を参照。
 
 ### 受付レスポンス
 

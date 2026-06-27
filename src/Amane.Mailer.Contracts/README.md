@@ -15,18 +15,29 @@ the published NuGet package.
 
 `docs/api/openapi.yaml` is the Consumer-facing HTTP reference / public schema.
 It is kept synchronized with this package and the runtime implementation, but it
-is not the source of truth. Current CI validates OpenAPI structure with
-`scripts/validate-openapi.mjs`.
+is not the source of truth. CI validates OpenAPI structure with
+`scripts/validate-openapi.mjs` and runs drift assertions with
+`scripts/check-contract-drift.mjs`.
 
 When changing the contract, review drift across this package, runtime behavior,
 OpenAPI, and tests for DTO JSON property names, required / nullable fields,
 `MailerErrorCodes`, `MailRequestAcceptanceStatus`, `MailRequestStatus`, payload
-hash fields, and JSON unknown / duplicate property behavior. Until automated
-drift checks are added, every HTTP-contract-changing PR must record validation
-notes comparing Contracts DTOs / constants, runtime behavior, OpenAPI schemas /
-examples, and related tests / test vectors. If OpenAPI changes, include the
-result of `node scripts/validate-openapi.mjs docs/api/openapi.yaml`. Automated
-drift checks remain follow-up work; JSON strictness is tracked in #22.
+hash fields, and JSON unknown / duplicate property behavior. The drift check
+derives DTO / constant expectations from Contracts, compares them to OpenAPI,
+and verifies the runtime/test coverage hooks for strict JSON and payload hashing.
+If the contract intentionally changes, update the Contracts type/constant first,
+then update `docs/api/openapi.yaml`, runtime behavior, examples, and related
+tests in the same change. There is no separate generated snapshot to refresh
+today; the drift check derives expected DTO / constant shape from source.
+Recompute any affected OpenAPI payload hash example and update
+`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json`
+when canonicalization fixtures change. Validate with:
+
+```bash
+node scripts/validate-openapi.mjs docs/api/openapi.yaml
+node scripts/check-contract-drift.mjs
+```
+
 Service release versions, Docker image tags, NuGet package versions, and
 OpenAPI `info.version` are all kept in sync under the same `X.Y.Z`.
 During the 0.x series, backward compatibility is not guaranteed; breaking

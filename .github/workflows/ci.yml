@@ -119,3 +119,6 @@ jobs:
 
       - name: Validate OpenAPI YAML
         run: node scripts/validate-openapi.mjs docs/api/openapi.yaml
+
+      - name: Check Contracts/runtime/OpenAPI drift
+        run: node scripts/check-contract-drift.mjs
