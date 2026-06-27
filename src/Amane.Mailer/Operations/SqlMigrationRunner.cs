@@ -1,6 +1,7 @@
 using Amane.Mailer.Data.Sqlite;
 using Microsoft.Data.Sqlite;
 using System.Security.Cryptography;
+using System.Text;
 
 namespace Amane.Mailer.Operations;
 
@@ -32,11 +33,14 @@ public sealed class SqlMigrationRunner
         await using var connection = await _connections.OpenConnectionAsync(cancellationToken);
         await EnsureSchemaMigrationsTableAsync(connection, migrations, cancellationToken);
 
+        var migrationsByVersion = migrations.ToDictionary(migration => migration.Version, StringComparer.Ordinal);
+        var appliedMigrations = await GetAppliedMigrationsAsync(connection, cancellationToken);
+        EnsureAppliedMigrationFilesExist(migrationsByVersion, appliedMigrations);
+
         var applied = new List<string>();
         foreach (var migration in migrations)
         {
-            var appliedMigration = await GetAppliedMigrationAsync(connection, migration.Version, cancellationToken);
-            if (appliedMigration is not null)
+            if (appliedMigrations.TryGetValue(migration.Version, out var appliedMigration))
             {
                 EnsureChecksumMatches(migration, appliedMigration);
                 continue;
@@ -88,12 +92,24 @@ public sealed class SqlMigrationRunner
         foreach (var file in files)
         {
             var bytes = await File.ReadAllBytesAsync(file, cancellationToken);
-            var sql = await File.ReadAllTextAsync(file, cancellationToken);
+            var sql = DecodeUtf8Sql(bytes);
             var checksum = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             migrations.Add(new MigrationFile(Path.GetFileName(file), sql, checksum));
         }
 
         return migrations;
+    }
+
+    private static string DecodeUtf8Sql(byte[] bytes)
+    {
+        var offset = bytes.Length >= 3
+            && bytes[0] == 0xEF
+            && bytes[1] == 0xBB
+            && bytes[2] == 0xBF
+            ? 3
+            : 0;
+
+        return Encoding.UTF8.GetString(bytes, offset, bytes.Length - offset);
     }
 
     private static async Task EnsureSchemaMigrationsTableAsync(
@@ -113,7 +129,8 @@ public sealed class SqlMigrationRunner
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        if (!await HasChecksumColumnAsync(connection, cancellationToken))
+        var hasChecksumColumn = await HasChecksumColumnAsync(connection, cancellationToken);
+        if (!hasChecksumColumn)
         {
             await using var alter = connection.CreateCommand();
             alter.CommandText = """
@@ -121,6 +138,11 @@ public sealed class SqlMigrationRunner
                 ADD COLUMN checksum TEXT CHECK (checksum IS NULL OR length(checksum) = 64);
                 """;
             await alter.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (hasChecksumColumn && !await HasMissingChecksumAsync(connection, cancellationToken))
+        {
+            return;
         }
 
         foreach (var migration in migrations)
@@ -157,23 +179,50 @@ public sealed class SqlMigrationRunner
         return false;
     }
 
-    private static async Task<AppliedMigration?> GetAppliedMigrationAsync(
+    private static async Task<bool> HasMissingChecksumAsync(
         SqliteConnection connection,
-        string version,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT checksum FROM schema_migrations WHERE version = @Version LIMIT 1;";
-        command.Parameters.AddWithValue("@Version", version);
+        command.CommandText = "SELECT 1 FROM schema_migrations WHERE checksum IS NULL LIMIT 1;";
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null;
+    }
+
+    private static async Task<IReadOnlyDictionary<string, AppliedMigration>> GetAppliedMigrationsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var migrations = new Dictionary<string, AppliedMigration>(StringComparer.Ordinal);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT version, checksum FROM schema_migrations ORDER BY version;";
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
+        while (await reader.ReadAsync(cancellationToken))
         {
-            return null;
+            var version = reader.GetString(0);
+            var checksum = reader.IsDBNull(1) ? null : reader.GetString(1);
+            migrations.Add(version, new AppliedMigration(version, checksum));
         }
 
-        var checksum = reader.IsDBNull(0) ? null : reader.GetString(0);
-        return new AppliedMigration(version, checksum);
+        return migrations;
+    }
+
+    private static void EnsureAppliedMigrationFilesExist(
+        IReadOnlyDictionary<string, MigrationFile> migrationsByVersion,
+        IReadOnlyDictionary<string, AppliedMigration> appliedMigrations)
+    {
+        foreach (var appliedMigration in appliedMigrations.Values)
+        {
+            if (migrationsByVersion.ContainsKey(appliedMigration.Version))
+            {
+                continue;
+            }
+
+            throw new InvalidOperationException(
+                $"Applied database migration '{appliedMigration.Version}' is not present in the migration directory. "
+                + "Migration SQL files are forward-only and must remain bundled after release.");
+        }
     }
 
     private static void EnsureChecksumMatches(MigrationFile migration, AppliedMigration appliedMigration)

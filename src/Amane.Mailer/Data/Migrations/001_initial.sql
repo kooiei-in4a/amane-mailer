@@ -1,7 +1,6 @@
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version     TEXT NOT NULL PRIMARY KEY,
-    applied_at  TEXT NOT NULL,
-    checksum    TEXT NOT NULL CHECK (length(checksum) = 64)
+    applied_at  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS mail_requests (

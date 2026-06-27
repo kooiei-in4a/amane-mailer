@@ -195,7 +195,7 @@ migrations instead of relying on a numbered migration for that metadata change.
 
 - New databases record each applied migration's `version`, `applied_at`, and `checksum` in the same transaction.
 - Existing databases without the checksum column, including `v0.1.0` databases, have the `checksum` column added by the first checksum-aware `db migrate`. That run backfills checksums for rows whose applied `version` matches the currently bundled migration files. Historical checksums did not exist before this point, so the first backfill anchors trust in the SQL bundled with that image.
-- Later `db migrate` runs compare the stored checksum for each applied `version` with the current file checksum and fail fast before applying pending migrations when they differ.
+- Later `db migrate` runs verify that every applied `version` still has a bundled SQL file and that the stored checksum matches the current file checksum. A missing file or checksum mismatch fails fast before applying pending migrations.
 - Released SQL migration files are forward-only and must not be edited after release. Add a new numbered migration for schema changes. If a checksum mismatch occurs, restore the correct image / SQL file or choose a restore / rebuild path from backup.
 
 **Examples (compose ops):**

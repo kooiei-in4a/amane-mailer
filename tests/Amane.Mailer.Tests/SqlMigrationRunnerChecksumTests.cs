@@ -120,6 +120,72 @@ public sealed class SqlMigrationRunnerChecksumTests
         }
     }
 
+    [Fact]
+    public async Task Db_migrate_fails_fast_when_legacy_backfilled_migration_file_changes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-migration-checksum", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+        var migrationDirectory = Path.Combine(root, "migrations");
+
+        try
+        {
+            CopyCurrentMigrations(migrationDirectory);
+            await CreateLegacyV010DatabaseAsync(databasePath, migrationDirectory, ct);
+
+            var runner = new SqlMigrationRunner(CreateFactory(databasePath), migrationDirectory);
+            await runner.ApplyPendingAsync(ct);
+
+            await File.AppendAllTextAsync(
+                Path.Combine(migrationDirectory, "001_initial.sql"),
+                $"{Environment.NewLine}-- edited after legacy backfill{Environment.NewLine}",
+                ct);
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => runner.ApplyPendingAsync(ct));
+
+            Assert.Contains("001_initial.sql", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("checksum mismatch", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Db_migrate_fails_fast_when_applied_migration_file_is_missing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-migration-checksum", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+        var migrationDirectory = Path.Combine(root, "migrations");
+
+        try
+        {
+            CopyCurrentMigrations(migrationDirectory);
+
+            var runner = new SqlMigrationRunner(CreateFactory(databasePath), migrationDirectory);
+            await runner.ApplyPendingAsync(ct);
+
+            File.Delete(Path.Combine(migrationDirectory, "002_worker_heartbeats.sql"));
+
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => runner.ApplyPendingAsync(ct));
+
+            Assert.Contains("002_worker_heartbeats.sql", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("not present in the migration directory", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static SqliteConnectionFactory CreateFactory(string databasePath)
     {
         var configuration = new ConfigurationBuilder()
@@ -132,7 +198,13 @@ public sealed class SqlMigrationRunnerChecksumTests
         return new SqliteConnectionFactory(configuration);
     }
 
-    private static async Task CreateLegacyV010DatabaseAsync(string databasePath, CancellationToken cancellationToken)
+    private static Task CreateLegacyV010DatabaseAsync(string databasePath, CancellationToken cancellationToken) =>
+        CreateLegacyV010DatabaseAsync(databasePath, GetCurrentMigrationDirectory(), cancellationToken);
+
+    private static async Task CreateLegacyV010DatabaseAsync(
+        string databasePath,
+        string migrationDirectory,
+        CancellationToken cancellationToken)
     {
         await using var connection = new SqliteConnection($"Data Source={databasePath}");
         await connection.OpenAsync(cancellationToken);
@@ -148,19 +220,20 @@ public sealed class SqlMigrationRunnerChecksumTests
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        await ExecuteSqlFileAsync(connection, "001_initial.sql", cancellationToken);
+        await ExecuteSqlFileAsync(connection, migrationDirectory, "001_initial.sql", cancellationToken);
         await InsertLegacyMigrationRecordAsync(connection, "001_initial.sql", cancellationToken);
-        await ExecuteSqlFileAsync(connection, "002_worker_heartbeats.sql", cancellationToken);
+        await ExecuteSqlFileAsync(connection, migrationDirectory, "002_worker_heartbeats.sql", cancellationToken);
         await InsertLegacyMigrationRecordAsync(connection, "002_worker_heartbeats.sql", cancellationToken);
     }
 
     private static async Task ExecuteSqlFileAsync(
         SqliteConnection connection,
+        string migrationDirectory,
         string fileName,
         CancellationToken cancellationToken)
     {
         var sql = await File.ReadAllTextAsync(
-            Path.Combine(GetCurrentMigrationDirectory(), fileName),
+            Path.Combine(migrationDirectory, fileName),
             cancellationToken);
 
         await using var command = connection.CreateCommand();
