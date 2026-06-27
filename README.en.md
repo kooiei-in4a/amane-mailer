@@ -170,3 +170,4 @@ For the Consumer app compose network setup, see the comments in [infra/deploy/co
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
 - [GHCR image publishing](docs/ops/ghcr-image-publish.en.md) [(ja)](docs/ops/ghcr-image-publish.md)
 - [Configuration README](config/mailer/README.en.md) [(ja)](config/mailer/README.md)
+- [Security policy](SECURITY.md)
