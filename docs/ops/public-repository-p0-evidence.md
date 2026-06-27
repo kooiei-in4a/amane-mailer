@@ -25,12 +25,16 @@ credential values.
 Status: verified on 2026-06-26 JST for `v0.1.0`.
 
 - GHCR image `ghcr.io/kooiei-in4a/amane-mailer:v0.1.0`, immutable
-  `sha-<git-sha>` tag, release record digest, and OCI source/revision labels
-  are consistent
+  `sha-<git-sha>` tag, release record digest, runtime manifest digest,
+  attestation manifest digest, and OCI source/revision labels are consistent.
+  The initial `v0.1.0` image did not set an OCI version label.
 - NuGet package `Amane.Mailer.Contracts` `0.1.0` SourceLink commit matches the
   release tag commit
 
 Reference: [docs/releases/v0.1.0.md](../releases/v0.1.0.md)
+
+Consumer verification procedure:
+[docs/ops/release-artifact-verification.en.md](release-artifact-verification.en.md)
 
 ## Release image smoke
 
