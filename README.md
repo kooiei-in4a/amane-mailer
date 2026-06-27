@@ -162,3 +162,4 @@ Consumer アプリの compose ネットワーク接続例は [infra/deploy/compo
 - [バックアップ運用](docs/ops/backup-operations.md) [(en)](docs/ops/backup-operations.en.md)
 - [GHCR image publish 手順](docs/ops/ghcr-image-publish.md) [(en)](docs/ops/ghcr-image-publish.en.md)
 - [設定 README](config/mailer/README.md) [(en)](config/mailer/README.en.md)
+- [セキュリティポリシー](SECURITY.md)

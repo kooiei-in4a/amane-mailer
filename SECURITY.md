@@ -1,20 +1,56 @@
 # Security Policy
 
+## Supported Versions
+
+Amane Mailer is pre-1.0 software. Only the latest patch release of the current
+minor version receives security fixes.
+
+| Version | Supported |
+| ------- | --------- |
+| 0.1.x   | Yes       |
+| < 0.1   | No        |
+
 ## Reporting a Vulnerability
 
 **Do not open public GitHub Issues for security vulnerabilities.**
 
-If you discover a security issue, please report it via
+Please report security issues via
 [GitHub's private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing/privately-reporting-a-security-vulnerability)
 for this repository.
 
+If GitHub private vulnerability reporting is unavailable to you, email
+**kouichirou.ie@in4a.jp** with the subject line `[Amane Mailer Security]`.
+Include reproduction steps, affected version, and impact assessment.
+
+## Response Timeline
+
+This project is maintained by a solo developer. Timelines below are
+best-effort goals, not SLA guarantees.
+
+| Stage                | Target       |
+| -------------------- | ------------ |
+| Initial response     | 7 days       |
+| Triage / severity    | 14 days      |
+| Fix release          | 90 days      |
+| Public advisory      | After fix    |
+
+If a reported issue is accepted, you will be credited in the advisory unless
+you request otherwise.
+
 ## Scope
 
-This policy covers the Amane Mailer service code, its Contracts NuGet package,
-Docker images, and the deploy-time compose templates in this repository.
+This policy covers:
 
-Host-level infrastructure, rclone configuration, age key management, and
-reverse proxy setup are outside this repository's scope.
+- Amane Mailer service source code (`src/Amane.Mailer`)
+- Contracts NuGet package (`src/Amane.Mailer.Contracts`)
+- Published Docker images on GHCR (`ghcr.io/kooiei-in4a/amane-mailer`)
+- Deploy-time compose templates (`infra/deploy`)
+
+Out of scope:
+
+- Host-level infrastructure, rclone configuration, age key management
+- Reverse proxy setup and TLS termination
+- Third-party dependencies (report upstream; mention here if relevant to Amane Mailer)
 
 ## General Guidelines
 
