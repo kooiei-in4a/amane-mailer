@@ -194,9 +194,10 @@ metadata なので、checksum column は番号付き SQL migration ではなく 
 migration 適用前に追加・backfill する。
 
 - 新規 DB では、適用した各 migration の `version`, `applied_at`, `checksum` を同一 transaction で記録する。
+- `db migrate` は同一 DB に対して排他的に実行する。複数の migration runner を同時に起動しない。
 - `v0.1.0` など checksum column がない既存 DB では、初回の checksum 対応 `db migrate` が `checksum` column を追加し、同梱されている現在の migration files のうち適用済み `version` と一致する行へ checksum を backfill する。その時点より前の historical checksum は存在しないため、この初回 backfill が現在同梱 SQL を信頼の起点にする。
 - 以後の `db migrate` は、適用済み `version` の SQL file が同梱されていることと、保存済み checksum が現在の file checksum と一致することを確認する。file 不在または checksum 不一致なら pending migration を適用する前に fail-fast する。
-- release 後の SQL migration file は forward-only とし、後編集しない。schema 変更は新しい番号付き migration を追加する。checksum mismatch が出た場合は、正しい image / SQL file に戻すか、backup からの restore / rebuild 手順を選ぶ。
+- release 後の SQL migration file は forward-only とし、後編集しない。byte-level checksum の対象なので、内容が同じに見える reformat、改行コード変更、encoding / BOM 変更も checksum mismatch になりうる。schema 変更は新しい番号付き migration を追加する。checksum mismatch が出た場合は、正しい image / SQL file に戻すか、backup からの restore / rebuild 手順を選ぶ。
 
 **例（compose ops）:**
 
