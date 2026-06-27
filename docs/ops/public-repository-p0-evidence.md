@@ -53,6 +53,10 @@ Status: verified on 2026-06-26 JST.
 - `Amane.Mailer.Contracts` is published through nuget.org Trusted Publishing
   for GitHub Actions OIDC
 - No long-lived NuGet API key is stored in the public repository
+- Symbol package (.snupkg) for `0.1.0`: availability not verified at release
+  time. The publish workflow pushed `.snupkg` but did not confirm nuget.org
+  acceptance. Starting from the next release, the workflow verifies `.snupkg`
+  generation before push and records symbol status in the job summary.
 
 ## CodeQL disposition
 

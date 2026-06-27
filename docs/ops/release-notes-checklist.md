@@ -19,6 +19,8 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 - Release image smoke 結果（`docs/releases/vX.Y.Z.md`、digest / 日付 / 環境 / pass-fail 要約）
 - OCI source label と revision label
 - NuGet package name / version / package URL
+- NuGet symbol package (.snupkg) の公開状態（publish workflow summary で確認）
+- SourceLink commit が release tag commit と一致することの確認
 - .NET SDK version（`global.json`）と roll-forward policy
 
 ## Operational notes
