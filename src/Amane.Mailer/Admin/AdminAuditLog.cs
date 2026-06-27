@@ -161,12 +161,18 @@ public static class AdminAuditLog
 
     public static void LogToStdout(ILogger logger, AdminAuditEvent auditEvent)
     {
-        // Sanitize each value inline so static analysis (CodeQL cs/log-forging)
-        // can trace the sanitizer→sink path without following record `with`.
-        var actor = NormalizeActor(auditEvent.Actor);
-        var sourceIp = SanitizeAuditLogValue(auditEvent.SourceIp);
-        var targetId = SanitizeAuditLogValue(auditEvent.TargetId);
-        var fieldName = SanitizeAuditLogValue(auditEvent.FieldName);
+        // NormalizeActor / SanitizeAuditLogValue already strip all control chars,
+        // but CodeQL does not recognise them as sanitizers. The chained Replace
+        // calls are a no-op at runtime — they exist solely as a CodeQL-recognised
+        // barrier for cs/log-forging (CWE-117).
+        var actor = NormalizeActor(auditEvent.Actor)
+            .Replace("\r", " ").Replace("\n", " ");
+        var sourceIp = SanitizeAuditLogValue(auditEvent.SourceIp)
+            ?.Replace("\r", " ").Replace("\n", " ");
+        var targetId = SanitizeAuditLogValue(auditEvent.TargetId)
+            ?.Replace("\r", " ").Replace("\n", " ");
+        var fieldName = SanitizeAuditLogValue(auditEvent.FieldName)
+            ?.Replace("\r", " ").Replace("\n", " ");
 
         logger.LogInformation(
             AuditEvent,
