@@ -186,6 +186,19 @@ Web ホスト起動前に `argv` で早期分岐。コンテナ `ENTRYPOINT` は
 | `db stats [--tenant-id <uuid>]` | SQLite `mail_requests` の status 別件数、ready backlog、oldest queued age、stale processing、dead-letter 件数を `key=value` で出力 | 0=成功 / 1=schema unavailable / 2=usage error |
 | `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | 1 request の状態、attempt 件数、provider message id の有無を `key=value` で出力（secret / recipient は出さない） | 0=成功 / 1=schema unavailable / 2=usage error |
 
+### マイグレーション checksum policy
+
+`db migrate` は各 SQL migration file の byte-level SHA-256 hex checksum を
+`schema_migrations.checksum` に保存する。`schema_migrations` は runner-owned
+metadata なので、checksum column は番号付き SQL migration ではなく runner が通常
+migration 適用前に追加・backfill する。
+
+- 新規 DB では、適用した各 migration の `version`, `applied_at`, `checksum` を同一 transaction で記録する。
+- `db migrate` は同一 DB に対して排他的に実行する。複数の migration runner を同時に起動しない。
+- `v0.1.0` など checksum column がない既存 DB では、初回の checksum 対応 `db migrate` が `checksum` column を追加し、同梱されている現在の migration files のうち適用済み `version` と一致する行へ checksum を backfill する。その時点より前の historical checksum は存在しないため、この初回 backfill が現在同梱 SQL を信頼の起点にする。
+- 以後の `db migrate` は、適用済み `version` の SQL file が同梱されていることと、保存済み checksum が現在の file checksum と一致することを確認する。file 不在または checksum 不一致なら pending migration を適用する前に fail-fast する。
+- release 後の SQL migration file は forward-only とし、後編集しない。byte-level checksum の対象なので、内容が同じに見える reformat、改行コード変更、encoding / BOM 変更も checksum mismatch になりうる。schema 変更は新しい番号付き migration を追加する。checksum mismatch が出た場合は、正しい image / SQL file に戻すか、backup からの restore / rebuild 手順を選ぶ。
+
 **例（compose ops）:**
 
 ```bash
