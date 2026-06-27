@@ -16,6 +16,7 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 - Runtime manifest digest
 - Attestation manifest digest
 - Platform（現状 `linux/amd64`）
+- Release image smoke 結果（`docs/releases/vX.Y.Z.md`、digest / 日付 / 環境 / pass-fail 要約）
 - OCI source label と revision label
 - NuGet package name / version / package URL
 - .NET SDK version（`global.json`）と roll-forward policy

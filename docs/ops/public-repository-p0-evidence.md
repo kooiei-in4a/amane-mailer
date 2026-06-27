@@ -32,6 +32,20 @@ Status: verified on 2026-06-26 JST for `v0.1.0`.
 
 Reference: [docs/releases/v0.1.0.md](../releases/v0.1.0.md)
 
+## Release image smoke
+
+Status: passed on 2026-06-27 JST for `ghcr.io/kooiei-in4a/amane-mailer:v0.1.0`
+(digest `sha256:b0e513663df2be1df6045b8bff39d1fcd93536cae98287b91f07cfc7b8700677`).
+
+- Clean-state smoke via [`scripts/release-smoke.sh`](../../scripts/release-smoke.sh):
+  8 checks passed, 0 failed (`/healthz`, `/readyz`, valid POST, Mailpit delivery,
+  idempotent repost, conflict, invalid token, invalid `source_service`)
+- Environment class: Windows 11 host, Docker Desktop, `linux/amd64` container runtime
+
+Reference: [docs/releases/v0.1.0.md](../releases/v0.1.0.md) (full pass/fail table),
+[release image smoke runbook](release-image-smoke.en.md),
+[GitHub Release v0.1.0](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v0.1.0).
+
 ## NuGet publishing
 
 Status: verified on 2026-06-26 JST.
