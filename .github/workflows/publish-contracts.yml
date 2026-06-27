@@ -148,14 +148,54 @@ jobs:
           --api-key "$NUGET_API_KEY"
           --skip-duplicate
 
+      - name: Verify symbol package availability on nuget.org
+        id: snupkg-check
+        continue-on-error: true
+        env:
+          PACKAGE_VERSION: ${{ steps.release.outputs.package_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg_id="amane.mailer.contracts"
+          url="https://api.nuget.org/v3-flatcontainer/${pkg_id}/${PACKAGE_VERSION}/${pkg_id}.${PACKAGE_VERSION}.snupkg"
+          echo "Checking symbol package availability at: ${url}"
+
+          max_attempts=10
+          delay=30
+          for attempt in $(seq 1 "$max_attempts"); do
+            status=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+            echo "Attempt ${attempt}/${max_attempts}: HTTP ${status}"
+            if [ "$status" = "200" ]; then
+              echo "snupkg_available=true" >> "$GITHUB_OUTPUT"
+              echo "Symbol package is available on nuget.org."
+              exit 0
+            fi
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              echo "Waiting ${delay}s before retry..."
+              sleep "$delay"
+            fi
+          done
+
+          echo "snupkg_available=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::Symbol package not yet available on nuget.org after ${max_attempts} attempts. It may still be processing."
+
       - name: Write package summary
         env:
           PACKAGE_VERSION: ${{ steps.release.outputs.package_version }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           REVISION: ${{ steps.release.outputs.revision }}
+          SNUPKG_AVAILABLE: ${{ steps.snupkg-check.outputs.snupkg_available }}
+          SNUPKG_CHECK_OUTCOME: ${{ steps.snupkg-check.outcome }}
         shell: bash
         run: |
           snupkg_files=$(ls artifacts/nuget/*.snupkg 2>/dev/null | xargs -I{} basename {} || echo "none")
+          if [ "$SNUPKG_AVAILABLE" = "true" ]; then
+            snupkg_status="available on nuget.org"
+          elif [ "$SNUPKG_CHECK_OUTCOME" = "failure" ]; then
+            snupkg_status="pushed but not yet confirmed on nuget.org (check may need manual follow-up)"
+          else
+            snupkg_status="unknown"
+          fi
           {
             echo "## Published contracts package"
             echo
@@ -164,5 +204,5 @@ jobs:
             echo "- Release tag: \`${RELEASE_TAG}\`"
             echo "- Revision: \`${REVISION}\`"
             echo "- Version source: \`${RELEASE_TAG}\` and project \`<Version>\` matched before packing"
-            echo "- Symbol package: \`${snupkg_files}\`"
+            echo "- Symbol package: \`${snupkg_files}\` — ${snupkg_status}"
           } >> "$GITHUB_STEP_SUMMARY"
