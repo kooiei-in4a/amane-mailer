@@ -20,7 +20,7 @@ after publishing a release, verify and record the following items.
 - Release image smoke result (`docs/releases/vX.Y.Z.md`: digest, date, environment, pass/fail summary)
 - OCI source label and revision label
 - NuGet package name / version / package URL
-- NuGet symbol package (.snupkg) availability (verify from the nuget.org availability check result in the publish workflow summary; if unconfirmed, check the flat container URL manually)
+- NuGet symbol package (.snupkg) availability (verify the push result in the publish workflow summary; after indexing, manually confirm availability via NuGet Package Explorer or VS debugger)
 - SourceLink commit matches the release tag commit
 - .NET SDK version from `global.json` and roll-forward policy
 
