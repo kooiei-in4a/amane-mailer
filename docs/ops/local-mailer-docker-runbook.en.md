@@ -43,11 +43,20 @@ The `data-init` service in `infra/docker/docker-compose.local.yml` runs before m
 and makes `data/mailer` world-writable (mode 777) so the non-root container can create
 SQLite files. Normal `docker compose up` and this runbook require no extra steps.
 
-To verify a fresh checkout on Linux/macOS:
+To verify a fresh checkout on Linux/macOS (run as-is when `data/mailer` is absent):
 
 ```bash
 bash scripts/local-compose-fresh-data-check.sh
 ```
+
+If `data/mailer` already exists, the script aborts to avoid accidental deletion.
+To remove existing history and run the check, set the reset flag explicitly:
+
+```bash
+LOCAL_FRESH_DATA_RESET=1 bash scripts/local-compose-fresh-data-check.sh
+```
+
+To keep `data/mailer` after the check, also set `LOCAL_FRESH_DATA_KEEP=1`.
 
 To prepare the bind mount manually (when not using `data-init`):
 

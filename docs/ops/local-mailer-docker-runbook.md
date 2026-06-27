@@ -44,11 +44,20 @@ local compose の SQLite は `data/mailer/` を bind mount します（named vol
 `data/mailer` を world-writable（mode 777）にし、non-root コンテナから SQLite を
 作成できるようにします。通常の `docker compose up` / runbook 手順では追加操作は不要です。
 
-Linux/macOS で fresh checkout を検証する場合:
+Linux/macOS で fresh checkout を検証する場合（`data/mailer` が無ければそのまま実行可）:
 
 ```bash
 bash scripts/local-compose-fresh-data-check.sh
 ```
+
+既存の `data/mailer` がある場合、スクリプトは誤削除を防ぐため abort します。
+履歴を削除して検証する場合のみ、明示的に reset フラグを付けてください:
+
+```bash
+LOCAL_FRESH_DATA_RESET=1 bash scripts/local-compose-fresh-data-check.sh
+```
+
+検証後も `data/mailer` を残す場合は `LOCAL_FRESH_DATA_KEEP=1` を併用できます。
 
 手動で bind mount 先を用意する場合（`data-init` を使わない場合）:
 

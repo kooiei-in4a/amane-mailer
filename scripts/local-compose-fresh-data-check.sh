@@ -10,6 +10,7 @@
 # Config via environment (all optional):
 #   LOCAL_COMPOSE_INIT_IMAGE  default busybox:1.37
 #   MAILER_DATA_PATH          default <repo>/data/mailer
+#   LOCAL_FRESH_DATA_RESET    set to 1 to remove an existing data dir before the check
 #   LOCAL_FRESH_DATA_KEEP     set to 1 to keep data/mailer after the check
 set -Eeuo pipefail
 set +x
@@ -39,19 +40,33 @@ fail() {
   printf '[FAIL] %s\n' "$1" >&2
 }
 
+abort() {
+  printf 'error: %s\n' "$1" >&2
+  should_cleanup=0
+  exit 1
+}
+
 cleanup() {
   if [[ "${LOCAL_FRESH_DATA_KEEP:-}" == "1" ]]; then
     return
   fi
 
-  rm -rf "$DATA_DIR"
+  if [[ "${should_cleanup:-}" == "1" ]]; then
+    rm -rf "$DATA_DIR"
+  fi
 }
 
 trap cleanup EXIT
 
 if [[ -e "$DATA_DIR" ]]; then
+  if [[ "${LOCAL_FRESH_DATA_RESET:-}" != "1" ]]; then
+    abort "$DATA_DIR already exists; set LOCAL_FRESH_DATA_RESET=1 to remove it and run the fresh-data check"
+  fi
+
   rm -rf "$DATA_DIR"
 fi
+
+should_cleanup=1
 
 "${COMPOSE[@]}" build mailer-migrate
 
