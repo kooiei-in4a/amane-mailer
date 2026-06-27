@@ -186,6 +186,18 @@ Early branching on `argv` before Web host startup. Container `ENTRYPOINT` is `./
 | `db stats [--tenant-id <uuid>]` | Output `mail_requests` status counts, ready backlog, oldest queued age, stale processing, and dead-letter counts from SQLite as `key=value` | 0=success / 1=schema unavailable / 2=usage error |
 | `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | Output one request's state, attempt count, and provider message id presence as `key=value` (does not expose secrets / recipient) | 0=success / 1=schema unavailable / 2=usage error |
 
+### Migration Checksum Policy
+
+`db migrate` stores the byte-level SHA-256 hex checksum for each SQL migration file in
+`schema_migrations.checksum`. `schema_migrations` is runner-owned metadata, so the
+runner adds and backfills the checksum column before applying normal numbered SQL
+migrations instead of relying on a numbered migration for that metadata change.
+
+- New databases record each applied migration's `version`, `applied_at`, and `checksum` in the same transaction.
+- Existing databases without the checksum column, including `v0.1.0` databases, have the `checksum` column added by the first checksum-aware `db migrate`. That run backfills checksums for rows whose applied `version` matches the currently bundled migration files. Historical checksums did not exist before this point, so the first backfill anchors trust in the SQL bundled with that image.
+- Later `db migrate` runs compare the stored checksum for each applied `version` with the current file checksum and fail fast before applying pending migrations when they differ.
+- Released SQL migration files are forward-only and must not be edited after release. Add a new numbered migration for schema changes. If a checksum mismatch occurs, restore the correct image / SQL file or choose a restore / rebuild path from backup.
+
 **Examples (compose ops):**
 
 ```bash
