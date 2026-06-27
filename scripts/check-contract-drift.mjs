@@ -107,45 +107,109 @@ function parseStringArray(relativePath, propertyName) {
   return [...match[1].matchAll(/"([^"]+)"/g)].map((item) => item[1]);
 }
 
-function extractSchemaBlock(source, schemaName) {
-  const lines = source.split(/\r?\n/);
-  const start = lines.findIndex((line) => line === `    ${schemaName}:`);
-  if (start < 0) {
-    fail(`OpenAPI schema ${schemaName} is missing.`);
-    return '';
+function regexEscape(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function lineIndent(line) {
+  return line.match(/^ */)?.[0].length ?? 0;
+}
+
+function isBlankOrComment(line) {
+  return /^\s*(?:#.*)?$/.test(line);
+}
+
+function parseInlineList(value) {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) {
+    return undefined;
   }
 
+  return trimmed
+    .slice(1, -1)
+    .split(',')
+    .map((item) => item.trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean);
+}
+
+function findDirectChildSection(lines, parentIndent, key) {
+  const childIndent = parentIndent + 2;
+  const pattern = new RegExp(`^ {${childIndent}}${regexEscape(key)}:\\s*(.*)$`);
+  const start = lines.findIndex((line) => pattern.test(line));
+  if (start < 0) {
+    return undefined;
+  }
+
+  const value = lines[start].match(pattern)?.[1].trim() ?? '';
   let end = lines.length;
   for (let index = start + 1; index < lines.length; index += 1) {
-    if (/^ {4}[A-Za-z0-9_.-]+:\s*$/.test(lines[index])) {
+    if (isBlankOrComment(lines[index])) {
+      continue;
+    }
+
+    if (lineIndent(lines[index]) <= childIndent) {
       end = index;
       break;
     }
   }
 
-  return lines.slice(start + 1, end).join('\n');
+  return {
+    indent: childIndent,
+    value,
+    lines: lines.slice(start + 1, end),
+  };
 }
 
-function parseRequired(schemaBlock) {
-  const inline = schemaBlock.match(/^ {6}required:\s*\[([^\]]*)\]\s*$/m);
-  if (inline) {
-    return inline[1]
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean);
+function extractSchemaBlock(source, schemaName) {
+  const lines = source.split(/\r?\n/);
+  const schemaPattern = new RegExp(`^( *)${regexEscape(schemaName)}:\\s*$`);
+  const start = lines.findIndex((line) => schemaPattern.test(line));
+  if (start < 0) {
+    fail(`OpenAPI schema ${schemaName} is missing.`);
+    return {
+      baseIndent: 0,
+      block: '',
+      lines: [],
+    };
   }
 
-  const lines = schemaBlock.split(/\r?\n/);
-  const start = lines.findIndex((line) => /^ {6}required:\s*$/.test(line));
-  if (start < 0) {
+  const baseIndent = lineIndent(lines[start]);
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    if (isBlankOrComment(lines[index])) {
+      continue;
+    }
+
+    if (lineIndent(lines[index]) <= baseIndent) {
+      end = index;
+      break;
+    }
+  }
+
+  const blockLines = lines.slice(start + 1, end);
+  return {
+    baseIndent,
+    block: blockLines.join('\n'),
+    lines: blockLines,
+  };
+}
+
+function parseRequired(schema) {
+  const section = findDirectChildSection(schema.lines, schema.baseIndent, 'required');
+  if (!section) {
     return [];
   }
 
+  const inline = parseInlineList(section.value);
+  if (inline) {
+    return inline;
+  }
+
   const required = [];
-  for (let index = start + 1; index < lines.length; index += 1) {
-    const match = lines[index].match(/^ {8}-\s+([A-Za-z0-9_]+)\s*$/);
+  for (const line of section.lines) {
+    const match = line.match(/^\s*-\s+([A-Za-z0-9_]+)\s*$/);
     if (!match) {
-      if (/^\s*$/.test(lines[index])) {
+      if (isBlankOrComment(line)) {
         continue;
       }
 
@@ -158,30 +222,14 @@ function parseRequired(schemaBlock) {
   return required;
 }
 
-function extractPropertiesBlock(schemaBlock) {
-  const lines = schemaBlock.split(/\r?\n/);
-  const start = lines.findIndex((line) => /^ {6}properties:\s*$/.test(line));
-  if (start < 0) {
-    return [];
-  }
-
-  let end = lines.length;
-  for (let index = start + 1; index < lines.length; index += 1) {
-    if (/^ {0,6}\S/.test(lines[index])) {
-      end = index;
-      break;
-    }
-  }
-
-  return lines.slice(start + 1, end);
-}
-
-function parseProperties(schemaBlock) {
-  const lines = extractPropertiesBlock(schemaBlock);
+function parseProperties(schema) {
+  const section = findDirectChildSection(schema.lines, schema.baseIndent, 'properties');
+  const lines = section?.lines ?? [];
+  const propertyIndent = section ? section.indent + 2 : 0;
   const properties = new Map();
 
   for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index].match(/^ {8}([A-Za-z0-9_]+):\s*$/);
+    const match = lines[index].match(new RegExp(`^ {${propertyIndent}}([A-Za-z0-9_]+):\\s*$`));
     if (!match) {
       continue;
     }
@@ -189,7 +237,11 @@ function parseProperties(schemaBlock) {
     const name = match[1];
     let end = lines.length;
     for (let next = index + 1; next < lines.length; next += 1) {
-      if (/^ {8}[A-Za-z0-9_]+:\s*$/.test(lines[next])) {
+      if (isBlankOrComment(lines[next])) {
+        continue;
+      }
+
+      if (lineIndent(lines[next]) <= propertyIndent) {
         end = next;
         break;
       }
@@ -207,28 +259,31 @@ function parseProperties(schemaBlock) {
 }
 
 function parseEnum(propertyBlock) {
-  const inline = propertyBlock.match(/^ {10}enum:\s*\[([^\]]*)\]\s*$/m);
-  if (inline) {
-    return inline[1]
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean);
-  }
-
   const lines = propertyBlock.split(/\r?\n/);
-  const start = lines.findIndex((line) => /^ {10}enum:\s*$/.test(line));
+  const start = lines.findIndex((line) => /^\s*enum:\s*/.test(line));
   if (start < 0) {
     return [];
   }
 
+  const value = lines[start].replace(/^\s*enum:\s*/, '');
+  const inline = parseInlineList(value);
+  if (inline) {
+    return inline;
+  }
+
+  const enumIndent = lineIndent(lines[start]);
   const values = [];
   for (let index = start + 1; index < lines.length; index += 1) {
-    const match = lines[index].match(/^ {12}-\s+(.+?)\s*$/);
-    if (!match) {
-      if (/^\s*$/.test(lines[index])) {
-        continue;
-      }
+    if (isBlankOrComment(lines[index])) {
+      continue;
+    }
 
+    if (lineIndent(lines[index]) <= enumIndent) {
+      break;
+    }
+
+    const match = lines[index].match(/^\s*-\s+(.+?)\s*$/);
+    if (!match) {
       break;
     }
 
@@ -240,21 +295,23 @@ function parseEnum(propertyBlock) {
 
 function isOpenApiNullable(propertyBlock) {
   return (
-    /^ {10}nullable:\s*true\s*$/m.test(propertyBlock)
-    || /^ {10}type:\s*\[[^\]]*\bnull\b[^\]]*\]\s*$/m.test(propertyBlock)
+    /^\s*nullable:\s*true\s*$/m.test(propertyBlock)
+    || /^\s*type:\s*\[[^\]]*\bnull\b[^\]]*\]\s*$/m.test(propertyBlock)
   );
 }
 
 function parseOpenApiSchema(openapi, schemaName) {
-  const block = extractSchemaBlock(openapi, schemaName);
-  const properties = parseProperties(block);
+  const schema = extractSchemaBlock(openapi, schemaName);
+  const properties = parseProperties(schema);
 
   return {
     name: schemaName,
-    block,
-    required: parseRequired(block),
+    block: schema.block,
+    required: parseRequired(schema),
     properties,
-    additionalPropertiesFalse: /^ {6}additionalProperties:\s*false\s*$/m.test(block),
+    additionalPropertiesFalse: schema.lines.some((line) =>
+      lineIndent(line) === schema.baseIndent + 2
+      && /^\s*additionalProperties:\s*false\s*$/.test(line)),
   };
 }
 
