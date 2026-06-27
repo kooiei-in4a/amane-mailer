@@ -349,3 +349,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-06-23 | Followed the initial SQLite / Native AOT release shape: chiseled single container / CLI / Retention / state transition DDL |
 | 2026-06-24 | Added Worker/Sweep heartbeat liveness: `worker_heartbeats` table, CLI heartbeat freshness check, `/readyz` Worker running check, `db stats` heartbeat age keys |
 | 2026-06-27 | Added Versioning Policy section (#5). Fixed OpenAPI `info.version` to `0.1.0` to match release/package |
+| 2026-06-27 | Prepared the `v0.1.1` patch release by updating the Contracts package and OpenAPI `info.version` to `0.1.1` |

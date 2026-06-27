@@ -349,3 +349,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-06-23 | 初回 SQLite / Native AOT リリース仕様に追随: chiseled 単一コンテナ / CLI / Retention / 状態遷移 DDL |
 | 2026-06-24 | Worker/Sweep heartbeat liveness 追加: `worker_heartbeats` テーブル、CLI heartbeat 鮮度チェック、`/readyz` Worker 稼働確認、`db stats` heartbeat age keys |
 | 2026-06-27 | バージョニングポリシー節追加（#5）。OpenAPI `info.version` を release/package と同一の `0.1.0` に修正 |
+| 2026-06-27 | `v0.1.1` patch release 準備として Contracts package と OpenAPI `info.version` を `0.1.1` に更新 |

@@ -2,7 +2,7 @@
 
 # 公開 release イメージの clean-state smoke
 
-公開済みの GHCR ランタイムイメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.1.0`）を
+公開済みの GHCR ランタイムイメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.1.1`）を
 clean state から pull し、Mailer + Mailpit を起動して公開 release runtime path を自動 smoke します。
 
 ローカル開発の `infra/docker/docker-compose.local.yml`（ソースから build）とは異なり、
@@ -16,6 +16,9 @@ Mailer の状態は named volume に置き、終了時に `docker compose down -
 - `bash`、`curl`、`sha256sum` が使えること。
 - GHCR イメージが pull できること（private の場合は事前に `docker login ghcr.io`。
   [GHCR image publish 手順](ghcr-image-publish.md) を参照）。
+- 公開 Mailer runtime image は現時点では `linux/amd64` only です。ARM host では
+  Docker Desktop などの amd64 emulation が使える場合のみ検証できます。multi-arch 対応は
+  [#4](https://github.com/kooiei-in4a/amane-mailer/issues/4) で追跡しています。
 - 既定の host port `15280`（Mailer）と `18025`（Mailpit）が空いていること。
 
 ## 実行
@@ -52,7 +55,8 @@ bash scripts/release-smoke.sh
 | 変数 | 既定 | 用途 |
 |------|------|------|
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | イメージ repository |
-| `MAILER_IMAGE_TAG` | `v0.1.0` | 検証するタグ |
+| `MAILER_IMAGE_TAG` | `v0.1.1` | 検証するタグ |
+| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | 公開 Mailer runtime image の platform |
 | `MAILER_PULL_POLICY` | `always` | ローカルイメージを使う場合は `missing` |
 | `MAILER_HTTP_PORT` | `15280` | Mailer の host port |
 | `MAILPIT_HTTP_PORT` | `18025` | Mailpit API/UI の host port |
@@ -68,9 +72,9 @@ MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
 
 ## 記録済み smoke 結果
 
-`v0.1.0` の value-free smoke 結果（digest、日付、環境、各 check の pass/fail）は
-[docs/releases/v0.1.0.md](../releases/v0.1.0.md) に記録しています。
-GitHub Release は [v0.1.0](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v0.1.0) を参照してください。
+`v0.1.1` の value-free smoke 結果（digest、日付、環境、各 check の pass/fail）は
+[docs/releases/v0.1.1.md](../releases/v0.1.1.md) に記録します。過去の `v0.1.0` 結果は
+[docs/releases/v0.1.0.md](../releases/v0.1.0.md) を参照してください。
 
 ## deploy drill との使い分け
 

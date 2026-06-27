@@ -86,12 +86,19 @@ Operational runbooks:
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
 
-To smoke the published GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.1.0`)
+To smoke the published GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.1.1`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
 run `scripts/release-smoke.sh`. See
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration.
+
+The published GHCR runtime image is currently **`linux/amd64` only**. On Apple
+Silicon or ARM Linux hosts, you can smoke it only when Docker Desktop or the
+Docker engine can run amd64 images through emulation, for example with
+`MAILER_IMAGE_PLATFORM=linux/amd64 bash scripts/release-smoke.sh`. This is not a
+production multi-arch support guarantee; multi-arch support is tracked in
+[#4](https://github.com/kooiei-in4a/amane-mailer/issues/4).
 
 ```bash
 bash scripts/release-smoke.sh
@@ -106,8 +113,8 @@ For local deploy rehearsal (no ACS live send), use
 
 ## Contracts Package
 
-`Amane.Mailer.Contracts` 0.1.0 has been published to nuget.org.
-Publish additional versions manually with [`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml)
+`Amane.Mailer.Contracts` is published to nuget.org.
+Publish versions manually with [`.github/workflows/publish-contracts.yml`](.github/workflows/publish-contracts.yml)
 by running it from a release tag ref. The package version is derived from the tag and validated against the csproj `<Version>`.
 
 The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contracts/`. The Mailer runtime references the same DTOs / constants, and [OpenAPI](docs/api/openapi.yaml) is the Consumer-facing HTTP reference / public schema synchronized with them. Service release versions, Docker image tags, NuGet package versions, and OpenAPI `info.version` are all kept in sync under the same `X.Y.Z` (see [Versioning Policy](docs/service-spec.en.md#versioning-policy)).
