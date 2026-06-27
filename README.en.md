@@ -169,5 +169,6 @@ For the Consumer app compose network setup, see the comments in [infra/deploy/co
 - [OpenAPI HTTP reference](docs/api/openapi.yaml)
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
 - [GHCR image publishing](docs/ops/ghcr-image-publish.en.md) [(ja)](docs/ops/ghcr-image-publish.md)
+- [Release artifact verification](docs/ops/release-artifact-verification.en.md) [(ja)](docs/ops/release-artifact-verification.md)
 - [Configuration README](config/mailer/README.en.md) [(ja)](config/mailer/README.md)
 - [Security policy](SECURITY.md)
