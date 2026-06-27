@@ -142,8 +142,8 @@ public static class AdminAuditLog
         AdminAuditEvent auditEvent,
         CancellationToken cancellationToken)
     {
+        LogToStdout(logger, auditEvent);
         var sanitized = SanitizeForOutput(auditEvent);
-        LogToStdout(logger, sanitized);
 
         try
         {
@@ -161,16 +161,22 @@ public static class AdminAuditLog
 
     public static void LogToStdout(ILogger logger, AdminAuditEvent auditEvent)
     {
-        var sanitized = SanitizeForOutput(auditEvent);
+        // Sanitize each value inline so static analysis (CodeQL cs/log-forging)
+        // can trace the sanitizer→sink path without following record `with`.
+        var actor = NormalizeActor(auditEvent.Actor);
+        var sourceIp = SanitizeAuditLogValue(auditEvent.SourceIp);
+        var targetId = SanitizeAuditLogValue(auditEvent.TargetId);
+        var fieldName = SanitizeAuditLogValue(auditEvent.FieldName);
+
         logger.LogInformation(
             AuditEvent,
             "Admin audit event {EventType} by {Actor} result {Result} target {TargetType}/{TargetId} field {FieldName} from {SourceIp}.",
-            sanitized.EventType,
-            sanitized.Actor,
-            sanitized.Result,
-            sanitized.TargetType,
-            sanitized.TargetId,
-            sanitized.FieldName,
-            sanitized.SourceIp);
+            auditEvent.EventType,
+            actor,
+            auditEvent.Result,
+            auditEvent.TargetType,
+            targetId,
+            fieldName,
+            sourceIp);
     }
 }

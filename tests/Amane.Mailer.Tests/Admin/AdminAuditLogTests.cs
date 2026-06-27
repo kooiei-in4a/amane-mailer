@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite.Models;
 
@@ -80,4 +81,63 @@ public sealed class AdminAuditLogTests
 
         Assert.Equal("user  spoof", sanitized.Actor);
     }
+
+    [Fact]
+    public void Log_to_stdout_sanitizes_actor_and_fields_before_reaching_logger()
+    {
+        var logger = new CapturingLogger();
+
+        AdminAuditLog.LogToStdout(
+            logger,
+            new AdminAuditEvent
+            {
+                EventType = AdminAuditLog.EventTypes.LoginFailed,
+                Actor = "evil\r\nFORGED LINE",
+                OccurredAt = DateTimeOffset.UtcNow,
+                Result = AdminAuditLog.Results.Failure,
+                SourceIp = "127.0.0.1\nnewline",
+                TargetId = "id\ttab",
+                FieldName = "field\rctrl",
+            });
+
+        var entry = Assert.Single(logger.Entries);
+        Assert.Equal("evil  FORGED LINE", entry.State["Actor"]);
+        Assert.Equal("127.0.0.1 newline", entry.State["SourceIp"]);
+        Assert.Equal("id tab", entry.State["TargetId"]);
+        Assert.Equal("field ctrl", entry.State["FieldName"]);
+    }
+
+    private sealed class CapturingLogger : ILogger
+    {
+        public List<LogEntry> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull =>
+            null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            var properties = state as IEnumerable<KeyValuePair<string, object?>>
+                ?? [];
+            Entries.Add(new LogEntry(
+                logLevel,
+                eventId,
+                properties.ToDictionary(
+                    static pair => pair.Key,
+                    static pair => pair.Value,
+                    StringComparer.Ordinal)));
+        }
+    }
+
+    private sealed record LogEntry(
+        LogLevel Level,
+        EventId EventId,
+        Dictionary<string, object?> State);
 }
