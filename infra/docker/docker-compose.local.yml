@@ -1,6 +1,8 @@
 services:
   mailpit:
-    image: axllent/mailpit:latest
+    # Local-only SMTP sink. The default intentionally tracks Mailpit latest;
+    # set MAILPIT_IMAGE to a tag or digest when reproducing a specific run.
+    image: ${MAILPIT_IMAGE:-axllent/mailpit:latest}
     ports:
       - "127.0.0.1:1025:1025"
       - "127.0.0.1:8025:8025"

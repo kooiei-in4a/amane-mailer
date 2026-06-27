@@ -27,6 +27,7 @@ firewall、または Docker port publish 制限をネットワーク境界とし
 - コマンドはリポジトリ root で実行すること。
 - 以下は Windows PowerShell 前提です。
 - local compose は `infra/docker/docker-compose.local.yml` です。
+- Mailpit は local-only helper として既定で `axllent/mailpit:latest` を使います。特定 build で再現する場合は `MAILPIT_IMAGE` で tag / digest を上書きします（方針: [container image pinning policy](container-image-pinning.md)）。
 - 既定は `MAILER_PROVIDER=mailpit` です。ACS 実送信は、承認済み ACS リソース、送信元アドレス、送信先アドレスがある場合だけ実行します。
 - `config/mailer/tenants.local*.json` は `.gitignore` 対象です。実送信用の tenant JSON や接続文字列をコミットしないでください。
 

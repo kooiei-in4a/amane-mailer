@@ -34,7 +34,9 @@ publish ジョブは次を使います:
 
 イメージ push に repository secret は不要です。ワークフローは `GITHUB_TOKEN` を使います。
 
-ワークフローは `infra/docker/Dockerfile` から Mailer イメージをビルドします。
+ワークフローは `infra/docker/Dockerfile` から Mailer イメージをビルドします。release build の
+base image は digest pin し、更新時は [container image pinning policy](container-image-pinning.md)
+に従って review / verification します。
 
 ## Release publish
 

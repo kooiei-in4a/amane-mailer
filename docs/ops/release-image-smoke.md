@@ -58,6 +58,7 @@ bash scripts/release-smoke.sh
 | `MAILER_IMAGE_TAG` | `v0.1.1` | 検証するタグ |
 | `MAILER_IMAGE_PLATFORM` | `linux/amd64` | 公開 Mailer runtime image の platform |
 | `MAILER_PULL_POLICY` | `always` | ローカルイメージを使う場合は `missing` |
+| `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image。既定の `latest` は意図的です。tag / digest 固定が必要な場合に上書きします。 |
 | `MAILER_HTTP_PORT` | `15280` | Mailer の host port |
 | `MAILPIT_HTTP_PORT` | `18025` | Mailpit API/UI の host port |
 | `MAIL_SERVICE_TOKEN` | `local-mail-service-token` | example tenant の token |
@@ -69,6 +70,9 @@ bash scripts/release-smoke.sh
 ```bash
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
 ```
+
+Mailpit は release artifact に含まれない smoke helper です。`latest` の扱いと固定が必要な場合の
+手順は [container image pinning policy](container-image-pinning.md) を参照してください。
 
 ## 記録済み smoke 結果
 

@@ -296,7 +296,7 @@ Schema: [config/mailer/tenants.schema.json](../config/mailer/tenants.schema.json
 
 | Element | Content |
 |---|---|
-| Image | `infra/docker/Dockerfile` — `sdk:10.0-noble-aot` build → `runtime-deps:10.0-noble-chiseled` runtime |
+| Image | `infra/docker/Dockerfile` — digest-pinned `sdk:10.0-noble-aot` build → digest-pinned `runtime-deps:10.0-noble-chiseled` runtime ([pinning policy](ops/container-image-pinning.en.md)) |
 | Data | `./data:/app/data` (SQLite `mailer.db` + WAL) |
 | Tenant config | Host-owned tenant JSON mounted read-only from `MAILER_TENANTS_HOST_PATH` to `MAILER_TENANTS_CONTAINER_PATH` (default `/app/config/mailer/tenants.json`) |
 | Migrations | `profiles: ops` `mailer-migrate` (`db migrate`) |

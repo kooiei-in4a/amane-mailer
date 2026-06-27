@@ -12,6 +12,8 @@ name: ${RELEASE_SMOKE_PROJECT:-amane-mailer-release-smoke}
 
 services:
   mailpit:
+    # Release smoke helper only. Set MAILPIT_IMAGE to a tag or digest when a
+    # smoke result must be reproduced with a specific Mailpit build.
     image: ${MAILPIT_IMAGE:-axllent/mailpit:latest}
     restart: "no"
     ports:

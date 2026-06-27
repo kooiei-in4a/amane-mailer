@@ -59,6 +59,7 @@ If startup itself fails, the script prints `docker compose ps` and recent logs.
 | `MAILER_IMAGE_TAG` | `v0.1.1` | Tag under test |
 | `MAILER_IMAGE_PLATFORM` | `linux/amd64` | Published Mailer runtime image platform |
 | `MAILER_PULL_POLICY` | `always` | Set `missing` to reuse a local image |
+| `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image. The default `latest` is intentional; override it when a tag / digest pin is needed. |
 | `MAILER_HTTP_PORT` | `15280` | Mailer host port |
 | `MAILPIT_HTTP_PORT` | `18025` | Mailpit API/UI host port |
 | `MAIL_SERVICE_TOKEN` | `local-mail-service-token` | Example tenant token |
@@ -70,6 +71,10 @@ Smoke a different tag:
 ```bash
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
 ```
+
+Mailpit is a smoke helper and is not included in the release artifact. See the
+[container image pinning policy](container-image-pinning.en.md) for the
+intentional `latest` usage and how to pin it when needed.
 
 ## Recorded smoke results
 

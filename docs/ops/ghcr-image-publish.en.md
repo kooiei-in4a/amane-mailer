@@ -39,7 +39,9 @@ The publish job uses:
 
 No repository secret is needed for pushing images. The workflow uses `GITHUB_TOKEN`.
 
-The workflow builds the Mailer image from `infra/docker/Dockerfile`.
+The workflow builds the Mailer image from `infra/docker/Dockerfile`. Release
+build base images are digest-pinned and reviewed / verified through the
+[container image pinning policy](container-image-pinning.en.md).
 
 ## Release publish
 
