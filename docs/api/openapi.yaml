@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Amane Mailer Service API
-  version: "0.1.0"
+  version: "0.1.1"
   description: >-
     汎用メール送信マイクロサービス。送信依頼を受け付けて永続化し、
     バックグラウンド Worker が ACS (Azure Communication Services) または Mailpit

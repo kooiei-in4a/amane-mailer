@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Clean-state release smoke for the published Mailer image (issue #11).
 #
-# Pulls ghcr.io/kooiei-in4a/amane-mailer:v0.1.0, starts Mailer + Mailpit from a
+# Pulls ghcr.io/kooiei-in4a/amane-mailer:v0.1.1, starts Mailer + Mailpit from a
 # clean compose project and named volume, and exercises the public release
 # runtime path end to end:
 #
@@ -21,7 +21,8 @@
 #
 # Config via environment (all optional):
 #   MAILER_IMAGE_REPOSITORY  default ghcr.io/kooiei-in4a/amane-mailer
-#   MAILER_IMAGE_TAG         default v0.1.0
+#   MAILER_IMAGE_TAG         default v0.1.1
+#   MAILER_IMAGE_PLATFORM    default linux/amd64 (published runtime image platform)
 #   MAILER_PULL_POLICY       default always   (set "missing" to reuse a local image)
 #   MAILER_HTTP_PORT         default 15280     (host port for Mailer)
 #   MAILPIT_HTTP_PORT        default 18025     (host port for Mailpit API/UI)
@@ -36,7 +37,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
 COMPOSE_FILE="$REPO_ROOT/infra/docker/docker-compose.release-smoke.yml"
 
 export MAILER_IMAGE_REPOSITORY="${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}"
-export MAILER_IMAGE_TAG="${MAILER_IMAGE_TAG:-v0.1.0}"
+export MAILER_IMAGE_TAG="${MAILER_IMAGE_TAG:-v0.1.1}"
+export MAILER_IMAGE_PLATFORM="${MAILER_IMAGE_PLATFORM:-linux/amd64}"
 export MAILER_PULL_POLICY="${MAILER_PULL_POLICY:-always}"
 export MAILER_HTTP_PORT="${MAILER_HTTP_PORT:-15280}"
 export MAILPIT_HTTP_PORT="${MAILPIT_HTTP_PORT:-18025}"

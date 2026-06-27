@@ -2,7 +2,7 @@
 
 # Clean-state smoke for the published release image
 
-Pulls the published GHCR runtime image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.1.0`)
+Pulls the published GHCR runtime image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.1.1`)
 from a clean state, starts Mailer + Mailpit, and smokes the public release runtime path.
 
 Unlike `infra/docker/docker-compose.local.yml` (which builds from source), this smoke
@@ -16,6 +16,10 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 - `bash`, `curl`, and `sha256sum` available.
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
+- The published Mailer runtime image is currently `linux/amd64` only. ARM hosts can
+  smoke it only when Docker Desktop or the Docker engine can run amd64 images through
+  emulation. Multi-arch support is tracked in
+  [#4](https://github.com/kooiei-in4a/amane-mailer/issues/4).
 - Default host ports `15280` (Mailer) and `18025` (Mailpit) are free.
 
 ## Run
@@ -52,7 +56,8 @@ If startup itself fails, the script prints `docker compose ps` and recent logs.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | Image repository |
-| `MAILER_IMAGE_TAG` | `v0.1.0` | Tag under test |
+| `MAILER_IMAGE_TAG` | `v0.1.1` | Tag under test |
+| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | Published Mailer runtime image platform |
 | `MAILER_PULL_POLICY` | `always` | Set `missing` to reuse a local image |
 | `MAILER_HTTP_PORT` | `15280` | Mailer host port |
 | `MAILPIT_HTTP_PORT` | `18025` | Mailpit API/UI host port |
@@ -68,9 +73,9 @@ MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
 
 ## Recorded smoke results
 
-Value-free smoke results for `v0.1.0` (digest, date, environment, per-check pass/fail)
-are recorded in [docs/releases/v0.1.0.md](../releases/v0.1.0.md).
-See the [GitHub Release v0.1.0](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v0.1.0).
+Value-free smoke results for `v0.1.1` (digest, date, environment, per-check pass/fail)
+are recorded in [docs/releases/v0.1.1.md](../releases/v0.1.1.md) after publish.
+Previous `v0.1.0` results remain in [docs/releases/v0.1.0.md](../releases/v0.1.0.md).
 
 ## How it differs from the deploy drills
 
