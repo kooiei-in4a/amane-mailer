@@ -112,6 +112,18 @@ jobs:
           -o artifacts/nuget
           -p:PackageVersion="$PACKAGE_VERSION"
 
+      - name: Verify symbol package was produced
+        shell: bash
+        run: |
+          set -euo pipefail
+          snupkg_count=$(find artifacts/nuget -name '*.snupkg' | wc -l)
+          if [ "$snupkg_count" -eq 0 ]; then
+            echo "::error::No .snupkg file found in artifacts/nuget/. Symbol package generation may have failed."
+            exit 1
+          fi
+          echo "Found ${snupkg_count} symbol package(s):"
+          ls -la artifacts/nuget/*.snupkg
+
       - name: NuGet login
         id: nuget-login
         uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841
@@ -128,6 +140,7 @@ jobs:
           --skip-duplicate
 
       - name: Push symbols to nuget.org
+        id: snupkg-push
         env:
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: >
@@ -141,7 +154,15 @@ jobs:
           PACKAGE_VERSION: ${{ steps.release.outputs.package_version }}
           RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
           REVISION: ${{ steps.release.outputs.revision }}
+          SNUPKG_PUSH_OUTCOME: ${{ steps.snupkg-push.outcome }}
+        shell: bash
         run: |
+          snupkg_files=$(ls artifacts/nuget/*.snupkg 2>/dev/null | xargs -I{} basename {} || echo "none")
+          if [ "$SNUPKG_PUSH_OUTCOME" = "success" ]; then
+            snupkg_status="pushed to nuget.org (verify availability via NuGet Package Explorer or VS debugger after indexing)"
+          else
+            snupkg_status="push failed — manual follow-up required"
+          fi
           {
             echo "## Published contracts package"
             echo
@@ -150,4 +171,5 @@ jobs:
             echo "- Release tag: \`${RELEASE_TAG}\`"
             echo "- Revision: \`${REVISION}\`"
             echo "- Version source: \`${RELEASE_TAG}\` and project \`<Version>\` matched before packing"
+            echo "- Symbol package: \`${snupkg_files}\` — ${snupkg_status}"
           } >> "$GITHUB_STEP_SUMMARY"
