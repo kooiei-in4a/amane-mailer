@@ -5,10 +5,10 @@
 Amane Mailer is pre-1.0 software. Only the latest patch release of the current
 minor version receives security fixes.
 
-| Version | Supported |
-| ------- | --------- |
-| 0.1.x   | Yes       |
-| < 0.1   | No        |
+| Version | Supported          |
+| ------- | ------------------ |
+| 0.1.1   | Yes (latest patch) |
+| < 0.1.1 | No                 |
 
 ## Reporting a Vulnerability
 
