@@ -5,10 +5,25 @@ services:
       - "127.0.0.1:1025:1025"
       - "127.0.0.1:8025:8025"
 
+  # The runtime image is chiseled and runs as a non-root user. On Linux/macOS a
+  # fresh bind mount path is auto-created root-owned (mode 755), so SQLite cannot
+  # be created until the directory is world-writable. Windows Docker Desktop
+  # usually creates a permissive host directory and does not need manual setup.
+  data-init:
+    image: ${LOCAL_COMPOSE_INIT_IMAGE:-busybox:1.37}
+    user: "0:0"
+    command: ["sh", "-c", "mkdir -p /app/data && chmod 0777 /app/data"]
+    volumes:
+      - ${MAILER_DATA_PATH:-../../data/mailer}:/app/data
+    restart: "no"
+
   mailer-migrate:
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile
+    depends_on:
+      data-init:
+        condition: service_completed_successfully
     command: ["db", "migrate"]
     environment:
       ASPNETCORE_ENVIRONMENT: Production

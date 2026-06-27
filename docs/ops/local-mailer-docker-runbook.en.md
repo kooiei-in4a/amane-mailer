@@ -29,6 +29,45 @@ Current limitations ([ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md
 - Default is `MAILER_PROVIDER=mailpit`. ACS live sending runs only when you have approved ACS resources, a verified sender address, and a deliverable recipient address.
 - `config/mailer/tenants.local*.json` is in `.gitignore`. Do not commit tenant JSON or connection strings used for live sending.
 
+## Data directory permissions (fresh checkout)
+
+Local compose bind-mounts SQLite at `data/mailer/` (not a named volume).
+`data/mailer` is in `.gitignore`, so a fresh clone does not include it.
+
+| Environment | Fresh checkout behavior |
+|-------------|-------------------------|
+| Linux / macOS | Docker auto-creates the bind-mount path as **root-owned mode 755**. The Mailer image runs as a non-root user, so SQLite cannot be created without preparation (`SQLite Error 14: unable to open database file`). |
+| Windows Docker Desktop | The host directory is often created with permissive permissions, so migrate may succeed without manual setup. |
+
+The `data-init` service in `infra/docker/docker-compose.local.yml` runs before migrate
+and makes `data/mailer` world-writable (mode 777) so the non-root container can create
+SQLite files. Normal `docker compose up` and this runbook require no extra steps.
+
+To verify a fresh checkout on Linux/macOS (run as-is when `data/mailer` is absent):
+
+```bash
+bash scripts/local-compose-fresh-data-check.sh
+```
+
+If `data/mailer` already exists, the script aborts to avoid accidental deletion.
+To remove existing history and run the check, set the reset flag explicitly:
+
+```bash
+LOCAL_FRESH_DATA_RESET=1 bash scripts/local-compose-fresh-data-check.sh
+```
+
+To keep `data/mailer` after the check, also set `LOCAL_FRESH_DATA_KEEP=1`.
+
+To prepare the bind mount manually (when not using `data-init`):
+
+```bash
+mkdir -p data/mailer
+chmod 0777 data/mailer
+```
+
+For release smoke (`data-init` on a named volume with the published GHCR image), see
+[release-image-smoke.en.md](release-image-smoke.en.md).
+
 ## 1. Stop Mailer
 
 ```powershell
