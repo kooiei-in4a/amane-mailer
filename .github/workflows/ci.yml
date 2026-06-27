@@ -106,7 +106,7 @@ jobs:
         run: bash scripts/local-compose-fresh-data-check.sh
 
   openapi-validation:
-    name: OpenAPI and contract drift validation
+    name: OpenAPI validation
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
