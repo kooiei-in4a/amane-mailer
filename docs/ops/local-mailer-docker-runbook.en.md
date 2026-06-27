@@ -26,6 +26,9 @@ Current limitations ([ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md
 - Run commands from the repository root.
 - Commands assume Windows PowerShell.
 - Local compose file: `infra/docker/docker-compose.local.yml`.
+- Mailpit defaults to `axllent/mailpit:latest` as a local-only helper. To
+  reproduce a specific build, override it with `MAILPIT_IMAGE` using a tag or
+  digest (policy: [container image pinning policy](container-image-pinning.en.md)).
 - Default is `MAILER_PROVIDER=mailpit`. ACS live sending runs only when you have approved ACS resources, a verified sender address, and a deliverable recipient address.
 - `config/mailer/tenants.local*.json` is in `.gitignore`. Do not commit tenant JSON or connection strings used for live sending.
 

@@ -24,6 +24,7 @@
 #   MAILER_IMAGE_TAG         default v0.1.1
 #   MAILER_IMAGE_PLATFORM    default linux/amd64 (published runtime image platform)
 #   MAILER_PULL_POLICY       default always   (set "missing" to reuse a local image)
+#   MAILPIT_IMAGE            default axllent/mailpit:latest
 #   MAILER_HTTP_PORT         default 15280     (host port for Mailer)
 #   MAILPIT_HTTP_PORT        default 18025     (host port for Mailpit API/UI)
 #   MAIL_SERVICE_TOKEN       default local-mail-service-token
@@ -40,6 +41,7 @@ export MAILER_IMAGE_REPOSITORY="${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/a
 export MAILER_IMAGE_TAG="${MAILER_IMAGE_TAG:-v0.1.1}"
 export MAILER_IMAGE_PLATFORM="${MAILER_IMAGE_PLATFORM:-linux/amd64}"
 export MAILER_PULL_POLICY="${MAILER_PULL_POLICY:-always}"
+export MAILPIT_IMAGE="${MAILPIT_IMAGE:-axllent/mailpit:latest}"
 export MAILER_HTTP_PORT="${MAILER_HTTP_PORT:-15280}"
 export MAILPIT_HTTP_PORT="${MAILPIT_HTTP_PORT:-18025}"
 export MAIL_SERVICE_TOKEN="${MAIL_SERVICE_TOKEN:-local-mail-service-token}"

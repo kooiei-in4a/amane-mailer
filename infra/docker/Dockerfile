@@ -1,5 +1,5 @@
 # Native AOT publish (linux-x64) + chiseled runtime — Phase A single-container mailer.
-FROM mcr.microsoft.com/dotnet/sdk:10.0-noble-aot AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble-aot@sha256:47f56dc3e5bf7b62d878c98aa7b31848ac9167462789fa73220adcd1af064e37 AS build
 WORKDIR /repo
 
 COPY Directory.Build.props Directory.Build.targets Directory.Packages.props global.json ./
@@ -16,7 +16,7 @@ RUN dotnet restore src/Amane.Mailer/Amane.Mailer.csproj --locked-mode \
     /p:PublishAot=true \
     /p:IlcTreatWarningsAsErrors=true
 
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled AS runtime
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled@sha256:01bd3f3d617a16705f896962ce26f5c1e1588ea57c71c98908cadb7bdcd0cd4d AS runtime
 WORKDIR /app
 
 COPY --from=build /app/publish/ ./

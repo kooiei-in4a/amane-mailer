@@ -296,7 +296,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 
 | 要素 | 内容 |
 |---|---|
-| イメージ | `infra/docker/Dockerfile` — `sdk:10.0-noble-aot` ビルド → `runtime-deps:10.0-noble-chiseled` 実行 |
+| イメージ | `infra/docker/Dockerfile` — digest-pinned `sdk:10.0-noble-aot` ビルド → digest-pinned `runtime-deps:10.0-noble-chiseled` 実行（[pinning policy](ops/container-image-pinning.md)） |
 | データ | `./data:/app/data`（SQLite `mailer.db` + WAL） |
 | テナント設定 | host-owned tenant JSON を `MAILER_TENANTS_HOST_PATH` から `MAILER_TENANTS_CONTAINER_PATH`（既定 `/app/config/mailer/tenants.json`）へ read-only mount |
 | マイグレーション | `profiles: ops` の `mailer-migrate`（`db migrate`） |
