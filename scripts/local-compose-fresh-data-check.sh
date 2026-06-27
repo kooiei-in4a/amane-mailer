@@ -46,13 +46,29 @@ abort() {
   exit 1
 }
 
+remove_data_dir() {
+  if rm -rf "$DATA_DIR" 2>/dev/null; then
+    return 0
+  fi
+
+  # Docker may leave root-owned files in the bind mount; remove via a throwaway container.
+  local parent_dir name
+  parent_dir="$(dirname "$DATA_DIR")"
+  name="$(basename "$DATA_DIR")"
+
+  docker run --rm \
+    -v "$parent_dir:/parent" \
+    "${LOCAL_COMPOSE_INIT_IMAGE:-busybox:1.37}" \
+    sh -c "rm -rf /parent/$name" >/dev/null 2>&1
+}
+
 cleanup() {
   if [[ "${LOCAL_FRESH_DATA_KEEP:-}" == "1" ]]; then
     return
   fi
 
   if [[ "${should_cleanup:-}" == "1" ]]; then
-    rm -rf "$DATA_DIR"
+    remove_data_dir || true
   fi
 }
 
@@ -63,7 +79,7 @@ if [[ -e "$DATA_DIR" ]]; then
     abort "$DATA_DIR already exists; set LOCAL_FRESH_DATA_RESET=1 to remove it and run the fresh-data check"
   fi
 
-  rm -rf "$DATA_DIR"
+  remove_data_dir || abort "failed to remove existing $DATA_DIR"
 fi
 
 should_cleanup=1
