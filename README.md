@@ -85,7 +85,8 @@ commit しないでください。
 
 公開済みの GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.1.1`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
-conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh` を使います。手順と設定は
+conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（Linux / macOS / Git Bash）または
+`scripts/release-smoke.ps1`（Windows / PowerShell + Docker Desktop）を使います。手順と設定は
 [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
 
 既定タグ `v0.1.1` の公開 GHCR runtime image は **`linux/amd64` only** です。Apple Silicon /
@@ -97,6 +98,10 @@ multi-arch release では Docker manifest または release notes の platform /
 
 ```bash
 bash scripts/release-smoke.sh
+```
+
+```powershell
+.\scripts\release-smoke.ps1
 ```
 
 `infra/deploy/drills/` 配下の no-send / ACS deploy drill helper script（`mail-05a-*`）は、
