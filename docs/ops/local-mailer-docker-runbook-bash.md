@@ -19,6 +19,7 @@ Windows PowerShell 版 runbook の該当節、または deploy / release smoke r
   `data-init` が `data/mailer` を準備するため、追加操作は不要です。
 - Admin UI の環境変数は `export` で設定します。`AMANE_ADMIN_ALLOW_HTTP=true` と
   `AMANE_ADMIN_PII_LIST_MODE=visible` はローカル確認専用です。
+- ACS 実送信 / Dead Letter の追加確認は Windows PowerShell 版、deploy runbook、release smoke runbook を参照します。
 
 ## 前提
 
@@ -30,6 +31,7 @@ Windows PowerShell 版 runbook の該当節、または deploy / release smoke r
 - 既定の host port `5280`（Mailer）と `8025`（Mailpit）が空いていること。
 
 `jq` は任意です。この runbook のコマンドは `jq` なしで動きます。
+Debian / Ubuntu で `uuidgen` が無い場合は `sudo apt install uuid-runtime` で追加できます。
 
 ## 1. 共通変数を設定する
 
@@ -96,6 +98,9 @@ unset admin_password
 
 ## 5. Mailer / Mailpit / Admin UI を起動する
 
+手順 1 以降は、同じ bash セッションで順に実行する前提です。別セッションで再開する場合は、
+手順 4 で `hash` を作り直してから Admin UI と Mailpit の env も再設定してください。
+
 `.env` に ACS 用の値が入っていても、この shell では Mailpit 固定で上書きします。
 `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=0.0.0.0` は `/admin` request の
 `Connection.LocalIpAddress` allowlist であり、socket bind ではありません。実際の host 側公開範囲は
@@ -122,6 +127,7 @@ docker compose -f "$COMPOSE_FILE" up -d --wait mailer
 
 `AMANE_ADMIN_ALLOW_HTTP=true` と `AMANE_ADMIN_PII_LIST_MODE=visible` はローカル確認専用です。
 本番・develop deploy host では HTTP 許可や PII 表示を有効にしないでください。
+Admin UI の公開範囲と PII 方針は [ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md) を参照してください。
 
 ## 6. health / ready を確認する
 
@@ -191,7 +197,15 @@ request_json() {
     "$TENANT_ID" "$SOURCE_SERVICE" "$request_id" "$PURPOSE" "$TO_EMAIL" "$subject" "$TEXT_BODY" "$hash_value"
 }
 
-request_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+if command -v uuidgen >/dev/null 2>&1; then
+  request_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+elif [ -r /proc/sys/kernel/random/uuid ]; then
+  request_id="$(cat /proc/sys/kernel/random/uuid)"
+else
+  echo "uuidgen is required. On Debian/Ubuntu, install it with: sudo apt install uuid-runtime" >&2
+  exit 1
+fi
+
 canonical_ok="$(canonical_payload "$SUBJECT_OK")"
 hash_ok="$(payload_hash "$canonical_ok")"
 json_ok="$(request_json "$request_id" "$SUBJECT_OK" "$hash_ok")"

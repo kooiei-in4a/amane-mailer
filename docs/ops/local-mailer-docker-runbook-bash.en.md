@@ -20,6 +20,7 @@ deploy / release smoke runbooks.
   startup runs `data-init`, which prepares `data/mailer`, so no extra setup is usually needed.
 - Admin UI environment variables use `export`. `AMANE_ADMIN_ALLOW_HTTP=true` and
   `AMANE_ADMIN_PII_LIST_MODE=visible` are for local verification only.
+- ACS live sending / Dead Letter checks stay in the Windows PowerShell runbook, deploy runbooks, or release smoke runbooks.
 
 ## Prerequisites
 
@@ -31,6 +32,7 @@ deploy / release smoke runbooks.
 - Default host ports `5280` (Mailer) and `8025` (Mailpit) are free.
 
 `jq` is optional. The commands below do not require it.
+On Debian / Ubuntu, install missing `uuidgen` with `sudo apt install uuid-runtime`.
 
 ## 1. Set common variables
 
@@ -97,6 +99,9 @@ unset admin_password
 
 ## 5. Start Mailer / Mailpit / Admin UI
 
+Steps from section 1 onward assume the same bash session. If you resume in a new session,
+regenerate `hash` in section 4, then reconfigure the Admin UI and Mailpit env vars.
+
 Even if `.env` contains ACS values, this shell overrides them to Mailpit.
 `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=0.0.0.0` is the `/admin` request
 `Connection.LocalIpAddress` allowlist, not a socket bind. Actual host exposure is
@@ -123,6 +128,7 @@ docker compose -f "$COMPOSE_FILE" up -d --wait mailer
 
 `AMANE_ADMIN_ALLOW_HTTP=true` and `AMANE_ADMIN_PII_LIST_MODE=visible` are for local
 verification only. Do not enable HTTP or PII display on production or develop deploy hosts.
+For the Admin UI exposure and PII policy, see [ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md).
 
 ## 6. Verify health / readiness
 
@@ -193,7 +199,15 @@ request_json() {
     "$TENANT_ID" "$SOURCE_SERVICE" "$request_id" "$PURPOSE" "$TO_EMAIL" "$subject" "$TEXT_BODY" "$hash_value"
 }
 
-request_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+if command -v uuidgen >/dev/null 2>&1; then
+  request_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+elif [ -r /proc/sys/kernel/random/uuid ]; then
+  request_id="$(cat /proc/sys/kernel/random/uuid)"
+else
+  echo "uuidgen is required. On Debian/Ubuntu, install it with: sudo apt install uuid-runtime" >&2
+  exit 1
+fi
+
 canonical_ok="$(canonical_payload "$SUBJECT_OK")"
 hash_ok="$(payload_hash "$canonical_ok")"
 json_ok="$(request_json "$request_id" "$SUBJECT_OK" "$hash_ok")"
