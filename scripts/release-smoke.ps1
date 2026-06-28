@@ -177,13 +177,13 @@ function Invoke-MailRequest {
         $webResponse = $_.Exception.Response
         if ($null -ne $webResponse) {
             $script:HttpStatus = [int]$webResponse.StatusCode
-            $stream = $webResponse.GetResponseStream()
+            $reader = $null
             try {
-                $reader = New-Object System.IO.StreamReader($stream)
+                $reader = New-Object System.IO.StreamReader($webResponse.GetResponseStream())
                 $script:RespBody = $reader.ReadToEnd()
             }
             finally {
-                if ($null -ne $stream) { $stream.Dispose() }
+                if ($null -ne $reader) { $reader.Dispose() }
             }
         }
         else {
@@ -195,6 +195,9 @@ function Invoke-MailRequest {
 
 function Get-HttpStatus {
     param([string]$Path)
+    # Wait-ForHttp only treats 200 as ready. Non-2xx or transport errors return '000',
+    # matching bash curl when the endpoint is not yet healthy. POST error bodies use
+    # Invoke-MailRequest, which reads status codes on PS7+ via -SkipHttpErrorCheck.
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri "$MailerUrl$Path" -TimeoutSec 15
         return [string]$response.StatusCode
@@ -233,10 +236,10 @@ function Test-MailpitReceivedSubject {
 }
 
 function Invoke-ReleaseCompose {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-    & docker compose -f $ComposeFile @Args
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ComposeArgs)
+    & docker compose -f $ComposeFile @ComposeArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "docker compose failed: $($Args -join ' ')"
+        throw "docker compose failed: $($ComposeArgs -join ' ')"
     }
 }
 
@@ -259,15 +262,35 @@ function Test-RequiredDeps {
 }
 
 function Invoke-DockerComposeQuiet {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ComposeArgs)
+    # PS wraps native stderr as ErrorRecord; Continue keeps cleanup from aborting under Stop.
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & docker compose -f $ComposeFile @Args 2>&1 | Out-Null
+        & docker compose -f $ComposeFile @ComposeArgs 2>&1 | Out-Null
     }
     finally {
         $ErrorActionPreference = $prevEap
     }
+}
+
+function Remove-ReleaseSmokeVolumeIfPresent {
+    $volumeName = "${ReleaseSmokeProject}_mailer-data"
+    & docker volume inspect $volumeName 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { return }
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & docker volume rm $volumeName 2>&1 | Out-Null
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+}
+
+function Invoke-ReleaseSmokeTeardown {
+    Invoke-DockerComposeQuiet down -v --remove-orphans
+    Remove-ReleaseSmokeVolumeIfPresent
 }
 
 function Invoke-Cleanup {
@@ -278,7 +301,7 @@ function Invoke-Cleanup {
     else {
         Write-Log ''
         Write-Log "[cleanup] removing compose project '$ReleaseSmokeProject' and its volume"
-        Invoke-DockerComposeQuiet down -v --remove-orphans
+        Invoke-ReleaseSmokeTeardown
     }
 }
 
@@ -293,7 +316,7 @@ try {
     Test-RequiredDeps
 
     Write-Log "[setup] removing any previous '$ReleaseSmokeProject' project"
-    Invoke-DockerComposeQuiet down -v --remove-orphans
+    Invoke-ReleaseSmokeTeardown
 
     Write-Log "[setup] starting Mailer + Mailpit (pull policy: $($env:MAILER_PULL_POLICY))"
     try {
