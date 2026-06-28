@@ -73,10 +73,10 @@ for manifest in manifests:
     architecture = platform.get("architecture")
     variant = platform.get("variant")
     if os_name and architecture and digest:
-        platform_name = f"{os_name}/{architecture}"
+        base_platform_name = f"{os_name}/{architecture}"
+        runtime_by_platform.setdefault(base_platform_name, digest)
         if variant:
-            platform_name = f"{platform_name}/{variant}"
-        runtime_by_platform[platform_name] = digest
+            runtime_by_platform[f"{base_platform_name}/{variant}"] = digest
 
 missing_runtime = []
 missing_attestation = []
