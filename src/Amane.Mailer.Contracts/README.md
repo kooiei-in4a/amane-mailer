@@ -5,6 +5,18 @@ delivery payload hash helper for use by consumer applications and the Mailer ser
 
 The C# root namespace is `Amane.Mailer.Contracts`.
 
+## Target Framework
+
+This package targets **.NET 8** (`net8.0`) on purpose. The Mailer runtime service
+targets a newer framework (currently `net10.0`), but the Contracts package stays on
+a broader consumer-compatible TFM so downstream applications on .NET 8 and later can
+reference it without upgrading their own target framework.
+
+Package version numbers stay aligned with the Mailer service release (see the
+Versioning Policy section in `docs/service-spec.md`), but the target frameworks do
+not have to match. A newer runtime does not imply the Contracts package should move
+to the same TFM.
+
 ## HTTP Contract Source of Truth
 
 This package is the code-level source of truth for Mailer HTTP request/response

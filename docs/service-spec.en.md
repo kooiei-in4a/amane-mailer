@@ -89,6 +89,12 @@ Prefer the immutable `sha-<git-sha>` tag or digest for deployment. The `vX.Y.Z` 
 
 Publish procedures: [docs/ops/ghcr-image-publish.en.md](ops/ghcr-image-publish.en.md), [`.github/workflows/publish-contracts.yml`](../.github/workflows/publish-contracts.yml)
 
+**Contracts package target framework**
+
+`Amane.Mailer.Contracts` targets `net8.0` for broader consumer compatibility. The Mailer runtime may target a newer framework such as `net10.0`, but release version (`X.Y.Z`) alignment and target framework are separate concerns. A newer runtime TFM does not require the Contracts package to move to the same TFM.
+
+When raising the Contracts package TFM, document the change in CHANGELOG release notes with migration guidance. Changes that raise the minimum .NET version required by consumer applications are treated as breaking changes in the 0.x line and follow semver from 1.0.0 onward.
+
 **0.x compatibility expectations**
 
 Releases in the 0.x line are still stabilizing the public API and contract. Backward compatibility is not guaranteed, but breaking changes are documented in CHANGELOG release notes with migration guidance. Starting from 1.0.0, semver backward-compatibility guarantees apply.

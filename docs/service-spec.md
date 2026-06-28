@@ -89,6 +89,12 @@ deploy では不変タグ `sha-<git-sha>` または digest を優先する。`vX
 
 publish 手順: [docs/ops/ghcr-image-publish.md](ops/ghcr-image-publish.md)、[`.github/workflows/publish-contracts.yml`](../.github/workflows/publish-contracts.yml)
 
+**Contracts package の target framework**
+
+`Amane.Mailer.Contracts` は consumer 互換のため `net8.0` を target する。Mailer runtime は `net10.0` などより新しい framework を target できるが、リリース version (`X.Y.Z`) の同期と target framework は別問題である。runtime が新しい TFM に上がっても、Contracts package が同じ TFM に追随する必要はない。
+
+Contracts package の TFM を引き上げる場合は、CHANGELOG のリリースノートと移行ガイダンスで明記する。consumer アプリの最小 .NET version 要件が上がる変更は、0.x では破壊的変更として扱い、1.0.0 以降は semver に従う。
+
 **0.x ラインの互換性期待値**
 
 0.x リリースは公開 API・contract をまだ安定化中である。後方互換性は保証しないが、破壊的変更は CHANGELOG のリリースノートと移行ガイダンスで明記する。1.0.0 以降は semver の後方互換保証を適用する。

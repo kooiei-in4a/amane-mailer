@@ -126,6 +126,8 @@ by running it from a release tag ref. The package version is derived from the ta
 
 The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contracts/`. The Mailer runtime references the same DTOs / constants, and [OpenAPI](docs/api/openapi.yaml) is the Consumer-facing HTTP reference / public schema synchronized with them. Service release versions, Docker image tags, NuGet package versions, and OpenAPI `info.version` are all kept in sync under the same `X.Y.Z` (see [Versioning Policy](docs/service-spec.en.md#versioning-policy)).
 
+The Contracts package targets `net8.0` for broader consumer compatibility. The Mailer runtime targets `net10.0`, but release version alignment and target framework are separate concerns. See the Target Framework section in [`src/Amane.Mailer.Contracts/README.md`](src/Amane.Mailer.Contracts/README.md).
+
 ## Consumer Quick Start
 
 Minimum information to POST a mail request to a running Mailer:

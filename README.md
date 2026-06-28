@@ -118,6 +118,8 @@ version の公開は [`.github/workflows/publish-contracts.yml`](.github/workflo
 
 HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/` です。Mailer runtime は同じ DTO / constants を参照し、[OpenAPI](docs/api/openapi.yaml) は Consumer 向け HTTP reference / 公開 schema として同期します。service release / Docker image tag / NuGet package / OpenAPI `info.version` はすべて同一の `X.Y.Z` を使用します（詳細: [バージョニングポリシー](docs/service-spec.md#バージョニングポリシー)）。
 
+Contracts package は consumer 互換のため `net8.0` を target します。Mailer runtime は `net10.0` ですが、リリース version の同期と target framework は別問題です。詳細は [`src/Amane.Mailer.Contracts/README.md`](src/Amane.Mailer.Contracts/README.md) の Target Framework 節を参照してください。
+
 ## Consumer クイックスタート
 
 起動した Mailer にメール送信依頼を POST するための最低限の情報です。
