@@ -8,7 +8,7 @@ CI is weighted by branch path so repeated pushes on feature branches stay fast.
 ```
 feature/**, fix/**  → (PR) → develop  ← accumulate multiple features
                                ↓ integration check with docker compose
-develop  → (PR, full CI) → main
+develop  → (PR, release-gate CI) → main
                                ↓ sync main back into develop (manual merge)
                              tag → release
 ```
@@ -39,24 +39,29 @@ Job names are unchanged so branch protection required status checks stay aligned
 |---------|----------|
 | Push to `feature/**` / `fix/**` | `Restore, build, and test` only |
 | Push to `develop`, or PR targeting `develop` | Above + `OpenAPI validation` |
-| Push to `main`, PR targeting `main`, `workflow_dispatch` | Full CI (all jobs below) |
+| PR targeting `main` | Release-gate CI (Native AOT, amd64 Docker, compose smoke, OpenAPI) |
+| Push to `main`, `workflow_dispatch` | Final CI (above + arm64 Docker) |
 
-Full CI includes:
+Release-gate CI includes:
 
 - `Restore, build, and test`
 - `Native AOT publish smoke`
-- `Docker build smoke (linux/amd64)` / `Docker build smoke (linux/arm64)` and aggregate `Docker build smoke`
+- `Docker build smoke (linux/amd64)` and aggregate `Docker build smoke`
 - `Local compose fresh data dir`
 - `OpenAPI validation`
 
-The `linux/arm64` Docker build (QEMU emulation) runs on full CI only.
+The `linux/arm64` Docker build (QEMU emulation) is the slowest Docker smoke path,
+so it runs only on `main` push and `workflow_dispatch` final CI.
 
 ### Intended trade-off
 
-Native AOT and multi-arch Docker do not run on `develop` or feature branches.
-Failures may therefore appear **for the first time on a PR to `main`**. That is intentional: the release gate is full CI on `main` PRs.
+Native AOT and Docker smoke are minimized on `develop` and feature branches.
+Native AOT or amd64 Docker failures may therefore appear **for the first time on
+a PR to `main`**. arm64 Docker failures may appear **for the first time on the
+post-merge push to `main`**. That is intentional: release PRs stay faster while
+the final `main` commit still receives multi-arch Docker coverage.
 
-Ambiguous paths fail secure toward full CI (for example `workflow_dispatch`).
+Ambiguous paths fail secure toward final CI (for example `workflow_dispatch`).
 
 ### concurrency
 
@@ -68,7 +73,8 @@ Required status check job names are unchanged.
 
 - Standalone jobs (Native AOT, compose smoke, etc.): **Skipped** on light paths; GitHub treats skipped required checks as successful.
 - Aggregate job `Docker build smoke` (`docker-build-smoke-required`): **Always runs** even when the matrix is skipped, and returns success when the matrix result is skipped. This avoids a `needs` + matching `if` skip chain that can leave required checks pending.
-- On PRs to `main`, the matrix runs and pass/fail is reflected normally.
+- On PRs to `main`, the amd64 matrix runs and pass/fail is reflected in the aggregate job.
+- On pushes to `main` and `workflow_dispatch`, the amd64 / arm64 matrix runs.
 
 ### develop protection policy
 
