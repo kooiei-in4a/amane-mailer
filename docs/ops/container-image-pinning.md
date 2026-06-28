@@ -7,7 +7,7 @@
 ## 方針
 
 - `infra/docker/Dockerfile` の .NET SDK / runtime-deps base image は `tag@sha256:<digest>` で固定します。tag は可読性と Dependabot の更新検出のために残し、digest が実際の build input を固定します。
-- publish workflow は現時点で `linux/amd64` のみを build します。Dockerfile の digest は registry の manifest list digest を使い、workflow の `platforms: linux/amd64` で対象 platform を選択します。
+- publish workflow は `linux/amd64` と `linux/arm64` を build します。Dockerfile の digest は registry の manifest list digest を使い、workflow の `platforms: linux/amd64,linux/arm64` で対象 platform を選択します。
 - `infra/docker/docker-compose.local.yml` と `infra/docker/docker-compose.release-smoke.yml` の Mailpit は production / release artifact に含まれない local-only helper です。既定は `axllent/mailpit:latest` のままにし、日常のローカル検証では Mailpit の修正を自然に取り込みます。
 - Mailpit の特定 build で再現したい場合、または supply-chain review のために固定が必要な場合は、`MAILPIT_IMAGE=axllent/mailpit:<tag>` または `MAILPIT_IMAGE=axllent/mailpit@sha256:<digest>` で上書きします。
 
@@ -20,7 +20,7 @@ Dependabot は `.github/dependabot.yml` の `docker` ecosystem で `/infra/docke
 更新 PR では次を確認します。
 
 1. tag 名が意図した lineage のままか確認します（例: `10.0-noble-aot`, `10.0-noble-chiseled`）。tag 変更を含む場合は .NET / Ubuntu base の変更として扱います。
-2. old / new digest を `docker buildx imagetools inspect` で確認し、workflow が使う `linux/amd64` manifest が存在することを確認します。
+2. old / new digest を `docker buildx imagetools inspect` で確認し、workflow が使う `linux/amd64` と `linux/arm64` manifest が存在することを確認します。
 3. upstream の .NET container image / Ubuntu / chiseled image notes、security update、breaking change を確認します。
 4. `infra/docker/Dockerfile` から Mailer image を build し、`/app/Amane.Mailer --help` または workflow 相当の image run が通ることを確認します。
 5. release 前は publish workflow の digest / platform / OCI label / attestation gate と、release image smoke を通します。
@@ -43,4 +43,4 @@ release evidence には published GHCR image の digest を記録します。bas
 - Dockerfile の .NET SDK / runtime-deps tag と digest
 - digest update PR の review 結果
 - Docker build / image run / release smoke の結果
-- publish workflow summary の published image digest、platform、attestation 状態
+- publish workflow summary の published image index digest、platform ごとの runtime manifest digest、attestation manifest digest

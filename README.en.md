@@ -93,12 +93,14 @@ run `scripts/release-smoke.sh`. See
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration.
 
-The published GHCR runtime image is currently **`linux/amd64` only**. On Apple
-Silicon or ARM Linux hosts, you can smoke it only when Docker Desktop or the
-Docker engine can run amd64 images through emulation, for example with
-`MAILER_IMAGE_PLATFORM=linux/amd64 bash scripts/release-smoke.sh`. This is not a
-production multi-arch support guarantee; multi-arch support is tracked in
-[#4](https://github.com/kooiei-in4a/amane-mailer/issues/4).
+The published GHCR runtime image for the default `v0.1.1` tag is
+**`linux/amd64` only**. On Apple Silicon or ARM Linux hosts, you can smoke that
+tag only when Docker Desktop or the Docker engine can run amd64 images through
+emulation, for example with
+`MAILER_IMAGE_PLATFORM=linux/amd64 bash scripts/release-smoke.sh`. For
+multi-arch releases, confirm the platform / runtime manifest digest in the
+Docker manifest or release notes, then smoke each target platform with
+`MAILER_IMAGE_PLATFORM=linux/amd64` or `MAILER_IMAGE_PLATFORM=linux/arm64`.
 
 ```bash
 bash scripts/release-smoke.sh

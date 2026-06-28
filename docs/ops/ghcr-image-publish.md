@@ -43,8 +43,8 @@ base image は digest pin し、更新時は [container image pinning policy](co
 1. release commit に `vX.Y.Z` tag を作成します。tag commit はこの hardened workflow を含む必要があるため、この変更を merge した後の commit に tag を切ってください。Contracts package を同じ release で publish する場合は、`src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` の `<Version>` が `X.Y.Z` と一致している必要があります。
 2. GitHub Actions の `Publish Amane Mailer Image` を release tag ref から実行します。
 3. `release` environment の承認後、workflow が `sha-<git-sha>` と `vX.Y.Z` を publish します。
-4. ワークフローの image run、config-content チェック、digest / platform / OCI label / attestation チェックが通ることを確認します。
-5. workflow summary の digest と `sha-<git-sha>` を GitHub Release notes または release evidence に転記します。Release notes の artifact / 運用制約は [release notes checklist](release-notes-checklist.md) で確認します。
+4. ワークフローの platform ごとの image run、config-content チェック、runtime manifest digest、OCI label、attestation manifest チェックが通ることを確認します。
+5. workflow summary の image index digest、platform ごとの runtime / attestation manifest digest、`sha-<git-sha>` を GitHub Release notes または release evidence に転記します。Release notes の artifact / 運用制約は [release notes checklist](release-notes-checklist.md) で確認します。
 
 既存の `v0.1.0` image は手動 evidence で digest / provenance を確認済みです。workflow 変更だけで既存 artifact を再発行しません。
 
@@ -70,15 +70,15 @@ image publish と NuGet package publish はどちらも GitHub Environment `rele
 
 - `provenance: true`
 - `sbom: true`
-- `platforms: linux/amd64`
+- `platforms: linux/amd64,linux/arm64`
 
-workflow は publish 前に `sha-<git-sha>` tag と release tag が GHCR に存在しないことを確認します。publish 後は build action の digest output が空でないこと、`sha-<git-sha>` tag と release tag の digest が build digest と一致すること、`docker buildx imagetools inspect --raw` に attestation manifest があることを gate します。さらに pulled image の OCI labels を検証します:
+workflow は publish 前に `sha-<git-sha>` tag と release tag が GHCR に存在しないことを確認します。publish 後は build action の digest output が空でないこと、`sha-<git-sha>` tag と release tag の digest が build digest と一致すること、`docker buildx imagetools inspect --raw` に各 runtime platform の manifest と、その runtime manifest を参照する attestation manifest があることを gate します。さらに各 platform の pulled image / container で `--help` smoke、safe config file 一覧、OCI labels を検証します:
 
 - `org.opencontainers.image.source`
 - `org.opencontainers.image.revision`
 - `org.opencontainers.image.version`
 
-digest、platform、OCI labels、inspect 結果は workflow summary に出力されます。Release notes を自動更新しないため、publish 後は summary の digest と `sha-<git-sha>` を release record に転記し、[release notes checklist](release-notes-checklist.md) の artifact / 運用制約も GitHub Release notes に反映してください。
+image index digest、platform ごとの runtime manifest digest、attestation manifest digest、OCI labels、inspect 結果は workflow summary に出力されます。Release notes を自動更新しないため、publish 後は summary の digest と `sha-<git-sha>` を release record に転記し、[release notes checklist](release-notes-checklist.md) の artifact / 運用制約も GitHub Release notes に反映してください。
 
 Consumer が公開済み artifact を検証する手順は
 [release artifact verification](release-artifact-verification.md) にまとめます。

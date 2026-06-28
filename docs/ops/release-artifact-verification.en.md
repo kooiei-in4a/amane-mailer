@@ -31,8 +31,9 @@ Copy these values from `docs/releases/vX.Y.Z.md` or the GitHub Release notes:
 
 - Image: `ghcr.io/kooiei-in4a/amane-mailer:vX.Y.Z`
 - Digest / index digest
-- Runtime manifest digest
-- Attestation manifest digest
+- Platform list
+- Runtime manifest digest for each platform
+- Attestation manifest digest for each platform
 - Immutable tag: `ghcr.io/kooiei-in4a/amane-mailer:sha-<git-sha>`
 - OCI `org.opencontainers.image.revision`
 - OCI `org.opencontainers.image.version` when the release record lists it
@@ -43,8 +44,6 @@ Replace `vX.Y.Z` with the release you are verifying.
 IMAGE_REPO=ghcr.io/kooiei-in4a/amane-mailer
 IMAGE_TAG=vX.Y.Z
 EXPECTED_INDEX_DIGEST=sha256:replace-with-release-image-digest
-EXPECTED_RUNTIME_MANIFEST_DIGEST=sha256:replace-with-runtime-manifest-digest
-EXPECTED_ATTESTATION_MANIFEST_DIGEST=sha256:replace-with-attestation-manifest-digest
 EXPECTED_REVISION=replace-with-release-commit-sha
 
 IMAGE_REF="${IMAGE_REPO}:${IMAGE_TAG}"
@@ -62,28 +61,36 @@ Both `Digest:` values must match `EXPECTED_INDEX_DIGEST`. Prefer digest pins ove
 tags for deployment:
 
 ```bash
-docker pull --platform linux/amd64 "${IMAGE_REPO}@${EXPECTED_INDEX_DIGEST}"
+TARGET_PLATFORM=linux/amd64
+docker pull --platform "$TARGET_PLATFORM" "${IMAGE_REPO}@${EXPECTED_INDEX_DIGEST}"
 ```
 
 ## Runtime Manifest And OCI Labels
 
-Verify the runtime manifest digest inside the image index:
+Verify the runtime manifest digest inside the image index for each platform.
+Replace `TARGET_PLATFORM` and `EXPECTED_RUNTIME_MANIFEST_DIGEST` with the
+per-platform values from the release record.
 
 ```bash
+TARGET_PLATFORM=linux/amd64
+TARGET_OS="${TARGET_PLATFORM%%/*}"
+TARGET_ARCH="${TARGET_PLATFORM#*/}"
+EXPECTED_RUNTIME_MANIFEST_DIGEST=sha256:replace-with-runtime-manifest-digest
+
 docker buildx imagetools inspect --raw "$IMAGE_REF" \
-  | jq -r '.manifests[]
-    | select(.platform.os == "linux" and .platform.architecture == "amd64")
+  | jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.manifests[]
+    | select(.platform.os == $os and .platform.architecture == $arch)
     | .digest'
 ```
 
 The output must match `EXPECTED_RUNTIME_MANIFEST_DIGEST`. If `jq` is not
-available, inspect the `linux/amd64` manifest line in
+available, inspect the target platform manifest line in
 `docker buildx imagetools inspect "$IMAGE_REF"`.
 
 Verify OCI labels from the pulled image:
 
 ```bash
-docker pull --platform linux/amd64 "$IMAGE_REF"
+docker pull --platform "$TARGET_PLATFORM" "$IMAGE_REF"
 
 docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}'
 docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
@@ -108,21 +115,25 @@ The current image publishing workflow runs `docker/build-push-action` with:
 
 - `provenance: true`
 - `sbom: true`
-- `platforms: linux/amd64`
+- `platforms: linux/amd64,linux/arm64`
 
 The SBOM and provenance are published as OCI attestation manifests attached to
 the GHCR image index, not as standalone GitHub Release assets. Verify the
-attestation manifest presence and digest:
+attestation manifest presence and digest for each runtime manifest digest:
 
 ```bash
+EXPECTED_ATTESTATION_MANIFEST_DIGEST=sha256:replace-with-attestation-manifest-digest
+
 docker buildx imagetools inspect --raw "$IMAGE_REF" \
-  | jq -r '.manifests[]
+  | jq -r --arg runtime "$EXPECTED_RUNTIME_MANIFEST_DIGEST" '.manifests[]
     | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")
+    | select(.annotations["vnd.docker.reference.digest"] == $runtime)
     | .digest'
 ```
 
-One output digest must match `EXPECTED_ATTESTATION_MANIFEST_DIGEST`. If `jq` is
-not available, confirm that an attestation manifest exists:
+One output digest must match the target platform's
+`EXPECTED_ATTESTATION_MANIFEST_DIGEST`. If `jq` is not available, confirm that
+an attestation manifest exists:
 
 ```bash
 docker buildx imagetools inspect --raw "$IMAGE_REF" \
@@ -130,8 +141,8 @@ docker buildx imagetools inspect --raw "$IMAGE_REF" \
 ```
 
 At this time, GitHub Releases do not attach separate `.spdx` / `.cdx` SBOM
-files. Release records store the image index digest, runtime manifest digest,
-and attestation manifest digest.
+files. Release records store the image index digest plus the runtime manifest
+digest and attestation manifest digest for each platform.
 
 ## NuGet Package
 

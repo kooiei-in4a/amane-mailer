@@ -22,7 +22,7 @@
 # Config via environment (all optional):
 #   MAILER_IMAGE_REPOSITORY  default ghcr.io/kooiei-in4a/amane-mailer
 #   MAILER_IMAGE_TAG         default v0.1.1
-#   MAILER_IMAGE_PLATFORM    default linux/amd64 (published runtime image platform)
+#   MAILER_IMAGE_PLATFORM    default linux/amd64 (runtime image platform to smoke)
 #   MAILER_PULL_POLICY       default always   (set "missing" to reuse a local image)
 #   MAILPIT_IMAGE            default axllent/mailpit:latest
 #   MAILER_HTTP_PORT         default 15280     (host port for Mailer)

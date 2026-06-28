@@ -14,9 +14,10 @@ after publishing a release, verify and record the following items.
 - Docker image, for example `ghcr.io/kooiei-in4a/amane-mailer:vX.Y.Z`
 - Image digest / index digest
 - Immutable Docker tag (`sha-<git-sha>`) and tag digest
-- Runtime manifest digest
-- Attestation manifest digest
-- Platform (currently `linux/amd64`)
+- Platform list using Docker manifest notation, for example `linux/amd64` and
+  `linux/arm64`
+- Runtime manifest digest for each platform
+- Attestation manifest digest for each platform
 - Release image smoke result (`docs/releases/vX.Y.Z.md`: digest, date, environment, pass/fail summary)
 - OCI source label and revision label
 - NuGet package name / version / package URL
@@ -34,7 +35,10 @@ after publishing a release, verify and record the following items.
 - SQLite deployment assumes single-node / single-replica operation. Horizontally
   scaling multiple Workers over one shared SQLite file is currently out of
   operational scope.
-- State the Docker image platform. The current image is `linux/amd64` only.
+- State the Docker image platforms using the same notation as the Docker
+  manifest. For a single-platform release, state a constraint such as
+  `linux/amd64 only`; for a multi-arch release, record per-platform digests and
+  smoke results.
 - Admin UI is disabled by default, internal-network-only, and experimental.
   State current limitations such as durable session, durable throttle, durable
   audit, and per-admin tenant scope gaps.

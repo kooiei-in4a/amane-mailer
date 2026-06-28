@@ -1,4 +1,4 @@
-# Native AOT publish (linux-x64) + chiseled runtime — Phase A single-container mailer.
+# Native AOT publish + chiseled runtime — Phase A single-container mailer.
 FROM mcr.microsoft.com/dotnet/sdk:10.0-noble-aot@sha256:47f56dc3e5bf7b62d878c98aa7b31848ac9167462789fa73220adcd1af064e37 AS build
 WORKDIR /repo
 
@@ -6,10 +6,17 @@ COPY Directory.Build.props Directory.Build.targets Directory.Packages.props glob
 COPY src/Amane.Mailer.Contracts/ ./src/Amane.Mailer.Contracts/
 COPY src/Amane.Mailer/ ./src/Amane.Mailer/
 
-RUN dotnet restore src/Amane.Mailer/Amane.Mailer.csproj --locked-mode \
+ARG TARGETARCH
+RUN target_arch="${TARGETARCH:-amd64}" \
+    && case "${target_arch}" in \
+        amd64) runtime_id="linux-x64" ;; \
+        arm64) runtime_id="linux-arm64" ;; \
+        *) echo "Unsupported Docker target architecture: ${target_arch}" >&2; exit 1 ;; \
+    esac \
+    && dotnet restore src/Amane.Mailer/Amane.Mailer.csproj --locked-mode \
     && dotnet publish src/Amane.Mailer/Amane.Mailer.csproj \
     -c Release \
-    -r linux-x64 \
+    -r "${runtime_id}" \
     --self-contained \
     --no-restore \
     -o /app/publish \

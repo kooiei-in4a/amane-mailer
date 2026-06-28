@@ -13,6 +13,7 @@ concurrency:
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/amane-mailer
+  IMAGE_PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   publish:
@@ -75,6 +76,9 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
 
@@ -113,7 +117,7 @@ jobs:
         with:
           context: .
           file: infra/docker/Dockerfile
-          platforms: linux/amd64
+          platforms: ${{ env.IMAGE_PLATFORMS }}
           push: true
           provenance: true
           sbom: true
@@ -124,117 +128,14 @@ jobs:
             org.opencontainers.image.version=${{ steps.image.outputs.release_tag }}
             org.opencontainers.image.description=Amane Mailer runtime image
 
-      - name: Run pushed image
-        env:
-          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.sha_tag }}
-        run: docker run --rm "$IMAGE_REF" --help
-
-      - name: Verify image config contents
-        env:
-          IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.sha_tag }}
-        run: |
-          container_id="$(docker create "$IMAGE_REF" --help)"
-          trap 'docker rm -f "$container_id" >/dev/null' EXIT
-
-          mkdir -p /tmp/mailer-config
-          docker cp "$container_id:/app/config/mailer/." /tmp/mailer-config
-
-          find /tmp/mailer-config -maxdepth 1 -type f -printf '%f\n' | sort > /tmp/mailer-config-files.txt
-          printf '%s\n' \
-            tenants.example.json \
-            tenants.local-acs.json.example \
-            tenants.schema.json \
-            > /tmp/expected-mailer-config-files.txt
-
-          diff -u /tmp/expected-mailer-config-files.txt /tmp/mailer-config-files.txt
-
-      - name: Inspect published image metadata
+      - name: Verify published image metadata
         id: metadata
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.sha_tag }}
           VERSION_REF: ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.release_tag }}
+          IMAGE_PLATFORMS: ${{ env.IMAGE_PLATFORMS }}
           RELEASE_TAG: ${{ steps.image.outputs.release_tag }}
           REVISION: ${{ steps.image.outputs.revision }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -z "${IMAGE_DIGEST}" ]; then
-            echo "::error::docker/build-push-action did not return an image digest."
-            exit 1
-          fi
-
-          inspect_text="$(docker buildx imagetools inspect "$IMAGE_REF")"
-          version_inspect_text="$(docker buildx imagetools inspect "$VERSION_REF")"
-          inspect_raw="$(docker buildx imagetools inspect --raw "$IMAGE_REF")"
-          printf '%s\n' "$inspect_text"
-
-          sha_tag_digest="$(printf '%s\n' "$inspect_text" | awk '/^Digest:/ { print $2; exit }')"
-          version_tag_digest="$(printf '%s\n' "$version_inspect_text" | awk '/^Digest:/ { print $2; exit }')"
-
-          if [ -z "${sha_tag_digest}" ] || [ -z "${version_tag_digest}" ]; then
-            echo "::error::Could not resolve digest for ${IMAGE_REF} or ${VERSION_REF}."
-            exit 1
-          fi
-
-          if [ "${sha_tag_digest}" != "${IMAGE_DIGEST}" ]; then
-            echo "::error::Build digest ${IMAGE_DIGEST} does not match ${IMAGE_REF} digest ${sha_tag_digest}."
-            exit 1
-          fi
-
-          if [ "${version_tag_digest}" != "${IMAGE_DIGEST}" ]; then
-            echo "::error::Build digest ${IMAGE_DIGEST} does not match ${VERSION_REF} digest ${version_tag_digest}."
-            exit 1
-          fi
-
-          if ! printf '%s\n' "$inspect_raw" | grep -Eq '"vnd\.docker\.reference\.type"[[:space:]]*:[[:space:]]*"attestation-manifest"'; then
-            echo "::error::Expected SBOM/provenance attestation manifest was not found for $IMAGE_REF."
-            exit 1
-          fi
-
-          platform="$(docker image inspect "$IMAGE_REF" --format '{{.Os}}/{{.Architecture}}')"
-          source_label="$(docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')"
-          revision_label="$(docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
-          version_label="$(docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.version" }}')"
-          expected_source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
-
-          if [ "${source_label}" != "${expected_source}" ]; then
-            echo "::error::OCI source label mismatch: ${source_label}"
-            exit 1
-          fi
-
-          if [ "${revision_label}" != "${REVISION}" ]; then
-            echo "::error::OCI revision label mismatch: ${revision_label}"
-            exit 1
-          fi
-
-          if [ "${version_label}" != "${RELEASE_TAG}" ]; then
-            echo "::error::OCI version label mismatch: ${version_label}"
-            exit 1
-          fi
-
-          {
-            echo "digest=${IMAGE_DIGEST}"
-            echo "platform=${platform}"
-            echo "attestation_manifest=present"
-          } >> "$GITHUB_OUTPUT"
-
-          {
-            echo "## Published image"
-            echo
-            echo "- Image: \`${IMAGE_REF}\`"
-            echo "- Release tag: \`${RELEASE_TAG}\`"
-            echo "- SHA tag: \`sha-${REVISION}\`"
-            echo "- Digest: \`${IMAGE_DIGEST}\`"
-            echo "- Release tag digest: \`${version_tag_digest}\`"
-            echo "- Platform: \`${platform}\`"
-            echo "- OCI source label: \`${source_label}\`"
-            echo "- OCI revision label: \`${revision_label}\`"
-            echo "- OCI version label: \`${version_label}\`"
-            echo "- SBOM/provenance: \`sbom: true\` and \`provenance: true\`; attestation manifest present"
-            echo
-            echo '```'
-            printf '%s\n' "$inspect_text"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          EXPECTED_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+        run: bash scripts/verify-published-image.sh

@@ -88,11 +88,12 @@ pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST
 conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh` を使います。手順と設定は
 [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
 
-公開 GHCR runtime image は現時点では **`linux/amd64` only** です。Apple Silicon / ARM Linux
-ホストでは、Docker Desktop などの amd64 emulation が使える場合に限り
+既定タグ `v0.1.1` の公開 GHCR runtime image は **`linux/amd64` only** です。Apple Silicon /
+ARM Linux ホストでは、Docker Desktop などの amd64 emulation が使える場合に限り
 `MAILER_IMAGE_PLATFORM=linux/amd64 bash scripts/release-smoke.sh` のように明示して検証できます。
-これは production multi-arch support の保証ではありません。multi-arch 対応は
-[#4](https://github.com/kooiei-in4a/amane-mailer/issues/4) で追跡しています。
+multi-arch release では Docker manifest または release notes の platform / runtime manifest digest
+を確認し、対象 platform ごとに `MAILER_IMAGE_PLATFORM=linux/amd64` または
+`MAILER_IMAGE_PLATFORM=linux/arm64` を指定して smoke してください。
 
 ```bash
 bash scripts/release-smoke.sh
