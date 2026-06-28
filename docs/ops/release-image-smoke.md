@@ -16,9 +16,10 @@ Mailer の状態は named volume に置き、終了時に `docker compose down -
 - `bash`、`curl`、`sha256sum` が使えること。
 - GHCR イメージが pull できること（private の場合は事前に `docker login ghcr.io`。
   [GHCR image publish 手順](ghcr-image-publish.md) を参照）。
-- 公開 Mailer runtime image は現時点では `linux/amd64` only です。ARM host では
-  Docker Desktop などの amd64 emulation が使える場合のみ検証できます。multi-arch 対応は
-  [#4](https://github.com/kooiei-in4a/amane-mailer/issues/4) で追跡しています。
+- 既定タグ `v0.1.1` の公開 Mailer runtime image は `linux/amd64` only です。ARM host では
+  Docker Desktop などの amd64 emulation が使える場合のみ検証できます。
+- multi-arch release では release notes または Docker manifest に記載された platform ごとに
+  `MAILER_IMAGE_PLATFORM` を変えてこの smoke を実行します。
 - 既定の host port `15280`（Mailer）と `18025`（Mailpit）が空いていること。
 
 ## 実行
@@ -56,7 +57,7 @@ bash scripts/release-smoke.sh
 |------|------|------|
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | イメージ repository |
 | `MAILER_IMAGE_TAG` | `v0.1.1` | 検証するタグ |
-| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | 公開 Mailer runtime image の platform |
+| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | smoke 対象の Mailer runtime image platform。multi-arch release では `linux/amd64` / `linux/arm64` など release notes の platform ごとに実行します。 |
 | `MAILER_PULL_POLICY` | `always` | ローカルイメージを使う場合は `missing` |
 | `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image。既定の `latest` は意図的です。tag / digest 固定が必要な場合に上書きします。 |
 | `MAILER_HTTP_PORT` | `15280` | Mailer の host port |

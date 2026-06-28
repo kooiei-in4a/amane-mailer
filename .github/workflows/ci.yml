@@ -81,17 +81,50 @@ jobs:
           artifacts/publish/aot-linux-x64/Amane.Mailer --help
 
   docker-build-smoke:
-    name: Docker build smoke
+    name: Docker build smoke (${{ matrix.platform }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            tag_suffix: linux-amd64
+          - platform: linux/arm64
+            tag_suffix: linux-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5
+
       - name: Build Mailer image
-        run: docker build --file infra/docker/Dockerfile --tag amane-mailer:ci-smoke .
+        run: >
+          docker buildx build
+          --platform ${{ matrix.platform }}
+          --file infra/docker/Dockerfile
+          --tag amane-mailer:ci-smoke-${{ matrix.tag_suffix }}
+          --load
+          .
 
       - name: Run Mailer image
-        run: docker run --rm amane-mailer:ci-smoke --help
+        run: >
+          docker run
+          --rm
+          --platform ${{ matrix.platform }}
+          amane-mailer:ci-smoke-${{ matrix.tag_suffix }}
+          --help
+
+  docker-build-smoke-required:
+    name: Docker build smoke
+    runs-on: ubuntu-24.04
+    needs: docker-build-smoke
+    steps:
+      - name: Confirm platform smoke matrix
+        run: echo "Docker build smoke matrix passed."
 
   local-compose-fresh-data:
     name: Local compose fresh data dir

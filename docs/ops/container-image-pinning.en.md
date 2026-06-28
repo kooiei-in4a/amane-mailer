@@ -10,9 +10,9 @@ and local / smoke helper images.
 - The .NET SDK / runtime-deps base images in `infra/docker/Dockerfile` are pinned
   as `tag@sha256:<digest>`. The tag remains for readability and Dependabot
   update detection; the digest fixes the actual build input.
-- The publish workflow currently builds only `linux/amd64`. The Dockerfile uses
-  registry manifest-list digests, and the workflow selects the target platform
-  with `platforms: linux/amd64`.
+- The publish workflow builds `linux/amd64` and `linux/arm64`. The Dockerfile
+  uses registry manifest-list digests, and the workflow selects the target
+  platforms with `platforms: linux/amd64,linux/arm64`.
 - Mailpit in `infra/docker/docker-compose.local.yml` and
   `infra/docker/docker-compose.release-smoke.yml` is a local-only helper that is
   not included in the production / release artifact. Its default intentionally
@@ -38,7 +38,8 @@ For update PRs, verify:
    `10.0-noble-chiseled`. If the tag changes, treat it as a .NET / Ubuntu base
    change.
 2. The old and new digests with `docker buildx imagetools inspect`, including
-   that the `linux/amd64` manifest used by the workflow exists.
+   that the `linux/amd64` and `linux/arm64` manifests used by the workflow
+   exist.
 3. Upstream .NET container image / Ubuntu / chiseled image notes, security
    updates, and breaking changes.
 4. The Mailer image builds from `infra/docker/Dockerfile`, and
@@ -69,5 +70,5 @@ updates base image digests, leave the following in the PR or release notes:
 - Dockerfile .NET SDK / runtime-deps tags and digests
 - Digest update PR review result
 - Docker build / image run / release smoke result
-- Published image digest, platform, and attestation status from the publish
-  workflow summary
+- Published image index digest, per-platform runtime manifest digests, and
+  per-platform attestation manifest digests from the publish workflow summary

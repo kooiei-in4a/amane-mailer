@@ -13,9 +13,9 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 - Docker image（例: `ghcr.io/kooiei-in4a/amane-mailer:vX.Y.Z`）
 - Image digest / index digest
 - 不変 Docker tag（`sha-<git-sha>`）と tag digest
-- Runtime manifest digest
-- Attestation manifest digest
-- Platform（現状 `linux/amd64`）
+- Platform 一覧（Docker manifest と同じ表記。例: `linux/amd64`, `linux/arm64`）
+- Platform ごとの runtime manifest digest
+- Platform ごとの attestation manifest digest
 - Release image smoke 結果（`docs/releases/vX.Y.Z.md`、digest / 日付 / 環境 / pass-fail 要約）
 - OCI source label と revision label
 - NuGet package name / version / package URL
@@ -31,7 +31,8 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
   更新前に停止した場合、同じメールが再送される可能性がある。
 - SQLite deployment は single-node / single-replica 前提。単一 SQLite file を
   共有する複数 Worker の水平化は現在の運用対象外。
-- Docker image の対応 platform を明記する。現状は `linux/amd64` only。
+- Docker image の対応 platform を Docker manifest と同じ表記で明記する。single-platform release では
+  `linux/amd64 only` のように制約を明記し、multi-arch release では platform ごとの digest / smoke 結果を記録する。
 - Admin UI は disabled by default、内部ネットワーク向け、experimental。現時点の
   limitation（durable session/throttle/audit/tenant scope など）を明記する。
 - upgrade / migration 前に SQLite DB と tenant config の backup を取得し、

@@ -53,10 +53,11 @@ build base images are digest-pinned and reviewed / verified through the
 2. Run `Publish Amane Mailer Image` from the release tag ref in GitHub Actions.
 3. After the `release` environment approval, the workflow publishes
    `sha-<git-sha>` and `vX.Y.Z`.
-4. Confirm that the image run, config-content check, digest / platform / OCI
-   label checks, and attestation check pass.
-5. Copy the digest and `sha-<git-sha>` from the workflow summary into the
-   GitHub Release notes or release evidence. Use the
+4. Confirm that the image run, config-content check, runtime manifest digest,
+   OCI label, and attestation manifest checks pass for every platform.
+5. Copy the image index digest, per-platform runtime / attestation manifest
+   digests, and `sha-<git-sha>` from the workflow summary into the GitHub
+   Release notes or release evidence. Use the
    [release notes checklist](release-notes-checklist.en.md) for the artifact
    and operational-constraint entries.
 
@@ -91,19 +92,22 @@ Image publishing and NuGet package publishing both use the GitHub Environment
 
 - `provenance: true`
 - `sbom: true`
-- `platforms: linux/amd64`
+- `platforms: linux/amd64,linux/arm64`
 
 Before publishing, the workflow verifies that neither the `sha-<git-sha>` tag
 nor the release tag exists in GHCR. After publishing, it verifies that the build
 action returned a non-empty digest, that both tag digests match the build digest,
-and that `docker buildx imagetools inspect --raw` contains an attestation
-manifest. It also validates OCI labels on the pulled image:
+and that `docker buildx imagetools inspect --raw` contains a runtime manifest
+for each configured platform plus an attestation manifest referencing each
+runtime manifest. It also runs `--help`, checks safe config file contents, and
+validates OCI labels for each platform:
 
 - `org.opencontainers.image.source`
 - `org.opencontainers.image.revision`
 - `org.opencontainers.image.version`
 
-The digest, platform, OCI labels, and inspect output are written to the workflow
+The image index digest, per-platform runtime manifest digests, attestation
+manifest digests, OCI labels, and inspect output are written to the workflow
 summary. Release notes are not updated automatically, so copy the summary digest
 and `sha-<git-sha>` into the release record after publishing, and reflect the
 artifact and operational-constraint items from the

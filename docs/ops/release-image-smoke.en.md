@@ -16,10 +16,11 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 - `bash`, `curl`, and `sha256sum` available.
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
-- The published Mailer runtime image is currently `linux/amd64` only. ARM hosts can
-  smoke it only when Docker Desktop or the Docker engine can run amd64 images through
-  emulation. Multi-arch support is tracked in
-  [#4](https://github.com/kooiei-in4a/amane-mailer/issues/4).
+- The published Mailer runtime image for the default `v0.1.1` tag is
+  `linux/amd64` only. ARM hosts can smoke that tag only when Docker Desktop or
+  the Docker engine can run amd64 images through emulation.
+- For multi-arch releases, run this smoke once per platform listed in the
+  release notes or Docker manifest by changing `MAILER_IMAGE_PLATFORM`.
 - Default host ports `15280` (Mailer) and `18025` (Mailpit) are free.
 
 ## Run
@@ -57,7 +58,7 @@ If startup itself fails, the script prints `docker compose ps` and recent logs.
 |----------|---------|---------|
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | Image repository |
 | `MAILER_IMAGE_TAG` | `v0.1.1` | Tag under test |
-| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | Published Mailer runtime image platform |
+| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | Mailer runtime image platform to smoke. For multi-arch releases, run once per release-noted platform such as `linux/amd64` and `linux/arm64`. |
 | `MAILER_PULL_POLICY` | `always` | Set `missing` to reuse a local image |
 | `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image. The default `latest` is intentional; override it when a tag / digest pin is needed. |
 | `MAILER_HTTP_PORT` | `15280` | Mailer host port |

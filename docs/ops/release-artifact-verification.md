@@ -26,8 +26,9 @@ release ごとに次を確認します。
 
 - Image: `ghcr.io/kooiei-in4a/amane-mailer:vX.Y.Z`
 - Digest / index digest
-- Runtime manifest digest
-- Attestation manifest digest
+- Platform 一覧
+- Platform ごとの runtime manifest digest
+- Platform ごとの attestation manifest digest
 - Immutable tag: `ghcr.io/kooiei-in4a/amane-mailer:sha-<git-sha>`
 - OCI `org.opencontainers.image.revision`
 - OCI `org.opencontainers.image.version`（release record に記録がある場合）
@@ -38,8 +39,6 @@ release ごとに次を確認します。
 IMAGE_REPO=ghcr.io/kooiei-in4a/amane-mailer
 IMAGE_TAG=vX.Y.Z
 EXPECTED_INDEX_DIGEST=sha256:replace-with-release-image-digest
-EXPECTED_RUNTIME_MANIFEST_DIGEST=sha256:replace-with-runtime-manifest-digest
-EXPECTED_ATTESTATION_MANIFEST_DIGEST=sha256:replace-with-attestation-manifest-digest
 EXPECTED_REVISION=replace-with-release-commit-sha
 
 IMAGE_REF="${IMAGE_REPO}:${IMAGE_TAG}"
@@ -57,27 +56,35 @@ docker buildx imagetools inspect "$SHA_REF"
 digest pin を優先してください。
 
 ```bash
-docker pull --platform linux/amd64 "${IMAGE_REPO}@${EXPECTED_INDEX_DIGEST}"
+TARGET_PLATFORM=linux/amd64
+docker pull --platform "$TARGET_PLATFORM" "${IMAGE_REPO}@${EXPECTED_INDEX_DIGEST}"
 ```
 
 ## Runtime manifest と OCI labels
 
-image index 内の runtime manifest digest を確認します。
+image index 内の runtime manifest digest を platform ごとに確認します。`TARGET_PLATFORM` と
+`EXPECTED_RUNTIME_MANIFEST_DIGEST` は release record の platform ごとの値に置き換えてください。
 
 ```bash
+TARGET_PLATFORM=linux/amd64
+TARGET_OS="${TARGET_PLATFORM%%/*}"
+TARGET_ARCH="${TARGET_PLATFORM#*/}"
+EXPECTED_RUNTIME_MANIFEST_DIGEST=sha256:replace-with-runtime-manifest-digest
+
 docker buildx imagetools inspect --raw "$IMAGE_REF" \
-  | jq -r '.manifests[]
-    | select(.platform.os == "linux" and .platform.architecture == "amd64")
+  | jq -r --arg os "$TARGET_OS" --arg arch "$TARGET_ARCH" '.manifests[]
+    | select(.platform.os == $os and .platform.architecture == $arch)
     | .digest'
 ```
 
-出力は `EXPECTED_RUNTIME_MANIFEST_DIGEST` と一致する必要があります。`jq` がない環境では
-`docker buildx imagetools inspect "$IMAGE_REF"` の `linux/amd64` manifest 行を確認してください。
+出力は `EXPECTED_RUNTIME_MANIFEST_DIGEST` と一致する必要があります。multi-arch release では
+`linux/amd64` と `linux/arm64` など、release record の全 platform で繰り返してください。`jq` がない環境では
+`docker buildx imagetools inspect "$IMAGE_REF"` の対象 platform manifest 行を確認してください。
 
 OCI labels は pulled image から確認します。
 
 ```bash
-docker pull --platform linux/amd64 "$IMAGE_REF"
+docker pull --platform "$TARGET_PLATFORM" "$IMAGE_REF"
 
 docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}'
 docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
@@ -100,20 +107,25 @@ consumer verification の判定対象には含めません。
 
 - `provenance: true`
 - `sbom: true`
-- `platforms: linux/amd64`
+- `platforms: linux/amd64,linux/arm64`
 
 SBOM と provenance は standalone release asset ではなく、GHCR image index に紐づく OCI
-attestation manifest として publish されます。attestation manifest の存在と digest は次で確認します。
+attestation manifest として publish されます。attestation manifest の存在と digest は runtime
+manifest digest ごとに確認します。
 
 ```bash
+EXPECTED_ATTESTATION_MANIFEST_DIGEST=sha256:replace-with-attestation-manifest-digest
+
 docker buildx imagetools inspect --raw "$IMAGE_REF" \
-  | jq -r '.manifests[]
+  | jq -r --arg runtime "$EXPECTED_RUNTIME_MANIFEST_DIGEST" '.manifests[]
     | select(.annotations["vnd.docker.reference.type"] == "attestation-manifest")
+    | select(.annotations["vnd.docker.reference.digest"] == $runtime)
     | .digest'
 ```
 
-出力の 1 つが `EXPECTED_ATTESTATION_MANIFEST_DIGEST` と一致する必要があります。`jq` がない環境では
-次で attestation manifest の存在を確認できます。
+出力の 1 つが対象 platform の `EXPECTED_ATTESTATION_MANIFEST_DIGEST` と一致する必要があります。
+`jq` がない環境では次で attestation manifest の存在を確認できますが、platform ごとの digest 照合には
+`docker buildx imagetools inspect --raw` の JSON を確認してください。
 
 ```bash
 docker buildx imagetools inspect --raw "$IMAGE_REF" \
@@ -121,7 +133,7 @@ docker buildx imagetools inspect --raw "$IMAGE_REF" \
 ```
 
 現時点では GitHub Release asset として個別の `.spdx` / `.cdx` SBOM file は添付していません。
-release record には image index digest、runtime manifest digest、attestation manifest digest を記録します。
+release record には image index digest、platform ごとの runtime manifest digest、attestation manifest digest を記録します。
 
 ## NuGet package
 
