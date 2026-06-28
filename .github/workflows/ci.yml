@@ -1,13 +1,22 @@
 name: CI
 
+# CI tiers (single workflow + job-level `if`; job names unchanged for branch protection):
+# - feature/** / fix/** push: build-test only
+# - develop push or PR targeting develop: build-test + openapi-validation
+# - main push, PR targeting main, workflow_dispatch: full CI (incl. Native AOT, amd64/arm64 Docker)
+# Fail-secure: workflow_dispatch and unrecognized paths use full CI when triggered.
+
 on:
   pull_request:
+    branches:
+      - main
+      - develop
   push:
     branches:
       - main
       - develop
-      - staging
-      - "codex/**"
+      - "feature/**"
+      - "fix/**"
   workflow_dispatch:
 
 permissions:
@@ -46,6 +55,10 @@ jobs:
 
   native-aot-smoke:
     name: Native AOT publish smoke
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main' ||
+      github.base_ref == 'main'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -82,6 +95,10 @@ jobs:
 
   docker-build-smoke:
     name: Docker build smoke (${{ matrix.platform }})
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main' ||
+      github.base_ref == 'main'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -120,6 +137,10 @@ jobs:
 
   docker-build-smoke-required:
     name: Docker build smoke
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main' ||
+      github.base_ref == 'main'
     runs-on: ubuntu-24.04
     needs: docker-build-smoke
     steps:
@@ -128,6 +149,10 @@ jobs:
 
   local-compose-fresh-data:
     name: Local compose fresh data dir
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main' ||
+      github.base_ref == 'main'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -140,6 +165,12 @@ jobs:
 
   openapi-validation:
     name: OpenAPI validation
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/develop' ||
+      github.base_ref == 'main' ||
+      github.base_ref == 'develop'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout

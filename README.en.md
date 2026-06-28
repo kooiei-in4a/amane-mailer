@@ -193,8 +193,18 @@ To safely try a conflict, use a local environment only, keep the same
 
 For the Consumer app compose network setup, see the comments in [infra/deploy/compose.yml](infra/deploy/compose.yml).
 
+## Branch strategy and CI
+
+Work flows `feature/**` / `fix/**` → `develop` → `main`. After each `main`
+merge, sync `main` back into `develop` manually. CI is weighted by branch path:
+feature pushes run build/test only, `develop` adds OpenAPI validation, and PRs
+to `main` run full CI including Native AOT and amd64/arm64 Docker. See
+[Branch strategy and CI weighting](docs/ops/branch-and-ci-workflow.en.md)
+[(ja)](docs/ops/branch-and-ci-workflow.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Key Docs
 
+- [Branch strategy and CI weighting](docs/ops/branch-and-ci-workflow.en.md) [(ja)](docs/ops/branch-and-ci-workflow.md)
 - [Service spec](docs/service-spec.en.md) [(ja)](docs/service-spec.md)
 - [OpenAPI HTTP reference](docs/api/openapi.yaml)
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
