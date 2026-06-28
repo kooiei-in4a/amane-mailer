@@ -13,7 +13,8 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 ## Prerequisites
 
 - Docker (with the compose plugin) running.
-- `bash`, `curl`, and `sha256sum` available.
+- On Linux / macOS / Git Bash: `bash`, `curl`, and `sha256sum` available.
+- On Windows: PowerShell 5.1+ and Docker Desktop (same Docker CLI context as PowerShell).
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
 - The published Mailer runtime image for the default `v0.1.1` tag is
@@ -27,9 +28,21 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 
 From the repository root:
 
+Linux / macOS / Git Bash:
+
 ```bash
 bash scripts/release-smoke.sh
 ```
+
+Windows (PowerShell, Docker Desktop):
+
+```powershell
+.\scripts\release-smoke.ps1
+```
+
+On Windows, prefer the PowerShell entrypoint above. Running
+`bash scripts/release-smoke.sh` through WSL can target a different Docker daemon
+than Docker Desktop's Windows CLI context.
 
 The script:
 
@@ -73,6 +86,10 @@ Smoke a different tag:
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
 ```
 
+```powershell
+$env:MAILER_IMAGE_TAG = 'sha-<git-sha>'; .\scripts\release-smoke.ps1
+```
+
 Mailpit is a smoke helper and is not included in the release artifact. See the
 [container image pinning policy](container-image-pinning.en.md) for the
 intentional `latest` usage and how to pin it when needed.
@@ -85,8 +102,9 @@ Previous `v0.1.0` results remain in [docs/releases/v0.1.0.md](../releases/v0.1.0
 
 ## How it differs from the deploy drills
 
-- `scripts/release-smoke.sh`: a release smoke that validates the **published image's**
-  HTTP / idempotency / Mailpit delivery from a clean state, using host-side curl only.
+- `scripts/release-smoke.sh` / `scripts/release-smoke.ps1`: a release smoke that validates the **published image's**
+  HTTP / idempotency / Mailpit delivery from a clean state. The bash script uses host-side
+  `curl`; the PowerShell script uses `Invoke-WebRequest`.
 - `infra/deploy/drills/mail-05a-*`: no-send / ACS deploy drills against a running compose
   stack on a deploy host. They use the SQLite Mailer CLI (`healthcheck`, `db stats`,
   `db request-state`) and a temporary curl compose client, and go deeper into worker

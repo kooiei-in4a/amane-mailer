@@ -89,7 +89,8 @@ Operational runbooks:
 To smoke the published GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.1.1`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
-run `scripts/release-smoke.sh`. See
+run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
+`scripts/release-smoke.ps1` (Windows / PowerShell with Docker Desktop). See
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration.
 
@@ -104,6 +105,10 @@ Docker manifest or release notes, then smoke each target platform with
 
 ```bash
 bash scripts/release-smoke.sh
+```
+
+```powershell
+.\scripts\release-smoke.ps1
 ```
 
 No-send / ACS deploy drill helper scripts under `infra/deploy/drills/`

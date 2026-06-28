@@ -2,7 +2,8 @@
 #
 # Unlike infra/docker/docker-compose.local.yml (which builds from source), this
 # file pulls the published GHCR image and exercises the public release runtime
-# path with Mailpit. It is driven by scripts/release-smoke.sh and is not meant
+# path with Mailpit. It is driven by scripts/release-smoke.sh and
+# scripts/release-smoke.ps1 and is not meant
 # for day-to-day local development.
 #
 # Tenant config is the safe example baked into the image
