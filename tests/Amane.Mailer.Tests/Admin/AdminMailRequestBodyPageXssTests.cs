@@ -76,6 +76,7 @@ public sealed class AdminMailRequestBodyPageXssTests
 
         AdminMailRequestBodyPage.RecordBodyViewedAuditLog(
             context,
+            new MailerAdminOptions(),
             logger,
             requestId,
             "metadata_json");
@@ -115,6 +116,7 @@ public sealed class AdminMailRequestBodyPageXssTests
 
         AdminMailRequestBodyPage.RecordBodyViewedAuditLog(
             context,
+            new MailerAdminOptions(),
             logger,
             requestId,
             "text_body");

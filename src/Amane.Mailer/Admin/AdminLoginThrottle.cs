@@ -39,39 +39,19 @@ public sealed class AdminLoginThrottle(
     {
         var key = BuildKey(username, remoteAddress);
         var now = timeProvider.GetUtcNow();
-        var current = await GetStateAsync(key, now, cancellationToken);
-
-        var count = current.LockedUntil is not null && current.LockedUntil <= now
-            ? 1
-            : current.Count + 1;
-        var wasLocked = current.LockedUntil is not null && current.LockedUntil > now;
-        var lockCreated = false;
-        DateTimeOffset? lockedUntil = current.LockedUntil;
-
-        if (count >= options.LoginFailureLimit)
-        {
-            if (!wasLocked)
-            {
-                lockCreated = true;
-            }
-
-            lockedUntil = now + options.LoginCooldown;
-        }
-        else if (current.LockedUntil is not null && current.LockedUntil <= now)
-        {
-            lockedUntil = null;
-        }
-
-        var next = new LoginFailureState(count, lockedUntil);
-        _cache[key] = next;
-        await repository.UpsertAsync(
-            new AdminLoginThrottleRow(key, count, lockedUntil, now),
+        var result = await repository.RecordFailureAsync(
+            key,
+            options.LoginFailureLimit,
+            options.LoginCooldown,
+            now,
             cancellationToken);
 
-        if (lockedUntil is null || lockedUntil <= now)
-            return (false, TimeSpan.Zero, lockCreated);
+        _cache[key] = new LoginFailureState(result.FailureCount, result.LockedUntil);
 
-        return (true, lockedUntil.Value - now, lockCreated);
+        if (result.LockedUntil is null || result.LockedUntil <= now)
+            return (false, TimeSpan.Zero, result.LockCreated);
+
+        return (true, result.LockedUntil.Value - now, result.LockCreated);
     }
 
     public async Task ResetAsync(

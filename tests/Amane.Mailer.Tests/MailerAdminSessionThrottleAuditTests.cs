@@ -313,6 +313,48 @@ public sealed class MailerAdminSessionThrottleAuditTests(MailerAdminFixture fixt
         Assert.Contains("AMANE_ADMIN_AUDIT_IDENTIFIER_HASH_KEY", ex.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Parallel_failed_logins_persist_atomic_failure_count()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        const int parallelAttempts = 5;
+        var tasks = new Task<HttpStatusCode>[parallelAttempts];
+        for (var index = 0; index < parallelAttempts; index++)
+        {
+            tasks[index] = PostFailedLoginAsync(fixture.Factory, ct);
+        }
+
+        var statuses = await Task.WhenAll(tasks);
+
+        Assert.Contains(HttpStatusCode.TooManyRequests, statuses);
+
+        var failureCount = await ReadThrottleFailureCountAsync(fixture.ConnectionString, ct);
+        Assert.Equal(parallelAttempts, failureCount);
+    }
+
+    private static async Task<HttpStatusCode> PostFailedLoginAsync(
+        WebApplicationFactory<global::Program> factory,
+        CancellationToken cancellationToken)
+    {
+        using var client = CreateClient(factory);
+        var csrfToken = await ReadCsrfTokenAsync(client, cancellationToken);
+        using var response = await client.PostAsync(
+            "/admin/api/login",
+            CreateLoginContent(csrfToken, MailerAdminFixture.Username, "wrong-password"),
+            cancellationToken);
+        return response.StatusCode;
+    }
+
+    private static async Task<int> ReadThrottleFailureCountAsync(string connectionString, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT failure_count FROM admin_login_throttle LIMIT 1;";
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     private static HttpClient CreateClient(WebApplicationFactory<global::Program> factory) =>
         factory.CreateClient(new WebApplicationFactoryClientOptions
         {
@@ -382,10 +424,9 @@ internal static class MailerAdminFixtureHelpers
     internal static WebApplicationFactory<global::Program> CreateFactory(
         string connectionString,
         string tenantConfigPath,
-        string passwordHash)
-    {
-        return new AdminTestFactory(connectionString, tenantConfigPath, passwordHash);
-    }
+        string passwordHash,
+        IReadOnlyDictionary<string, string?>? extraConfiguration = null) =>
+        new AdminTestFactory(connectionString, tenantConfigPath, passwordHash, extraConfiguration);
 
     internal static string TenantConfigJson =>
         $$"""
@@ -418,14 +459,15 @@ internal static class MailerAdminFixtureHelpers
     private sealed class AdminTestFactory(
         string connectionString,
         string tenantConfigPath,
-        string passwordHash) : WebApplicationFactory<global::Program>
+        string passwordHash,
+        IReadOnlyDictionary<string, string?>? extraConfiguration) : WebApplicationFactory<global::Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Testing");
             builder.ConfigureAppConfiguration((_, configuration) =>
             {
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                var settings = new Dictionary<string, string?>
                 {
                     ["ConnectionStrings:Mailer"] = connectionString,
                     ["MAILER_TENANTS_PATH"] = tenantConfigPath,
@@ -435,7 +477,17 @@ internal static class MailerAdminFixtureHelpers
                     ["AMANE_ADMIN_USERNAME"] = MailerAdminFixture.Username,
                     ["AMANE_ADMIN_PASSWORD_HASH"] = passwordHash,
                     ["AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "127.0.0.1",
-                });
+                };
+
+                if (extraConfiguration is not null)
+                {
+                    foreach (var (key, value) in extraConfiguration)
+                    {
+                        settings[key] = value;
+                    }
+                }
+
+                configuration.AddInMemoryCollection(settings);
             });
             builder.ConfigureServices(services =>
             {
@@ -453,6 +505,7 @@ internal static class MailerAdminFixtureHelpers
                 app.Use(async (context, nextMiddleware) =>
                 {
                     context.Connection.LocalIpAddress ??= IPAddress.Loopback;
+                    context.Connection.RemoteIpAddress ??= IPAddress.Loopback;
                     await nextMiddleware();
                 });
 
