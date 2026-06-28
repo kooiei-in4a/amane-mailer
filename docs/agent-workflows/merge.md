@@ -26,6 +26,18 @@ Do not merge unless all checks pass:
 
 If any check fails, do not merge. Report the blocker and next action.
 
+### Draft PR Handling
+
+Draft status is a merge blocker unless the human explicitly asked to merge in the current session.
+
+When the human explicitly asked to merge and every other safety gate passes:
+
+1. Mark the PR ready for review.
+2. Re-check mergeability, CI/checks, reviews, comments, diff scope, and side-effect risk.
+3. Merge only if the re-check passes.
+
+If the PR remains draft, cannot be marked ready, or any re-check fails, do not merge. Report the blocker and next action.
+
 ## Execution Gate
 
 Before merging, report:
@@ -36,6 +48,7 @@ Before merging, report:
 - Merge method.
 - Checks reviewed.
 - Review state.
+- Draft handling, when the PR was draft.
 - Known residual risk.
 
 Merge only after the safety gate is satisfied.

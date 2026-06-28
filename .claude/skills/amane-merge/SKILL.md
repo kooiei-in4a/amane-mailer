@@ -27,6 +27,8 @@ Before merge, verify:
 - No release workflow or artifact publication is triggered unexpectedly.
 - Merge method follows repository practice or explicit human instruction.
 
+If the PR is draft and the user explicitly asked to merge in this session, mark it ready only after every other gate passes, then re-check all gates before merging. If draft cannot be cleared or any re-check fails, stop and report the blocker.
+
 If any check fails, do not merge. Report the blocker.
 
 After merge, report:
