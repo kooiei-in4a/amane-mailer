@@ -124,15 +124,20 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/` です。Ma
   .NET は `Amane.Mailer.Contracts` の `MailPayloadHasher` を使用。
   アルゴリズム仕様・エラーコード・冪等性: [docs/api/openapi.yaml](docs/api/openapi.yaml)
 
-ローカル compose 起動後は、host から次の smoke request をそのまま実行できます。
+ローカル compose 起動後は、host から次の smoke request を実行できます。
+`mail_request_id` は冪等キーなので、同じ依頼として再送したい場合以外は毎回新しい UUID を使います。
+`uuidgen` がない環境では、`request_id` に任意の UUID 文字列を設定してください。
 
 ```bash
+request_id="$(uuidgen)"
+
 curl -i -X POST http://127.0.0.1:5280/internal/mail-requests \
   -H "Authorization: Bearer local-mail-service-token" \
   -H "Content-Type: application/json" \
-  -d '{
+  -d @- <<JSON
+{
     "tenant_id": "00000000-0000-0000-0000-000000000101",
-    "mail_request_id": "00000000-0000-0000-0000-000000000201",
+    "mail_request_id": "${request_id}",
     "source_service": "example-service",
     "purpose": "FormResponseNotification",
     "to": [
@@ -141,17 +146,26 @@ curl -i -X POST http://127.0.0.1:5280/internal/mail-requests \
     "subject": "New response",
     "text_body": "A new response arrived.",
     "payload_hash": "7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9"
-  }'
+}
+JSON
 ```
 
-期待レスポンスは `202 Accepted` と次の JSON です。
+期待レスポンスは `202 Accepted` と、生成した `request_id` を含む次の JSON です。
 
 ```json
 {
-  "mail_request_id": "00000000-0000-0000-0000-000000000201",
+  "mail_request_id": "<request_id>",
   "status": "accepted"
 }
 ```
+
+同じ `request_id` と同じ JSON をもう一度 POST すると、新規受付ではなく冪等再送として
+`202 Accepted` / `status: "already_accepted"` になります。新規 request と再送は
+レスポンス body の `status` が `accepted` か `already_accepted` かで見分けます。
+
+conflict を安全に試す場合はローカル環境でのみ、同じ `request_id` のまま `subject` など
+hash 対象フィールドを変更し、その payload に合わせて `payload_hash` を再計算してから POST してください。
+期待結果は `409 Conflict` / `IDEMPOTENCY_CONFLICT` です。
 
 Consumer アプリの compose ネットワーク接続例は [infra/deploy/compose.yml](infra/deploy/compose.yml) のコメントを参照してください。
 

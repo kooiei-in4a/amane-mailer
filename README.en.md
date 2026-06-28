@@ -132,15 +132,20 @@ Minimum information to POST a mail request to a running Mailer:
   or see [docs/api/openapi.yaml](docs/api/openapi.yaml) for the algorithm spec.
 
 After starting the local compose stack, you can run this smoke request from the
-host:
+host. `mail_request_id` is the idempotency key, so use a fresh UUID for each
+new request unless you intentionally want to retry the same request.
+If `uuidgen` is unavailable, set `request_id` to any UUID string.
 
 ```bash
+request_id="$(uuidgen)"
+
 curl -i -X POST http://127.0.0.1:5280/internal/mail-requests \
   -H "Authorization: Bearer local-mail-service-token" \
   -H "Content-Type: application/json" \
-  -d '{
+  -d @- <<JSON
+{
     "tenant_id": "00000000-0000-0000-0000-000000000101",
-    "mail_request_id": "00000000-0000-0000-0000-000000000201",
+    "mail_request_id": "${request_id}",
     "source_service": "example-service",
     "purpose": "FormResponseNotification",
     "to": [
@@ -149,17 +154,29 @@ curl -i -X POST http://127.0.0.1:5280/internal/mail-requests \
     "subject": "New response",
     "text_body": "A new response arrived.",
     "payload_hash": "7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9"
-  }'
+}
+JSON
 ```
 
-Expected response: `202 Accepted` with this JSON body:
+Expected response: `202 Accepted` with this JSON body containing the generated
+`request_id`:
 
 ```json
 {
-  "mail_request_id": "00000000-0000-0000-0000-000000000201",
+  "mail_request_id": "<request_id>",
   "status": "accepted"
 }
 ```
+
+A second POST with the same `request_id` and the same JSON is an idempotent
+retry, not a new acceptance: it returns `202 Accepted` with
+`status: "already_accepted"`. Distinguish new requests from retries by checking
+whether the response body `status` is `accepted` or `already_accepted`.
+
+To safely try a conflict, use a local environment only, keep the same
+`request_id`, change a hash-covered field such as `subject`, recompute
+`payload_hash` for that payload, and POST again. The expected result is
+`409 Conflict` / `IDEMPOTENCY_CONFLICT`.
 
 For the Consumer app compose network setup, see the comments in [infra/deploy/compose.yml](infra/deploy/compose.yml).
 
