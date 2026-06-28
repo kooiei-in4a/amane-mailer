@@ -1,4 +1,4 @@
-# Amane Mailer Agent Guide
+# Amane Mailer Contributor and Agent Guide
 
 ## Project
 
@@ -9,25 +9,34 @@
 - Docs: `docs/` — service spec, ADRs, OpenAPI, runbooks.
 - .NET SDK: see `global.json` (currently 10.0.301).
 
-For human-oriented setup and runbooks, start with [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+For setup and contribution basics, start with [README.md](README.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md). This file highlights project-specific
+constraints that contributors and AI coding tools should preserve.
 
 ## Work rules
 
-- Start from the GitHub issue and its acceptance criteria. The checklist is the definition of done.
+- Start from the public GitHub issue and its acceptance criteria when one exists.
+  The checklist is the definition of done.
 - Keep the diff scoped to one issue or one behavior. No unrelated refactors, formatting churn, or dependencies.
 - Read nearby tests and relevant ADRs under `docs/adr/` before editing.
 - Add or update focused tests for behavior changes.
-- Do not commit unless the human explicitly asks.
-- Never push, force-push, publish artifacts, or trigger release workflows without explicit human instruction.
-- Do not create extra memory, progress, or agent-notes files unless the human explicitly asks.
+- If you are an automated coding agent, do not commit unless the maintainer
+  explicitly asks in the current session.
+- Never push, force-push, publish artifacts, or trigger release workflows without
+  explicit maintainer instruction.
+- Do not create extra memory, progress, or agent-notes files unless they are
+  explicitly requested.
 
-P1 issues use `[P1]` in the issue title, not a GitHub label. Search by title or issue number.
+Priority is carried in public issue titles such as `[P1]` or `[P2]`, not in a
+GitHub label. Search by issue number or title when looking for priority work.
 
-## Agent workflows
+## AI-assisted workflows
 
-Reusable issue and PR workflows are kept under `docs/agent-workflows/`.
+Reusable issue and PR workflows for AI coding tools are kept under
+`docs/agent-workflows/`. Contributors who are not using an AI tool can ignore
+these helpers and follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Use these instead of ad-hoc long prompts:
+When using an AI tool, prefer these workflow files over ad-hoc long prompts:
 
 - Issue start: `docs/agent-workflows/issue-start.md`
 - Third-party review: `docs/agent-workflows/pr-review.md`
@@ -35,13 +44,15 @@ Use these instead of ad-hoc long prompts:
 - Merge: `docs/agent-workflows/merge.md`
 - Cleanup: `docs/agent-workflows/cleanup.md`
 
-Tool adapters:
+Tool-specific adapters:
 
 - Claude Code project skills: `.claude/skills/`
 - Codex project skills: `.agents/skills/`
 - Cursor project rules: `.cursor/rules/`
 
-Side-effecting workflows such as PR creation, merge, branch deletion, release, publish, and workflow dispatch require explicit human instruction in the current session.
+Side-effecting workflows such as PR creation, merge, branch deletion, release,
+publish, and workflow dispatch require explicit maintainer instruction in the
+current session.
 
 ## Validation
 
@@ -118,11 +129,14 @@ Read in this order when context is unclear:
 3. [docs/service-spec.md](docs/service-spec.md) and [docs/api/openapi.yaml](docs/api/openapi.yaml)
 4. Ops runbooks in `docs/ops/` when changing deployment or operations
 
-Do not cite private issue numbers or paths that no longer exist in public docs (#28).
+Do not add references to non-public issue trackers, private paths, or docs that
+do not exist in the public repository. Prefer public GitHub issue links when an
+issue reference is useful.
 
-## Modes
+## AI tool modes
 
-State the mode at the start of a session, or infer from the human's request.
+AI coding tools should state or infer the working mode at the start of a session.
+For ordinary contributor work, use these rows as a quick scope check.
 
 | Mode | Do | Do not |
 |------|----|--------|
@@ -131,16 +145,14 @@ State the mode at the start of a session, or infer from the human's request.
 | **Review** | Inspect diff for security, contract drift, AOT, PII, release, migration risks | Propose unrelated improvements |
 | **Test** | Reproduce failure, add regression coverage, run focused checks, then broaden validation | Change product behavior without agreement |
 
-## Suggested P1 order
+## Public issue priority notes
 
-1. Agent files (this guide) — done when `AGENTS.md` and `CLAUDE.md` exist
-2. #28 — public docs cleanup (stale private refs, ROADMAP)
-3. #21 — contract source of truth — done when ADR/service spec/README agree on Contracts as source of truth
-4. #5 — package/API/versioning policy
-5. #22 — JSON strictness (unknown/duplicate properties)
-6. Drift CI — automate Contracts/runtime/OpenAPI drift checks after #21
-7. #26 — provider error sanitize
-8. #23 — release workflow hardening
-9. #27, #11 — release notes and clean-state smoke
+- Treat the open GitHub issue and maintainer direction as the current source of
+  truth for sequencing.
+- P1/P2 priority appears in issue titles, for example `[P1]` or `[P2]`.
+- Keep follow-up references public and issue-number based. Do not copy private
+  roadmap notes into docs or PR descriptions.
 
-Scoped Cursor rules (`contracts-api.mdc`, `admin-security.mdc`) may be added under `.cursor/rules/` only after #21 or before Admin-heavy work — not in the initial commit.
+Scoped Cursor rules (`contracts-api.mdc`, `admin-security.mdc`) may be added
+under `.cursor/rules/` only when the related public issue calls for them, such as
+Contracts/OpenAPI or Admin-heavy work.
