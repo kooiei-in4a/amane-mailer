@@ -78,7 +78,8 @@
 6. ドリル `.env` で Admin UI が有効なら、ドリル専用資格情報でログイン、送信依頼一覧表示、Dead Letters ページ表示を確認します。
    Admin の tenant scope 判定は `tenants.json` の tenant 件数と DB 内の履歴 tenant 件数の大きい方を使います。
    tenant を設定から削除していても、復元 DB の `mail_requests` に 2 件以上の distinct `tenant_id` が残っている場合は multi-tenant 扱いです。
-   必要に応じて次を確認し、scoped admin または break-glass 管理者が用意されていることを確認します:
+   必要に応じて次を確認し、少なくとも 1 名の scoped admin または break-glass 管理者が用意されていることを確認します。
+   service-wide backup を Admin UI/API から実行する運用では、break-glass または全 effective tenant scope を持つ管理者も別途確認します:
 
    ```bash
    sqlite3 ./restore-mailer-data/mailer.db 'SELECT COUNT(DISTINCT tenant_id) FROM mail_requests;'
@@ -106,5 +107,5 @@
 - 使い捨て Mailer 環境で `/healthz` と `/readyz` が 200 を返す。
 - `db stats` が成功し、復元データの期待 status 件数を示す。
 - ドリルで Admin UI が有効なら、Admin ログイン、Mail Requests、Dead Letters が動作する。
-- Admin UI が有効なら、復元 DB の distinct tenant 履歴に対応する tenant scope または break-glass 管理者がある。
+- Admin UI が有効なら、scoped admin または break-glass 管理者がある。Admin UI/API から service-wide backup を使う運用では、break-glass または全 effective tenant scope を持つ管理者がある。
 - 次のスケジュールバックアップに依存する前にドリル結果を記録する。

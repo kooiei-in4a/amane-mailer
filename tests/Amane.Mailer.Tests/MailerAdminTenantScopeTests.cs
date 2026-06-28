@@ -253,6 +253,9 @@ public sealed class MailerAdminTenantScopeTests(MailerAdminFixture fixture)
     {
         var ct = TestContext.Current.CancellationToken;
         var username = "break-glass-audit-" + Guid.NewGuid().ToString("N");
+        const string recipient = "body@example.com";
+        const string subject = "Body Subject";
+        const string htmlBody = "break-glass-body";
         await fixture.Factory.Services.GetRequiredService<AdminUserRepository>()
             .CreateBreakGlassUserAsync(
                 username,
@@ -262,9 +265,9 @@ public sealed class MailerAdminTenantScopeTests(MailerAdminFixture fixture)
         var id = await SeedMailRequestAsync(
             OtherTenantId,
             MailRequestState.Queued,
-            "body@example.com",
-            "Body Subject",
-            htmlBody: "break-glass-body",
+            recipient,
+            subject,
+            htmlBody: htmlBody,
             completedAt: null,
             ct);
 
@@ -278,7 +281,20 @@ public sealed class MailerAdminTenantScopeTests(MailerAdminFixture fixture)
             .ListRecentAsync(20, ct);
 
         Assert.Contains(auditRows, row => row.EventType == AdminAuditLog.EventTypes.BreakGlassLoginSucceeded);
-        Assert.Contains(auditRows, row => row.EventType == AdminAuditLog.EventTypes.BreakGlassMailRequestBodyViewed);
+        var bodyViewRow = Assert.Single(
+            auditRows,
+            row => row.EventType == AdminAuditLog.EventTypes.BreakGlassMailRequestBodyViewed);
+        Assert.Equal(id.ToString("D"), bodyViewRow.TargetId);
+        Assert.Equal("html_body", bodyViewRow.FieldName);
+        foreach (var value in AuditValues(bodyViewRow))
+        {
+            if (value is null)
+                continue;
+
+            Assert.DoesNotContain(recipient, value, StringComparison.Ordinal);
+            Assert.DoesNotContain(subject, value, StringComparison.Ordinal);
+            Assert.DoesNotContain(htmlBody, value, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -339,6 +355,19 @@ public sealed class MailerAdminTenantScopeTests(MailerAdminFixture fixture)
                 tenantIds,
                 cancellationToken);
     }
+
+    private static IEnumerable<string?> AuditValues(AdminAuditEventRow row) =>
+    [
+        row.EventType,
+        row.Actor,
+        row.SourceIp,
+        row.UserAgentSummary,
+        row.TargetType,
+        row.TargetId,
+        row.FieldName,
+        row.Result,
+        row.ErrorCode,
+    ];
 
     private async Task<Guid> SeedMailRequestAsync(
         Guid tenantId,

@@ -89,8 +89,10 @@ drills.
    count and the restored DB's historical tenant count. Even if a tenant has
    been removed from configuration, the restored DB is treated as multi-tenant
    when `mail_requests` still contains 2 or more distinct `tenant_id` values.
-   Check the restored DB when needed and confirm that a scoped admin or
-   break-glass admin exists:
+   Check the restored DB when needed and confirm that at least one scoped admin
+   or break-glass admin exists. When operators run service-wide backup through
+   Admin UI/API, also confirm that a break-glass admin or an admin with all
+   effective tenant scopes exists:
 
    ```bash
    sqlite3 ./restore-mailer-data/mailer.db 'SELECT COUNT(DISTINCT tenant_id) FROM mail_requests;'
@@ -121,6 +123,7 @@ drills.
 - `db stats` succeeds and shows expected status counts for the restored data.
 - Admin login, Mail Requests, and Dead Letters work when Admin UI is enabled for
   the drill.
-- When Admin UI is enabled, tenant scopes or a break-glass admin cover the
-  restored DB's distinct tenant history.
+- When Admin UI is enabled, a scoped admin or break-glass admin exists. When
+  service-wide backup is used through Admin UI/API, a break-glass admin or an
+  admin with all effective tenant scopes exists.
 - The drill result is recorded before relying on the next scheduled backup.

@@ -44,7 +44,6 @@ public static class AdminAuditLog
     {
         public const string MailRequest = "mail_request";
         public const string AdminSession = "admin_session";
-        public const string AdminUser = "admin_user";
     }
 
     public static string ResolveActor(HttpContext context) =>
