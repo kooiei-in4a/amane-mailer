@@ -118,6 +118,14 @@ jobs:
           amane-mailer:ci-smoke-${{ matrix.tag_suffix }}
           --help
 
+  docker-build-smoke-required:
+    name: Docker build smoke
+    runs-on: ubuntu-24.04
+    needs: docker-build-smoke
+    steps:
+      - name: Confirm platform smoke matrix
+        run: echo "Docker build smoke matrix passed."
+
   local-compose-fresh-data:
     name: Local compose fresh data dir
     runs-on: ubuntu-24.04
