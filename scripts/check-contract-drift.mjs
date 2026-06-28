@@ -573,6 +573,18 @@ for (const relativePath of payloadHashExamplePaths) {
   }
 }
 
+const payloadHashExampleSources = {
+  python: read('examples/payload-hash/python/mail_payload_hash.py'),
+  javascript: read('examples/payload-hash/javascript/mail_payload_hash.mjs'),
+  go: read('examples/payload-hash/go/mail_payload_hash.go'),
+};
+
+for (const field of includedHashFields) {
+  assertContains(payloadHashExampleSources.python, `"${field}"`, 'Python INCLUDED_FIELDS');
+  assertContains(payloadHashExampleSources.javascript, `'${field}'`, 'JavaScript INCLUDED_FIELDS');
+  assertContains(payloadHashExampleSources.go, `"${field}":`, 'Go includedFields');
+}
+
 for (const field of includedHashFields) {
   assertContains(payloadHashExamplesReadme, `\`${field}\``, 'payload_hash examples README included fields');
 }
@@ -586,6 +598,7 @@ for (const needle of [
   'Null omission vs explicit null',
   'metadata values are strings',
   'Sort and escape rules',
+  'UTF-16 code-unit order',
 ]) {
   assertContains(payloadHashExamplesReadme, needle, 'payload_hash examples README contract notes');
 }

@@ -8,6 +8,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode/utf16"
 )
 
 var includedFields = map[string]struct{}{
@@ -84,12 +85,42 @@ func Canonicalize(value any) (string, error) {
 	}
 }
 
+func compareOrdinal(a, b string) int {
+	ua := utf16.Encode([]rune(a))
+	ub := utf16.Encode([]rune(b))
+	limit := len(ua)
+	if len(ub) < limit {
+		limit = len(ub)
+	}
+	for index := 0; index < limit; index++ {
+		if ua[index] != ub[index] {
+			if ua[index] < ub[index] {
+				return -1
+			}
+			return 1
+		}
+	}
+	if len(ua) == len(ub) {
+		return 0
+	}
+	if len(ua) < len(ub) {
+		return -1
+	}
+	return 1
+}
+
+func sortKeysOrdinal(keys []string) {
+	sort.Slice(keys, func(i, j int) bool {
+		return compareOrdinal(keys[i], keys[j]) < 0
+	})
+}
+
 func canonicalizeObject(value map[string]any) (string, error) {
 	keys := make([]string, 0, len(value))
 	for key := range value {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	sortKeysOrdinal(keys)
 
 	parts := make([]string, 0, len(keys))
 	for _, key := range keys {

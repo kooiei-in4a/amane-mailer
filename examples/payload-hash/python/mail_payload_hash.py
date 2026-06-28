@@ -64,9 +64,21 @@ def canonicalize(value: Any) -> str:
     raise TypeError(f"Unsupported JSON value type: {type(value)!r}")
 
 
+def _utf16_code_units(value: str) -> list[int]:
+    encoded = value.encode("utf-16-le")
+    return [
+        encoded[index] | (encoded[index + 1] << 8)
+        for index in range(0, len(encoded), 2)
+    ]
+
+
+def _sort_keys_ordinal(keys: list[str]) -> list[str]:
+    return sorted(keys, key=_utf16_code_units)
+
+
 def _canonicalize_object(value: dict[str, Any]) -> str:
     parts = []
-    for key in sorted(value.keys()):
+    for key in _sort_keys_ordinal(list(value.keys())):
         parts.append(f"{escape_json_string(key)}:{canonicalize(value[key])}")
     return "{" + ",".join(parts) + "}"
 

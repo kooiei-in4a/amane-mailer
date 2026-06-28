@@ -57,5 +57,25 @@
     },
     "expected_canonical_json": "{\"metadata\":{\"campaign\":\"launch\",\"form_id\":\"form-002\"},\"purpose\":\"FormResponseNotification\",\"source_service\":\"example-service\",\"subject\":\"Metadata example\",\"text_body\":\"Plain text only.\",\"to\":[{\"display_name\":\"Operations\",\"email\":\"ops@example.com\"}]}",
     "expected_sha256_hex": "cfb39646d0068b82ce85b8fd8f52d534f786ea8e6253710bd0e62fc35856b838"
+  },
+  {
+    "name": "ordinal-metadata-key-sorting",
+    "input": {
+      "source_service": "example-service",
+      "purpose": "FormResponseNotification",
+      "subject": "Ordinal metadata key sorting",
+      "to": [
+        {
+          "email": "admin@example.com"
+        }
+      ],
+      "text_body": "Checks UTF-16 code-unit key order in metadata.",
+      "metadata": {
+        "😀": "grinning",
+        "\uE000": "private-use"
+      }
+    },
+    "expected_canonical_json": "{\"metadata\":{\"😀\":\"grinning\",\"\uE000\":\"private-use\"},\"purpose\":\"FormResponseNotification\",\"source_service\":\"example-service\",\"subject\":\"Ordinal metadata key sorting\",\"text_body\":\"Checks UTF-16 code-unit key order in metadata.\",\"to\":[{\"email\":\"admin@example.com\"}]}",
+    "expected_sha256_hex": "60f8fc0e09b41d589f12994749c6c7cab7e65007e0cedc1ffb56d6ba8ae70939"
   }
 ]

@@ -46,7 +46,7 @@ Match the JSON you POST. If your serializer omits null optional properties, comp
 
 After extracting included fields from the request JSON:
 
-1. Sort object keys lexicographically (Unicode code-point / ordinal order) at every nesting level.
+1. Sort object keys by .NET `StringComparer.Ordinal` (UTF-16 code-unit order) at every nesting level. JavaScript `Array.prototype.sort()` matches this; Python and Go examples implement the same rule explicitly.
 2. Serialize to compact JSON with no extra whitespace.
 3. Escape strings with Mailer rules: `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\u00xx` for control characters below U+0020.
 4. UTF-8 encode the canonical JSON string, SHA-256, lowercase hex (64 characters).
