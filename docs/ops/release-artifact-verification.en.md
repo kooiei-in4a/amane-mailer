@@ -98,6 +98,10 @@ Expected values:
   older release record explicitly marks the version label absent, follow that
   release record.
 
+Informational labels such as `org.opencontainers.image.description` are recorded
+for context. They are not part of consumer verification unless a release record
+explicitly says otherwise.
+
 ## Provenance / Attestation / SBOM
 
 The current image publishing workflow runs `docker/build-push-action` with:

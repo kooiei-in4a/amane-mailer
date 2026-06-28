@@ -91,6 +91,9 @@ docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencon
 - `org.opencontainers.image.version=vX.Y.Z`（現行 workflow release。古い release で release record が
   absent と明記している場合は、その release record を優先します）
 
+`org.opencontainers.image.description` などの説明用 label は参考情報です。release record が明示しない限り、
+consumer verification の判定対象には含めません。
+
 ## Provenance / attestation / SBOM
 
 現行の image publish workflow は `docker/build-push-action` を次の設定で実行します。
