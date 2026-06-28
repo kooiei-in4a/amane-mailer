@@ -54,6 +54,7 @@ after publishing a release, verify and record the following items.
 - `docs/adr/0012-mail-via-mailer-microservice.md`
 - `docs/adr/0013-admin-threat-model-and-pii-policy.md`
 - `docs/ops/ghcr-image-publish.md` / `.en.md`
+- `docs/ops/release-artifact-verification.md` / `.en.md`
 - `docs/ops/backup-operations.md` / `.en.md`
 - `docs/ops/restore-procedure.md` / `.en.md`
 - GitHub Release body (`gh release view vX.Y.Z --repo kooiei-in4a/amane-mailer`)

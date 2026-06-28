@@ -110,6 +110,9 @@ artifact and operational-constraint items from the
 [release notes checklist](release-notes-checklist.en.md) in the GitHub Release
 notes.
 
+Consumer verification steps for published artifacts live in
+[release artifact verification](release-artifact-verification.en.md).
+
 ## Deploy host pull access
 
 If GHCR packages are private, the deploy host must authenticate before `docker compose pull`.
