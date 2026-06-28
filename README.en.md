@@ -134,6 +134,7 @@ Minimum information to POST a mail request to a running Mailer:
 After starting the local compose stack, you can run this smoke request from the
 host. `mail_request_id` is the idempotency key, so use a fresh UUID for each
 new request unless you intentionally want to retry the same request.
+If `uuidgen` is unavailable, set `request_id` to any UUID string.
 
 ```bash
 request_id="$(uuidgen)"

@@ -126,6 +126,7 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/` です。Ma
 
 ローカル compose 起動後は、host から次の smoke request を実行できます。
 `mail_request_id` は冪等キーなので、同じ依頼として再送したい場合以外は毎回新しい UUID を使います。
+`uuidgen` がない環境では、`request_id` に任意の UUID 文字列を設定してください。
 
 ```bash
 request_id="$(uuidgen)"
