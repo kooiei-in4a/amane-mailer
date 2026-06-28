@@ -17,7 +17,7 @@ For each review finding, decide:
 
 - Correct / partially correct / incorrect.
 - In scope / out of scope.
-- Fix now / follow-up issue / no action.
+- Fix now / follow-up issue proposal / no action.
 - Reason.
 
 Rules:
@@ -28,7 +28,8 @@ Rules:
 - Fix Minor only when low risk and clearly beneficial.
 - Treat Nit as optional.
 - Do not expand scope.
-- Create or propose follow-up issues for valid out-of-scope findings.
+- Propose follow-up issue drafts for valid out-of-scope findings when useful.
+- Do not create GitHub issues unless the current human request explicitly authorizes issue creation.
 - Re-run relevant validation after changes.
 
 Final output:
@@ -37,7 +38,7 @@ Final output:
 review triage table:
 changes made:
 findings declined:
-follow-up issues:
+follow-up issue proposals:
 validation:
 PR comment draft:
 remaining risk:

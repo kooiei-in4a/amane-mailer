@@ -16,12 +16,14 @@ Do not blindly apply reviewer suggestions. For each finding, classify correctnes
 
 Do not commit, push, create PRs, merge, delete branches, publish artifacts, or trigger release workflows unless the current user request explicitly authorizes that action.
 
+Propose follow-up issue drafts when useful, but do not create GitHub issues unless the current user request explicitly authorizes issue creation.
+
 Final output must include:
 
 - Review triage.
 - Changes made.
 - Findings declined.
-- Follow-up issues.
+- Follow-up issue proposals.
 - Validation.
 - PR comment draft.
 - Remaining risk.

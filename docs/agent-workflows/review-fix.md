@@ -16,7 +16,7 @@ For each finding, decide:
 
 - Correct, partially correct, or incorrect.
 - In scope or out of scope.
-- Fix now, follow-up issue, or no action.
+- Fix now, follow-up issue proposal, or no action.
 - Reason.
 - Validation required after the decision.
 
@@ -28,7 +28,8 @@ Fix rules:
 - Treat Nit findings as optional.
 - Do not blindly apply reviewer suggestions.
 - Do not expand the issue scope.
-- Create or propose follow-up issues for valid out-of-scope findings.
+- Propose follow-up issue drafts for valid out-of-scope findings when useful.
+- Do not create GitHub issues unless the current human request explicitly authorizes issue creation.
 
 Stop and ask before implementation if a finding requires product or specification judgment, security posture changes, release process changes, data migration, or HTTP contract changes beyond the accepted issue scope.
 
@@ -69,7 +70,7 @@ Changes made:
 
 Findings declined:
 
-Follow-up issues:
+Follow-up issue proposals:
 
 Validation:
 
