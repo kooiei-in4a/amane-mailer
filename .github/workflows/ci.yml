@@ -173,4 +173,5 @@ jobs:
         run: node examples/payload-hash/javascript/verify_vectors.mjs
 
       - name: Verify payload_hash examples (Go)
-        run: go test ./examples/payload-hash/go/...
+        working-directory: examples/payload-hash/go
+        run: go test ./...

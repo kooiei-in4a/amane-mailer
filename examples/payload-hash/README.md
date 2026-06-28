@@ -59,7 +59,7 @@ These examples mirror `MailPayloadHasher` in `src/Amane.Mailer.Contracts/Securit
 |---|---|---|
 | Python | [python/mail_payload_hash.py](python/mail_payload_hash.py) | `python examples/payload-hash/python/verify_vectors.py` |
 | JavaScript (Node.js) | [javascript/mail_payload_hash.mjs](javascript/mail_payload_hash.mjs) | `node examples/payload-hash/javascript/verify_vectors.mjs` |
-| Go | [go/mail_payload_hash.go](go/mail_payload_hash.go) | `go test ./examples/payload-hash/go/...` |
+| Go | [go/mail_payload_hash.go](go/mail_payload_hash.go) | `go test ./...` in `examples/payload-hash/go` |
 
 CI runs all three verifiers in the OpenAPI validation workflow. Contract drift check (`scripts/check-contract-drift.mjs`) asserts these examples stay present and reference the shared test vectors.
 
