@@ -85,6 +85,17 @@ drills.
 
 6. If Admin UI is enabled in the drill `.env`, verify login, mail request list
    visibility, and Dead Letters page rendering with drill-only credentials.
+   Admin tenant-scope readiness uses the larger of the `tenants.json` tenant
+   count and the restored DB's historical tenant count. Even if a tenant has
+   been removed from configuration, the restored DB is treated as multi-tenant
+   when `mail_requests` still contains 2 or more distinct `tenant_id` values.
+   Check the restored DB when needed and confirm that a scoped admin or
+   break-glass admin exists:
+
+   ```bash
+   sqlite3 ./restore-mailer-data/mailer.db 'SELECT COUNT(DISTINCT tenant_id) FROM mail_requests;'
+   sqlite3 ./restore-mailer-data/mailer.db 'SELECT tenant_id, COUNT(*) FROM mail_requests GROUP BY tenant_id ORDER BY tenant_id;'
+   ```
 
 7. Record the drill date, backup filename, restore duration, verification
    result, and any corrective action in private operations notes.
@@ -110,4 +121,6 @@ drills.
 - `db stats` succeeds and shows expected status counts for the restored data.
 - Admin login, Mail Requests, and Dead Letters work when Admin UI is enabled for
   the drill.
+- When Admin UI is enabled, tenant scopes or a break-glass admin cover the
+  restored DB's distinct tenant history.
 - The drill result is recorded before relying on the next scheduled backup.

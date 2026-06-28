@@ -24,7 +24,9 @@ public static class AdminAuditLog
     public static class EventTypes
     {
         public const string MailRequestBodyViewed = "mail_request.body_viewed";
+        public const string BreakGlassMailRequestBodyViewed = "mail_request.break_glass_body_viewed";
         public const string LoginSucceeded = "auth.login_succeeded";
+        public const string BreakGlassLoginSucceeded = "auth.break_glass_login_succeeded";
         public const string LoginFailed = "auth.login_failed";
         public const string Logout = "auth.logout";
         public const string SessionExpired = "auth.session_expired";
@@ -42,6 +44,7 @@ public static class AdminAuditLog
     {
         public const string MailRequest = "mail_request";
         public const string AdminSession = "admin_session";
+        public const string AdminUser = "admin_user";
     }
 
     public static string ResolveActor(HttpContext context) =>

@@ -308,6 +308,7 @@ public static class AdminSessionRevokeReasons
     public const string AbsoluteExpired = "absolute_expired";
     public const string IdleExpired = "idle_expired";
     public const string CredentialChanged = "credential_changed";
+    public const string TenantScopeChanged = "tenant_scope_changed";
     public const string ConcurrentLimit = "concurrent_limit";
     public const string Invalid = "invalid";
 }
