@@ -12,7 +12,8 @@
 *.env
 .env.*
 !.env.example
-.claude/
+.claude/*
+!.claude/skills/
 
 # SQLite database files
 *.db

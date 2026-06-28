@@ -1,0 +1,54 @@
+---
+description: Amane Mailer agent workflow, validation gates, and review discipline.
+alwaysApply: true
+---
+
+# Amane Mailer Agent Workflow
+
+When working in this repository:
+
+- Read `AGENTS.md` first.
+- Treat the GitHub issue acceptance criteria as the definition of done.
+- Keep changes scoped to one issue or one behavior.
+- Do not introduce unrelated refactors, formatting churn, or dependency updates.
+- Add or update focused tests for behavior changes.
+- Do not commit secrets, real tenant JSON, ACS connection strings, bearer tokens, private `.env`, SQLite DBs, backups, or private infra details.
+- Do not expose PII or raw provider errors in logs, DB, Admin UI, docs, or tests.
+- Preserve Native AOT and trimming compatibility.
+- Keep Contracts, runtime behavior, OpenAPI, and tests synchronized for HTTP contract changes.
+
+Workflow gates:
+
+1. Exploration.
+2. Plan.
+3. Implementation.
+4. Validation.
+5. Self-review.
+6. PR-ready summary.
+
+Before proposing completion for product changes, verify:
+
+```powershell
+dotnet restore Amane.Mailer.slnx --locked-mode
+dotnet build Amane.Mailer.slnx -c Release --no-restore
+dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
+```
+
+Use additional checks when relevant:
+
+```powershell
+node scripts/validate-openapi.mjs docs/api/openapi.yaml
+```
+
+For runtime, serialization, dependency, or trimming-sensitive changes, consider Native AOT publish smoke.
+
+Review findings must be classified:
+
+- Blocker.
+- Major.
+- Minor.
+- Nit.
+- Question.
+- Out-of-scope.
+
+Do not accept third-party review findings blindly. Triage each finding for correctness, scope, and timing.
