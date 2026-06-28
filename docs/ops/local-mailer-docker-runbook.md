@@ -1,9 +1,12 @@
-[English](local-mailer-docker-runbook.en.md)
+[English](local-mailer-docker-runbook.en.md) | [Linux/macOS bash 版](local-mailer-docker-runbook-bash.md)
 
 # ローカル Mailer Docker Runbook
 
 ローカル PC の Docker で Mailer と Mailpit を起動し、Mailer 管理画面、Mailpit 受信、
 ACS 切替、Dead Letter を確認するための手順です。Consumer アプリ本体の `app` / `db` は対象外です。
+
+Linux / macOS の bash と curl で Mailpit local smoke を確認する場合は
+[Linux/macOS 向け local Mailer + Mailpit runbook](local-mailer-docker-runbook-bash.md) を参照してください。
 
 Deploy host 向け deploy compose（3 tenant / 共有ネットワーク）の rehearsal は
 [local-deploy-rehearsal-runbook.md](local-deploy-rehearsal-runbook.md) を参照してください。

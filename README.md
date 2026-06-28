@@ -49,6 +49,8 @@ docker compose -f infra/docker/docker-compose.local.yml up -d --build --wait mai
 ローカルの `config/mailer/tenants.example.json` bind mount から読み込まれます。
 Admin UI setup、ACS 切替、Dead Letter 確認を含む smoke 手順は
 [ローカル Mailer Docker runbook](docs/ops/local-mailer-docker-runbook.md) [(en)](docs/ops/local-mailer-docker-runbook.en.md) を参照してください。
+Linux / macOS の bash と curl で Mailpit 到着、冪等再送、conflict まで確認する手順は
+[Linux/macOS 向け local Mailer + Mailpit runbook](docs/ops/local-mailer-docker-runbook-bash.md) [(en)](docs/ops/local-mailer-docker-runbook-bash.en.md) を参照してください。
 
 ## Admin UI
 

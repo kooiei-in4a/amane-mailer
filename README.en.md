@@ -52,6 +52,9 @@ tenant is loaded from the local `config/mailer/tenants.example.json` bind mount.
 For the full smoke procedure, including Admin UI setup, ACS switching, and Dead
 Letter checks, see
 [Local Mailer Docker runbook](docs/ops/local-mailer-docker-runbook.en.md) [(ja)](docs/ops/local-mailer-docker-runbook.md).
+For Linux / macOS bash and curl steps that verify Mailpit receipt, idempotent
+repost, and conflict, see
+[Local Mailer + Mailpit runbook for Linux/macOS](docs/ops/local-mailer-docker-runbook-bash.en.md) [(ja)](docs/ops/local-mailer-docker-runbook-bash.md).
 
 ## Admin UI
 
