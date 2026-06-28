@@ -66,6 +66,10 @@ release 前の最終ゲートを `main` PR のフル CI に置く意図的なト
 
 ### branch protection との整合
 
-required status checks の job 名は変更していません。`develop` 向け PR では重い job は **Skipped** となり、
-GitHub は skipped job を required check 上成功扱いにします。`main` 向け PR では従来どおり全 required job が実行されます。
+required status checks の job 名は変更していません。
+
+- 単体 job（Native AOT、compose smoke 等）: 軽量経路では **Skipped**。GitHub は skipped job を required check 上成功扱いにします。
+- 集約 job `Docker build smoke`（`docker-build-smoke-required`）: matrix 本体が skip されても **常に実行** し、matrix が skipped のときは success を返します。`needs` と同一 `if` による skip 連鎖で required check が pending のままになるのを防ぐためです。
+- `main` 向け PR では matrix が実行され、成否がそのまま反映されます。
+
 ruleset 自体の変更が必要な場合は別 issue で扱います。

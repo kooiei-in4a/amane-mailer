@@ -137,15 +137,21 @@ jobs:
 
   docker-build-smoke-required:
     name: Docker build smoke
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.ref == 'refs/heads/main' ||
-      github.base_ref == 'main'
+    # Always run so required status check reports success when the matrix is skipped
+    # on light CI paths (needs + matching if would skip this job and leave checks pending).
+    if: always()
     runs-on: ubuntu-24.04
     needs: docker-build-smoke
     steps:
       - name: Confirm platform smoke matrix
-        run: echo "Docker build smoke matrix passed."
+        run: |
+          result="${{ needs.docker-build-smoke.result }}"
+          if [ "$result" = "success" ] || [ "$result" = "skipped" ]; then
+            echo "Docker build smoke gate passed (matrix result: $result)."
+          else
+            echo "Docker build smoke matrix failed (result: $result)."
+            exit 1
+          fi
 
   local-compose-fresh-data:
     name: Local compose fresh data dir
