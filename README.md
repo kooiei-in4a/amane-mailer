@@ -130,6 +130,7 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 - **必須フィールド**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `to`, `subject`, `payload_hash`
 - **`payload_hash`**: 配送フィールドの canonical JSON SHA-256。
   .NET は `Amane.Mailer.Contracts` の `MailPayloadHasher` を使用。
+  Python / JavaScript / Go の実装例: [examples/payload-hash/](examples/payload-hash/README.md)
   アルゴリズム仕様・エラーコード・冪等性: [docs/api/openapi.yaml](docs/api/openapi.yaml)
 
 ローカル compose 起動後は、host から次の smoke request を実行できます。

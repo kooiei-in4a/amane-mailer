@@ -155,3 +155,23 @@ jobs:
 
       - name: Check Contracts/runtime/OpenAPI drift
         run: node scripts/check-contract-drift.mjs
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.22"
+
+      - name: Verify payload_hash examples (Python)
+        run: python examples/payload-hash/python/verify_vectors.py
+
+      - name: Verify payload_hash examples (JavaScript)
+        run: node examples/payload-hash/javascript/verify_vectors.mjs
+
+      - name: Verify payload_hash examples (Go)
+        working-directory: examples/payload-hash/go
+        run: go test ./...

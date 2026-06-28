@@ -557,6 +557,63 @@ for (const needle of [
   assertContains(contractsReadme, needle, 'Contracts README update guidance');
 }
 
+const payloadHashExamplesReadme = read('examples/payload-hash/README.md');
+const payloadHashExamplePaths = [
+  'examples/payload-hash/python/mail_payload_hash.py',
+  'examples/payload-hash/python/verify_vectors.py',
+  'examples/payload-hash/javascript/mail_payload_hash.mjs',
+  'examples/payload-hash/javascript/verify_vectors.mjs',
+  'examples/payload-hash/go/mail_payload_hash.go',
+  'examples/payload-hash/go/verify_vectors_test.go',
+];
+
+for (const relativePath of payloadHashExamplePaths) {
+  if (!existsSync(path.join(root, relativePath))) {
+    fail(`payload_hash example file is missing: ${relativePath}.`);
+  }
+}
+
+const payloadHashExampleSources = {
+  python: read('examples/payload-hash/python/mail_payload_hash.py'),
+  javascript: read('examples/payload-hash/javascript/mail_payload_hash.mjs'),
+  go: read('examples/payload-hash/go/mail_payload_hash.go'),
+};
+
+for (const field of includedHashFields) {
+  assertContains(payloadHashExampleSources.python, `"${field}"`, 'Python INCLUDED_FIELDS');
+  assertContains(payloadHashExampleSources.javascript, `'${field}'`, 'JavaScript INCLUDED_FIELDS');
+  assertContains(payloadHashExampleSources.go, `"${field}":`, 'Go includedFields');
+}
+
+for (const field of includedHashFields) {
+  assertContains(payloadHashExamplesReadme, `\`${field}\``, 'payload_hash examples README included fields');
+}
+
+for (const field of excludedHashFields) {
+  assertContains(payloadHashExamplesReadme, `\`${field}\``, 'payload_hash examples README excluded fields');
+}
+
+for (const needle of [
+  'tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json',
+  'Null omission vs explicit null',
+  'metadata values are strings',
+  'Sort and escape rules',
+  'UTF-16 code-unit order',
+]) {
+  assertContains(payloadHashExamplesReadme, needle, 'payload_hash examples README contract notes');
+}
+
+for (const needle of [
+  'examples/payload-hash/',
+  'payload-hash-vectors.json',
+]) {
+  assertContains(contractsReadme, needle, 'Contracts README payload_hash examples guidance');
+}
+
+for (const readmePath of ['README.md', 'README.en.md']) {
+  assertContains(read(readmePath), 'examples/payload-hash/', `${readmePath} payload_hash examples link`);
+}
+
 if (errors.length > 0) {
   console.error('Contract drift check failed:');
   for (const error of errors) {
