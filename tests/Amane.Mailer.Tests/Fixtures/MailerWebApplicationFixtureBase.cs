@@ -64,6 +64,9 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
             DELETE FROM mail_attempts;
             DELETE FROM mail_requests;
             DELETE FROM admin_audit_events;
+            DELETE FROM admin_login_throttle;
+            DELETE FROM admin_sessions;
+            DELETE FROM admin_config;
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

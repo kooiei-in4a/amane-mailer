@@ -1,76 +1,130 @@
 using System.Collections.Concurrent;
+using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
 
 namespace Amane.Mailer.Admin;
 
-public sealed class AdminLoginThrottle(TimeProvider timeProvider)
+public sealed class AdminLoginThrottle(
+    TimeProvider timeProvider,
+    AdminLoginThrottleRepository repository,
+    MailerAdminOptions options)
 {
-    private readonly ConcurrentDictionary<string, LoginFailureState> _failures = new(StringComparer.Ordinal);
+    private readonly AdminNetworkIdentifierHasher? _networkIdentifierHasher =
+        options.HashNetworkIdentifiers && options.AuditIdentifierHashKey is not null
+            ? new AdminNetworkIdentifierHasher(options.AuditIdentifierHashKey)
+            : null;
+    private readonly ConcurrentDictionary<string, LoginFailureState> _cache = new(StringComparer.Ordinal);
 
-    public bool IsLocked(string username, string remoteAddress, MailerAdminOptions options, out TimeSpan retryAfter)
-    {
-        var key = BuildKey(username, remoteAddress);
-        var now = timeProvider.GetUtcNow();
-        retryAfter = TimeSpan.Zero;
+    public void Clear() => _cache.Clear();
 
-        if (!_failures.TryGetValue(key, out var state) || state.LockedUntil is null)
-            return false;
-
-        if (state.LockedUntil <= now)
-        {
-            _failures.TryRemove(key, out _);
-            return false;
-        }
-
-        retryAfter = state.LockedUntil.Value - now;
-        return true;
-    }
-
-    public bool RecordFailure(
+    public async Task<(bool IsLocked, TimeSpan RetryAfter)> IsLockedWithRetryAfterAsync(
         string username,
         string remoteAddress,
-        MailerAdminOptions options,
-        out TimeSpan retryAfter)
+        CancellationToken cancellationToken)
     {
         var key = BuildKey(username, remoteAddress);
         var now = timeProvider.GetUtcNow();
+        var state = await GetStateAsync(key, now, cancellationToken);
 
-        var next = _failures.AddOrUpdate(
-            key,
-            _ => new LoginFailureState(1, null),
-            (_, current) =>
-            {
-                if (current.LockedUntil is not null && current.LockedUntil <= now)
-                    return new LoginFailureState(1, null);
+        if (state.LockedUntil is null || state.LockedUntil <= now)
+            return (false, TimeSpan.Zero);
 
-                var count = current.Count + 1;
-                var lockedUntil = count >= options.LoginFailureLimit
-                    ? now + options.LoginCooldown
-                    : current.LockedUntil;
-                return new LoginFailureState(count, lockedUntil);
-            });
+        return (true, state.LockedUntil.Value - now);
+    }
 
-        if (next.LockedUntil is null || next.LockedUntil <= now)
+    public async Task<(bool IsLocked, TimeSpan RetryAfter, bool LockCreated)> RecordFailureAsync(
+        string username,
+        string remoteAddress,
+        CancellationToken cancellationToken)
+    {
+        var key = BuildKey(username, remoteAddress);
+        var now = timeProvider.GetUtcNow();
+        var current = await GetStateAsync(key, now, cancellationToken);
+
+        var count = current.LockedUntil is not null && current.LockedUntil <= now
+            ? 1
+            : current.Count + 1;
+        var wasLocked = current.LockedUntil is not null && current.LockedUntil > now;
+        var lockCreated = false;
+        DateTimeOffset? lockedUntil = current.LockedUntil;
+
+        if (count >= options.LoginFailureLimit)
         {
-            retryAfter = TimeSpan.Zero;
-            return false;
+            if (!wasLocked)
+            {
+                lockCreated = true;
+            }
+
+            lockedUntil = now + options.LoginCooldown;
+        }
+        else if (current.LockedUntil is not null && current.LockedUntil <= now)
+        {
+            lockedUntil = null;
         }
 
-        retryAfter = next.LockedUntil.Value - now;
-        return true;
+        var next = new LoginFailureState(count, lockedUntil);
+        _cache[key] = next;
+        await repository.UpsertAsync(
+            new AdminLoginThrottleRow(key, count, lockedUntil, now),
+            cancellationToken);
+
+        if (lockedUntil is null || lockedUntil <= now)
+            return (false, TimeSpan.Zero, lockCreated);
+
+        return (true, lockedUntil.Value - now, lockCreated);
     }
 
-    public void Reset(string username, string remoteAddress)
+    public async Task ResetAsync(
+        string username,
+        string remoteAddress,
+        CancellationToken cancellationToken)
     {
-        _failures.TryRemove(BuildKey(username, remoteAddress), out _);
+        var key = BuildKey(username, remoteAddress);
+        _cache.TryRemove(key, out _);
+        await repository.DeleteAsync(key, cancellationToken);
     }
 
-    public void Clear()
+    private async Task<LoginFailureState> GetStateAsync(
+        string key,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
-        _failures.Clear();
+        if (_cache.TryGetValue(key, out var cached))
+        {
+            if (cached.LockedUntil is null || cached.LockedUntil > now)
+                return cached;
+
+            _cache.TryRemove(key, out _);
+        }
+
+        var row = await repository.GetAsync(key, cancellationToken);
+        if (row is null)
+            return new LoginFailureState(0, null);
+
+        if (row.LockedUntil is not null && row.LockedUntil <= now)
+        {
+            await repository.DeleteAsync(key, cancellationToken);
+            return new LoginFailureState(0, null);
+        }
+
+        var state = new LoginFailureState(row.FailureCount, row.LockedUntil);
+        _cache[key] = state;
+        return state;
     }
 
-    private static string BuildKey(string username, string remoteAddress) =>
-        $"{username.Trim().ToUpperInvariant()}|{remoteAddress}";
+    internal string BuildKey(string username, string remoteAddress)
+    {
+        var sourceIdentifier = ResolveSourceIdentifier(remoteAddress);
+        return $"{username.Trim().ToUpperInvariant()}|{sourceIdentifier}";
+    }
+
+    private string ResolveSourceIdentifier(string remoteAddress)
+    {
+        if (_networkIdentifierHasher is null)
+            return remoteAddress;
+
+        return _networkIdentifierHasher.HashIdentifier(remoteAddress);
+    }
 
     private sealed record LoginFailureState(int Count, DateTimeOffset? LockedUntil);
 }

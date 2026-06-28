@@ -26,6 +26,10 @@ public static class AdminAuditLog
         public const string MailRequestBodyViewed = "mail_request.body_viewed";
         public const string LoginSucceeded = "auth.login_succeeded";
         public const string LoginFailed = "auth.login_failed";
+        public const string Logout = "auth.logout";
+        public const string SessionExpired = "auth.session_expired";
+        public const string AccountTemporarilyLocked = "auth.account_temporarily_locked";
+        public const string LoginRateLimited = "auth.login_rate_limited";
     }
 
     public static class Results

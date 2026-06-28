@@ -99,6 +99,10 @@ Persisted events:
 | `mail_request.body_viewed` | An authenticated admin opens a stored `html_body`, `text_body`, or `metadata_json` field | **Fail closed** — if the audit event cannot be persisted, the body view is denied with HTTP 500 and the content is not returned. |
 | `auth.login_succeeded` | A successful admin login | **Best effort** — a persistence failure is logged but does not block the auth flow. |
 | `auth.login_failed` | A rejected admin login | **Best effort** — bounded per IP/account by the login throttle. |
+| `auth.logout` | A successful explicit admin logout | **Best effort** |
+| `auth.session_expired` | A server-side session rejected for absolute or idle expiry | **Best effort** — deduplicated per session id for five minutes |
+| `auth.account_temporarily_locked` | Login failures reached the throttle threshold | **Best effort** |
+| `auth.login_rate_limited` | A login attempt rejected while the throttle lock is active | **Best effort** |
 
 Each row records only the event type, actor, timestamp, source IP, a truncated
 user-agent summary, the target reference (type / id / field name), the result,
@@ -110,10 +114,11 @@ password.
 The body-view event keeps its dedicated structured stdout log
 (`AdminMailRequestBodyViewed`) in addition to the database row.
 
-Not yet implemented (tracked for follow-up): logout / session-expired /
-login-rate-limited events, retention sweep
-(`MAILER_ADMIN_AUDIT_RETENTION_DAYS`), and optional hashing of network
-identifiers (`MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS`). The
+Not yet implemented (tracked for follow-up): retention sweep
+(`MAILER_ADMIN_AUDIT_RETENTION_DAYS`). When
+`MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, auth audit `source_ip` values
+and login throttle keys store keyed HMAC-SHA256 hashes instead of raw IP addresses;
+see the runbook section **Admin audit identifier hash key rotation**.
 `admin_audit_events` table is part of the Mailer SQLite database and is
 therefore included in `Amane.Mailer db backup` output.
 
@@ -127,17 +132,13 @@ limits before enabling the admin UI in any non-local environment.
 
 Current implementation limits:
 
-- **Audit log**: Body-view and login success/failure events are persisted to
-  the `admin_audit_events` SQLite table (and mirrored to stdout). Logout,
-  session-expired, and login-rate-limited events, plus a retention sweep, are
-  not yet implemented. See the Admin Audit Logging section above.
-- **Login throttle**: In-memory only; resets on process restart
-  (no durable throttle).
-- **Session store / revocation**: No durable server-side session store
-  (cookie auth only). Immediate revocation of existing sessions on admin
-  disable or credential change is not implemented. Sessions remain valid
-  until the default idle timeout (30 min) or default absolute lifetime (12 h)
-  expires.
+- **Audit log**: Body-view and auth events (login, logout, session expired, account
+  locked, login rate limited) are persisted to `admin_audit_events` (stdout mirror).
+  Retention sweep is not yet implemented.
+- **Login throttle**: SQLite-backed with in-memory cache; survives process restart.
+- **Session store / revocation**: Server-side sessions in SQLite with credential-epoch
+  invalidation on password hash change, explicit logout, expiry, and concurrent-session
+  limit enforcement (default three sessions per admin).
 - **Tenant scope**: No per-admin tenant scope. A single
   `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH` credential has
   access to all tenants.
