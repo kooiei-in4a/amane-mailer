@@ -50,16 +50,16 @@ published artifact checks, and maintainer confirmation items below.
 
 Status: inventory reviewed on 2026-06-29 JST without recording secret values.
 
-| Area | Publicly verifiable observation | Remaining maintainer confirmation |
-| --- | --- | --- |
-| GitHub Actions repository secrets | `gh secret list --repo kooiei-in4a/amane-mailer` returned no repository secrets. | Confirm no required publish or deploy credential is stored outside GitHub Actions secret inventory. |
-| GitHub `release` environment secrets | `gh secret list --repo kooiei-in4a/amane-mailer --env release` returned no environment secrets. | Confirm the release environment does not rely on hidden out-of-band long-lived credentials. |
-| GitHub Actions variables | Repository and `release` environment variable lists were empty. | None for publish credentials. |
-| GHCR image publish | `.github/workflows/publish-image.yml` uses `GITHUB_TOKEN` with `contents: read` and `packages: write`; no repository secret is needed. | Confirm deploy hosts use only intended read-only pull credentials when GHCR authentication is required. |
-| NuGet Contracts publish | `.github/workflows/publish-contracts.yml` uses `contents: read`, `id-token: write`, `environment: release`, and `NuGet/login` for GitHub Actions OIDC. No long-lived NuGet API key is visible in repository or environment secrets. | In nuget.org maintainer UI, confirm Trusted Publishing / generated API key scope is limited to `Amane.Mailer.Contracts`, and no legacy unscoped or glob/version-only key remains active. |
-| Runtime tenant tokens | Public examples use placeholders or the documented local-only sample token. | Confirm deployed `MAIL_SERVICE_TOKEN_*` values were rotated where public/private repository exposure risk existed. |
-| ACS connection string | No ACS connection string is present in public repository secrets or docs. | Confirm deployed `ACS_CONNECTION_STRING` values were rotated where public/private repository exposure risk existed. |
-| Deploy secrets | No deploy secret values are stored in this public repository. | Confirm external deploy hosts, backup remotes, and operator secret stores were reviewed and rotated as needed. |
+| Area | Publicly verifiable observation | Rotation disposition | Remaining maintainer confirmation |
+| --- | --- | --- | --- |
+| GitHub Actions repository secrets | `gh secret list --repo kooiei-in4a/amane-mailer` returned no repository secrets. | Not applicable for GitHub Actions repository secrets; no long-lived credential is visible there. | Confirm no required publish or deploy credential is stored outside GitHub Actions secret inventory. |
+| GitHub `release` environment secrets | `gh secret list --repo kooiei-in4a/amane-mailer --env release` returned no environment secrets. | Not applicable for GitHub Actions environment secrets; no long-lived credential is visible there. | Confirm the release environment does not rely on hidden out-of-band long-lived credentials. |
+| GitHub Actions variables | Repository and `release` environment variable lists were empty. | Not applicable for publish credentials. | None for publish credentials. |
+| GHCR image publish | `.github/workflows/publish-image.yml` uses `GITHUB_TOKEN` with `contents: read` and `packages: write`; no repository secret is needed. | Not applicable for repository-stored publish credentials; publish uses the job-scoped `GITHUB_TOKEN`. | Confirm deploy hosts use only intended read-only pull credentials when GHCR authentication is required. |
+| NuGet Contracts publish | `.github/workflows/publish-contracts.yml` uses `contents: read`, `id-token: write`, `environment: release`, and `NuGet/login` for GitHub Actions OIDC. No long-lived NuGet API key is visible in repository or environment secrets. | Not applicable for GitHub-stored NuGet API keys; maintainer confirmation required for nuget.org-side Trusted Publishing scope and any legacy keys. | In nuget.org maintainer UI, confirm Trusted Publishing / generated API key scope is limited to `Amane.Mailer.Contracts`, package owner / collaborator settings are expected, and no legacy unscoped or glob/version-only key remains active. If a mismatch is found, track it as follow-up from [#95](https://github.com/kooiei-in4a/amane-mailer/issues/95) before treating the item as complete. |
+| Runtime tenant tokens | Public examples use placeholders or the documented local-only sample token. | Maintainer confirmation required. Public repository evidence cannot determine deployed token rotation status. | Confirm deployed `MAIL_SERVICE_TOKEN_*` values were rotated where public/private repository exposure risk existed. |
+| ACS connection string | No ACS connection string is present in public repository secrets or docs. | Maintainer confirmation required. Public repository evidence cannot determine deployed ACS credential rotation status. | Confirm deployed `ACS_CONNECTION_STRING` values were rotated where public/private repository exposure risk existed. |
+| Deploy secrets | No deploy secret values are stored in this public repository. | Maintainer confirmation required. Public repository evidence cannot determine external deploy secret rotation status. | Confirm external deploy hosts, backup remotes, and operator secret stores were reviewed and rotated as needed. |
 
 ## Release artifact consistency
 
@@ -122,6 +122,11 @@ Status: reviewed on 2026-06-29 JST.
     final symbols result.
   - Symbol server indexing / SourceLink debugging availability was not verified
     in this pass.
+- Post-push symbol endpoint verification is currently a manual release evidence
+  step, not an automated `publish-contracts.yml` gate.
+- Related symbol follow-up history:
+  [#66](https://github.com/kooiei-in4a/amane-mailer/issues/66) and
+  [#97](https://github.com/kooiei-in4a/amane-mailer/issues/97).
 
 ## Main branch protection
 
