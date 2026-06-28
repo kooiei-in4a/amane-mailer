@@ -1,8 +1,11 @@
-[日本語](local-mailer-docker-runbook.md)
+[日本語](local-mailer-docker-runbook.md) | [Linux/macOS bash version](local-mailer-docker-runbook-bash.en.md)
 
 # Local Mailer Docker Runbook
 
 This runbook covers starting Mailer and Mailpit on local Docker, and verifying the Mailer admin UI, Mailpit delivery, ACS switching, and Dead Letter behavior. The Consumer app itself (`app` / `db`) is out of scope.
+
+For a Mailpit local smoke flow using Linux / macOS bash and curl, see
+[Local Mailer + Mailpit runbook for Linux/macOS](local-mailer-docker-runbook-bash.en.md).
 
 For deploy compose rehearsal on a deploy host (3 tenants / shared network), see [local-deploy-rehearsal-runbook.en.md](local-deploy-rehearsal-runbook.en.md).
 
