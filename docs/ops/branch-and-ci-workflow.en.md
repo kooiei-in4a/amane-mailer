@@ -70,4 +70,11 @@ Required status check job names are unchanged.
 - Aggregate job `Docker build smoke` (`docker-build-smoke-required`): **Always runs** even when the matrix is skipped, and returns success when the matrix result is skipped. This avoids a `needs` + matching `if` skip chain that can leave required checks pending.
 - On PRs to `main`, the matrix runs and pass/fail is reflected normally.
 
-Ruleset changes, if needed, are out of scope for the CI weighting change itself.
+### develop protection policy
+
+`develop` has a lighter ruleset than `main`. Because `develop` is the integration
+branch, PR reviews, Native AOT, Docker smoke, OpenAPI, and CodeQL are not required
+there. The only required status check is `Restore, build, and test`.
+
+Direct pushes to `develop` are reserved for maintainer setup and maintenance
+checks. Normal feature work uses PRs from `feature/**` or `fix/**` into `develop`.
