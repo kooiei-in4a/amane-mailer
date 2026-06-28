@@ -72,4 +72,11 @@ required status checks の job 名は変更していません。
 - 集約 job `Docker build smoke`（`docker-build-smoke-required`）: matrix 本体が skip されても **常に実行** し、matrix が skipped のときは success を返します。`needs` と同一 `if` による skip 連鎖で required check が pending のままになるのを防ぐためです。
 - `main` 向け PR では matrix が実行され、成否がそのまま反映されます。
 
-ruleset 自体の変更が必要な場合は別 issue で扱います。
+### develop protection 方針
+
+`develop` には `main` より軽い ruleset を付けます。`develop` は機能統合の実験場なので
+PR review、Native AOT、Docker smoke、OpenAPI、CodeQL は required にしません。ただし最低限の
+品質ゲートとして required status check は `Restore, build, and test` のみ必須にします。
+
+`develop` への直接 push は初期作成や保守確認など maintainer の確認目的に限ります。通常の機能開発は
+`feature/**` または `fix/**` から `develop` への PR で行います。
