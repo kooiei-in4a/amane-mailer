@@ -143,3 +143,13 @@ if (accepted.Status == MailRequestAcceptanceStatus.AlreadyAccepted)
 
 The bundled JSON context omits null optional properties. If you compute the
 hash from raw JSON instead, pass the exact JSON string that will be sent.
+
+## Non-.NET payload_hash examples
+
+Python, JavaScript (Node.js), and Go reference implementations with official
+test vector verification live under
+[`examples/payload-hash/`](../../examples/payload-hash/README.md).
+CI runs each language verifier against
+`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json`.
+When canonicalization rules change, update those examples in the same change as
+the test vectors.

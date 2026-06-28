@@ -138,7 +138,8 @@ Minimum information to POST a mail request to a running Mailer:
 - **Required fields**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `to`, `subject`, `payload_hash`
 - **`payload_hash`**: SHA-256 of the canonical delivery payload.
   Use `MailPayloadHasher` from `Amane.Mailer.Contracts` (.NET),
-  or see [docs/api/openapi.yaml](docs/api/openapi.yaml) for the algorithm spec.
+  or see [examples/payload-hash/](examples/payload-hash/README.md) for Python / JavaScript / Go,
+  and [docs/api/openapi.yaml](docs/api/openapi.yaml) for the algorithm spec.
 
 After starting the local compose stack, you can run this smoke request from the
 host. `mail_request_id` is the idempotency key, so use a fresh UUID for each

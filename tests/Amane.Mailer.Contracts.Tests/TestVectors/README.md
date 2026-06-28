@@ -22,3 +22,6 @@ Excluded fields:
 Optional fields are included only when the App writes them to the payload JSON. Explicit `null` values are canonicalized as `null` and included in the hash.
 
 Numeric JSON values are outside the mail payload contract. `metadata` values are strings only; callers must stringify numeric identifiers before hashing.
+
+Non-.NET reference implementations with vector verification:
+[`examples/payload-hash/`](../../../examples/payload-hash/README.md).
