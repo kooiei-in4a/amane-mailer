@@ -21,7 +21,11 @@ after publishing a release, verify and record the following items.
 - Release image smoke result (`docs/releases/vX.Y.Z.md`: digest, date, environment, pass/fail summary)
 - OCI source label and revision label
 - NuGet package name / version / package URL
-- NuGet symbol package (.snupkg) availability (verify the push result in the publish workflow summary; after indexing, manually confirm availability via NuGet Package Explorer or VS debugger)
+- NuGet symbol package:
+  - Generation: confirm the `.snupkg` file name and successful `Verify symbol package was produced` step in the publish workflow summary.
+  - Push: confirm `Push symbols to nuget.org`, or the `.nupkg` push creating the symbol package followed by an explicit symbol push completing with `--skip-duplicate`.
+  - Availability: confirm `https://www.nuget.org/api/v2/symbolpackage/Amane.Mailer.Contracts/X.Y.Z` returns a `.snupkg` containing `lib/net8.0/Amane.Mailer.Contracts.pdb`.
+  - Indexing / debugging: manually verify SourceLink / symbol resolution with NuGet Package Explorer, Visual Studio, or Rider. If not verified, record `not verified` in the release record.
 - SourceLink commit matches the release tag commit
 - .NET SDK version from `global.json` and roll-forward policy
 

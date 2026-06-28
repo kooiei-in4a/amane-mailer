@@ -186,10 +186,38 @@ package generation:
 - `SymbolPackageFormat=snupkg`
 - `ContinuousIntegrationBuild=true` when packed in CI
 
-Check the release record and publish workflow summary for `.snupkg` generation /
-push results. After NuGet indexing, confirm SourceLink resolution with NuGet
-Package Explorer or a Visual Studio / Rider debugger session against the release
-commit on GitHub.
+Record symbol status for each release as four separate checks:
+
+| Item | How to verify | What to record |
+| --- | --- | --- |
+| Generation | Check the publish workflow `Verify symbol package was produced` step and the `.snupkg` file name in the summary. | `.snupkg` file name and generation step result |
+| Push | Check the `Push symbols to nuget.org` step. A `.nupkg` push may create the symbol package, after which the explicit `.snupkg` push can complete with `--skip-duplicate`. | push success, skip-duplicate, or failure |
+| Availability | Download the `.snupkg` from the NuGet Gallery symbol package endpoint and confirm it contains the PDB. | endpoint, HTTP result, file size, PDB path |
+| Indexing / debugging | Use NuGet Package Explorer or a Visual Studio / Rider debugger session to confirm SourceLink / symbol resolution. | verified / not verified and method used |
+
+Check availability with:
+
+```bash
+PACKAGE_ID=Amane.Mailer.Contracts
+PACKAGE_VERSION=X.Y.Z
+SNUPKG="${PACKAGE_ID}.${PACKAGE_VERSION}.snupkg"
+
+curl -fL -o "$SNUPKG" \
+  "https://www.nuget.org/api/v2/symbolpackage/${PACKAGE_ID}/${PACKAGE_VERSION}"
+
+unzip -l "$SNUPKG" | grep 'lib/net8.0/Amane.Mailer.Contracts.pdb'
+```
+
+`https://api.nuget.org/v3-flatcontainer/.../*.snupkg` can return 404 even when
+the NuGet Gallery symbol package endpoint can return a `.snupkg`. Do not treat a
+flat-container `.snupkg` 404 alone as the final symbol package result. Use the
+NuGet Gallery symbol package endpoint, NuGet Package Explorer, or debugger
+verification instead.
+
+After NuGet indexing, confirm SourceLink resolution with NuGet Package Explorer
+or a Visual Studio / Rider debugger session against the release commit on
+GitHub. If indexing / debugging cannot be verified, record `not verified` and
+keep that separate from `.snupkg` generation, push, and download availability.
 
 At this time, the NuGet package publish does not emit a standalone SBOM file,
 SLSA provenance attestation file, or project-specific author signature. NuGet

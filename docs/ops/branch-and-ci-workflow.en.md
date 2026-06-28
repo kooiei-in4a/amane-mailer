@@ -76,6 +76,39 @@ Required status check job names are unchanged.
 - On PRs to `main`, the amd64 matrix runs and pass/fail is reflected in the aggregate job.
 - On pushes to `main` and `workflow_dispatch`, the amd64 / arm64 matrix runs.
 
+### Main Protection Ruleset Snapshot
+
+As of 2026-06-29 JST, the `main protection` ruleset is active. The classic
+branch protection API returns `Branch not protected` because `main` is protected
+by a repository ruleset.
+
+- Target: `refs/heads/main`
+- Pull request rule:
+  - `required_approving_review_count: 0`
+  - unresolved review threads must be resolved before merge
+  - CODEOWNERS review is not required
+  - last-push approval is not required
+- Required status checks:
+  - `Restore, build, and test`
+  - `Native AOT publish smoke`
+  - `Docker build smoke`
+  - `OpenAPI validation`
+  - `Analyze (actions)`
+  - `Analyze (csharp)`
+  - `Analyze (javascript-typescript)`
+  - `Local compose fresh data dir`
+- Additional rules: required signatures, non-fast-forward block, deletion block
+
+This repository currently keeps required review count at 0 for solo-maintainer
+operation. In exchange, maintainers must use this checklist for PRs into `main`
+and for release review:
+
+- Keep PRs release-sized, and confirm diff scope plus related issue / release record coverage.
+- Confirm required checks match current workflow job names and are all successful or intentionally skipped-success.
+- Confirm `docs/ops/public-repository-p0-evidence.md` and the release record cover artifact digests, NuGet package / symbols, security evidence, and known unverifiable items.
+- For workflow, release, deployment, Contracts / OpenAPI, Admin security, provider error handling, secret, or PII changes, write an explicit self-review and keep the PR in Draft if another review is needed.
+- Because CODEOWNERS currently points to the single repository owner, requiring CODEOWNERS review would not add an independent reviewer by itself. Revisit required review count 1, CODEOWNERS review, and last-push approval when an external reviewer is available.
+
 ### develop protection policy
 
 `develop` has a lighter ruleset than `main`. Because `develop` is the integration
