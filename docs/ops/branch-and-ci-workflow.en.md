@@ -64,4 +64,10 @@ Ambiguous paths fail secure toward full CI (for example `workflow_dispatch`).
 
 ### Branch protection alignment
 
-Required status check job names are unchanged. On PRs to `develop`, heavy jobs are **Skipped**; GitHub treats skipped required checks as successful. PRs to `main` still run all required jobs. Ruleset changes, if needed, are out of scope for the CI weighting change itself.
+Required status check job names are unchanged.
+
+- Standalone jobs (Native AOT, compose smoke, etc.): **Skipped** on light paths; GitHub treats skipped required checks as successful.
+- Aggregate job `Docker build smoke` (`docker-build-smoke-required`): **Always runs** even when the matrix is skipped, and returns success when the matrix result is skipped. This avoids a `needs` + matching `if` skip chain that can leave required checks pending.
+- On PRs to `main`, the matrix runs and pass/fail is reflected normally.
+
+Ruleset changes, if needed, are out of scope for the CI weighting change itself.
