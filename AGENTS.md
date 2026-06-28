@@ -20,10 +20,12 @@ constraints that contributors and AI coding tools should preserve.
 - Keep the diff scoped to one issue or one behavior. No unrelated refactors, formatting churn, or dependencies.
 - Read nearby tests and relevant ADRs under `docs/adr/` before editing.
 - Add or update focused tests for behavior changes.
-- If you are an automated coding agent, do not commit unless the maintainer
-  explicitly asks in the current session.
-- Never push, force-push, publish artifacts, or trigger release workflows without
-  explicit maintainer instruction.
+- If you are an automated coding agent, do not commit, push, force-push, publish
+  artifacts, or trigger release workflows unless the maintainer explicitly asks
+  in the current session.
+- Human contributors should follow [CONTRIBUTING.md](CONTRIBUTING.md) for the
+  normal fork, branch, and pull request flow. Release and publish workflows
+  remain maintainer-only.
 - Do not create extra memory, progress, or agent-notes files unless they are
   explicitly requested.
 
