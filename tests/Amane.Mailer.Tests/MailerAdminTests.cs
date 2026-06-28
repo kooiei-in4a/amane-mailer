@@ -18,6 +18,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     {
         await fixture.ResetAsync(TestContext.Current.CancellationToken);
         fixture.Factory.Services.GetRequiredService<AdminLoginThrottle>().Clear();
+        fixture.Factory.Services.GetRequiredService<AdminSessionExpiredDedupe>().Clear();
         fixture.Factory.Services.GetRequiredService<AdminDeadLetterCountCache>().ClearForTests();
     }
 
@@ -744,7 +745,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         Assert.Equal(MailerAdminFixture.Username, row.Actor);
         Assert.Equal("admin_session", row.TargetType);
         Assert.Equal("success", row.Result);
-        Assert.Null(row.TargetId);
+        Assert.False(string.IsNullOrWhiteSpace(row.TargetId));
         Assert.Null(row.FieldName);
     }
 

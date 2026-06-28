@@ -22,6 +22,10 @@ public static class MailerAdminExtensions
             return options;
         });
         services.AddSingleton<AdminLoginThrottle>();
+        services.AddSingleton<AdminSessionExpiredDedupe>();
+        services.AddSingleton<AdminCredentialSync>();
+        services.AddSingleton<AdminSessionRepository>();
+        services.AddSingleton<AdminLoginThrottleRepository>();
         services.AddSingleton<AdminDeadLetterCountCache>();
 
         // AMANE_ADMIN_ALLOW_HTTP=true drops HTTPS-only constraints for local dev behind no TLS proxy.
@@ -69,6 +73,9 @@ public static class MailerAdminExtensions
         var options = app.Services.GetRequiredService<MailerAdminOptions>();
         if (!options.Enabled)
             return app;
+
+        var credentialSync = app.Services.GetRequiredService<AdminCredentialSync>();
+        credentialSync.EnsureSyncedAsync(CancellationToken.None).GetAwaiter().GetResult();
 
         app.UseAuthentication();
         app.UseAuthorization();
@@ -180,6 +187,8 @@ public static class MailerAdminExtensions
         MailerAdminOptions options,
         AdminLoginThrottle throttle,
         AdminAuditRepository auditRepository,
+        AdminSessionRepository sessionRepository,
+        AdminCredentialSync credentialSync,
         ILoggerFactory loggerFactory,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
@@ -201,9 +210,28 @@ public static class MailerAdminExtensions
         var username = form["username"].ToString();
         var password = form["password"].ToString();
         var remoteAddress = GetRemoteAddress(context);
+        var normalizedActor = AdminAuditLog.NormalizeActor(username);
 
-        if (throttle.IsLocked(username, remoteAddress, options, out var retryAfter))
+        var (isLocked, retryAfter) = await throttle.IsLockedWithRetryAfterAsync(
+            username,
+            remoteAddress,
+            cancellationToken);
+        if (isLocked)
+        {
+            await AdminAuditLog.WriteBestEffortAsync(
+                auditRepository,
+                auditLogger,
+                BuildAuthAuditEvent(
+                    context,
+                    options,
+                    timeProvider,
+                    AdminAuditLog.EventTypes.LoginRateLimited,
+                    AdminAuditLog.Results.Failure,
+                    normalizedActor),
+                cancellationToken);
+
             return TooManyRequests(context, retryAfter);
+        }
 
         if (!string.Equals(username, options.Username, StringComparison.Ordinal)
             || !AdminPasswordHasher.Verify(password, options.PasswordHash))
@@ -213,22 +241,61 @@ public static class MailerAdminExtensions
                 auditLogger,
                 BuildAuthAuditEvent(
                     context,
+                    options,
                     timeProvider,
                     AdminAuditLog.EventTypes.LoginFailed,
                     AdminAuditLog.Results.Failure,
-                    AdminAuditLog.NormalizeActor(username)),
+                    normalizedActor),
                 cancellationToken);
 
-            if (throttle.RecordFailure(username, remoteAddress, options, out retryAfter))
-                return TooManyRequests(context, retryAfter);
+            var (locked, failureRetryAfter, lockCreated) = await throttle.RecordFailureAsync(
+                username,
+                remoteAddress,
+                cancellationToken);
+
+            if (lockCreated)
+            {
+                await AdminAuditLog.WriteBestEffortAsync(
+                    auditRepository,
+                    auditLogger,
+                    BuildAuthAuditEvent(
+                        context,
+                        options,
+                        timeProvider,
+                        AdminAuditLog.EventTypes.AccountTemporarilyLocked,
+                        AdminAuditLog.Results.Failure,
+                        normalizedActor),
+                    cancellationToken);
+            }
+
+            if (locked)
+                return TooManyRequests(context, failureRetryAfter);
 
             return Results.Text("Invalid username or password.", statusCode: StatusCodes.Status401Unauthorized);
         }
 
-        throttle.Reset(username, remoteAddress);
+        await throttle.ResetAsync(username, remoteAddress, cancellationToken);
 
         var now = timeProvider.GetUtcNow();
         var absoluteExpiresAt = now + options.SessionAbsoluteLifetime;
+        var idleExpiresAt = now + options.SessionIdleTimeout;
+        var sessionId = AdminSessionIds.CreateNew();
+        var session = new AdminSessionRow(
+            sessionId,
+            options.Username,
+            now,
+            now,
+            absoluteExpiresAt,
+            idleExpiresAt,
+            null,
+            null,
+            credentialSync.CredentialEpoch);
+
+        await sessionRepository.CreateSessionAsync(
+            session,
+            options.MaxConcurrentSessions,
+            cancellationToken);
+
         var claims = new[]
         {
             new Claim(ClaimTypes.NameIdentifier, options.Username),
@@ -238,12 +305,13 @@ public static class MailerAdminExtensions
         var properties = new AuthenticationProperties
         {
             AllowRefresh = true,
-            ExpiresUtc = now + options.SessionIdleTimeout,
+            ExpiresUtc = idleExpiresAt <= absoluteExpiresAt ? idleExpiresAt : absoluteExpiresAt,
             IssuedUtc = now,
             IsPersistent = false,
         };
         properties.Items[AdminAuthenticationConstants.AbsoluteExpiresUtcProperty] =
             absoluteExpiresAt.ToString("O", CultureInfo.InvariantCulture);
+        properties.Items[AdminAuthenticationConstants.SessionIdProperty] = sessionId;
 
         await context.SignInAsync(
             AdminAuthenticationConstants.Scheme,
@@ -255,10 +323,12 @@ public static class MailerAdminExtensions
             auditLogger,
             BuildAuthAuditEvent(
                 context,
+                options,
                 timeProvider,
                 AdminAuditLog.EventTypes.LoginSucceeded,
                 AdminAuditLog.Results.Success,
-                options.Username),
+                options.Username,
+                sessionId),
             cancellationToken);
 
         return Results.Redirect("/admin");
@@ -266,29 +336,71 @@ public static class MailerAdminExtensions
 
     private static AdminAuditEvent BuildAuthAuditEvent(
         HttpContext context,
+        MailerAdminOptions options,
         TimeProvider timeProvider,
         string eventType,
         string result,
-        string actor) =>
+        string actor,
+        string? sessionId = null) =>
         new()
         {
             EventType = eventType,
             Actor = actor,
             OccurredAt = timeProvider.GetUtcNow(),
-            SourceIp = AdminAuditLog.ResolveSourceIp(context),
+            SourceIp = options.ResolveAuditSourceIp(AdminAuditLog.ResolveSourceIp(context)),
             UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
             TargetType = AdminAuditLog.TargetTypes.AdminSession,
+            TargetId = sessionId,
             Result = result,
         };
 
     private static async Task<IResult> LogoutAsync(
         HttpContext context,
-        IAntiforgery antiforgery)
+        IAntiforgery antiforgery,
+        MailerAdminOptions options,
+        AdminSessionRepository sessionRepository,
+        AdminAuditRepository auditRepository,
+        ILoggerFactory loggerFactory,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
         if (!await ValidateAntiforgeryAsync(context, antiforgery))
             return Results.Text("Invalid CSRF token.", statusCode: StatusCodes.Status400BadRequest);
 
+        var authResult = await context.AuthenticateAsync(AdminAuthenticationConstants.Scheme);
+        var sessionId = authResult.Properties?.Items.TryGetValue(
+            AdminAuthenticationConstants.SessionIdProperty,
+            out var storedSessionId) == true
+            ? storedSessionId
+            : null;
+        var actor = AdminAuditLog.ResolveActor(context);
+        var now = timeProvider.GetUtcNow();
+
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            await sessionRepository.RevokeSessionAsync(
+                sessionId,
+                AdminSessionRevokeReasons.Logout,
+                now,
+                cancellationToken);
+        }
+
         await context.SignOutAsync(AdminAuthenticationConstants.Scheme);
+
+        var auditLogger = loggerFactory.CreateLogger(AdminAuditLog.LoggerCategory);
+        await AdminAuditLog.WriteBestEffortAsync(
+            auditRepository,
+            auditLogger,
+            BuildAuthAuditEvent(
+                context,
+                options,
+                timeProvider,
+                AdminAuditLog.EventTypes.Logout,
+                AdminAuditLog.Results.Success,
+                actor,
+                sessionId),
+            cancellationToken);
+
         return Results.Redirect("/admin/login");
     }
 
@@ -381,28 +493,134 @@ public static class MailerAdminExtensions
 
     private static async Task ValidateAdminCookieAsync(CookieValidatePrincipalContext context)
     {
-        var options = context.HttpContext.RequestServices.GetRequiredService<MailerAdminOptions>();
-        var timeProvider = context.HttpContext.RequestServices.GetRequiredService<TimeProvider>();
+        var services = context.HttpContext.RequestServices;
+        var options = services.GetRequiredService<MailerAdminOptions>();
+        var timeProvider = services.GetRequiredService<TimeProvider>();
+        var sessionRepository = services.GetRequiredService<AdminSessionRepository>();
+        var credentialSync = services.GetRequiredService<AdminCredentialSync>();
+        var auditRepository = services.GetRequiredService<AdminAuditRepository>();
+        var sessionExpiredDedupe = services.GetRequiredService<AdminSessionExpiredDedupe>();
+        var loggerFactory = services.GetRequiredService<ILoggerFactory>();
         var now = timeProvider.GetUtcNow();
 
         if (!context.Properties.Items.TryGetValue(
-                AdminAuthenticationConstants.AbsoluteExpiresUtcProperty,
-                out var absoluteExpiresUtc)
-            || !DateTimeOffset.TryParse(
-                absoluteExpiresUtc,
-                CultureInfo.InvariantCulture,
-                DateTimeStyles.RoundtripKind,
-                out var absoluteExpiresAt)
-            || absoluteExpiresAt <= now)
+                AdminAuthenticationConstants.SessionIdProperty,
+                out var sessionId)
+            || string.IsNullOrWhiteSpace(sessionId))
         {
-            context.RejectPrincipal();
-            await context.HttpContext.SignOutAsync(AdminAuthenticationConstants.Scheme);
+            await RejectSessionAsync(
+                context,
+                sessionRepository,
+                null,
+                AdminSessionRevokeReasons.Invalid,
+                options,
+                auditRepository,
+                sessionExpiredDedupe,
+                loggerFactory,
+                timeProvider,
+                now,
+                recordSessionExpired: false);
+            return;
+        }
+
+        var session = await sessionRepository.GetSessionAsync(sessionId, context.HttpContext.RequestAborted);
+        if (session is null
+            || session.RevokedAt is not null
+            || session.CredentialEpoch != credentialSync.CredentialEpoch)
+        {
+            await RejectSessionAsync(
+                context,
+                sessionRepository,
+                sessionId,
+                AdminSessionRevokeReasons.Invalid,
+                options,
+                auditRepository,
+                sessionExpiredDedupe,
+                loggerFactory,
+                timeProvider,
+                now,
+                recordSessionExpired: false);
+            return;
+        }
+
+        string? revokeReason = null;
+        if (session.AbsoluteExpiresAt <= now)
+            revokeReason = AdminSessionRevokeReasons.AbsoluteExpired;
+        else if (session.IdleExpiresAt <= now)
+            revokeReason = AdminSessionRevokeReasons.IdleExpired;
+
+        if (revokeReason is not null)
+        {
+            await RejectSessionAsync(
+                context,
+                sessionRepository,
+                sessionId,
+                revokeReason,
+                options,
+                auditRepository,
+                sessionExpiredDedupe,
+                loggerFactory,
+                timeProvider,
+                now,
+                recordSessionExpired: true,
+                actor: session.Actor);
             return;
         }
 
         var idleExpiresAt = now + options.SessionIdleTimeout;
-        context.Properties.ExpiresUtc = idleExpiresAt <= absoluteExpiresAt
+        var cookieExpiresAt = idleExpiresAt <= session.AbsoluteExpiresAt
             ? idleExpiresAt
-            : absoluteExpiresAt;
+            : session.AbsoluteExpiresAt;
+        context.Properties.ExpiresUtc = cookieExpiresAt;
+
+        await sessionRepository.UpdateLastSeenAsync(
+            sessionId,
+            now,
+            idleExpiresAt,
+            context.HttpContext.RequestAborted);
+    }
+
+    private static async Task RejectSessionAsync(
+        CookieValidatePrincipalContext context,
+        AdminSessionRepository sessionRepository,
+        string? sessionId,
+        string revokeReason,
+        MailerAdminOptions options,
+        AdminAuditRepository auditRepository,
+        AdminSessionExpiredDedupe sessionExpiredDedupe,
+        ILoggerFactory loggerFactory,
+        TimeProvider timeProvider,
+        DateTimeOffset now,
+        bool recordSessionExpired,
+        string? actor = null)
+    {
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            await sessionRepository.RevokeSessionAsync(
+                sessionId,
+                revokeReason,
+                now,
+                context.HttpContext.RequestAborted);
+
+            if (recordSessionExpired && sessionExpiredDedupe.ShouldRecord(sessionId))
+            {
+                var auditLogger = loggerFactory.CreateLogger(AdminAuditLog.LoggerCategory);
+                await AdminAuditLog.WriteBestEffortAsync(
+                    auditRepository,
+                    auditLogger,
+                    BuildAuthAuditEvent(
+                        context.HttpContext,
+                        options,
+                        timeProvider,
+                        AdminAuditLog.EventTypes.SessionExpired,
+                        AdminAuditLog.Results.Failure,
+                        actor ?? AdminAuditLog.ResolveActor(context.HttpContext),
+                        sessionId),
+                    context.HttpContext.RequestAborted);
+            }
+        }
+
+        context.RejectPrincipal();
+        await context.HttpContext.SignOutAsync(AdminAuthenticationConstants.Scheme);
     }
 }

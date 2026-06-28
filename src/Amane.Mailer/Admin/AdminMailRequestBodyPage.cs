@@ -19,6 +19,7 @@ public static class AdminMailRequestBodyPage
         string? field,
         HttpContext context,
         ILoggerFactory loggerFactory,
+        MailerAdminOptions options,
         MailRequestRepository repository,
         AdminAuditRepository auditRepository,
         TimeProvider timeProvider,
@@ -60,7 +61,7 @@ public static class AdminMailRequestBodyPage
                         EventType = AdminAuditLog.EventTypes.MailRequestBodyViewed,
                         Actor = AdminAuditLog.ResolveActor(context),
                         OccurredAt = timeProvider.GetUtcNow(),
-                        SourceIp = AdminAuditLog.ResolveSourceIp(context),
+                        SourceIp = options.ResolveAuditSourceIp(AdminAuditLog.ResolveSourceIp(context)),
                         UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
                         TargetType = AdminAuditLog.TargetTypes.MailRequest,
                         TargetId = requestId.ToString("D"),
@@ -81,7 +82,7 @@ public static class AdminMailRequestBodyPage
                 statusCode: StatusCodes.Status500InternalServerError);
         }
 
-        RecordBodyViewedAuditLog(context, logger, requestId, field);
+        RecordBodyViewedAuditLog(context, options, logger, requestId, field);
 
         var deadLetterCount = await deadLetterCountCache.GetCountAsync(repository, cancellationToken);
 
@@ -122,13 +123,15 @@ public static class AdminMailRequestBodyPage
 
     internal static void RecordBodyViewedAuditLog(
         HttpContext context,
+        MailerAdminOptions options,
         ILogger logger,
         Guid requestId,
         string field)
     {
         var adminUsername = AdminAuditLog.NormalizeActor(AdminAuditLog.ResolveActor(context));
         var remoteAddress =
-            AdminAuditLog.SanitizeAuditLogValue(AdminAuditLog.ResolveSourceIp(context))
+            AdminAuditLog.SanitizeAuditLogValue(
+                options.ResolveAuditSourceIp(AdminAuditLog.ResolveSourceIp(context)))
             ?? "unknown";
 
         logger.LogInformation(
