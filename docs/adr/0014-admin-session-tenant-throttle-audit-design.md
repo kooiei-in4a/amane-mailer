@@ -35,7 +35,7 @@
 
 | 項目 | 内容 |
 |------|------|
-| データモデル | `admin_sessions` テーブル（session id、actor、issued_at、last_seen_at、absolute_expires_at、idle_expires_at、revoked_at、revoke_reason） |
+| データモデル | `admin_sessions` テーブル（session id、actor、issued_at、last_seen_at、absolute_expires_at、idle_expires_at、revoked_at、revoke_reason、credential_epoch）、`admin_config` テーブル（`applied_password_hash`、`credential_epoch`） |
 | Cookie 形状 | 既存 Cookie 認証 middleware を維持。principal に server-side session id を載せ、DB lookup で有効性を確認 |
 | 失効トリガー | 明示 logout、absolute / idle 期限切れ、**資格情報ハッシュ変更**（`AMANE_ADMIN_PASSWORD_HASH` 変更時は全 session 失効）、**管理者無効化**（将来の `admin_users.disabled`） |
 | 同時 session 上限 | ADR 0013 D-04 に従い設定可能にする。production 既定は管理者あたり 3 本まで（env で上書き可）。超過時は最古 session から失効 |
@@ -47,16 +47,16 @@
 - 水平スケール・複数 Mailer プロセス間の session 共有。
 - OIDC / MFA / インターネット直接公開向け session 保護（ADR 0013 D-02 の「別 ADR」扱いを維持）。
 
-**資格情報変更の即時失効（単一 env 管理者の interim）:** Phase 1 では `admin_credential_epoch`（整数、migration で導入）を Mailer DB に保持し、startup 時に env の password hash と比較して epoch を進める。session 行に `credential_epoch` を保存し、不一致なら reject する。将来 `admin_users` に移行したら per-user credential version に置き換える。
+**資格情報変更の即時失効（単一 env 管理者の interim）:** Phase 1 では `admin_config` に **適用済み** `applied_password_hash`（env の `AMANE_ADMIN_PASSWORD_HASH` と同形式の PBKDF2 文字列。平文パスワードは保存しない）と `credential_epoch`（整数）を保持する。startup 時に env の hash と `applied_password_hash` を比較し、不一致なら `credential_epoch` をインクリメントして `applied_password_hash` を更新し、既存 session を全失効する。新規 login で発行する session 行にはその時点の `credential_epoch` を保存し、`OnValidatePrincipal` で不一致なら reject する。将来 `admin_users` に移行したら per-user `credential_epoch` + `applied_password_hash` に置き換える。
 
 ### D-02. per-admin tenant scope の要否と導入条件
 
-**判断:** tenant scope は **共有 Mailer（ADR 0012 D-04a）で 2 件以上の tenant が同一 SQLite DB に同居し、かつ Admin UI が有効な環境では必須**とする。単一 tenant のみを載せる Mailer、または Admin UI を有効にしない環境では、現行の env 単一管理者モデルを Phase 1〜2 の間は許容する。
+**判断:** tenant scope は **2 件以上の tenant が同一 Mailer SQLite DB に存在し、かつ Admin UI が有効な環境では必須**とする。tenant 数の判定は **`tenants.json` の登録件数と DB 内の distinct `tenant_id` の大きい方**を用いる（`mail_requests` 等に過去 tenant の行が残る場合も含む。restore 直後の空 DB は除く）。単一 tenant のみの Mailer、または Admin UI を有効にしない環境では、現行の env 単一管理者モデルを Phase 1〜2 の間は許容する。
 
 | 条件 | tenant scope |
 |------|----------------|
-| `tenants.json` に tenant が 1 件のみ、かつ staging/production 同居なし | **不要**（文書化された limitation として維持可） |
-| 2 件以上の tenant が同一 DB に存在 | **必須**（Phase 2 完了前に shared Mailer + Admin 有効化を blocker とする） |
+| 登録 tenant が 1 件のみ、かつ DB 内 distinct `tenant_id` も 1 件以下、staging/production 同居なし | **不要**（単一 tenant ローカル / 専用 Mailer。Phase 1〜2 の間は env 単一管理者を維持可） |
+| 2 件以上の tenant が設定または DB に存在 | **必須**（Phase 2 完了前の Admin 有効化は **blocker**。shared Mailer 典型） |
 | production tenant と non-production tenant の同居（ADR 0012 D-04a の典型） | **必須**。break-glass 管理者のみ全 tenant 横断を許可 |
 
 **Phase 2（tenant scope follow-up）に含める:**
@@ -82,9 +82,9 @@
 | 項目 | 内容 |
 |------|------|
 | データモデル | `admin_login_throttle`（key = normalized username + source identifier、failure_count、locked_until、updated_at） |
-| source identifier | 既定は normalized source IP（`Connection.RemoteIpAddress`）。`MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は keyed hash を throttle key にも使用し、raw IP をテーブルに保存しない |
+| source identifier | 既定は normalized source IP（`Connection.RemoteIpAddress`）。`MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は keyed hash を throttle key に使用し、raw IP をテーブルに保存しない（Phase 1 で実装。D-04 と同一 env フラグ） |
 | 挙動 | 現行 `AdminLoginThrottle` と同じ threshold / cooldown（`LoginFailureLimit`、`LoginCooldown`）。再起動後も locked_until が未来なら 429 を返す |
-| 監査 | 429 応答時に `auth.login_rate_limited` を記録（D-04） |
+| 監査 | 閾値到達で lock 作成時は `auth.account_temporarily_locked`、既に lock 中の試行で 429 を返す時は `auth.login_rate_limited` を記録（D-04） |
 | 最適化 | 読み取りは in-memory cache 可。書き込みは SQLite transaction で正本を更新 |
 
 **却下した代替案:** 再起動で throttle をリセットし運用でカバーする案 — ADR 0013 D-04 の「必須」要件とレビュー blocker に反するため採用しない。
@@ -99,15 +99,16 @@
 |----------|----------|----------|
 | `auth.logout` | 明示 logout POST 成功時 | `WriteBestEffortAsync`（login と同様。認証フローを落とさない） |
 | `auth.session_expired` | `OnValidatePrincipal` で absolute / idle 期限切れにより reject 時 | best-effort。同一 session で短時間に重複しないよう session id で dedupe（in-memory、5 分 TTL で十分） |
-| `auth.login_rate_limited` | login throttle が 429 を返す直前 | best-effort。actor は入力 username の normalized 値 |
+| `auth.account_temporarily_locked` | 失敗回数が閾値に達し `locked_until` が新規設定された時 | best-effort。actor は入力 username の normalized 値（ADR 0013 D-08 の `account temporarily locked`） |
+| `auth.login_rate_limited` | 既に lock 中の状態で login 試行が 429 になる時 | best-effort。actor は入力 username の normalized 値（ADR 0013 D-08 の `login rate limited`） |
+| network identifier hash | `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` のとき Phase 1 auth イベントの `source_ip` に keyed SHA-256（server secret + salt）を保存。raw IP / 完全 UA は永続化しない。throttle key も同一フラグ（D-03） |
 
-**Phase 3 — 保持・識別子（独立 follow-up）:**
+**Phase 3 — 保持運用（独立 follow-up）:**
 
 | 項目 | 内容 |
 |------|------|
 | retention sweep | `MAILER_ADMIN_AUDIT_RETENTION_DAYS`（既定 180 日）を超えた `admin_audit_events` 行を削除。worker 起動時または日次タイマーで batch delete。30 日未満の設定は non-local で拒否（ADR 0013 D-08） |
 | purge CLI | `admin audit purge` または `db admin-audit purge --older-than-days N` で明示削除（runbook 用） |
-| network identifier hash | `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` のとき `source_ip` と throttle key に keyed SHA-256（server secret + salt）を保存。raw IP / 完全 UA は永続化しない |
 | backup / restore | retention sweep 後も backup に audit が含まれることを [restore runbook](../ops/restore-verification.md) に追記（実装 issue で doc 更新） |
 
 **stdout ミラー:** 正本は引き続き SQLite。stdout structured log は二次チャンネル（ADR 0013 D-08、#6 完了方針を維持）。
@@ -118,10 +119,10 @@
 
 ```text
 Phase 1 — Session + throttle + auth audit 残件
-  ├─ migration: admin_sessions, admin_login_throttle, admin_credential_epoch
-  ├─ server-side session validation + revocation
-  ├─ durable login throttle
-  └─ auth.logout / session_expired / login_rate_limited audit
+  ├─ migration: admin_sessions, admin_login_throttle, admin_config
+  ├─ server-side session validation + revocation (applied_password_hash + credential_epoch)
+  ├─ durable login throttle (+ optional network identifier hash)
+  └─ auth.logout / session_expired / account_temporarily_locked / login_rate_limited audit
 
 Phase 2 — Multi-admin + tenant scope
   ├─ migration: admin_users, admin_user_tenant_scopes
@@ -131,7 +132,7 @@ Phase 2 — Multi-admin + tenant scope
 
 Phase 3 — Audit 運用完成
   ├─ retention sweep + purge CLI
-  └─ MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS
+  └─ backup/restore runbook 更新
 ```
 
 | Phase | リスククラス | Native AOT | HTTP 契約 | ブロッカー |
@@ -144,9 +145,9 @@ Phase 3 — Audit 運用完成
 
 1. `[P2] Admin durable session store と即時失効を実装する`（Phase 1）
 2. `[P2] Admin login throttle を SQLite 正本にする`（Phase 1、#1 と同 PR 可）
-3. `[P2] Admin auth 監査イベント（logout / session expired / rate limited）を追加する`（Phase 1、#1 と同 PR 可）
+3. `[P2] Admin auth 監査イベント（logout / session expired / account locked / rate limited）を追加する`（Phase 1、#1 と同 PR 可）
 4. `[P2] Admin multi-user と tenant scope 認可を実装する`（Phase 2）
-5. `[P3] Admin audit retention sweep と network identifier hash 化を実装する`（Phase 3）
+5. `[P3] Admin audit retention sweep と purge CLI を実装する`（Phase 3）
 
 ## Alternatives Considered
 
@@ -167,7 +168,7 @@ Phase 3 — Audit 運用完成
 - _negative:_ Phase 1 で migration 3 表 + session 検証が増え、Admin 基盤の複雑さが上がる。
 - _negative:_ Phase 2 の multi-admin は bootstrap / CLI / 運用 runbook の更新が必要。
 - _neutral:_ 単一 tenant ローカル開発は Phase 2 完了まで現行 env 管理者モデルを維持できる。
-- _operational:_ Phase 2 完了前に shared Mailer で Admin を有効にする場合は、tenant scope 未実装を既知の limitation としてリリースノートと SECURITY.md に残す（実装 PR で更新）。
+- _operational:_ **2+ tenant が DB または設定に存在する環境では、Phase 2 完了前の Admin 有効化を許可しない**（blocker）。単一 tenant 専用 Mailer で Phase 1 のみ先行する場合は、session/throttle の既知 limitation を SECURITY.md に明記する（実装 PR で更新）。
 
 ## References
 
