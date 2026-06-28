@@ -3,8 +3,9 @@ name: CI
 # CI tiers (single workflow + job-level `if`; job names unchanged for branch protection):
 # - feature/** / fix/** push: build-test only
 # - develop push or PR targeting develop: build-test + openapi-validation
-# - main push, PR targeting main, workflow_dispatch: full CI (incl. Native AOT, amd64/arm64 Docker)
-# Fail-secure: workflow_dispatch and unrecognized paths use full CI when triggered.
+# - PR targeting main: release-gate CI (incl. Native AOT, amd64 Docker)
+# - main push, workflow_dispatch: final CI (incl. Native AOT, amd64/arm64 Docker)
+# Fail-secure: workflow_dispatch and unrecognized paths use final CI when triggered.
 
 on:
   pull_request:
@@ -102,12 +103,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            tag_suffix: linux-amd64
-          - platform: linux/arm64
-            tag_suffix: linux-arm64
+      matrix: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') && '{"include":[{"platform":"linux/amd64","tag_suffix":"linux-amd64"},{"platform":"linux/arm64","tag_suffix":"linux-arm64"}]}' || '{"include":[{"platform":"linux/amd64","tag_suffix":"linux-amd64"}]}') }}
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0

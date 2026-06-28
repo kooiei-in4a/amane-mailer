@@ -8,7 +8,7 @@ CI はブランチ経路ごとに重みを分け、feature ブランチの反復
 ```
 feature/**, fix/**  →（PR）→ develop  ← 機能を複数蓄積
                               ↓ docker compose で統合確認
-develop  →（PR・フル CI）→ main
+develop  →（PR・release gate CI）→ main
                               ↓ main を develop に同期し戻す（手動 merge）
                             tag → release
 ```
@@ -39,25 +39,29 @@ job 名は branch protection の required status checks と一致させるため
 |----------|----------|
 | `feature/**` / `fix/**` への push | `Restore, build, and test` のみ |
 | `develop` への push、または `develop` 向け PR | 上記 + `OpenAPI validation` |
-| `main` への push、`main` 向け PR、`workflow_dispatch` | フル CI（下記すべて） |
+| `main` 向け PR | release gate CI（Native AOT、amd64 Docker、compose smoke、OpenAPI） |
+| `main` への push、`workflow_dispatch` | 最終 CI（上記 + arm64 Docker） |
 
-フル CI に含まれる job:
+release gate CI に含まれる job:
 
 - `Restore, build, and test`
 - `Native AOT publish smoke`
-- `Docker build smoke (linux/amd64)` / `Docker build smoke (linux/arm64)` および集約 job `Docker build smoke`
+- `Docker build smoke (linux/amd64)` および集約 job `Docker build smoke`
 - `Local compose fresh data dir`
 - `OpenAPI validation`
 
-`linux/arm64` の Docker build（QEMU エミュレーション）はフル CI のみです。
+`linux/arm64` の Docker build（QEMU エミュレーション）は時間が長いため、`main` への push と
+`workflow_dispatch` の最終 CI のみで実行します。
 
 ### 設計上のトレードオフ
 
-`develop` や feature ブランチでは Native AOT と multi-arch Docker は走りません。
-そのため **初めて `main` 向け PR を出したとき** に AOT / arm64 で初検出される失敗があり得ます。
-release 前の最終ゲートを `main` PR のフル CI に置く意図的なトレードオフです。
+`develop` や feature ブランチでは Native AOT と Docker smoke は最小限に抑えます。
+Native AOT や amd64 Docker の失敗は **初めて `main` 向け PR を出したとき** に検出される場合があります。
+arm64 Docker の失敗は **`main` への merge 後 push** で初検出される場合があります。
+release PR の待ち時間を短くしつつ、最終的な `main` コミットでは multi-arch Docker を確認するための
+意図的なトレードオフです。
 
-判定に迷う経路は fail-secure でフル CI 側に倒します（例: `workflow_dispatch`）。
+判定に迷う経路は fail-secure で最終 CI 側に倒します（例: `workflow_dispatch`）。
 
 ### concurrency
 
@@ -70,7 +74,8 @@ required status checks の job 名は変更していません。
 
 - 単体 job（Native AOT、compose smoke 等）: 軽量経路では **Skipped**。GitHub は skipped job を required check 上成功扱いにします。
 - 集約 job `Docker build smoke`（`docker-build-smoke-required`）: matrix 本体が skip されても **常に実行** し、matrix が skipped のときは success を返します。`needs` と同一 `if` による skip 連鎖で required check が pending のままになるのを防ぐためです。
-- `main` 向け PR では matrix が実行され、成否がそのまま反映されます。
+- `main` 向け PR では amd64 matrix が実行され、成否が集約 job に反映されます。
+- `main` への push と `workflow_dispatch` では amd64 / arm64 matrix が実行されます。
 
 ### develop protection 方針
 

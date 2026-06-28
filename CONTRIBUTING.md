@@ -23,7 +23,7 @@ dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 Work flows through `develop` and lands on `main` in release-sized batches:
 
 ```
-feature/**, fix/**  → (PR) → develop  → (PR, full CI) → main
+feature/**, fix/**  → (PR) → develop  → (PR, release-gate CI) → main
 ```
 
 After each `main` merge, maintainers sync `main` back into `develop` manually
@@ -39,10 +39,12 @@ CI runs lighter checks on feature branches and full checks before release:
 |---------|--------|
 | Push to `feature/**` / `fix/**` | Restore, build, test |
 | Push to `develop` or PR to `develop` | Above + OpenAPI validation |
-| Push to `main`, PR to `main` | Full CI (Native AOT, amd64/arm64 Docker, compose smoke, OpenAPI) |
+| PR to `main` | Release-gate CI (Native AOT, amd64 Docker, compose smoke, OpenAPI) |
+| Push to `main` | Final CI (above + arm64 Docker) |
 
-Native AOT and arm64 Docker failures may first appear on a PR to `main`; that
-is the intentional release gate. Details:
+Native AOT failures may first appear on a PR to `main`; arm64 Docker failures
+may first appear on the post-merge `main` push. That keeps release PR feedback
+faster while still checking the final `main` commit. Details:
 [docs/ops/branch-and-ci-workflow.en.md](docs/ops/branch-and-ci-workflow.en.md).
 
 ## Reporting issues
