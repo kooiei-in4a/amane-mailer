@@ -23,6 +23,26 @@ For human-oriented setup and runbooks, start with [README.md](README.md) and [CO
 
 P1 issues use `[P1]` in the issue title, not a GitHub label. Search by title or issue number.
 
+## Agent workflows
+
+Reusable issue and PR workflows are kept under `docs/agent-workflows/`.
+
+Use these instead of ad-hoc long prompts:
+
+- Issue start: `docs/agent-workflows/issue-start.md`
+- Third-party review: `docs/agent-workflows/pr-review.md`
+- Review response: `docs/agent-workflows/review-fix.md`
+- Merge: `docs/agent-workflows/merge.md`
+- Cleanup: `docs/agent-workflows/cleanup.md`
+
+Tool adapters:
+
+- Claude Code project skills: `.claude/skills/`
+- Codex project skills: `.agents/skills/`
+- Cursor project rules: `.cursor/rules/`
+
+Side-effecting workflows such as PR creation, merge, branch deletion, release, publish, and workflow dispatch require explicit human instruction in the current session.
+
 ## Validation
 
 Run the smallest useful check first, then broaden before finishing.
