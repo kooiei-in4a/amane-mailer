@@ -77,6 +77,37 @@ required status checks の job 名は変更していません。
 - `main` 向け PR では amd64 matrix が実行され、成否が集約 job に反映されます。
 - `main` への push と `workflow_dispatch` では amd64 / arm64 matrix が実行されます。
 
+### main protection ruleset snapshot
+
+2026-06-29 JST 時点の `main protection` ruleset は active です。classic branch protection API は
+`Branch not protected` を返しますが、これは ruleset で保護しているためです。
+
+- 対象: `refs/heads/main`
+- Pull request rule:
+  - `required_approving_review_count: 0`
+  - unresolved review thread は merge 前に解消必須
+  - CODEOWNERS review は未必須
+  - last-push approval は未必須
+- Required status checks:
+  - `Restore, build, and test`
+  - `Native AOT publish smoke`
+  - `Docker build smoke`
+  - `OpenAPI validation`
+  - `Analyze (actions)`
+  - `Analyze (csharp)`
+  - `Analyze (javascript-typescript)`
+  - `Local compose fresh data dir`
+- 追加 rule: required signatures、non-fast-forward block、deletion block
+
+この repository は solo maintainer 運用のため、現時点では required review count 0 を維持します。
+その代わり、`main` 向け PR と release 前 review では次の maintainer checklist を必須運用にします。
+
+- PR は release 単位に絞り、diff scope と関連 issue / release record を確認する。
+- Required checks が current workflow の job 名と一致し、すべて成功または意図した skipped-success であることを確認する。
+- `docs/ops/public-repository-p0-evidence.md` と release record に、artifact digest、NuGet package / symbols、security evidence、既知の確認不能項目が残っていることを確認する。
+- Workflow、release、deployment、Contracts / OpenAPI、Admin security、provider error handling、secret / PII に関わる変更はセルフレビューを明示し、必要なら Draft PR のまま追加 review を依頼する。
+- CODEOWNERS の owner は repository owner 1 名なので、CODEOWNERS review 必須化だけでは独立した reviewer を増やせない。外部 reviewer が参加できる状態になったら required review count 1、CODEOWNERS review、last-push approval を再検討する。
+
 ### develop protection 方針
 
 `develop` には `main` より軽い ruleset を付けます。`develop` は機能統合の実験場なので

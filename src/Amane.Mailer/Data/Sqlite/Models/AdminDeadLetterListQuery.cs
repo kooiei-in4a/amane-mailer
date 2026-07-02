@@ -6,5 +6,7 @@ public sealed record AdminDeadLetterListQuery
 
     public Guid? CursorId { get; init; }
 
+    public IReadOnlySet<Guid>? AllowedTenantIds { get; init; }
+
     public int PageSize { get; init; } = 50;
 }

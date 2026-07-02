@@ -1,4 +1,5 @@
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Configuration;
 
 namespace Amane.Mailer.Admin;
 
@@ -7,6 +8,8 @@ namespace Amane.Mailer.Admin;
 /// </summary>
 public sealed class AdminCredentialSync(
     AdminSessionRepository sessions,
+    AdminUserRepository users,
+    MailerTenantRegistry tenantRegistry,
     MailerAdminOptions options)
 {
     private int _credentialEpoch;
@@ -24,9 +27,25 @@ public sealed class AdminCredentialSync(
                 AdminSessionRevokeReasons.CredentialChanged,
                 cancellationToken);
             _credentialEpoch = rotated.CredentialEpoch;
+            await users.EnsureSeedUserAsync(
+                options.Username,
+                options.PasswordHash,
+                tenantRegistry.ListTenants().Select(tenant => tenant.TenantId),
+                cancellationToken);
+            await users.EnsureTenantScopeReadyAsync(
+                tenantRegistry.ListTenants().Select(tenant => tenant.TenantId),
+                cancellationToken);
             return;
         }
 
         _credentialEpoch = config.CredentialEpoch;
+        await users.EnsureSeedUserAsync(
+            options.Username,
+            options.PasswordHash,
+            tenantRegistry.ListTenants().Select(tenant => tenant.TenantId),
+            cancellationToken);
+        await users.EnsureTenantScopeReadyAsync(
+            tenantRegistry.ListTenants().Select(tenant => tenant.TenantId),
+            cancellationToken);
     }
 }

@@ -21,6 +21,7 @@ public static class AdminMailRequestBodyPage
         ILoggerFactory loggerFactory,
         MailerAdminOptions options,
         MailRequestRepository repository,
+        AdminUserRepository userRepository,
         AdminAuditRepository auditRepository,
         TimeProvider timeProvider,
         AdminDeadLetterCountCache deadLetterCountCache,
@@ -32,7 +33,16 @@ public static class AdminMailRequestBodyPage
         if (field is null || !AllowedFields.Contains(field))
             return Results.NotFound();
 
-        var detail = await repository.GetDetailForAdminAsync(requestId, cancellationToken);
+        var access = await userRepository.GetTenantAccessAsync(
+            AdminAuditLog.ResolveActor(context),
+            cancellationToken);
+        if (access is null)
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+        var detail = await repository.GetDetailForAdminAsync(
+            requestId,
+            access.AllowedTenantIdsForQuery,
+            cancellationToken);
         if (detail is null)
             return Results.NotFound();
 
@@ -69,6 +79,25 @@ public static class AdminMailRequestBodyPage
                         Result = AdminAuditLog.Results.Success,
                     }),
                 cancellationToken);
+
+            if (access.IsBreakGlass)
+            {
+                await auditRepository.WriteAsync(
+                    AdminAuditLog.SanitizeForOutput(
+                        new AdminAuditEvent
+                        {
+                            EventType = AdminAuditLog.EventTypes.BreakGlassMailRequestBodyViewed,
+                            Actor = AdminAuditLog.ResolveActor(context),
+                            OccurredAt = timeProvider.GetUtcNow(),
+                            SourceIp = options.ResolveAuditSourceIp(AdminAuditLog.ResolveSourceIp(context)),
+                            UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
+                            TargetType = AdminAuditLog.TargetTypes.MailRequest,
+                            TargetId = requestId.ToString("D"),
+                            FieldName = field,
+                            Result = AdminAuditLog.Results.Success,
+                        }),
+                    cancellationToken);
+            }
         }
         catch (Exception ex)
         {
@@ -84,7 +113,10 @@ public static class AdminMailRequestBodyPage
 
         RecordBodyViewedAuditLog(context, options, logger, requestId, field);
 
-        var deadLetterCount = await deadLetterCountCache.GetCountAsync(repository, cancellationToken);
+        var deadLetterCount = await deadLetterCountCache.GetCountAsync(
+            repository,
+            access.AllowedTenantIdsForQuery,
+            cancellationToken);
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(

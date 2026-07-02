@@ -68,6 +68,8 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
               AND completed_at IS NOT NULL
             """);
 
+        AppendTenantScopeFilter(where, command, query.AllowedTenantIds);
+
         if (query.CursorCompletedAt is not null && query.CursorId is not null)
         {
             where.AppendLine();
@@ -115,17 +117,19 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
         return new AdminDeadLetterListPage(rows, nextCursor);
     }
 
-    public async Task<int> CountDeadLettersForAdminAsync(CancellationToken cancellationToken = default)
+    public async Task<int> CountDeadLettersForAdminAsync(
+        IReadOnlySet<Guid>? allowedTenantIds = null,
+        CancellationToken cancellationToken = default)
     {
-        const string sql = """
-            SELECT COUNT(*)
-            FROM mail_requests
-            WHERE status = @Status;
-            """;
-
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = sql;
+        var where = new StringBuilder("WHERE status = @Status");
+        AppendTenantScopeFilter(where, command, allowedTenantIds);
+        command.CommandText = $$"""
+            SELECT COUNT(*)
+            FROM mail_requests
+            {{where}};
+            """;
         command.Parameters.AddWithValue("@Status", (int)MailRequestState.DeadLettered);
 
         var result = await command.ExecuteScalarAsync(cancellationToken);
@@ -158,6 +162,8 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
             where.Append("  AND tenant_id = @TenantId");
             command.Parameters.AddWithValue("@TenantId", query.TenantId.Value.ToString("D"));
         }
+
+        AppendTenantScopeFilter(where, command, query.AllowedTenantIds);
 
         if (!string.IsNullOrWhiteSpace(query.SourceService))
         {
@@ -208,9 +214,15 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
 
     public async Task<AdminMailRequestDetail?> GetDetailForAdminAsync(
         Guid id,
+        IReadOnlySet<Guid>? allowedTenantIds = null,
         CancellationToken cancellationToken = default)
     {
-        const string sql = """
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var where = new StringBuilder("WHERE id = @Id");
+        AppendTenantScopeFilter(where, command, allowedTenantIds);
+
+        command.CommandText = $$"""
             SELECT
                 id, tenant_id, source_service, mail_request_id, purpose,
                 payload_json, payload_hash, subject, html_body, text_body, reply_to,
@@ -220,13 +232,9 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
                 delivered_at, failed_at, last_error_message,
                 accepted_at, created_at, updated_at, completed_at
             FROM mail_requests
-            WHERE id = @Id
+            {{where}}
             LIMIT 1;
             """;
-
-        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = sql;
         command.Parameters.AddWithValue("@Id", id.ToString("D"));
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -298,6 +306,36 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
         }
 
         return rows;
+    }
+
+    private static void AppendTenantScopeFilter(
+        StringBuilder where,
+        SqliteCommand command,
+        IReadOnlySet<Guid>? allowedTenantIds)
+    {
+        if (allowedTenantIds is null)
+            return;
+
+        where.AppendLine();
+        if (allowedTenantIds.Count == 0)
+        {
+            where.Append("  AND 1 = 0");
+            return;
+        }
+
+        var parameterNames = new List<string>(allowedTenantIds.Count);
+        var index = 0;
+        foreach (var tenantId in allowedTenantIds.OrderBy(id => id))
+        {
+            var parameterName = "@AllowedTenantId" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            parameterNames.Add(parameterName);
+            command.Parameters.AddWithValue(parameterName, tenantId.ToString("D"));
+            index++;
+        }
+
+        where.Append("  AND tenant_id IN (");
+        where.Append(string.Join(", ", parameterNames));
+        where.Append(')');
     }
 
     public async Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(

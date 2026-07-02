@@ -12,6 +12,7 @@ public static class AdminMailRequestDetailPage
         string id,
         HttpContext context,
         MailRequestRepository repository,
+        AdminUserRepository userRepository,
         AdminDeadLetterCountCache deadLetterCountCache,
         MailerAdminOptions options,
         CancellationToken cancellationToken)
@@ -19,12 +20,24 @@ public static class AdminMailRequestDetailPage
         if (!Guid.TryParse(id, out var requestId))
             return Results.NotFound();
 
-        var detail = await repository.GetDetailForAdminAsync(requestId, cancellationToken);
+        var access = await userRepository.GetTenantAccessAsync(
+            AdminAuditLog.ResolveActor(context),
+            cancellationToken);
+        if (access is null)
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+        var detail = await repository.GetDetailForAdminAsync(
+            requestId,
+            access.AllowedTenantIdsForQuery,
+            cancellationToken);
         if (detail is null)
             return Results.NotFound();
 
         var attempts = await repository.ListAttemptsForAdminAsync(requestId, cancellationToken);
-        var deadLetterCount = await deadLetterCountCache.GetCountAsync(repository, cancellationToken);
+        var deadLetterCount = await deadLetterCountCache.GetCountAsync(
+            repository,
+            access.AllowedTenantIdsForQuery,
+            cancellationToken);
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
