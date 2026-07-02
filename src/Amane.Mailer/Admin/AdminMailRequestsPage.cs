@@ -413,8 +413,11 @@ public static class AdminMailRequestsPage
 
     private static string MaskSubject(string subject)
     {
+        if (string.IsNullOrEmpty(subject))
+            return "***";
+
         if (subject.Length <= 12)
-            return subject;
+            return $"{subject[0]}***";
 
         return subject[..12] + "...";
     }

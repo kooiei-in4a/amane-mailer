@@ -63,12 +63,13 @@ The admin UI is an **internal-network-only, experimental** operational aid.
 Direct exposure to the public internet is not a supported configuration.
 In production, use a reverse proxy, firewall, or Docker port publish restriction as the network boundary.
 
-**Current limitations ([ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md) goals not yet implemented)**
+**Current limitations ([ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md) / [ADR 0014](docs/adr/0014-admin-session-tenant-throttle-audit-design.md))**
 
-- Login throttle is in-memory only (resets on process restart)
-- No durable server-side session store (cookie auth only); immediate session revocation on admin disable or credential change is not implemented
+- Login throttle is SQLite-backed (lock state survives process restart)
+- Durable server-side session store (credential-hash change revocation, explicit logout, expiry, concurrent session limit)
 - No per-admin tenant scope (single `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`)
-- Audit log persists body-view and login success/failure events to the `admin_audit_events` SQLite table (and mirrors them to stdout). Logout, session-expired, and login-rate-limited events, plus retention sweep and optional network identifier hashing, are not yet implemented (tracked in [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6))
+- Audit log persists body-view and auth events (login, logout, session expired, account locked, login rate limited) to `admin_audit_events` (stdout mirror). Retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`)
+- When `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, raw IP addresses are not stored in the database; keyed hashes are used instead (startup fail-closed when the key is unset)
 
 ## Deployment Notes
 

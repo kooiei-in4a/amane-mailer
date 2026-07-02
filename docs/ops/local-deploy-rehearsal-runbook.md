@@ -165,9 +165,10 @@ allowlist であり、socket bind ではありません。実際の host 側公�
 `AMANE_ADMIN_ALLOW_HTTP=false` を維持してください。
 
 Admin UI は **内部ネットワーク向け・experimental** な運用補助ツールです。現時点の制約:
-login throttle は in-memory のみ（プロセス再起動でリセット）、
-server-side session store なし（cookie auth のみ）・管理者無効化・認証情報変更時の即時 session 失効は未実装、
-管理者ごとの tenant scope なし、audit log は body view と login 成功/失敗を `admin_audit_events` に永続化（stdout にもミラー）。logout / session expired / login rate limited、retention sweep、network identifier の hash 化は未実装（[#6](https://github.com/kooiei-in4a/amane-mailer/issues/6)）。
+login throttle は SQLite 正本（再起動後も lock 維持）、
+server-side session store あり（資格情報 hash 変更時の即時失効、明示 logout、期限切れ、同時 session 上限）、
+管理者ごとの tenant scope なし、audit log は body view と auth イベント（login / logout / session expired / account locked / login rate limited）を `admin_audit_events` に永続化（stdout にもミラー）。retention sweep は未実装（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`）。
+`MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は raw IP を DB に保存せず keyed hash を使用（鍵未設定時は startup fail-closed）。
 
 ```powershell
 $composeFiles = @("-f", "compose.yml", "-f", "compose.local-rehearsal.yml")

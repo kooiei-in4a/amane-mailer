@@ -112,7 +112,12 @@ public static class AdminMailRequestDetailPage
             AppendDetailRow(html, "宛先表示名", detail.RecipientDisplayName);
         AppendDetailRow(html, "件名", subject);
         if (detail.ReplyTo is not null)
-            AppendDetailRow(html, "reply_to", detail.ReplyTo);
+        {
+            var replyTo = options.MaskRecipients
+                ? MaskRecipient(detail.ReplyTo)
+                : detail.ReplyTo;
+            AppendDetailRow(html, "reply_to", replyTo);
+        }
         AppendDetailRow(html, "試行回数", $"{detail.AttemptCount} / {detail.MaxAttempts}");
         if (detail.NextAttemptAt.HasValue)
             AppendDetailRow(html, "next_attempt_at", FormatLocalTime(detail.NextAttemptAt.Value));
@@ -292,8 +297,11 @@ public static class AdminMailRequestDetailPage
 
     private static string MaskSubject(string subject)
     {
+        if (string.IsNullOrEmpty(subject))
+            return "***";
+
         if (subject.Length <= 12)
-            return subject;
+            return $"{subject[0]}***";
 
         return subject[..12] + "...";
     }
