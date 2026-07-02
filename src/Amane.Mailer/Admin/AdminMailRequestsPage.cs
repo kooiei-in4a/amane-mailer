@@ -15,6 +15,7 @@ public static class AdminMailRequestsPage
         HttpContext context,
         MailRequestRepository repository,
         MailerTenantRegistry tenantRegistry,
+        AdminUserRepository userRepository,
         AdminDeadLetterCountCache deadLetterCountCache,
         MailerAdminOptions options,
         CancellationToken cancellationToken)
@@ -22,6 +23,12 @@ public static class AdminMailRequestsPage
         var query = context.Request.Query;
         if (!TryParseStatus(query["status"].ToString(), out var status, out var selectedStatus))
             return Results.Text("Invalid status filter.", statusCode: StatusCodes.Status400BadRequest);
+
+        var access = await userRepository.GetTenantAccessAsync(
+            AdminAuditLog.ResolveActor(context),
+            cancellationToken);
+        if (access is null)
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
 
         Guid? tenantId = null;
         var selectedTenantId = query["tenant_id"].ToString();
@@ -32,6 +39,8 @@ public static class AdminMailRequestsPage
 
             tenantId = parsedTenantId;
             selectedTenantId = parsedTenantId.ToString("D");
+            if (!access.CanAccessTenant(parsedTenantId))
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
         }
 
         var sourceService = query["source_service"].ToString();
@@ -53,6 +62,7 @@ public static class AdminMailRequestsPage
             {
                 Status = status,
                 TenantId = tenantId,
+                AllowedTenantIds = access.AllowedTenantIdsForQuery,
                 SourceService = sourceService,
                 CursorUpdatedAt = cursor?.UpdatedAt,
                 CursorId = cursor?.Id,
@@ -60,13 +70,19 @@ public static class AdminMailRequestsPage
             },
             cancellationToken);
 
-        var deadLetterCount = await deadLetterCountCache.GetCountAsync(repository, cancellationToken);
+        var deadLetterCount = await deadLetterCountCache.GetCountAsync(
+            repository,
+            access.AllowedTenantIdsForQuery,
+            cancellationToken);
+        var visibleTenants = tenantRegistry.ListTenants()
+            .Where(tenant => access.CanAccessTenant(tenant.TenantId))
+            .ToArray();
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
             RenderHtml(
                 page,
-                tenantRegistry.ListTenants(),
+                visibleTenants,
                 selectedStatus,
                 selectedTenantId,
                 sourceService,

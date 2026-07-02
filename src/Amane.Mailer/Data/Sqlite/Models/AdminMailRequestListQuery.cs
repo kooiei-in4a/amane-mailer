@@ -6,6 +6,8 @@ public sealed record AdminMailRequestListQuery
 
     public Guid? TenantId { get; init; }
 
+    public IReadOnlySet<Guid>? AllowedTenantIds { get; init; }
+
     public string? SourceService { get; init; }
 
     public string? CursorUpdatedAt { get; init; }

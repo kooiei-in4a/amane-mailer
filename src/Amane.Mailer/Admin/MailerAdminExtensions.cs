@@ -25,6 +25,7 @@ public static class MailerAdminExtensions
         services.AddSingleton<AdminSessionExpiredDedupe>();
         services.AddSingleton<AdminCredentialSync>();
         services.AddSingleton<AdminSessionRepository>();
+        services.AddSingleton<AdminUserRepository>();
         services.AddSingleton<AdminLoginThrottleRepository>();
         services.AddSingleton<AdminDeadLetterCountCache>();
 
@@ -188,7 +189,7 @@ public static class MailerAdminExtensions
         AdminLoginThrottle throttle,
         AdminAuditRepository auditRepository,
         AdminSessionRepository sessionRepository,
-        AdminCredentialSync credentialSync,
+        AdminUserRepository userRepository,
         ILoggerFactory loggerFactory,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
@@ -233,8 +234,8 @@ public static class MailerAdminExtensions
             return TooManyRequests(context, retryAfter);
         }
 
-        if (!string.Equals(username, options.Username, StringComparison.Ordinal)
-            || !AdminPasswordHasher.Verify(password, options.PasswordHash))
+        var user = await userRepository.GetActiveUserByUsernameAsync(username, cancellationToken);
+        if (user is null || !AdminPasswordHasher.Verify(password, user.PasswordHash))
         {
             await AdminAuditLog.WriteBestEffortAsync(
                 auditRepository,
@@ -282,14 +283,14 @@ public static class MailerAdminExtensions
         var sessionId = AdminSessionIds.CreateNew();
         var session = new AdminSessionRow(
             sessionId,
-            options.Username,
+            user.Username,
             now,
             now,
             absoluteExpiresAt,
             idleExpiresAt,
             null,
             null,
-            credentialSync.CredentialEpoch);
+            user.CredentialEpoch);
 
         await sessionRepository.CreateSessionAsync(
             session,
@@ -298,8 +299,8 @@ public static class MailerAdminExtensions
 
         var claims = new[]
         {
-            new Claim(ClaimTypes.NameIdentifier, options.Username),
-            new Claim(ClaimTypes.Name, options.Username),
+            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString(CultureInfo.InvariantCulture)),
+            new Claim(ClaimTypes.Name, user.Username),
         };
         var identity = new ClaimsIdentity(claims, AdminAuthenticationConstants.Scheme);
         var properties = new AuthenticationProperties
@@ -327,9 +328,25 @@ public static class MailerAdminExtensions
                 timeProvider,
                 AdminAuditLog.EventTypes.LoginSucceeded,
                 AdminAuditLog.Results.Success,
-                options.Username,
+                user.Username,
                 sessionId),
             cancellationToken);
+
+        if (user.IsBreakGlass)
+        {
+            await AdminAuditLog.WriteBestEffortAsync(
+                auditRepository,
+                auditLogger,
+                BuildAuthAuditEvent(
+                    context,
+                    options,
+                    timeProvider,
+                    AdminAuditLog.EventTypes.BreakGlassLoginSucceeded,
+                    AdminAuditLog.Results.Success,
+                    user.Username,
+                    sessionId),
+                cancellationToken);
+        }
 
         return Results.Redirect("/admin");
     }
@@ -497,7 +514,7 @@ public static class MailerAdminExtensions
         var options = services.GetRequiredService<MailerAdminOptions>();
         var timeProvider = services.GetRequiredService<TimeProvider>();
         var sessionRepository = services.GetRequiredService<AdminSessionRepository>();
-        var credentialSync = services.GetRequiredService<AdminCredentialSync>();
+        var userRepository = services.GetRequiredService<AdminUserRepository>();
         var auditRepository = services.GetRequiredService<AdminAuditRepository>();
         var sessionExpiredDedupe = services.GetRequiredService<AdminSessionExpiredDedupe>();
         var loggerFactory = services.GetRequiredService<ILoggerFactory>();
@@ -524,9 +541,13 @@ public static class MailerAdminExtensions
         }
 
         var session = await sessionRepository.GetSessionAsync(sessionId, context.HttpContext.RequestAborted);
+        var user = session is null
+            ? null
+            : await userRepository.GetActiveUserByUsernameAsync(session.Actor, context.HttpContext.RequestAborted);
         if (session is null
             || session.RevokedAt is not null
-            || session.CredentialEpoch != credentialSync.CredentialEpoch)
+            || user is null
+            || session.CredentialEpoch != user.CredentialEpoch)
         {
             await RejectSessionAsync(
                 context,

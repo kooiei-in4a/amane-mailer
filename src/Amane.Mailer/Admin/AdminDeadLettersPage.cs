@@ -13,10 +13,17 @@ public static class AdminDeadLettersPage
     public static async Task<IResult> RenderAsync(
         HttpContext context,
         MailRequestRepository repository,
+        AdminUserRepository userRepository,
         AdminDeadLetterCountCache deadLetterCountCache,
         MailerAdminOptions options,
         CancellationToken cancellationToken)
     {
+        var access = await userRepository.GetTenantAccessAsync(
+            AdminAuditLog.ResolveActor(context),
+            cancellationToken);
+        if (access is null)
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+
         AdminDeadLetterCursor? cursor = null;
         var cursorValue = context.Request.Query["cursor"].ToString();
         if (!string.IsNullOrWhiteSpace(cursorValue))
@@ -32,11 +39,15 @@ public static class AdminDeadLettersPage
             {
                 CursorCompletedAt = cursor?.CompletedAt,
                 CursorId = cursor?.Id,
+                AllowedTenantIds = access.AllowedTenantIdsForQuery,
                 PageSize = PageSize,
             },
             cancellationToken);
 
-        var deadLetterCount = await deadLetterCountCache.GetCountAsync(repository, cancellationToken);
+        var deadLetterCount = await deadLetterCountCache.GetCountAsync(
+            repository,
+            access.AllowedTenantIdsForQuery,
+            cancellationToken);
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
