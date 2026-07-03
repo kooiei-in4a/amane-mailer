@@ -20,9 +20,77 @@ Current limitations ([ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md
 
 - Login throttle is SQLite-backed (lock state survives process restart)
 - Durable server-side session store (credential-hash change revocation, explicit logout, expiry, concurrent session limit)
-- No per-admin tenant scope (single `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`)
-- Audit log persists body-view and auth events (login, logout, session expired, account locked, login rate limited) to `admin_audit_events` (stdout mirror). Retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`)
+- Per-admin tenant scope is implemented (scoped / break-glass authorization; startup fails closed when two or more effective tenants exist and Admin is enabled but no scoped or break-glass admin exists). The env bootstrap admin receives all configured tenant scopes on first seed (`is_break_glass=false`; not break-glass)
+- Scoped / break-glass admins are created with `admin user create` (see Admin tenant scope operations)
+- Audit retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`)
 - When `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, raw IP addresses are not stored in the database; keyed hashes are used instead (startup fail-closed when the key is unset)
+
+## Admin tenant scope operations
+
+Authorization boundaries and recommended operations for shared Mailer + multi-tenant + Admin enabled. Behavioral source of truth: `tests/Amane.Mailer.Tests/MailerAdminTenantScopeTests.cs` and [ADR 0014 D-02](../adr/0014-admin-session-tenant-throttle-audit-design.md#d-02-per-admin-tenant-scope-の要否と導入条件).
+
+### Terminology
+
+| Type | Database shape | Authorization |
+|------|----------------|---------------|
+| **scoped admin** | `is_break_glass=0`, one or more `admin_user_tenant_scopes` rows | Allowed tenants only for mail requests / dead letters. No service-wide backup |
+| **break-glass admin** | `is_break_glass=1`, no scope rows | All tenants. Enhanced audit on login and body view |
+| **bootstrap admin** | Seeded from env `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH` on **first empty DB** | All configured tenant scopes (`is_break_glass=0`). **Not** break-glass |
+
+### Effective tenant count
+
+Use the **larger** of `tenants.json` tenant count and `SELECT COUNT(DISTINCT tenant_id) FROM mail_requests`. Even if a tenant is removed from config, two or more distinct `tenant_id` values in the DB still count as multi-tenant (see [restore-verification](restore-verification.en.md)).
+
+### Startup fail-closed
+
+When the effective tenant count is two or more and Admin is enabled, Mailer refuses to start unless at least one enabled scoped or break-glass admin exists. Apply migration `006_admin_users_and_tenant_scopes.sql`, then provision scoped / break-glass admins before enabling Admin.
+
+### Recommended operations (shared multi-tenant production)
+
+1. **Do not rely on the bootstrap admin for ongoing use.** First seed grants all tenant scopes without break-glass audit.
+2. Provision **scoped admins** per tenant boundary (prevent develop / staging / production cross-view).
+3. For service-wide backup via Admin UI, also provision a **break-glass** admin or an admin with all effective tenant scopes.
+4. Rotate bootstrap credentials and move day-to-day work to scoped admins.
+
+### Creating scoped / break-glass admins
+
+1. Generate a password hash (do not echo the plain password to stdout):
+
+```powershell
+$adminPassword = [System.Net.NetworkCredential]::new(
+  "",
+  (Read-Host "Mailer admin password" -AsSecureString)
+).Password
+$hash = @($adminPassword, $adminPassword) |
+  docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer admin hash-password 2>$null |
+  Select-Object -Last 1
+
+if ($hash -notlike "pbkdf2:sha256:*") {
+  throw "Failed to generate AMANE_ADMIN_PASSWORD_HASH."
+}
+```
+
+2. Create a scoped admin (one or more `--tenant-id` values):
+
+```powershell
+docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer `
+  admin user create `
+  --username tenant-admin-example `
+  --password-hash $hash `
+  --tenant-id 00000000-0000-0000-0000-000000000101
+```
+
+3. Create a break-glass admin (omit `--tenant-id`):
+
+```powershell
+docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer `
+  admin user create `
+  --username break-glass-example `
+  --password-hash $hash `
+  --break-glass
+```
+
+The Mailer container must reference the same SQLite database via `ConnectionStrings__Mailer`. Re-running scoped admin creation for the same username updates tenant scopes and revokes all active sessions for that admin immediately (ADR 0013 D-04).
 
 ## Prerequisites
 

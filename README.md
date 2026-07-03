@@ -63,7 +63,9 @@ Linux / macOS の bash と curl で Mailpit 到着、冪等再送、conflict ま
 
 - login throttle は SQLite 正本（再起動後も lock 維持）
 - server-side session store あり（資格情報 hash 変更時の即時失効、明示 logout、期限切れ、同時 session 上限）
-- 管理者ごとの tenant scope なし（単一 `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`）
+- 管理者ごとの tenant scope あり（`admin_users` / `admin_user_tenant_scopes`）。scoped admin は許可 tenant のみ閲覧・操作。break-glass 管理者は全 tenant 横断（強化監査）。2 件以上の effective tenant + Admin 有効時は scoped または break-glass 管理者がいないと startup fail-closed
+- env bootstrap 管理者（`AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`）は初回 DB 作成時に `admin_users` へ seed され、**設定済み全 tenant の scope** を付与する（`is_break_glass=false`。**break-glass 扱いではない**）。multi-tenant 本番では bootstrap 管理者の継続利用を避け、tenant 別 scoped 管理者を用意する（[runbook](docs/ops/local-mailer-docker-runbook.md#admin-tenant-scope-運用)）
+- scoped / break-glass 管理者は `admin user create` で作成（`admin hash-password` で hash 生成）
 - audit log は body view と auth イベント（login / logout / session expired / account locked / login rate limited）を `admin_audit_events` に永続化（stdout にもミラー）。retention sweep は未実装（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`）
 - `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は raw IP を DB に保存せず keyed hash を使用（鍵未設定時は startup fail-closed）
 
@@ -86,13 +88,13 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
-公開済みの GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.1.1`）を clean state から
+公開済みの GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.2.0`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
 conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（Linux / macOS / Git Bash）または
 `scripts/release-smoke.ps1`（Windows / PowerShell + Docker Desktop）を使います。手順と設定は
 [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
 
-既定タグ `v0.1.1` の公開 GHCR runtime image は **`linux/amd64` only** です。Apple Silicon /
+既定タグ `v0.2.0` の公開 GHCR runtime image は **`linux/amd64` only** です。Apple Silicon /
 ARM Linux ホストでは、Docker Desktop などの amd64 emulation が使える場合に限り
 `MAILER_IMAGE_PLATFORM=linux/amd64 bash scripts/release-smoke.sh` のように明示して検証できます。
 multi-arch release では Docker manifest または release notes の platform / runtime manifest digest
@@ -185,9 +187,10 @@ Consumer アプリの compose ネットワーク接続例は [infra/deploy/compo
 
 作業は `feature/**` / `fix/**` → `develop` → `main` の順で進めます。`main`
 マージ後は `main` を `develop` に手動同期します。CI はブランチ経路ごとに
-重み付けされ、feature push では build/test のみ、`develop` では OpenAPI 検証
-まで、`main` 向け PR では Native AOT と amd64/arm64 Docker を含むフル CI が
-走ります。詳細は [ブランチ戦略と CI 重み付け](docs/ops/branch-and-ci-workflow.md)
+重み付けされ、feature push では build/test のみ、`develop` 向け PR では OpenAPI
+検証と Native AOT publish smoke まで、`main` 向け PR では amd64 Docker と compose
+smoke を含むフル CI が走ります（arm64 Docker は `main` push）。詳細は
+[ブランチ戦略と CI 重み付け](docs/ops/branch-and-ci-workflow.md)
 [(en)](docs/ops/branch-and-ci-workflow.en.md) と [CONTRIBUTING.md](CONTRIBUTING.md)
 を参照してください。
 

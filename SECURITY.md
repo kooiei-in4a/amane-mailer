@@ -85,6 +85,26 @@ The classification `error_code` (for example `ACS_REQUEST_FAILED`,
 operators can still triage failures. Raw provider responses are intentionally
 not stored anywhere.
 
+## Mail Request Metadata
+
+Mailer applies a **docs-first** policy for `metadata` on
+`POST /internal/mail-requests`:
+
+- **Keys** containing `token`, `password`, `secret`, or `url` (case-insensitive)
+  are rejected with `INVALID_METADATA` (422). Oversized metadata is also rejected.
+- **Values** are stored exactly as sent. Mailer does not scan or scrub metadata
+  values for secrets, URL query parameters, or token-like content.
+- Accepted metadata is persisted in SQLite, included in backups, and may be
+  displayed in the Admin UI when operators view stored mail request fields.
+
+Consumers must not place secrets, bearer tokens, passwords, or reset-link query
+secrets in metadata values even when the key name is allowed. `subject`, body
+fields, `reply_to`, and `metadata` may contain PII; treat the mail payload and
+Mailer database as sensitive data.
+
+See `docs/api/openapi.yaml`, `src/Amane.Mailer.Contracts/README.md`, and
+`docs/service-spec.md` for the full contract description.
+
 ## Admin Audit Logging
 
 Admin operation audit events are persisted to the Mailer SQLite database
@@ -139,6 +159,17 @@ Current implementation limits:
 - **Session store / revocation**: Server-side sessions in SQLite with credential-epoch
   invalidation on password hash change, explicit logout, expiry, and concurrent-session
   limit enforcement (default three sessions per admin).
-- **Tenant scope**: No per-admin tenant scope. A single
-  `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH` credential has
-  access to all tenants.
+- **Tenant scope**: Per-admin tenant scope is implemented (ADR 0014 Phase 2).
+  Scoped admins are limited to explicitly assigned `tenant_id` values in
+  `admin_user_tenant_scopes`. Break-glass admins (`is_break_glass=1`) can
+  access all tenants and receive enhanced audit events. When two or more
+  effective tenants exist (`tenants.json` count and distinct `mail_requests.tenant_id`,
+  whichever is larger) and Admin is enabled, startup fails closed unless at
+  least one enabled scoped or break-glass admin exists.
+- **Bootstrap admin**: `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`
+  seeds the first `admin_users` row on empty database creation with all
+  configured tenant scopes (`is_break_glass=false`). This is **not** break-glass
+  access and does not receive break-glass audit treatment. In shared
+  multi-tenant production, do not rely on the bootstrap admin for ongoing
+  operations; provision scoped admins per tenant boundary. Use `admin user create`
+  with `admin hash-password` for scoped / break-glass provisioning.

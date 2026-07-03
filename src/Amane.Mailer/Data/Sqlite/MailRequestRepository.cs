@@ -1,3 +1,4 @@
+using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite.Models;
 using Microsoft.Data.Sqlite;
 using System.Text;
@@ -143,7 +144,10 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
         (int)MailRequestState.Delivered,
         (int)MailRequestState.Failed,
         (int)MailRequestState.DeadLettered,
+        (int)MailRequestState.Cancelled,
     ];
+
+    internal const string OperatorCancelledLastErrorMessage = "operator_cancelled";
 
     private static async Task<List<AdminMailRequestListRow>> ListForAdminStatusAsync(
         SqliteConnection connection,
@@ -282,7 +286,7 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
                 started_at, completed_at
             FROM mail_attempts
             WHERE request_id = @RequestId
-            ORDER BY attempt_number ASC;
+            ORDER BY started_at ASC, id ASC;
             """;
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
@@ -835,6 +839,242 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
         return result is long count ? (int)count : 0;
     }
 
+    public async Task<ManualMailRequestMutationResult> TryManualRetryAsync(
+        Guid id,
+        IReadOnlySet<Guid>? allowedTenantIds,
+        DateTimeOffset now,
+        AdminAuditRepository auditRepository,
+        AdminAuditEvent auditTemplate,
+        CancellationToken cancellationToken = default)
+    {
+        if (allowedTenantIds is { Count: 0 })
+            return new(ManualMailRequestMutationStatus.NotFound);
+
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+
+        const string updateSql = """
+            UPDATE mail_requests
+            SET
+                status = @QueuedStatus,
+                attempt_count = 0,
+                next_attempt_at = NULL,
+                lock_token = NULL,
+                lock_expires_at = NULL,
+                completed_at = NULL,
+                delivered_at = NULL,
+                failed_at = NULL,
+                updated_at = @Now
+            WHERE id = @Id
+              AND status IN (@DeadLetteredStatus, @FailedStatus)
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            await using (var update = connection.CreateCommand())
+            {
+                var where = new StringBuilder(updateSql);
+                AppendTenantScopeFilter(where, update, allowedTenantIds);
+                update.CommandText = where.ToString();
+                update.Parameters.AddWithValue("@QueuedStatus", (int)MailRequestState.Queued);
+                update.Parameters.AddWithValue("@Now", nowStorage);
+                update.Parameters.AddWithValue("@Id", id.ToString("D"));
+                update.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
+                update.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
+
+                var affected = await update.ExecuteNonQueryAsync(cancellationToken);
+                if (affected > 0)
+                {
+                    await auditRepository.WriteAsync(
+                        auditTemplate with
+                        {
+                            Result = AdminAuditLog.Results.Success,
+                            ErrorCode = null,
+                        },
+                        connection,
+                        cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                    return new(ManualMailRequestMutationStatus.Succeeded);
+                }
+            }
+
+            var current = await ReadScopedStatusAsync(connection, id, allowedTenantIds, cancellationToken);
+            var status = current is null
+                ? ManualMailRequestMutationStatus.NotFound
+                : ManualMailRequestMutationStatus.InvalidState;
+
+            await auditRepository.WriteAsync(
+                auditTemplate with
+                {
+                    Result = AdminAuditLog.Results.Failure,
+                    ErrorCode = status == ManualMailRequestMutationStatus.NotFound
+                        ? AdminAuditLog.ErrorCodes.NotFound
+                        : AdminAuditLog.ErrorCodes.InvalidState,
+                },
+                connection,
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new(status);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    public async Task<ManualMailRequestMutationResult> TryManualCancelAsync(
+        Guid id,
+        IReadOnlySet<Guid>? allowedTenantIds,
+        DateTimeOffset now,
+        AdminAuditRepository auditRepository,
+        AdminAuditEvent auditTemplate,
+        CancellationToken cancellationToken = default)
+    {
+        if (allowedTenantIds is { Count: 0 })
+            return new(ManualMailRequestMutationStatus.NotFound);
+
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+
+        const string updateSql = """
+            UPDATE mail_requests
+            SET
+                status = @CancelledStatus,
+                next_attempt_at = NULL,
+                lock_token = NULL,
+                lock_expires_at = NULL,
+                completed_at = @Now,
+                failed_at = @Now,
+                last_error_message = @LastErrorMessage,
+                updated_at = @Now
+            WHERE id = @Id
+              AND (
+                    status IN (@QueuedStatus, @FailedStatus, @DeadLetteredStatus)
+                    OR (
+                        status = @ProcessingStatus
+                        AND lock_expires_at IS NOT NULL
+                        AND lock_expires_at <= @Now
+                    )
+                  )
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            await using (var update = connection.CreateCommand())
+            {
+                var where = new StringBuilder(updateSql);
+                AppendTenantScopeFilter(where, update, allowedTenantIds);
+                update.CommandText = where.ToString();
+                update.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
+                update.Parameters.AddWithValue("@Now", nowStorage);
+                update.Parameters.AddWithValue("@LastErrorMessage", OperatorCancelledLastErrorMessage);
+                update.Parameters.AddWithValue("@Id", id.ToString("D"));
+                update.Parameters.AddWithValue("@QueuedStatus", (int)MailRequestState.Queued);
+                update.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
+                update.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
+                update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+
+                var affected = await update.ExecuteNonQueryAsync(cancellationToken);
+                if (affected > 0)
+                {
+                    await auditRepository.WriteAsync(
+                        auditTemplate with
+                        {
+                            Result = AdminAuditLog.Results.Success,
+                            ErrorCode = null,
+                        },
+                        connection,
+                        cancellationToken);
+                    await transaction.CommitAsync(cancellationToken);
+                    return new(ManualMailRequestMutationStatus.Succeeded);
+                }
+            }
+
+            var current = await ReadScopedStatusAsync(connection, id, allowedTenantIds, cancellationToken);
+            if (current is null)
+            {
+                await WriteFailureAuditAsync(
+                    auditRepository,
+                    connection,
+                    auditTemplate,
+                    AdminAuditLog.ErrorCodes.NotFound,
+                    cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return new(ManualMailRequestMutationStatus.NotFound);
+            }
+
+            var failureCode = current.Value.Status == MailRequestState.Processing
+                && current.Value.LockExpiresAt is not null
+                && current.Value.LockExpiresAt > now
+                ? AdminAuditLog.ErrorCodes.LockHeld
+                : AdminAuditLog.ErrorCodes.InvalidState;
+
+            var failureStatus = failureCode == AdminAuditLog.ErrorCodes.LockHeld
+                ? ManualMailRequestMutationStatus.LockHeld
+                : ManualMailRequestMutationStatus.InvalidState;
+
+            await WriteFailureAuditAsync(
+                auditRepository,
+                connection,
+                auditTemplate,
+                failureCode,
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new(failureStatus);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    private static async Task WriteFailureAuditAsync(
+        AdminAuditRepository auditRepository,
+        SqliteConnection connection,
+        AdminAuditEvent auditTemplate,
+        string errorCode,
+        CancellationToken cancellationToken) =>
+        await auditRepository.WriteAsync(
+            auditTemplate with
+            {
+                Result = AdminAuditLog.Results.Failure,
+                ErrorCode = errorCode,
+            },
+            connection,
+            cancellationToken);
+
+    private static async Task<(MailRequestState Status, DateTimeOffset? LockExpiresAt)?> ReadScopedStatusAsync(
+        SqliteConnection connection,
+        Guid id,
+        IReadOnlySet<Guid>? allowedTenantIds,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        var where = new StringBuilder("WHERE id = @Id");
+        command.Parameters.AddWithValue("@Id", id.ToString("D"));
+        AppendTenantScopeFilter(where, command, allowedTenantIds);
+        command.CommandText = $"""
+            SELECT status, lock_expires_at
+            FROM mail_requests
+            {where}
+            LIMIT 1;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+
+        var status = (MailRequestState)reader.GetInt32(0);
+        DateTimeOffset? lockExpiresAt = reader.IsDBNull(1)
+            ? null
+            : SqliteTime.FromStorage(reader.GetString(1));
+        return (status, lockExpiresAt);
+    }
+
     public async Task<int> DeleteExpiredCompletedAsync(
         DateTimeOffset completedBefore,
         int batchSize,
@@ -845,7 +1085,7 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
             WHERE id IN (
                 SELECT id
                 FROM mail_requests
-                WHERE status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus)
+                WHERE status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus)
                   AND completed_at IS NOT NULL
                   AND completed_at < @CompletedBefore
                 ORDER BY completed_at ASC
@@ -864,6 +1104,7 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
             command.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
             command.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
             command.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
+            command.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
             command.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
             command.Parameters.AddWithValue("@BatchSize", batchSize);
 

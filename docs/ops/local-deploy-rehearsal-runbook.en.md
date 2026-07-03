@@ -164,8 +164,10 @@ under the HTTPS reverse-proxy setup.
 The Admin UI is an **internal-network-only, experimental** operational aid. Current limits:
 login throttle is SQLite-backed (lock state survives process restart);
 durable server-side session store (credential-hash change revocation, explicit logout, expiry, concurrent session limit);
-no per-admin tenant scope; audit log persists body-view and auth events (login, logout, session expired, account locked, login rate limited)
-to `admin_audit_events` (mirrored to stdout). Retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`).
+per-admin tenant scope is implemented (scoped / break-glass authorization; bootstrap admin receives all configured scopes on first seed, not break-glass);
+scoped / break-glass admins are created with `admin user create` (hash via `admin hash-password`);
+audit log persists body-view and auth events to `admin_audit_events` (mirrored to stdout). Retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`).
+For shared multi-tenant production boundaries, see [local-mailer-docker-runbook.en.md](local-mailer-docker-runbook.en.md#admin-tenant-scope-operations).
 When `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, raw IP addresses are not stored in the database; keyed hashes are used instead (startup fail-closed when the key is unset).
 
 ```powershell
