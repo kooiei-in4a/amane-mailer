@@ -85,6 +85,26 @@ The classification `error_code` (for example `ACS_REQUEST_FAILED`,
 operators can still triage failures. Raw provider responses are intentionally
 not stored anywhere.
 
+## Mail Request Metadata
+
+Mailer applies a **docs-first** policy for `metadata` on
+`POST /internal/mail-requests`:
+
+- **Keys** containing `token`, `password`, `secret`, or `url` (case-insensitive)
+  are rejected with `INVALID_METADATA` (422). Oversized metadata is also rejected.
+- **Values** are stored exactly as sent. Mailer does not scan or scrub metadata
+  values for secrets, URL query parameters, or token-like content.
+- Accepted metadata is persisted in SQLite, included in backups, and may be
+  displayed in the Admin UI when operators view stored mail request fields.
+
+Consumers must not place secrets, bearer tokens, passwords, or reset-link query
+secrets in metadata values even when the key name is allowed. `subject`, body
+fields, `reply_to`, and `metadata` may contain PII; treat the mail payload and
+Mailer database as sensitive data.
+
+See `docs/api/openapi.yaml`, `src/Amane.Mailer.Contracts/README.md`, and
+`docs/service-spec.md` for the full contract description.
+
 ## Admin Audit Logging
 
 Admin operation audit events are persisted to the Mailer SQLite database

@@ -208,6 +208,11 @@ components:
           description: >-
             付随情報。tenant の metadata_max_bytes（既定 4096）以内。
             キーに token / password / secret / url を含むものは拒否（422 INVALID_METADATA）。
+            **値の内容は検査しない**（docs-first ポリシー）。送信された文字列がそのまま SQLite に永続化され、
+            backup 対象となり、Admin 等の運用設定によっては画面に表示されうる。
+            Consumer は secret、Bearer token、パスワード、リセット URL のクエリ secret 等を
+            metadata 値に入れないこと。subject / body / reply_to と同様、metadata は PII や
+            user-controlled データを含みうる。
         payload_hash:
           type: string
           description: >-

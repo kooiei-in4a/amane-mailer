@@ -68,6 +68,20 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | 宛先複数 / メタデータ / hash 不一致 | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
 | 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 
+### metadata の秘密情報ポリシー（docs-first）
+
+`metadata` は **キー名のみ**を検査し、**値の内容は検査しない**（docs-first ポリシー）。
+
+| 検査対象 | 挙動 |
+|---|---|
+| キー名 | `token` / `password` / `secret` / `url` を含むキーは 422 `INVALID_METADATA` |
+| 値 | 送信された文字列をそのまま `metadata_json` に永続化（secret スクラブなし） |
+| サイズ | tenant の `metadata_max_bytes`（既定 4096）超過は 422 `INVALID_METADATA` |
+
+Consumer は許可されたキー名でも、secret・Bearer token・パスワード・リセット URL のクエリ secret 等を metadata **値**に入れないこと。受理された metadata は SQLite・backup の対象となり、Admin 等で表示されうる。`subject` / 本文 / `reply_to` と同様、metadata は PII を含みうる。
+
+OpenAPI・Contracts README・`SECURITY.md` と整合する。値の強制拒否（URL クエリ secret パターン等）は本ポリシーでは採用しない。
+
 ### 冪等性
 
 - 一意キーは **`(tenant_id, source_service, mail_request_id)`**。
