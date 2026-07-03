@@ -169,7 +169,7 @@ login throttle は SQLite 正本（再起動後も lock 維持）、
 server-side session store あり（資格情報 hash 変更時の即時失効、明示 logout、期限切れ、同時 session 上限）、
 管理者ごとの tenant scope あり（scoped / break-glass 認可。bootstrap 管理者は初回 seed 時に全設定 tenant scope、break-glass ではない）、
 scoped / break-glass 作成は `admin user create`（`admin hash-password` で hash 生成）、
-audit log は body view と auth イベントを `admin_audit_events` に永続化（stdout にもミラー）。retention sweep は未実装（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`）。
+audit log は body view と auth イベントを `admin_audit_events` に永続化（stdout にもミラー）。retention sweep は `MAILER_ADMIN_AUDIT_RETENTION_DAYS`（既定 180 日）で自動削除。明示 purge は `db admin-audit purge --older-than-days <days>`。
 multi-tenant 本番の運用境界は [local-mailer-docker-runbook.md](local-mailer-docker-runbook.md#admin-tenant-scope-運用) を参照。
 `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は raw IP を DB に保存せず keyed hash を使用（鍵未設定時は startup fail-closed）。
 

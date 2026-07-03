@@ -135,8 +135,13 @@ password.
 The body-view event keeps its dedicated structured stdout log
 (`AdminMailRequestBodyViewed`) in addition to the database row.
 
-Not yet implemented (tracked for follow-up): retention sweep
-(`MAILER_ADMIN_AUDIT_RETENTION_DAYS`). When
+Admin audit retention sweep uses `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (default
+180 days). Rows older than the configured retention are deleted on worker startup
+and on a daily timer. Explicit purge:
+`dotnet Amane.Mailer.dll db admin-audit purge --older-than-days <days>`.
+Retention under 30 days is allowed only when `ASPNETCORE_ENVIRONMENT=Development`.
+Purge output and sweep logs include counts and day thresholds only — no actor,
+target, or mail payload fields. When
 `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, auth audit `source_ip` values
 and login throttle keys store keyed HMAC-SHA256 hashes instead of raw IP addresses;
 see the runbook section **Admin audit identifier hash key rotation**.
@@ -155,7 +160,8 @@ Current implementation limits:
 
 - **Audit log**: Body-view and auth events (login, logout, session expired, account
   locked, login rate limited) are persisted to `admin_audit_events` (stdout mirror).
-  Retention sweep is not yet implemented.
+  Retention sweep and `db admin-audit purge` remove rows older than
+  `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (default 180 days).
 - **Login throttle**: SQLite-backed with in-memory cache; survives process restart.
 - **Session store / revocation**: Server-side sessions in SQLite with credential-epoch
   invalidation on password hash change, explicit logout, expiry, and concurrent-session

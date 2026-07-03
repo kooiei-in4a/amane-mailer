@@ -116,4 +116,51 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
 
         return rows;
     }
+
+    public async Task<int> DeleteOlderThanAsync(
+        DateTimeOffset occurredBefore,
+        int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            DELETE FROM admin_audit_events
+            WHERE id IN (
+                SELECT id
+                FROM admin_audit_events
+                WHERE occurred_at < @OccurredBefore
+                ORDER BY occurred_at ASC
+                LIMIT @BatchSize
+            );
+            """;
+
+        var occurredBeforeStorage = SqliteTime.ToStorageUtc(occurredBefore);
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.Parameters.AddWithValue("@OccurredBefore", occurredBeforeStorage);
+            command.Parameters.AddWithValue("@BatchSize", Math.Max(1, batchSize));
+
+            var deleted = await command.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return deleted;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    public async Task<int> CountAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM admin_audit_events;";
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result);
+    }
 }
