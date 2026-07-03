@@ -35,6 +35,13 @@ public sealed record MailRequestCreateRequest
     [JsonPropertyName("reply_to")]
     public string? ReplyTo { get; init; }
 
+    /// <summary>
+    /// Optional caller-supplied key/value pairs (string values only).
+    /// Keys containing token, password, secret, or url (case-insensitive) are rejected.
+    /// Values are stored as sent and are not scanned for secrets; do not place tokens,
+    /// passwords, or URL query secrets in metadata values. See Contracts README
+    /// "Metadata policy" and OpenAPI metadata description.
+    /// </summary>
     [JsonPropertyName("metadata")]
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 

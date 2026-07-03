@@ -225,6 +225,27 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
+    public async Task Metadata_value_with_secret_is_accepted_when_key_is_allowed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest(metadata: new Dictionary<string, string>
+        {
+            ["link"] = "https://example.test/reset?token=replace-with-placeholder",
+        });
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(
+            MailRequestAcceptanceStatus.Accepted,
+            await MailRequestTestData.ReadStatusAsync(response, ct));
+    }
+
+    [Fact]
     public async Task Oversized_metadata_returns_422()
     {
         var ct = TestContext.Current.CancellationToken;

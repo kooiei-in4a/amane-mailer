@@ -68,6 +68,20 @@ When intentionally changing the contract, update the DTOs / constants / payload 
 | Multiple recipients / metadata / hash mismatch | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
 | Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 
+### Metadata secret policy (docs-first)
+
+`metadata` validation inspects **key names only**; **values are not scanned** (docs-first policy).
+
+| Check | Behavior |
+|---|---|
+| Key name | Keys containing `token`, `password`, `secret`, or `url` return 422 `INVALID_METADATA` |
+| Value | Stored verbatim in `metadata_json` (no secret scrubbing) |
+| Size | Exceeding tenant `metadata_max_bytes` (default 4096) returns 422 `INVALID_METADATA` |
+
+Consumers must not place secrets, bearer tokens, passwords, or reset-link query secrets in metadata **values** even when the key name is allowed (for example `"link": "https://example.test/reset?token=..."` is accepted but unsafe). Accepted metadata is persisted in SQLite and backups and may appear in the Admin UI. Like `subject`, body fields, and `reply_to`, metadata may contain PII.
+
+This policy is synchronized with OpenAPI, the Contracts README, and `SECURITY.md`. Value-level enforcement (for example URL query secret patterns) is out of scope for this policy.
+
 ### Idempotency
 
 - Unique key is **`(tenant_id, source_service, mail_request_id)`**.

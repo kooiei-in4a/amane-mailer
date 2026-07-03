@@ -50,6 +50,25 @@ node scripts/validate-openapi.mjs docs/api/openapi.yaml
 node scripts/check-contract-drift.mjs
 ```
 
+## Metadata policy
+
+Mailer applies a **docs-first** policy for `metadata` values:
+
+- **Keys** are rejected when they contain `token`, `password`, `secret`, or `url`
+  (case-insensitive). Oversized metadata returns `INVALID_METADATA` (422).
+- **Values** are stored exactly as sent. Mailer does not scan, scrub, or reject
+  metadata values for secrets, URL query parameters, or token-like content.
+- Accepted metadata is persisted in SQLite (`metadata_json`), included in backups,
+  and may be shown in the Admin UI when operators view stored mail request fields.
+- Do **not** place secrets, bearer tokens, passwords, or reset-link query secrets
+  in metadata values even when the key name is allowed (for example
+  `"link": "https://example.test/reset?token=..."` is accepted but unsafe).
+- `subject`, `html_body`, `text_body`, `reply_to`, and `metadata` may contain PII;
+  treat the mail payload and Mailer SQLite database as sensitive data.
+
+See also `docs/api/openapi.yaml` (`metadata` field), `docs/service-spec.md`, and
+`SECURITY.md` (Mail request metadata).
+
 Service release versions, Docker image tags, NuGet package versions, and
 OpenAPI `info.version` are all kept in sync under the same `X.Y.Z`.
 During the 0.x series, backward compatibility is not guaranteed; breaking
