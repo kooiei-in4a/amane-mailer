@@ -22,7 +22,7 @@ public sealed record MailerAdminDbOpsOptions
             "MAILER_ADMIN_DB_BACKUP_DIRECTORY",
             string.Empty);
 
-        if (string.IsNullOrWhiteSpace(backupDirectory))
+        if (enabled && string.IsNullOrWhiteSpace(backupDirectory))
         {
             backupDirectory = DeriveDefaultBackupDirectory(mailerConnectionString);
         }
@@ -30,7 +30,9 @@ public sealed record MailerAdminDbOpsOptions
         return new()
         {
             Enabled = enabled,
-            BackupDirectory = Path.GetFullPath(backupDirectory),
+            BackupDirectory = string.IsNullOrWhiteSpace(backupDirectory)
+                ? string.Empty
+                : Path.GetFullPath(backupDirectory),
         };
     }
 

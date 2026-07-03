@@ -152,6 +152,104 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
     }
 
     [Fact]
+    public void Disabled_db_ops_does_not_derive_backup_directory_for_memory_database()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AMANE_ADMIN_DB_OPS_ENABLED"] = "false",
+            })
+            .Build();
+
+        var options = MailerAdminDbOpsOptions.Load(configuration, "Data Source=:memory:");
+
+        Assert.False(options.Enabled);
+        Assert.Equal(string.Empty, options.BackupDirectory);
+    }
+
+    [Fact]
+    public async Task Backup_without_csrf_returns_bad_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var username = "dbops-csrf-" + Guid.NewGuid().ToString("N");
+        await dbOpsFixture.Factory.Services.GetRequiredService<AdminUserRepository>()
+            .CreateBreakGlassUserAsync(
+                username,
+                AdminPasswordHasher.Hash(TenantAdminPassword(username)),
+                ct);
+
+        using var client = CreateClient(dbOpsFixture.Factory);
+        await LoginAsync(client, username, TenantAdminPassword(username), ct);
+
+        using var response = await client.PostAsync("/admin/ops/backup", new StringContent(string.Empty), ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Scoped_admin_with_all_effective_tenant_scopes_can_run_backup()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var username = "dbops-all-scopes-" + Guid.NewGuid().ToString("N");
+        await SeedMailRequestForTenantAsync(OtherTenantId, ct);
+        await CreateScopedUserAsync(
+            username,
+            [MailerWebApplicationFixtureBase.TenantId, OtherTenantId],
+            ct);
+
+        using var client = CreateClient(dbOpsFixture.Factory);
+        await LoginAsync(client, username, TenantAdminPassword(username), ct);
+
+        using var page = await client.GetAsync("/admin/ops", ct);
+        var html = await page.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        Assert.Contains("/admin/ops/backup", html, StringComparison.Ordinal);
+
+        var csrf = await ReadCsrfTokenFromHtmlAsync(html);
+        using var response = await client.PostAsync("/admin/ops/backup", CreateCsrfContent(csrf), ct);
+
+        Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Concurrent_backup_requests_return_conflict_for_second_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var username = "dbops-concurrent-" + Guid.NewGuid().ToString("N");
+        await dbOpsFixture.Factory.Services.GetRequiredService<AdminUserRepository>()
+            .CreateBreakGlassUserAsync(
+                username,
+                AdminPasswordHasher.Hash(TenantAdminPassword(username)),
+                ct);
+
+        using var client = CreateClient(dbOpsFixture.Factory);
+        await LoginAsync(client, username, TenantAdminPassword(username), ct);
+
+        using var page = await client.GetAsync("/admin/ops", ct);
+        var csrf = await ReadCsrfTokenFromHtmlAsync(await page.Content.ReadAsStringAsync(ct));
+        var content = CreateCsrfContent(csrf);
+
+        var first = client.PostAsync("/admin/ops/backup", content, ct);
+        var second = client.PostAsync("/admin/ops/backup", content, ct);
+        await Task.WhenAll(first, second);
+
+        using var firstResponse = await first;
+        using var secondResponse = await second;
+        var statusCodes = new[] { firstResponse.StatusCode, secondResponse.StatusCode };
+
+        Assert.Contains(HttpStatusCode.SeeOther, statusCodes);
+        Assert.Contains(HttpStatusCode.Conflict, statusCodes);
+
+        var failed = await ReadLatestAuditAsync(AdminAuditLog.EventTypes.DbBackupFailed, ct);
+        Assert.NotNull(failed);
+        Assert.Equal(AdminAuditLog.Results.Failure, failed.Value.Result);
+        Assert.Equal(AdminAuditLog.ErrorCodes.LockHeld, await ReadLatestAuditErrorCodeAsync(
+            AdminAuditLog.EventTypes.DbBackupFailed,
+            ct));
+    }
+
+    [Fact]
     public void ResolveBackupDestinationPath_rejects_path_traversal()
     {
         var service = dbOpsFixture.Factory.Services.GetRequiredService<AdminDbOpsService>();
@@ -226,6 +324,25 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
                 AdminPasswordHasher.Hash(TenantAdminPassword(username)),
                 tenantIds,
                 cancellationToken);
+
+    private async Task<string?> ReadLatestAuditErrorCodeAsync(
+        string eventType,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(dbOpsFixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT error_code
+            FROM admin_audit_events
+            WHERE event_type = @EventType
+            ORDER BY id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@EventType", eventType);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is string errorCode ? errorCode : null;
+    }
 
     private async Task<(string Result, string? TargetType, string? TargetId, string? FieldName)?> ReadLatestAuditAsync(
         string eventType,
