@@ -23,6 +23,7 @@ GitHub Actions で Mailer ランタイムイメージを GitHub Container Regist
 - publish されるタグは `sha-<git-sha>` と release tag（例: `v0.1.1`）だけです。
 - `sha-<git-sha>` または release tag が GHCR に既に存在する場合、workflow は上書きせず失敗します。
 - branch ref、形式不正な tag、tag が指す commit と checked-out commit / workflow event commit が一致しない実行は失敗します。
+- image push の前に release-critical validation を再実行します（`dotnet restore` / `build` / `test`、OpenAPI validation、`scripts/check-contract-drift.mjs`、Contracts `<Version>` と OpenAPI `info.version` の tag 整合性）。CI 未通過や contract drift のある commit からは publish できません。
 - deploy では可能な限り不変タグ `sha-<git-sha>` または digest を使います。
 
 ## GitHub Actions 権限

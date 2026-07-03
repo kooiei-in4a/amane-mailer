@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Microsoft.AspNetCore.Antiforgery;
 
 namespace Amane.Mailer.Admin;
 
@@ -15,6 +16,8 @@ public static class AdminMailRequestDetailPage
         AdminUserRepository userRepository,
         AdminDeadLetterCountCache deadLetterCountCache,
         MailerAdminOptions options,
+        IAntiforgery antiforgery,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(id, out var requestId))
@@ -40,8 +43,15 @@ public static class AdminMailRequestDetailPage
             cancellationToken);
 
         context.Response.Headers.CacheControl = "no-store";
+        var csrfToken = antiforgery.GetAndStoreTokens(context).RequestToken ?? string.Empty;
         return Results.Content(
-            RenderHtml(detail, attempts, options, deadLetterCount),
+            RenderHtml(
+                detail,
+                attempts,
+                options,
+                deadLetterCount,
+                csrfToken,
+                timeProvider.GetUtcNow()),
             "text/html; charset=utf-8");
     }
 
@@ -49,7 +59,9 @@ public static class AdminMailRequestDetailPage
         AdminMailRequestDetail detail,
         IReadOnlyList<AdminMailAttemptRow> attempts,
         MailerAdminOptions options,
-        int deadLetterCount = 0)
+        int deadLetterCount = 0,
+        string csrfToken = "",
+        DateTimeOffset? now = null)
     {
         var html = new StringBuilder();
 
@@ -66,6 +78,7 @@ public static class AdminMailRequestDetailPage
             """);
 
         AppendDetailSection(html, detail, options);
+        AppendMutationActions(html, detail, csrfToken, now ?? DateTimeOffset.UtcNow);
         AppendAttemptsSection(html, attempts);
 
         AdminLayout.AppendDocumentEnd(html);
@@ -148,6 +161,57 @@ public static class AdminMailRequestDetailPage
         AppendBodyLink(html, detail.Id, "html_body", detail.HtmlBody);
         AppendBodyLink(html, detail.Id, "text_body", detail.TextBody);
         AppendBodyLink(html, detail.Id, "metadata_json", detail.MetadataJson);
+
+        html.AppendLine("              </section>");
+    }
+
+    private static void AppendMutationActions(
+        StringBuilder html,
+        AdminMailRequestDetail detail,
+        string csrfToken,
+        DateTimeOffset now)
+    {
+        var canRetry = detail.Status is MailRequestState.DeadLettered or MailRequestState.Failed;
+        var canCancel = detail.Status is MailRequestState.Queued
+            or MailRequestState.Failed
+            or MailRequestState.DeadLettered
+            || detail.Status == MailRequestState.Processing
+            && detail.LockExpiresAt is not null
+            && detail.LockExpiresAt <= now;
+
+        if (!canRetry && !canCancel)
+            return;
+
+        var idStr = detail.Id.ToString("D");
+        html.AppendLine("              <section class=\"detail-actions\" aria-label=\"運用操作\">");
+
+        if (canRetry)
+        {
+            html.Append("                <form method=\"post\" action=\"/admin/mail-requests/");
+            html.Append(idStr);
+            html.AppendLine("/retry\" class=\"inline-form\">");
+            html.Append("                  <input type=\"hidden\" name=\"__RequestVerificationToken\" value=\"");
+            html.Append(Html(csrfToken));
+            html.AppendLine("\">");
+            html.AppendLine("                  <button type=\"submit\" class=\"action-button\">再送する</button>");
+            html.AppendLine("                </form>");
+        }
+
+        if (canCancel)
+        {
+            html.Append("                <form method=\"post\" action=\"/admin/mail-requests/");
+            html.Append(idStr);
+            html.AppendLine("/cancel\" class=\"inline-form\">");
+            html.Append("                  <input type=\"hidden\" name=\"__RequestVerificationToken\" value=\"");
+            html.Append(Html(csrfToken));
+            html.AppendLine("\">");
+            html.AppendLine("                  <button type=\"submit\" class=\"action-button\">キャンセルする</button>");
+            html.AppendLine("                </form>");
+        }
+        else if (detail.Status == MailRequestState.Processing)
+        {
+            html.AppendLine("                <button type=\"button\" class=\"action-button action-button-disabled\" disabled title=\"有効な lock 中はキャンセルできません\">キャンセルする</button>");
+        }
 
         html.AppendLine("              </section>");
     }
@@ -251,6 +315,7 @@ public static class AdminMailRequestDetailPage
             MailRequestState.Delivered => "Delivered",
             MailRequestState.Failed => "Failed",
             MailRequestState.DeadLettered => "DeadLettered",
+            MailRequestState.Cancelled => "Cancelled",
             _ => "Unknown",
         };
 
@@ -262,6 +327,7 @@ public static class AdminMailRequestDetailPage
             MailRequestState.Delivered => "status-delivered",
             MailRequestState.Failed => "status-failed",
             MailRequestState.DeadLettered => "status-deadlettered",
+            MailRequestState.Cancelled => "status-cancelled",
             _ => "status-unknown",
         };
 
@@ -271,6 +337,7 @@ public static class AdminMailRequestDetailPage
             (int)MailRequestState.Delivered => "Delivered",
             (int)MailRequestState.Failed => "Failed",
             (int)MailRequestState.DeadLettered => "DeadLettered",
+            (int)MailRequestState.Cancelled => "Cancelled",
             _ => status.ToString(CultureInfo.InvariantCulture),
         };
 
@@ -280,6 +347,7 @@ public static class AdminMailRequestDetailPage
             (int)MailRequestState.Delivered => "status-delivered",
             (int)MailRequestState.Failed => "status-failed",
             (int)MailRequestState.DeadLettered => "status-deadlettered",
+            (int)MailRequestState.Cancelled => "status-cancelled",
             _ => "status-unknown",
         };
 

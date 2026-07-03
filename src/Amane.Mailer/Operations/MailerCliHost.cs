@@ -17,6 +17,20 @@ public static class MailerCliHost
             .AddCommandLine(args.Where(static arg => arg.Contains('=')).ToArray())
             .Build();
 
+    public static IReadOnlyList<string> FilterConfigurationArgs(IReadOnlyList<string> commandArgs) =>
+        commandArgs.Where(static arg => !IsInlineConfigurationArg(arg)).ToArray();
+
+    internal static bool IsInlineConfigurationArg(string arg)
+    {
+        var equalIndex = arg.IndexOf('=');
+        if (equalIndex <= 0)
+            return false;
+
+        var key = arg[..equalIndex];
+        return key.StartsWith("ConnectionStrings:", StringComparison.Ordinal)
+            || key.StartsWith("Mailer:", StringComparison.Ordinal);
+    }
+
     public static Task<int> RunAdminHashPasswordAsync(
         IReadOnlyList<string> commandArgs,
         TextReader input,
@@ -25,6 +39,22 @@ public static class MailerCliHost
     {
         var command = new AdminHashPasswordCommand();
         return command.ExecuteAsync(commandArgs, input, output, error);
+    }
+
+    public static async Task<int> RunAdminUserCreateAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var factory = new SqliteConnectionFactory(configuration);
+        var command = new AdminUserCreateCommand(factory, TimeProvider.System);
+        return await command.ExecuteAsync(
+            FilterConfigurationArgs(commandArgs),
+            output,
+            error,
+            cancellationToken);
     }
 
     public static async Task<int> RunHealthCheckAsync(

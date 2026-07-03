@@ -7,4 +7,5 @@ public enum MailRequestState : byte
     Delivered = 2,
     Failed = 3,
     DeadLettered = 4,
+    Cancelled = 5,
 }

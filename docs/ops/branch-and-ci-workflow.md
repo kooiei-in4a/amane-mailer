@@ -38,7 +38,7 @@ job 名は branch protection の required status checks と一致させるため
 | トリガー | 実行 job |
 |----------|----------|
 | `feature/**` / `fix/**` への push | `Restore, build, and test` のみ |
-| `develop` への push、または `develop` 向け PR | 上記 + `OpenAPI validation` |
+| `develop` への push、または `develop` 向け PR | 上記 + `OpenAPI validation`（PR では `Native AOT publish smoke` も実行） |
 | `main` 向け PR | release gate CI（Native AOT、amd64 Docker、compose smoke、OpenAPI） |
 | `main` への push、`workflow_dispatch` | 最終 CI（上記 + arm64 Docker） |
 
@@ -55,8 +55,9 @@ release gate CI に含まれる job:
 
 ### 設計上のトレードオフ
 
-`develop` や feature ブランチでは Native AOT と Docker smoke は最小限に抑えます。
-Native AOT や amd64 Docker の失敗は **初めて `main` 向け PR を出したとき** に検出される場合があります。
+`develop` や feature ブランチでは Docker smoke は最小限に抑えます。`Native AOT publish
+smoke` は `develop` 向け PR で実行します（`develop` への直接 push や feature ブランチ push では実行しません）。
+amd64 Docker の失敗は **初めて `main` 向け PR を出したとき** に検出される場合があります。
 arm64 Docker の失敗は **`main` への merge 後 push** で初検出される場合があります。
 release PR の待ち時間を短くしつつ、最終的な `main` コミットでは multi-arch Docker を確認するための
 意図的なトレードオフです。

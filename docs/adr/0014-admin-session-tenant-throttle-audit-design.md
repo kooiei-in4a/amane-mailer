@@ -16,7 +16,7 @@
 | login throttle の再起動耐性 | D-04, D-11 | in-memory `ConcurrentDictionary` のみ |
 | 監査イベントの残件 | D-08 | login success/failure と body view は永続化済み。logout / session expired / login rate limited、retention sweep、network identifier hash 化は未実装 |
 
-**実装ステータス（2026-07-02）:** Phase 1（durable session、SQLite throttle、auth 監査イベント、network identifier hash 化）は実装済み。Phase 2（per-admin tenant scope）と Phase 3（audit retention sweep）は未実装。詳細は [ADR 0013 実装ステータス表](0013-admin-threat-model-and-pii-policy.md#実装ステータス2026-07-02-時点) を参照。
+**実装ステータス（2026-07-03）:** Phase 1（durable session、SQLite throttle、auth 監査イベント、network identifier hash 化）と Phase 2（per-admin tenant scope、scoped / break-glass 認可、multi-tenant fail-closed）は実装済み。Phase 3（audit retention sweep）は未実装。詳細は [ADR 0013 実装ステータス表](0013-admin-threat-model-and-pii-policy.md#実装ステータス2026-07-03-時点) を参照。
 
 [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) で audit 永続化の基盤（`admin_audit_events` テーブル、login/body view 記録）は完了した。本 ADR は**残りの Admin 基盤強化を広い実装に入る前に凍結する設計判断**を記録する。
 
@@ -67,7 +67,7 @@
 |------|------|
 | データモデル | `admin_users`（username、password hash、disabled、credential_epoch、is_break_glass）、`admin_user_tenant_scopes`（admin_id、tenant_id） |
 | 認可 | 一覧・詳細・本文・再送・キャンセルは scoped tenant のみ。DB backup は break-glass または全 tenant scope のみ（ADR 0013 D-09） |
-| bootstrap | 初回 migration で env の username/hash から 1 行を seed。以降は CLI `admin user` サブコマンドで追加（実装 issue で詳細化） |
+| bootstrap | 初回 migration で env の username/hash から 1 行を seed（`is_break_glass=false`、設定済み全 tenant scope）。以降の env hash 変更は password 同期のみ（scope は自動拡張しない）。scoped / break-glass 追加は `admin user create` CLI（[runbook](../ops/local-mailer-docker-runbook.md#admin-tenant-scope-運用) 参照） |
 | 失効 | tenant scope 変更時は対象管理者の全 session を即時失効（ADR 0013 D-04） |
 
 **Phase 2 に含めない:**
@@ -215,7 +215,7 @@ Phase 1〜3 の実装 issue は、上記タイトル案に加え、該当フェ�
 - _negative:_ Phase 1 で migration 3 表 + session 検証が増え、Admin 基盤の複雑さが上がる。
 - _negative:_ Phase 2 の multi-admin は bootstrap / CLI / 運用 runbook の更新が必要。
 - _neutral:_ 単一 tenant ローカル開発は Phase 2 完了まで現行 env 管理者モデルを維持できる。
-- _operational:_ **2+ tenant が DB または設定に存在する環境では、Phase 2 完了前の Admin 有効化を許可しない**（blocker）。単一 tenant 専用 Mailer で Phase 1 のみ先行する場合は、session/throttle の既知 limitation を SECURITY.md に明記する（実装 PR で更新）。
+- _operational:_ shared multi-tenant + Admin 有効化時は scoped または break-glass 管理者の用意と bootstrap 管理者の継続利用回避を runbook に明記する（Phase 2 完了。`admin user` CLI は follow-up）。
 - _operational:_ hash 鍵と DB 履歴 tenant の運用境界は D-06 と Phase 1/2 受け入れ条件に落とし込み済み。別 issue は不要（実装 PR で runbook を更新する）。
 
 ## References

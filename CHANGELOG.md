@@ -11,6 +11,49 @@ NuGet package versions (`Amane.Mailer.Contracts`), and OpenAPI `info.version` ar
 kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 `docs/service-spec.md` for details.
 
+## [0.2.0] - 2026-07-03
+
+### Added
+
+- Admin tenant-scope authorization for multi-user operators (#91).
+- Admin manual retry and manual cancel for queued, processing, failed, and
+  dead-lettered mail requests per ADR 0015 (#100, #101).
+- `Cancelled` worker delivery status (internal DB value 5) with migration 007.
+- `admin user` CLI for scoped and break-glass Admin user creation (#131).
+- Release-critical gates on the publish-image workflow (#120).
+
+### Security
+
+- Exclude tenant secrets and backup paths from the Docker build context (#117).
+- Mask subject and reply-to PII consistently in Admin masked mode (#118).
+- Sync README, SECURITY, and Admin runbooks with current Admin security posture
+  (#119).
+
+### Changed
+
+- Reduce `linux/arm64` Docker smoke frequency to `main` push and
+  `workflow_dispatch` only.
+- Update Dependabot GitHub Actions dependencies.
+- Document `develop` branch protection policy.
+
+### Documentation
+
+- Clarify Admin tenant-scope operational boundaries (#121).
+- Document metadata value secret policy in OpenAPI, Contracts README, and
+  service spec (#122).
+- Expand public release evidence and restore-verification guidance.
+
+### Breaking / Migration
+
+- **DB migration 007** expands `mail_requests.status` to allow `Cancelled` (5).
+  Existing SQLite databases apply this automatically at startup. Operators
+  upgrading from v0.1.1 should allow a normal restart; no manual SQL is
+  required.
+- **Admin-only behavior**: manual retry/cancel and tenant scope apply to the
+  experimental Admin UI and CLI only. The public `POST /internal/mail-requests`
+  HTTP contract shape and acceptance semantics are unchanged; OpenAPI
+  `info.version` bumps with the service release.
+
 ## [0.1.1] - 2026-06-27
 
 ### Fixed

@@ -45,9 +45,12 @@ after publishing a release, verify and record the following items.
   smoke results.
 - Admin UI is disabled by default, internal-network-only, and experimental.
   State current limitations such as durable session, durable throttle, durable
-  audit, and per-admin tenant scope gaps.
+  audit, tenant scope operational boundaries, and retention sweep.
 - Take a backup of the SQLite DB and tenant config before upgrade / migration,
   and verify the restore procedure for production.
+- For GHCR image publish, confirm `publish-image.yml` release-critical validation
+  (restore / build / test, OpenAPI validation, contract drift, version alignment)
+  passed before image push.
 - ACS live sending requires explicit configuration. Send live mail only when
   `MAILER_PROVIDER=acs`, `ACS_CONNECTION_STRING`, a `live_sending=true` tenant,
   and ACS-approved sender/domain configuration are all in place.

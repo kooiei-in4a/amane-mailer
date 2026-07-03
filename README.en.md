@@ -67,7 +67,9 @@ In production, use a reverse proxy, firewall, or Docker port publish restriction
 
 - Login throttle is SQLite-backed (lock state survives process restart)
 - Durable server-side session store (credential-hash change revocation, explicit logout, expiry, concurrent session limit)
-- No per-admin tenant scope (single `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`)
+- Per-admin tenant scope is implemented (`admin_users` / `admin_user_tenant_scopes`). Scoped admins can view and operate only allowed tenants. Break-glass admins can access all tenants (enhanced audit). When two or more effective tenants exist and Admin is enabled, startup fails closed unless at least one scoped or break-glass admin exists
+- The env bootstrap admin (`AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`) is seeded into `admin_users` on first database creation with **all configured tenant scopes** (`is_break_glass=false`; **not** treated as break-glass). In multi-tenant production, avoid relying on the bootstrap admin; provision per-tenant scoped admins instead ([runbook](docs/ops/local-mailer-docker-runbook.en.md#admin-tenant-scope-operations))
+- Scoped / break-glass admins are created with `admin user create` (generate hashes with `admin hash-password`)
 - Audit log persists body-view and auth events (login, logout, session expired, account locked, login rate limited) to `admin_audit_events` (stdout mirror). Retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`)
 - When `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, raw IP addresses are not stored in the database; keyed hashes are used instead (startup fail-closed when the key is unset)
 
@@ -90,7 +92,7 @@ Operational runbooks:
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
 
-To smoke the published GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.1.1`)
+To smoke the published GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.2.0`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
 run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
@@ -98,7 +100,7 @@ run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration.
 
-The published GHCR runtime image for the default `v0.1.1` tag is
+The published GHCR runtime image for the default `v0.2.0` tag is
 **`linux/amd64` only**. On Apple Silicon or ARM Linux hosts, you can smoke that
 tag only when Docker Desktop or the Docker engine can run amd64 images through
 emulation, for example with
@@ -198,8 +200,9 @@ For the Consumer app compose network setup, see the comments in [infra/deploy/co
 
 Work flows `feature/**` / `fix/**` → `develop` → `main`. After each `main`
 merge, sync `main` back into `develop` manually. CI is weighted by branch path:
-feature pushes run build/test only, `develop` adds OpenAPI validation, and PRs
-to `main` run full CI including Native AOT and amd64/arm64 Docker. See
+feature pushes run build/test only, PRs to `develop` add OpenAPI validation and
+Native AOT publish smoke, and PRs to `main` run full CI including amd64 Docker
+and compose smoke (arm64 Docker on `main` push). See
 [Branch strategy and CI weighting](docs/ops/branch-and-ci-workflow.en.md)
 [(ja)](docs/ops/branch-and-ci-workflow.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 

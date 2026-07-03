@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Microsoft.AspNetCore.Antiforgery;
 
 namespace Amane.Mailer.Admin;
 
@@ -16,6 +17,7 @@ public static class AdminDeadLettersPage
         AdminUserRepository userRepository,
         AdminDeadLetterCountCache deadLetterCountCache,
         MailerAdminOptions options,
+        IAntiforgery antiforgery,
         CancellationToken cancellationToken)
     {
         var access = await userRepository.GetTenantAccessAsync(
@@ -50,8 +52,9 @@ public static class AdminDeadLettersPage
             cancellationToken);
 
         context.Response.Headers.CacheControl = "no-store";
+        var csrfToken = antiforgery.GetAndStoreTokens(context).RequestToken ?? string.Empty;
         return Results.Content(
-            RenderHtml(page, deadLetterCount, cursorValue, options),
+            RenderHtml(page, deadLetterCount, cursorValue, options, csrfToken),
             "text/html; charset=utf-8");
     }
 
@@ -59,7 +62,8 @@ public static class AdminDeadLettersPage
         AdminDeadLetterListPage page,
         int deadLetterCount,
         string? currentCursor,
-        MailerAdminOptions options)
+        MailerAdminOptions options,
+        string csrfToken)
     {
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(html, "Dead Letters - Amane Admin", AdminNavItem.DeadLetters, deadLetterCount);
@@ -95,7 +99,7 @@ public static class AdminDeadLettersPage
         {
             foreach (var item in page.Items)
             {
-                AppendRow(html, item, options);
+                AppendRow(html, item, options, csrfToken);
             }
         }
 
@@ -110,7 +114,11 @@ public static class AdminDeadLettersPage
         return html.ToString();
     }
 
-    private static void AppendRow(StringBuilder html, AdminDeadLetterListRow item, MailerAdminOptions options)
+    private static void AppendRow(
+        StringBuilder html,
+        AdminDeadLetterListRow item,
+        MailerAdminOptions options,
+        string csrfToken)
     {
         html.AppendLine("                  <tr>");
         html.Append("                    <td><a href=\"/admin/mail-requests/");
@@ -129,7 +137,14 @@ public static class AdminDeadLettersPage
         html.Append("                      <a class=\"action-link\" href=\"/admin/mail-requests/");
         html.Append(Html(item.Id.ToString("D")));
         html.AppendLine("\">詳細</a>");
-        html.AppendLine("                      <button type=\"button\" class=\"action-button action-button-disabled\" disabled title=\"手動再送は未実装です\">再送する</button>");
+        html.Append("                      <form method=\"post\" action=\"/admin/mail-requests/");
+        html.Append(Html(item.Id.ToString("D")));
+        html.AppendLine("/retry\" class=\"inline-form\">");
+        html.Append("                        <input type=\"hidden\" name=\"__RequestVerificationToken\" value=\"");
+        html.Append(Html(csrfToken));
+        html.AppendLine("\">");
+        html.AppendLine("                        <button type=\"submit\" class=\"action-button\">再送する</button>");
+        html.AppendLine("                      </form>");
         html.AppendLine("                    </td>");
         html.AppendLine("                  </tr>");
     }

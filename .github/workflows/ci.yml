@@ -2,7 +2,7 @@ name: CI
 
 # CI tiers (single workflow + job-level `if`; job names unchanged for branch protection):
 # - feature/** / fix/** push: build-test only
-# - develop push or PR targeting develop: build-test + openapi-validation
+# - develop push or PR targeting develop: build-test + openapi-validation + native-aot-smoke
 # - PR targeting main: release-gate CI (incl. Native AOT, amd64 Docker)
 # - main push, workflow_dispatch: final CI (incl. Native AOT, amd64/arm64 Docker)
 # Fail-secure: workflow_dispatch and unrecognized paths use final CI when triggered.
@@ -59,7 +59,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
-      github.base_ref == 'main'
+      github.base_ref == 'main' ||
+      github.base_ref == 'develop'
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
