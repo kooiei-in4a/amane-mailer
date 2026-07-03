@@ -48,6 +48,18 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton(provider =>
             MailerRetentionOptions.Load(provider.GetRequiredService<IConfiguration>()));
 
+        services.AddSingleton(provider =>
+        {
+            var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
+            var options = MailerAdminAuditRetentionOptions.Load(resolvedConfiguration);
+            if (resolvedConfiguration.GetValue("Mailer:Worker:Enabled", true))
+            {
+                options.Validate();
+            }
+
+            return options;
+        });
+
         services.AddSingleton<WorkerServiceStatus>();
 
         services.AddSingleton(provider =>
@@ -88,6 +100,7 @@ public static class AmaneMailerServiceCollectionExtensions
         {
             services.AddHostedService<MailRequestSweepService>();
             services.AddHostedService<RetentionService>();
+            services.AddHostedService<AdminAuditRetentionService>();
             services.AddHostedService<MailerWalCheckpointShutdownService>();
             services.AddHostedService<MailRequestWorker>();
         }
