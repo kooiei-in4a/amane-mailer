@@ -100,14 +100,11 @@ run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration.
 
-The published GHCR runtime image for the default `v0.2.0` tag is
-**`linux/amd64` only**. On Apple Silicon or ARM Linux hosts, you can smoke that
-tag only when Docker Desktop or the Docker engine can run amd64 images through
-emulation, for example with
-`MAILER_IMAGE_PLATFORM=linux/amd64 bash scripts/release-smoke.sh`. For
-multi-arch releases, confirm the platform / runtime manifest digest in the
-Docker manifest or release notes, then smoke each target platform with
-`MAILER_IMAGE_PLATFORM=linux/amd64` or `MAILER_IMAGE_PLATFORM=linux/arm64`.
+The published GHCR runtime image for the default `v0.2.0` tag is **multi-arch**
+(`linux/amd64` and `linux/arm64`). For smoke runs, confirm the platform in the
+release notes or Docker manifest, then set `MAILER_IMAGE_PLATFORM=linux/amd64` or
+`MAILER_IMAGE_PLATFORM=linux/arm64`. On hosts that can only run amd64 through
+emulation, pin `linux/amd64` explicitly.
 
 ```bash
 bash scripts/release-smoke.sh

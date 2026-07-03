@@ -94,12 +94,10 @@ conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（L
 `scripts/release-smoke.ps1`（Windows / PowerShell + Docker Desktop）を使います。手順と設定は
 [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
 
-既定タグ `v0.2.0` の公開 GHCR runtime image は **`linux/amd64` only** です。Apple Silicon /
-ARM Linux ホストでは、Docker Desktop などの amd64 emulation が使える場合に限り
-`MAILER_IMAGE_PLATFORM=linux/amd64 bash scripts/release-smoke.sh` のように明示して検証できます。
-multi-arch release では Docker manifest または release notes の platform / runtime manifest digest
-を確認し、対象 platform ごとに `MAILER_IMAGE_PLATFORM=linux/amd64` または
-`MAILER_IMAGE_PLATFORM=linux/arm64` を指定して smoke してください。
+既定タグ `v0.2.0` の公開 GHCR runtime image は **multi-arch**（`linux/amd64` と
+`linux/arm64`）です。smoke では release notes または Docker manifest の platform を確認し、
+`MAILER_IMAGE_PLATFORM=linux/amd64` または `MAILER_IMAGE_PLATFORM=linux/arm64` を指定してください。
+amd64 emulation のみ利用可能なホストでは `linux/amd64` を明示してください。
 
 ```bash
 bash scripts/release-smoke.sh
