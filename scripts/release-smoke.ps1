@@ -276,11 +276,11 @@ function Invoke-DockerComposeQuiet {
 
 function Remove-ReleaseSmokeVolumeIfPresent {
     $volumeName = "${ReleaseSmokeProject}_mailer-data"
-    & docker volume inspect $volumeName 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { return }
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
+        & docker volume inspect $volumeName 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { return }
         & docker volume rm $volumeName 2>&1 | Out-Null
     }
     finally {
