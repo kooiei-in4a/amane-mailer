@@ -108,6 +108,132 @@ public sealed class AdminAuditRepositoryTests
                 ct));
     }
 
+    [Fact]
+    public async Task List_for_admin_filters_mail_request_events_by_tenant_scope()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await AuditTestDatabase.CreateAsync(ct);
+        var repository = new AdminAuditRepository(db.Factory);
+
+        var visibleTenantId = Guid.Parse("00000000-0000-0000-0000-000000000101");
+        var hiddenTenantId = Guid.Parse("00000000-0000-0000-0000-000000000202");
+        var visibleMailRequestId = Guid.NewGuid();
+        var hiddenMailRequestId = Guid.NewGuid();
+        await SeedMailRequestAsync(db.ConnectionString, visibleMailRequestId, visibleTenantId, ct);
+        await SeedMailRequestAsync(db.ConnectionString, hiddenMailRequestId, hiddenTenantId, ct);
+
+        var occurredAt = new DateTimeOffset(2026, 6, 27, 12, 0, 0, TimeSpan.Zero);
+        await repository.WriteAsync(
+            NewMailRequestAuditEvent(visibleMailRequestId, occurredAt, "scoped-visible"),
+            ct);
+        await repository.WriteAsync(
+            NewMailRequestAuditEvent(hiddenMailRequestId, occurredAt.AddMinutes(1), "scoped-hidden"),
+            ct);
+        await repository.WriteAsync(
+            NewAuthAuditEvent(AdminAuditLog.EventTypes.Logout, "scoped-auth", occurredAt.AddMinutes(2)),
+            ct);
+
+        var scopedTenants = new HashSet<Guid> { visibleTenantId };
+        var page = await repository.ListForAdminAsync(
+            new AdminAuditListQuery { AllowedTenantIds = scopedTenants, PageSize = 50 },
+            ct);
+
+        Assert.Equal(2, page.Items.Count);
+        Assert.Contains(page.Items, row => row.Actor == "scoped-visible");
+        Assert.Contains(page.Items, row => row.Actor == "scoped-auth");
+        Assert.DoesNotContain(page.Items, row => row.Actor == "scoped-hidden");
+    }
+
+    [Fact]
+    public async Task List_for_admin_applies_event_type_and_actor_filters()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await AuditTestDatabase.CreateAsync(ct);
+        var repository = new AdminAuditRepository(db.Factory);
+
+        var occurredAt = new DateTimeOffset(2026, 6, 27, 13, 0, 0, TimeSpan.Zero);
+        await repository.WriteAsync(NewAuthAuditEvent(AdminAuditLog.EventTypes.Logout, "alpha", occurredAt), ct);
+        await repository.WriteAsync(
+            NewAuthAuditEvent(AdminAuditLog.EventTypes.SessionExpired, "alpha", occurredAt.AddMinutes(1)),
+            ct);
+
+        var page = await repository.ListForAdminAsync(
+            new AdminAuditListQuery
+            {
+                EventType = AdminAuditLog.EventTypes.Logout,
+                Actor = "alpha",
+                PageSize = 50,
+            },
+            ct);
+
+        var row = Assert.Single(page.Items);
+        Assert.Equal(AdminAuditLog.EventTypes.Logout, row.EventType);
+        Assert.Equal("alpha", row.Actor);
+    }
+
+    private static AdminAuditEvent NewMailRequestAuditEvent(
+        Guid mailRequestId,
+        DateTimeOffset occurredAt,
+        string actor) =>
+        new()
+        {
+            EventType = AdminAuditLog.EventTypes.ManualCancelRequested,
+            Actor = actor,
+            OccurredAt = occurredAt,
+            TargetType = AdminAuditLog.TargetTypes.MailRequest,
+            TargetId = mailRequestId.ToString("D"),
+            Result = AdminAuditLog.Results.Success,
+        };
+
+    private static AdminAuditEvent NewAuthAuditEvent(
+        string eventType,
+        string actor,
+        DateTimeOffset occurredAt) =>
+        new()
+        {
+            EventType = eventType,
+            Actor = actor,
+            OccurredAt = occurredAt,
+            TargetType = AdminAuditLog.TargetTypes.AdminSession,
+            Result = AdminAuditLog.Results.Success,
+        };
+
+    private static async Task SeedMailRequestAsync(
+        string connectionString,
+        Guid id,
+        Guid tenantId,
+        CancellationToken cancellationToken)
+    {
+        var now = new DateTimeOffset(2026, 6, 27, 0, 0, 0, TimeSpan.Zero);
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO mail_requests (
+                id, tenant_id, source_service, mail_request_id, purpose,
+                payload_json, payload_hash, subject, html_body, recipient_email,
+                status, attempt_count, max_attempts, last_error_message,
+                accepted_at, created_at, updated_at, completed_at, failed_at)
+            VALUES (
+                @Id, @TenantId, @SourceService, @MailRequestId, 'AuditRepoTest',
+                '{}', @PayloadHash, @Subject, NULL, @RecipientEmail,
+                @Status, 1, 3, NULL,
+                @AcceptedAt, @CreatedAt, @UpdatedAt, NULL, NULL);
+            """;
+        command.Parameters.AddWithValue("@Id", id.ToString("D"));
+        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+        command.Parameters.AddWithValue("@SourceService", "audit-repo-test");
+        command.Parameters.AddWithValue("@MailRequestId", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@PayloadHash", new string('b', 64));
+        command.Parameters.AddWithValue("@Subject", "repo test subject");
+        command.Parameters.AddWithValue("@RecipientEmail", "repo-test@example.com");
+        command.Parameters.AddWithValue("@Status", (int)MailRequestState.Queued);
+        command.Parameters.AddWithValue("@AcceptedAt", SqliteTime.ToStorageUtc(now));
+        command.Parameters.AddWithValue("@CreatedAt", SqliteTime.ToStorageUtc(now));
+        command.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private static AdminAuditEvent NewEvent(string actor, DateTimeOffset occurredAt) =>
         new()
         {

@@ -1,3 +1,5 @@
+using System.Text;
+using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite.Models;
 using Microsoft.Data.Sqlite;
 
@@ -78,44 +80,181 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
         int limit,
         CancellationToken cancellationToken = default)
     {
-        var boundedLimit = Math.Clamp(limit, 1, 500);
+        var page = await ListForAdminAsync(
+            new AdminAuditListQuery { PageSize = Math.Clamp(limit, 1, 500) },
+            cancellationToken);
+        return page.Items;
+    }
 
-        const string sql = """
-            SELECT
-                id, event_type, actor, occurred_at,
-                source_ip, user_agent_summary,
-                target_type, target_id, field_name,
-                result, error_code
-            FROM admin_audit_events
-            ORDER BY occurred_at DESC, id DESC
-            LIMIT @Limit;
-            """;
+    public async Task<AdminAuditListPage> ListForAdminAsync(
+        AdminAuditListQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        var pageSize = Math.Clamp(query.PageSize, 1, 50);
+        var limit = pageSize + 1;
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.Parameters.AddWithValue("@Limit", boundedLimit);
 
-        var rows = new List<AdminAuditEventRow>(boundedLimit);
+        var where = new StringBuilder("WHERE 1 = 1");
+        AppendListFilters(where, command, query);
+        AppendAuditTenantScopeFilter(where, command, query.AllowedTenantIds);
+
+        if (query.CursorOccurredAt is not null && query.CursorId is not null)
+        {
+            where.AppendLine();
+            where.Append("  AND (ae.occurred_at < @CursorOccurredAt OR (ae.occurred_at = @CursorOccurredAt AND ae.id < @CursorId))");
+            command.Parameters.AddWithValue("@CursorOccurredAt", query.CursorOccurredAt);
+            command.Parameters.AddWithValue("@CursorId", query.CursorId.Value);
+        }
+
+        command.CommandText = $"""
+            SELECT
+                ae.id, ae.event_type, ae.actor, ae.occurred_at,
+                ae.source_ip, ae.user_agent_summary,
+                ae.target_type, ae.target_id, ae.field_name,
+                ae.result, ae.error_code
+            FROM admin_audit_events ae
+            {where}
+            ORDER BY ae.occurred_at DESC, ae.id DESC
+            LIMIT @Limit;
+            """;
+        command.Parameters.AddWithValue("@Limit", limit);
+
+        var rows = new List<AdminAuditEventRow>(limit);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            rows.Add(new AdminAuditEventRow(
-                reader.GetInt64(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                SqliteTime.FromStorage(reader.GetString(3)),
-                reader.IsDBNull(4) ? null : reader.GetString(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5),
-                reader.IsDBNull(6) ? null : reader.GetString(6),
-                reader.IsDBNull(7) ? null : reader.GetString(7),
-                reader.IsDBNull(8) ? null : reader.GetString(8),
-                reader.GetString(9),
-                reader.IsDBNull(10) ? null : reader.GetString(10)));
+            rows.Add(ReadAuditEventRow(reader));
         }
 
-        return rows;
+        string? nextCursor = null;
+        if (rows.Count > pageSize)
+        {
+            var last = rows[pageSize - 1];
+            nextCursor = AdminAuditEventCursor.Encode(last.OccurredAt, last.Id);
+            rows.RemoveRange(pageSize, rows.Count - pageSize);
+        }
+
+        return new AdminAuditListPage(rows, nextCursor);
     }
+
+    public async Task<AdminAuditEventRow?> GetForAdminAsync(
+        long id,
+        IReadOnlySet<Guid>? allowedTenantIds,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+
+        var where = new StringBuilder("WHERE ae.id = @Id");
+        command.Parameters.AddWithValue("@Id", id);
+        AppendAuditTenantScopeFilter(where, command, allowedTenantIds);
+
+        command.CommandText = $"""
+            SELECT
+                ae.id, ae.event_type, ae.actor, ae.occurred_at,
+                ae.source_ip, ae.user_agent_summary,
+                ae.target_type, ae.target_id, ae.field_name,
+                ae.result, ae.error_code
+            FROM admin_audit_events ae
+            {where}
+            LIMIT 1;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+
+        return ReadAuditEventRow(reader);
+    }
+
+    private static void AppendListFilters(
+        StringBuilder where,
+        SqliteCommand command,
+        AdminAuditListQuery query)
+    {
+        if (!string.IsNullOrWhiteSpace(query.EventType))
+        {
+            where.AppendLine();
+            where.Append("  AND ae.event_type = @EventType");
+            command.Parameters.AddWithValue("@EventType", query.EventType);
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Actor))
+        {
+            where.AppendLine();
+            where.Append("  AND ae.actor = @Actor");
+            command.Parameters.AddWithValue("@Actor", query.Actor);
+        }
+
+        if (query.OccurredFrom is not null)
+        {
+            where.AppendLine();
+            where.Append("  AND ae.occurred_at >= @OccurredFrom");
+            command.Parameters.AddWithValue("@OccurredFrom", SqliteTime.ToStorageUtc(query.OccurredFrom.Value));
+        }
+
+        if (query.OccurredToExclusive is not null)
+        {
+            where.AppendLine();
+            where.Append("  AND ae.occurred_at < @OccurredToExclusive");
+            command.Parameters.AddWithValue(
+                "@OccurredToExclusive",
+                SqliteTime.ToStorageUtc(query.OccurredToExclusive.Value));
+        }
+    }
+
+    /// <summary>
+    /// Scoped admins see auth/session events service-wide (no mail tenant PII) and
+    /// mail_request events only when the target row is in an allowed tenant.
+    /// Break-glass passes <paramref name="allowedTenantIds"/> as null (no filter).
+    /// </summary>
+    private static void AppendAuditTenantScopeFilter(
+        StringBuilder where,
+        SqliteCommand command,
+        IReadOnlySet<Guid>? allowedTenantIds)
+    {
+        if (allowedTenantIds is null)
+            return;
+
+        where.AppendLine();
+        if (allowedTenantIds.Count == 0)
+        {
+            where.Append("  AND 1 = 0");
+            return;
+        }
+
+        var parameterNames = new List<string>(allowedTenantIds.Count);
+        var index = 0;
+        foreach (var tenantId in allowedTenantIds.OrderBy(id => id))
+        {
+            var parameterName = "@AllowedTenantId" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            parameterNames.Add(parameterName);
+            command.Parameters.AddWithValue(parameterName, tenantId.ToString("D"));
+            index++;
+        }
+
+        where.Append("  AND (ae.target_type IS NULL OR ae.target_type <> @MailRequestTargetType OR EXISTS (");
+        where.Append("SELECT 1 FROM mail_requests mr WHERE mr.id = ae.target_id AND mr.tenant_id IN (");
+        where.Append(string.Join(", ", parameterNames));
+        where.Append(")))");
+        command.Parameters.AddWithValue("@MailRequestTargetType", AdminAuditLog.TargetTypes.MailRequest);
+    }
+
+    private static AdminAuditEventRow ReadAuditEventRow(SqliteDataReader reader) =>
+        new(
+            reader.GetInt64(0),
+            reader.GetString(1),
+            reader.GetString(2),
+            SqliteTime.FromStorage(reader.GetString(3)),
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5),
+            reader.IsDBNull(6) ? null : reader.GetString(6),
+            reader.IsDBNull(7) ? null : reader.GetString(7),
+            reader.IsDBNull(8) ? null : reader.GetString(8),
+            reader.GetString(9),
+            reader.IsDBNull(10) ? null : reader.GetString(10));
 
     public async Task<int> DeleteOlderThanAsync(
         DateTimeOffset occurredBefore,
