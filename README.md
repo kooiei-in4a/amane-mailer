@@ -187,9 +187,10 @@ Consumer アプリの compose ネットワーク接続例は [infra/deploy/compo
 
 作業は `feature/**` / `fix/**` → `develop` → `main` の順で進めます。`main`
 マージ後は `main` を `develop` に手動同期します。CI はブランチ経路ごとに
-重み付けされ、feature push では build/test のみ、`develop` では OpenAPI 検証
-まで、`main` 向け PR では Native AOT と amd64/arm64 Docker を含むフル CI が
-走ります。詳細は [ブランチ戦略と CI 重み付け](docs/ops/branch-and-ci-workflow.md)
+重み付けされ、feature push では build/test のみ、`develop` 向け PR では OpenAPI
+検証と Native AOT publish smoke まで、`main` 向け PR では amd64 Docker と compose
+smoke を含むフル CI が走ります（arm64 Docker は `main` push）。詳細は
+[ブランチ戦略と CI 重み付け](docs/ops/branch-and-ci-workflow.md)
 [(en)](docs/ops/branch-and-ci-workflow.en.md) と [CONTRIBUTING.md](CONTRIBUTING.md)
 を参照してください。
 

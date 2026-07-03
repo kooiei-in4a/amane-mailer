@@ -38,7 +38,7 @@ Job names are unchanged so branch protection required status checks stay aligned
 | Trigger | Jobs run |
 |---------|----------|
 | Push to `feature/**` / `fix/**` | `Restore, build, and test` only |
-| Push to `develop`, or PR targeting `develop` | Above + `OpenAPI validation` |
+| Push to `develop`, or PR targeting `develop` | Above + `OpenAPI validation`; PRs also run `Native AOT publish smoke` |
 | PR targeting `main` | Release-gate CI (Native AOT, amd64 Docker, compose smoke, OpenAPI) |
 | Push to `main`, `workflow_dispatch` | Final CI (above + arm64 Docker) |
 
@@ -55,11 +55,13 @@ so it runs only on `main` push and `workflow_dispatch` final CI.
 
 ### Intended trade-off
 
-Native AOT and Docker smoke are minimized on `develop` and feature branches.
-Native AOT or amd64 Docker failures may therefore appear **for the first time on
-a PR to `main`**. arm64 Docker failures may appear **for the first time on the
-post-merge push to `main`**. That is intentional: release PRs stay faster while
-the final `main` commit still receives multi-arch Docker coverage.
+Docker smoke is minimized on `develop` and feature branches. `Native AOT publish
+smoke` runs on PRs targeting `develop` (not on direct pushes to `develop` or
+feature-branch pushes). amd64 Docker failures may therefore appear **for the
+first time on a PR to `main`**. arm64 Docker failures may appear **for the
+first time on the post-merge push to `main`**. That is intentional: release PRs
+stay faster while the final `main` commit still receives multi-arch Docker
+coverage.
 
 Ambiguous paths fail secure toward final CI (for example `workflow_dispatch`).
 

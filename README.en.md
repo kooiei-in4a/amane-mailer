@@ -200,8 +200,9 @@ For the Consumer app compose network setup, see the comments in [infra/deploy/co
 
 Work flows `feature/**` / `fix/**` → `develop` → `main`. After each `main`
 merge, sync `main` back into `develop` manually. CI is weighted by branch path:
-feature pushes run build/test only, `develop` adds OpenAPI validation, and PRs
-to `main` run full CI including Native AOT and amd64/arm64 Docker. See
+feature pushes run build/test only, PRs to `develop` add OpenAPI validation and
+Native AOT publish smoke, and PRs to `main` run full CI including amd64 Docker
+and compose smoke (arm64 Docker on `main` push). See
 [Branch strategy and CI weighting](docs/ops/branch-and-ci-workflow.en.md)
 [(ja)](docs/ops/branch-and-ci-workflow.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
