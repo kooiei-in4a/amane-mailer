@@ -121,6 +121,48 @@ public sealed class MailerAdminUserCliTests
     }
 
     [Fact]
+    public async Task Admin_user_create_command_accepts_inline_configuration_args()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = CreateTempRoot();
+        var databasePath = Path.Combine(root, "mailer.db");
+        var configuration = BuildConfiguration(root);
+        const string username = "inline-config-admin";
+        var passwordHash = AdminPasswordHasher.Hash("password-for-inline-config");
+
+        try
+        {
+            await MigrateAsync(configuration, ct);
+            var exitCode = await MailerCliHost.RunAdminUserCreateAsync(
+                configuration,
+                [
+                    "admin", "user", "create",
+                    "--username", username,
+                    "--password-hash", passwordHash,
+                    "--tenant-id", TenantA.ToString("D"),
+                    $"ConnectionStrings:Mailer=Data Source={databasePath}",
+                ],
+                new StringWriter(),
+                new StringWriter(),
+                ct);
+
+            Assert.Equal(AdminUserCreateCommand.SuccessExitCode, exitCode);
+
+            var access = await new AdminUserRepository(
+                    new SqliteConnectionFactory(configuration),
+                    TimeProvider.System)
+                .GetTenantAccessAsync(username, ct);
+
+            Assert.NotNull(access);
+            Assert.Contains(TenantA, access.TenantIds);
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [Fact]
     public async Task Admin_user_create_command_revokes_sessions_when_scoped_user_is_updated()
     {
         var ct = TestContext.Current.CancellationToken;

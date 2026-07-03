@@ -58,9 +58,17 @@ effective tenant が 2 件以上かつ Admin 有効時、有効な scoped admin 
 1. パスワード hash を生成する（平文パスワードは stdout に出さない）:
 
 ```powershell
-$hash = "your-password" |
+$adminPassword = [System.Net.NetworkCredential]::new(
+  "",
+  (Read-Host "Mailer admin password" -AsSecureString)
+).Password
+$hash = @($adminPassword, $adminPassword) |
   docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer admin hash-password 2>$null |
   Select-Object -Last 1
+
+if ($hash -notlike "pbkdf2:sha256:*") {
+  throw "Failed to generate AMANE_ADMIN_PASSWORD_HASH."
+}
 ```
 
 2. scoped 管理者を作成する（`--tenant-id` は 1 件以上、複数指定可）:

@@ -96,7 +96,8 @@ if (AdminHashPasswordCommand.IsAdminHashPasswordCommand(commandArgs))
         Console.Error);
 }
 
-if (AdminUserCreateCommand.IsAdminUserCreateCommand(commandArgs))
+var adminUserCommandArgs = MailerCliHost.FilterConfigurationArgs(commandArgs);
+if (AdminUserCreateCommand.IsAdminUserCreateCommand(adminUserCommandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
     return await MailerCliHost.RunAdminUserCreateAsync(
