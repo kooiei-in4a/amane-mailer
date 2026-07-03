@@ -45,7 +45,8 @@ after publishing a release, verify and record the following items.
   smoke results.
 - Admin UI is disabled by default, internal-network-only, and experimental.
   State current limitations such as durable session, durable throttle, durable
-  audit, and per-admin tenant scope gaps.
+  audit, tenant scope operational boundaries, missing `admin user` CLI, and
+  retention sweep.
 - Take a backup of the SQLite DB and tenant config before upgrade / migration,
   and verify the restore procedure for production.
 - ACS live sending requires explicit configuration. Send live mail only when
