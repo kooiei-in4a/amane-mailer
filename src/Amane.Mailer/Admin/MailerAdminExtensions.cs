@@ -28,6 +28,16 @@ public static class MailerAdminExtensions
         services.AddSingleton<AdminUserRepository>();
         services.AddSingleton<AdminLoginThrottleRepository>();
         services.AddSingleton<AdminDeadLetterCountCache>();
+        services.AddSingleton(provider =>
+        {
+            var configuration = provider.GetRequiredService<IConfiguration>();
+            var connections = provider.GetRequiredService<SqliteConnectionFactory>();
+            var adminOptions = provider.GetRequiredService<MailerAdminOptions>();
+            var options = MailerAdminDbOpsOptions.Load(configuration, connections.ConnectionString);
+            options.Validate(adminOptions.Enabled, connections);
+            return options;
+        });
+        services.AddSingleton<AdminDbOpsService>();
 
         // AMANE_ADMIN_ALLOW_HTTP=true drops HTTPS-only constraints for local dev behind no TLS proxy.
         // Production always keeps SecurePolicy.Always and __Host- cookie prefixes.
@@ -122,6 +132,8 @@ public static class MailerAdminExtensions
         app.MapGet("/admin/audit-log", AdminAuditLogPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/audit-log/{id:long}", AdminAuditLogDetailPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/ops", AdminOpsPage.RenderAsync).RequireAuthorization();
+        app.MapPost("/admin/ops/checkpoint", AdminDbOpsHandlers.CheckpointAsync).RequireAuthorization();
+        app.MapPost("/admin/ops/backup", AdminDbOpsHandlers.BackupAsync).RequireAuthorization();
         app.MapGet("/admin/mail-requests/{id}", AdminMailRequestDetailPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/mail-requests/{id}/body", AdminMailRequestBodyPage.RenderAsync).RequireAuthorization();
         app.MapPost("/admin/mail-requests/{id}/retry", AdminMailRequestMutationHandlers.RetryAsync).RequireAuthorization();

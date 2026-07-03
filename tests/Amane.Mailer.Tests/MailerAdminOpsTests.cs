@@ -139,7 +139,7 @@ public sealed class MailerAdminOpsTests(MailerAdminFixture fixture)
         Assert.Contains("mailer.db", html, StringComparison.Ordinal);
         Assert.Contains("bytes", html, StringComparison.Ordinal);
         Assert.Contains("wal", html, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("unavailable on read-only page", html, StringComparison.Ordinal);
+        Assert.Contains("unavailable (DB ops disabled)", html, StringComparison.Ordinal);
         Assert.DoesNotContain("busy=", html, StringComparison.Ordinal);
     }
 
