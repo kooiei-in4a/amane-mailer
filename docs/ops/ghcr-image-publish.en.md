@@ -28,6 +28,10 @@ The image name is derived from `${{ github.repository_owner }}` at publish time.
   workflow fails instead of overwriting it.
 - Branch refs, malformed tags, or runs where the tag commit does not match the
   checked-out commit / workflow event commit fail before publishing.
+- Before image push, the workflow re-runs release-critical validation (`dotnet
+  restore` / `build` / `test`, OpenAPI validation, `scripts/check-contract-drift.mjs`,
+  and tag alignment for Contracts `<Version>` and OpenAPI `info.version`). Publish
+  fails when CI-equivalent checks or contract drift would fail on the tagged commit.
 - Deploy with the immutable `sha-<git-sha>` tag or the digest whenever possible.
 
 ## GitHub Actions permissions
