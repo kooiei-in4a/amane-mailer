@@ -21,9 +21,52 @@ firewall、または Docker port publish 制限をネットワーク境界とし
 
 - login throttle は SQLite 正本（再起動後も lock 維持）
 - server-side session store あり（資格情報 hash 変更時の即時失効、明示 logout、期限切れ、同時 session 上限）
-- 管理者ごとの tenant scope なし（単一 `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`）
+- 管理者ごとの tenant scope あり（scoped / break-glass 認可。2+ effective tenant + Admin 有効時は scoped または break-glass 管理者がいないと startup fail-closed）。env bootstrap 管理者は初回 seed 時に全設定 tenant scope を付与（break-glass ではない）
+- scoped / break-glass 作成 CLI（`admin user`）は未実装（`admin hash-password` のみ）
 - audit retention sweep は未実装（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`）
 - `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は raw IP を DB に保存せず keyed hash を使用（鍵未設定時は startup fail-closed）
+
+## Admin tenant scope 運用
+
+shared Mailer + multi-tenant + Admin 有効時の認可境界と推奨運用です。挙動の正本は `tests/Amane.Mailer.Tests/MailerAdminTenantScopeTests.cs` と [ADR 0014 D-02](../adr/0014-admin-session-tenant-throttle-audit-design.md#d-02-per-admin-tenant-scope-の要否と導入条件) です。
+
+### 用語
+
+| 種別 | DB 上の特徴 | 認可 |
+|------|-------------|------|
+| **scoped admin** | `is_break_glass=0`、`admin_user_tenant_scopes` に 1 件以上 | 許可 tenant の mail request / dead letter のみ。service-wide backup は不可 |
+| **break-glass admin** | `is_break_glass=1`、scope 行なし | 全 tenant 横断。login / 本文閲覧は強化監査 |
+| **bootstrap admin** | env `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH` から **空 DB 初回** seed | 設定済み全 tenant scope を付与（`is_break_glass=0`）。**break-glass ではない** |
+
+### effective tenant 数
+
+`tenants.json` の tenant 件数と `SELECT COUNT(DISTINCT tenant_id) FROM mail_requests` の **大きい方**を用います。設定から tenant を削除しても、DB に 2 件以上の distinct `tenant_id` が残る場合は multi-tenant 扱いです（[restore-verification](restore-verification.md) 参照）。
+
+### startup fail-closed
+
+effective tenant が 2 件以上かつ Admin 有効時、有効な scoped admin または break-glass 管理者が 1 名もいないと Mailer は起動しません。migration `006_admin_users_and_tenant_scopes.sql` 適用後、scoped / break-glass 管理者を用意してから Admin を有効化してください。
+
+### 推奨運用（shared multi-tenant 本番）
+
+1. **bootstrap 管理者の継続利用を避ける。** 初回 seed で全 tenant scope が付与されても break-glass 監査は付きません。
+2. tenant 境界ごとに **scoped admin** を用意する（develop / staging / production の誤閲覧防止）。
+3. service-wide backup を Admin UI から使う場合は、**break-glass** または全 effective tenant scope を持つ管理者を別途用意する。
+4. bootstrap 資格情報はローテーションし、日常運用は scoped 管理者に移行する。
+
+### scoped / break-glass 管理者の作成（現状）
+
+パスワード hash 生成:
+
+```powershell
+docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer admin hash-password
+```
+
+**`admin user` サブコマンドは未実装**です。scoped / break-glass 行の作成はランタイム API（`AdminUserRepository.CreateOrUpdateScopedUserAsync` / `CreateBreakGlassUserAsync`）で行う想定であり、運用向け CLI は follow-up issue で整備します。それまでは:
+
+- **新規 DB + multi-tenant**: 初回起動で bootstrap 管理者が全 scope を持ち fail-closed を通過する。本番運用前に scoped 管理者を追加し、bootstrap を日常利用から外す。
+- **既存 DB**: scoped / break-glass 管理者が未整備のまま 2+ effective tenant で Admin を有効化すると startup 失敗する。管理者追加手段（CLI follow-up またはメンテナンス手順）を先に用意する。
+
+tenant scope 変更時は対象管理者の全 session が即時失効します（ADR 0013 D-04）。
 
 ## Admin audit identifier hash key rotation
 
