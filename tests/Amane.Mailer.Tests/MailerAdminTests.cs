@@ -362,6 +362,30 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     }
 
     [Fact]
+    public async Task Mail_requests_list_masks_short_subject()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var now = new DateTimeOffset(2026, 6, 24, 12, 0, 0, TimeSpan.Zero);
+        await SeedMailRequestAsync(
+            sourceService: MailerWebApplicationFixtureBase.SourceService,
+            status: MailRequestState.Queued,
+            updatedAt: now,
+            recipientEmail: "short@example.com",
+            subject: "Secret",
+            ct);
+
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync("/admin/mail-requests", ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("S***", html, StringComparison.Ordinal);
+        Assert.DoesNotContain(">Secret<", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Mail_requests_list_shows_empty_state()
     {
         var ct = TestContext.Current.CancellationToken;

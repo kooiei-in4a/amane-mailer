@@ -59,12 +59,13 @@ Linux / macOS の bash と curl で Mailpit 到着、冪等再送、conflict ま
 直接公開は想定していません。production では reverse proxy、firewall、または Docker port publish
 制限をネットワーク境界として設定してください。
 
-**現時点の制約（[ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md) の方針に対して未実装）**
+**現時点の制約（[ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md) / [ADR 0014](docs/adr/0014-admin-session-tenant-throttle-audit-design.md)）**
 
-- login throttle は in-memory のみ（プロセス再起動でリセット）
-- server-side session store なし（cookie auth のみ）、管理者無効化・認証情報変更時の即時 session 失効は未実装
+- login throttle は SQLite 正本（再起動後も lock 維持）
+- server-side session store あり（資格情報 hash 変更時の即時失効、明示 logout、期限切れ、同時 session 上限）
 - 管理者ごとの tenant scope なし（単一 `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`）
-- audit log は body view と login 成功/失敗を `admin_audit_events` SQLite テーブルに永続化（stdout にもミラー）。logout / session expired / login rate limited、retention sweep、network identifier の hash 化は未実装（[#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) で追跡中）
+- audit log は body view と auth イベント（login / logout / session expired / account locked / login rate limited）を `admin_audit_events` に永続化（stdout にもミラー）。retention sweep は未実装（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`）
+- `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は raw IP を DB に保存せず keyed hash を使用（鍵未設定時は startup fail-closed）
 
 ## デプロイ時の注意
 
