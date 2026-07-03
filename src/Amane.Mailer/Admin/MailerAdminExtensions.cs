@@ -119,6 +119,8 @@ public static class MailerAdminExtensions
         app.MapGet("/admin/login", RenderLoginPage).AllowAnonymous();
         app.MapGet("/admin/mail-requests", AdminMailRequestsPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/dead-letters", AdminDeadLettersPage.RenderAsync).RequireAuthorization();
+        app.MapGet("/admin/audit-log", AdminAuditLogPage.RenderAsync).RequireAuthorization();
+        app.MapGet("/admin/audit-log/{id:long}", AdminAuditLogDetailPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/ops", AdminOpsPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/mail-requests/{id}", AdminMailRequestDetailPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/mail-requests/{id}/body", AdminMailRequestBodyPage.RenderAsync).RequireAuthorization();

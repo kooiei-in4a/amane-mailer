@@ -34,6 +34,21 @@ public static class AdminAuditLog
         public const string SessionExpired = "auth.session_expired";
         public const string AccountTemporarilyLocked = "auth.account_temporarily_locked";
         public const string LoginRateLimited = "auth.login_rate_limited";
+
+        public static IReadOnlyList<string> All { get; } =
+        [
+            MailRequestBodyViewed,
+            BreakGlassMailRequestBodyViewed,
+            ManualRetryRequested,
+            ManualCancelRequested,
+            LoginSucceeded,
+            BreakGlassLoginSucceeded,
+            LoginFailed,
+            Logout,
+            SessionExpired,
+            AccountTemporarilyLocked,
+            LoginRateLimited,
+        ];
     }
 
     public static class ErrorCodes
