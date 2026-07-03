@@ -22,6 +22,7 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll db stats [--tenant-id <uuid>] [--queued-stale-minutes <minutes>] [--failure-window-minutes <minutes>] [--stale-processing-minutes <minutes>]
       dotnet Amane.Mailer.dll db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>
       dotnet Amane.Mailer.dll admin hash-password
+      dotnet Amane.Mailer.dll admin user create --username <name> --password-hash <pbkdf2> [--tenant-id <uuid> ...] [--break-glass]
 
     Options:
       -h, --help    Show help.
@@ -93,6 +94,17 @@ if (AdminHashPasswordCommand.IsAdminHashPasswordCommand(commandArgs))
         Console.In,
         Console.Out,
         Console.Error);
+}
+
+if (AdminUserCreateCommand.IsAdminUserCreateCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunAdminUserCreateAsync(
+        cliConfiguration,
+        commandArgs,
+        Console.Out,
+        Console.Error,
+        CancellationToken.None);
 }
 
 var builder = WebApplication.CreateBuilder(args);

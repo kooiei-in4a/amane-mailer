@@ -27,6 +27,18 @@ public static class MailerCliHost
         return command.ExecuteAsync(commandArgs, input, output, error);
     }
 
+    public static async Task<int> RunAdminUserCreateAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var factory = new SqliteConnectionFactory(configuration);
+        var command = new AdminUserCreateCommand(factory, TimeProvider.System);
+        return await command.ExecuteAsync(commandArgs, output, error, cancellationToken);
+    }
+
     public static async Task<int> RunHealthCheckAsync(
         IConfiguration configuration,
         CancellationToken cancellationToken)

@@ -69,7 +69,7 @@ In production, use a reverse proxy, firewall, or Docker port publish restriction
 - Durable server-side session store (credential-hash change revocation, explicit logout, expiry, concurrent session limit)
 - Per-admin tenant scope is implemented (`admin_users` / `admin_user_tenant_scopes`). Scoped admins can view and operate only allowed tenants. Break-glass admins can access all tenants (enhanced audit). When two or more effective tenants exist and Admin is enabled, startup fails closed unless at least one scoped or break-glass admin exists
 - The env bootstrap admin (`AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`) is seeded into `admin_users` on first database creation with **all configured tenant scopes** (`is_break_glass=false`; **not** treated as break-glass). In multi-tenant production, avoid relying on the bootstrap admin; provision per-tenant scoped admins instead ([runbook](docs/ops/local-mailer-docker-runbook.en.md#admin-tenant-scope-operations))
-- CLI to create scoped / break-glass admins (`admin user`) is not yet implemented. Only `admin hash-password` is available today
+- Scoped / break-glass admins are created with `admin user create` (generate hashes with `admin hash-password`)
 - Audit log persists body-view and auth events (login, logout, session expired, account locked, login rate limited) to `admin_audit_events` (stdout mirror). Retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`)
 - When `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, raw IP addresses are not stored in the database; keyed hashes are used instead (startup fail-closed when the key is unset)
 

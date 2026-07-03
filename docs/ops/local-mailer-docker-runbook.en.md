@@ -21,7 +21,7 @@ Current limitations ([ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md
 - Login throttle is SQLite-backed (lock state survives process restart)
 - Durable server-side session store (credential-hash change revocation, explicit logout, expiry, concurrent session limit)
 - Per-admin tenant scope is implemented (scoped / break-glass authorization; startup fails closed when two or more effective tenants exist and Admin is enabled but no scoped or break-glass admin exists). The env bootstrap admin receives all configured tenant scopes on first seed (`is_break_glass=false`; not break-glass)
-- CLI to create scoped / break-glass admins (`admin user`) is not yet implemented (`admin hash-password` only)
+- Scoped / break-glass admins are created with `admin user create` (see Admin tenant scope operations)
 - Audit retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`)
 - When `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, raw IP addresses are not stored in the database; keyed hashes are used instead (startup fail-closed when the key is unset)
 
@@ -52,20 +52,37 @@ When the effective tenant count is two or more and Admin is enabled, Mailer refu
 3. For service-wide backup via Admin UI, also provision a **break-glass** admin or an admin with all effective tenant scopes.
 4. Rotate bootstrap credentials and move day-to-day work to scoped admins.
 
-### Creating scoped / break-glass admins (current state)
+### Creating scoped / break-glass admins
 
-Password hash generation:
+1. Generate a password hash (do not echo the plain password to stdout):
 
 ```powershell
-docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer admin hash-password
+$hash = "your-password" |
+  docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer admin hash-password 2>$null |
+  Select-Object -Last 1
 ```
 
-The **`admin user` subcommand is not implemented** yet. Scoped / break-glass rows are intended to be created via runtime APIs (`AdminUserRepository.CreateOrUpdateScopedUserAsync` / `CreateBreakGlassUserAsync`); an operator-facing CLI is tracked as a follow-up issue. Until then:
+2. Create a scoped admin (one or more `--tenant-id` values):
 
-- **New DB + multi-tenant**: first startup seeds the bootstrap admin with all scopes and passes fail-closed. Add scoped admins and stop using bootstrap for routine work before production.
-- **Existing DB**: enabling Admin with two or more effective tenants and no scoped / break-glass admin causes startup failure. Provision an admin-creation path (CLI follow-up or maintenance procedure) first.
+```powershell
+docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer `
+  admin user create `
+  --username tenant-admin-example `
+  --password-hash $hash `
+  --tenant-id 00000000-0000-0000-0000-000000000101
+```
 
-Tenant scope changes revoke all active sessions for the affected admin immediately (ADR 0013 D-04).
+3. Create a break-glass admin (omit `--tenant-id`):
+
+```powershell
+docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer `
+  admin user create `
+  --username break-glass-example `
+  --password-hash $hash `
+  --break-glass
+```
+
+The Mailer container must reference the same SQLite database via `ConnectionStrings__Mailer`. Re-running scoped admin creation for the same username updates tenant scopes and revokes all active sessions for that admin immediately (ADR 0013 D-04).
 
 ## Prerequisites
 

@@ -65,7 +65,7 @@ Linux / macOS の bash と curl で Mailpit 到着、冪等再送、conflict ま
 - server-side session store あり（資格情報 hash 変更時の即時失効、明示 logout、期限切れ、同時 session 上限）
 - 管理者ごとの tenant scope あり（`admin_users` / `admin_user_tenant_scopes`）。scoped admin は許可 tenant のみ閲覧・操作。break-glass 管理者は全 tenant 横断（強化監査）。2 件以上の effective tenant + Admin 有効時は scoped または break-glass 管理者がいないと startup fail-closed
 - env bootstrap 管理者（`AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`）は初回 DB 作成時に `admin_users` へ seed され、**設定済み全 tenant の scope** を付与する（`is_break_glass=false`。**break-glass 扱いではない**）。multi-tenant 本番では bootstrap 管理者の継続利用を避け、tenant 別 scoped 管理者を用意する（[runbook](docs/ops/local-mailer-docker-runbook.md#admin-tenant-scope-運用)）
-- scoped / break-glass 管理者の作成 CLI（`admin user`）は未実装。パスワード hash 生成は `admin hash-password` のみ
+- scoped / break-glass 管理者は `admin user create` で作成（`admin hash-password` で hash 生成）
 - audit log は body view と auth イベント（login / logout / session expired / account locked / login rate limited）を `admin_audit_events` に永続化（stdout にもミラー）。retention sweep は未実装（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`）
 - `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は raw IP を DB に保存せず keyed hash を使用（鍵未設定時は startup fail-closed）
 
