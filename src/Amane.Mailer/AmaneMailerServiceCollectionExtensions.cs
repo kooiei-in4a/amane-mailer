@@ -77,6 +77,8 @@ public static class AmaneMailerServiceCollectionExtensions
         });
 
         services.AddSingleton<SqliteConnectionFactory>();
+        services.AddSingleton<MailerDbStatsReader>();
+        services.AddSingleton<MailerDbStorageInfoReader>();
 
         services.AddSingleton<MailRequestRepository>();
         services.AddSingleton<AdminAuditRepository>();

@@ -329,6 +329,52 @@ body {
   cursor: not-allowed;
 }
 
+.ops-section {
+  padding: 16px;
+  border: 1px solid #d7dbe3;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.ops-heading {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+.ops-meta {
+  margin: 0 0 12px;
+  color: #677182;
+  font-size: 0.85rem;
+}
+
+.ops-empty {
+  margin: 0;
+  color: #677182;
+}
+
+.ops-dl {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.ops-dl dt {
+  margin: 0;
+  color: #424a57;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.ops-dl dd {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.ops-table {
+  min-width: 480px;
+}
+
 @media (max-width: 760px) {
   .admin-has-sidenav .admin-shell {
     grid-template-columns: 1fr;
