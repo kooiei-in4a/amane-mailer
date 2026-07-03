@@ -25,6 +25,8 @@ public static class AdminAuditLog
     {
         public const string MailRequestBodyViewed = "mail_request.body_viewed";
         public const string BreakGlassMailRequestBodyViewed = "mail_request.break_glass_body_viewed";
+        public const string ManualRetryRequested = "mail_request.manual_retry_requested";
+        public const string ManualCancelRequested = "mail_request.manual_cancel_requested";
         public const string LoginSucceeded = "auth.login_succeeded";
         public const string BreakGlassLoginSucceeded = "auth.break_glass_login_succeeded";
         public const string LoginFailed = "auth.login_failed";
@@ -32,6 +34,13 @@ public static class AdminAuditLog
         public const string SessionExpired = "auth.session_expired";
         public const string AccountTemporarilyLocked = "auth.account_temporarily_locked";
         public const string LoginRateLimited = "auth.login_rate_limited";
+    }
+
+    public static class ErrorCodes
+    {
+        public const string NotFound = "not_found";
+        public const string InvalidState = "invalid_state";
+        public const string LockHeld = "lock_held";
     }
 
     public static class Results
