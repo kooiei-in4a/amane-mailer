@@ -67,7 +67,7 @@
 |------|------|
 | データモデル | `admin_users`（username、password hash、disabled、credential_epoch、is_break_glass）、`admin_user_tenant_scopes`（admin_id、tenant_id） |
 | 認可 | 一覧・詳細・本文・再送・キャンセルは scoped tenant のみ。DB backup は break-glass または全 tenant scope のみ（ADR 0013 D-09） |
-| bootstrap | 初回 migration で env の username/hash から 1 行を seed（`is_break_glass=false`、設定済み全 tenant scope）。以降の env hash 変更は password 同期のみ（scope は自動拡張しない）。scoped / break-glass 追加は `admin user` CLI を想定（**未実装**。現状は `admin hash-password` のみ。運用は [runbook](../ops/local-mailer-docker-runbook.md#admin-tenant-scope-運用) 参照） |
+| bootstrap | 初回 migration で env の username/hash から 1 行を seed（`is_break_glass=false`、設定済み全 tenant scope）。以降の env hash 変更は password 同期のみ（scope は自動拡張しない）。scoped / break-glass 追加は `admin user create` CLI（[runbook](../ops/local-mailer-docker-runbook.md#admin-tenant-scope-運用) 参照） |
 | 失効 | tenant scope 変更時は対象管理者の全 session を即時失効（ADR 0013 D-04） |
 
 **Phase 2 に含めない:**

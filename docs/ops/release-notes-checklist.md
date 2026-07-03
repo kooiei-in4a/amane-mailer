@@ -38,7 +38,7 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 - Docker image の対応 platform を Docker manifest と同じ表記で明記する。single-platform release では
   `linux/amd64 only` のように制約を明記し、multi-arch release では platform ごとの digest / smoke 結果を記録する。
 - Admin UI は disabled by default、内部ネットワーク向け、experimental。現時点の
-  limitation（durable session/throttle/audit、tenant scope 運用境界、`admin user` CLI 未実装、retention sweep など）を明記する。
+  limitation（durable session/throttle/audit、tenant scope 運用境界、retention sweep など）を明記する。
 - upgrade / migration 前に SQLite DB と tenant config の backup を取得し、
   production では restore 手順も確認する。
 - GHCR image publish 時は `publish-image.yml` の release-critical validation

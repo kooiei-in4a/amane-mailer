@@ -171,6 +171,5 @@ Current implementation limits:
   configured tenant scopes (`is_break_glass=false`). This is **not** break-glass
   access and does not receive break-glass audit treatment. In shared
   multi-tenant production, do not rely on the bootstrap admin for ongoing
-  operations; provision scoped admins per tenant boundary. Scoped / break-glass
-  user creation CLI (`admin user`) is not yet shipped; `admin hash-password`
-  is available for hash generation only.
+  operations; provision scoped admins per tenant boundary. Use `admin user create`
+  with `admin hash-password` for scoped / break-glass provisioning.

@@ -22,7 +22,7 @@ firewall、または Docker port publish 制限をネットワーク境界とし
 - login throttle は SQLite 正本（再起動後も lock 維持）
 - server-side session store あり（資格情報 hash 変更時の即時失効、明示 logout、期限切れ、同時 session 上限）
 - 管理者ごとの tenant scope あり（scoped / break-glass 認可。2+ effective tenant + Admin 有効時は scoped または break-glass 管理者がいないと startup fail-closed）。env bootstrap 管理者は初回 seed 時に全設定 tenant scope を付与（break-glass ではない）
-- scoped / break-glass 作成 CLI（`admin user`）は未実装（`admin hash-password` のみ）
+- scoped / break-glass 作成 CLI（`admin user create`）あり（`admin hash-password` で hash 生成）
 - audit retention sweep は未実装（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`）
 - `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は raw IP を DB に保存せず keyed hash を使用（鍵未設定時は startup fail-closed）
 
@@ -53,20 +53,45 @@ effective tenant が 2 件以上かつ Admin 有効時、有効な scoped admin 
 3. service-wide backup を Admin UI から使う場合は、**break-glass** または全 effective tenant scope を持つ管理者を別途用意する。
 4. bootstrap 資格情報はローテーションし、日常運用は scoped 管理者に移行する。
 
-### scoped / break-glass 管理者の作成（現状）
+### scoped / break-glass 管理者の作成
 
-パスワード hash 生成:
+1. パスワード hash を生成する（平文パスワードは stdout に出さない）:
 
 ```powershell
-docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer admin hash-password
+$adminPassword = [System.Net.NetworkCredential]::new(
+  "",
+  (Read-Host "Mailer admin password" -AsSecureString)
+).Password
+$hash = @($adminPassword, $adminPassword) |
+  docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer admin hash-password 2>$null |
+  Select-Object -Last 1
+
+if ($hash -notlike "pbkdf2:sha256:*") {
+  throw "Failed to generate AMANE_ADMIN_PASSWORD_HASH."
+}
 ```
 
-**`admin user` サブコマンドは未実装**です。scoped / break-glass 行の作成はランタイム API（`AdminUserRepository.CreateOrUpdateScopedUserAsync` / `CreateBreakGlassUserAsync`）で行う想定であり、運用向け CLI は follow-up issue で整備します。それまでは:
+2. scoped 管理者を作成する（`--tenant-id` は 1 件以上、複数指定可）:
 
-- **新規 DB + multi-tenant**: 初回起動で bootstrap 管理者が全 scope を持ち fail-closed を通過する。本番運用前に scoped 管理者を追加し、bootstrap を日常利用から外す。
-- **既存 DB**: scoped / break-glass 管理者が未整備のまま 2+ effective tenant で Admin を有効化すると startup 失敗する。管理者追加手段（CLI follow-up またはメンテナンス手順）を先に用意する。
+```powershell
+docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer `
+  admin user create `
+  --username tenant-admin-example `
+  --password-hash $hash `
+  --tenant-id 00000000-0000-0000-0000-000000000101
+```
 
-tenant scope 変更時は対象管理者の全 session が即時失効します（ADR 0013 D-04）。
+3. break-glass 管理者を作成する（`--tenant-id` は指定しない）:
+
+```powershell
+docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer `
+  admin user create `
+  --username break-glass-example `
+  --password-hash $hash `
+  --break-glass
+```
+
+Mailer コンテナは `ConnectionStrings__Mailer` で同一 SQLite DB を参照する必要があります。scoped 管理者の再作成（同一 username）は tenant scope を更新し、対象管理者の全 session を即時失効します（ADR 0013 D-04）。
 
 ## Admin audit identifier hash key rotation
 

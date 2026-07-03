@@ -45,8 +45,7 @@ after publishing a release, verify and record the following items.
   smoke results.
 - Admin UI is disabled by default, internal-network-only, and experimental.
   State current limitations such as durable session, durable throttle, durable
-  audit, tenant scope operational boundaries, missing `admin user` CLI, and
-  retention sweep.
+  audit, tenant scope operational boundaries, and retention sweep.
 - Take a backup of the SQLite DB and tenant config before upgrade / migration,
   and verify the restore procedure for production.
 - For GHCR image publish, confirm `publish-image.yml` release-critical validation
