@@ -41,6 +41,9 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
   limitation（durable session/throttle/audit、tenant scope 運用境界、`admin user` CLI 未実装、retention sweep など）を明記する。
 - upgrade / migration 前に SQLite DB と tenant config の backup を取得し、
   production では restore 手順も確認する。
+- GHCR image publish 時は `publish-image.yml` の release-critical validation
+  （restore / build / test、OpenAPI validation、contract drift、version 整合性）が
+  image push 前に通過していることを確認する。
 - ACS live sending は explicit config が必要。`MAILER_PROVIDER=acs`、
   `ACS_CONNECTION_STRING`、`live_sending=true` tenant、ACS で承認済み sender/domain
   が揃う場合だけ実送信する。
