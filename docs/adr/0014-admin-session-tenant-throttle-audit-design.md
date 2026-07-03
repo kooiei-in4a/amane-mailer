@@ -9,12 +9,14 @@
 
 [ADR 0013](0013-admin-threat-model-and-pii-policy.md) は管理画面の脅威モデル、Cookie + PBKDF2 認証、tenant scope、login throttle、監査ログの**目標**を定めた。公開レビュー後も、次のギャップが stricter 環境での採用 blocker として残っている。
 
-| ギャップ | ADR 0013 参照 | 現状（2026-06-28） |
-|----------|---------------|-------------------|
+| ギャップ | ADR 0013 参照 | 現状（2026-06-28 設計時点） |
+|----------|---------------|---------------------------|
 | durable server-side session と即時失効 | D-04, D-11 | ASP.NET Cookie auth のみ。server-side store なし。資格情報変更・無効化時の既存 session 即時失効なし |
 | 管理者ごとの tenant scope | D-10 | 単一 `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH` |
 | login throttle の再起動耐性 | D-04, D-11 | in-memory `ConcurrentDictionary` のみ |
 | 監査イベントの残件 | D-08 | login success/failure と body view は永続化済み。logout / session expired / login rate limited、retention sweep、network identifier hash 化は未実装 |
+
+**実装ステータス（2026-07-02）:** Phase 1（durable session、SQLite throttle、auth 監査イベント、network identifier hash 化）は実装済み。Phase 2（per-admin tenant scope）と Phase 3（audit retention sweep）は未実装。詳細は [ADR 0013 実装ステータス表](0013-admin-threat-model-and-pii-policy.md#実装ステータス2026-07-02-時点) を参照。
 
 [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) で audit 永続化の基盤（`admin_audit_events` テーブル、login/body view 記録）は完了した。本 ADR は**残りの Admin 基盤強化を広い実装に入る前に凍結する設計判断**を記録する。
 

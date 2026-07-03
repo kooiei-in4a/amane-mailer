@@ -181,19 +181,20 @@ PBKDF2 の 600,000 回以上という下限は AOT 互換性・負荷検証で�
 - _operational:_ PII 表示を許す環境では、画面共有、録画、スクリーンショット、ブラウザ拡張、端末ロック、共有アカウント利用を運用ルールで制限する。非マスク一覧や本文表示は「便利機能」ではなく「監査される例外操作」として扱う。
 - _operational:_ backup ファイルは Mailer DB と同等以上に PII を含む。保存先権限、暗号化、世代管理、転送経路、削除確認を運用 runbook に含める。
 
-## 実装ステータス（2026-06-28 時点）
+## 実装ステータス（2026-07-02 時点）
 
-本 ADR は方針・目標・最低要件を定める。以下の項目は現時点で未実装であり、
+本 ADR は方針・目標・最低要件を定める。以下は現時点の実装状況であり、
 ADR の「目標」と「現在の実装」を混同しないよう明記する。
 **follow-up scope・導入条件・実装フェーズは [ADR 0014](0014-admin-session-tenant-throttle-audit-design.md) で凍結済み。**
 
 | 項目 | ADR 参照 | 現状 | 設計 / 追跡 |
 |------|----------|------|-------------|
-| durable login throttle | D-04 | in-memory `ConcurrentDictionary` のみ（プロセス再起動でリセット） | [ADR 0014 D-03](0014-admin-session-tenant-throttle-audit-design.md#d-03-login-throttle-の再起動耐性) Phase 1 |
-| durable server-side session store・session 即時失効 | D-04 | cookie auth のみ（server-side store なし、無効化・認証情報変更時の即時失効なし） | [ADR 0014 D-01](0014-admin-session-tenant-throttle-audit-design.md#d-01-durable-server-side-session-と即時失効の-follow-up-scope) Phase 1 |
+| durable login throttle | D-04 | SQLite 正本 + in-memory cache（再起動後も `locked_until` を尊重） | [ADR 0014 D-03](0014-admin-session-tenant-throttle-audit-design.md#d-03-login-throttle-の再起動耐性) Phase 1 完了 |
+| durable server-side session store・session 即時失効 | D-04 | `admin_sessions` + credential epoch による即時失効、logout、期限切れ、同時 session 上限 | [ADR 0014 D-01](0014-admin-session-tenant-throttle-audit-design.md#d-01-durable-server-side-session-と即時失効の-follow-up-scope) Phase 1 完了 |
 | 管理者ごとの tenant scope | D-10 | 未実装（単一 `AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`） | [ADR 0014 D-02](0014-admin-session-tenant-throttle-audit-design.md#d-02-per-admin-tenant-scope-の要否と導入条件) Phase 2（2+ tenant 同居 + Admin 有効時は blocker） |
-| 管理操作監査ログの SQLite 永続化 | D-08 | body view（fail-closed）と login success/failure を `admin_audit_events` に永続化（stdout にもミラー） | [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) 完了 |
-| 監査 auth 残件・retention・hash 化 | D-08 | logout / session expired / account locked / rate limited、network identifier hash 化は未実装。retention sweep 未実装 | [ADR 0014 D-04](0014-admin-session-tenant-throttle-audit-design.md#d-04-監査-follow-uplogout--session-expired--rate-limited--retention-sweep) Phase 1（auth イベント・hash）/ Phase 3（retention sweep） |
+| 管理操作監査ログの SQLite 永続化 | D-08 | body view（fail-closed）と auth イベント（login / logout / session expired / account locked / login rate limited）を `admin_audit_events` に永続化（stdout にもミラー） | [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) 完了 |
+| 監査 retention sweep | D-08 | 未実装 | [ADR 0014 D-04](0014-admin-session-tenant-throttle-audit-design.md#d-04-監査-follow-uplogout--session-expired--rate-limited--retention-sweep) Phase 3 |
+| network identifier hash 化 | D-08 | `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時に keyed hash（鍵未設定時は startup fail-closed） | [ADR 0014 D-04](0014-admin-session-tenant-throttle-audit-design.md#d-04-監査-follow-uplogout--session-expired--rate-limited--retention-sweep) Phase 1 完了 |
 
 上記未実装項目が残る間、Admin UI は **内部ネットワーク向け・experimental** な位置づけとして運用する（D-02 に準拠）。
 

@@ -59,11 +59,53 @@ public sealed class AdminMailRequestDetailPageRenderTests
         Assert.DoesNotContain("html_body", htmlWithout, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Masked_mode_hides_short_subject_reply_to_and_display_name()
+    {
+        var maskOptions = new MailerAdminOptions
+        {
+            MaskRecipients = true,
+            MaskSubjects = true,
+        };
+        var detail = CreateDetail(
+            subject: "Secret",
+            replyTo: "reply@example.com",
+            recipientDisplayName: "Operator Name");
+
+        var html = AdminMailRequestDetailPage.RenderHtml(detail, [], maskOptions);
+
+        Assert.Contains("S***", html, StringComparison.Ordinal);
+        Assert.Contains("r***@example.com", html, StringComparison.Ordinal);
+        Assert.Contains("t***@example.com", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Secret", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("reply@example.com", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Operator Name", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Masked_mode_truncates_long_subject()
+    {
+        var maskOptions = new MailerAdminOptions
+        {
+            MaskRecipients = true,
+            MaskSubjects = true,
+        };
+        var detail = CreateDetail(subject: "Sensitive Subject ABC");
+
+        var html = AdminMailRequestDetailPage.RenderHtml(detail, [], maskOptions);
+
+        Assert.Contains("Sensitive Su...", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Sensitive Subject ABC", html, StringComparison.Ordinal);
+    }
+
     private static AdminMailRequestDetail CreateDetail(
         MailRequestState status = MailRequestState.Queued,
         DateTimeOffset? lockExpiresAt = null,
         string? htmlBody = null,
-        Guid? id = null)
+        Guid? id = null,
+        string subject = "Test subject",
+        string? replyTo = null,
+        string? recipientDisplayName = null)
     {
         var now = DateTimeOffset.UtcNow;
         return new AdminMailRequestDetail(
@@ -74,12 +116,12 @@ public sealed class AdminMailRequestDetailPageRenderTests
             Purpose: "test",
             PayloadJson: "{}",
             PayloadHash: new string('a', 64),
-            Subject: "Test subject",
+            Subject: subject,
             HtmlBody: htmlBody,
             TextBody: null,
-            ReplyTo: null,
+            ReplyTo: replyTo,
             RecipientEmail: "test@example.com",
-            RecipientDisplayName: null,
+            RecipientDisplayName: recipientDisplayName,
             MetadataJson: null,
             Status: status,
             AttemptCount: 0,

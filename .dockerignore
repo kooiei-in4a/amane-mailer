@@ -10,6 +10,7 @@ artifacts/
 .artifacts/
 .env
 .env.*
+*.env
 *.user
 # Deploy-time secrets and local databases — never include in build context
 infra/deploy/data/
@@ -28,6 +29,21 @@ infra/deploy/tenants.json
 !config/mailer/tenants.example.json
 !config/mailer/tenants.local-acs.json.example
 !config/mailer/tenants.schema.json
+
+# Private tenant config, deploy keys, backups, and rehearsal artifacts — never in build context
+config/mailer/tenants.local*.json
+config/mailer/tenants.production*.json
+infra/deploy/keys/
+infra/deploy/rclone/
+infra/deploy/restore/
+*.db.age
+infra/deploy/compose.acs-drill.yml
+infra/deploy/compose.mail-05a-client.yml
+infra/deploy/compose.worker-disabled.yml
+infra/deploy/mail-05a-work/
+infra/deploy/tenants.acs-drill.json
+infra/deploy/mail-05a-acs-drill.input.json
+infra/deploy/drills/mail-05a-acs-drill.input.json
 
 # Keep generated build outputs excluded after the source re-include rules.
 **/bin/
