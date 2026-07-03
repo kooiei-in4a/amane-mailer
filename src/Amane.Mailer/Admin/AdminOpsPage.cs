@@ -1,9 +1,11 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Worker;
+using Microsoft.AspNetCore.Antiforgery;
 
 namespace Amane.Mailer.Admin;
 
@@ -17,6 +19,9 @@ public static class AdminOpsPage
         MailerDbStatsReader statsReader,
         MailerDbStorageInfoReader storageInfoReader,
         WorkerServiceStatus serviceStatus,
+        MailerAdminDbOpsOptions dbOpsOptions,
+        MailerTenantRegistry tenantRegistry,
+        IAntiforgery antiforgery,
         IConfiguration configuration,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
@@ -26,6 +31,12 @@ public static class AdminOpsPage
             cancellationToken);
         if (access is null)
             return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+        var canRunServiceWideDbOps = dbOpsOptions.Enabled
+            && await userRepository.CanRunServiceWideBackupAsync(
+                access.Username,
+                tenantRegistry.ListTenants().Select(tenant => tenant.TenantId),
+                cancellationToken);
 
         var deadLetterCount = await deadLetterCountCache.GetCountAsync(
             mailRequestRepository,
@@ -42,6 +53,9 @@ public static class AdminOpsPage
 
         var workerEnabled = configuration.GetValue("Mailer:Worker:Enabled", true);
         var readiness = BuildReadiness(storageInfo, serviceStatus, workerEnabled);
+        var csrfToken = dbOpsOptions.Enabled && canRunServiceWideDbOps
+            ? HtmlEncoder.Default.Encode(antiforgery.GetAndStoreTokens(context).RequestToken ?? string.Empty)
+            : null;
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
@@ -52,6 +66,9 @@ public static class AdminOpsPage
                 storageInfo,
                 readiness,
                 deadLetterCount,
+                dbOpsOptions,
+                canRunServiceWideDbOps,
+                csrfToken,
                 now),
             "text/html; charset=utf-8");
     }
@@ -81,6 +98,9 @@ public static class AdminOpsPage
         MailerDbStorageInfo storageInfo,
         AdminOpsReadiness readiness,
         int deadLetterCount,
+        MailerAdminDbOpsOptions dbOpsOptions,
+        bool canRunServiceWideDbOps,
+        string? csrfToken,
         DateTimeOffset asOfUtc)
     {
         var html = new StringBuilder();
@@ -199,7 +219,18 @@ public static class AdminOpsPage
         AppendDefinition(html, "WAL size", FormatBytes(storageInfo.WalFileSizeBytes));
         AppendDefinition(html, "Journal mode", storageInfo.JournalMode ?? "n/a");
         AppendDefinition(html, "Current schema version", storageInfo.CurrentSchemaVersion ?? "n/a");
-        AppendDefinition(html, "WAL checkpoint", "unavailable on read-only page");
+        if (dbOpsOptions.Enabled && canRunServiceWideDbOps)
+        {
+            AppendDefinition(html, "WAL checkpoint", "available via Database operations");
+        }
+        else if (dbOpsOptions.Enabled)
+        {
+            AppendDefinition(html, "WAL checkpoint", "requires break-glass or all tenant scopes");
+        }
+        else
+        {
+            AppendDefinition(html, "WAL checkpoint", "unavailable (DB ops disabled)");
+        }
 
         html.AppendLine("                  </dl>");
 
@@ -228,6 +259,40 @@ public static class AdminOpsPage
         }
 
         html.AppendLine("                </section>");
+
+        if (dbOpsOptions.Enabled)
+        {
+            html.AppendLine("                <section class=\"ops-section\" aria-label=\"Database operations\">");
+            html.AppendLine("                  <h2 class=\"ops-heading\">Database operations</h2>");
+            if (canRunServiceWideDbOps && csrfToken is not null)
+            {
+                html.AppendLine("                  <p class=\"ops-meta\">");
+                html.Append("                    Backups are written to the configured directory as ");
+                html.Append(Html("mailer-<UTC-timestamp>.db"));
+                html.AppendLine(".");
+                html.AppendLine("                  </p>");
+                html.AppendLine("                  <div class=\"ops-actions\">");
+                html.AppendLine("                    <form method=\"post\" action=\"/admin/ops/checkpoint\" class=\"ops-form\">");
+                html.Append("                      <input type=\"hidden\" name=\"__RequestVerificationToken\" value=\"");
+                html.Append(csrfToken);
+                html.AppendLine("\">");
+                html.AppendLine("                      <button type=\"submit\">Run WAL checkpoint</button>");
+                html.AppendLine("                    </form>");
+                html.AppendLine("                    <form method=\"post\" action=\"/admin/ops/backup\" class=\"ops-form\">");
+                html.Append("                      <input type=\"hidden\" name=\"__RequestVerificationToken\" value=\"");
+                html.Append(csrfToken);
+                html.AppendLine("\">");
+                html.AppendLine("                      <button type=\"submit\">Run online backup</button>");
+                html.AppendLine("                    </form>");
+                html.AppendLine("                  </div>");
+            }
+            else
+            {
+                html.AppendLine("                  <p class=\"ops-empty\">Service-wide DB operations require break-glass access or all effective tenant scopes.</p>");
+            }
+
+            html.AppendLine("                </section>");
+        }
 
         AdminLayout.AppendDocumentEnd(html);
         return html.ToString();

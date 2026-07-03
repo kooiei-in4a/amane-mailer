@@ -85,6 +85,18 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
         source.BackupDatabase(destination);
     }
 
+    public string? GetConfiguredDatabasePath()
+    {
+        var dataSource = new SqliteConnectionStringBuilder(_connectionString).DataSource;
+        if (string.IsNullOrWhiteSpace(dataSource)
+            || string.Equals(dataSource, ":memory:", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return Path.GetFullPath(dataSource);
+    }
+
     public bool IsConfiguredDatabasePath(string absolutePath)
     {
         if (!Path.IsPathRooted(absolutePath))
