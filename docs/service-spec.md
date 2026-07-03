@@ -175,13 +175,18 @@ Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する
 
 ### 3.4 状態遷移（`mail_requests.status`）
 
+状態値と Worker 自動遷移の正本は [ADR 0015: 手動再送・手動キャンセル状態遷移](adr/0015-manual-retry-cancel-state-transitions.md) を参照する。以下は service-spec 上の要約である。
+
 | 値 | 名前 | 意味 |
 |---|---|---|
-| **0** | `Queued` | 受付済み・配送待ち |
+| **0** | `Queued` | 受付済み・配送待ち（`next_attempt_at` 到来で claim 対象） |
 | **1** | `Processing` | Worker がリース取得・送信中 |
 | **2** | `Delivered` | 配送成功（終端） |
-| **3** | `Failed` | 再試行可能な失敗（`next_attempt_at` 設定で 0 に戻る場合あり） |
+| **3** | `Failed` | 非 retryable な provider 失敗（終端） |
 | **4** | `DeadLettered` | 最大試行超過等で打ち切り（終端） |
+| **5** | `Cancelled` | 運用者による手動キャンセル（終端） |
+
+**Worker 自動遷移:**
 
 ```
 0 Queued ──claim──▶ 1 Processing ──success──▶ 2 Delivered
@@ -190,6 +195,17 @@ Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する
                          ├──terminal fail───▶ 3 Failed
                          └──max attempts────▶ 4 DeadLettered
 ```
+
+retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻し** `next_attempt_at` を設定する（runtime 実装どおり）。
+
+**Admin 手動操作（ADR 0015 要約）:**
+
+| 操作 | 許可される遷移元 | 遷移先 |
+|---|---|---|
+| 手動再送 | `DeadLettered`, `Failed` | `Queued`（`attempt_count=0`, `next_attempt_at=NULL`） |
+| 手動キャンセル | `Queued`, `Failed`, `DeadLettered`, 期限切れ `Processing` | `Cancelled` |
+
+`Delivered` / 有効 lock 保持中の `Processing` / `Cancelled` からの手動操作は拒否する。詳細な競合ルール・監査・tenant 認可は ADR 0015 を正とする。
 
 ---
 
@@ -385,3 +401,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-06-24 | Worker/Sweep heartbeat liveness 追加: `worker_heartbeats` テーブル、CLI heartbeat 鮮度チェック、`/readyz` Worker 稼働確認、`db stats` heartbeat age keys |
 | 2026-06-27 | バージョニングポリシー節追加（#5）。OpenAPI `info.version` を release/package と同一の `0.1.0` に修正 |
 | 2026-06-27 | `v0.1.1` patch release 準備として Contracts package と OpenAPI `info.version` を `0.1.1` に更新 |
+| 2026-07-03 | ADR 0015 に追随: `Cancelled` 状態、手動再送・手動キャンセル遷移、`Failed` 定義修正 |

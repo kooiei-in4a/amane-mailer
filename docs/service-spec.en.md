@@ -175,13 +175,18 @@ Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthche
 
 ### 3.4 State Transitions (`mail_requests.status`)
 
+The canonical state values and Worker automatic transitions are defined in [ADR 0015: Manual retry and cancel state transitions](adr/0015-manual-retry-cancel-state-transitions.md). The table below is a service-spec summary.
+
 | Value | Name | Meaning |
 |---|---|---|
-| **0** | `Queued` | Accepted · awaiting delivery |
+| **0** | `Queued` | Accepted · awaiting delivery (claimable when `next_attempt_at` is due) |
 | **1** | `Processing` | Worker holds lease · sending |
 | **2** | `Delivered` | Delivery succeeded (terminal) |
-| **3** | `Failed` | Retryable failure (may return to 0 with `next_attempt_at` set) |
+| **3** | `Failed` | Non-retryable provider failure (terminal) |
 | **4** | `DeadLettered` | Abandoned after max attempts etc. (terminal) |
+| **5** | `Cancelled` | Operator manual cancel (terminal) |
+
+**Worker automatic transitions:**
 
 ```
 0 Queued ──claim──▶ 1 Processing ──success──▶ 2 Delivered
@@ -190,6 +195,17 @@ Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthche
                          ├──terminal fail───▶ 3 Failed
                          └──max attempts────▶ 4 DeadLettered
 ```
+
+On retryable failure the runtime returns to **`Queued` (0)** with `next_attempt_at` set — it does **not** move to `Failed` (3).
+
+**Admin manual operations (ADR 0015 summary):**
+
+| Operation | Allowed source states | Target state |
+|---|---|---|
+| Manual retry | `DeadLettered`, `Failed` | `Queued` (`attempt_count=0`, `next_attempt_at=NULL`) |
+| Manual cancel | `Queued`, `Failed`, `DeadLettered`, expired `Processing` | `Cancelled` |
+
+Manual operations are rejected from `Delivered`, `Processing` with a valid lock, and `Cancelled`. See ADR 0015 for race rules, audit events, and tenant authorization.
 
 ---
 
@@ -385,3 +401,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-06-24 | Added Worker/Sweep heartbeat liveness: `worker_heartbeats` table, CLI heartbeat freshness check, `/readyz` Worker running check, `db stats` heartbeat age keys |
 | 2026-06-27 | Added Versioning Policy section (#5). Fixed OpenAPI `info.version` to `0.1.0` to match release/package |
 | 2026-06-27 | Prepared the `v0.1.1` patch release by updating the Contracts package and OpenAPI `info.version` to `0.1.1` |
+| 2026-07-03 | Followed ADR 0015: `Cancelled` state, manual retry/cancel transitions, `Failed` definition fix |
