@@ -26,6 +26,22 @@ public sealed class AdminAuditRetentionTests : IClassFixture<AdminAuditRetention
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     [Fact]
+    public void Load_prefers_MAILER_retention_days_when_both_env_vars_are_set()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MAILER_ADMIN_AUDIT_RETENTION_DAYS"] = "90",
+                ["AMANE_ADMIN_AUDIT_RETENTION_DAYS"] = "365",
+            })
+            .Build();
+
+        var options = MailerAdminAuditRetentionOptions.Load(configuration);
+
+        Assert.Equal(90, options.RetentionDays);
+    }
+
+    [Fact]
     public void Validate_rejects_retention_under_30_days_outside_local_development()
     {
         var configuration = new ConfigurationBuilder()

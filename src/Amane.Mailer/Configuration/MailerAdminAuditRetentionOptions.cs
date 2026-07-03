@@ -78,9 +78,9 @@ public sealed record MailerAdminAuditRetentionOptions
 
     private static int ReadRetentionDays(IConfiguration configuration)
     {
-        var value = configuration["AMANE_ADMIN_AUDIT_RETENTION_DAYS"];
+        var value = configuration["MAILER_ADMIN_AUDIT_RETENTION_DAYS"];
         if (string.IsNullOrWhiteSpace(value))
-            value = configuration["MAILER_ADMIN_AUDIT_RETENTION_DAYS"];
+            value = configuration["AMANE_ADMIN_AUDIT_RETENTION_DAYS"];
 
         return int.TryParse(value, out var parsed) && parsed > 0
             ? parsed
