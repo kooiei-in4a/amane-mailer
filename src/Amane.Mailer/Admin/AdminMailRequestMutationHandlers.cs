@@ -137,7 +137,7 @@ public static class AdminMailRequestMutationHandlers
                     requestId);
             }
 
-            return Results.Redirect($"/admin/mail-requests/{requestId:D}");
+            return SeeOtherRedirect($"/admin/mail-requests/{requestId:D}");
         }
 
         return result.Status switch
@@ -167,6 +167,18 @@ public static class AdminMailRequestMutationHandlers
             Result = AdminAuditLog.Results.Failure,
             ErrorCode = null,
         });
+
+    private static IResult SeeOtherRedirect(string url) => new SeeOtherRedirectResult(url);
+
+    private sealed class SeeOtherRedirectResult(string url) : IResult
+    {
+        public Task ExecuteAsync(HttpContext httpContext)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status303SeeOther;
+            httpContext.Response.Headers.Location = url;
+            return Task.CompletedTask;
+        }
+    }
 
     private static async Task<bool> ValidateAntiforgeryAsync(HttpContext context, IAntiforgery antiforgery)
     {

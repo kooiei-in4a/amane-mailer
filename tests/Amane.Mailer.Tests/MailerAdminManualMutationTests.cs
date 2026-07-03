@@ -41,7 +41,7 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
             CreateCsrfContent(csrf),
             ct);
 
-        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
         Assert.Equal(
             $"/admin/mail-requests/{internalId:D}",
             response.Headers.Location?.OriginalString);
@@ -72,7 +72,7 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
             CreateCsrfContent(csrf),
             ct);
 
-        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
 
         var state = await ReadStatusAsync(internalId, ct);
         Assert.Equal(MailRequestState.Cancelled, state.Status);

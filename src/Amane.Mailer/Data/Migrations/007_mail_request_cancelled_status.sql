@@ -1,7 +1,9 @@
 -- Expand mail_requests.status CHECK to include Cancelled (5).
 -- SQLite cannot ALTER CHECK constraints; recreate the table in-place.
+-- PRAGMA foreign_keys=OFF is ineffective inside SqlMigrationRunner's transaction,
+-- so back up mail_attempts before DROP to avoid ON DELETE CASCADE data loss.
 
-PRAGMA foreign_keys = OFF;
+CREATE TABLE mail_attempts_007_backup AS SELECT * FROM mail_attempts;
 
 CREATE TABLE mail_requests_new (
     id                      TEXT NOT NULL PRIMARY KEY,
@@ -86,4 +88,6 @@ CREATE INDEX IF NOT EXISTS idx_mail_requests_deadletter_completed
     ON mail_requests (status, completed_at DESC)
     WHERE status = 4;
 
-PRAGMA foreign_keys = ON;
+INSERT INTO mail_attempts SELECT * FROM mail_attempts_007_backup;
+
+DROP TABLE mail_attempts_007_backup;
