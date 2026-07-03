@@ -505,7 +505,9 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         Assert.Contains("3 / 3", html, StringComparison.Ordinal);
         Assert.Contains(">詳細<", html, StringComparison.Ordinal);
         Assert.Contains("再送する", html, StringComparison.Ordinal);
-        Assert.Contains("action-button-disabled", html, StringComparison.Ordinal);
+        Assert.Contains("/retry", html, StringComparison.Ordinal);
+        Assert.Contains("action-button", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("action-button-disabled", html, StringComparison.Ordinal);
         Assert.Contains("nav-badge", html, StringComparison.Ordinal);
         Assert.Contains("aria-label=\"1 件\"", html, StringComparison.Ordinal);
         Assert.DoesNotContain(queuedId.ToString("D"), html, StringComparison.Ordinal);

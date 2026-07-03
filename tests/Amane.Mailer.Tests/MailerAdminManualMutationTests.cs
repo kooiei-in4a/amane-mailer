@@ -1,0 +1,363 @@
+using System.Net;
+using Amane.Mailer.Admin;
+using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Tests.Fixtures;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace Amane.Mailer.Tests;
+
+[Collection(MailerTestCollection.Name)]
+public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
+    : IClassFixture<MailerAdminFixture>, IAsyncLifetime
+{
+    private static readonly Guid TenantA = MailerWebApplicationFixtureBase.TenantId;
+    private static readonly Guid TenantB = Guid.Parse("00000000-0000-0000-0000-000000000202");
+
+    public async ValueTask InitializeAsync()
+    {
+        await fixture.ResetAsync(TestContext.Current.CancellationToken);
+        fixture.Factory.Services.GetRequiredService<AdminLoginThrottle>().Clear();
+        fixture.Factory.Services.GetRequiredService<AdminSessionExpiredDedupe>().Clear();
+        fixture.Factory.Services.GetRequiredService<AdminDeadLetterCountCache>().ClearForTests();
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    [Fact]
+    public async Task Manual_retry_requeues_deadlettered_request_via_admin_post()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var internalId = await SeedMailRequestAsync(MailRequestState.DeadLettered, TenantA, ct);
+
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+        var csrf = await ReadCsrfTokenFromAdminPageAsync(client, $"/admin/mail-requests/{internalId:D}", ct);
+
+        using var response = await client.PostAsync(
+            $"/admin/mail-requests/{internalId:D}/retry",
+            CreateCsrfContent(csrf),
+            ct);
+
+        Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
+        Assert.Equal(
+            $"/admin/mail-requests/{internalId:D}",
+            response.Headers.Location?.OriginalString);
+
+        var state = await ReadStatusAsync(internalId, ct);
+        Assert.Equal(MailRequestState.Queued, state.Status);
+        Assert.Equal(0, state.AttemptCount);
+        Assert.Null(state.NextAttemptAt);
+
+        var audit = await ReadLatestAuditAsync(internalId, AdminAuditLog.EventTypes.ManualRetryRequested, ct);
+        Assert.NotNull(audit);
+        Assert.Equal(AdminAuditLog.Results.Success, audit.Value.Result);
+        Assert.DoesNotContain("user@example.com", audit.Value.EventType, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Manual_cancel_marks_queued_request_as_cancelled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var internalId = await SeedMailRequestAsync(MailRequestState.Queued, TenantA, ct);
+
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+        var csrf = await ReadCsrfTokenFromAdminPageAsync(client, $"/admin/mail-requests/{internalId:D}", ct);
+
+        using var response = await client.PostAsync(
+            $"/admin/mail-requests/{internalId:D}/cancel",
+            CreateCsrfContent(csrf),
+            ct);
+
+        Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
+
+        var state = await ReadStatusAsync(internalId, ct);
+        Assert.Equal(MailRequestState.Cancelled, state.Status);
+        Assert.Equal(MailRequestRepository.OperatorCancelledLastErrorMessage, state.LastErrorMessage);
+        Assert.NotNull(state.CompletedAt);
+
+        var audit = await ReadLatestAuditAsync(internalId, AdminAuditLog.EventTypes.ManualCancelRequested, ct);
+        Assert.NotNull(audit);
+        Assert.Equal(AdminAuditLog.Results.Success, audit.Value.Result);
+    }
+
+    [Fact]
+    public async Task Manual_retry_returns_not_found_for_out_of_scope_tenant()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SeedScopedAdminAsync([TenantA], ct);
+        _ = await SeedMailRequestAsync(MailRequestState.DeadLettered, TenantA, ct);
+        var internalId = await SeedMailRequestAsync(MailRequestState.DeadLettered, TenantB, ct);
+
+        var client = CreateClient();
+        await LoginAsync(client, "scoped-admin", "scoped-admin-password", ct);
+        var csrf = await ReadCsrfTokenFromAdminPageAsync(client, "/admin/dead-letters", ct);
+
+        using var response = await client.PostAsync(
+            $"/admin/mail-requests/{internalId:D}/retry",
+            CreateCsrfContent(csrf),
+            ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        var audit = await ReadLatestAuditAsync(internalId, AdminAuditLog.EventTypes.ManualRetryRequested, ct);
+        Assert.NotNull(audit);
+        Assert.Equal(AdminAuditLog.Results.Failure, audit.Value.Result);
+        Assert.Equal(AdminAuditLog.ErrorCodes.NotFound, audit.Value.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Manual_cancel_returns_conflict_when_processing_lock_is_active()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var internalId = await SeedProcessingWithActiveLockAsync(TenantA, ct);
+        _ = await SeedMailRequestAsync(MailRequestState.DeadLettered, TenantA, ct);
+
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+        var csrf = await ReadCsrfTokenFromAdminPageAsync(client, "/admin/dead-letters", ct);
+
+        using var response = await client.PostAsync(
+            $"/admin/mail-requests/{internalId:D}/cancel",
+            CreateCsrfContent(csrf),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+
+        var state = await ReadStatusAsync(internalId, ct);
+        Assert.Equal(MailRequestState.Processing, state.Status);
+
+        var audit = await ReadLatestAuditAsync(internalId, AdminAuditLog.EventTypes.ManualCancelRequested, ct);
+        Assert.NotNull(audit);
+        Assert.Equal(AdminAuditLog.ErrorCodes.LockHeld, audit.Value.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Dead_letters_page_enables_retry_form()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+
+        var mailRequestId = Guid.NewGuid();
+        await SeedMailRequestAsync(
+            MailRequestState.DeadLettered,
+            TenantA,
+            ct,
+            mailRequestId: mailRequestId);
+
+        using var response = await client.GetAsync("/admin/dead-letters", ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("/retry", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("手動再送は未実装です", html, StringComparison.Ordinal);
+        Assert.Contains(mailRequestId.ToString("D"), html, StringComparison.Ordinal);
+    }
+
+    private HttpClient CreateClient() =>
+        fixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost"),
+        });
+
+    private static async Task LoginAsync(HttpClient client, CancellationToken cancellationToken) =>
+        await LoginAsync(client, MailerAdminFixture.Username, MailerAdminFixture.Password, cancellationToken);
+
+    private static async Task LoginAsync(
+        HttpClient client,
+        string username,
+        string password,
+        CancellationToken cancellationToken)
+    {
+        var csrfToken = await ReadCsrfTokenFromLoginAsync(client, cancellationToken);
+        using var response = await client.PostAsync(
+            "/admin/api/login",
+            CreateLoginContent(csrfToken, username, password),
+            cancellationToken);
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+    }
+
+    private static async Task<string> ReadCsrfTokenFromLoginAsync(HttpClient client, CancellationToken cancellationToken)
+    {
+        using var response = await client.GetAsync("/admin/login", cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await ReadCsrfTokenFromHtmlAsync(await response.Content.ReadAsStringAsync(cancellationToken));
+    }
+
+    private static async Task<string> ReadCsrfTokenFromAdminPageAsync(
+        HttpClient client,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        using var response = await client.GetAsync(path, cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await ReadCsrfTokenFromHtmlAsync(await response.Content.ReadAsStringAsync(cancellationToken));
+    }
+
+    private static Task<string> ReadCsrfTokenFromHtmlAsync(string html)
+    {
+        const string marker = "name=\"__RequestVerificationToken\" value=\"";
+        var start = html.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, "Admin page did not contain a CSRF token.");
+        start += marker.Length;
+        var end = html.IndexOf('"', start);
+        Assert.True(end > start, "Admin page CSRF token value was empty.");
+        return Task.FromResult(html[start..end]);
+    }
+
+    private static FormUrlEncodedContent CreateCsrfContent(string csrfToken) =>
+        new(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = csrfToken,
+        });
+
+    private static FormUrlEncodedContent CreateLoginContent(string csrfToken, string username, string password) =>
+        new(new Dictionary<string, string>
+        {
+            ["__RequestVerificationToken"] = csrfToken,
+            ["username"] = username,
+            ["password"] = password,
+        });
+
+    private async Task<Guid> SeedMailRequestAsync(
+        MailRequestState status,
+        Guid tenantId,
+        CancellationToken cancellationToken,
+        Guid? mailRequestId = null)
+    {
+        var internalId = Guid.NewGuid();
+        var now = SqliteTime.UtcNow;
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+        var completedAt = status is MailRequestState.Delivered
+            or MailRequestState.Failed
+            or MailRequestState.DeadLettered
+            or MailRequestState.Cancelled
+            ? nowStorage
+            : (string?)null;
+
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO mail_requests (
+                id, tenant_id, source_service, mail_request_id, purpose,
+                payload_json, payload_hash, subject, recipient_email,
+                status, attempt_count, max_attempts,
+                accepted_at, created_at, updated_at, completed_at, last_error_message)
+            VALUES (
+                @Id, @TenantId, 'manual-mutation-test', @MailRequestId, 'test',
+                '{}', @PayloadHash, 'subject', 'user@example.com',
+                @Status, @AttemptCount, 3,
+                @Now, @Now, @Now, @CompletedAt, @LastErrorMessage);
+            """;
+        command.Parameters.AddWithValue("@Id", internalId.ToString("D"));
+        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+        command.Parameters.AddWithValue("@MailRequestId", (mailRequestId ?? Guid.NewGuid()).ToString("D"));
+        command.Parameters.AddWithValue("@PayloadHash", new string('a', 64));
+        command.Parameters.AddWithValue("@Status", (int)status);
+        command.Parameters.AddWithValue("@AttemptCount", status == MailRequestState.DeadLettered ? 3 : 0);
+        command.Parameters.AddWithValue("@Now", nowStorage);
+        command.Parameters.AddWithValue("@CompletedAt", (object?)completedAt ?? DBNull.Value);
+        command.Parameters.AddWithValue(
+            "@LastErrorMessage",
+            status == MailRequestState.DeadLettered ? "provider failed" : DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return internalId;
+    }
+
+    private async Task<Guid> SeedProcessingWithActiveLockAsync(Guid tenantId, CancellationToken cancellationToken)
+    {
+        var internalId = Guid.NewGuid();
+        var now = SqliteTime.UtcNow;
+        var lockExpiresAt = now.AddMinutes(5);
+
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO mail_requests (
+                id, tenant_id, source_service, mail_request_id, purpose,
+                payload_json, payload_hash, subject, recipient_email,
+                status, attempt_count, max_attempts, lock_token, lock_expires_at,
+                accepted_at, created_at, updated_at)
+            VALUES (
+                @Id, @TenantId, 'manual-mutation-test', @MailRequestId, 'test',
+                '{}', @PayloadHash, 'subject', 'user@example.com',
+                @Status, 1, 3, @LockToken, @LockExpiresAt,
+                @Now, @Now, @Now);
+            """;
+        command.Parameters.AddWithValue("@Id", internalId.ToString("D"));
+        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+        command.Parameters.AddWithValue("@MailRequestId", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@PayloadHash", new string('b', 64));
+        command.Parameters.AddWithValue("@Status", (int)MailRequestState.Processing);
+        command.Parameters.AddWithValue("@LockToken", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(lockExpiresAt));
+        command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        return internalId;
+    }
+
+    private async Task SeedScopedAdminAsync(IReadOnlyList<Guid> tenantIds, CancellationToken cancellationToken) =>
+        await fixture.Factory.Services.GetRequiredService<AdminUserRepository>()
+            .CreateOrUpdateScopedUserAsync(
+                "scoped-admin",
+                AdminPasswordHasher.Hash("scoped-admin-password"),
+                tenantIds,
+                cancellationToken);
+
+    private async Task<(MailRequestState Status, int AttemptCount, string? NextAttemptAt, string? LastErrorMessage, string? CompletedAt)> ReadStatusAsync(
+        Guid internalId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT status, attempt_count, next_attempt_at, last_error_message, completed_at
+            FROM mail_requests
+            WHERE id = @Id;
+            """;
+        command.Parameters.AddWithValue("@Id", internalId.ToString("D"));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        return (
+            (MailRequestState)reader.GetInt32(0),
+            reader.GetInt32(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4));
+    }
+
+    private async Task<(string EventType, string Result, string? ErrorCode)?> ReadLatestAuditAsync(
+        Guid internalId,
+        string eventType,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT event_type, result, error_code
+            FROM admin_audit_events
+            WHERE target_id = @TargetId AND event_type = @EventType
+            ORDER BY id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@TargetId", internalId.ToString("D"));
+        command.Parameters.AddWithValue("@EventType", eventType);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+
+        return (
+            reader.GetString(0),
+            reader.GetString(1),
+            reader.IsDBNull(2) ? null : reader.GetString(2));
+    }
+}

@@ -1,4 +1,5 @@
 using Amane.Mailer.Data.Sqlite.Models;
+using Microsoft.Data.Sqlite;
 
 namespace Amane.Mailer.Data.Sqlite;
 
@@ -27,6 +28,38 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
+        command.Parameters.AddWithValue("@EventType", auditEvent.EventType);
+        command.Parameters.AddWithValue("@Actor", auditEvent.Actor);
+        command.Parameters.AddWithValue("@OccurredAt", SqliteTime.ToStorageUtc(auditEvent.OccurredAt));
+        command.Parameters.AddWithValue("@SourceIp", (object?)auditEvent.SourceIp ?? DBNull.Value);
+        command.Parameters.AddWithValue("@UserAgentSummary", (object?)auditEvent.UserAgentSummary ?? DBNull.Value);
+        command.Parameters.AddWithValue("@TargetType", (object?)auditEvent.TargetType ?? DBNull.Value);
+        command.Parameters.AddWithValue("@TargetId", (object?)auditEvent.TargetId ?? DBNull.Value);
+        command.Parameters.AddWithValue("@FieldName", (object?)auditEvent.FieldName ?? DBNull.Value);
+        command.Parameters.AddWithValue("@Result", auditEvent.Result);
+        command.Parameters.AddWithValue("@ErrorCode", (object?)auditEvent.ErrorCode ?? DBNull.Value);
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task WriteAsync(
+        AdminAuditEvent auditEvent,
+        SqliteConnection connection,
+        CancellationToken cancellationToken = default)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO admin_audit_events (
+                event_type, actor, occurred_at,
+                source_ip, user_agent_summary,
+                target_type, target_id, field_name,
+                result, error_code)
+            VALUES (
+                @EventType, @Actor, @OccurredAt,
+                @SourceIp, @UserAgentSummary,
+                @TargetType, @TargetId, @FieldName,
+                @Result, @ErrorCode);
+            """;
         command.Parameters.AddWithValue("@EventType", auditEvent.EventType);
         command.Parameters.AddWithValue("@Actor", auditEvent.Actor);
         command.Parameters.AddWithValue("@OccurredAt", SqliteTime.ToStorageUtc(auditEvent.OccurredAt));

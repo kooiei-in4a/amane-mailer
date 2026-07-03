@@ -221,6 +221,7 @@ public sealed class DbRequestStateCommand(SqliteConnectionFactory connections)
             MailRequestState.Delivered => "delivered",
             MailRequestState.Failed => "failed",
             MailRequestState.DeadLettered => "dead_lettered",
+            MailRequestState.Cancelled => "cancelled",
             _ => ((int)status).ToString(System.Globalization.CultureInfo.InvariantCulture),
         };
 
