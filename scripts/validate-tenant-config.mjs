@@ -212,8 +212,19 @@ function readEnv(name) {
   return process.env[name];
 }
 
+function readFirstEnv(...names) {
+  for (const name of names) {
+    const value = readEnv(name);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
 function readProviderOverride() {
-  return (readEnv('MAILER_PROVIDER') ?? readEnv('Mailer:Provider') ?? '').trim();
+  return (readFirstEnv('MAILER_PROVIDER', 'Mailer__Provider', 'Mailer:Provider') ?? '').trim();
 }
 
 function looksLikePlaceholder(value) {
@@ -249,7 +260,7 @@ function validateEnvironment() {
   let hasMailpitTenant = false;
 
   if (providerOverride && !['acs', 'mailpit'].includes(providerOverride)) {
-    fail('MAILER_PROVIDER / Mailer:Provider must be either acs or mailpit when set.');
+    fail('MAILER_PROVIDER / Mailer__Provider / Mailer:Provider must be either acs or mailpit when set.');
   }
 
   for (const [index, tenant] of config.tenants.entries()) {
@@ -276,6 +287,10 @@ function validateEnvironment() {
         }
         seenSourceServices.add(sourceService);
       }
+    }
+
+    if (!tenant || typeof tenant !== 'object' || Array.isArray(tenant)) {
+      continue;
     }
 
     if (tenant && typeof tenant.token_env === 'string') {
@@ -309,12 +324,16 @@ function validateEnvironment() {
   }
 
   if (hasMailpitTenant) {
-    const mailpitPort = readEnv('MAILPIT_SMTP_PORT') ?? readEnv('Mailer:Mailpit:SmtpPort');
+    const mailpitPort = readFirstEnv(
+      'MAILPIT_SMTP_PORT',
+      'Mailer__Mailpit__SmtpPort',
+      'Mailer:Mailpit:SmtpPort',
+    );
     if (mailpitPort !== undefined && !/^[1-9][0-9]*$/.test(mailpitPort)) {
-      fail('MAILPIT_SMTP_PORT / Mailer:Mailpit:SmtpPort must be a positive integer when set.');
+      fail('MAILPIT_SMTP_PORT / Mailer__Mailpit__SmtpPort / Mailer:Mailpit:SmtpPort must be a positive integer when set.');
     }
 
-    notes.push('Mailpit SMTP settings use MAILPIT_SMTP_HOST and MAILPIT_SMTP_PORT when set; otherwise runtime defaults apply.');
+    notes.push('Mailpit SMTP settings use MAILPIT_SMTP_HOST / MAILPIT_SMTP_PORT or .NET double-underscore aliases when set; otherwise runtime defaults apply.');
   }
 
   notes.push(`Effective provider count: acs=${providerCounts.acs}, mailpit=${providerCounts.mailpit}.`);

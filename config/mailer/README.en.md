@@ -26,8 +26,9 @@ Secrets such as tenant Bearer tokens are not stored in JSON. JSON stores the
 environment variable name in `token_env`; set the actual token value in that
 environment variable.
 
-`provider` normally comes from the tenant JSON. Setting `MAILER_PROVIDER` or
-`Mailer:Provider` overrides the provider for every tenant.
+`provider` normally comes from the tenant JSON. Setting `MAILER_PROVIDER` or the
+.NET environment-variable form `Mailer__Provider` (configuration key
+`Mailer:Provider`) overrides the provider for every tenant.
 
 Deployment-specific tenant files should be mounted into the container and
 validated against `tenants.schema.json` before deployment. The Docker image only
@@ -59,8 +60,9 @@ The preflight checks the `tenants.schema.json` shape, duplicate `tenant_id`
 values, empty or duplicate `source_services`, whether each `token_env` exists in
 the environment, token values that look like placeholders, the
 `ACS_CONNECTION_STRING` requirement when the effective provider (`MAILER_PROVIDER`
-/ `Mailer:Provider` overrides included) is `acs` and `live_sending=true`, and
-the Mailpit SMTP host / port configuration policy.
+/ `Mailer__Provider` overrides included) is `acs` and `live_sending=true`, and
+the Mailpit SMTP host / port configuration policy. This preflight targets the
+current shell environment and does not read `appsettings*.json`.
 
 The shared deploy template (`tenants.shared.example.json`) contains three
 tenants — `example-develop`, `example-staging`, `example-production` — each
