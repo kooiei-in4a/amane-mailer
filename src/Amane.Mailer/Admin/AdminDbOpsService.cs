@@ -62,7 +62,7 @@ public sealed class AdminDbOpsService(
     }
 
     internal static string BuildBackupFileName(DateTimeOffset utcNow) =>
-        "mailer-" + utcNow.ToUniversalTime().ToString("yyyyMMdd'T'HHmmss'Z'", System.Globalization.CultureInfo.InvariantCulture) + ".db";
+        "mailer-" + utcNow.ToUniversalTime().ToString("yyyyMMdd'T'HHmmssfff'Z'", System.Globalization.CultureInfo.InvariantCulture) + ".db";
 
     internal string ResolveBackupDestinationPath(string fileName)
     {

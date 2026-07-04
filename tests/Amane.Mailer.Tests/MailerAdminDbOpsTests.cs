@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
@@ -23,7 +24,7 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
         dbOpsFixture.Factory.Services.GetRequiredService<AdminSessionExpiredDedupe>().Clear();
         dbOpsFixture.Factory.Services.GetRequiredService<AdminDeadLetterCountCache>().ClearForTests();
         Directory.CreateDirectory(dbOpsFixture.BackupDirectory);
-        foreach (var file in Directory.GetFiles(dbOpsFixture.BackupDirectory, "mailer-*.db"))
+        foreach (var file in Directory.EnumerateFiles(dbOpsFixture.BackupDirectory, "mailer-*"))
         {
             try
             {
@@ -35,6 +36,8 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
                 File.Delete(file);
             }
         }
+
+        SqliteConnection.ClearAllPools();
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -213,10 +216,29 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
     }
 
     [Fact]
-    public async Task Concurrent_backup_requests_return_conflict_for_second_request()
+    public async Task RunBackupAsync_returns_lock_held_when_operation_lock_is_already_held()
     {
         var ct = TestContext.Current.CancellationToken;
-        var username = "dbops-concurrent-" + Guid.NewGuid().ToString("N");
+        var service = dbOpsFixture.Factory.Services.GetRequiredService<AdminDbOpsService>();
+        var operationLock = GetOperationLock(service);
+
+        Assert.True(await operationLock.WaitAsync(0, ct));
+        try
+        {
+            var result = await service.RunBackupAsync(ct);
+            Assert.Equal(AdminDbOpsStatus.LockHeld, result.Status);
+        }
+        finally
+        {
+            operationLock.Release();
+        }
+    }
+
+    [Fact]
+    public async Task Backup_post_returns_conflict_when_operation_lock_is_already_held()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var username = "dbops-lock-held-" + Guid.NewGuid().ToString("N");
         await dbOpsFixture.Factory.Services.GetRequiredService<AdminUserRepository>()
             .CreateBreakGlassUserAsync(
                 username,
@@ -228,25 +250,35 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
 
         using var page = await client.GetAsync("/admin/ops", ct);
         var csrf = await ReadCsrfTokenFromHtmlAsync(await page.Content.ReadAsStringAsync(ct));
-        var content = CreateCsrfContent(csrf);
 
-        var first = client.PostAsync("/admin/ops/backup", content, ct);
-        var second = client.PostAsync("/admin/ops/backup", content, ct);
-        await Task.WhenAll(first, second);
+        var service = dbOpsFixture.Factory.Services.GetRequiredService<AdminDbOpsService>();
+        var operationLock = GetOperationLock(service);
+        Assert.True(await operationLock.WaitAsync(0, ct));
+        try
+        {
+            using var response = await client.PostAsync("/admin/ops/backup", CreateCsrfContent(csrf), ct);
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
 
-        using var firstResponse = await first;
-        using var secondResponse = await second;
-        var statusCodes = new[] { firstResponse.StatusCode, secondResponse.StatusCode };
+            var failed = await ReadLatestAuditAsync(AdminAuditLog.EventTypes.DbBackupFailed, ct);
+            Assert.NotNull(failed);
+            Assert.Equal(AdminAuditLog.Results.Failure, failed.Value.Result);
+            Assert.Equal(AdminAuditLog.ErrorCodes.LockHeld, await ReadLatestAuditErrorCodeAsync(
+                AdminAuditLog.EventTypes.DbBackupFailed,
+                ct));
+        }
+        finally
+        {
+            operationLock.Release();
+        }
+    }
 
-        Assert.Contains(HttpStatusCode.SeeOther, statusCodes);
-        Assert.Contains(HttpStatusCode.Conflict, statusCodes);
+    [Fact]
+    public void BuildBackupFileName_uses_millisecond_utc_timestamp()
+    {
+        var fileName = AdminDbOpsService.BuildBackupFileName(
+            new DateTimeOffset(2026, 7, 4, 3, 12, 13, 456, TimeSpan.Zero));
 
-        var failed = await ReadLatestAuditAsync(AdminAuditLog.EventTypes.DbBackupFailed, ct);
-        Assert.NotNull(failed);
-        Assert.Equal(AdminAuditLog.Results.Failure, failed.Value.Result);
-        Assert.Equal(AdminAuditLog.ErrorCodes.LockHeld, await ReadLatestAuditErrorCodeAsync(
-            AdminAuditLog.EventTypes.DbBackupFailed,
-            ct));
+        Assert.Equal("mailer-20260704T031213456Z.db", fileName);
     }
 
     [Fact]
@@ -437,4 +469,11 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
             ["username"] = username,
             ["password"] = password,
         });
+
+    private static SemaphoreSlim GetOperationLock(AdminDbOpsService service)
+    {
+        var lockField = typeof(AdminDbOpsService).GetField("_operationLock", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(lockField);
+        return (SemaphoreSlim)lockField.GetValue(service)!;
+    }
 }
