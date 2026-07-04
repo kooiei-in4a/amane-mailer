@@ -55,11 +55,11 @@ These examples mirror `MailPayloadHasher` in `src/Amane.Mailer.Contracts/Securit
 
 ## Language examples
 
-| Language | Implementation | Verify against test vectors |
-|---|---|---|
-| Python | [python/mail_payload_hash.py](python/mail_payload_hash.py) | `python examples/payload-hash/python/verify_vectors.py` |
-| JavaScript (Node.js) | [javascript/mail_payload_hash.mjs](javascript/mail_payload_hash.mjs) | `node examples/payload-hash/javascript/verify_vectors.mjs` |
-| Go | [go/mail_payload_hash.go](go/mail_payload_hash.go) | `go test ./...` in `examples/payload-hash/go` |
+| Language | Implementation | Verify against test vectors | Request JSON verifier |
+|---|---|---|---|
+| Python | [python/mail_payload_hash.py](python/mail_payload_hash.py) | `python examples/payload-hash/python/verify_vectors.py` | `python examples/payload-hash/python/verify_request.py request.json` |
+| JavaScript (Node.js) | [javascript/mail_payload_hash.mjs](javascript/mail_payload_hash.mjs) | `node examples/payload-hash/javascript/verify_vectors.mjs` | — |
+| Go | [go/mail_payload_hash.go](go/mail_payload_hash.go) | `go test ./...` in `examples/payload-hash/go` | — |
 
 CI runs all three verifiers in the OpenAPI validation workflow. Contract drift check (`scripts/check-contract-drift.mjs`) asserts these examples stay present and reference the shared test vectors.
 
@@ -82,3 +82,47 @@ request["payload_hash"] = compute_delivery_payload_sha256_hex(request)
 ```
 
 Use the same pattern in JavaScript and Go—see each language file for exported helpers.
+
+## Verify your request JSON (Python)
+
+When you already have the JSON file you plan to POST, use the request verifier to inspect
+included fields, canonical JSON, computed hash, and whether `payload_hash` matches:
+
+```bash
+python examples/payload-hash/python/verify_request.py examples/payload-hash/fixtures/form-response-request.json
+```
+
+Example output:
+
+```text
+Included fields (hash input):
+  - purpose
+  - source_service
+  - subject
+  - text_body
+  - to
+
+Excluded from hash (present in request):
+  - mail_request_id
+  - payload_hash
+  - tenant_id
+
+Canonical JSON:
+{"purpose":"FormResponseNotification",...}
+
+Computed SHA-256:
+7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9
+
+Request payload_hash:
+7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9
+
+Result: MATCH
+```
+
+Exit code `0` means match (or no `payload_hash` field to compare); `1` means mismatch; `2` means input error.
+
+Run verifier tests against official vectors:
+
+```bash
+python examples/payload-hash/python/verify_request_vectors.py
+```
