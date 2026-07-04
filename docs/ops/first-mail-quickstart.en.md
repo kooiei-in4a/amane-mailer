@@ -17,13 +17,29 @@ For fuller smoke coverage (idempotent repost, conflict, Admin UI, and more), see
 - Run commands from the repository root.
 - Host ports `5280` (Mailer) and `8025` (Mailpit) are free.
 - Steps 1–2 need `curl` only (PowerShell `curl.exe` on Windows is fine).
-- Steps 3–4 require **bash** and `curl` (on Windows, use [Git Bash](https://gitforwindows.org/); PowerShell alone cannot run the heredoc, `uuidgen`, or `seq` loop).
+- Steps 3–4 manual curl examples require **bash** and `curl` (on Windows, use [Git Bash](https://gitforwindows.org/); PowerShell alone cannot run the heredoc or `seq` loop). The **PowerShell automated smoke script** below skips manual steps 3–4.
 
 No Admin environment variables (`AMANE_ADMIN_*`) are required. Local compose defaults to Mailpit delivery.
 
-## Automated smoke (bash)
+## Automated smoke
 
-Run the full flow with one script (Linux / macOS / Git Bash):
+### PowerShell (recommended on Windows)
+
+Run from the same PowerShell session as Docker Desktop:
+
+```powershell
+.\scripts\local-first-mail-smoke.ps1
+```
+
+Optional env:
+
+```powershell
+$env:MAILER_HTTP_PORT = '5280'
+$env:MAILPIT_HTTP_PORT = '8025'
+.\scripts\local-first-mail-smoke.ps1
+```
+
+### bash (Linux / macOS / Git Bash)
 
 ```bash
 bash scripts/local-first-mail-smoke.sh

@@ -16,13 +16,29 @@ ACS 実送信、Dead Letter、backup / restore、deploy rehearsal、multi-tenant
 - リポジトリ root でコマンドを実行すること。
 - host port `5280`（Mailer）と `8025`（Mailpit）が空いていること。
 - 手順 1–2 は `curl` があれば可（Windows では PowerShell の `curl.exe` でも可）。
-- 手順 3–4 は **bash** と `curl` が必要です（Windows では [Git Bash](https://gitforwindows.org/) を使ってください。PowerShell のみでは heredoc、`uuidgen`、`seq` が使えません）。
+- 手順 3–4 の手動 curl 例は **bash** と `curl` が必要です（Windows では [Git Bash](https://gitforwindows.org/) を使ってください。PowerShell のみでは heredoc や `seq` が使えません）。**PowerShell 向けの自動 smoke script** なら手順 3–4 を省略できます（下記参照）。
 
 Admin 用の環境変数（`AMANE_ADMIN_*`）は **設定不要** です。local compose の既定値で Mailpit 配送になります。
 
-## 自動 smoke（bash）
+## 自動 smoke
 
-手順をまとめて実行する script があります（Linux / macOS / Git Bash）:
+### PowerShell（Windows 推奨）
+
+Docker Desktop と同じ PowerShell セッションから実行します:
+
+```powershell
+.\scripts\local-first-mail-smoke.ps1
+```
+
+任意 env:
+
+```powershell
+$env:MAILER_HTTP_PORT = '5280'
+$env:MAILPIT_HTTP_PORT = '8025'
+.\scripts\local-first-mail-smoke.ps1
+```
+
+### bash（Linux / macOS / Git Bash）
 
 ```bash
 bash scripts/local-first-mail-smoke.sh

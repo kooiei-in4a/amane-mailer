@@ -37,7 +37,7 @@ dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 
 To confirm your **first delivered message**, start with the Admin-free
 [Zero-Admin first-mail quickstart](docs/ops/first-mail-quickstart.en.md) [(ja)](docs/ops/first-mail-quickstart.md).
-On bash, run `bash scripts/local-first-mail-smoke.sh` for the same checks automatically.
+On PowerShell, run `.\scripts\local-first-mail-smoke.ps1`; on bash, run `bash scripts/local-first-mail-smoke.sh` for the same checks automatically.
 
 The local compose file builds the Mailer image and starts Mailpit:
 
