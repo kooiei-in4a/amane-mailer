@@ -33,6 +33,10 @@ dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 
 ## Mailpit で起動する
 
+**初めて 1 通届くところまで確認する**場合は、Admin 不要の
+[Zero-Admin 初回メール quickstart](docs/ops/first-mail-quickstart.md) [(en)](docs/ops/first-mail-quickstart.en.md)
+から始めてください。
+
 local compose は Mailer イメージを build し、Mailpit を起動します。
 
 ```powershell

@@ -35,6 +35,9 @@ dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 
 ## Run With Mailpit
 
+To confirm your **first delivered message**, start with the Admin-free
+[Zero-Admin first-mail quickstart](docs/ops/first-mail-quickstart.en.md) [(ja)](docs/ops/first-mail-quickstart.md).
+
 The local compose file builds the Mailer image and starts Mailpit:
 
 ```powershell
