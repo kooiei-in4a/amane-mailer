@@ -2,7 +2,7 @@
 
 # 公開 release イメージの clean-state smoke
 
-公開済みの GHCR ランタイムイメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.1.1`）を
+公開済みの GHCR ランタイムイメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.2.0`）を
 clean state から pull し、Mailer + Mailpit を起動して公開 release runtime path を自動 smoke します。
 
 ローカル開発の `infra/docker/docker-compose.local.yml`（ソースから build）とは異なり、
@@ -17,10 +17,10 @@ Mailer の状態は named volume に置き、終了時に `docker compose down -
 - Windows では PowerShell 5.1+ と Docker Desktop（PowerShell と同じ Docker CLI context）を使うこと。
 - GHCR イメージが pull できること（private の場合は事前に `docker login ghcr.io`。
   [GHCR image publish 手順](ghcr-image-publish.md) を参照）。
-- 既定タグ `v0.1.1` の公開 Mailer runtime image は `linux/amd64` only です。ARM host では
-  Docker Desktop などの amd64 emulation が使える場合のみ検証できます。
-- multi-arch release では release notes または Docker manifest に記載された platform ごとに
-  `MAILER_IMAGE_PLATFORM` を変えてこの smoke を実行します。
+- 既定タグ `v0.2.0` の公開 GHCR runtime image は **multi-arch**（`linux/amd64` と
+  `linux/arm64`）です。smoke では release notes または Docker manifest の platform を確認し、
+  `MAILER_IMAGE_PLATFORM=linux/amd64` または `MAILER_IMAGE_PLATFORM=linux/arm64` を指定してください。
+- amd64 emulation のみ利用可能なホストでは `linux/amd64` を明示してください。
 - 既定の host port `15280`（Mailer）と `18025`（Mailpit）が空いていること。
 
 ## 実行
@@ -68,7 +68,7 @@ context がずれることがあるため、Windows では上記 PowerShell 版�
 | 変数 | 既定 | 用途 |
 |------|------|------|
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | イメージ repository |
-| `MAILER_IMAGE_TAG` | `v0.1.1` | 検証するタグ |
+| `MAILER_IMAGE_TAG` | `v0.2.0` | 検証するタグ |
 | `MAILER_IMAGE_PLATFORM` | `linux/amd64` | smoke 対象の Mailer runtime image platform。multi-arch release では `linux/amd64` / `linux/arm64` など release notes の platform ごとに実行します。 |
 | `MAILER_PULL_POLICY` | `always` | ローカルイメージを使う場合は `missing` |
 | `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image。既定の `latest` は意図的です。tag / digest 固定が必要な場合に上書きします。 |
@@ -93,9 +93,9 @@ Mailpit は release artifact に含まれない smoke helper です。`latest` �
 
 ## 記録済み smoke 結果
 
-`v0.1.1` の value-free smoke 結果（digest、日付、環境、各 check の pass/fail）は
-[docs/releases/v0.1.1.md](../releases/v0.1.1.md) に記録します。過去の `v0.1.0` 結果は
-[docs/releases/v0.1.0.md](../releases/v0.1.0.md) を参照してください。
+`v0.2.0` の value-free smoke 結果（digest、日付、環境、各 check の pass/fail）は
+[docs/releases/v0.2.0.md](../releases/v0.2.0.md) に記録します。過去の `v0.1.1` 結果は
+[docs/releases/v0.1.1.md](../releases/v0.1.1.md) を参照してください。
 
 ## deploy drill との使い分け
 
