@@ -29,6 +29,31 @@ tenant Bearer トークンなどの秘密情報は JSON に保存しません。
 deploy 固有の tenant ファイルは、デプロイ前にコンテナへ mount し、`tenants.schema.json` で検証してください。Docker イメージに含まれるのは安全な example と schema のみです。
 ローカル検証用ファイルには、schema に新しい environment 値を意図的に追加しない限り `develop` を使ってください。
 
+## Preflight
+
+起動前に、tenant JSON と現在の shell 環境変数を preflight できます。secret 値そのものは
+stdout / stderr に出しません。
+
+```bash
+MAIL_SERVICE_TOKEN=local-mail-service-token \
+  scripts/validate-tenant-config.sh config/mailer/tenants.example.json
+```
+
+deploy 用 `infra/deploy/tenants.json` を確認する場合は、deploy `.env` の値を読み込んだ
+bash session で実行してください。
+
+```bash
+set -a
+. infra/deploy/.env
+set +a
+scripts/validate-tenant-config.sh infra/deploy/tenants.json
+```
+
+この preflight は `tenants.schema.json` に沿った shape、`tenant_id` 重複、
+`source_services` の空・重複、`token_env` の env 存在、placeholder らしい token 値、
+実効 provider（`MAILER_PROVIDER` / `Mailer:Provider` override 含む）が `acs` かつ
+`live_sending=true` の場合の `ACS_CONNECTION_STRING`、Mailpit SMTP host / port の設定方針を確認します。
+
 共有 deploy テンプレート（`tenants.shared.example.json`）には 3 tenant — `example-develop`、`example-staging`、`example-production` — が含まれ、それぞれ別の `token_env` を持ちます。このファイルをコピーし、tenant 名をサービスに合わせて変更し、プレースホルダーを実値に置き換え、deploy ディレクトリで `tenants.json` として mount してください。
 
 ローカル・テスト tenant では `live_sending=false` を使います。`provider=acs` でも `live_sending=false` の tenant は実送信しません。承認済み live sender の場合のみ、実効 provider を `acs` にし、`live_sending=true` と `ACS_CONNECTION_STRING` を設定してください。

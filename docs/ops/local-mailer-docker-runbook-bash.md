@@ -122,12 +122,15 @@ export MAILPIT_SMTP_PORT="1025"
 export MAILPIT_SMTP_USE_SSL="false"
 export ACS_CONNECTION_STRING=""
 
+bash scripts/validate-tenant-config.sh config/mailer/tenants.example.json
+
 docker compose -f "$COMPOSE_FILE" up -d --wait mailer
 ```
 
 `AMANE_ADMIN_ALLOW_HTTP=true` と `AMANE_ADMIN_PII_LIST_MODE=visible` はローカル確認専用です。
 本番・develop deploy host では HTTP 許可や PII 表示を有効にしないでください。
 Admin UI の公開範囲と PII 方針は [ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md) を参照してください。
+tenant / env preflight の詳細は [Mailer 設定](../../config/mailer/README.md#preflight) を参照してください。
 
 ## 6. health / ready を確認する
 
