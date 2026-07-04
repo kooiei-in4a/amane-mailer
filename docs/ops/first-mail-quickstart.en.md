@@ -21,6 +21,22 @@ For fuller smoke coverage (idempotent repost, conflict, Admin UI, and more), see
 
 No Admin environment variables (`AMANE_ADMIN_*`) are required. Local compose defaults to Mailpit delivery.
 
+## Automated smoke (bash)
+
+Run the full flow with one script (Linux / macOS / Git Bash):
+
+```bash
+bash scripts/local-first-mail-smoke.sh
+```
+
+Optional env:
+
+```bash
+MAILER_HTTP_PORT=5280 MAILPIT_HTTP_PORT=8025 bash scripts/local-first-mail-smoke.sh
+```
+
+The script prints a `[PASS]` / `[FAIL]` summary on success or failure. On failure it also prints `docker compose ps` and recent logs.
+
 ## 1. Start Mailer + Mailpit
 
 ```bash

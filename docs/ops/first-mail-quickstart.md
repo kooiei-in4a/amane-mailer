@@ -20,6 +20,22 @@ ACS 実送信、Dead Letter、backup / restore、deploy rehearsal、multi-tenant
 
 Admin 用の環境変数（`AMANE_ADMIN_*`）は **設定不要** です。local compose の既定値で Mailpit 配送になります。
 
+## 自動 smoke（bash）
+
+手順をまとめて実行する script があります（Linux / macOS / Git Bash）:
+
+```bash
+bash scripts/local-first-mail-smoke.sh
+```
+
+任意 env:
+
+```bash
+MAILER_HTTP_PORT=5280 MAILPIT_HTTP_PORT=8025 bash scripts/local-first-mail-smoke.sh
+```
+
+成功時・失敗時とも `[PASS]` / `[FAIL]` の summary が表示されます。失敗時は `docker compose ps` と直近 log も出力します。
+
 ## 1. Mailer + Mailpit を起動する
 
 ```bash
