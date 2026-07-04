@@ -800,6 +800,45 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     }
 
     [Fact]
+    public async Task Failed_login_returns_same_generic_response_for_unknown_user()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        const string unknownUsername = "missing-admin-user";
+        const string wrongPassword = "totally-wrong-password";
+        using var client = CreateClient(fixture.Factory);
+        var csrfToken = await ReadCsrfTokenAsync(client, ct);
+
+        using var knownUserResponse = await client.PostAsync(
+            "/admin/api/login",
+            CreateLoginContent(csrfToken, MailerAdminFixture.Username, wrongPassword),
+            ct);
+        var knownUserBody = await knownUserResponse.Content.ReadAsStringAsync(ct);
+
+        using var unknownUserResponse = await client.PostAsync(
+            "/admin/api/login",
+            CreateLoginContent(csrfToken, unknownUsername, wrongPassword),
+            ct);
+        var unknownUserBody = await unknownUserResponse.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, knownUserResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, unknownUserResponse.StatusCode);
+        Assert.Equal(knownUserBody, unknownUserBody);
+        Assert.Equal("Invalid username or password.", knownUserBody);
+
+        var rows = await ReadAuditEventsAsync(fixture.ConnectionString, "auth.login_failed", ct);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Contains(rows, row =>
+            row.Actor == MailerAdminFixture.Username
+            && row.TargetType == "admin_session"
+            && row.Result == "failure");
+        Assert.Contains(rows, row =>
+            row.Actor == unknownUsername
+            && row.TargetType == "admin_session"
+            && row.Result == "failure");
+    }
+
+    [Fact]
     public async Task Body_view_persists_audit_event_without_pii()
     {
         var ct = TestContext.Current.CancellationToken;
