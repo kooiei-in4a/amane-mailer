@@ -3,7 +3,7 @@
   Clean-state release smoke for the published Mailer image (issue #11, #53).
 
 .DESCRIPTION
-  Pulls ghcr.io/kooiei-in4a/amane-mailer:v0.1.1, starts Mailer + Mailpit from a
+  Pulls ghcr.io/kooiei-in4a/amane-mailer:v0.3.0, starts Mailer + Mailpit from a
   clean compose project and named volume, and exercises the public release
   runtime path end to end:
 
@@ -26,7 +26,7 @@
 
   Config via environment (all optional):
     MAILER_IMAGE_REPOSITORY  default ghcr.io/kooiei-in4a/amane-mailer
-    MAILER_IMAGE_TAG         default v0.1.1
+    MAILER_IMAGE_TAG         default v0.3.0
     MAILER_IMAGE_PLATFORM    default linux/amd64
     MAILER_PULL_POLICY       default always   (set "missing" to reuse a local image)
     MAILPIT_IMAGE            default axllent/mailpit:latest
@@ -62,7 +62,7 @@ function Get-EnvOrDefault {
 }
 
 $env:MAILER_IMAGE_REPOSITORY = Get-EnvOrDefault 'MAILER_IMAGE_REPOSITORY' 'ghcr.io/kooiei-in4a/amane-mailer'
-$env:MAILER_IMAGE_TAG = Get-EnvOrDefault 'MAILER_IMAGE_TAG' 'v0.1.1'
+$env:MAILER_IMAGE_TAG = Get-EnvOrDefault 'MAILER_IMAGE_TAG' 'v0.3.0'
 $env:MAILER_IMAGE_PLATFORM = Get-EnvOrDefault 'MAILER_IMAGE_PLATFORM' 'linux/amd64'
 $env:MAILER_PULL_POLICY = Get-EnvOrDefault 'MAILER_PULL_POLICY' 'always'
 $env:MAILPIT_IMAGE = Get-EnvOrDefault 'MAILPIT_IMAGE' 'axllent/mailpit:latest'

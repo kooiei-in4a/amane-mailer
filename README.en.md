@@ -35,6 +35,10 @@ dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 
 ## Run With Mailpit
 
+To confirm your **first delivered message**, start with the Admin-free
+[Zero-Admin first-mail quickstart](docs/ops/first-mail-quickstart.en.md) [(ja)](docs/ops/first-mail-quickstart.md).
+On PowerShell, run `.\scripts\local-first-mail-smoke.ps1`; on bash, run `bash scripts/local-first-mail-smoke.sh` for the same checks automatically.
+
 The local compose file builds the Mailer image and starts Mailpit:
 
 ```powershell
@@ -70,7 +74,7 @@ In production, use a reverse proxy, firewall, or Docker port publish restriction
 - Per-admin tenant scope is implemented (`admin_users` / `admin_user_tenant_scopes`). Scoped admins can view and operate only allowed tenants. Break-glass admins can access all tenants (enhanced audit). When two or more effective tenants exist and Admin is enabled, startup fails closed unless at least one scoped or break-glass admin exists
 - The env bootstrap admin (`AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`) is seeded into `admin_users` on first database creation with **all configured tenant scopes** (`is_break_glass=false`; **not** treated as break-glass). In multi-tenant production, avoid relying on the bootstrap admin; provision per-tenant scoped admins instead ([runbook](docs/ops/local-mailer-docker-runbook.en.md#admin-tenant-scope-operations))
 - Scoped / break-glass admins are created with `admin user create` (generate hashes with `admin hash-password`)
-- Audit log persists body-view and auth events (login, logout, session expired, account locked, login rate limited) to `admin_audit_events` (stdout mirror). Retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`)
+- Audit log persists body-view and auth events (login, logout, session expired, account locked, login rate limited) to `admin_audit_events` (stdout mirror). Retention sweep uses `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (default 180 days); explicit purge via `db admin-audit purge --older-than-days <days>`
 - When `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, raw IP addresses are not stored in the database; keyed hashes are used instead (startup fail-closed when the key is unset)
 
 ## Deployment Notes
@@ -92,7 +96,7 @@ Operational runbooks:
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
 
-To smoke the published GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.2.0`)
+After v0.3.0 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.3.0`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
 run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
@@ -100,7 +104,8 @@ run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration.
 
-The published GHCR runtime image for the default `v0.2.0` tag is **multi-arch**
+For the v0.3.0 release, the default smoke tag `v0.3.0` is expected to be a
+**multi-arch** GHCR runtime image after publish
 (`linux/amd64` and `linux/arm64`). For smoke runs, confirm the platform in the
 release notes or Docker manifest, then set `MAILER_IMAGE_PLATFORM=linux/amd64` or
 `MAILER_IMAGE_PLATFORM=linux/arm64`. On hosts that can only run amd64 through
@@ -142,6 +147,7 @@ Minimum information to POST a mail request to a running Mailer:
 - **`payload_hash`**: SHA-256 of the canonical delivery payload.
   Use `MailPayloadHasher` from `Amane.Mailer.Contracts` (.NET),
   or see [examples/payload-hash/](examples/payload-hash/README.md) for Python / JavaScript / Go,
+  verify a request JSON file with `python examples/payload-hash/python/verify_request.py request.json`,
   and [docs/api/openapi.yaml](docs/api/openapi.yaml) for the algorithm spec.
 
 After starting the local compose stack, you can run this smoke request from the
@@ -192,6 +198,14 @@ To safely try a conflict, use a local environment only, keep the same
 `409 Conflict` / `IDEMPOTENCY_CONFLICT`.
 
 For the Consumer app compose network setup, see the comments in [infra/deploy/compose.yml](infra/deploy/compose.yml).
+
+For a full runnable Python Consumer sample that computes `payload_hash`, POSTs
+to a local Mailer, and handles `accepted` / `already_accepted` /
+`IDEMPOTENCY_CONFLICT`, see [examples/consumer-python/](examples/consumer-python/README.md).
+For a full runnable Node.js Consumer sample that uses the existing JavaScript
+`payload_hash` helper, POSTs to a local Mailer, and handles `accepted` /
+`already_accepted` / `IDEMPOTENCY_CONFLICT`, see
+[examples/consumer-node/](examples/consumer-node/README.md).
 
 ## Branch strategy and CI
 

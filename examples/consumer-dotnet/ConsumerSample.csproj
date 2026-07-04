@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Amane.Mailer.Examples.ConsumerSample</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Local dev uses ProjectReference so the sample always builds against the current
+      Contracts source. A real Consumer would use:
+        <PackageReference Include="Amane.Mailer.Contracts" Version="x.y.z" />
+    -->
+    <ProjectReference Include="..\..\src\Amane.Mailer.Contracts\Amane.Mailer.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

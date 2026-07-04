@@ -23,7 +23,7 @@ firewall、または Docker port publish 制限をネットワーク境界とし
 - server-side session store あり（資格情報 hash 変更時の即時失効、明示 logout、期限切れ、同時 session 上限）
 - 管理者ごとの tenant scope あり（scoped / break-glass 認可。2+ effective tenant + Admin 有効時は scoped または break-glass 管理者がいないと startup fail-closed）。env bootstrap 管理者は初回 seed 時に全設定 tenant scope を付与（break-glass ではない）
 - scoped / break-glass 作成 CLI（`admin user create`）あり（`admin hash-password` で hash 生成）
-- audit retention sweep は未実装（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`）
+- audit retention sweep あり（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`、既定 180 日。worker 起動時と日次タイマーで batch delete。明示 purge は `db admin-audit purge --older-than-days <days>`）
 - `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は raw IP を DB に保存せず keyed hash を使用（鍵未設定時は startup fail-closed）
 
 ## Admin tenant scope 運用
@@ -117,6 +117,20 @@ Mailer コンテナは `ConnectionStrings__Mailer` で同一 SQLite DB を参照
 ```powershell
 [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
 ```
+
+## Admin audit retention
+
+`MAILER_ADMIN_AUDIT_RETENTION_DAYS`（fallback: `AMANE_ADMIN_AUDIT_RETENTION_DAYS`）で `admin_audit_events` の保持日数を設定します（既定 180 日）。worker 有効時、起動直後と日次タイマーで保持期間を過ぎた行を batch delete します。`mail_requests` や本文 payload には触れません。
+
+30 日未満の保持期間は `ASPNETCORE_ENVIRONMENT=Development` のローカル開発以外では startup fail-closed です。
+
+明示 purge（runbook / 手動運用）:
+
+```powershell
+dotnet Amane.Mailer.dll db admin-audit purge --older-than-days 180
+```
+
+purge 出力と sweep ログは削除件数と日数のみを含み、actor・target・メール payload は含みません。`db backup` スナップショットには purge 前の監査行が含まれます（[restore-verification](restore-verification.md) 参照）。
 
 ## 前提
 

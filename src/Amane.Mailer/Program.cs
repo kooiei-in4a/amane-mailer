@@ -21,6 +21,7 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll db backup <absolute-path>
       dotnet Amane.Mailer.dll db stats [--tenant-id <uuid>] [--queued-stale-minutes <minutes>] [--failure-window-minutes <minutes>] [--stale-processing-minutes <minutes>]
       dotnet Amane.Mailer.dll db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>
+      dotnet Amane.Mailer.dll db admin-audit purge --older-than-days <days>
       dotnet Amane.Mailer.dll admin hash-password
       dotnet Amane.Mailer.dll admin user create --username <name> --password-hash <pbkdf2> [--tenant-id <uuid> ...] [--break-glass]
 
@@ -80,6 +81,17 @@ if (DbRequestStateCommand.IsDbRequestStateCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
     return await MailerCliHost.RunDbRequestStateAsync(
+        cliConfiguration,
+        commandArgs,
+        Console.Out,
+        Console.Error,
+        CancellationToken.None);
+}
+
+if (DbAdminAuditPurgeCommand.IsDbAdminAuditPurgeCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunDbAdminAuditPurgeAsync(
         cliConfiguration,
         commandArgs,
         Console.Out,

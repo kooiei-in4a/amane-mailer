@@ -143,6 +143,23 @@ bash backup-mailer.sh 2>&1 | tee /tmp/mailer-backup-manual.log
 
 アクティブなバックアップ操作外で平文 `.db` が見つかった場合はホストから削除し、インシデントをオペレータの非公開メモに記録します。
 
+## Admin UI 経由 backup（任意）
+
+`AMANE_ADMIN_DB_OPS_ENABLED=true`（fallback: `MAILER_ADMIN_DB_OPS_ENABLED`）を **明示した場合のみ**、Admin UI `/admin/ops` から WAL checkpoint と online backup を実行できます。`AMANE_ADMIN_ENABLED=true` だけでは有効になりません。
+
+| 項目 | 内容 |
+|------|------|
+| 認可 | break-glass 管理者、または全 effective tenant scope を持つ管理者のみ（scoped admin は不可） |
+| 出力先 | 固定ディレクトリのみ（UI/API からパス指定不可）。既定は `<db-parent>/backups/`。上書きは `AMANE_ADMIN_DB_BACKUP_DIRECTORY` |
+| ファイル名 | `mailer-<UTC-timestamp>.db`（平文） |
+| 監査 | `admin_audit_events` に `db_ops.*` を記録。絶対パスは記録しない |
+| 同時実行 | checkpoint / backup は排他（実行中は 409 Conflict） |
+
+**運用上の注意**
+
+- backup 出力は Mailer DB と同等以上の **PII を平文で含む**。本番の定期運用は `backup-mailer.sh`（age 暗号化 + offsite）を優先し、Admin backup は緊急スナップショット向けとする。
+- 保存先の権限制限・暗号化・転送・削除確認を適用する。詳細は [ADR 0013 D-09](../adr/0013-admin-threat-model-and-pii-policy.md) を参照。
+- CLI `db checkpoint` / `db backup` は従来どおり利用可能（Admin ゲートの影響を受けない）。
 ## スケジュールバックアップ
 
 手動バックアップとリストア検証が通ってからスケジュールを導入します。crontab や systemd timer など、ホストが所有する 1 か所に置きます。

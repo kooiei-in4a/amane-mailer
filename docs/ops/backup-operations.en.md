@@ -178,6 +178,31 @@ Expected result:
 If a plaintext `.db` backup is found outside an active backup operation, remove
 it from the host and record the incident in the operator's private notes.
 
+## Admin UI Backup (Optional)
+
+When `AMANE_ADMIN_DB_OPS_ENABLED=true` (fallback: `MAILER_ADMIN_DB_OPS_ENABLED`)
+is set explicitly, operators with break-glass access or all effective tenant
+scopes can run WAL checkpoint and online backup from Admin UI `/admin/ops`.
+`AMANE_ADMIN_ENABLED=true` alone does not enable DB operations.
+
+| Item | Policy |
+|------|--------|
+| Authorization | break-glass admin, or admin with all effective tenant scopes only |
+| Destination | fixed directory only (no path input in UI/API). Default: `<db-parent>/backups/`. Override: `AMANE_ADMIN_DB_BACKUP_DIRECTORY` |
+| File name | `mailer-<UTC-timestamp>.db` (plaintext) |
+| Audit | `admin_audit_events` records `db_ops.*` without absolute paths |
+| Concurrency | checkpoint and backup are exclusive (409 Conflict while running) |
+
+**Operational cautions**
+
+- Backup output contains **plaintext PII** at least equal to the live Mailer DB.
+  Prefer `backup-mailer.sh` (age encryption + offsite) for scheduled production
+  backups; treat Admin backup as an emergency snapshot path.
+- Apply destination permissions, encryption, transfer controls, and deletion
+  confirmation. See [ADR 0013 D-09](../adr/0013-admin-threat-model-and-pii-policy.md).
+- CLI `db checkpoint` / `db backup` remain available and are not gated by Admin
+  settings.
+
 ## Scheduled Backup
 
 Install scheduling only after manual backup and restore verification pass. Keep

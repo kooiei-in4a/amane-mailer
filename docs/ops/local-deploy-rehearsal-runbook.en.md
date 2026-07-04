@@ -55,6 +55,7 @@ $env:MAILER_PULL_POLICY = 'never'   # or set in .env
 ```
 
 The script does not overwrite existing `.env` / `tenants.json`.
+For tenant / env preflight, see [Mailer configuration](../../config/mailer/README.en.md#preflight).
 
 ## Manual steps
 
@@ -166,7 +167,7 @@ login throttle is SQLite-backed (lock state survives process restart);
 durable server-side session store (credential-hash change revocation, explicit logout, expiry, concurrent session limit);
 per-admin tenant scope is implemented (scoped / break-glass authorization; bootstrap admin receives all configured scopes on first seed, not break-glass);
 scoped / break-glass admins are created with `admin user create` (hash via `admin hash-password`);
-audit log persists body-view and auth events to `admin_audit_events` (mirrored to stdout). Retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`).
+audit log persists body-view and auth events to `admin_audit_events` (mirrored to stdout). Retention sweep uses `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (default 180 days); explicit purge via `db admin-audit purge --older-than-days <days>`.
 For shared multi-tenant production boundaries, see [local-mailer-docker-runbook.en.md](local-mailer-docker-runbook.en.md#admin-tenant-scope-operations).
 When `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, raw IP addresses are not stored in the database; keyed hashes are used instead (startup fail-closed when the key is unset).
 

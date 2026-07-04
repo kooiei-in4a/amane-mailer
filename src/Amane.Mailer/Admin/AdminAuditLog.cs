@@ -34,6 +34,29 @@ public static class AdminAuditLog
         public const string SessionExpired = "auth.session_expired";
         public const string AccountTemporarilyLocked = "auth.account_temporarily_locked";
         public const string LoginRateLimited = "auth.login_rate_limited";
+        public const string DbCheckpointRequested = "db_ops.checkpoint_requested";
+        public const string DbBackupRequested = "db_ops.backup_requested";
+        public const string DbBackupCompleted = "db_ops.backup_completed";
+        public const string DbBackupFailed = "db_ops.backup_failed";
+
+        public static IReadOnlyList<string> All { get; } =
+        [
+            MailRequestBodyViewed,
+            BreakGlassMailRequestBodyViewed,
+            ManualRetryRequested,
+            ManualCancelRequested,
+            LoginSucceeded,
+            BreakGlassLoginSucceeded,
+            LoginFailed,
+            Logout,
+            SessionExpired,
+            AccountTemporarilyLocked,
+            LoginRateLimited,
+            DbCheckpointRequested,
+            DbBackupRequested,
+            DbBackupCompleted,
+            DbBackupFailed,
+        ];
     }
 
     public static class ErrorCodes
@@ -41,6 +64,12 @@ public static class AdminAuditLog
         public const string NotFound = "not_found";
         public const string InvalidState = "invalid_state";
         public const string LockHeld = "lock_held";
+        public const string OperationFailed = "operation_failed";
+    }
+
+    public static class FieldNames
+    {
+        public const string ConfiguredBackupDirectory = "configured_backup_directory";
     }
 
     public static class Results
@@ -53,6 +82,7 @@ public static class AdminAuditLog
     {
         public const string MailRequest = "mail_request";
         public const string AdminSession = "admin_session";
+        public const string DbOps = "db_ops";
     }
 
     public static string ResolveActor(HttpContext context) =>
