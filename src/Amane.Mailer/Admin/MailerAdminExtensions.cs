@@ -15,7 +15,7 @@ public static class MailerAdminExtensions
 {
     // Keep unknown-user failures on the same PBKDF2 verification path as bad passwords.
     private const string DummyAdminPasswordHash =
-        "pbkdf2:sha256:600000:YW1hbmUtZHVtbXktMTI0:pnIu73WAm1scjjQVvEyMAEPV4FU0Vc08DRl8DNg0QOU=";
+        "pbkdf2:sha256:600000:YW1hbmUtZHVtbXktMTI0IQ==:qMTLpvljgavl6UScZshWUdoApY4JFTGZWhLPJ62+Ui0=";
 
     public static IServiceCollection AddMailerAdmin(this IServiceCollection services, IConfiguration configuration)
     {

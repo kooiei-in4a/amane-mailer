@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations;
@@ -291,6 +292,19 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         Assert.Equal(HttpStatusCode.TooManyRequests, locked.StatusCode);
         Assert.Equal("30", locked.Headers.RetryAfter?.Delta?.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Assert.Equal(HttpStatusCode.TooManyRequests, stillLocked.StatusCode);
+    }
+
+    [Fact]
+    public void Dummy_admin_password_hash_is_supported()
+    {
+        var field = typeof(MailerAdminExtensions).GetField(
+            "DummyAdminPasswordHash",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(field);
+        var hash = Assert.IsType<string>(field!.GetRawConstantValue());
+
+        Assert.True(AdminPasswordHasher.IsSupportedHash(hash));
     }
 
     [Fact]
