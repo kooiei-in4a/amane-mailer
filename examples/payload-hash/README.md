@@ -148,9 +148,11 @@ previous request. Typical causes:
 2. **Omitted vs. explicit `null` mismatch.** Computing the hash as if an
    optional field were omitted, then POSTing it as `"reply_to": null` (or the
    reverse). The hash input must match the JSON shape you actually send.
-3. **`metadata` values that aren't strings.** For example `"form_id": 42`
-   instead of `"form_id": "42"`. Numeric JSON values are outside the mail
-   payload contract; stringify identifiers before hashing.
+3. **Empty string treated as omitted.** Some application code skips adding
+   a field to the hash input when its value is an empty string `""`,
+   treating it like "no value." But `""` is a present, non-null value—if
+   the JSON you send includes `"reply_to": ""`, the hash input must include
+   it too. Only an actually absent key should be treated as omitted.
 4. **Serializer null handling differs from what you hashed.** Some
    JSON libraries drop `null`-valued properties by default, or add them back
    on deserialize/reserialize. If your serializer's actual output differs
@@ -176,6 +178,13 @@ previous request. Typical causes:
 Use the [request JSON verifier](#verify-your-request-json-python) to inspect
 exactly which fields were included/excluded and see the canonical JSON Mailer
 would compute, before you POST.
+
+Note: non-string `metadata` values (for example `"form_id": 42` instead of
+`"form_id": "42"`) are **not** a cause of `INVALID_PAYLOAD_HASH`. Mailer
+deserializes the request body into a typed contract before hash validation
+runs, and a non-string `metadata` value fails that step first, returning
+400 `INVALID_REQUEST`. Stringify identifiers before sending regardless, to
+avoid the 400.
 
 ### `IDEMPOTENCY_CONFLICT` (409) vs. `INVALID_PAYLOAD_HASH` (422)
 
