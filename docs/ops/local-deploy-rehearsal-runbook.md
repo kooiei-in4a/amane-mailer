@@ -57,6 +57,7 @@ $env:MAILER_PULL_POLICY = 'never'   # または .env に記載
 ```
 
 スクリプトは既存の `.env` / `tenants.json` を上書きしません。
+tenant / env preflight は [Mailer 設定](../../config/mailer/README.md#preflight) を参照してください。
 
 ## 手動手順
 

@@ -55,6 +55,7 @@ $env:MAILER_PULL_POLICY = 'never'   # or set in .env
 ```
 
 The script does not overwrite existing `.env` / `tenants.json`.
+For tenant / env preflight, see [Mailer configuration](../../config/mailer/README.en.md#preflight).
 
 ## Manual steps
 
