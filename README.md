@@ -192,6 +192,9 @@ Consumer アプリの compose ネットワーク接続例は [infra/deploy/compo
 Python Consumer の full runnable sample（既存 Python `payload_hash` helper 使用、local Mailer への
 POST、`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
 [examples/consumer-python/](examples/consumer-python/README.md) を参照してください。
+Node.js Consumer の full runnable sample（既存 JavaScript `payload_hash` helper 使用、local Mailer への
+POST、`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
+[examples/consumer-node/](examples/consumer-node/README.md) を参照してください。
 
 ## ブランチ戦略と CI
 

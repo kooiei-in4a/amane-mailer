@@ -201,6 +201,10 @@ For the Consumer app compose network setup, see the comments in [infra/deploy/co
 For a full runnable Python Consumer sample that computes `payload_hash`, POSTs
 to a local Mailer, and handles `accepted` / `already_accepted` /
 `IDEMPOTENCY_CONFLICT`, see [examples/consumer-python/](examples/consumer-python/README.md).
+For a full runnable Node.js Consumer sample that uses the existing JavaScript
+`payload_hash` helper, POSTs to a local Mailer, and handles `accepted` /
+`already_accepted` / `IDEMPOTENCY_CONFLICT`, see
+[examples/consumer-node/](examples/consumer-node/README.md).
 
 ## Branch strategy and CI
 
