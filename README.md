@@ -189,6 +189,9 @@ Consumer アプリの compose ネットワーク接続例は [infra/deploy/compo
 .NET Consumer の full runnable sample（`Amane.Mailer.Contracts` 使用、`payload_hash` 計算、
 `accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
 [examples/consumer-dotnet/](examples/consumer-dotnet/README.md) を参照してください。
+Python Consumer の full runnable sample（既存 Python `payload_hash` helper 使用、local Mailer への
+POST、`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
+[examples/consumer-python/](examples/consumer-python/README.md) を参照してください。
 
 ## ブランチ戦略と CI
 
