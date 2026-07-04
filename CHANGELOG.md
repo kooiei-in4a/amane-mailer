@@ -44,7 +44,7 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 - No breaking public HTTP contract change. The public
   `POST /internal/mail-requests` HTTP contract shape and acceptance semantics
   are unchanged.
-- No manual database migration is required for this release-prep change.
+- No manual database migration is required for this release.
 
 ## [0.2.0] - 2026-07-03
 
