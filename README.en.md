@@ -146,6 +146,7 @@ Minimum information to POST a mail request to a running Mailer:
 - **`payload_hash`**: SHA-256 of the canonical delivery payload.
   Use `MailPayloadHasher` from `Amane.Mailer.Contracts` (.NET),
   or see [examples/payload-hash/](examples/payload-hash/README.md) for Python / JavaScript / Go,
+  verify a request JSON file with `python examples/payload-hash/python/verify_request.py request.json`,
   and [docs/api/openapi.yaml](docs/api/openapi.yaml) for the algorithm spec.
 
 After starting the local compose stack, you can run this smoke request from the

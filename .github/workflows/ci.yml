@@ -204,7 +204,9 @@ jobs:
           go-version: "1.22"
 
       - name: Verify payload_hash examples (Python)
-        run: python examples/payload-hash/python/verify_vectors.py
+        run: |
+          python examples/payload-hash/python/verify_vectors.py
+          python examples/payload-hash/python/verify_request_vectors.py
 
       - name: Verify payload_hash examples (JavaScript)
         run: node examples/payload-hash/javascript/verify_vectors.mjs

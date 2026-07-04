@@ -561,6 +561,8 @@ const payloadHashExamplesReadme = read('examples/payload-hash/README.md');
 const payloadHashExamplePaths = [
   'examples/payload-hash/python/mail_payload_hash.py',
   'examples/payload-hash/python/verify_vectors.py',
+  'examples/payload-hash/python/verify_request.py',
+  'examples/payload-hash/python/verify_request_vectors.py',
   'examples/payload-hash/javascript/mail_payload_hash.mjs',
   'examples/payload-hash/javascript/verify_vectors.mjs',
   'examples/payload-hash/go/mail_payload_hash.go',
