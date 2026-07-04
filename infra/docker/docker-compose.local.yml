@@ -5,7 +5,7 @@ services:
     image: ${MAILPIT_IMAGE:-axllent/mailpit:latest}
     ports:
       - "127.0.0.1:1025:1025"
-      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:${MAILPIT_HTTP_PORT:-8025}:8025"
 
   # The runtime image is chiseled and runs as a non-root user. On Linux/macOS a
   # fresh bind mount path is auto-created root-owned (mode 755), so SQLite cannot
@@ -77,7 +77,7 @@ services:
       - ${MAILER_DATA_PATH:-../../data/mailer}:/app/data
       - ${MAILER_CONFIG_PATH:-../../config/mailer}:/app/config/mailer:ro
     ports:
-      - "127.0.0.1:5280:8080"
+      - "127.0.0.1:${MAILER_HTTP_PORT:-5280}:8080"
     healthcheck:
       test: ["CMD", "/app/Amane.Mailer", "healthcheck"]
       interval: 5s
