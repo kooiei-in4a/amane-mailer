@@ -186,6 +186,10 @@ hash 対象フィールドを変更し、その payload に合わせて `payload
 
 Consumer アプリの compose ネットワーク接続例は [infra/deploy/compose.yml](infra/deploy/compose.yml) のコメントを参照してください。
 
+.NET Consumer の full runnable sample（`Amane.Mailer.Contracts` 使用、`payload_hash` 計算、
+`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
+[examples/consumer-dotnet/](examples/consumer-dotnet/README.md) を参照してください。
+
 ## ブランチ戦略と CI
 
 作業は `feature/**` / `fix/**` → `develop` → `main` の順で進めます。`main`
