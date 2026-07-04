@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,8 @@ EXCLUDED_FIELDS = frozenset(
         "payload_hash",
     ]
 )
+
+LOWERCASE_SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -44,7 +47,11 @@ def verify_request_data(request: dict[str, Any]) -> VerifyResult:
     if request_hash is None:
         matches = None
     else:
-        matches = str(request_hash).lower() == computed_hash
+        request_hash_text = str(request_hash)
+        matches = (
+            LOWERCASE_SHA256_HEX_PATTERN.fullmatch(request_hash_text) is not None
+            and request_hash_text == computed_hash
+        )
 
     return VerifyResult(
         included_fields=included,
@@ -107,12 +114,23 @@ def format_verify_result(result: VerifyResult) -> str:
     return "\n".join(lines)
 
 
-def load_request_json(path: Path) -> dict[str, Any]:
-    raw = path.read_text(encoding="utf-8")
-    parsed = json.loads(raw)
+def _parse_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        duplicate = next(key for key in keys if keys.count(key) > 1)
+        raise ValueError(f"Duplicate JSON property: {duplicate!r}")
+    return dict(pairs)
+
+
+def parse_request_json(raw: str) -> dict[str, Any]:
+    parsed = json.loads(raw, object_pairs_hook=_parse_object_pairs)
     if not isinstance(parsed, dict):
         raise ValueError("Mail request JSON must be an object.")
     return parsed
+
+
+def load_request_json(path: Path) -> dict[str, Any]:
+    return parse_request_json(path.read_text(encoding="utf-8"))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from verify_request import format_verify_result, verify_request_data
+from verify_request import format_verify_result, parse_request_json, verify_request_data
 
 ROOT = Path(__file__).resolve().parents[3]
 VECTORS_PATH = (
@@ -56,6 +56,60 @@ def main() -> int:
             print(f"[FAIL] {name}: expected MISMATCH for incorrect payload_hash")
             print(format_verify_result(mismatch_result))
             return 1
+
+        uppercase_request = dict(matching_request)
+        uppercase_request["payload_hash"] = expected_hash.upper()
+        uppercase_result = verify_request_data(uppercase_request)
+        if uppercase_result.matches is not False:
+            print(f"[FAIL] {name}: expected MISMATCH for uppercase payload_hash")
+            print(format_verify_result(uppercase_result))
+            return 1
+
+    duplicate_json = (
+        '{'
+        '"tenant_id":"00000000-0000-0000-0000-000000000101",'
+        '"mail_request_id":"00000000-0000-0000-0000-000000000201",'
+        '"source_service":"example-service",'
+        '"purpose":"FormResponseNotification",'
+        '"to":[{"email":"admin@example.com"}],'
+        '"subject":"First subject",'
+        '"text_body":"A new response arrived.",'
+        f'"payload_hash":"{vectors[0]["expected_sha256_hex"]}",'
+        '"subject":"Duplicate subject"'
+        '}'
+    )
+    try:
+        parse_request_json(duplicate_json)
+    except ValueError as error:
+        if "Duplicate JSON property" not in str(error):
+            print(f"[FAIL] duplicate property: unexpected error: {error}")
+            return 1
+    else:
+        print("[FAIL] duplicate property: expected input error")
+        return 1
+
+    nested_duplicate_json = (
+        '{'
+        '"tenant_id":"00000000-0000-0000-0000-000000000101",'
+        '"mail_request_id":"00000000-0000-0000-0000-000000000201",'
+        '"source_service":"example-service",'
+        '"purpose":"FormResponseNotification",'
+        '"to":[{"email":"admin@example.com"}],'
+        '"subject":"New response",'
+        '"text_body":"A new response arrived.",'
+        '"metadata":{"form_id":"form-001","form_id":"form-002"},'
+        f'"payload_hash":"{vectors[0]["expected_sha256_hex"]}"'
+        '}'
+    )
+    try:
+        parse_request_json(nested_duplicate_json)
+    except ValueError as error:
+        if "Duplicate JSON property" not in str(error):
+            print(f"[FAIL] nested duplicate property: unexpected error: {error}")
+            return 1
+    else:
+        print("[FAIL] nested duplicate property: expected input error")
+        return 1
 
     print(f"Python payload_hash request verifier passed ({len(vectors)} vectors).")
     return 0
