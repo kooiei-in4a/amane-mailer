@@ -15,7 +15,8 @@ ACS 実送信、Dead Letter、backup / restore、deploy rehearsal、multi-tenant
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) または Docker Engine が起動していること。
 - リポジトリ root でコマンドを実行すること。
 - host port `5280`（Mailer）と `8025`（Mailpit）が空いていること。
-- `curl` が使えること（Windows では Git Bash または PowerShell 7+ の `curl.exe` でも可）。
+- 手順 1–2 は `curl` があれば可（Windows では PowerShell の `curl.exe` でも可）。
+- 手順 3–4 は **bash** と `curl` が必要です（Windows では [Git Bash](https://gitforwindows.org/) を使ってください。PowerShell のみでは heredoc、`uuidgen`、`seq` が使えません）。
 
 Admin 用の環境変数（`AMANE_ADMIN_*`）は **設定不要** です。local compose の既定値で Mailpit 配送になります。
 

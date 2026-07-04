@@ -16,7 +16,8 @@ For fuller smoke coverage (idempotent repost, conflict, Admin UI, and more), see
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) or Docker Engine is running.
 - Run commands from the repository root.
 - Host ports `5280` (Mailer) and `8025` (Mailpit) are free.
-- `curl` is available (on Windows, Git Bash or PowerShell 7+ `curl.exe` is fine).
+- Steps 1–2 need `curl` only (PowerShell `curl.exe` on Windows is fine).
+- Steps 3–4 require **bash** and `curl` (on Windows, use [Git Bash](https://gitforwindows.org/); PowerShell alone cannot run the heredoc, `uuidgen`, or `seq` loop).
 
 No Admin environment variables (`AMANE_ADMIN_*`) are required. Local compose defaults to Mailpit delivery.
 
