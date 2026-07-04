@@ -92,13 +92,13 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
-公開済みの GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.2.0`）を clean state から
+公開済みの GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.3.0`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
 conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（Linux / macOS / Git Bash）または
 `scripts/release-smoke.ps1`（Windows / PowerShell + Docker Desktop）を使います。手順と設定は
 [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
 
-既定タグ `v0.2.0` の公開 GHCR runtime image は **multi-arch**（`linux/amd64` と
+既定タグ `v0.3.0` の公開 GHCR runtime image は **multi-arch**（`linux/amd64` と
 `linux/arm64`）です。smoke では release notes または Docker manifest の platform を確認し、
 `MAILER_IMAGE_PLATFORM=linux/amd64` または `MAILER_IMAGE_PLATFORM=linux/arm64` を指定してください。
 amd64 emulation のみ利用可能なホストでは `linux/amd64` を明示してください。

@@ -11,6 +11,41 @@ NuGet package versions (`Amane.Mailer.Contracts`), and OpenAPI `info.version` ar
 kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 `docs/service-spec.md` for details.
 
+## [0.3.0] - 2026-07-04
+
+### Added
+
+- Zero-Admin first-mail quickstart for a fresh local Mailpit setup (#145).
+- Bash and PowerShell local first-mail smoke scripts for the first-success path
+  (#146, #147).
+- `payload_hash` request verifier and mismatch troubleshooting guidance for
+  Consumer self-diagnosis (#148, #149).
+- Tenant config / environment preflight and troubleshooting matrix for common
+  startup misconfiguration paths (#150, #151).
+- Runnable .NET, Python, and Node.js Consumer POST examples that compute
+  `payload_hash` and handle accepted, idempotent retry, and conflict outcomes
+  (#152, #153, #154).
+
+### Changed
+
+- Align public release image defaults and smoke guidance on `v0.3.0` (#173).
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `0.3.0` (#173).
+
+### Documentation
+
+- Update README links for first-mail, payload hash, tenant troubleshooting, and
+  Consumer sample onboarding paths (#145-#155).
+- Add v0.3.0 release evidence draft with placeholders for tag, NuGet, GHCR, and
+  public smoke artifacts (#174).
+
+### Breaking / Migration
+
+- No breaking public HTTP contract change. The public
+  `POST /internal/mail-requests` HTTP contract shape and acceptance semantics
+  are unchanged.
+- No manual database migration is required for this release-prep change.
+
 ## [0.2.0] - 2026-07-03
 
 ### Added
