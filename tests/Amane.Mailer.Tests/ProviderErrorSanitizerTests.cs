@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Amane.Mailer.Delivery;
 
 namespace Amane.Mailer.Tests;
@@ -108,6 +109,34 @@ public sealed class ProviderErrorSanitizerTests
 
         Assert.True(result.Length <= ProviderErrorSanitizer.MaxLength + 3);
         Assert.EndsWith("...", result, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Sanitize_caps_raw_input_before_regex_and_keeps_result_bounded()
+    {
+        var raw = "token=" + new string('x', ProviderErrorSanitizer.MaxRegexInputLength * 4);
+
+        var result = ProviderErrorSanitizer.Sanitize(raw);
+
+        Assert.Equal("token=***", result);
+        Assert.True(result.Length <= ProviderErrorSanitizer.MaxLength + 3);
+    }
+
+    [Fact]
+    public void Sanitize_completes_within_bounded_time_for_long_pathological_input()
+    {
+        ProviderErrorSanitizer.Sanitize("warmup");
+        var raw = "token=" + new string('A', ProviderErrorSanitizer.MaxRegexInputLength * 8);
+
+        var stopwatch = Stopwatch.StartNew();
+        var result = ProviderErrorSanitizer.Sanitize(raw);
+        stopwatch.Stop();
+
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+            $"Sanitize took {stopwatch.Elapsed.TotalMilliseconds:0.0} ms.");
+        Assert.DoesNotContain(new string('A', 128), result, StringComparison.Ordinal);
+        Assert.True(result.Length <= ProviderErrorSanitizer.MaxLength + 3);
     }
 
     [Fact]
