@@ -126,3 +126,64 @@ Run verifier tests against official vectors:
 ```bash
 python examples/payload-hash/python/verify_request_vectors.py
 ```
+
+## Troubleshooting `payload_hash` mismatches
+
+Applies to both .NET and non-.NET Consumers — Mailer recomputes the hash from
+the request JSON it received, so any deviation from the rules above produces
+a mismatch regardless of implementation language.
+
+### `INVALID_PAYLOAD_HASH` (422)
+
+Mailer recomputes the hash from your own request body and compares it against
+the `payload_hash` you sent. A 422 `INVALID_PAYLOAD_HASH` means those two
+values disagree for **that single request**—it does not compare against any
+previous request. Typical causes:
+
+1. **Included vs. excluded fields mixed up.** Hashing `tenant_id`,
+   `mail_request_id`, or `payload_hash` (routing/self-reference fields), or
+   omitting one of the eight delivery fields (`source_service`, `purpose`,
+   `to`, `subject`, `html_body`, `text_body`, `reply_to`, `metadata`) from the
+   hash input.
+2. **Omitted vs. explicit `null` mismatch.** Computing the hash as if an
+   optional field were omitted, then POSTing it as `"reply_to": null` (or the
+   reverse). The hash input must match the JSON shape you actually send.
+3. **`metadata` values that aren't strings.** For example `"form_id": 42`
+   instead of `"form_id": "42"`. Numeric JSON values are outside the mail
+   payload contract; stringify identifiers before hashing.
+4. **Serializer null handling differs from what you hashed.** Some
+   JSON libraries drop `null`-valued properties by default, or add them back
+   on deserialize/reserialize. If your serializer's actual output differs
+   from the shape you hashed, the hashes diverge even though your code
+   "looks" correct.
+5. **Non-ordinal key sorting.** Locale-aware or case-insensitive sort
+   implementations can reorder keys differently from .NET
+   `StringComparer.Ordinal` (UTF-16 code-unit order), producing a different
+   canonical JSON string and thus a different hash.
+6. **Hash computed against different JSON than the one POSTed.** For
+   example, hashing an in-memory object and then re-serializing it for the
+   request body with a different JSON library or formatting pass (pretty
+   printing, key reordering, re-escaping) between hash computation and send.
+
+Use the [request JSON verifier](#verify-your-request-json-python) to inspect
+exactly which fields were included/excluded and see the canonical JSON Mailer
+would compute, before you POST.
+
+### `IDEMPOTENCY_CONFLICT` (409) vs. `INVALID_PAYLOAD_HASH` (422)
+
+These two error codes check different things, in this order:
+
+1. Mailer first checks that **your own `payload_hash` is self-consistent**
+   with your own request body (`INVALID_PAYLOAD_HASH`, 422). This does not
+   look at any other request.
+2. Only if that check passes does Mailer look up whether the same
+   `mail_request_id` (scoped to `tenant_id` + `source_service`) was already
+   accepted. If it was, and the **newly computed hash differs from the hash
+   stored for that earlier request**, Mailer returns `IDEMPOTENCY_CONFLICT`
+   (409).
+
+In short: `INVALID_PAYLOAD_HASH` means your hash doesn't match your own
+payload. `IDEMPOTENCY_CONFLICT` means your hash is fine, but the payload
+content changed between two requests that reused the same idempotency key —
+usually because a retry was sent with edited subject/body/recipient/metadata
+instead of the original content.
