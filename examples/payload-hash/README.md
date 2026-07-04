@@ -142,9 +142,9 @@ previous request. Typical causes:
 
 1. **Included vs. excluded fields mixed up.** Hashing `tenant_id`,
    `mail_request_id`, or `payload_hash` (routing/self-reference fields), or
-   omitting one of the eight delivery fields (`source_service`, `purpose`,
-   `to`, `subject`, `html_body`, `text_body`, `reply_to`, `metadata`) from the
-   hash input.
+   omitting one of the delivery fields (`source_service`, `purpose`, `to`,
+   `subject`, `html_body`, `text_body`, `reply_to`, `metadata`) that is
+   actually present in the request JSON from the hash input.
 2. **Omitted vs. explicit `null` mismatch.** Computing the hash as if an
    optional field were omitted, then POSTing it as `"reply_to": null` (or the
    reverse). The hash input must match the JSON shape you actually send.
@@ -160,10 +160,18 @@ previous request. Typical causes:
    implementations can reorder keys differently from .NET
    `StringComparer.Ordinal` (UTF-16 code-unit order), producing a different
    canonical JSON string and thus a different hash.
-6. **Hash computed against different JSON than the one POSTed.** For
-   example, hashing an in-memory object and then re-serializing it for the
-   request body with a different JSON library or formatting pass (pretty
-   printing, key reordering, re-escaping) between hash computation and send.
+6. **Hash computed against different field values than the ones POSTed.**
+   Mailer parses the JSON and canonicalizes semantic values, so whitespace,
+   key order, or string-escaping style in your request body do not by
+   themselves cause a mismatch. What does cause one is hashing a payload
+   that is later mutated before send—for example, hashing a request object
+   and then trimming, re-encoding, or otherwise editing a field's value
+   (subject, body, `metadata` entry, etc.) before the actual POST.
+7. **Digest encoded incorrectly.** `payload_hash` must be a lowercase,
+   64-character hex-encoded SHA-256 digest computed over the UTF-8 bytes of
+   the canonical JSON. Uppercase hex, base64, or a digest computed over a
+   non-UTF-8 byte encoding will not match, even if the canonical JSON itself
+   is correct.
 
 Use the [request JSON verifier](#verify-your-request-json-python) to inspect
 exactly which fields were included/excluded and see the canonical JSON Mailer
