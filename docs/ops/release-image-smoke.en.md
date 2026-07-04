@@ -2,11 +2,12 @@
 
 # Clean-state smoke for the published release image
 
-Pulls the published GHCR runtime image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.2.0`)
-from a clean state, starts Mailer + Mailpit, and smokes the public release runtime path.
+After v0.3.0 is published, this runbook pulls the GHCR runtime image (default
+`ghcr.io/kooiei-in4a/amane-mailer:v0.3.0`) from a clean state, starts Mailer +
+Mailpit, and smokes the release runtime path.
 
 Unlike `infra/docker/docker-compose.local.yml` (which builds from source), this smoke
-exercises the **published image itself**. Tenant configuration is the safe example baked
+exercises the **release image itself after publish**. Tenant configuration is the safe example baked
 into the image (`/app/config/mailer/tenants.example.json`); no host tenant JSON is mounted.
 Mailer state lives in a named volume that `docker compose down -v` removes on exit.
 
@@ -17,7 +18,8 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 - On Windows: PowerShell 5.1+ and Docker Desktop (same Docker CLI context as PowerShell).
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
-- The published GHCR runtime image for the default `v0.2.0` tag is **multi-arch**
+- For the v0.3.0 release, the default smoke tag `v0.3.0` is expected to be a
+  **multi-arch** GHCR runtime image after publish
   (`linux/amd64` and `linux/arm64`). For smoke runs, confirm the platform in the
   release notes or Docker manifest, then set `MAILER_IMAGE_PLATFORM=linux/amd64` or
   `MAILER_IMAGE_PLATFORM=linux/arm64`.
@@ -47,7 +49,7 @@ than Docker Desktop's Windows CLI context.
 The script:
 
 1. Removes any leftover smoke compose project from a previous run.
-2. Pulls the published image and Mailpit, then starts them in a clean project / named volume.
+2. Pulls the target release image and Mailpit, then starts them in a clean project / named volume.
 3. Runs the checks below, printing `[PASS]` / `[FAIL]` per line.
 4. Removes the compose project and volume on exit (including on failure).
 
@@ -70,7 +72,7 @@ If startup itself fails, the script prints `docker compose ps` and recent logs.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | Image repository |
-| `MAILER_IMAGE_TAG` | `v0.2.0` | Tag under test |
+| `MAILER_IMAGE_TAG` | `v0.3.0` | Tag under test |
 | `MAILER_IMAGE_PLATFORM` | `linux/amd64` | Mailer runtime image platform to smoke. For multi-arch releases, run once per release-noted platform such as `linux/amd64` and `linux/arm64`. |
 | `MAILER_PULL_POLICY` | `always` | Set `missing` to reuse a local image |
 | `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image. The default `latest` is intentional; override it when a tag / digest pin is needed. |
@@ -96,13 +98,13 @@ intentional `latest` usage and how to pin it when needed.
 
 ## Recorded smoke results
 
-Value-free smoke results for `v0.2.0` (digest, date, environment, per-check pass/fail)
-are recorded in [docs/releases/v0.2.0.md](../releases/v0.2.0.md) after publish.
-Previous `v0.1.1` results remain in [docs/releases/v0.1.1.md](../releases/v0.1.1.md).
+Value-free smoke results for `v0.3.0` (digest, date, environment, per-check pass/fail)
+are recorded in [docs/releases/v0.3.0.md](../releases/v0.3.0.md) after publish.
+Previous `v0.2.0` results remain in [docs/releases/v0.2.0.md](../releases/v0.2.0.md).
 
 ## How it differs from the deploy drills
 
-- `scripts/release-smoke.sh` / `scripts/release-smoke.ps1`: a release smoke that validates the **published image's**
+- `scripts/release-smoke.sh` / `scripts/release-smoke.ps1`: a release smoke that validates the **target release image's**
   HTTP / idempotency / Mailpit delivery from a clean state. The bash script uses host-side
   `curl`; the PowerShell script uses `Invoke-WebRequest`.
 - `infra/deploy/drills/mail-05a-*`: no-send / ACS deploy drills against a running compose
