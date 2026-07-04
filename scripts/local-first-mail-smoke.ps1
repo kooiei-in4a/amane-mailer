@@ -140,14 +140,20 @@ function Invoke-MailRequest {
     $uri = "$MailerUrl/internal/mail-requests"
 
     if ($PSVersionTable.PSVersion.Major -ge 7) {
-        $response = Invoke-WebRequest -UseBasicParsing -Method Post `
-            -Uri $uri `
-            -Headers $headers `
-            -Body $Json `
-            -TimeoutSec 30 `
-            -SkipHttpErrorCheck
-        $script:HttpStatus = [int]$response.StatusCode
-        $script:RespBody = $response.Content
+        try {
+            $response = Invoke-WebRequest -UseBasicParsing -Method Post `
+                -Uri $uri `
+                -Headers $headers `
+                -Body $Json `
+                -TimeoutSec 30 `
+                -SkipHttpErrorCheck
+            $script:HttpStatus = [int]$response.StatusCode
+            $script:RespBody = $response.Content
+        }
+        catch {
+            $script:HttpStatus = 0
+            $script:RespBody = $_.Exception.Message
+        }
         return
     }
 
