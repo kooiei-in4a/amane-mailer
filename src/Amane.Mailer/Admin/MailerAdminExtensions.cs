@@ -13,6 +13,10 @@ namespace Amane.Mailer.Admin;
 
 public static class MailerAdminExtensions
 {
+    // Keep unknown-user failures on the same PBKDF2 verification path as bad passwords.
+    private const string DummyAdminPasswordHash =
+        "pbkdf2:sha256:600000:YW1hbmUtZHVtbXktMTI0IQ==:qMTLpvljgavl6UScZshWUdoApY4JFTGZWhLPJ62+Ui0=";
+
     public static IServiceCollection AddMailerAdmin(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton(provider =>
@@ -237,7 +241,9 @@ public static class MailerAdminExtensions
         }
 
         var user = await userRepository.GetActiveUserByUsernameAsync(username, cancellationToken);
-        if (user is null || !AdminPasswordHasher.Verify(password, user.PasswordHash))
+        var passwordHash = user?.PasswordHash ?? DummyAdminPasswordHash;
+        var passwordVerified = AdminPasswordHasher.Verify(password, passwordHash);
+        if (user is null || !passwordVerified)
         {
             await AdminAuditLog.WriteBestEffortAsync(
                 auditRepository,

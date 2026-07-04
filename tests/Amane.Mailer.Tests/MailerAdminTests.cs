@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations;
@@ -291,6 +292,19 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         Assert.Equal(HttpStatusCode.TooManyRequests, locked.StatusCode);
         Assert.Equal("30", locked.Headers.RetryAfter?.Delta?.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
         Assert.Equal(HttpStatusCode.TooManyRequests, stillLocked.StatusCode);
+    }
+
+    [Fact]
+    public void Dummy_admin_password_hash_is_supported()
+    {
+        var field = typeof(MailerAdminExtensions).GetField(
+            "DummyAdminPasswordHash",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        Assert.NotNull(field);
+        var hash = Assert.IsType<string>(field!.GetRawConstantValue());
+
+        Assert.True(AdminPasswordHasher.IsSupportedHash(hash));
     }
 
     [Fact]
@@ -797,6 +811,45 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
             if (value is not null)
                 Assert.DoesNotContain("totally-wrong-password", value, StringComparison.Ordinal);
         }
+    }
+
+    [Fact]
+    public async Task Failed_login_returns_same_generic_response_for_unknown_user()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        const string unknownUsername = "missing-admin-user";
+        const string wrongPassword = "totally-wrong-password";
+        using var client = CreateClient(fixture.Factory);
+        var csrfToken = await ReadCsrfTokenAsync(client, ct);
+
+        using var knownUserResponse = await client.PostAsync(
+            "/admin/api/login",
+            CreateLoginContent(csrfToken, MailerAdminFixture.Username, wrongPassword),
+            ct);
+        var knownUserBody = await knownUserResponse.Content.ReadAsStringAsync(ct);
+
+        using var unknownUserResponse = await client.PostAsync(
+            "/admin/api/login",
+            CreateLoginContent(csrfToken, unknownUsername, wrongPassword),
+            ct);
+        var unknownUserBody = await unknownUserResponse.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, knownUserResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, unknownUserResponse.StatusCode);
+        Assert.Equal(knownUserBody, unknownUserBody);
+        Assert.Equal("Invalid username or password.", knownUserBody);
+
+        var rows = await ReadAuditEventsAsync(fixture.ConnectionString, "auth.login_failed", ct);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Contains(rows, row =>
+            row.Actor == MailerAdminFixture.Username
+            && row.TargetType == "admin_session"
+            && row.Result == "failure");
+        Assert.Contains(rows, row =>
+            row.Actor == unknownUsername
+            && row.TargetType == "admin_session"
+            && row.Result == "failure");
     }
 
     [Fact]
