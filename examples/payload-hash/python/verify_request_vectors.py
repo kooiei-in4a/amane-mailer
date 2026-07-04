@@ -111,6 +111,51 @@ def main() -> int:
         print("[FAIL] nested duplicate property: expected input error")
         return 1
 
+    unknown_top_level_json = (
+        '{'
+        '"tenant_id":"00000000-0000-0000-0000-000000000101",'
+        '"mail_request_id":"00000000-0000-0000-0000-000000000201",'
+        '"source_service":"example-service",'
+        '"purpose":"FormResponseNotification",'
+        '"to":[{"email":"admin@example.com"}],'
+        '"subject":"New response",'
+        '"text_body":"A new response arrived.",'
+        f'"payload_hash":"{vectors[0]["expected_sha256_hex"]}",'
+        '"unexpected":"value"'
+        '}'
+    )
+    try:
+        parse_request_json(unknown_top_level_json)
+    except ValueError as error:
+        if "Unknown request property" not in str(error):
+            print(f"[FAIL] unknown top-level property: unexpected error: {error}")
+            return 1
+    else:
+        print("[FAIL] unknown top-level property: expected input error")
+        return 1
+
+    unknown_recipient_json = (
+        '{'
+        '"tenant_id":"00000000-0000-0000-0000-000000000101",'
+        '"mail_request_id":"00000000-0000-0000-0000-000000000201",'
+        '"source_service":"example-service",'
+        '"purpose":"FormResponseNotification",'
+        '"to":[{"email":"admin@example.com","unexpected":"value"}],'
+        '"subject":"New response",'
+        '"text_body":"A new response arrived.",'
+        f'"payload_hash":"{vectors[0]["expected_sha256_hex"]}"'
+        '}'
+    )
+    try:
+        parse_request_json(unknown_recipient_json)
+    except ValueError as error:
+        if "Unknown recipient property" not in str(error):
+            print(f"[FAIL] unknown recipient property: unexpected error: {error}")
+            return 1
+    else:
+        print("[FAIL] unknown recipient property: expected input error")
+        return 1
+
     print(f"Python payload_hash request verifier passed ({len(vectors)} vectors).")
     return 0
 

@@ -25,7 +25,32 @@ EXCLUDED_FIELDS = frozenset(
     ]
 )
 
+ALLOWED_REQUEST_FIELDS = INCLUDED_FIELDS | EXCLUDED_FIELDS
+ALLOWED_RECIPIENT_FIELDS = frozenset(["email", "display_name"])
+
 LOWERCASE_SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_request_shape(request: dict[str, Any]) -> None:
+    unknown_top_level = sorted(set(request) - ALLOWED_REQUEST_FIELDS)
+    if unknown_top_level:
+        raise ValueError(f"Unknown request property: {unknown_top_level[0]!r}")
+
+    to_value = request.get("to")
+    if to_value is None:
+        return
+
+    if not isinstance(to_value, list):
+        raise ValueError("'to' must be an array.")
+
+    for index, recipient in enumerate(to_value):
+        if not isinstance(recipient, dict):
+            raise ValueError(f"'to[{index}]' must be an object.")
+        unknown_recipient = sorted(set(recipient) - ALLOWED_RECIPIENT_FIELDS)
+        if unknown_recipient:
+            raise ValueError(
+                f"Unknown recipient property at to[{index}]: {unknown_recipient[0]!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -39,6 +64,7 @@ class VerifyResult:
 
 
 def verify_request_data(request: dict[str, Any]) -> VerifyResult:
+    _validate_request_shape(request)
     included = tuple(sorted(key for key in request if key in INCLUDED_FIELDS))
     excluded_present = tuple(sorted(key for key in request if key in EXCLUDED_FIELDS))
     canonical_json = build_delivery_payload_json(request)
@@ -126,6 +152,7 @@ def parse_request_json(raw: str) -> dict[str, Any]:
     parsed = json.loads(raw, object_pairs_hook=_parse_object_pairs)
     if not isinstance(parsed, dict):
         raise ValueError("Mail request JSON must be an object.")
+    _validate_request_shape(parsed)
     return parsed
 
 
