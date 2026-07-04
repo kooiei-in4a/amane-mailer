@@ -198,6 +198,10 @@ To safely try a conflict, use a local environment only, keep the same
 
 For the Consumer app compose network setup, see the comments in [infra/deploy/compose.yml](infra/deploy/compose.yml).
 
+For a full runnable Python Consumer sample that computes `payload_hash`, POSTs
+to a local Mailer, and handles `accepted` / `already_accepted` /
+`IDEMPOTENCY_CONFLICT`, see [examples/consumer-python/](examples/consumer-python/README.md).
+
 ## Branch strategy and CI
 
 Work flows `feature/**` / `fix/**` → `develop` → `main`. After each `main`
