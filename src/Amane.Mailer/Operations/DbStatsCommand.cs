@@ -11,6 +11,7 @@ public sealed class DbStatsCommand(
     public const int UnavailableExitCode = 1;
     public const int UsageErrorExitCode = 2;
 
+    private readonly MailerDbStatsReader _statsReader = new(connections);
     private readonly Func<DateTimeOffset> _nowProvider = nowProvider ?? (() => SqliteTime.UtcNow);
 
     public static bool IsDbStatsCommand(IReadOnlyList<string> args) =>
@@ -36,159 +37,38 @@ public sealed class DbStatsCommand(
             return UsageErrorExitCode;
         }
 
-        if (!await CanReadMigratedSchemaAsync(cancellationToken))
+        if (!await _statsReader.CanReadMigratedSchemaAsync(cancellationToken))
         {
             await error.WriteLineAsync("Mailer database schema is not migrated.");
             return UnavailableExitCode;
         }
 
         var now = _nowProvider().ToUniversalTime();
-        var stats = await LoadStatsAsync(options, now, cancellationToken);
-        await WriteStatsAsync(stats, output);
+        var query = options.TenantId is null
+            ? MailerDbStatsQuery.ForAllTenants(
+                options.QueuedStaleMinutes,
+                options.FailureWindowMinutes,
+                options.StaleProcessingMinutes)
+            : MailerDbStatsQuery.ForSingleTenant(
+                options.TenantId.Value,
+                options.QueuedStaleMinutes,
+                options.FailureWindowMinutes,
+                options.StaleProcessingMinutes);
+
+        var stats = await _statsReader.LoadStatsAsync(query, now, cancellationToken)
+            ?? throw new InvalidOperationException("Mailer stats query returned no result.");
+
+        await WriteStatsAsync(stats, options.TenantId, output);
         return SuccessExitCode;
     }
 
-    private async Task<MailRequestStats> LoadStatsAsync(
-        DbStatsOptions options,
-        DateTimeOffset now,
-        CancellationToken cancellationToken)
-    {
-        const string sql = """
-            WITH filtered AS (
-                SELECT status, next_attempt_at, lock_expires_at, updated_at
-                FROM mail_requests
-                WHERE @TenantId IS NULL OR tenant_id = @TenantId
-            )
-            SELECT
-                COUNT(CASE WHEN status = @QueuedStatus THEN 1 END),
-                COUNT(CASE WHEN status = @ProcessingStatus THEN 1 END),
-                COUNT(CASE WHEN status = @DeliveredStatus THEN 1 END),
-                COUNT(CASE WHEN status = @FailedStatus THEN 1 END),
-                COUNT(CASE WHEN status = @DeadLetteredStatus THEN 1 END),
-                COUNT(CASE
-                    WHEN status = @QueuedStatus
-                     AND (next_attempt_at IS NULL OR next_attempt_at <= @Now)
-                    THEN 1 END),
-                MIN(CASE
-                    WHEN status = @QueuedStatus
-                     AND (next_attempt_at IS NULL OR next_attempt_at <= @Now)
-                    THEN updated_at END),
-                COUNT(CASE
-                    WHEN status = @QueuedStatus
-                     AND (next_attempt_at IS NULL OR next_attempt_at <= @Now)
-                     AND updated_at < @QueuedStaleBefore
-                    THEN 1 END),
-                COUNT(CASE
-                    WHEN status = @ProcessingStatus
-                     AND updated_at < @StaleProcessingBefore
-                    THEN 1 END),
-                COUNT(CASE
-                    WHEN status = @ProcessingStatus
-                     AND lock_expires_at IS NOT NULL
-                     AND lock_expires_at <= @Now
-                    THEN 1 END),
-                COUNT(CASE
-                    WHEN status = @FailedStatus
-                     AND updated_at > @FailureWindowStart
-                    THEN 1 END),
-                COUNT(CASE
-                    WHEN status = @DeadLetteredStatus
-                     AND updated_at > @FailureWindowStart
-                    THEN 1 END)
-            FROM filtered;
-            """;
-
-        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.Parameters.AddWithValue("@TenantId", options.TenantId is null ? DBNull.Value : options.TenantId.Value.ToString("D"));
-        command.Parameters.AddWithValue("@QueuedStatus", (int)MailRequestState.Queued);
-        command.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
-        command.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
-        command.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
-        command.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
-        command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
-        command.Parameters.AddWithValue(
-            "@QueuedStaleBefore",
-            SqliteTime.ToStorageUtc(now.AddMinutes(-options.QueuedStaleMinutes)));
-        command.Parameters.AddWithValue(
-            "@StaleProcessingBefore",
-            SqliteTime.ToStorageUtc(now.AddMinutes(-options.StaleProcessingMinutes)));
-        command.Parameters.AddWithValue(
-            "@FailureWindowStart",
-            SqliteTime.ToStorageUtc(now.AddMinutes(-options.FailureWindowMinutes)));
-
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
-        {
-            throw new InvalidOperationException("Mailer stats query returned no rows.");
-        }
-
-        DateTimeOffset? oldestQueuedAt = reader.IsDBNull(6) ? null : SqliteTime.FromStorage(reader.GetString(6));
-        var oldestQueuedAgeSeconds = oldestQueuedAt is null
-            ? 0
-            : Math.Max(0, (long)Math.Floor((now - oldestQueuedAt.Value).TotalSeconds));
-
-        var mailStats = new MailRequestStats(
-            now,
-            options.TenantId,
-            reader.GetInt64(0),
-            reader.GetInt64(1),
-            reader.GetInt64(2),
-            reader.GetInt64(3),
-            reader.GetInt64(4),
-            reader.GetInt64(5),
-            oldestQueuedAgeSeconds,
-            reader.GetInt64(7),
-            reader.GetInt64(8),
-            reader.GetInt64(9),
-            reader.GetInt64(10),
-            reader.GetInt64(11),
-            WorkerHeartbeatAgeSeconds: -1,
-            SweepHeartbeatAgeSeconds: -1);
-
-        const string heartbeatSql = "SELECT name, last_heartbeat_at FROM worker_heartbeats WHERE name IN ('worker', 'sweep');";
-
-        await using var heartbeatCommand = connection.CreateCommand();
-        heartbeatCommand.CommandText = heartbeatSql;
-
-        await using var heartbeatReader = await heartbeatCommand.ExecuteReaderAsync(cancellationToken);
-        var workerAge = -1L;
-        var sweepAge = -1L;
-        while (await heartbeatReader.ReadAsync(cancellationToken))
-        {
-            var name = heartbeatReader.GetString(0);
-            var lastHeartbeatAt = SqliteTime.FromStorage(heartbeatReader.GetString(1));
-            var age = Math.Max(0, (long)Math.Floor((now - lastHeartbeatAt).TotalSeconds));
-            if (string.Equals(name, "worker", StringComparison.Ordinal))
-                workerAge = age;
-            else if (string.Equals(name, "sweep", StringComparison.Ordinal))
-                sweepAge = age;
-        }
-
-        return mailStats with
-        {
-            WorkerHeartbeatAgeSeconds = workerAge,
-            SweepHeartbeatAgeSeconds = sweepAge,
-        };
-    }
-
-    private async Task<bool> CanReadMigratedSchemaAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            return await connections.CanConnectToMigratedSchemaAsync(cancellationToken);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static async Task WriteStatsAsync(MailRequestStats stats, TextWriter output)
+    private static async Task WriteStatsAsync(
+        MailerDbStatsResult stats,
+        Guid? tenantId,
+        TextWriter output)
     {
         await output.WriteLineAsync($"as_of_utc={SqliteTime.ToStorageUtc(stats.AsOfUtc)}");
-        await output.WriteLineAsync($"tenant_id={stats.TenantId?.ToString("D") ?? "all"}");
+        await output.WriteLineAsync($"tenant_id={tenantId?.ToString("D") ?? "all"}");
         await output.WriteLineAsync($"status_queued={stats.QueuedCount}");
         await output.WriteLineAsync($"status_processing={stats.ProcessingCount}");
         await output.WriteLineAsync($"status_delivered={stats.DeliveredCount}");
@@ -297,22 +177,4 @@ public sealed class DbStatsCommand(
         int QueuedStaleMinutes,
         int FailureWindowMinutes,
         int StaleProcessingMinutes);
-
-    private sealed record MailRequestStats(
-        DateTimeOffset AsOfUtc,
-        Guid? TenantId,
-        long QueuedCount,
-        long ProcessingCount,
-        long DeliveredCount,
-        long FailedCount,
-        long DeadLetteredCount,
-        long ReadyBacklogCount,
-        long OldestQueuedAgeSeconds,
-        long QueuedStaleCount,
-        long StaleProcessingCount,
-        long ExpiredProcessingCount,
-        long RecentFailedCount,
-        long RecentDeadLetteredCount,
-        long WorkerHeartbeatAgeSeconds,
-        long SweepHeartbeatAgeSeconds);
 }

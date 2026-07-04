@@ -22,7 +22,7 @@ Current limitations ([ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md
 - Durable server-side session store (credential-hash change revocation, explicit logout, expiry, concurrent session limit)
 - Per-admin tenant scope is implemented (scoped / break-glass authorization; startup fails closed when two or more effective tenants exist and Admin is enabled but no scoped or break-glass admin exists). The env bootstrap admin receives all configured tenant scopes on first seed (`is_break_glass=false`; not break-glass)
 - Scoped / break-glass admins are created with `admin user create` (see Admin tenant scope operations)
-- Audit retention sweep is not yet implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`)
+- Audit retention sweep is implemented (`MAILER_ADMIN_AUDIT_RETENTION_DAYS`, default 180 days; batch delete on worker startup and on a daily timer; explicit purge via `db admin-audit purge --older-than-days <days>`)
 - When `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`, raw IP addresses are not stored in the database; keyed hashes are used instead (startup fail-closed when the key is unset)
 
 ## Admin tenant scope operations
@@ -91,6 +91,26 @@ docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps ma
 ```
 
 The Mailer container must reference the same SQLite database via `ConnectionStrings__Mailer`. Re-running scoped admin creation for the same username updates tenant scopes and revokes all active sessions for that admin immediately (ADR 0013 D-04).
+
+## Admin audit retention
+
+`MAILER_ADMIN_AUDIT_RETENTION_DAYS` (fallback: `AMANE_ADMIN_AUDIT_RETENTION_DAYS`)
+controls how long `admin_audit_events` rows are kept (default 180 days). When the
+worker is enabled, rows older than the retention are batch-deleted on startup and
+on a daily timer. Mail request payloads are not touched.
+
+Retention under 30 days is rejected outside local development
+(`ASPNETCORE_ENVIRONMENT=Development`).
+
+Explicit purge:
+
+```powershell
+dotnet Amane.Mailer.dll db admin-audit purge --older-than-days 180
+```
+
+Purge output and sweep logs include deleted counts and day thresholds only — no
+actor, target, or mail payload fields. `db backup` snapshots include audit rows
+present before purge (see [restore-verification](restore-verification.en.md)).
 
 ## Prerequisites
 

@@ -102,6 +102,13 @@ drills.
 7. Record the drill date, backup filename, restore duration, verification
    result, and any corrective action in private operations notes.
 
+   **Admin audit log:** `admin_audit_events` is part of the Mailer SQLite
+   database. A `db backup` snapshot includes audit rows that were present in
+   the DB before purge ran. After restore, retention sweep or
+   `db admin-audit purge` may delete rows older than the configured retention.
+   When long-term audit evidence is required, export audit rows to your log
+   platform before they age out or before relying on a backup alone.
+
 8. Stop and remove drill containers. Preserve `restore-mailer-data/` for
    inspection until cleanup is approved, then remove it:
 

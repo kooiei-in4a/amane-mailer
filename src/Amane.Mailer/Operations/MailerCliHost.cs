@@ -156,4 +156,21 @@ public static class MailerCliHost
         var command = new DbRequestStateCommand(factory);
         return await command.ExecuteAsync(commandArgs, output, error, cancellationToken);
     }
+
+    public static async Task<int> RunDbAdminAuditPurgeAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var factory = new SqliteConnectionFactory(configuration);
+        var command = new DbAdminAuditPurgeCommand(factory, TimeProvider.System);
+        return await command.ExecuteAsync(
+            FilterConfigurationArgs(commandArgs),
+            configuration,
+            output,
+            error,
+            cancellationToken);
+    }
 }

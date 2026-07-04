@@ -33,6 +33,10 @@ dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 
 ## Mailpit で起動する
 
+**初めて 1 通届くところまで確認する**場合は、Admin 不要の
+[Zero-Admin 初回メール quickstart](docs/ops/first-mail-quickstart.md) [(en)](docs/ops/first-mail-quickstart.en.md)
+から始めてください。PowerShell なら `.\scripts\local-first-mail-smoke.ps1`、bash なら `bash scripts/local-first-mail-smoke.sh` で同じ確認を自動実行できます。
+
 local compose は Mailer イメージを build し、Mailpit を起動します。
 
 ```powershell
@@ -66,7 +70,7 @@ Linux / macOS の bash と curl で Mailpit 到着、冪等再送、conflict ま
 - 管理者ごとの tenant scope あり（`admin_users` / `admin_user_tenant_scopes`）。scoped admin は許可 tenant のみ閲覧・操作。break-glass 管理者は全 tenant 横断（強化監査）。2 件以上の effective tenant + Admin 有効時は scoped または break-glass 管理者がいないと startup fail-closed
 - env bootstrap 管理者（`AMANE_ADMIN_USERNAME` / `AMANE_ADMIN_PASSWORD_HASH`）は初回 DB 作成時に `admin_users` へ seed され、**設定済み全 tenant の scope** を付与する（`is_break_glass=false`。**break-glass 扱いではない**）。multi-tenant 本番では bootstrap 管理者の継続利用を避け、tenant 別 scoped 管理者を用意する（[runbook](docs/ops/local-mailer-docker-runbook.md#admin-tenant-scope-運用)）
 - scoped / break-glass 管理者は `admin user create` で作成（`admin hash-password` で hash 生成）
-- audit log は body view と auth イベント（login / logout / session expired / account locked / login rate limited）を `admin_audit_events` に永続化（stdout にもミラー）。retention sweep は未実装（`MAILER_ADMIN_AUDIT_RETENTION_DAYS`）
+- audit log は body view と auth イベント（login / logout / session expired / account locked / login rate limited）を `admin_audit_events` に永続化（stdout にもミラー）。retention sweep は `MAILER_ADMIN_AUDIT_RETENTION_DAYS`（既定 180 日）で自動削除。明示 purge は `db admin-audit purge --older-than-days <days>`
 - `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時は raw IP を DB に保存せず keyed hash を使用（鍵未設定時は startup fail-closed）
 
 ## デプロイ時の注意
@@ -88,13 +92,14 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
-公開済みの GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.2.0`）を clean state から
+v0.3.0 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.3.0`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
 conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（Linux / macOS / Git Bash）または
 `scripts/release-smoke.ps1`（Windows / PowerShell + Docker Desktop）を使います。手順と設定は
 [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
 
-既定タグ `v0.2.0` の公開 GHCR runtime image は **multi-arch**（`linux/amd64` と
+v0.3.0 release では、既定 smoke tag `v0.3.0` の GHCR runtime image は publish 後
+**multi-arch**（`linux/amd64` と
 `linux/arm64`）です。smoke では release notes または Docker manifest の platform を確認し、
 `MAILER_IMAGE_PLATFORM=linux/amd64` または `MAILER_IMAGE_PLATFORM=linux/arm64` を指定してください。
 amd64 emulation のみ利用可能なホストでは `linux/amd64` を明示してください。
@@ -134,6 +139,7 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 - **`payload_hash`**: 配送フィールドの canonical JSON SHA-256。
   .NET は `Amane.Mailer.Contracts` の `MailPayloadHasher` を使用。
   Python / JavaScript / Go の実装例: [examples/payload-hash/](examples/payload-hash/README.md)
+  自分の request JSON を検証: `python examples/payload-hash/python/verify_request.py request.json`
   アルゴリズム仕様・エラーコード・冪等性: [docs/api/openapi.yaml](docs/api/openapi.yaml)
 
 ローカル compose 起動後は、host から次の smoke request を実行できます。
@@ -180,6 +186,16 @@ hash 対象フィールドを変更し、その payload に合わせて `payload
 期待結果は `409 Conflict` / `IDEMPOTENCY_CONFLICT` です。
 
 Consumer アプリの compose ネットワーク接続例は [infra/deploy/compose.yml](infra/deploy/compose.yml) のコメントを参照してください。
+
+.NET Consumer の full runnable sample（`Amane.Mailer.Contracts` 使用、`payload_hash` 計算、
+`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
+[examples/consumer-dotnet/](examples/consumer-dotnet/README.md) を参照してください。
+Python Consumer の full runnable sample（既存 Python `payload_hash` helper 使用、local Mailer への
+POST、`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
+[examples/consumer-python/](examples/consumer-python/README.md) を参照してください。
+Node.js Consumer の full runnable sample（既存 JavaScript `payload_hash` helper 使用、local Mailer への
+POST、`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
+[examples/consumer-node/](examples/consumer-node/README.md) を参照してください。
 
 ## ブランチ戦略と CI
 
