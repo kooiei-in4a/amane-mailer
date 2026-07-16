@@ -7,7 +7,7 @@
     <PackageVersion Include="Azure.Communication.Email" Version="1.1.0" />
     <PackageVersion Include="MailKitLite" Version="4.17.0" />
     <PackageVersion Include="MimeKitLite" Version="4.17.0" />
-    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.9" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.10" />
     <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
     <PackageVersion Include="SQLitePCLRaw.core" Version="3.0.3" />
     <PackageVersion Include="SQLitePCLRaw.config.e_sqlite3" Version="3.0.3" />
