@@ -1,5 +1,5 @@
 # Native AOT publish + chiseled runtime — Phase A single-container mailer.
-FROM mcr.microsoft.com/dotnet/sdk:10.0-noble-aot@sha256:47f56dc3e5bf7b62d878c98aa7b31848ac9167462789fa73220adcd1af064e37 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble-aot@sha256:977c117b98abe301eeb4c2ed3f8deebf8b8f11e65549ee7886581d2b41641adb AS build
 WORKDIR /repo
 
 COPY Directory.Build.props Directory.Build.targets Directory.Packages.props global.json ./
