@@ -88,6 +88,6 @@ CI runs SDK tests in the `sdk-tests` job. Lower-level language examples remain i
 
 ## Related docs
 
-- [OpenAPI](../../docs/api/openapi.yaml)
-- [ADR 0012 D-05 payload_hash](../../docs/adr/0012-mail-via-mailer-microservice.md)
+- [OpenAPI](../docs/api/openapi.yaml)
+- [ADR 0012 D-05 payload_hash](../docs/adr/0012-mail-via-mailer-microservice.md)
 - [Consumer quickstart in README](../README.md#consumer-クイックスタート)

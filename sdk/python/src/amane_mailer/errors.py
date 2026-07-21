@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -83,7 +84,7 @@ class MailRequestAcceptedResponse:
 
 def parse_mailer_error(status_code: int, body_text: str) -> MailerError:
     try:
-        body = __import__("json").loads(body_text)
+        body = json.loads(body_text)
     except ValueError:
         return MailerError(
             f"Mailer returned HTTP {status_code}.",

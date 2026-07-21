@@ -59,6 +59,6 @@ try {
 
 ## Retries
 
-`sendMail()` retries retryable errors (503 / `retryable: true`) with exponential backoff. Defaults: 3 retries, 200 ms base delay. Override with `{ maxRetries, baseDelayMs }`.
+`sendMail()` retries retryable HTTP errors (503 / `retryable: true`) and transport failures (connection refused, DNS failure, timeout) with exponential backoff. Defaults: 3 retries, 200 ms base delay. Override with `{ maxRetries, baseDelayMs }`.
 
 Idempotent resend: POST the same `mail_request_id` and payload again; Mailer returns `already_accepted` without creating a duplicate queue entry.

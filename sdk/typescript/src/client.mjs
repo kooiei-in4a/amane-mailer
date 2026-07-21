@@ -6,6 +6,7 @@ import {
   MailRequestAcceptedResponse,
   MailRequestAcceptanceStatus,
   parseMailerError,
+  toRetryableTransportError,
 } from './errors.mjs';
 
 function sleep(ms) {
@@ -96,12 +97,18 @@ export class MailerClient {
 
   async #postOnce(mailRequest) {
     const endpoint = buildEndpoint(this.baseUrl);
-    const response = await postJson(
-      endpoint,
-      this.bearerToken,
-      serializeMailRequest(mailRequest),
-      this.timeoutMs,
-    );
+    let response;
+
+    try {
+      response = await postJson(
+        endpoint,
+        this.bearerToken,
+        serializeMailRequest(mailRequest),
+        this.timeoutMs,
+      );
+    } catch (error) {
+      throw toRetryableTransportError(error);
+    }
 
     if (response.statusCode === 202) {
       const body = JSON.parse(response.body);

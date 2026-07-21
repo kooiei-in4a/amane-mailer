@@ -15,6 +15,7 @@ export {
   MailRequestAcceptanceStatus,
   MailRequestAcceptedResponse,
   parseMailerError,
+  toRetryableTransportError,
 } from './errors.mjs';
 
 export { MailRequestValidationError, validateMailRequestDraft } from './validation.mjs';

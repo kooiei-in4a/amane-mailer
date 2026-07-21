@@ -63,6 +63,15 @@ export class MailRequestAcceptedResponse {
   }
 }
 
+export function toRetryableTransportError(error) {
+  if (error instanceof MailerRetryableError) {
+    return error;
+  }
+
+  const message = error instanceof Error ? error.message : 'Mailer request failed.';
+  return new MailerRetryableError(message);
+}
+
 export function parseMailerError(statusCode, bodyText) {
   let body;
   try {

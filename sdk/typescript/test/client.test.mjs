@@ -148,6 +148,35 @@ test('MailerClient retries retryable 503 then succeeds', async () => {
   });
 });
 
+test('MailerClient wraps transport failures as MailerRetryableError', async () => {
+  const client = new MailerClient({
+    baseUrl: 'http://127.0.0.1:1',
+    bearerToken: 'token',
+    timeoutMs: 500,
+  });
+
+  await assert.rejects(
+    () => client.sendMail(buildSampleRequest(), { maxRetries: 0 }),
+    (error) => error instanceof MailerRetryableError,
+  );
+});
+
+test('MailerClient retries transport failures before giving up', async () => {
+  const start = Date.now();
+  const client = new MailerClient({
+    baseUrl: 'http://127.0.0.1:1',
+    bearerToken: 'token',
+    timeoutMs: 500,
+  });
+
+  await assert.rejects(
+    () => client.sendMail(buildSampleRequest(), { maxRetries: 2, baseDelayMs: 50 }),
+    MailerRetryableError,
+  );
+
+  assert.ok(Date.now() - start >= 100, 'expected backoff delays between transport retries');
+});
+
 test('MailerClient surfaces retryable errors after max retries', async () => {
   await withMockServer((_req, res) => {
     res.writeHead(503, { 'Content-Type': 'application/json' });

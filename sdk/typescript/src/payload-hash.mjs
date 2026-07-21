@@ -92,5 +92,5 @@ export function computeSha256Hex(jsonValue) {
 
 export function computeDeliveryPayloadSha256Hex(request) {
   const deliveryJson = buildDeliveryPayloadJson(request);
-  return computeSha256Hex(JSON.parse(deliveryJson));
+  return createHash('sha256').update(deliveryJson, 'utf8').digest('hex');
 }

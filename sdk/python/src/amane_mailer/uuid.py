@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+import time
 import uuid
 
 
@@ -16,7 +17,7 @@ def _format_uuid_bytes(raw: bytes) -> str:
 
 def generate_uuid_v7(now_ms: int | None = None) -> str:
     """Generate a UUIDv7 string. Falls back to UUIDv4 outside the 48-bit timestamp range."""
-    timestamp_ms = int(now_ms if now_ms is not None else __import__("time").time() * 1000)
+    timestamp_ms = int(now_ms if now_ms is not None else time.time() * 1000)
     if timestamp_ms < 0 or timestamp_ms >= 0x1000000000000:
         return str(uuid.uuid4())
 

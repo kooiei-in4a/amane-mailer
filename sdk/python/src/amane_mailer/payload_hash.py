@@ -95,4 +95,4 @@ def compute_sha256_hex(json_value: Any) -> str:
 
 def compute_delivery_payload_sha256_hex(request: dict[str, Any]) -> str:
     delivery_json = build_delivery_payload_json(request)
-    return compute_sha256_hex(json.loads(delivery_json))
+    return hashlib.sha256(delivery_json.encode("utf-8")).hexdigest()
