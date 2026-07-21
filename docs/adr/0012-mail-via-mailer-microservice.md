@@ -101,7 +101,18 @@ Mailer API の `202 Accepted` は「Mailer が依頼を永続化した」こと�
 
 ### D-08. GET 状態確認 API は MVP 外
 
+**Status:** Superseded by D-08a (#216)
+
 `GET /internal/mail-requests/{mailRequestId}` は将来予約に留める。MVP では Consumer は `dispatched` までを管理し、配信結果は Mailer 側の運用確認に閉じる。
+
+### D-08a. Consumer 向け GET 配送ステータス照会 API
+
+`GET /internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}` を Consumer 向け HTTP API として提供する。
+
+- POST と同様に Bearer 認証 + `tenant_id` + `source_service` allowlist を適用する。
+- 返却は PII を含まない最小セット（`mail_request_id`, Worker 配送 `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`）。
+- 存在しない ID および他 tenant の ID は **404 統一**（存在有無を漏らさない）。
+- Contracts 正本は `MailRequestStatusResponse`（`MailRequestCreateResponse.status` の acceptance 値と混同しない）。
 
 ## Consequences
 

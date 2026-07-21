@@ -344,10 +344,12 @@ const contractsReadme = read('src/Amane.Mailer.Contracts/README.md');
 
 const requestDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailRequestCreateRequest.cs');
 const responseDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailRequestCreateResponse.cs');
+const statusResponseDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailRequestStatusResponse.cs');
 const recipientDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailRecipientDto.cs');
 
 const requestSchema = parseOpenApiSchema(openapi, 'MailRequestCreateRequest');
 const responseSchema = parseOpenApiSchema(openapi, 'MailRequestCreateResponse');
+const statusResponseSchema = parseOpenApiSchema(openapi, 'MailRequestStatusResponse');
 const recipientSchema = parseOpenApiSchema(openapi, 'MailRecipient');
 const errorSchema = parseOpenApiSchema(openapi, 'Error');
 
@@ -358,6 +360,7 @@ compareDtoToOpenApiSchema('MailRecipientDto', recipientDto, recipientSchema, {
   expectClosedSchema: recipientDto.rejectsUnknownMembers,
 });
 compareDtoToOpenApiSchema('MailRequestCreateResponse', responseDto, responseSchema);
+compareDtoToOpenApiSchema('MailRequestStatusResponse', statusResponseDto, statusResponseSchema);
 
 if (!requestDto.rejectsUnknownMembers) {
   fail('MailRequestCreateRequest must reject unknown JSON members.');
@@ -399,6 +402,17 @@ if (!statusProperty) {
     'MailRequestAcceptanceStatus vs OpenAPI response status enum',
     parseEnum(statusProperty.block),
     acceptanceStatuses.map((constant) => constant.value),
+  );
+}
+
+const deliveryStatusProperty = statusResponseSchema.properties.get('status');
+if (!deliveryStatusProperty) {
+  fail('OpenAPI MailRequestStatusResponse.status property is missing.');
+} else {
+  assertSameSet(
+    'MailRequestStatus vs OpenAPI delivery status enum',
+    parseEnum(deliveryStatusProperty.block),
+    deliveryStatuses.map((constant) => constant.value),
   );
 }
 
@@ -444,7 +458,12 @@ for (const status of deliveryStatuses) {
 }
 
 const runtimeJsonContext = read('src/Amane.Mailer/Json/MailerJsonContext.cs');
-for (const typeName of ['MailRequestCreateRequest', 'MailRequestCreateResponse', 'MailRecipientDto']) {
+for (const typeName of [
+  'MailRequestCreateRequest',
+  'MailRequestCreateResponse',
+  'MailRequestStatusResponse',
+  'MailRecipientDto',
+]) {
   assertContains(
     runtimeJsonContext,
     `[JsonSerializable(typeof(${typeName}))]`,
@@ -458,7 +477,12 @@ assertContains(
 );
 
 const contractsJsonContext = read('src/Amane.Mailer.Contracts/Json/MailerContractsJsonContext.cs');
-for (const typeName of ['MailRequestCreateRequest', 'MailRequestCreateResponse', 'MailRecipientDto']) {
+for (const typeName of [
+  'MailRequestCreateRequest',
+  'MailRequestCreateResponse',
+  'MailRequestStatusResponse',
+  'MailRecipientDto',
+]) {
   assertContains(
     contractsJsonContext,
     `[JsonSerializable(typeof(${typeName}))]`,
@@ -500,6 +524,26 @@ assertMatches(
   'Runtime accepted response serialization',
   'MailerJsonResults.Accepted(new MailRequestCreateResponse)',
 );
+assertMatches(
+  runtimeContractSources,
+  /MailerJsonResults\.Ok\s*\(\s*new\s+MailRequestStatusResponse/s,
+  'Runtime status response serialization',
+  'MailerJsonResults.Ok(new MailRequestStatusResponse)',
+);
+assertMatches(
+  runtimeContractSources,
+  /MailerErrorCodes\.NotFound/s,
+  'Runtime GET not-found error code',
+  'MailerErrorCodes.NotFound',
+);
+
+for (const constant of deliveryStatuses) {
+  assertContains(
+    runtimeContractSources,
+    `MailRequestStatus.${constant.name}`,
+    'Runtime delivery-status constants',
+  );
+}
 
 for (const constant of errorCodes) {
   assertContains(
@@ -526,7 +570,10 @@ for (const needle of [
   assertContains(contractStrictnessTests, needle, 'Contracts JSON strictness tests');
 }
 
-const runtimeApiTests = read('tests/Amane.Mailer.Tests/MailRequestApiTests.cs');
+const runtimeApiTests = [
+  read('tests/Amane.Mailer.Tests/MailRequestApiTests.cs'),
+  read('tests/Amane.Mailer.Tests/MailRequestStatusApiTests.cs'),
+].join('\n');
 for (const needle of [
   'Unknown_top_level_property_returns_400',
   'Unknown_recipient_property_returns_400',
@@ -535,6 +582,24 @@ for (const needle of [
   'Duplicate_metadata_property_returns_400',
 ]) {
   assertContains(runtimeApiTests, needle, 'Runtime JSON strictness tests');
+}
+
+for (const needle of [
+  'Get_after_post_returns_queued_status',
+  'Get_nonexistent_request_returns_404',
+  'Get_other_tenant_request_returns_404',
+  'Get_unauthorized_returns_401',
+  'Get_unregistered_source_service_returns_403',
+  'Get_invalid_mail_request_id_returns_400',
+  'Get_missing_tenant_id_returns_400',
+  'Get_invalid_tenant_id_returns_400',
+  'Get_missing_source_service_returns_400',
+  'Get_response_excludes_pii_fields',
+  'Get_delivered_status_returns_expected_fields',
+  'Get_cancelled_status_returns_expected_fields',
+  'Get_processing_status_returns_expected_fields',
+]) {
+  assertContains(runtimeApiTests, needle, 'Mail request status GET API tests');
 }
 
 const payloadHashTests = read('tests/Amane.Mailer.Contracts.Tests/MailPayloadHasherTests.cs');
