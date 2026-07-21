@@ -35,7 +35,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
         _tenantConfigDirectory = Path.Combine(root, "config");
         Directory.CreateDirectory(_tenantConfigDirectory);
         var tenantConfigPath = Path.Combine(_tenantConfigDirectory, "tenants.json");
-        await File.WriteAllTextAsync(tenantConfigPath, TenantConfigJson);
+        await File.WriteAllTextAsync(tenantConfigPath, BuildTenantConfigJson());
 
         var factory = new SqliteConnectionFactory(
             new ConfigurationBuilder()
@@ -63,6 +63,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
         command.CommandText = """
             DELETE FROM mail_attempts;
             DELETE FROM mail_requests;
+            DELETE FROM delivery_events;
             DELETE FROM admin_audit_events;
             DELETE FROM admin_login_throttle;
             DELETE FROM admin_sessions;
@@ -112,7 +113,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
     {
     }
 
-    private static string TenantConfigJson =>
+    protected virtual string BuildTenantConfigJson() =>
         $$"""
         {
           "version": 1,

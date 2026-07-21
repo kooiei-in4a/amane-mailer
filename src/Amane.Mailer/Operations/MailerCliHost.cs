@@ -1,5 +1,6 @@
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Webhooks;
 
 namespace Amane.Mailer.Operations;
 

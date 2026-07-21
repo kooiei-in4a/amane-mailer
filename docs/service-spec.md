@@ -207,6 +207,22 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 
 `Delivered` / 有効 lock 保持中の `Processing` / `Cancelled` からの手動操作は拒否する。詳細な競合ルール・監査・tenant 認可は ADR 0015 を正とする。
 
+### 3.5 配送結果 Webhook（outbound）
+
+テナント JSON の optional `webhook` 設定により、Mailer は terminal 状態
+（`delivered` / `failed` / `dead_lettered` / `cancelled`）到達時に
+`delivery_events` outbox へ `MailDeliveryEventPayload` を enqueue し、
+`WebhookDeliveryWorker` が HMAC 署名付き HTTPS POST で Consumer へ配信する。
+
+- secret は `webhook.secret_env` が指す環境変数から読み込む（tenant JSON 平文禁止）。
+- payload に PII（recipient, subject, body 等）は含めない。
+- Consumer 重複排除契約は `event_id`（同一 mail request で不変）。
+- 配信失敗時は指数バックオフで再送し、上限超過で webhook Dead Letter として記録する。
+- SSRF 対策: HTTPS 必須、private/metadata IP ブロック、optional `allowed_host_suffixes`。
+- 検証手順: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
+- OpenAPI schema: `MailDeliveryEventPayload`
+- Admin / ops 確認: `/admin/webhook-dead-letters`、`db stats` の webhook 件数
+
 ---
 
 ## 4. 運用 CLI（Native バイナリ）
@@ -254,7 +270,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 |---|---|
 | `as_of_utc` | 集計基準時刻（UTC） |
 | `tenant_id` | 対象 tenant UUID、または `all` |
-| `status_queued` / `status_processing` / `status_delivered` / `status_failed` / `status_dead_lettered` | `mail_requests.status` 別件数 |
+| `status_queued` / `status_processing` / `status_delivered` / `status_failed` / `status_dead_lettered` / `status_cancelled` | `mail_requests.status` 別件数 |
 | `ready_backlog_count` | `queued` かつ `next_attempt_at IS NULL OR next_attempt_at <= now` の件数 |
 | `oldest_queued_age_seconds` | ready backlog 内の最古 `updated_at` からの秒数（対象なしは 0） |
 | `queued_stale_count` | ready backlog のうち `updated_at` が `--queued-stale-minutes` より古い件数 |
@@ -264,6 +280,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `failed_total` / `dead_lettered_total` / `terminal_total` | terminal failure の累計件数 |
 | `worker_heartbeat_age_seconds` | Worker の最終 heartbeat からの経過秒数（行未存在は `-1`） |
 | `sweep_heartbeat_age_seconds` | Sweep の最終 heartbeat からの経過秒数（行未存在は `-1`） |
+| `webhook_events_pending` / `webhook_events_dead_lettered` | 配送結果 Webhook outbox 件数 |
 
 `db request-state` は no-send / ACS deploy drill などの read-only 検証コマンド。出力は
 `tenant_id`, `source_service`, `mail_request_id`, `found`, `status`,
