@@ -131,7 +131,9 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 
 ## Consumer クイックスタート
 
-起動した Mailer にメール送信依頼を POST するための最低限の情報です。
+起動した Mailer にメール送信依頼を POST し、必要に応じて配送ステータスを GET するための最低限の情報です。
+
+### 送信依頼（POST）
 
 - **エンドポイント**: `POST http://mailer:8080/internal/mail-requests`
 - **認証**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
@@ -185,6 +187,41 @@ JSON
 conflict を安全に試す場合はローカル環境でのみ、同じ `request_id` のまま `subject` など
 hash 対象フィールドを変更し、その payload に合わせて `payload_hash` を再計算してから POST してください。
 期待結果は `409 Conflict` / `IDEMPOTENCY_CONFLICT` です。
+
+### 配送ステータスの照会（GET）
+
+`202 Accepted` は「依頼を受け付けた」ことだけを示します。Worker による実際の配送結果（`delivered` / `failed` など）は GET で確認します。
+
+- **エンドポイント**: `GET http://mailer:8080/internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}`
+- **認証**: POST と同じ Bearer トークン
+- **必須 query**: `tenant_id`, `source_service`（POST body と同じ値）
+- **返却フィールド**: `mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`
+- **PII なし**: 宛先・件名・本文は返しません
+
+`status` の値は Worker 配送状態です（`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`）。POST レスポンスの `accepted` / `already_accepted` とは別物です。
+
+存在しない ID、または他 tenant の ID に対しては **404 `NOT_FOUND`** を返します（存在有無を漏らしません）。
+
+POST 直後の例（同じ `request_id` / `tenant_id` / `source_service` を使う）:
+
+```bash
+curl -fsS "http://127.0.0.1:5280/internal/mail-requests/${request_id}?tenant_id=00000000-0000-0000-0000-000000000101&source_service=example-service" \
+  -H "Authorization: Bearer local-mail-service-token"
+```
+
+期待レスポンス（受付直後）:
+
+```json
+{
+  "mail_request_id": "<request_id>",
+  "status": "queued",
+  "attempt_count": 0,
+  "max_attempts": 3,
+  "accepted_at": "2026-07-21T12:00:00Z"
+}
+```
+
+Worker が配送を完了すると `status` は `delivered` などに変わります。詳細なエラーコード一覧・HTTP ステータス表は [docs/api/openapi.yaml](docs/api/openapi.yaml) と [サービス仕様](docs/service-spec.md#配送ステータス照会get) を参照してください。
 
 Consumer アプリの compose ネットワーク接続例は [infra/deploy/compose.yml](infra/deploy/compose.yml) のコメントを参照してください。
 

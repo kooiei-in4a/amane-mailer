@@ -17,7 +17,7 @@ For fuller smoke coverage (idempotent repost, conflict, Admin UI, and more), see
 - Run commands from the repository root.
 - Host ports `5280` (Mailer) and `8025` (Mailpit) are free.
 - Steps 1–2 need `curl` only (PowerShell `curl.exe` on Windows is fine).
-- Steps 3–4 manual curl examples require **bash** and `curl` (on Windows, use [Git Bash](https://gitforwindows.org/); PowerShell alone cannot run the heredoc or `seq` loop). The **PowerShell automated smoke script** below skips manual steps 3–4.
+- Steps 3–5 manual curl examples require **bash** and `curl` (on Windows, use [Git Bash](https://gitforwindows.org/); PowerShell alone cannot run the heredoc or `seq` loop). The **PowerShell automated smoke script** below skips manual steps 3–5.
 
 No Admin environment variables (`AMANE_ADMIN_*`) are required. Local compose defaults to Mailpit delivery.
 
@@ -115,7 +115,31 @@ Expected response: `HTTP/1.1 202 Accepted` with JSON like:
 
 For `payload_hash` calculation, see the [Consumer quick start](../../README.en.md#consumer-quick-start) or [examples/payload-hash/](../../examples/payload-hash/README.md).
 
-## 4. Confirm delivery in Mailpit
+## 4. GET delivery status (optional)
+
+POST `202 Accepted` / `status: "accepted"` only means the request was persisted. Use GET to read the Worker delivery outcome.
+
+```bash
+curl -fsS "http://127.0.0.1:5280/internal/mail-requests/${request_id}?tenant_id=00000000-0000-0000-0000-000000000101&source_service=example-service" \
+  -H "Authorization: Bearer local-mail-service-token"
+printf '\n'
+```
+
+Expected output right after acceptance (example):
+
+```json
+{
+  "mail_request_id": "<request_id>",
+  "status": "queued",
+  "attempt_count": 0,
+  "max_attempts": 3,
+  "accepted_at": "..."
+}
+```
+
+If you repeat the same GET after a few seconds, `status` may become `delivered` once the Worker finishes. Recipient, subject, and body are not returned.
+
+## 5. Confirm delivery in Mailpit
 
 ### Browser
 
@@ -144,13 +168,14 @@ fi
 
 ## When something fails
 
-Check these five items in order:
+Check these six items in order:
 
 1. **Container state** — `docker compose -f infra/docker/docker-compose.local.yml ps`: are `mailer` and `mailpit` `running` / `healthy`?
 2. **Mailer logs** — `docker compose -f infra/docker/docker-compose.local.yml logs mailer --tail 50`: startup errors or DB initialization failures?
 3. **Port conflict** — are `5280` / `8025` already in use? Conflicts usually fail compose startup or make `curl` connection refused.
 4. **POST returns 401 / 403** — is `Authorization: Bearer local-mail-service-token` correct, and is `tenant_id` the example tenant `00000000-0000-0000-0000-000000000101`?
-5. **Nothing in Mailpit** — did step 2 return `{"ready":true}`? Wait a few seconds, then recheck the Mailpit UI or API.
+5. **GET returns 404** — do `mail_request_id`, `tenant_id`, and `source_service` match the POST request? Missing IDs and other tenants' IDs also return 404.
+6. **Nothing in Mailpit** — did step 2 return `{"ready":true}`? Wait a few seconds, then recheck the Mailpit UI or API.
 
 ## Cleanup
 

@@ -16,7 +16,7 @@ ACS 実送信、Dead Letter、backup / restore、deploy rehearsal、multi-tenant
 - リポジトリ root でコマンドを実行すること。
 - host port `5280`（Mailer）と `8025`（Mailpit）が空いていること。
 - 手順 1–2 は `curl` があれば可（Windows では PowerShell の `curl.exe` でも可）。
-- 手順 3–4 の手動 curl 例は **bash** と `curl` が必要です（Windows では [Git Bash](https://gitforwindows.org/) を使ってください。PowerShell のみでは heredoc や `seq` が使えません）。**PowerShell 向けの自動 smoke script** なら手順 3–4 を省略できます（下記参照）。
+- 手順 3–5 の手動 curl 例は **bash** と `curl` が必要です（Windows では [Git Bash](https://gitforwindows.org/) を使ってください。PowerShell のみでは heredoc や `seq` が使えません）。**PowerShell 向けの自動 smoke script** なら手順 3–5 を省略できます（下記参照）。
 
 Admin 用の環境変数（`AMANE_ADMIN_*`）は **設定不要** です。local compose の既定値で Mailpit 配送になります。
 
@@ -114,7 +114,31 @@ JSON
 
 `payload_hash` の計算方法は [Consumer クイックスタート](../../README.md#consumer-クイックスタート) または [examples/payload-hash/](../../examples/payload-hash/README.md) を参照してください。
 
-## 4. Mailpit で到着を確認する
+## 4. 配送ステータスを GET する（任意）
+
+POST の `202 Accepted` / `status: "accepted"` は「受付済み」だけを意味します。Worker の配送結果は GET で確認します。
+
+```bash
+curl -fsS "http://127.0.0.1:5280/internal/mail-requests/${request_id}?tenant_id=00000000-0000-0000-0000-000000000101&source_service=example-service" \
+  -H "Authorization: Bearer local-mail-service-token"
+printf '\n'
+```
+
+受付直後の期待値（例）:
+
+```json
+{
+  "mail_request_id": "<request_id>",
+  "status": "queued",
+  "attempt_count": 0,
+  "max_attempts": 3,
+  "accepted_at": "..."
+}
+```
+
+数秒後に同じ GET を繰り返すと、`status` が `delivered` になることがあります（Worker 配送完了後）。宛先・件名・本文は返りません。
+
+## 5. Mailpit で到着を確認する
 
 ### ブラウザ
 
@@ -143,13 +167,14 @@ fi
 
 ## 失敗したときに見る場所
 
-次の 5 点を順に確認してください。
+次の 6 点を順に確認してください。
 
 1. **コンテナ状態** — `docker compose -f infra/docker/docker-compose.local.yml ps` で `mailer` と `mailpit` が `running` / `healthy` か。
 2. **Mailer ログ** — `docker compose -f infra/docker/docker-compose.local.yml logs mailer --tail 50` で startup エラーや DB 初期化失敗がないか。
 3. **port 競合** — `5280` / `8025` を別プロセスが使用していないか。競合時は compose 起動が失敗するか、`curl` が接続拒否になる。
 4. **POST が 401 / 403** — `Authorization: Bearer local-mail-service-token` と `tenant_id`（example tenant `00000000-0000-0000-0000-000000000101`）が正しいか。
-5. **Mailpit に届かない** — 手順 2 の `readyz` が `{"ready":true}` だったか。数秒待ってから Mailpit UI / API を再確認する。
+5. **GET が 404** — `mail_request_id` / `tenant_id` / `source_service` が POST 時と一致しているか。存在しない ID や他 tenant の ID も 404 になります。
+6. **Mailpit に届かない** — 手順 2 の `readyz` が `{"ready":true}` だったか。数秒待ってから Mailpit UI / API を再確認する。
 
 ## 片付け
 
