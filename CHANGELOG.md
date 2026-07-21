@@ -44,11 +44,18 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
   `infra/deploy/config/platform-sender/`. `scripts/validate-tenant-config.mjs` accepts
   `ACS_CONNECTION_STRING_FILE` as well as bare `ACS_CONNECTION_STRING`.
 
-### Ops note (image UID)
+### Ops note (image UID / Docker verification)
 
 - Empirically confirmed on published `ghcr.io/kooiei-in4a/amane-mailer:v0.3.0`:
   `Config.User=1654` (uid/gid `1654`). Documented in the register-acs runbook with the
   requirement to re-check per deployed tag.
+- Docker Known-gap checks completed 2026-07-21 (Windows + WSL2): `docker compose config` against
+  `infra/deploy/compose.yml` with disposable `.env` (image tag `v0.3.0`); mount boundary
+  confirmed via compose config + `docker inspect` (`mailer` ACS `:ro`, `mailer-acs-admin`
+  ACS + platform-sender read-write, `mailer-migrate` without those mounts); host dirs `1654:1654`
+  mode `0700` on a Linux-native path; `check-acs-preflight` / interactive PTY `register-acs`
+  `SUCCESS` using local branch image `amane-mailer:pr206-verify` (published `v0.3.0` predates
+  the CLI). Synthetic secret files removed afterward; see register-acs runbook section 9.
 
 ## [0.3.0] - 2026-07-04
 

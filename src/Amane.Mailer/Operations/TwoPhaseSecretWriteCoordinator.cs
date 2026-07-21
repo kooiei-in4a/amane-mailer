@@ -16,7 +16,11 @@ namespace Amane.Mailer.Operations;
 /// here (not a crash, an observed exception), that is reported as
 /// <see cref="AdminProviderRegisterAcsResultCodes.RejectedRollbackFailed"/> rather than
 /// <see cref="AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack"/> — the latter
-/// would incorrectly claim the on-disk state is clean again.
+/// would incorrectly claim the on-disk state is clean again. Likewise, if discarding an
+/// uncommitted temp file fails, that is reported as
+/// <see cref="AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed"/> rather than silently
+/// re-throwing only the original triggering failure — an operator needs to know a
+/// secret-bearing temp file may still be on disk.
 /// </para>
 /// </summary>
 public static class TwoPhaseSecretWriteCoordinator
@@ -30,8 +34,8 @@ public static class TwoPhaseSecretWriteCoordinator
 
     /// <summary>
     /// Same logic as <see cref="WriteBoth"/>, expressed over <see cref="ISecretFileWriter"/> so
-    /// tests can substitute a fake that forces the rollback branch deterministically — see
-    /// <see cref="ISecretFileWriter"/> for why the real filesystem can't reliably do that.
+    /// tests can substitute a fake that forces the rollback/cleanup branches deterministically —
+    /// see <see cref="ISecretFileWriter"/> for why the real filesystem can't reliably do that.
     /// </summary>
     internal static void WriteBothCore(
         ISecretFileWriter first,
@@ -47,9 +51,18 @@ public static class TwoPhaseSecretWriteCoordinator
         {
             second.Prepare(secondContent);
         }
-        catch
+        catch (Exception ex)
         {
-            first.DiscardPrepared();
+            if (!first.TryDiscardPrepared())
+            {
+                throw new SecretOperationException(
+                    AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed,
+                    "The second file failed to prepare and cleaning up the first file's temp " +
+                    "file also failed. A temp file may still be present on disk. Manual review " +
+                    "is required.",
+                    ex);
+            }
+
             throw;
         }
 
@@ -57,9 +70,18 @@ public static class TwoPhaseSecretWriteCoordinator
         {
             first.Commit();
         }
-        catch
+        catch (Exception ex)
         {
-            second.DiscardPrepared();
+            if (!second.TryDiscardPrepared())
+            {
+                throw new SecretOperationException(
+                    AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed,
+                    "The first file failed to commit and cleaning up the second file's temp " +
+                    "file also failed. A temp file may still be present on disk. Manual review " +
+                    "is required.",
+                    ex);
+            }
+
             throw;
         }
 
@@ -70,20 +92,30 @@ public static class TwoPhaseSecretWriteCoordinator
         catch (Exception ex)
         {
             var rolledBack = first.TryRollbackCommitted();
-            second.DiscardPrepared();
+            var discarded = second.TryDiscardPrepared();
 
-            if (rolledBack)
+            if (!rolledBack)
             {
                 throw new SecretOperationException(
-                    AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack,
-                    "The second file failed to commit; the first was rolled back.",
+                    AdminProviderRegisterAcsResultCodes.RejectedRollbackFailed,
+                    "The second file failed to commit and rolling back the first also failed. " +
+                    "The first file's value may still be present on disk. Manual review is required.",
+                    ex);
+            }
+
+            if (!discarded)
+            {
+                throw new SecretOperationException(
+                    AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed,
+                    "The second file failed to commit; the first was rolled back, but cleaning " +
+                    "up the second file's temp file also failed. A temp file may still be " +
+                    "present on disk. Manual review is required.",
                     ex);
             }
 
             throw new SecretOperationException(
-                AdminProviderRegisterAcsResultCodes.RejectedRollbackFailed,
-                "The second file failed to commit and rolling back the first also failed. " +
-                "The first file's value may still be present on disk. Manual review is required.",
+                AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack,
+                "The second file failed to commit; the first was rolled back.",
                 ex);
         }
     }

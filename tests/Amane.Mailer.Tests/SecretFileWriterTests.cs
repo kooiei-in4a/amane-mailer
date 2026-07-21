@@ -39,17 +39,62 @@ public sealed class SecretFileWriterTests
     }
 
     [Fact]
-    public void DiscardPrepared_removes_temp_file_without_touching_target()
+    public void TryDiscardPrepared_removes_temp_file_without_touching_target_and_returns_true()
     {
         using var scratch = new ScratchDirectory();
         var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
         var writer = new SecretFileWriter(targetPath);
 
         writer.Prepare("value");
-        writer.DiscardPrepared();
+        var discarded = writer.TryDiscardPrepared();
 
+        Assert.True(discarded);
         Assert.False(File.Exists(targetPath));
         Assert.Empty(Directory.GetFiles(scratch.Path));
+    }
+
+    [Fact]
+    public void TryDiscardPrepared_returns_true_when_nothing_was_prepared()
+    {
+        using var scratch = new ScratchDirectory();
+        var writer = new SecretFileWriter(Path.Combine(scratch.Path, "acs_connection_string"));
+
+        Assert.True(writer.TryDiscardPrepared());
+    }
+
+    [Fact]
+    public void TryDiscardPrepared_returns_false_and_leaves_the_acs_secret_temp_file_on_disk_when_the_delete_fails()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Skip("Directory write-permission enforcement is verified against real POSIX mode bits, Linux only.");
+            return;
+        }
+
+        using var scratch = new ScratchDirectory();
+        var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
+        var writer = new SecretFileWriter(targetPath);
+        const string acsLikeSecret = "Endpoint=https://synthetic.example.communication.azure.com/;AccessKey=SYNTHETIC-NOT-REAL";
+
+        writer.Prepare(acsLikeSecret);
+        var tempFileBeforeDiscard = Assert.Single(Directory.GetFiles(scratch.Path));
+
+        // Remove write permission on the containing directory so unlink() fails, simulating a
+        // discard delete that cannot complete (not merely a crash).
+        File.SetUnixFileMode(scratch.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            var discarded = writer.TryDiscardPrepared();
+
+            Assert.False(discarded);
+            var tempFileAfterDiscard = Assert.Single(Directory.GetFiles(scratch.Path));
+            Assert.Equal(tempFileBeforeDiscard, tempFileAfterDiscard);
+            Assert.Equal(acsLikeSecret, File.ReadAllText(tempFileAfterDiscard));
+        }
+        finally
+        {
+            File.SetUnixFileMode(scratch.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     [Fact]

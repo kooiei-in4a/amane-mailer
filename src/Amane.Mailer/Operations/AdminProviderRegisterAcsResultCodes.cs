@@ -30,6 +30,15 @@ public static class AdminProviderRegisterAcsResultCodes
     /// </summary>
     public const string RejectedRollbackFailed = "REJECTED_ROLLBACK_FAILED";
 
+    /// <summary>
+    /// A prepared (uncommitted) temp file failed to be deleted during cleanup after a sibling
+    /// step failed. Distinct from <see cref="RejectedRollbackFailed"/>, which is specifically
+    /// about undoing an already-committed value; this is about an uncommitted <c>.tmp-*</c> file
+    /// (which may still contain the ACS secret content) that could not be removed. Manual review
+    /// is required; do not auto-retry.
+    /// </summary>
+    public const string RejectedCleanupFailed = "REJECTED_CLEANUP_FAILED";
+
     public const string RejectedCancelled = "REJECTED_CANCELLED";
     public const string FailedUnexpected = "FAILED_UNEXPECTED";
 }

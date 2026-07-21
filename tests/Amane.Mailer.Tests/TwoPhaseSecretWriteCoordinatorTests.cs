@@ -22,6 +22,54 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
     }
 
     [Fact]
+    public void Real_secret_file_writer_leaves_the_acs_secret_temp_file_readable_on_disk_when_discard_fails_after_a_prepare_failure()
+    {
+        // End-to-end (real SecretFileWriter, real filesystem) version of the exact scenario the
+        // reviewer flagged: first.Prepare() succeeds and writes an ACS-secret-like temp file,
+        // second.Prepare() fails, and cleaning up the first's temp file also fails. The temp file
+        // must remain verifiably on disk (not silently swallowed), matching the fake-driven
+        // WriteBothCore_reports_cleanup_failed_when_the_second_prepare_fails_and_the_first_discard_also_fails
+        // above, which asserts the coordinator's canonical-code branch for this same sequence.
+        // WriteBoth itself calls first.Prepare() before second.Prepare() can fail, so there is no
+        // hook to flip firstDir's permission in between from outside — this drives the same two
+        // real SecretFileWriter calls the coordinator would make, in the same order, directly.
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Skip("Directory write-permission enforcement is verified against real POSIX mode bits, Linux only.");
+            return;
+        }
+
+        using var firstDir = new ScratchDirectory();
+        var firstPath = Path.Combine(firstDir.Path, "acs_connection_string");
+        var missingSecondDirectory = Path.Combine(Path.GetTempPath(), "amane-mailer-missing-" + Guid.NewGuid().ToString("N"));
+        var secondPath = Path.Combine(missingSecondDirectory, "platform-sender.json");
+        const string acsLikeSecret = "Endpoint=https://synthetic.example.communication.azure.com/;AccessKey=SYNTHETIC-NOT-REAL";
+
+        var first = new SecretFileWriter(firstPath);
+        first.Prepare(acsLikeSecret);
+        var tempFileBeforePrepareFailure = Assert.Single(Directory.GetFiles(firstDir.Path));
+
+        File.SetUnixFileMode(firstDir.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            var second = new SecretFileWriter(secondPath);
+            var prepareEx = Record.Exception(() => second.Prepare("second-content"));
+            Assert.NotNull(prepareEx);
+
+            var discarded = first.TryDiscardPrepared();
+
+            Assert.False(discarded);
+            var tempFileAfterDiscardFailure = Assert.Single(Directory.GetFiles(firstDir.Path));
+            Assert.Equal(tempFileBeforePrepareFailure, tempFileAfterDiscardFailure);
+            Assert.Equal(acsLikeSecret, File.ReadAllText(tempFileAfterDiscardFailure));
+        }
+        finally
+        {
+            File.SetUnixFileMode(firstDir.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
     public void WriteBoth_rolls_back_the_first_commit_when_the_second_commit_fails()
     {
         using var firstDir = new ScratchDirectory();
@@ -67,11 +115,57 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
         Assert.True(second.DiscardAttempted, "the second writer's temp file must still be discarded even when the first's rollback fails");
     }
 
+    [Fact]
+    public void WriteBothCore_reports_cleanup_failed_when_the_second_commit_fails_and_the_second_discard_also_fails()
+    {
+        // Rollback of the first succeeds, but cleaning up the second's own temp file fails —
+        // distinct from the rollback-failure branch above.
+        var first = new FakeSecretFileWriter { CommitSucceeds = true, RollbackSucceeds = true };
+        var second = new FakeSecretFileWriter { CommitSucceeds = false, DiscardSucceeds = false };
+
+        var ex = Assert.Throws<SecretOperationException>(() =>
+            TwoPhaseSecretWriteCoordinator.WriteBothCore(first, "first-content", second, "second-content"));
+
+        Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed, ex.CanonicalCode);
+        Assert.True(first.RollbackAttempted);
+        Assert.True(second.DiscardAttempted);
+    }
+
+    [Fact]
+    public void WriteBothCore_reports_cleanup_failed_when_the_first_commit_fails_and_the_second_discard_also_fails()
+    {
+        var first = new FakeSecretFileWriter { CommitSucceeds = false };
+        var second = new FakeSecretFileWriter { DiscardSucceeds = false };
+
+        var ex = Assert.Throws<SecretOperationException>(() =>
+            TwoPhaseSecretWriteCoordinator.WriteBothCore(first, "first-content", second, "second-content"));
+
+        Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed, ex.CanonicalCode);
+        Assert.True(second.DiscardAttempted);
+    }
+
+    [Fact]
+    public void WriteBothCore_reports_cleanup_failed_when_the_second_prepare_fails_and_the_first_discard_also_fails()
+    {
+        var first = new FakeSecretFileWriter { DiscardSucceeds = false };
+        var second = new FakeSecretFileWriter { PrepareSucceeds = false };
+
+        var ex = Assert.Throws<SecretOperationException>(() =>
+            TwoPhaseSecretWriteCoordinator.WriteBothCore(first, "first-content", second, "second-content"));
+
+        Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed, ex.CanonicalCode);
+        Assert.True(first.DiscardAttempted);
+    }
+
     private sealed class FakeSecretFileWriter : ISecretFileWriter
     {
+        public bool PrepareSucceeds { get; init; } = true;
+
         public bool CommitSucceeds { get; init; } = true;
 
         public bool RollbackSucceeds { get; init; } = true;
+
+        public bool DiscardSucceeds { get; init; } = true;
 
         public bool RollbackAttempted { get; private set; }
 
@@ -79,6 +173,10 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
 
         public void Prepare(string content)
         {
+            if (!PrepareSucceeds)
+            {
+                throw new IOException("simulated prepare failure");
+            }
         }
 
         public void Commit()
@@ -89,7 +187,11 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
             }
         }
 
-        public void DiscardPrepared() => DiscardAttempted = true;
+        public bool TryDiscardPrepared()
+        {
+            DiscardAttempted = true;
+            return DiscardSucceeds;
+        }
 
         public bool TryRollbackCommitted()
         {

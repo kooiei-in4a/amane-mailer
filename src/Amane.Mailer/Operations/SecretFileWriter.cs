@@ -3,8 +3,8 @@ namespace Amane.Mailer.Operations;
 /// <summary>
 /// Atomic single-file writer: write to a temp file in the same directory as the target (same
 /// filesystem, so the final rename is atomic), set restrictive permissions, then rename over the
-/// target. Split into <see cref="Prepare"/> / <see cref="Commit"/> / <see cref="DiscardPrepared"/>
-/// / <see cref="RollbackCommitted"/> so <see cref="TwoPhaseSecretWriteCoordinator"/> can prepare
+/// target. Split into <see cref="Prepare"/> / <see cref="Commit"/> / <see cref="TryDiscardPrepared"/>
+/// / <see cref="TryRollbackCommitted"/> so <see cref="TwoPhaseSecretWriteCoordinator"/> can prepare
 /// two independent files before committing either, and roll the first back if the second's
 /// commit fails.
 /// <para>
@@ -58,21 +58,37 @@ public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
         _tempPath = null;
     }
 
-    public void DiscardPrepared()
+    /// <summary>
+    /// Deletes the uncommitted temp file created by <see cref="Prepare"/>, if any.
+    /// <para>
+    /// Returns <see langword="false"/> if a temp file existed but the delete failed — the caller
+    /// must not treat cleanup as having succeeded in that case. The temp file may still contain
+    /// the prepared secret content (e.g. the ACS connection string) on disk.
+    /// <see cref="TwoPhaseSecretWriteCoordinator"/> maps a failed discard to
+    /// <see cref="AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed"/> so an operator
+    /// knows a temp file may need manual removal, instead of silently reporting only the
+    /// original failure that triggered the cleanup attempt.
+    /// </para>
+    /// </summary>
+    public bool TryDiscardPrepared()
     {
-        if (_tempPath is not null && File.Exists(_tempPath))
+        var tempPath = _tempPath;
+        _tempPath = null;
+
+        if (tempPath is null || !File.Exists(tempPath))
         {
-            try
-            {
-                File.Delete(_tempPath);
-            }
-            catch
-            {
-                // Best effort cleanup of an uncommitted temp file; not itself the final secret.
-            }
+            return true;
         }
 
-        _tempPath = null;
+        try
+        {
+            File.Delete(tempPath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

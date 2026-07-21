@@ -111,3 +111,12 @@ Never record:
 
 - The actual ACS connection string or sender email value.
 - Raw exceptions, stack traces, or the content of interactive input.
+
+## 9. Verified on (Docker checks)
+
+Verified 2026-07-21 on Windows + WSL2 with Docker Engine:
+
+- `docker compose --env-file .env -f compose.yml --profile ops --profile acs-admin config` against `infra/deploy/compose.yml` with a disposable `.env` based on `.env.example`, image `ghcr.io/kooiei-in4a/amane-mailer:v0.3.0`.
+- Mount boundary (compose config + `docker inspect` Mounts): `mailer` mounts ACS secret as `:ro` / `RW=false`; `mailer-acs-admin` mounts ACS secret and platform-sender as read-write (`RW=true`); `mailer-migrate` has neither ACS nor platform-sender mounts.
+- Image UID: `docker inspect ghcr.io/kooiei-in4a/amane-mailer:v0.3.0 --format '{{.Config.User}}'` reports `1654`. Host directories prepared `1654:1654` mode `0700` on a Linux-native WSL path (Windows `/mnt/c` drvfs cannot `chown` / meaningfully apply `chmod 0700`).
+- Registration: published `v0.3.0` does not include `admin provider register-acs` (pre-feature tag). Verified with a local branch-built image tagged `amane-mailer:pr206-verify` (`Config.User=1654`). `check-acs-preflight` via compose profile `acs-admin` returned `SUCCESS`. Interactive `register-acs` driven through a real PTY into `docker compose ... run mailer-acs-admin` with synthetic inputs only returned `SUCCESS`; files `acs_connection_string` and `platform-sender.json` appeared with mode `600` uid/gid `1654` (contents not recorded). Synthetic files removed after verification.
