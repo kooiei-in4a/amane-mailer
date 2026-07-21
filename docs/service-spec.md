@@ -283,7 +283,8 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | 変数 | 用途 | 例・備考 |
 |---|---|---|
 | `ConnectionStrings__Mailer` | SQLite 接続文字列 | 既定 `Data Source=/app/data/mailer.db`（未設定時も同値） |
-| **`ACS_CONNECTION_STRING`** | **ACS の接続文字列** | **provider=acs のとき必須** |
+| **`ACS_CONNECTION_STRING_FILE`** | **ACS 接続文字列ファイル** | **Staging/Production deploy（`infra/deploy/compose.yml`）の正本。`admin provider register-acs` が書く `acs_connection_string` を指す。`MAILER_REQUIRE_ACS_SECRET_FILE=true` のとき bare env へのフォールバックはしない** |
+| `ACS_CONNECTION_STRING` | ACS 接続文字列（環境変数） | local Mailpit compose、および local ACS drill（`mail-05a-acs-drill.sh` の compose override）向け。Staging/Production の `compose.yml` では参照しない |
 | `MAIL_SERVICE_TOKEN_*` | テナント Bearer トークン | `tenants.json` の `token_env` が指定 |
 | `MAILER_PROVIDER` | provider グローバル上書き（任意） | `acs` / `mailpit` |
 | `MAILER_TENANTS_PATH` | tenants.json の場所 | 例 `/app/config/mailer/tenants.json` |

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -223,6 +223,33 @@ function readFirstEnv(...names) {
   return undefined;
 }
 
+function resolveAcsConnectionStringForPreflight() {
+  const filePath = (readEnv('ACS_CONNECTION_STRING_FILE') ?? '').trim();
+  if (filePath.length > 0) {
+    if (!existsSync(filePath)) {
+      return {
+        error: `ACS_CONNECTION_STRING_FILE is set but the file does not exist.`,
+      };
+    }
+
+    const content = readFileSync(filePath, 'utf8').trim();
+    if (content.length === 0) {
+      return {
+        error: `ACS_CONNECTION_STRING_FILE is set but the file is empty.`,
+      };
+    }
+
+    return { value: content };
+  }
+
+  const envValue = readEnv('ACS_CONNECTION_STRING');
+  if (envValue !== undefined && envValue.trim().length > 0) {
+    return { value: envValue };
+  }
+
+  return { value: undefined };
+}
+
 function readProviderOverride() {
   return (readFirstEnv('MAILER_PROVIDER', 'Mailer__Provider', 'Mailer:Provider') ?? '').trim();
 }
@@ -310,11 +337,17 @@ function validateEnvironment() {
     }
 
     if (effectiveProvider === 'acs' && tenant.live_sending === true) {
-      const acsConnectionString = readEnv('ACS_CONNECTION_STRING');
-      if (acsConnectionString === undefined || acsConnectionString.length === 0) {
-        fail(`${label} uses effective provider acs with live_sending=true, but ACS_CONNECTION_STRING is not set.`);
-      } else if (looksLikePlaceholder(acsConnectionString)) {
-        fail(`${label} uses effective provider acs with live_sending=true, but ACS_CONNECTION_STRING appears to contain a placeholder value.`);
+      const acsSecret = resolveAcsConnectionStringForPreflight();
+      if (acsSecret.error) {
+        fail(`${label} uses effective provider acs with live_sending=true, but ${acsSecret.error}`);
+      } else if (acsSecret.value === undefined) {
+        fail(
+          `${label} uses effective provider acs with live_sending=true, but neither ACS_CONNECTION_STRING_FILE nor ACS_CONNECTION_STRING provides a value.`,
+        );
+      } else if (looksLikePlaceholder(acsSecret.value)) {
+        fail(
+          `${label} uses effective provider acs with live_sending=true, but the resolved ACS secret appears to contain a placeholder value.`,
+        );
       }
     }
 

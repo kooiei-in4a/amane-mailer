@@ -45,8 +45,9 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
   （restore / build / test、OpenAPI validation、contract drift、version 整合性）が
   image push 前に通過していることを確認する。
 - ACS live sending は explicit config が必要。`MAILER_PROVIDER=acs`、
-  `ACS_CONNECTION_STRING`、`live_sending=true` tenant、ACS で承認済み sender/domain
-  が揃う場合だけ実送信する。
+  Staging/Production では `admin provider register-acs` で登録した
+  `ACS_CONNECTION_STRING_FILE`（local/drill のみ bare `ACS_CONNECTION_STRING`）、
+  `live_sending=true` tenant、ACS で承認済み sender/domain が揃う場合だけ実送信する。
 
 ## References to verify
 

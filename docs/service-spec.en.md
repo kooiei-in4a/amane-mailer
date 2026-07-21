@@ -283,7 +283,8 @@ values, body, and metadata are not output.
 | Variable | Purpose | Example / Notes |
 |---|---|---|
 | `ConnectionStrings__Mailer` | SQLite connection string | Default `Data Source=/app/data/mailer.db` (same when unset) |
-| **`ACS_CONNECTION_STRING`** | **ACS connection string** | **Required when provider=acs** |
+| **`ACS_CONNECTION_STRING_FILE`** | **ACS connection string file** | **Canonical for Staging/Production deploy (`infra/deploy/compose.yml`). Points at the `acs_connection_string` file written by `admin provider register-acs`. When `MAILER_REQUIRE_ACS_SECRET_FILE=true`, there is no fallback to the bare env var** |
+| `ACS_CONNECTION_STRING` | ACS connection string (environment variable) | For local Mailpit compose and the local ACS drill (`mail-05a-acs-drill.sh` compose override). Not referenced by Staging/Production `compose.yml` |
 | `MAIL_SERVICE_TOKEN_*` | Tenant Bearer tokens | Specified by `token_env` in `tenants.json` |
 | `MAILER_PROVIDER` | Global provider override (optional) | `acs` / `mailpit` |
 | `MAILER_TENANTS_PATH` | Location of tenants.json | e.g. `/app/config/mailer/tenants.json` |

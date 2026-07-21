@@ -23,11 +23,14 @@ input only.
 
 1. Create the host directories referenced by `MAILER_ACS_SECRET_HOST_PATH` (default
    `./secrets/acs`) and `MAILER_PLATFORM_SENDER_HOST_PATH` (default `./config/platform-sender`).
-2. Resolve the Mailer runtime image's actual non-root execution UID/GID (chiseled image). Use
-   `docker inspect <image> --format '{{.Config.User}}'` — do not transcribe a guessed value into
-   this runbook, since it depends on the actual built image.
+2. Resolve the Mailer runtime image's actual non-root execution UID/GID (chiseled image).
+   Use `docker inspect <image> --format '{{.Config.User}}'`. Empirically, the published
+   `ghcr.io/kooiei-in4a/amane-mailer:v0.3.0` image reports `Config.User=1654`
+   (uid/gid `1654`, passwd name `app`). **Always re-check for the tag you deploy** —
+   the value can change when the base image or `APP_UID` changes; do not reuse another
+   tag's value by guess.
 3. Create both directories owned by that UID/GID, mode `0700`, with no group/other permissions
-   at all.
+   at all. For the v0.3.0 image, that is typically `chown 1654:1654` followed by `chmod 0700`.
 4. Never transcribe the secret value itself into this runbook or any approval record.
 
 ## 3. Running the command
