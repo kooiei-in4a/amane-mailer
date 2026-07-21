@@ -7,7 +7,8 @@ minor version receives security fixes.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.3.0   | Yes (latest release) |
+| 0.4.0   | Yes (latest release) |
+| 0.3.x   | No                 |
 | 0.2.x   | No                 |
 | 0.1.x   | No                 |
 | < 0.1.0 | No                 |
@@ -59,6 +60,10 @@ Out of scope:
 - Do not commit real secrets, tokens, connection strings, or database files.
 - See `.gitignore` and `.dockerignore` for patterns that are already excluded.
 - Keep `ACS_CONNECTION_STRING` empty in checked-in files.
+- Do not commit registered ACS secret files under `infra/deploy/secrets/` or
+  registered `platform-sender.json` under `infra/deploy/config/platform-sender/`.
+  Staging/Production register those via `admin provider register-acs` (file-based
+  `ACS_CONNECTION_STRING_FILE` only; see `docs/ops/register-acs-cli-runbook.md`).
 - Use placeholder values (`replace-with-*`) in examples and templates.
 
 ## Provider Error Sanitization

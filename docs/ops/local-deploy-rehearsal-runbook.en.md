@@ -276,6 +276,8 @@ To reset the DB, delete `infra/deploy/data/` and repeat from step 4.
 ## Optional: no-send shared Mailer smoke
 
 No-send API / auth / SQLite DB verification. ACS is not required (`ACS_CONNECTION_STRING` stays empty).
+For Staging/Production ACS file-secret registration, see the
+[register-acs CLI runbook](register-acs-cli-runbook.en.md).
 **Not run in quick start.** `local-rehearsal.ps1` invokes it only when you explicitly pass `-RunSmoke`.
 
 Manual run:

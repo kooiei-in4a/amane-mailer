@@ -52,7 +52,9 @@ after publishing a release, verify and record the following items.
   (restore / build / test, OpenAPI validation, contract drift, version alignment)
   passed before image push.
 - ACS live sending requires explicit configuration. Send live mail only when
-  `MAILER_PROVIDER=acs`, `ACS_CONNECTION_STRING`, a `live_sending=true` tenant,
+  `MAILER_PROVIDER=acs`, a Staging/Production file secret registered via
+  `admin provider register-acs` (`ACS_CONNECTION_STRING_FILE`; bare
+  `ACS_CONNECTION_STRING` only for local/drill), a `live_sending=true` tenant,
   and ACS-approved sender/domain configuration are all in place.
 
 ## References To Verify

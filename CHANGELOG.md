@@ -11,6 +11,83 @@ NuGet package versions (`Amane.Mailer.Contracts`), and OpenAPI `info.version` ar
 kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 `docs/service-spec.md` for details.
 
+## [Unreleased]
+
+## [0.4.0] - 2026-07-21
+
+### Added
+
+- `admin provider register-acs` / `admin provider check-acs-preflight` CLI commands
+  (MAILER-ACS-INPUT-01): safe interactive registration of the ACS connection string
+  (deploy-time secret file, never tenant JSON, never the DB) and a new tenant-independent
+  platform-owned sender identity file (`platform-sender.json` / `platform-sender.schema.json`)
+  for future System Admin platform-owned mail. Interactive-terminal-only input, exclusive
+  cross-process locking from preflight through commit, and a two-phase write with rollback so a
+  failure never leaves only one of the two files registered (#203).
+- `mailer-acs-admin` Compose service (profile `acs-admin`) with dedicated read-write mounts for
+  the ACS secret and platform-sender directories, separate from the read-only mount `mailer`
+  uses and excluded entirely from `mailer-migrate` (#203).
+- `scripts/pty-smoke-register-acs.py`: real-PTY smoke test (synthetic values only) that drives
+  the built CLI through an actual pseudo-terminal to confirm success, re-run rejection,
+  partial-state rejection, and that secret input is never echoed to the terminal — behavior a
+  unit test with a fake console cannot verify (#203).
+
+### Changed
+
+- `infra/deploy/compose.yml` / `infra/deploy/.env.example`: Staging/Production no longer accept
+  the bare `ACS_CONNECTION_STRING` environment variable. Only the file-based
+  `ACS_CONNECTION_STRING_FILE` secret (written by `admin provider register-acs`) is wired. The
+  local ACS drill (`infra/deploy/drills/mail-05a-acs-drill.sh`) is unaffected — it already
+  injected `ACS_CONNECTION_STRING` through its own compose override, independent of this file
+  (#203, #204).
+- Docs / ops sync after MAILER-ACS-INPUT-01: `config/mailer/README` (ja/en), service-spec (ja/en),
+  SECURITY, root README ops links, release-notes checklist, and register-acs runbooks now
+  describe the file-secret Staging/Production path. `.dockerignore` and
+  `scripts/check-dockerignore-secrets.mjs` exclude `infra/deploy/secrets/` and
+  `infra/deploy/config/platform-sender/`. `scripts/validate-tenant-config.mjs` accepts
+  `ACS_CONNECTION_STRING_FILE` as well as bare `ACS_CONNECTION_STRING` (#204).
+- Align public release image defaults and smoke guidance on `v0.4.0`.
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `0.4.0`.
+- Dependabot batch on `develop`: GitHub Actions, NuGet, and Docker base image digest updates
+  (#207).
+
+### Fixed
+
+- `SecretFileWriter.DiscardPrepared` no longer silently swallows delete failures; surfaces
+  `REJECTED_CLEANUP_FAILED` (#206).
+- MAILER-ACS-INPUT-01 review fixes: temp-file leak on rollback failure, accurate
+  `REJECTED_ROLLBACK_FAILED` code, doc comment accuracy (#205).
+
+### Ops note (image UID / Docker verification)
+
+- Empirically confirmed on published `ghcr.io/kooiei-in4a/amane-mailer:v0.3.0`:
+  `Config.User=1654` (uid/gid `1654`). Documented in the register-acs runbook with the
+  requirement to re-check per deployed tag.
+- Docker Known-gap checks completed 2026-07-21 (Windows + WSL2): `docker compose config` against
+  `infra/deploy/compose.yml` with disposable `.env` (image tag `v0.3.0`); mount boundary
+  confirmed via compose config + `docker inspect` (`mailer` ACS `:ro`, `mailer-acs-admin`
+  ACS + platform-sender read-write, `mailer-migrate` without those mounts); host dirs `1654:1654`
+  mode `0700` on a Linux-native path; `check-acs-preflight` / interactive PTY `register-acs`
+  `SUCCESS` using local branch image `amane-mailer:pr206-verify` (published `v0.3.0` predates
+  the CLI). Synthetic secret files removed afterward; see register-acs runbook section 9 (#206).
+
+### Documentation
+
+- Add v0.4.0 release evidence draft with placeholders for tag, NuGet, GHCR, and
+  public smoke artifacts.
+
+### Breaking / Migration
+
+- No breaking public HTTP contract change. The public
+  `POST /internal/mail-requests` HTTP contract shape and acceptance semantics
+  are unchanged.
+- **Staging/Production operators** upgrading from v0.3.0 must register the ACS
+  connection string with `admin provider register-acs` and use
+  `ACS_CONNECTION_STRING_FILE` instead of bare `ACS_CONNECTION_STRING` in compose.
+  Local development and the ACS drill compose override are unchanged.
+- No manual database migration is required for this release.
+
 ## [0.3.0] - 2026-07-04
 
 ### Added

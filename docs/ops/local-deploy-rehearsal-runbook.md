@@ -279,6 +279,8 @@ DB を空にし直す場合は `infra/deploy/data/` を削除してから手順 
 ## 任意: no-send shared Mailer smoke
 
 送信なしの API / 認証 / SQLite DB 検証です。ACS は不要（`ACS_CONNECTION_STRING` は空のまま）。
+Staging/Production 向けの ACS file secret 登録は
+[register-acs CLI runbook](register-acs-cli-runbook.md) を参照。
 **クイックスタートでは実行しません。** 明示的に `-RunSmoke` を付けたときだけ
 `local-rehearsal.ps1` から呼ばれます。
 

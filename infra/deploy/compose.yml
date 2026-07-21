@@ -26,7 +26,7 @@ services:
       MAIL_SERVICE_TOKEN_STAGING: ${MAIL_SERVICE_TOKEN_STAGING:-}
       MAIL_SERVICE_TOKEN_PRODUCTION: ${MAIL_SERVICE_TOKEN_PRODUCTION:-}
       MAILER_PROVIDER: ${MAILER_PROVIDER:-}
-      ACS_CONNECTION_STRING: ${ACS_CONNECTION_STRING:-}
+      # ACS is not used for one-shot DB migration; no ACS secret is mounted here (least privilege).
     volumes:
       - ${MAILER_DATA_PATH:-./data}:/app/data
       - ${MAILER_TENANTS_HOST_PATH:-./tenants.json}:${MAILER_TENANTS_CONTAINER_PATH:-/app/config/mailer/tenants.json}:ro
@@ -52,7 +52,17 @@ services:
       MAIL_SERVICE_TOKEN_STAGING: ${MAIL_SERVICE_TOKEN_STAGING:-}
       MAIL_SERVICE_TOKEN_PRODUCTION: ${MAIL_SERVICE_TOKEN_PRODUCTION:-}
       MAILER_PROVIDER: ${MAILER_PROVIDER:-}
-      ACS_CONNECTION_STRING: ${ACS_CONNECTION_STRING:-}
+      # Staging/Production only accept the file-based secret written by
+      # `admin provider register-acs` (mailer-acs-admin, profile acs-admin). The bare
+      # ACS_CONNECTION_STRING env var is intentionally not referenced here — it is used only by
+      # the local ACS drill (infra/deploy/drills/mail-05a-acs-drill.sh) via its own compose
+      # override, never by this file. See DeployComposeAcsBoundaryTests.
+      ACS_CONNECTION_STRING_FILE: /run/secrets/acs/acs_connection_string
+      # Fail closed: without ACS_CONNECTION_STRING_FILE resolving to a value, MailerOptions must
+      # not fall back to a bare ACS_CONNECTION_STRING env var here, even if one is present in the
+      # container's process environment. The local ACS drill never sets this flag, so its own
+      # ACS_CONNECTION_STRING fallback is unaffected. See MailerOptionsAcsConnectionStringTests.
+      MAILER_REQUIRE_ACS_SECRET_FILE: "true"
       Mailer__Retention__Days: ${MAILER_RETENTION_DAYS:-90}
       Mailer__Retention__SweepIntervalHours: ${MAILER_RETENTION_SWEEP_INTERVAL_HOURS:-24}
       AMANE_ADMIN_ENABLED: ${AMANE_ADMIN_ENABLED:-false}
@@ -69,6 +79,7 @@ services:
     volumes:
       - ${MAILER_DATA_PATH:-./data}:/app/data
       - ${MAILER_TENANTS_HOST_PATH:-./tenants.json}:${MAILER_TENANTS_CONTAINER_PATH:-/app/config/mailer/tenants.json}:ro
+      - ${MAILER_ACS_SECRET_HOST_PATH:-./secrets/acs}:/run/secrets/acs:ro
     networks:
       internal:
       mailer:
@@ -80,6 +91,32 @@ services:
       timeout: ${MAILER_HEALTHCHECK_TIMEOUT:-5s}
       retries: ${MAILER_HEALTHCHECK_RETRIES:-5}
       start_period: ${MAILER_HEALTHCHECK_START_PERIOD:-20s}
+
+  # One-shot operator CLI for `admin provider register-acs` / `admin provider check-acs-preflight`
+  # (MAILER-ACS-INPUT-01). Writes acs_connection_string and platform-sender.json; never touches
+  # tenants.json, never assigns a tenant, and does not itself wire System Admin mail sending.
+  # Invoke without -T so a real TTY is allocated (secret input is read via non-echo keystrokes):
+  #   docker compose --env-file .env -f compose.yml --profile acs-admin run --rm mailer-acs-admin
+  mailer-acs-admin:
+    image: ${MAILER_IMAGE_REPOSITORY}:${MAILER_IMAGE_TAG}
+    pull_policy: ${MAILER_PULL_POLICY}
+    profiles:
+      - acs-admin
+    restart: "no"
+    logging: *default-logging
+    mem_limit: ${MAILER_MEM_LIMIT}
+    cpus: ${MAILER_CPUS}
+    command: ["admin", "provider", "register-acs"]
+    network_mode: none
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # Container path must match acs_connection_string's directory above and
+      # AcsSecretFileNames.CanonicalFileName / PlatformSenderFile.CanonicalFileName in code.
+      MAILER_ACS_SECRET_DIRECTORY: /run/secrets/acs
+      MAILER_PLATFORM_SENDER_DIRECTORY: /run/config/platform-sender
+    volumes:
+      - ${MAILER_ACS_SECRET_HOST_PATH:-./secrets/acs}:/run/secrets/acs
+      - ${MAILER_PLATFORM_SENDER_HOST_PATH:-./config/platform-sender}:/run/config/platform-sender
 
 # ── Consumer app compose integration ──────────────────────────────────────────
 # To send requests from a Consumer app running in a separate compose stack,
