@@ -1,17 +1,21 @@
 using System.Globalization;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Webhooks;
 
 namespace Amane.Mailer.Operations;
 
 public sealed class DbStatsCommand(
     SqliteConnectionFactory connections,
-    Func<DateTimeOffset>? nowProvider = null)
+    Func<DateTimeOffset>? nowProvider = null,
+    DeliveryEventRepository? deliveryEventRepository = null)
 {
     public const int SuccessExitCode = 0;
     public const int UnavailableExitCode = 1;
     public const int UsageErrorExitCode = 2;
 
     private readonly MailerDbStatsReader _statsReader = new(connections);
+    private readonly DeliveryEventRepository _deliveryEventRepository =
+        deliveryEventRepository ?? new DeliveryEventRepository(connections);
     private readonly Func<DateTimeOffset> _nowProvider = nowProvider ?? (() => SqliteTime.UtcNow);
 
     public static bool IsDbStatsCommand(IReadOnlyList<string> args) =>
@@ -58,12 +62,15 @@ public sealed class DbStatsCommand(
         var stats = await _statsReader.LoadStatsAsync(query, now, cancellationToken)
             ?? throw new InvalidOperationException("Mailer stats query returned no result.");
 
-        await WriteStatsAsync(stats, options.TenantId, output);
+        var webhookCounts = await _deliveryEventRepository.CountOperationalAsync(cancellationToken);
+
+        await WriteStatsAsync(stats, webhookCounts, options.TenantId, output);
         return SuccessExitCode;
     }
 
     private static async Task WriteStatsAsync(
         MailerDbStatsResult stats,
+        (long PendingCount, long DeadLetteredCount) webhookCounts,
         Guid? tenantId,
         TextWriter output)
     {
@@ -86,6 +93,8 @@ public sealed class DbStatsCommand(
         await output.WriteLineAsync($"terminal_total={stats.FailedCount + stats.DeadLetteredCount}");
         await output.WriteLineAsync($"worker_heartbeat_age_seconds={stats.WorkerHeartbeatAgeSeconds}");
         await output.WriteLineAsync($"sweep_heartbeat_age_seconds={stats.SweepHeartbeatAgeSeconds}");
+        await output.WriteLineAsync($"webhook_events_pending={webhookCounts.PendingCount}");
+        await output.WriteLineAsync($"webhook_events_dead_lettered={webhookCounts.DeadLetteredCount}");
     }
 
     private static bool TryParseOptions(

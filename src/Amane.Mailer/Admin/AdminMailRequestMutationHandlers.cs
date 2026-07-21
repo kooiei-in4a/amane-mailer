@@ -1,6 +1,7 @@
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Queue;
+using Amane.Mailer.Webhooks;
 using Microsoft.AspNetCore.Antiforgery;
 
 namespace Amane.Mailer.Admin;
@@ -57,6 +58,7 @@ public static class AdminMailRequestMutationHandlers
         string id,
         HttpContext context,
         MailRequestRepository repository,
+        DeliveryEventEnqueuer deliveryEventEnqueuer,
         AdminUserRepository userRepository,
         AdminAuditRepository auditRepository,
         MailerAdminOptions options,
@@ -87,6 +89,11 @@ public static class AdminMailRequestMutationHandlers
             auditRepository,
             auditTemplate,
             cancellationToken);
+
+        if (result.Status == ManualMailRequestMutationStatus.Succeeded)
+        {
+            await deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(requestId, cancellationToken);
+        }
 
         return await CompleteMutationAsync(
             context,

@@ -4,6 +4,7 @@ using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Delivery;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Queue;
+using Amane.Mailer.Webhooks;
 using Amane.Mailer.Worker;
 
 namespace Amane.Mailer;
@@ -60,6 +61,18 @@ public static class AmaneMailerServiceCollectionExtensions
             return options;
         });
 
+        services.AddSingleton(provider =>
+        {
+            var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
+            var options = MailerWebhookOptions.Load(resolvedConfiguration);
+            if (resolvedConfiguration.GetValue("Mailer:Worker:Enabled", true))
+            {
+                options.Validate();
+            }
+
+            return options;
+        });
+
         services.AddSingleton<WorkerServiceStatus>();
 
         services.AddSingleton(provider =>
@@ -87,7 +100,14 @@ public static class AmaneMailerServiceCollectionExtensions
 
         services.AddSingleton<MailRequestRepository>();
         services.AddSingleton<AdminAuditRepository>();
+        services.AddSingleton<DeliveryEventRepository>();
         services.AddSingleton<ExpiredProcessingReaper>();
+        services.AddSingleton<WebhookUrlValidator>();
+        services.AddSingleton<WebhookSignatureService>();
+        services.AddSingleton<WebhookDeliveryClient>();
+        services.AddSingleton<DeliveryEventEnqueuer>();
+        services.AddSingleton<WebhookDeliveryQueue>();
+        services.AddSingleton<IWebhookDeliveryQueue>(provider => provider.GetRequiredService<WebhookDeliveryQueue>());
 
         services.AddSingleton<SqlMigrationRunner>();
 
@@ -105,11 +125,15 @@ public static class AmaneMailerServiceCollectionExtensions
 
         if (configuration.GetValue("Mailer:Worker:Enabled", true))
         {
+            var webhookOptions = MailerWebhookOptions.Load(configuration);
+            services.AddWebhookHttpClient(webhookOptions);
             services.AddHostedService<MailRequestSweepService>();
+            services.AddHostedService<WebhookDeliverySweepService>();
             services.AddHostedService<RetentionService>();
             services.AddHostedService<AdminAuditRetentionService>();
             services.AddHostedService<MailerWalCheckpointShutdownService>();
             services.AddHostedService<MailRequestWorker>();
+            services.AddHostedService<WebhookDeliveryWorker>();
         }
 
         return services;

@@ -10,15 +10,18 @@ public sealed class MailerTenantRegistry
     private readonly IReadOnlyList<MailerTenant> _tenants;
     private readonly IReadOnlyDictionary<Guid, MailerTenant> _tenantsById;
     private readonly IReadOnlyDictionary<Guid, string> _tokensByTenantId;
+    private readonly IReadOnlyDictionary<Guid, string> _webhookSecretsByTenantId;
 
     private MailerTenantRegistry(
         IReadOnlyList<MailerTenant> tenants,
         IReadOnlyDictionary<Guid, MailerTenant> tenantsById,
-        IReadOnlyDictionary<Guid, string> tokensByTenantId)
+        IReadOnlyDictionary<Guid, string> tokensByTenantId,
+        IReadOnlyDictionary<Guid, string> webhookSecretsByTenantId)
     {
         _tenants = tenants;
         _tenantsById = tenantsById;
         _tokensByTenantId = tokensByTenantId;
+        _webhookSecretsByTenantId = webhookSecretsByTenantId;
     }
 
     public static MailerTenantRegistry Load(IConfiguration configuration)
@@ -41,6 +44,7 @@ public sealed class MailerTenantRegistry
 
         var tenantsById = new Dictionary<Guid, MailerTenant>();
         var tokensByTenantId = new Dictionary<Guid, string>();
+        var webhookSecretsByTenantId = new Dictionary<Guid, string>();
 
         foreach (var tenant in tenantFile.Tenants)
         {
@@ -61,6 +65,20 @@ public sealed class MailerTenantRegistry
             }
 
             tokensByTenantId.Add(tenant.TenantId, token);
+
+            if (tenant.Webhook is not null)
+            {
+                var webhookSecret = configuration[tenant.Webhook.SecretEnv]
+                    ?? Environment.GetEnvironmentVariable(tenant.Webhook.SecretEnv);
+
+                if (string.IsNullOrWhiteSpace(webhookSecret))
+                {
+                    throw new InvalidOperationException(
+                        $"Environment variable '{tenant.Webhook.SecretEnv}' must be set for tenant '{tenant.Name}' webhook delivery.");
+                }
+
+                webhookSecretsByTenantId.Add(tenant.TenantId, webhookSecret);
+            }
         }
 
         return new MailerTenantRegistry(
@@ -68,7 +86,8 @@ public sealed class MailerTenantRegistry
                 .OrderBy(tenant => tenant.Name, StringComparer.Ordinal)
                 .ToArray(),
             tenantsById,
-            tokensByTenantId);
+            tokensByTenantId,
+            webhookSecretsByTenantId);
     }
 
     public MailerTenant? Authorize(Guid tenantId, string? bearerToken)
@@ -85,6 +104,9 @@ public sealed class MailerTenantRegistry
 
     public MailerTenant? Find(Guid tenantId) =>
         _tenantsById.GetValueOrDefault(tenantId);
+
+    public string? GetWebhookSecret(Guid tenantId) =>
+        _webhookSecretsByTenantId.GetValueOrDefault(tenantId);
 
     public IReadOnlyList<MailerTenant> ListTenants() => _tenants;
 

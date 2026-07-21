@@ -362,6 +362,16 @@ compareDtoToOpenApiSchema('MailRecipientDto', recipientDto, recipientSchema, {
 compareDtoToOpenApiSchema('MailRequestCreateResponse', responseDto, responseSchema);
 compareDtoToOpenApiSchema('MailRequestStatusResponse', statusResponseDto, statusResponseSchema);
 
+const deliveryEventDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailDeliveryEventPayload.cs');
+const deliveryEventSchema = parseOpenApiSchema(openapi, 'MailDeliveryEventPayload');
+compareDtoToOpenApiSchema('MailDeliveryEventPayload', deliveryEventDto, deliveryEventSchema, {
+  expectClosedSchema: deliveryEventDto.rejectsUnknownMembers,
+});
+
+if (!deliveryEventDto.rejectsUnknownMembers) {
+  fail('MailDeliveryEventPayload must reject unknown JSON members.');
+}
+
 if (!requestDto.rejectsUnknownMembers) {
   fail('MailRequestCreateRequest must reject unknown JSON members.');
 }
@@ -463,6 +473,7 @@ for (const typeName of [
   'MailRequestCreateResponse',
   'MailRequestStatusResponse',
   'MailRecipientDto',
+  'MailDeliveryEventPayload',
 ]) {
   assertContains(
     runtimeJsonContext,
@@ -482,6 +493,7 @@ for (const typeName of [
   'MailRequestCreateResponse',
   'MailRequestStatusResponse',
   'MailRecipientDto',
+  'MailDeliveryEventPayload',
 ]) {
   assertContains(
     contractsJsonContext,
@@ -561,11 +573,13 @@ for (const constant of acceptanceStatuses) {
   );
 }
 
-const contractStrictnessTests = read('tests/Amane.Mailer.Contracts.Tests/MailRequestDtoStrictnessTests.cs');
+const contractStrictnessTests = read('tests/Amane.Mailer.Contracts.Tests/MailRequestDtoStrictnessTests.cs')
+  + read('tests/Amane.Mailer.Contracts.Tests/MailDeliveryEventPayloadStrictnessTests.cs');
 for (const needle of [
   'MailRequestCreateRequest_rejects_unknown_property',
   'MailRecipientDto_rejects_unknown_property',
   'MailRequestCreateRequest_accepts_known_properties',
+  'MailDeliveryEventPayload_rejects_unknown_property',
 ]) {
   assertContains(contractStrictnessTests, needle, 'Contracts JSON strictness tests');
 }

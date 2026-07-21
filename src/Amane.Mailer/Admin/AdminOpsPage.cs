@@ -4,6 +4,7 @@ using System.Text.Encodings.Web;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations;
+using Amane.Mailer.Webhooks;
 using Amane.Mailer.Worker;
 using Microsoft.AspNetCore.Antiforgery;
 
@@ -16,6 +17,7 @@ public static class AdminOpsPage
         AdminUserRepository userRepository,
         AdminDeadLetterCountCache deadLetterCountCache,
         MailRequestRepository mailRequestRepository,
+        DeliveryEventRepository deliveryEventRepository,
         MailerDbStatsReader statsReader,
         MailerDbStorageInfoReader storageInfoReader,
         WorkerServiceStatus serviceStatus,
@@ -50,6 +52,10 @@ public static class AdminOpsPage
             access.AllowedTenantIdsForQuery,
             cancellationToken);
         var storageInfo = await storageInfoReader.LoadAsync(cancellationToken);
+        var webhookCounts = await deliveryEventRepository.CountOperationalAsync(cancellationToken);
+        var webhookDeadLetterCount = await deliveryEventRepository.CountDeadLettersForAdminAsync(
+            access.AllowedTenantIdsForQuery,
+            cancellationToken);
 
         var workerEnabled = configuration.GetValue("Mailer:Worker:Enabled", true);
         var readiness = BuildReadiness(storageInfo, serviceStatus, workerEnabled);
@@ -66,6 +72,8 @@ public static class AdminOpsPage
                 storageInfo,
                 readiness,
                 deadLetterCount,
+                webhookCounts,
+                webhookDeadLetterCount,
                 dbOpsOptions,
                 canRunServiceWideDbOps,
                 csrfToken,
@@ -98,6 +106,8 @@ public static class AdminOpsPage
         MailerDbStorageInfo storageInfo,
         AdminOpsReadiness readiness,
         int deadLetterCount,
+        (long PendingCount, long DeadLetteredCount) webhookCounts,
+        int webhookDeadLetterCount,
         MailerAdminDbOpsOptions dbOpsOptions,
         bool canRunServiceWideDbOps,
         string? csrfToken,
@@ -175,6 +185,16 @@ public static class AdminOpsPage
             html.AppendLine("                  </dl>");
         }
 
+        html.AppendLine("                </section>");
+
+        html.AppendLine("                <section class=\"ops-section\" aria-label=\"Webhook delivery\">");
+        html.AppendLine("                  <h2 class=\"ops-heading\">Webhook delivery</h2>");
+        html.AppendLine("                  <dl class=\"ops-dl\">");
+        AppendDefinition(html, "Pending webhook events", FormatCount(webhookCounts.PendingCount));
+        AppendDefinition(html, "Webhook dead letters (scoped)", FormatCount(webhookDeadLetterCount));
+        AppendDefinition(html, "Webhook dead letters (service-wide)", FormatCount(webhookCounts.DeadLetteredCount));
+        html.AppendLine("                  </dl>");
+        html.AppendLine("                  <p><a href=\"/admin/webhook-dead-letters\">Webhook Dead Letters 一覧</a></p>");
         html.AppendLine("                </section>");
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Provider attempts\">");

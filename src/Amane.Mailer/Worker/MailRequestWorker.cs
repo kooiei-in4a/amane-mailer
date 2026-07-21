@@ -3,6 +3,7 @@ using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
 using Amane.Mailer.Queue;
+using Amane.Mailer.Webhooks;
 
 namespace Amane.Mailer.Worker;
 
@@ -16,6 +17,7 @@ public sealed class MailRequestWorker : BackgroundService
     private readonly MailerHealthcheckOptions _healthcheckOptions;
     private readonly IMailDeliveryProvider _deliveryProvider;
     private readonly ExpiredProcessingReaper _expiredProcessingReaper;
+    private readonly DeliveryEventEnqueuer _deliveryEventEnqueuer;
     private readonly WorkerServiceStatus _serviceStatus;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<MailRequestWorker> _logger;
@@ -31,6 +33,7 @@ public sealed class MailRequestWorker : BackgroundService
         MailerHealthcheckOptions healthcheckOptions,
         IMailDeliveryProvider deliveryProvider,
         ExpiredProcessingReaper expiredProcessingReaper,
+        DeliveryEventEnqueuer deliveryEventEnqueuer,
         WorkerServiceStatus serviceStatus,
         MailDeliveryInflightTracker inflightTracker,
         TimeProvider timeProvider,
@@ -44,6 +47,7 @@ public sealed class MailRequestWorker : BackgroundService
         _healthcheckOptions = healthcheckOptions;
         _deliveryProvider = deliveryProvider;
         _expiredProcessingReaper = expiredProcessingReaper;
+        _deliveryEventEnqueuer = deliveryEventEnqueuer;
         _serviceStatus = serviceStatus;
         _inflightTracker = inflightTracker;
         _timeProvider = timeProvider;
@@ -327,6 +331,13 @@ public sealed class MailRequestWorker : BackgroundService
             return;
         }
 
+        if (outcome is MailRequestFinalizeOutcome.Delivered
+            or MailRequestFinalizeOutcome.Failed
+            or MailRequestFinalizeOutcome.DeadLettered)
+        {
+            await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
+        }
+
         if (outcome == MailRequestFinalizeOutcome.DeadLettered)
         {
             _logger.LogError(
@@ -388,6 +399,8 @@ public sealed class MailRequestWorker : BackgroundService
                 row.MailRequestId);
             return;
         }
+
+        await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
 
         _logger.LogWarning(
             "Mail request {MailRequestId} failed terminally after attempt {AttemptNumber} via provider {Provider}. ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",

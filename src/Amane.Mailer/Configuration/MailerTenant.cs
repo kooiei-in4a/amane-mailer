@@ -70,6 +70,9 @@ public sealed record MailerTenant
     [JsonPropertyName("retry")]
     public required MailerRetryOptions Retry { get; init; }
 
+    [JsonPropertyName("webhook")]
+    public MailerWebhookConfig? Webhook { get; init; }
+
     public bool IsSourceServiceAllowed(string sourceService)
     {
         _sourceServiceSet ??= SourceServices.ToHashSet(StringComparer.Ordinal);
@@ -140,6 +143,7 @@ public sealed record MailerTenant
         }
 
         Retry.Validate(Name);
+        Webhook?.Validate(Name);
     }
 
     private static bool IsValidSourceService(string sourceService)
@@ -215,5 +219,70 @@ public sealed record MailerRetryOptions
         {
             throw new InvalidOperationException($"tenant '{tenantName}' retry.max_delay_seconds must be positive.");
         }
+    }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record MailerWebhookConfig
+{
+    [JsonPropertyName("url")]
+    public required string Url { get; init; }
+
+    [JsonPropertyName("secret_env")]
+    public required string SecretEnv { get; init; }
+
+    [JsonPropertyName("allowed_host_suffixes")]
+    public IReadOnlyList<string>? AllowedHostSuffixes { get; init; }
+
+    public void Validate(string tenantName)
+    {
+        if (string.IsNullOrWhiteSpace(Url))
+        {
+            throw new InvalidOperationException($"tenant '{tenantName}' webhook.url is required.");
+        }
+
+        if (!Uri.TryCreate(Url, UriKind.Absolute, out var uri)
+            || !string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"tenant '{tenantName}' webhook.url must be an absolute HTTPS URL.");
+        }
+
+        if (string.IsNullOrWhiteSpace(SecretEnv))
+        {
+            throw new InvalidOperationException($"tenant '{tenantName}' webhook.secret_env is required.");
+        }
+
+        if (!IsValidSecretEnv(SecretEnv))
+        {
+            throw new InvalidOperationException(
+                $"tenant '{tenantName}' webhook.secret_env must match ^[A-Z][A-Z0-9_]*$.");
+        }
+
+        if (AllowedHostSuffixes is { Count: > 0 })
+        {
+            if (AllowedHostSuffixes.Any(string.IsNullOrWhiteSpace))
+            {
+                throw new InvalidOperationException(
+                    $"tenant '{tenantName}' webhook.allowed_host_suffixes must not contain empty values.");
+            }
+
+            if (AllowedHostSuffixes.Distinct(StringComparer.OrdinalIgnoreCase).Count() != AllowedHostSuffixes.Count)
+            {
+                throw new InvalidOperationException(
+                    $"tenant '{tenantName}' webhook.allowed_host_suffixes must be unique.");
+            }
+        }
+    }
+
+    private static bool IsValidSecretEnv(string secretEnv)
+    {
+        if (secretEnv.Length == 0 || secretEnv[0] is < 'A' or > 'Z')
+            return false;
+
+        return secretEnv[1..].All(static c =>
+            c is >= 'A' and <= 'Z'
+            || c is >= '0' and <= '9'
+            || c == '_');
     }
 }
