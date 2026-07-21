@@ -24,6 +24,11 @@ tenant JSON は階層 merge しません。環境別 JSON を使う場合は、�
 
 tenant Bearer トークンなどの秘密情報は JSON に保存しません。JSON には `token_env` で環境変数名を記載し、実際の token 値はその環境変数に設定します。
 
+optional `webhook` オブジェクトで配送結果の outbound webhook を有効にできます。
+`url` と `secret_env`（秘密は環境変数。tenant JSON 平文禁止）を設定します。詳細は
+[webhook verification](../../docs/consumer/webhook-verification.md) と
+`tenants.schema.json` の `webhook` 定義を参照してください。
+
 `provider` は通常 tenant JSON の値を使います。`MAILER_PROVIDER` または .NET 環境変数形式の
 `Mailer__Provider`（config key は `Mailer:Provider`）を設定した場合は、全 tenant の provider をその値で上書きします。
 

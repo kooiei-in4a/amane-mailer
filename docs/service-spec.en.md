@@ -48,6 +48,7 @@ The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contra
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | Change schedule (`queued` and `attempt_count=0`) | Tenant Bearer |
 | `GET` | `/healthz` | Liveness check | None |
 | `GET` | `/readyz` | Readiness (includes DB schema check) | None |
+| `GET` | `/metrics` | Prometheus metrics (ops; see [metrics-and-alerts.en.md](ops/metrics-and-alerts.en.md)) | None by default (optional bearer) |
 
 ### Contract Sync and Drift Review
 
@@ -261,6 +262,27 @@ On retryable failure the runtime returns to **`Queued` (0)** with `next_attempt_
 
 Manual operations are rejected from `Delivered`, `Processing` with a valid lock, and `Cancelled`. See ADR 0015 for race rules, audit events, and tenant authorization.
 
+### 3.5 Delivery result webhooks (outbound)
+
+With an optional `webhook` object in tenant JSON, Mailer enqueues a
+`MailDeliveryEventPayload` into the `delivery_events` outbox when a request
+reaches a terminal state (`delivered` / `failed` / `dead_lettered` /
+`cancelled`). `WebhookDeliveryWorker` delivers an HMAC-signed HTTPS POST to the
+Consumer.
+
+- Read the secret from the environment variable named by `webhook.secret_env`
+  (never store plaintext secrets in tenant JSON).
+- Payload excludes PII (recipient, subject, body, and related fields).
+- Consumer deduplication contract uses `event_id` (stable across webhook retries
+  for the same mail request event).
+- Failed deliveries use exponential backoff; exceeding the retry limit records a
+  webhook Dead Letter.
+- SSRF controls: HTTPS required, private/metadata IP blocked, optional
+  `allowed_host_suffixes`.
+- Verification steps: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
+- OpenAPI schema: `MailDeliveryEventPayload`
+- Admin / ops visibility: `/admin/webhook-dead-letters`, `db stats` webhook counts
+
 ---
 
 ## 4. Operations CLI (Native Binary)
@@ -308,7 +330,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 |---|---|
 | `as_of_utc` | Aggregation reference time (UTC) |
 | `tenant_id` | Target tenant UUID, or `all` |
-| `status_queued` / `status_processing` / `status_delivered` / `status_failed` / `status_dead_lettered` | Counts by `mail_requests.status` |
+| `status_queued` / `status_processing` / `status_delivered` / `status_failed` / `status_dead_lettered` / `status_cancelled` | Counts by `mail_requests.status` |
 | `ready_backlog_count` | Count where `queued` and both `next_attempt_at` / `scheduled_at` are due (null or `<= now`) |
 | `oldest_queued_age_seconds` | Seconds since oldest `updated_at` in ready backlog (0 if none) |
 | `queued_stale_count` | Ready backlog items where `updated_at` is older than `--queued-stale-minutes` |
@@ -318,6 +340,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `failed_total` / `dead_lettered_total` / `terminal_total` | Cumulative terminal failure counts |
 | `worker_heartbeat_age_seconds` | Seconds since Worker last heartbeat (`-1` if row missing) |
 | `sweep_heartbeat_age_seconds` | Seconds since Sweep last heartbeat (`-1` if row missing) |
+| `webhook_events_pending` / `webhook_events_dead_lettered` | Delivery-result webhook outbox counts |
 
 `db request-state` is a read-only verification command for no-send / ACS deploy drills. Output keys:
 `tenant_id`, `source_service`, `mail_request_id`, `found`, `status`,

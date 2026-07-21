@@ -33,7 +33,7 @@ services:
     restart: "no"
 
   mailer-migrate:
-    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v0.4.0}
+    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v0.9.0}
     platform: ${MAILER_IMAGE_PLATFORM:-linux/amd64}
     pull_policy: ${MAILER_PULL_POLICY:-always}
     depends_on:
@@ -52,7 +52,7 @@ services:
     restart: "no"
 
   mailer:
-    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v0.4.0}
+    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v0.9.0}
     platform: ${MAILER_IMAGE_PLATFORM:-linux/amd64}
     pull_policy: ${MAILER_PULL_POLICY:-always}
     depends_on:
