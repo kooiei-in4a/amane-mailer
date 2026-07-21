@@ -139,7 +139,9 @@ The Contracts package targets `net8.0` for broader consumer compatibility. The M
 
 ## Consumer Quick Start
 
-Minimum information to POST a mail request to a running Mailer:
+Minimum information to POST a mail request to a running Mailer and, when needed, query delivery status with GET.
+
+### Submit a mail request (POST)
 
 - **Endpoint**: `POST http://mailer:8080/internal/mail-requests`
 - **Auth**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
@@ -197,6 +199,41 @@ To safely try a conflict, use a local environment only, keep the same
 `request_id`, change a hash-covered field such as `subject`, recompute
 `payload_hash` for that payload, and POST again. The expected result is
 `409 Conflict` / `IDEMPOTENCY_CONFLICT`.
+
+### Query delivery status (GET)
+
+`202 Accepted` only means the request was persisted. Use GET to learn the Worker delivery outcome (`delivered`, `failed`, and so on).
+
+- **Endpoint**: `GET http://mailer:8080/internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}`
+- **Auth**: same Bearer token as POST
+- **Required query params**: `tenant_id`, `source_service` (same values as the POST body)
+- **Response fields**: `mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`
+- **No PII**: recipient, subject, and body are not returned
+
+`status` values describe Worker delivery state (`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`). They are separate from POST acceptance values `accepted` / `already_accepted`.
+
+Missing IDs and other tenants' IDs both return **404 `NOT_FOUND`** without leaking existence.
+
+Example immediately after POST (reuse the same `request_id`, `tenant_id`, and `source_service`):
+
+```bash
+curl -fsS "http://127.0.0.1:5280/internal/mail-requests/${request_id}?tenant_id=00000000-0000-0000-0000-000000000101&source_service=example-service" \
+  -H "Authorization: Bearer local-mail-service-token"
+```
+
+Expected response right after acceptance:
+
+```json
+{
+  "mail_request_id": "<request_id>",
+  "status": "queued",
+  "attempt_count": 0,
+  "max_attempts": 3,
+  "accepted_at": "2026-07-21T12:00:00Z"
+}
+```
+
+After the Worker finishes delivery, `status` becomes `delivered` and related fields update. See [docs/api/openapi.yaml](docs/api/openapi.yaml) and the [service spec delivery-status section](docs/service-spec.en.md#delivery-status-query-get) for the full HTTP status table and error codes.
 
 For the Consumer app compose network setup, see the comments in [infra/deploy/compose.yml](infra/deploy/compose.yml).
 
