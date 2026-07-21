@@ -36,7 +36,7 @@ public sealed class MailerDbStatsReader(SqliteConnectionFactory connections)
 
         const string sql = """
             WITH filtered AS (
-                SELECT status, next_attempt_at, lock_expires_at, updated_at
+                SELECT status, next_attempt_at, scheduled_at, lock_expires_at, updated_at
                 FROM mail_requests
                 WHERE 1 = 1
             )
@@ -49,14 +49,17 @@ public sealed class MailerDbStatsReader(SqliteConnectionFactory connections)
                 COUNT(CASE
                     WHEN status = @QueuedStatus
                      AND (next_attempt_at IS NULL OR next_attempt_at <= @Now)
+                     AND (scheduled_at IS NULL OR scheduled_at <= @Now)
                     THEN 1 END),
                 MIN(CASE
                     WHEN status = @QueuedStatus
                      AND (next_attempt_at IS NULL OR next_attempt_at <= @Now)
+                     AND (scheduled_at IS NULL OR scheduled_at <= @Now)
                     THEN updated_at END),
                 COUNT(CASE
                     WHEN status = @QueuedStatus
                      AND (next_attempt_at IS NULL OR next_attempt_at <= @Now)
+                     AND (scheduled_at IS NULL OR scheduled_at <= @Now)
                      AND updated_at < @QueuedStaleBefore
                     THEN 1 END),
                 COUNT(CASE

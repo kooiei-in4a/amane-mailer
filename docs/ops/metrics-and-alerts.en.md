@@ -1,8 +1,12 @@
-[Japanese](metrics-and-alerts.md)
+[日本語](metrics-and-alerts.md)
 
 # Prometheus metrics and alerts runbook
 
-The Mailer `/metrics` endpoint exposes queue backlog, delivery outcomes, and worker heartbeats in Prometheus text format. Gauges for queue, dead letters, and heartbeats come from the same `MailerDbStatsReader` used by Admin `/admin/ops` and CLI `db stats`. Counters and histograms are kept in-process since startup.
+Amane Mailer's `/metrics` endpoint exposes queue backlog, delivery results, and
+Worker heartbeat in Prometheus text format. Gauge series for queue / dead letter
+/ heartbeat reuse the same `MailerDbStatsReader` aggregation as Admin
+`/admin/ops` and CLI `db stats`. Counters and histograms are held in-memory for
+the process lifetime.
 
 ## Endpoint
 
@@ -11,41 +15,46 @@ The Mailer `/metrics` endpoint exposes queue backlog, delivery outcomes, and wor
 | Path | `GET /metrics` |
 | Content-Type | `text/plain; version=0.0.4; charset=utf-8` |
 | Default | Enabled (`Mailer:Metrics:Enabled=true`) |
-| Auth | None by default (internal network isolation). When `Mailer:Metrics:BearerToken` is set, `Authorization: Bearer <token>` is required |
-| Disabled | `Mailer:Metrics:Enabled=false` → **404** |
+| Auth | None by default (assumes internal-network isolation). When `Mailer:Metrics:BearerToken` is set, `Authorization: Bearer <token>` is required |
+| Disable | `Mailer:Metrics:Enabled=false` → **404** |
 | DB not migrated | **503** |
 
-### Configuration example
+### Configuration examples
 
 ```bash
-# Optional scrape bearer
+# Optional: scrape bearer
 export MAILER_METRICS_BEARER_TOKEN="replace-with-scrape-token"
 
 # To disable
 export Mailer__Metrics__Enabled=false
 ```
 
-Publish the Mailer HTTP port on an **internal network only** and scrape from the same network or VPN. Like `/healthz` and `/readyz`, direct internet exposure is not intended.
+Publish the Mailer HTTP port on an **internal network only** (Compose / systemd).
+Scrape from the same network or VPN. Like `/healthz` and `/readyz`, direct
+internet exposure is not intended.
 
-## Exported metrics
+## Published metrics
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `mail_requests_accepted_total` | counter | none | Mail requests accepted since process start (resets on restart) |
-| `mail_deliveries_total` | counter | `result`, `provider` | Completed attempts since process start. `result` is `delivered`, `failed`, or `dead_lettered` |
+| `mail_deliveries_total` | counter | `result`, `provider` | Completed attempts since process start. `result` is `delivered` / `failed` / `dead_lettered` |
 | `mail_delivery_duration_seconds` | histogram | `provider` | Attempt duration in seconds since process start (resets on restart) |
-| `mail_queue_ready_count` | gauge | none | Requests ready for immediate delivery (all tenants) |
-| `mail_queue_oldest_age_seconds` | gauge | none | Age in seconds of the oldest ready queued request |
-| `mail_retries_total` | counter | none | Retry attempts since process start (`attempt_number > 1` on completed attempts) |
-| `mail_dead_letters_total` | gauge | none | Current dead-lettered request count |
-| `mail_worker_heartbeat_age_seconds` | gauge | `component` | Heartbeat age for `worker` or `sweep`. Series omitted when row missing |
+| `mail_queue_ready_count` | gauge | none | Immediately deliverable queued count (all tenants) |
+| `mail_queue_oldest_age_seconds` | gauge | none | Age of oldest `updated_at` in the ready backlog |
+| `mail_retries_total` | counter | none | Retry attempts since process start (`attempt_number > 1` completed attempts) |
+| `mail_dead_letters_total` | gauge | none | Current dead_lettered request count |
+| `mail_worker_heartbeat_age_seconds` | gauge | `component` | Heartbeat age for `worker` / `sweep`. No series when the row is missing |
 
-**Forbidden labels:** `recipient_email`, `subject`, `mail_request_id`, `tenant_id`, `source_service`
+**Forbidden labels (must not include):** `recipient_email`, `subject`,
+`mail_request_id`, `tenant_id`, `source_service`
 
-### Relation to Admin / CLI
+### Relationship to Admin / CLI
 
-- **Gauges (queue / dead letter / heartbeat):** Same service-wide aggregation as CLI `db stats` without `--tenant-id` and break-glass Admin ops.
-- **Counters / histogram:** Process lifetime events only. History inserted directly into the DB is not included. Counters and histograms restart from zero after Mailer restart.
+- **Gauges (queue / dead letter / heartbeat):** Same service-wide aggregation as
+  CLI `db stats` (no tenant filter) and break-glass Admin ops.
+- **Counters / histograms:** Process-lifetime events only. Rows inserted directly
+  into the DB are not included. After restart, counters and histograms start at 0.
 
 ## Prometheus scrape example
 
@@ -63,7 +72,7 @@ scrape_configs:
     #   credentials: replace-with-scrape-token
 ```
 
-## Recommended alert thresholds
+## Suggested alert thresholds
 
 ```yaml
 groups:
@@ -102,14 +111,17 @@ groups:
           summary: Failed delivery attempt rate is elevated
 ```
 
-Because `mail_deliveries_total` is an in-process counter, `rate()` can be briefly unstable right after a Mailer restart. Treat queue and heartbeat alerts as primary and delivery rate as secondary.
+Because `mail_deliveries_total` is an in-process counter, `rate()` can be briefly
+unstable right after a Mailer restart. Prefer queue / heartbeat alerts as
+primary signals and treat delivery rate as secondary.
 
 ## Security notes
 
-- Do not expose `/metrics` directly on the public internet.
-- Response must not include recipient, subject, mail_request_id, or tenant_id.
-- Rotate bearer tokens with the same secret-management boundary as scrape config.
-- Admin UI (`/admin/ops`) is a separate path with session auth and tenant scope; metrics are service-wide ops data.
+- Do not expose `/metrics` directly to the public internet.
+- Responses must not include recipient / subject / mail_request_id / tenant_id.
+- Rotate bearer tokens in the same secret boundary as scrape config.
+- Separate path from Admin UI (`/admin/ops`). Admin uses session auth + tenant
+  scope; metrics are ops-oriented and service-wide.
 
 ## Local check
 
@@ -117,7 +129,7 @@ Because `mail_deliveries_total` is an in-process counter, `rate()` can be briefl
 curl -fsS http://127.0.0.1:5280/metrics | head
 ```
 
-With bearer configured:
+With bearer:
 
 ```bash
 curl -fsS -H "Authorization: Bearer replace-with-scrape-token" http://127.0.0.1:5280/metrics | head

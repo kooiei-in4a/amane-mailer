@@ -18,7 +18,8 @@ internal static class MailRequestTestData
         string sourceService = Fixtures.MailerWebApplicationFixtureBase.SourceService,
         string subject = "Form response received",
         string? replyTo = null,
-        IReadOnlyDictionary<string, string>? metadata = null)
+        IReadOnlyDictionary<string, string>? metadata = null,
+        DateTimeOffset? scheduledAt = null)
     {
         var request = new MailRequestCreateRequest
         {
@@ -42,6 +43,7 @@ internal static class MailRequestTestData
             {
                 ["form_id"] = "form-123",
             },
+            ScheduledAt = scheduledAt,
             PayloadHash = new string('0', 64),
         };
 

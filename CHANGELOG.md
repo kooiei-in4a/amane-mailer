@@ -13,6 +13,51 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-22
+
+### Added
+
+- Tenant-scoped `GET /internal/mail-requests/{mail_request_id}` delivery status
+  query (PII-free). Contracts `MailRequestStatusResponse` / `MailRequestStatus`
+  (including `processing` and `cancelled`) synchronized with OpenAPI (#216).
+- Prometheus `GET /metrics` for queue backlog, delivery results, retries, dead
+  letters, and worker heartbeat. Ops runbook with scrape and alert examples
+  (#217).
+- Official TypeScript and Python Consumer SDKs under `sdk/` with payload hash
+  alignment to Contracts test vectors, typed errors, and retryable 503 backoff
+  (#218).
+- Signed delivery-result webhooks for terminal states (`delivered` / `failed` /
+  `dead_lettered` / `cancelled`): HMAC headers, outbox retries, Dead Letter,
+  SSRF controls, and Consumer verification docs (#219).
+- Scheduled send via optional `scheduled_at`, plus cancel and reschedule APIs.
+  Independent from retry `next_attempt_at`; max horizon 30 days UTC; payload_hash
+  excludes `scheduled_at` (#220).
+
+### Changed
+
+- Align public release image defaults and smoke guidance on `v0.9.0`.
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `0.9.0`.
+- Version numbers intentionally advance from `0.4.0` to `0.9.0` for this feature
+  bundle (no intermediate public releases).
+
+### Documentation
+
+- Sync Consumer and ops docs for status GET, metrics, SDKs, webhooks, and
+  scheduled send (JA/EN service-spec, README, Contracts README, metrics EN
+  runbook).
+- Add v0.9.0 release evidence draft.
+
+### Breaking / Migration
+
+- Additive HTTP contract surface for consumers: status GET, cancel, reschedule,
+  optional `scheduled_at` on create, and outbound webhook payload schema.
+  Existing POST acceptance behavior is unchanged.
+- Operators enabling webhooks must set tenant `webhook` config and the secret
+  env named by `webhook.secret_env` (never store secrets in tenant JSON).
+- DB migrations for delivery events and `scheduled_at` are applied via
+  `db migrate` (idempotent; existing rows keep `scheduled_at` null = immediate).
+
 ## [0.4.0] - 2026-07-21
 
 ### Added

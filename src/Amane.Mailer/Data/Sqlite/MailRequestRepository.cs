@@ -152,6 +152,16 @@ public sealed class MailRequestRepository(
     ];
 
     internal const string OperatorCancelledLastErrorMessage = "operator_cancelled";
+    internal const string ConsumerCancelledLastErrorMessage = "consumer_cancelled";
+
+    /// <summary>
+    /// Queued rows are claimable only when both the first-dispatch schedule and retry backoff are due.
+    /// </summary>
+    private const string QueuedReadyPredicate = """
+        status = @QueuedStatus
+        AND (next_attempt_at IS NULL OR next_attempt_at <= @Now)
+        AND (scheduled_at IS NULL OR scheduled_at <= @Now)
+        """;
 
     private static async Task<List<AdminMailRequestListRow>> ListForAdminStatusAsync(
         SqliteConnection connection,
@@ -353,7 +363,7 @@ public sealed class MailRequestRepository(
         CancellationToken cancellationToken = default)
     {
         const string sql = """
-            SELECT id, payload_hash, status, next_attempt_at
+            SELECT id, payload_hash, status, next_attempt_at, scheduled_at
             FROM mail_requests
             WHERE tenant_id = @TenantId
               AND source_service = @SourceService
@@ -380,6 +390,7 @@ public sealed class MailRequestRepository(
             PayloadHash = reader.GetString(1),
             Status = (MailRequestState)reader.GetInt32(2),
             NextAttemptAt = reader.IsDBNull(3) ? null : SqliteTime.FromStorage(reader.GetString(3)),
+            ScheduledAt = reader.IsDBNull(4) ? null : SqliteTime.FromStorage(reader.GetString(4)),
         };
     }
 
@@ -396,6 +407,7 @@ public sealed class MailRequestRepository(
                 mr.attempt_count,
                 mr.max_attempts,
                 mr.next_attempt_at,
+                mr.scheduled_at,
                 mr.accepted_at,
                 mr.delivered_at,
                 COALESCE((
@@ -425,15 +437,16 @@ public sealed class MailRequestRepository(
             return null;
         }
 
-        var lastErrorCode = reader.GetString(7);
+        var lastErrorCode = reader.GetString(8);
         return new MailRequestStatusRow(
             MailRequestId: Guid.Parse(reader.GetString(0)),
             Status: (MailRequestState)reader.GetInt32(1),
             AttemptCount: reader.GetInt32(2),
             MaxAttempts: reader.GetInt32(3),
             NextAttemptAt: reader.IsDBNull(4) ? null : SqliteTime.FromStorage(reader.GetString(4)),
-            AcceptedAt: SqliteTime.FromStorage(reader.GetString(5)),
-            DeliveredAt: reader.IsDBNull(6) ? null : SqliteTime.FromStorage(reader.GetString(6)),
+            ScheduledAt: reader.IsDBNull(5) ? null : SqliteTime.FromStorage(reader.GetString(5)),
+            AcceptedAt: SqliteTime.FromStorage(reader.GetString(6)),
+            DeliveredAt: reader.IsDBNull(7) ? null : SqliteTime.FromStorage(reader.GetString(7)),
             LastErrorCode: string.IsNullOrEmpty(lastErrorCode) ? null : lastErrorCode);
     }
 
@@ -446,13 +459,13 @@ public sealed class MailRequestRepository(
                 id, tenant_id, source_service, mail_request_id, purpose,
                 payload_json, payload_hash, subject, html_body, text_body, reply_to,
                 recipient_email, recipient_display_name, metadata_json,
-                status, attempt_count, max_attempts,
+                status, attempt_count, max_attempts, scheduled_at,
                 accepted_at, created_at, updated_at)
             VALUES (
                 @Id, @TenantId, @SourceService, @MailRequestId, @Purpose,
                 @PayloadJson, @PayloadHash, @Subject, @HtmlBody, @TextBody, @ReplyTo,
                 @RecipientEmail, @RecipientDisplayName, @MetadataJson,
-                @Status, 0, @MaxAttempts,
+                @Status, 0, @MaxAttempts, @ScheduledAt,
                 @AcceptedAt, @CreatedAt, @UpdatedAt);
             """;
 
@@ -480,6 +493,11 @@ public sealed class MailRequestRepository(
             command.Parameters.AddWithValue("@MetadataJson", (object?)insert.MetadataJson ?? DBNull.Value);
             command.Parameters.AddWithValue("@Status", (int)MailRequestState.Queued);
             command.Parameters.AddWithValue("@MaxAttempts", insert.MaxAttempts);
+            command.Parameters.AddWithValue(
+                "@ScheduledAt",
+                insert.ScheduledAt is null
+                    ? DBNull.Value
+                    : SqliteTime.ToStorageUtc(insert.ScheduledAt.Value));
             command.Parameters.AddWithValue("@AcceptedAt", nowStorage);
             command.Parameters.AddWithValue("@CreatedAt", nowStorage);
             command.Parameters.AddWithValue("@UpdatedAt", nowStorage);
@@ -501,7 +519,7 @@ public sealed class MailRequestRepository(
         Guid lockToken,
         CancellationToken cancellationToken = default)
     {
-        const string sql = """
+        const string sql = $"""
             UPDATE mail_requests
             SET
                 status = @ProcessingStatus,
@@ -513,7 +531,7 @@ public sealed class MailRequestRepository(
                 SELECT id
                 FROM mail_requests
                 WHERE
-                    (status = @QueuedStatus AND (next_attempt_at IS NULL OR next_attempt_at <= @Now))
+                    ({QueuedReadyPredicate})
                     OR (
                         status = @ProcessingStatus
                         AND lock_expires_at IS NOT NULL
@@ -524,7 +542,7 @@ public sealed class MailRequestRepository(
                 LIMIT 1
             )
               AND (
-                    (status = @QueuedStatus AND (next_attempt_at IS NULL OR next_attempt_at <= @Now))
+                    ({QueuedReadyPredicate})
                     OR (
                         status = @ProcessingStatus
                         AND lock_expires_at IS NOT NULL
@@ -837,12 +855,12 @@ public sealed class MailRequestRepository(
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
-        const string sql = """
+        const string sql = $"""
             SELECT EXISTS (
                 SELECT 1
                 FROM mail_requests
                 WHERE
-                    (status = @QueuedStatus AND (next_attempt_at IS NULL OR next_attempt_at <= @Now))
+                    ({QueuedReadyPredicate})
                     OR (
                         status = @ProcessingStatus
                         AND lock_expires_at IS NOT NULL
@@ -1110,6 +1128,164 @@ public sealed class MailRequestRepository(
             await transaction.RollbackAsync(cancellationToken);
             throw;
         }
+    }
+
+    public async Task<ConsumerMailRequestMutationResult> TryConsumerCancelAsync(
+        Guid tenantId,
+        string sourceService,
+        Guid mailRequestId,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+
+        const string updateSql = """
+            UPDATE mail_requests
+            SET
+                status = @CancelledStatus,
+                next_attempt_at = NULL,
+                lock_token = NULL,
+                lock_expires_at = NULL,
+                completed_at = @Now,
+                failed_at = @Now,
+                last_error_message = @LastErrorMessage,
+                updated_at = @Now
+            WHERE tenant_id = @TenantId
+              AND source_service = @SourceService
+              AND mail_request_id = @MailRequestId
+              AND status = @QueuedStatus
+            RETURNING id;
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            await using (var update = connection.CreateCommand())
+            {
+                update.CommandText = updateSql;
+                update.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
+                update.Parameters.AddWithValue("@Now", nowStorage);
+                update.Parameters.AddWithValue("@LastErrorMessage", ConsumerCancelledLastErrorMessage);
+                update.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+                update.Parameters.AddWithValue("@SourceService", sourceService);
+                update.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+                update.Parameters.AddWithValue("@QueuedStatus", (int)MailRequestState.Queued);
+
+                await using var reader = await update.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    var internalId = Guid.Parse(reader.GetString(0));
+                    await reader.DisposeAsync();
+                    await transaction.CommitAsync(cancellationToken);
+                    return new(ManualMailRequestMutationStatus.Succeeded, internalId);
+                }
+            }
+
+            var exists = await ExistsByIdempotencyKeyAsync(
+                connection,
+                tenantId,
+                sourceService,
+                mailRequestId,
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new(exists
+                ? ManualMailRequestMutationStatus.InvalidState
+                : ManualMailRequestMutationStatus.NotFound);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    public async Task<ConsumerMailRequestMutationResult> TryRescheduleAsync(
+        Guid tenantId,
+        string sourceService,
+        Guid mailRequestId,
+        DateTimeOffset? scheduledAt,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+        var scheduledStorage = scheduledAt is null
+            ? null
+            : SqliteTime.ToStorageUtc(scheduledAt.Value);
+
+        const string updateSql = """
+            UPDATE mail_requests
+            SET
+                scheduled_at = @ScheduledAt,
+                updated_at = @Now
+            WHERE tenant_id = @TenantId
+              AND source_service = @SourceService
+              AND mail_request_id = @MailRequestId
+              AND status = @QueuedStatus
+              AND attempt_count = 0;
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            await using (var update = connection.CreateCommand())
+            {
+                update.CommandText = updateSql;
+                update.Parameters.AddWithValue("@ScheduledAt", (object?)scheduledStorage ?? DBNull.Value);
+                update.Parameters.AddWithValue("@Now", nowStorage);
+                update.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+                update.Parameters.AddWithValue("@SourceService", sourceService);
+                update.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+                update.Parameters.AddWithValue("@QueuedStatus", (int)MailRequestState.Queued);
+
+                var affected = await update.ExecuteNonQueryAsync(cancellationToken);
+                if (affected > 0)
+                {
+                    await transaction.CommitAsync(cancellationToken);
+                    return new(ManualMailRequestMutationStatus.Succeeded);
+                }
+            }
+
+            var exists = await ExistsByIdempotencyKeyAsync(
+                connection,
+                tenantId,
+                sourceService,
+                mailRequestId,
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new(exists
+                ? ManualMailRequestMutationStatus.InvalidState
+                : ManualMailRequestMutationStatus.NotFound);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    private static async Task<bool> ExistsByIdempotencyKeyAsync(
+        SqliteConnection connection,
+        Guid tenantId,
+        string sourceService,
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT 1
+            FROM mail_requests
+            WHERE tenant_id = @TenantId
+              AND source_service = @SourceService
+              AND mail_request_id = @MailRequestId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+        command.Parameters.AddWithValue("@SourceService", sourceService);
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null;
     }
 
     private static async Task WriteFailureAuditAsync(

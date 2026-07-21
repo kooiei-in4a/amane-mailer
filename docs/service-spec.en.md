@@ -42,10 +42,13 @@ The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contra
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
-| `POST` | `/internal/mail-requests` | Accept send request | Tenant Bearer |
+| `POST` | `/internal/mail-requests` | Accept send request (optional `scheduled_at`) | Tenant Bearer |
 | `GET` | `/internal/mail-requests/{mail_request_id}` | Query delivery status (`tenant_id` / `source_service` as query params) | Tenant Bearer |
+| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | Pre-send cancel (`queued` only) | Tenant Bearer |
+| `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | Change schedule (`queued` and `attempt_count=0`) | Tenant Bearer |
 | `GET` | `/healthz` | Liveness check | None |
 | `GET` | `/readyz` | Readiness (includes DB schema check) | None |
+| `GET` | `/metrics` | Prometheus metrics (ops; see [metrics-and-alerts.en.md](ops/metrics-and-alerts.en.md)) | None by default (optional bearer) |
 
 ### Contract Sync and Drift Review
 
@@ -67,7 +70,10 @@ When intentionally changing the contract, update the DTOs / constants / payload 
 | Same ID, different content | 409 | `IDEMPOTENCY_CONFLICT` |
 | Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | Multiple recipients / metadata / hash mismatch | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
+| Past `scheduled_at` / beyond max schedule horizon | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+
+API times are **UTC**. `scheduled_at` is the first-dispatch schedule and is independent of `next_attempt_at` (retry backoff). Omit or null means immediate. Max schedule horizon is **30 days** from accept / reschedule time (`MailRequestScheduleLimits.MaxScheduledAhead`). `scheduled_at` is excluded from payload_hash.
 
 ### Delivery Status Query (GET)
 
@@ -82,7 +88,39 @@ When intentionally changing the contract, update the DTOs / constants / payload 
 | Not found, or belongs to another tenant | 404 | `NOT_FOUND` (does not leak existence) |
 | Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 
-The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`). `last_error_code` is a sanitized error code only.
+The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`). `last_error_code` is a sanitized error code only.
+
+### Pre-send cancel (POST cancel)
+
+`POST /internal/mail-requests/{mail_request_id}/cancel?tenant_id={uuid}&source_service={name}`
+
+| Situation | HTTP | code / status |
+|---|---|---|
+| Cancel a `queued` request | 200 | `status: cancelled` (status JSON) |
+| Invalid query | 400 | `INVALID_REQUEST` |
+| Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
+| source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
+| Missing / other tenant | 404 | `NOT_FOUND` |
+| Not `queued` | 422 | `INVALID_STATE` |
+| Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+
+### Reschedule (POST reschedule)
+
+`POST /internal/mail-requests/{mail_request_id}/reschedule?tenant_id={uuid}&source_service={name}`
+
+Body: `{ "scheduled_at": "<UTC date-time>|null" }` (null clears the schedule gate = immediate).
+
+| Situation | HTTP | code / status |
+|---|---|---|
+| Updated while `queued` and `attempt_count=0` | 200 | Updated status JSON |
+| Invalid query | 400 | `INVALID_REQUEST` |
+| Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
+| source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
+| Missing / other tenant | 404 | `NOT_FOUND` |
+| Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
+| Past time / beyond 30 days | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
+| Disallowed state | 422 | `INVALID_STATE` |
+| Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 
 ### Metadata secret policy (docs-first)
 
@@ -151,7 +189,8 @@ Canonical DDL: `src/Amane.Mailer/Data/Migrations/001_initial.sql`
 | `metadata_json` | TEXT NULL | Optional metadata |
 | `status` | INTEGER | State (see table below) |
 | `attempt_count` / `max_attempts` | INTEGER | Attempt counts |
-| `next_attempt_at` | TEXT NULL | Next attempt time (UTC ISO8601) |
+| `next_attempt_at` | TEXT NULL | Next attempt time (UTC ISO8601). Retry backoff only |
+| `scheduled_at` | TEXT NULL | First-dispatch schedule (UTC ISO8601). null = immediate. Independent of `next_attempt_at` |
 | `lock_token` / `lock_expires_at` | TEXT NULL | Worker lease |
 | `delivered_at` / `failed_at` / `completed_at` | TEXT NULL | Terminal timestamps |
 | `accepted_at` / `created_at` / `updated_at` | TEXT | Audit timestamps |
@@ -160,7 +199,7 @@ Canonical DDL: `src/Amane.Mailer/Data/Migrations/001_initial.sql`
 
 **Partial indexes:**
 
-- `idx_mail_requests_queued_due` — `status = 0` ordered by `next_attempt_at`
+- `idx_mail_requests_queued_due` — `status = 0` ordered by `scheduled_at`, `next_attempt_at`, `created_at`
 - `idx_mail_requests_processing_expired` — `status = 1` ordered by `lock_expires_at`
 
 ### 3.2 `mail_attempts` — Send Attempt History
@@ -195,7 +234,7 @@ The canonical state values and Worker automatic transitions are defined in [ADR 
 
 | Value | Name | Meaning |
 |---|---|---|
-| **0** | `Queued` | Accepted · awaiting delivery (claimable when `next_attempt_at` is due) |
+| **0** | `Queued` | Accepted · awaiting delivery (claimable when both `scheduled_at` and `next_attempt_at` are due) |
 | **1** | `Processing` | Worker holds lease · sending |
 | **2** | `Delivered` | Delivery succeeded (terminal) |
 | **3** | `Failed` | Non-retryable provider failure (terminal) |
@@ -222,6 +261,27 @@ On retryable failure the runtime returns to **`Queued` (0)** with `next_attempt_
 | Manual cancel | `Queued`, `Failed`, `DeadLettered`, expired `Processing` | `Cancelled` |
 
 Manual operations are rejected from `Delivered`, `Processing` with a valid lock, and `Cancelled`. See ADR 0015 for race rules, audit events, and tenant authorization.
+
+### 3.5 Delivery result webhooks (outbound)
+
+With an optional `webhook` object in tenant JSON, Mailer enqueues a
+`MailDeliveryEventPayload` into the `delivery_events` outbox when a request
+reaches a terminal state (`delivered` / `failed` / `dead_lettered` /
+`cancelled`). `WebhookDeliveryWorker` delivers an HMAC-signed HTTPS POST to the
+Consumer.
+
+- Read the secret from the environment variable named by `webhook.secret_env`
+  (never store plaintext secrets in tenant JSON).
+- Payload excludes PII (recipient, subject, body, and related fields).
+- Consumer deduplication contract uses `event_id` (stable across webhook retries
+  for the same mail request event).
+- Failed deliveries use exponential backoff; exceeding the retry limit records a
+  webhook Dead Letter.
+- SSRF controls: HTTPS required, private/metadata IP blocked, optional
+  `allowed_host_suffixes`.
+- Verification steps: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
+- OpenAPI schema: `MailDeliveryEventPayload`
+- Admin / ops visibility: `/admin/webhook-dead-letters`, `db stats` webhook counts
 
 ---
 
@@ -270,8 +330,8 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 |---|---|
 | `as_of_utc` | Aggregation reference time (UTC) |
 | `tenant_id` | Target tenant UUID, or `all` |
-| `status_queued` / `status_processing` / `status_delivered` / `status_failed` / `status_dead_lettered` | Counts by `mail_requests.status` |
-| `ready_backlog_count` | Count where `queued` and `next_attempt_at IS NULL OR next_attempt_at <= now` |
+| `status_queued` / `status_processing` / `status_delivered` / `status_failed` / `status_dead_lettered` / `status_cancelled` | Counts by `mail_requests.status` |
+| `ready_backlog_count` | Count where `queued` and both `next_attempt_at` / `scheduled_at` are due (null or `<= now`) |
 | `oldest_queued_age_seconds` | Seconds since oldest `updated_at` in ready backlog (0 if none) |
 | `queued_stale_count` | Ready backlog items where `updated_at` is older than `--queued-stale-minutes` |
 | `stale_processing_count` | `processing` items where `updated_at` is older than `--stale-processing-minutes` |
@@ -280,6 +340,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `failed_total` / `dead_lettered_total` / `terminal_total` | Cumulative terminal failure counts |
 | `worker_heartbeat_age_seconds` | Seconds since Worker last heartbeat (`-1` if row missing) |
 | `sweep_heartbeat_age_seconds` | Seconds since Sweep last heartbeat (`-1` if row missing) |
+| `webhook_events_pending` / `webhook_events_dead_lettered` | Delivery-result webhook outbox counts |
 
 `db request-state` is a read-only verification command for no-send / ACS deploy drills. Output keys:
 `tenant_id`, `source_service`, `mail_request_id`, `found`, `status`,

@@ -25,5 +25,6 @@ public static class MailPayloadHashContract
         "tenant_id",
         "mail_request_id",
         "payload_hash",
+        "scheduled_at",
     ];
 }

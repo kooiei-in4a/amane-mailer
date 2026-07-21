@@ -22,6 +22,7 @@ EXCLUDED_FIELDS = frozenset(
         "tenant_id",
         "mail_request_id",
         "payload_hash",
+        "scheduled_at",
     ]
 )
 

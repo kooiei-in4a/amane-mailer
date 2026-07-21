@@ -9,3 +9,7 @@ public enum ManualMailRequestMutationStatus
 }
 
 public sealed record ManualMailRequestMutationResult(ManualMailRequestMutationStatus Status);
+
+public sealed record ConsumerMailRequestMutationResult(
+    ManualMailRequestMutationStatus Status,
+    Guid? InternalRequestId = null);

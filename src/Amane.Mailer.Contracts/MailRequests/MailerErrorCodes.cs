@@ -12,4 +12,7 @@ public static class MailerErrorCodes
     public const string UnauthorizedTenant = "UNAUTHORIZED_TENANT";
     public const string MailerTemporarilyUnavailable = "MAILER_TEMPORARILY_UNAVAILABLE";
     public const string NotFound = "NOT_FOUND";
+    public const string ScheduledAtInPast = "SCHEDULED_AT_IN_PAST";
+    public const string ScheduledAtTooFar = "SCHEDULED_AT_TOO_FAR";
+    public const string InvalidState = "INVALID_STATE";
 }

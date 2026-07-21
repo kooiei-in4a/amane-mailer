@@ -6,6 +6,7 @@ public sealed record MailRequestStatusRow(
     int AttemptCount,
     int MaxAttempts,
     DateTimeOffset? NextAttemptAt,
+    DateTimeOffset? ScheduledAt,
     DateTimeOffset AcceptedAt,
     DateTimeOffset? DeliveredAt,
     string? LastErrorCode);

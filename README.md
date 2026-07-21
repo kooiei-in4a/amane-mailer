@@ -93,13 +93,13 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
-v0.4.0 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.4.0`）を clean state から
+v0.9.0 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v0.9.0`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
 conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（Linux / macOS / Git Bash）または
 `scripts/release-smoke.ps1`（Windows / PowerShell + Docker Desktop）を使います。手順と設定は
 [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
 
-v0.4.0 release では、既定 smoke tag `v0.4.0` の GHCR runtime image は publish 後
+v0.9.0 release では、既定 smoke tag `v0.9.0` の GHCR runtime image は publish 後
 **multi-arch**（`linux/amd64` と
 `linux/arm64`）です。smoke では release notes または Docker manifest の platform を確認し、
 `MAILER_IMAGE_PLATFORM=linux/amd64` または `MAILER_IMAGE_PLATFORM=linux/arm64` を指定してください。
@@ -197,7 +197,8 @@ hash 対象フィールドを変更し、その payload に合わせて `payload
 - **エンドポイント**: `GET http://mailer:8080/internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}`
 - **認証**: POST と同じ Bearer トークン
 - **必須 query**: `tenant_id`, `source_service`（POST body と同じ値）
-- **返却フィールド**: `mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`
+- **返却フィールド**: `mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`
+- **任意**: POST の `scheduled_at`（UTC）で予約送信。送信前キャンセル / 再スケジュールは OpenAPI の `/cancel`・`/reschedule` を参照
 - **PII なし**: 宛先・件名・本文は返しません
 
 `status` の値は Worker 配送状態です（`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`）。POST レスポンスの `accepted` / `already_accepted` とは別物です。
@@ -253,6 +254,9 @@ smoke を含むフル CI が走ります（arm64 Docker は `main` push）。詳
 - [ブランチ戦略と CI 重み付け](docs/ops/branch-and-ci-workflow.md) [(en)](docs/ops/branch-and-ci-workflow.en.md)
 - [サービス仕様](docs/service-spec.md) [(en)](docs/service-spec.en.md)
 - [OpenAPI HTTP reference](docs/api/openapi.yaml)
+- [Consumer SDKs](sdk/README.md)
+- [Webhook 検証](docs/consumer/webhook-verification.md)
+- [Prometheus メトリクスとアラート](docs/ops/metrics-and-alerts.md) [(en)](docs/ops/metrics-and-alerts.en.md)
 - [バックアップ運用](docs/ops/backup-operations.md) [(en)](docs/ops/backup-operations.en.md)
 - [GHCR image publish 手順](docs/ops/ghcr-image-publish.md) [(en)](docs/ops/ghcr-image-publish.en.md)
 - [Release artifact verification](docs/ops/release-artifact-verification.md) [(en)](docs/ops/release-artifact-verification.en.md)
