@@ -266,6 +266,13 @@ paths:
                 scheduledAtInPast: { value: { code: SCHEDULED_AT_IN_PAST } }
                 scheduledAtTooFar: { value: { code: SCHEDULED_AT_TOO_FAR } }
                 invalidState: { value: { code: INVALID_STATE } }
+        '413':
+          description: リクエストボディが上限（256,000 バイト）超過
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                tooLarge: { value: { code: REQUEST_TOO_LARGE } }
         '503':
           description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
           content:

@@ -250,6 +250,34 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         Assert.True(MailRequestEndpoints.IsDispatchableQueued(stored, DateTimeOffset.UtcNow));
     }
 
+    [Fact]
+    public async Task Reschedule_after_attempt_returns_invalid_state()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest();
+
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+
+        await SetAttemptCountAsync(request.MailRequestId, attemptCount: 1, ct);
+
+        using var reschedule = await client.PostAsync(
+            RescheduleUrl(request.MailRequestId),
+            JsonContent.Create(
+                new MailRequestRescheduleRequest { ScheduledAt = DateTimeOffset.UtcNow.AddHours(3) },
+                options: JsonOptions),
+            ct);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, reschedule.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidState,
+            await MailRequestTestData.ReadCodeAsync(reschedule, ct));
+    }
+
     private async Task MarkDeliveredAsync(Guid mailRequestId, CancellationToken cancellationToken)
     {
         var now = SqliteTime.ToStorageUtc(DateTimeOffset.UtcNow);
@@ -284,6 +312,24 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
             WHERE mail_request_id = @MailRequestId;
             """;
         command.Parameters.AddWithValue("@NextAttemptAt", SqliteTime.ToStorageUtc(nextAttemptAt));
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task SetAttemptCountAsync(
+        Guid mailRequestId,
+        int attemptCount,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE mail_requests
+            SET attempt_count = @AttemptCount
+            WHERE mail_request_id = @MailRequestId;
+            """;
+        command.Parameters.AddWithValue("@AttemptCount", attemptCount);
         command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

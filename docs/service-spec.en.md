@@ -112,9 +112,14 @@ Body: `{ "scheduled_at": "<UTC date-time>|null" }` (null clears the schedule gat
 | Situation | HTTP | code / status |
 |---|---|---|
 | Updated while `queued` and `attempt_count=0` | 200 | Updated status JSON |
+| Invalid query | 400 | `INVALID_REQUEST` |
+| Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
+| source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
+| Missing / other tenant | 404 | `NOT_FOUND` |
+| Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | Past time / beyond 30 days | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | Disallowed state | 422 | `INVALID_STATE` |
-| Missing / other tenant | 404 | `NOT_FOUND` |
+| Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 
 ### Metadata secret policy (docs-first)
 

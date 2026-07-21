@@ -112,9 +112,14 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | 状況 | HTTP | code / status |
 |---|---|---|
 | `queued` かつ `attempt_count=0` で更新成功 | 200 | 更新後ステータス JSON |
+| クエリ不正 | 400 | `INVALID_REQUEST` |
+| トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
+| source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
+| 存在しない / 他 tenant | 404 | `NOT_FOUND` |
+| ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | 過去時刻 / 30 日超 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | 許可状態以外 | 422 | `INVALID_STATE` |
-| 存在しない / 他 tenant | 404 | `NOT_FOUND` |
+| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 
 ### metadata の秘密情報ポリシー（docs-first）
 

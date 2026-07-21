@@ -8,17 +8,17 @@ namespace Amane.Mailer.Tests;
 public sealed class MailRequestScheduledMigrationTests
 {
     [Fact]
-    public async Task Db_migrate_008_adds_scheduled_at_null_for_existing_rows()
+    public async Task Db_migrate_009_adds_scheduled_at_null_for_existing_rows()
     {
         var ct = TestContext.Current.CancellationToken;
-        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-migration-008", Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-migration-009", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var databasePath = Path.Combine(root, "mailer.db");
         var migrationDirectory = Path.Combine(root, "migrations");
 
         try
         {
-            CopyMigrationsThrough(migrationDirectory, "007_mail_request_cancelled_status.sql");
+            CopyMigrationsThrough(migrationDirectory, "008_delivery_events.sql");
 
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
@@ -34,11 +34,11 @@ public sealed class MailRequestScheduledMigrationTests
             await SeedMailRequestAsync(databasePath, requestId, ct);
 
             File.Copy(
-                Path.Combine(GetCurrentMigrationDirectory(), "008_mail_request_scheduled_at.sql"),
-                Path.Combine(migrationDirectory, "008_mail_request_scheduled_at.sql"));
+                Path.Combine(GetCurrentMigrationDirectory(), "009_mail_request_scheduled_at.sql"),
+                Path.Combine(migrationDirectory, "009_mail_request_scheduled_at.sql"));
 
             var applied = await runner.ApplyPendingAsync(ct);
-            Assert.Contains("008_mail_request_scheduled_at.sql", applied);
+            Assert.Contains("009_mail_request_scheduled_at.sql", applied);
 
             await using var connection = new SqliteConnection($"Data Source={databasePath}");
             await connection.OpenAsync(ct);
@@ -60,7 +60,7 @@ public sealed class MailRequestScheduledMigrationTests
                         status, attempt_count, max_attempts, scheduled_at,
                         accepted_at, created_at, updated_at)
                     VALUES (
-                        @Id, @TenantId, 'migration-008-test', @MailRequestId, 'test',
+                        @Id, @TenantId, 'migration-009-test', @MailRequestId, 'test',
                         '{}', @PayloadHash, 'subject', 'user@example.com',
                         0, 0, 3, @ScheduledAt,
                         @Now, @Now, @Now);
@@ -101,7 +101,7 @@ public sealed class MailRequestScheduledMigrationTests
                 status, attempt_count, max_attempts,
                 accepted_at, created_at, updated_at)
             VALUES (
-                @Id, @TenantId, 'migration-008-test', @MailRequestId, 'test',
+                @Id, @TenantId, 'migration-009-test', @MailRequestId, 'test',
                 '{}', @PayloadHash, 'subject', 'user@example.com',
                 0, 0, 3,
                 @Now, @Now, @Now);
