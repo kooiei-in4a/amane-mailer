@@ -514,7 +514,7 @@
       "amane.mailer": {
         "type": "Project",
         "dependencies": {
-          "Amane.Mailer.Contracts": "[1.0.0, )",
+          "Amane.Mailer.Contracts": "[0.3.0, )",
           "Azure.Communication.Email": "[1.1.0, )",
           "MailKitLite": "[4.17.0, )",
           "Microsoft.Data.Sqlite": "[10.0.9, )",

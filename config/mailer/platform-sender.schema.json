@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kooiei-in4a/amane-mailer/config/mailer/platform-sender.schema.json",
+  "title": "Mailer platform-owned sender configuration",
+  "description": "Sender identity for platform-owned (tenant-less) mail such as System Admin confirmation mail. This file is written by 'admin provider register-acs' and is not yet consumed by any runtime send path; wiring it into a send decision is out of scope until the platform-owned mail request contract (MAIL-PLATFORM-01) exists.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "environment", "sender", "provider", "live_sending"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "environment": {
+      "type": "string",
+      "enum": ["staging"]
+    },
+    "sender": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["email", "display_name"],
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "provider": {
+      "type": "string",
+      "enum": ["acs"]
+    },
+    "live_sending": {
+      "type": "boolean",
+      "const": false
+    }
+  }
+}

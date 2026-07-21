@@ -11,6 +11,40 @@ NuGet package versions (`Amane.Mailer.Contracts`), and OpenAPI `info.version` ar
 kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 `docs/service-spec.md` for details.
 
+## [Unreleased]
+
+### Added
+
+- `admin provider register-acs` / `admin provider check-acs-preflight` CLI commands
+  (MAILER-ACS-INPUT-01): safe interactive registration of the ACS connection string
+  (deploy-time secret file, never tenant JSON, never the DB) and a new tenant-independent
+  platform-owned sender identity file (`platform-sender.json` / `platform-sender.schema.json`)
+  for future System Admin platform-owned mail. Interactive-terminal-only input, exclusive
+  cross-process locking from preflight through commit, and a two-phase write with rollback so a
+  failure never leaves only one of the two files registered.
+- `mailer-acs-admin` Compose service (profile `acs-admin`) with dedicated read-write mounts for
+  the ACS secret and platform-sender directories, separate from the read-only mount `mailer`
+  uses and excluded entirely from `mailer-migrate`.
+- `scripts/pty-smoke-register-acs.py`: real-PTY smoke test (synthetic values only) that drives
+  the built CLI through an actual pseudo-terminal to confirm success, re-run rejection,
+  partial-state rejection, and that secret input is never echoed to the terminal — behavior a
+  unit test with a fake console cannot verify.
+
+### Known gap before Ready PR
+
+- The Mailer chiseled image's actual non-root runtime UID/GID has not been empirically confirmed
+  against the `mailer-acs-admin` host secret directory ownership (`docker inspect <image>
+  --format '{{.Config.User}}'` on a Linux Docker host). Required before converting the
+  MAILER-ACS-INPUT-01 PR from Draft to Ready.
+
+### Changed
+
+- `infra/deploy/compose.yml` / `infra/deploy/.env.example`: Staging/Production no longer accept
+  the bare `ACS_CONNECTION_STRING` environment variable. Only the file-based
+  `ACS_CONNECTION_STRING_FILE` secret (written by `admin provider register-acs`) is wired. The
+  local ACS drill (`infra/deploy/drills/mail-05a-acs-drill.sh`) is unaffected — it already
+  injected `ACS_CONNECTION_STRING` through its own compose override, independent of this file.
+
 ## [0.3.0] - 2026-07-04
 
 ### Added

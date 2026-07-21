@@ -24,6 +24,8 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll db admin-audit purge --older-than-days <days>
       dotnet Amane.Mailer.dll admin hash-password
       dotnet Amane.Mailer.dll admin user create --username <name> --password-hash <pbkdf2> [--tenant-id <uuid> ...] [--break-glass]
+      dotnet Amane.Mailer.dll admin provider register-acs
+      dotnet Amane.Mailer.dll admin provider check-acs-preflight
 
     Options:
       -h, --help    Show help.
@@ -118,6 +120,18 @@ if (AdminUserCreateCommand.IsAdminUserCreateCommand(adminUserCommandArgs))
         Console.Out,
         Console.Error,
         CancellationToken.None);
+}
+
+if (AdminProviderRegisterAcsCommand.IsRegisterAcsCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunAdminProviderRegisterAcsAsync(cliConfiguration, Console.Error);
+}
+
+if (AdminProviderRegisterAcsCommand.IsCheckAcsPreflightCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunAdminProviderCheckAcsPreflightAsync(cliConfiguration, Console.Error);
 }
 
 var builder = WebApplication.CreateBuilder(args);

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "environment": "staging",
+  "sender": {
+    "email": "system-admin-noreply@example.com",
+    "display_name": "Example System Admin"
+  },
+  "provider": "acs",
+  "live_sending": false
+}
