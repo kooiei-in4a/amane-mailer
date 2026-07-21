@@ -1,12 +1,16 @@
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Operations;
 using Microsoft.Data.Sqlite;
 using System.Text;
 
 namespace Amane.Mailer.Data.Sqlite;
 
-public sealed class MailRequestRepository(SqliteConnectionFactory connections)
+public sealed class MailRequestRepository(
+    SqliteConnectionFactory connections,
+    MailerRuntimeMetrics? runtimeMetrics = null)
 {
+    private readonly MailerRuntimeMetrics? _runtimeMetrics = runtimeMetrics;
     private const string ExpiredProcessingReaperProvider = "lease-reaper";
     private const string ExpiredProcessingMaxAttemptsErrorCode = "PROCESSING_LEASE_EXPIRED_MAX_ATTEMPTS";
     private const string ExpiredProcessingMaxAttemptsErrorMessage =
@@ -482,6 +486,7 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
 
             await command.ExecuteNonQueryAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+            _runtimeMetrics?.RecordRequestAccepted();
         }
         catch
         {
@@ -651,6 +656,7 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
             }
 
             var deadLettered = new List<ExpiredProcessingDeadLetteredRequest>(candidates.Count);
+            var recordedAttempts = new List<MailAttemptInsert>(candidates.Count);
             foreach (var candidate in candidates)
             {
                 await using (var update = connection.CreateCommand())
@@ -686,6 +692,20 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
                     await insertAttempt.ExecuteNonQueryAsync(cancellationToken);
                 }
 
+                recordedAttempts.Add(new MailAttemptInsert
+                {
+                    RequestId = candidate.Id,
+                    AttemptNumber = candidate.AttemptNumber,
+                    Provider = ExpiredProcessingReaperProvider,
+                    Status = MailRequestState.DeadLettered,
+                    ErrorCode = ExpiredProcessingMaxAttemptsErrorCode,
+                    ErrorMessage = ExpiredProcessingMaxAttemptsErrorMessage,
+                    Retryable = true,
+                    LockToken = candidate.LockToken,
+                    StartedAt = candidate.StartedAt,
+                    CompletedAt = now,
+                });
+
                 deadLettered.Add(new ExpiredProcessingDeadLetteredRequest(
                     candidate.Id,
                     candidate.MailRequestId,
@@ -695,6 +715,11 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
             }
 
             await transaction.CommitAsync(cancellationToken);
+            foreach (var attempt in recordedAttempts)
+            {
+                _runtimeMetrics?.RecordAttemptCompleted(attempt);
+            }
+
             return deadLettered;
         }
         catch
@@ -798,6 +823,7 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
             }
 
             await transaction.CommitAsync(cancellationToken);
+            _runtimeMetrics?.RecordAttemptCompleted(attempt);
             return true;
         }
         catch

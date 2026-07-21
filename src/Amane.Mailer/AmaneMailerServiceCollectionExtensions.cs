@@ -76,6 +76,11 @@ public static class AmaneMailerServiceCollectionExtensions
             return options;
         });
 
+        services.AddSingleton(provider =>
+            MailerMetricsOptions.Load(provider.GetRequiredService<IConfiguration>()));
+
+        services.AddSingleton<MailerRuntimeMetrics>();
+
         services.AddSingleton<SqliteConnectionFactory>();
         services.AddSingleton<MailerDbStatsReader>();
         services.AddSingleton<MailerDbStorageInfoReader>();
