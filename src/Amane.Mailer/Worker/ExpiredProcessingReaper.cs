@@ -1,12 +1,14 @@
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Webhooks;
 
 namespace Amane.Mailer.Worker;
 
 public sealed class ExpiredProcessingReaper(
     MailRequestRepository repository,
     MailerWorkerOptions workerOptions,
+    DeliveryEventEnqueuer deliveryEventEnqueuer,
     ILogger<ExpiredProcessingReaper> logger)
 {
     public async Task DeadLetterExpiredProcessingAtMaxAttemptsAsync(
@@ -23,6 +25,7 @@ public sealed class ExpiredProcessingReaper(
             foreach (var request in deadLettered)
             {
                 LogExpiredProcessingDeadLetter(request);
+                await deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(request.Id, cancellationToken);
             }
 
             if (deadLettered.Count < workerOptions.BatchClaimSize)

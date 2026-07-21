@@ -135,6 +135,8 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 
 ### 送信依頼（POST）
 
+**公式 Consumer SDK（TypeScript / Python）**: リクエストビルダー、`payload_hash` 自動計算、型付きエラー、503 リトライを含む SDK は [sdk/](sdk/README.md) を参照してください。
+
 - **エンドポイント**: `POST http://mailer:8080/internal/mail-requests`
 - **認証**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
   - ローカル既定トークン: `local-mail-service-token`
