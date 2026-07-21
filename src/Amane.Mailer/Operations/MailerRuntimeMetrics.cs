@@ -57,6 +57,18 @@ public sealed class MailerRuntimeMetrics
         }
     }
 
+    internal void ClearForTests()
+    {
+        Interlocked.Exchange(ref _acceptedTotal, 0);
+        Interlocked.Exchange(ref _retriesTotal, 0);
+
+        lock (_gate)
+        {
+            _deliveries.Clear();
+            _durations.Clear();
+        }
+    }
+
     internal static string MapDeliveryResult(MailRequestState status) => status switch
     {
         MailRequestState.Delivered => "delivered",

@@ -22,8 +22,11 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
     private static readonly DateTimeOffset FixedNow = MailerMetricsFixture.FixedNow;
     private const string MetricsBearerToken = "metrics-scrape-token";
 
-    public async ValueTask InitializeAsync() =>
+    public async ValueTask InitializeAsync()
+    {
         await fixture.ResetAsync(TestContext.Current.CancellationToken);
+        fixture.Factory.Services.GetRequiredService<MailerRuntimeMetrics>().ClearForTests();
+    }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 

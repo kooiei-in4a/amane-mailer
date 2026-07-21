@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Amane.Mailer.Configuration;
 
 namespace Amane.Mailer.Operations;
@@ -20,11 +22,6 @@ public static class MailerMetricsEndpoint
         if (!IsAuthorized(context, options))
         {
             return Results.Unauthorized();
-        }
-
-        if (!await statsReader.CanReadMigratedSchemaAsync(cancellationToken))
-        {
-            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
 
         var now = timeProvider.GetUtcNow();
@@ -59,6 +56,15 @@ public static class MailerMetricsEndpoint
 
         var token = authorization[prefix.Length..].Trim();
         return !string.IsNullOrEmpty(token)
-            && string.Equals(token, options.BearerToken, StringComparison.Ordinal);
+            && ConstantTimeEquals(options.BearerToken, token);
+    }
+
+    private static bool ConstantTimeEquals(string expected, string actual)
+    {
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        var actualBytes = Encoding.UTF8.GetBytes(actual);
+        var expectedHash = SHA256.HashData(expectedBytes);
+        var actualHash = SHA256.HashData(actualBytes);
+        return CryptographicOperations.FixedTimeEquals(expectedHash, actualHash);
     }
 }
