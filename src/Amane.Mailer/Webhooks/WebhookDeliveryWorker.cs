@@ -64,13 +64,20 @@ public sealed class WebhookDeliveryWorker(
         }
 
         using var deliveryTimeout = new CancellationTokenSource(webhookOptions.DeliveryTimeout);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, deliveryTimeout.Token);
-        var result = await deliveryClient.DeliverAsync(
-            tenant,
-            secret,
-            payload,
-            row.PayloadJson,
-            linked.Token);
+        WebhookDeliveryResult result;
+        try
+        {
+            result = await deliveryClient.DeliverAsync(
+                tenant,
+                secret,
+                payload,
+                row.PayloadJson,
+                deliveryTimeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            result = WebhookDeliveryResult.Failure("WEBHOOK_TIMEOUT", retryable: true);
+        }
 
         var completedAt = timeProvider.GetUtcNow();
         DeliveryEventFinalizeOutcome outcome;

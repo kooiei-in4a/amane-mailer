@@ -335,7 +335,7 @@ public sealed class MailRequestWorker : BackgroundService
             or MailRequestFinalizeOutcome.Failed
             or MailRequestFinalizeOutcome.DeadLettered)
         {
-            await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, finalizeTimeout.Token);
+            await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
         }
 
         if (outcome == MailRequestFinalizeOutcome.DeadLettered)
@@ -400,7 +400,7 @@ public sealed class MailRequestWorker : BackgroundService
             return;
         }
 
-        await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, finalizeTimeout.Token);
+        await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
 
         _logger.LogWarning(
             "Mail request {MailRequestId} failed terminally after attempt {AttemptNumber} via provider {Provider}. ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",

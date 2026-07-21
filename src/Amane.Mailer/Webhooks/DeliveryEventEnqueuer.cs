@@ -56,10 +56,25 @@ public sealed class DeliveryEventEnqueuer(
         }
     }
 
+    public async Task ReconcileMissingTerminalEventsAsync(
+        int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+        var missingRequestIds = await repository.FindInternalRequestIdsMissingDeliveryEventsAsync(
+            batchSize,
+            cancellationToken);
+
+        foreach (var requestId in missingRequestIds)
+        {
+            await TryEnqueueForInternalRequestAsync(requestId, cancellationToken);
+        }
+    }
+
     internal static MailDeliveryEventPayload BuildPayload(DeliveryEventContext context) =>
         new()
         {
             EventId = Guid.NewGuid(),
+            // event_type mirrors status today; both are kept for the shared #216 status model.
             EventType = context.EventType,
             OccurredAt = context.OccurredAt,
             TenantId = context.TenantId,

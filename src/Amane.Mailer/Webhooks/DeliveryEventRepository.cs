@@ -103,6 +103,44 @@ public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
             SqliteTime.FromStorage(reader.GetString(6)));
     }
 
+    public async Task<IReadOnlyList<Guid>> FindInternalRequestIdsMissingDeliveryEventsAsync(
+        int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT mr.id
+            FROM mail_requests mr
+            WHERE mr.status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus)
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM delivery_events de
+                    WHERE de.tenant_id = mr.tenant_id
+                      AND de.source_service = mr.source_service
+                      AND de.mail_request_id = mr.mail_request_id
+                  )
+            ORDER BY COALESCE(mr.completed_at, mr.updated_at) ASC, mr.id ASC
+            LIMIT @BatchSize;
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+        command.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
+        command.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
+        command.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
+        command.Parameters.AddWithValue("@BatchSize", Math.Max(1, batchSize));
+
+        var ids = new List<Guid>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            ids.Add(Guid.Parse(reader.GetString(0)));
+        }
+
+        return ids;
+    }
+
     public async Task<DeliveryEventRow?> TryClaimOneAsync(
         DateTimeOffset now,
         TimeSpan leaseDuration,

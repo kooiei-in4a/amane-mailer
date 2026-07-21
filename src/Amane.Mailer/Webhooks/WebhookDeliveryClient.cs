@@ -38,7 +38,12 @@ public sealed class WebhookDeliveryClient(
         var bodyBytes = Encoding.UTF8.GetBytes(payloadJson);
         var headers = signatureService.CreateHeaders(payload.EventId, timestamp, bodyBytes, webhookSecret);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, validation.Uri);
+        using var request = new HttpRequestMessage(HttpMethod.Post, validation.Uri!);
+        if (validation.ConnectAddress is not null)
+        {
+            request.Options.Set(WebhookConnectionOptions.PinnedConnectAddress, validation.ConnectAddress);
+        }
+
         request.Content = new ByteArrayContent(bodyBytes);
         request.Content.Headers.ContentType = new("application/json");
         request.Headers.TryAddWithoutValidation(WebhookSignatureService.EventIdHeaderName, headers.EventId.ToString("D"));
@@ -62,7 +67,7 @@ public sealed class WebhookDeliveryClient(
                 $"WEBHOOK_HTTP_{(int)response.StatusCode}",
                 retryable);
         }
-        catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
             return WebhookDeliveryResult.Failure("WEBHOOK_TIMEOUT", retryable: true);
         }

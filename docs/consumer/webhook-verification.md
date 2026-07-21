@@ -61,6 +61,10 @@ Mailer enqueues at most one delivery-result event per
 `(tenant_id, source_service, mail_request_id)`. Retries reuse the same `event_id` and body.
 Consumers must treat duplicate POSTs with the same `event_id` as success.
 
+A periodic reconciliation sweep also scans terminal `mail_requests` that are missing a
+corresponding `delivery_events` row and enqueues them, covering crash/retry gaps between
+mail finalize and webhook enqueue.
+
 ## Example verification (pseudocode)
 
 ```text

@@ -1,9 +1,12 @@
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Webhooks;
 
 namespace Amane.Mailer.Worker;
 
 public sealed class WebhookDeliverySweepService(
     DeliveryEventRepository repository,
+    DeliveryEventEnqueuer deliveryEventEnqueuer,
+    MailerWebhookOptions webhookOptions,
     IWebhookDeliveryQueue queue,
     TimeProvider timeProvider,
     ILogger<WebhookDeliverySweepService> logger) : BackgroundService
@@ -17,6 +20,10 @@ public sealed class WebhookDeliverySweepService(
         {
             try
             {
+                await deliveryEventEnqueuer.ReconcileMissingTerminalEventsAsync(
+                    webhookOptions.BatchClaimSize,
+                    stoppingToken);
+
                 var now = timeProvider.GetUtcNow();
                 if (await repository.HasPendingWorkAsync(now, stoppingToken)
                     && !queue.TrySignalWorkAvailable())

@@ -6,11 +6,23 @@ namespace Amane.Mailer.Webhooks;
 
 public sealed class WebhookUrlValidator
 {
+    private readonly Func<string, CancellationToken, Task<IPAddress[]>> _resolveHostAddressesAsync;
+
     private static readonly HashSet<string> BlockedHostNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "localhost",
         "metadata.google.internal",
     };
+
+    public WebhookUrlValidator()
+        : this(static (host, cancellationToken) => Dns.GetHostAddressesAsync(host, cancellationToken))
+    {
+    }
+
+    internal WebhookUrlValidator(Func<string, CancellationToken, Task<IPAddress[]>> resolveHostAddressesAsync)
+    {
+        _resolveHostAddressesAsync = resolveHostAddressesAsync;
+    }
 
     public async Task<WebhookUrlValidationResult> ValidateAsync(
         MailerWebhookConfig webhook,
@@ -36,11 +48,6 @@ public sealed class WebhookUrlValidator
             return WebhookUrlValidationResult.Invalid("WEBHOOK_URL_HOST_BLOCKED");
         }
 
-        if (IsBlockedLiteralIp(uri.Host, out var literalReason))
-        {
-            return WebhookUrlValidationResult.Invalid(literalReason);
-        }
-
         if (webhook.AllowedHostSuffixes is { Count: > 0 }
             && !IsHostAllowedBySuffix(uri.Host, webhook.AllowedHostSuffixes))
         {
@@ -49,18 +56,15 @@ public sealed class WebhookUrlValidator
 
         if (IPAddress.TryParse(uri.Host, out var literalAddress))
         {
-            if (IsBlockedIpAddress(literalAddress))
-            {
-                return WebhookUrlValidationResult.Invalid("WEBHOOK_URL_IP_BLOCKED");
-            }
-
-            return WebhookUrlValidationResult.Valid(uri);
+            return IsBlockedIpAddress(literalAddress)
+                ? WebhookUrlValidationResult.Invalid("WEBHOOK_URL_IP_BLOCKED")
+                : WebhookUrlValidationResult.Valid(uri);
         }
 
         IPAddress[] addresses;
         try
         {
-            addresses = await Dns.GetHostAddressesAsync(uri.Host, cancellationToken);
+            addresses = await _resolveHostAddressesAsync(uri.Host, cancellationToken);
         }
         catch (SocketException)
         {
@@ -72,15 +76,26 @@ public sealed class WebhookUrlValidator
             return WebhookUrlValidationResult.Invalid("WEBHOOK_URL_DNS_EMPTY");
         }
 
+        var connectAddress = SelectConnectAddress(addresses);
+        if (connectAddress is null)
+        {
+            return WebhookUrlValidationResult.Invalid("WEBHOOK_URL_IP_BLOCKED");
+        }
+
+        return WebhookUrlValidationResult.Valid(uri, connectAddress, uri.Host);
+    }
+
+    internal static IPAddress? SelectConnectAddress(IReadOnlyList<IPAddress> addresses)
+    {
         foreach (var address in addresses)
         {
-            if (IsBlockedIpAddress(address))
+            if (!IsBlockedIpAddress(address))
             {
-                return WebhookUrlValidationResult.Invalid("WEBHOOK_URL_IP_BLOCKED");
+                return address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
             }
         }
 
-        return WebhookUrlValidationResult.Valid(uri);
+        return null;
     }
 
     private static bool IsHostAllowedBySuffix(string host, IReadOnlyList<string> allowedSuffixes)
@@ -98,24 +113,6 @@ public sealed class WebhookUrlValidator
             }
         }
 
-        return false;
-    }
-
-    private static bool IsBlockedLiteralIp(string host, out string reason)
-    {
-        if (!IPAddress.TryParse(host, out var address))
-        {
-            reason = string.Empty;
-            return false;
-        }
-
-        if (IsBlockedIpAddress(address))
-        {
-            reason = "WEBHOOK_URL_IP_BLOCKED";
-            return true;
-        }
-
-        reason = string.Empty;
         return false;
     }
 
@@ -143,6 +140,9 @@ public sealed class WebhookUrlValidator
                 172 when bytes[1] is >= 16 and <= 31 => true,
                 192 when bytes[1] == 168 => true,
                 100 when bytes[1] is >= 64 and <= 127 => true,
+                // IPv4 multicast/reserved ranges are not useful webhook targets over TCP.
+                >= 224 and <= 239 => true,
+                >= 240 => true,
                 _ => false,
             };
         }
@@ -162,9 +162,19 @@ public sealed class WebhookUrlValidator
     }
 }
 
-public sealed record WebhookUrlValidationResult(bool IsValid, Uri? Uri, string? ErrorCode)
+public sealed record WebhookUrlValidationResult(
+    bool IsValid,
+    Uri? Uri,
+    IPAddress? ConnectAddress,
+    string? OriginalHost,
+    string? ErrorCode)
 {
-    public static WebhookUrlValidationResult Valid(Uri uri) => new(true, uri, null);
+    public static WebhookUrlValidationResult Valid(
+        Uri uri,
+        IPAddress? connectAddress = null,
+        string? originalHost = null) =>
+        new(true, uri, connectAddress, originalHost, null);
 
-    public static WebhookUrlValidationResult Invalid(string errorCode) => new(false, null, errorCode);
+    public static WebhookUrlValidationResult Invalid(string errorCode) =>
+        new(false, null, null, null, errorCode);
 }

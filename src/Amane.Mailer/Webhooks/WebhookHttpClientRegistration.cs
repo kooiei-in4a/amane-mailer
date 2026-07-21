@@ -19,6 +19,7 @@ public static class WebhookHttpClientRegistration
             AllowAutoRedirect = false,
             ConnectTimeout = options.DeliveryTimeout,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            ConnectCallback = WebhookConnectCallback.ConnectAsync,
         });
 
         return services;
