@@ -175,6 +175,8 @@ app.MapGet("/readyz", async (
     }
 });
 
+app.MapGet("/metrics", MailerMetricsEndpoint.HandleAsync);
+
 app.MapMailRequestEndpoints();
 app.MapAdminIfEnabled();
 
