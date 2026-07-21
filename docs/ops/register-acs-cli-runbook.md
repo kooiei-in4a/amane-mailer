@@ -14,8 +14,13 @@
 ## 2. 事前準備（deploy host）
 
 1. `MAILER_ACS_SECRET_HOST_PATH`（既定 `./secrets/acs`）と`MAILER_PLATFORM_SENDER_HOST_PATH`（既定 `./config/platform-sender`）に対応するhost directoryを作成する。
-2. Mailer runtime imageの実行時UID/GIDを確認する（chiseled imageの非rootユーザー。`docker inspect <image> --format '{{.Config.User}}'`で確認できるが、実イメージのbuild結果に依存するため、値を推測でrunbookへ転記しない）。
+2. Mailer runtime imageの実行時UID/GIDを確認する（chiseled imageの非rootユーザー）。
+   `docker inspect <image> --format '{{.Config.User}}'`で確認する。公開イメージ
+   `ghcr.io/kooiei-in4a/amane-mailer:v0.3.0` では実測で `Config.User=1654`
+   （uid/gid `1654`、passwd 上の名前は `app`）。**デプロイするタグごとに必ず再確認する**
+   （base image / `APP_UID` の更新で変わり得るため、他タグの値を推測で流用しない）。
 3. 両directoryをそのUID/GIDのowner、mode `0700`で作成する。group/otherに一切の権限を与えない。
+   v0.3.0 イメージを使う場合の例: `chown 1654:1654` のあと `chmod 0700`。
 4. secret値そのものは、このrunbookや承認記録に転記しない。
 
 ## 3. 実行

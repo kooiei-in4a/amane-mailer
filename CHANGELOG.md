@@ -30,13 +30,6 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
   partial-state rejection, and that secret input is never echoed to the terminal — behavior a
   unit test with a fake console cannot verify.
 
-### Known gap before Ready PR
-
-- The Mailer chiseled image's actual non-root runtime UID/GID has not been empirically confirmed
-  against the `mailer-acs-admin` host secret directory ownership (`docker inspect <image>
-  --format '{{.Config.User}}'` on a Linux Docker host). Required before converting the
-  MAILER-ACS-INPUT-01 PR from Draft to Ready.
-
 ### Changed
 
 - `infra/deploy/compose.yml` / `infra/deploy/.env.example`: Staging/Production no longer accept
@@ -44,6 +37,18 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
   `ACS_CONNECTION_STRING_FILE` secret (written by `admin provider register-acs`) is wired. The
   local ACS drill (`infra/deploy/drills/mail-05a-acs-drill.sh`) is unaffected — it already
   injected `ACS_CONNECTION_STRING` through its own compose override, independent of this file.
+- Docs / ops sync after MAILER-ACS-INPUT-01: `config/mailer/README` (ja/en), service-spec (ja/en),
+  SECURITY, root README ops links, release-notes checklist, and register-acs runbooks now
+  describe the file-secret Staging/Production path. `.dockerignore` and
+  `scripts/check-dockerignore-secrets.mjs` exclude `infra/deploy/secrets/` and
+  `infra/deploy/config/platform-sender/`. `scripts/validate-tenant-config.mjs` accepts
+  `ACS_CONNECTION_STRING_FILE` as well as bare `ACS_CONNECTION_STRING`.
+
+### Ops note (image UID)
+
+- Empirically confirmed on published `ghcr.io/kooiei-in4a/amane-mailer:v0.3.0`:
+  `Config.User=1654` (uid/gid `1654`). Documented in the register-acs runbook with the
+  requirement to re-check per deployed tag.
 
 ## [0.3.0] - 2026-07-04
 

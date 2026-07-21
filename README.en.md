@@ -92,6 +92,7 @@ addresses, or deploy-host `.env` files.
 Operational runbooks:
 
 - [Local deploy rehearsal](docs/ops/local-deploy-rehearsal-runbook.en.md) [(ja)](docs/ops/local-deploy-rehearsal-runbook.md)
+- [ACS secret / platform-owned sender registration CLI](docs/ops/register-acs-cli-runbook.en.md) [(ja)](docs/ops/register-acs-cli-runbook.md)
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)

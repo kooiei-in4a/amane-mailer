@@ -88,6 +88,7 @@ commit しないでください。
 運用 runbook:
 
 - [ローカル deploy rehearsal](docs/ops/local-deploy-rehearsal-runbook.md) [(en)](docs/ops/local-deploy-rehearsal-runbook.en.md)
+- [ACS secret / platform-owned sender 登録 CLI](docs/ops/register-acs-cli-runbook.md) [(en)](docs/ops/register-acs-cli-runbook.en.md)
 - [バックアップ運用](docs/ops/backup-operations.md) [(en)](docs/ops/backup-operations.en.md)
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
