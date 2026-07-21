@@ -112,6 +112,71 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
+    public async Task Get_invalid_mail_request_id_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var url = StatusUrl("not-a-uuid");
+
+        using var response = await client.GetAsync(url, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+        Assert.Equal(
+            "mail_request_id must be a UUID.",
+            await ReadMessageAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Get_missing_tenant_id_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var url = StatusUrl(Guid.NewGuid(), includeTenantId: false);
+
+        using var response = await client.GetAsync(url, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Get_invalid_tenant_id_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var url = StatusUrl(
+            Guid.NewGuid().ToString("D"),
+            tenantId: "not-a-uuid");
+
+        using var response = await client.GetAsync(url, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Get_missing_source_service_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var url = StatusUrl(Guid.NewGuid(), includeSourceService: false);
+
+        using var response = await client.GetAsync(url, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
     public async Task Get_response_excludes_pii_fields()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -194,13 +259,80 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
         Assert.Equal(0, root.GetProperty("attempt_count").GetInt32());
     }
 
+    [Fact]
+    public async Task Get_processing_status_returns_expected_fields()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var mailRequestId = Guid.NewGuid();
+        await SeedMailRequestAsync(
+            mailRequestId,
+            MailerWebApplicationFixtureBase.TenantId,
+            MailerWebApplicationFixtureBase.SourceService,
+            MailRequestState.Processing,
+            ct,
+            attemptCount: 1);
+
+        using var client = CreateAuthorizedClient();
+        using var response = await client.GetAsync(StatusUrl(mailRequestId), ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+
+        Assert.Equal(MailRequestStatus.Processing, root.GetProperty("status").GetString());
+        Assert.Equal(1, root.GetProperty("attempt_count").GetInt32());
+    }
+
     private static string StatusUrl(
         Guid mailRequestId,
         Guid? tenantId = null,
-        string? sourceService = null) =>
-        $"/internal/mail-requests/{mailRequestId:D}" +
-        $"?tenant_id={(tenantId ?? MailerWebApplicationFixtureBase.TenantId):D}" +
-        $"&source_service={sourceService ?? MailerWebApplicationFixtureBase.SourceService}";
+        string? sourceService = null,
+        bool includeTenantId = true,
+        bool includeSourceService = true) =>
+        StatusUrl(
+            mailRequestId.ToString("D"),
+            tenantId?.ToString("D"),
+            sourceService,
+            includeTenantId,
+            includeSourceService);
+
+    private static string StatusUrl(
+        string mailRequestId,
+        string? tenantId = null,
+        string? sourceService = null,
+        bool includeTenantId = true,
+        bool includeSourceService = true)
+    {
+        var resolvedTenantId = tenantId ?? MailerWebApplicationFixtureBase.TenantId.ToString("D");
+        var resolvedSourceService = sourceService ?? MailerWebApplicationFixtureBase.SourceService;
+
+        var queryParts = new List<string>(2);
+        if (includeTenantId)
+        {
+            queryParts.Add($"tenant_id={resolvedTenantId}");
+        }
+
+        if (includeSourceService)
+        {
+            queryParts.Add($"source_service={resolvedSourceService}");
+        }
+
+        var query = queryParts.Count == 0 ? string.Empty : "?" + string.Join("&", queryParts);
+        return $"/internal/mail-requests/{mailRequestId}{query}";
+    }
+
+    private static async Task<string?> ReadMessageAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.TryGetProperty("message", out var message)
+            ? message.GetString()
+            : null;
+    }
 
     private async Task SeedMailRequestAsync(
         Guid mailRequestId,

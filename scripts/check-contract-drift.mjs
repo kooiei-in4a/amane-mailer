@@ -590,9 +590,14 @@ for (const needle of [
   'Get_other_tenant_request_returns_404',
   'Get_unauthorized_returns_401',
   'Get_unregistered_source_service_returns_403',
+  'Get_invalid_mail_request_id_returns_400',
+  'Get_missing_tenant_id_returns_400',
+  'Get_invalid_tenant_id_returns_400',
+  'Get_missing_source_service_returns_400',
   'Get_response_excludes_pii_fields',
   'Get_delivered_status_returns_expected_fields',
   'Get_cancelled_status_returns_expected_fields',
+  'Get_processing_status_returns_expected_fields',
 ]) {
   assertContains(runtimeApiTests, needle, 'Mail request status GET API tests');
 }
