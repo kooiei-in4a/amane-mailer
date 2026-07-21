@@ -8,6 +8,7 @@ using Amane.Mailer.Json;
 using Amane.Mailer.Queue;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Contracts.Security;
+using Amane.Mailer.Webhooks;
 using Microsoft.Data.Sqlite;
 
 namespace Amane.Mailer.Api;
@@ -20,6 +21,8 @@ public static class MailRequestEndpoints
     {
         endpoints.MapPost("/internal/mail-requests", CreateMailRequestAsync);
         endpoints.MapGet("/internal/mail-requests/{mailRequestId}", GetMailRequestStatusAsync);
+        endpoints.MapPost("/internal/mail-requests/{mailRequestId}/cancel", CancelMailRequestAsync);
+        endpoints.MapPost("/internal/mail-requests/{mailRequestId}/reschedule", RescheduleMailRequestAsync);
         return endpoints;
     }
 
@@ -30,40 +33,16 @@ public static class MailRequestEndpoints
         MailerTenantRegistry tenantRegistry,
         CancellationToken cancellationToken)
     {
-        if (!Guid.TryParse(mailRequestId, out var parsedMailRequestId))
+        if (!TryAuthorizeScopedMailRequest(
+                httpRequest,
+                tenantRegistry,
+                mailRequestId,
+                out var tenantId,
+                out var sourceService,
+                out var parsedMailRequestId,
+                out var authError))
         {
-            return MailerJsonResults.ValidationError(
-                MailerErrorCodes.InvalidRequest,
-                "mail_request_id must be a UUID.",
-                StatusCodes.Status400BadRequest);
-        }
-
-        if (!TryParseRequiredGuidQuery(httpRequest, "tenant_id", out var tenantId, out var queryParseError))
-        {
-            return MailerJsonResults.ValidationError(
-                MailerErrorCodes.InvalidRequest,
-                queryParseError,
-                StatusCodes.Status400BadRequest);
-        }
-
-        if (!TryParseRequiredSourceServiceQuery(httpRequest, out var sourceService, out queryParseError))
-        {
-            return MailerJsonResults.ValidationError(
-                MailerErrorCodes.InvalidRequest,
-                queryParseError,
-                StatusCodes.Status400BadRequest);
-        }
-
-        var bearerToken = ReadBearerToken(httpRequest);
-        var tenant = tenantRegistry.Authorize(tenantId, bearerToken);
-        if (tenant is null)
-        {
-            return Error(StatusCodes.Status401Unauthorized, MailerErrorCodes.UnauthorizedTenant);
-        }
-
-        if (!tenant.IsSourceServiceAllowed(sourceService))
-        {
-            return Error(StatusCodes.Status403Forbidden, MailerErrorCodes.SourceServiceNotAllowed);
+            return authError!;
         }
 
         MailRequestStatusRow? statusRow;
@@ -92,10 +71,189 @@ public static class MailRequestEndpoints
             AttemptCount = statusRow.AttemptCount,
             MaxAttempts = statusRow.MaxAttempts,
             NextAttemptAt = statusRow.NextAttemptAt,
+            ScheduledAt = statusRow.ScheduledAt,
             AcceptedAt = statusRow.AcceptedAt,
             DeliveredAt = statusRow.DeliveredAt,
             LastErrorCode = statusRow.LastErrorCode,
         });
+    }
+
+    private static async Task<IResult> CancelMailRequestAsync(
+        string mailRequestId,
+        HttpRequest httpRequest,
+        MailRequestRepository repository,
+        DeliveryEventEnqueuer deliveryEventEnqueuer,
+        MailerTenantRegistry tenantRegistry,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        if (!TryAuthorizeScopedMailRequest(
+                httpRequest,
+                tenantRegistry,
+                mailRequestId,
+                out var tenantId,
+                out var sourceService,
+                out var parsedMailRequestId,
+                out var authError))
+        {
+            return authError!;
+        }
+
+        var now = timeProvider.GetUtcNow();
+        ConsumerMailRequestMutationResult result;
+        try
+        {
+            result = await repository.TryConsumerCancelAsync(
+                tenantId,
+                sourceService,
+                parsedMailRequestId,
+                now,
+                cancellationToken);
+        }
+        catch (Exception ex) when (IsTransientDatabaseException(ex))
+        {
+            return ServiceUnavailable();
+        }
+
+        if (result.Status == ManualMailRequestMutationStatus.NotFound)
+        {
+            return Error(StatusCodes.Status404NotFound, MailerErrorCodes.NotFound);
+        }
+
+        if (result.Status != ManualMailRequestMutationStatus.Succeeded)
+        {
+            return Error(StatusCodes.Status422UnprocessableEntity, MailerErrorCodes.InvalidState);
+        }
+
+        if (result.InternalRequestId is Guid internalId)
+        {
+            await deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(internalId, cancellationToken);
+        }
+
+        return await GetStatusResultAsync(
+            repository,
+            tenantId,
+            sourceService,
+            parsedMailRequestId,
+            cancellationToken);
+    }
+
+    private static async Task<IResult> RescheduleMailRequestAsync(
+        string mailRequestId,
+        HttpRequest httpRequest,
+        MailRequestRepository repository,
+        IMailRequestQueue queue,
+        MailerTenantRegistry tenantRegistry,
+        TimeProvider timeProvider,
+        ILoggerFactory loggerFactory,
+        CancellationToken cancellationToken)
+    {
+        if (!TryAuthorizeScopedMailRequest(
+                httpRequest,
+                tenantRegistry,
+                mailRequestId,
+                out var tenantId,
+                out var sourceService,
+                out var parsedMailRequestId,
+                out var authError))
+        {
+            return authError!;
+        }
+
+        string requestBody;
+        try
+        {
+            requestBody = await ReadRequestBodyAsync(httpRequest, cancellationToken);
+        }
+        catch (RequestBodyTooLargeException)
+        {
+            return MailerJsonResults.Error(
+                MailerErrorCodes.RequestTooLarge,
+                StatusCodes.Status413PayloadTooLarge);
+        }
+
+        MailRequestRescheduleRequest? request;
+        try
+        {
+            request = JsonSerializer.Deserialize(
+                requestBody,
+                MailerJsonContext.Default.MailRequestRescheduleRequest);
+        }
+        catch (JsonException)
+        {
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                "Request body is not valid JSON.",
+                StatusCodes.Status400BadRequest);
+        }
+
+        if (request is null)
+        {
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                "Request body is required.",
+                StatusCodes.Status400BadRequest);
+        }
+
+        if (JsonDuplicatePropertyDetector.HasDuplicateProperty(requestBody))
+        {
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                "Request body contains a duplicate JSON property.",
+                StatusCodes.Status400BadRequest);
+        }
+
+        var now = timeProvider.GetUtcNow();
+        var scheduleError = ValidateScheduledAt(request.ScheduledAt, now);
+        if (scheduleError is not null)
+        {
+            return scheduleError;
+        }
+
+        var scheduledAtUtc = request.ScheduledAt?.ToUniversalTime();
+        ConsumerMailRequestMutationResult result;
+        try
+        {
+            result = await repository.TryRescheduleAsync(
+                tenantId,
+                sourceService,
+                parsedMailRequestId,
+                scheduledAtUtc,
+                now,
+                cancellationToken);
+        }
+        catch (Exception ex) when (IsTransientDatabaseException(ex))
+        {
+            return ServiceUnavailable();
+        }
+
+        if (result.Status == ManualMailRequestMutationStatus.NotFound)
+        {
+            return Error(StatusCodes.Status404NotFound, MailerErrorCodes.NotFound);
+        }
+
+        if (result.Status != ManualMailRequestMutationStatus.Succeeded)
+        {
+            return Error(StatusCodes.Status422UnprocessableEntity, MailerErrorCodes.InvalidState);
+        }
+
+        if (IsImmediatelyDispatchable(scheduledAtUtc, now))
+        {
+            var logger = loggerFactory.CreateLogger("MailRequestEndpoints");
+            if (!queue.TrySignalWorkAvailable())
+            {
+                logger.LogWarning(
+                    "WorkAvailable channel is full after reschedule for request {MailRequestId}.",
+                    parsedMailRequestId);
+            }
+        }
+
+        return await GetStatusResultAsync(
+            repository,
+            tenantId,
+            sourceService,
+            parsedMailRequestId,
+            cancellationToken);
     }
 
     private static async Task<IResult> CreateMailRequestAsync(
@@ -168,13 +326,14 @@ public static class MailRequestEndpoints
             return Error(StatusCodes.Status403Forbidden, MailerErrorCodes.SourceServiceNotAllowed);
         }
 
-        var validationError = ValidateRequest(request, requestBody, tenant);
+        var now = timeProvider.GetUtcNow();
+        var validationError = ValidateRequest(request, requestBody, tenant, now);
         if (validationError is not null)
         {
             return validationError;
         }
 
-        var now = timeProvider.GetUtcNow();
+        var scheduledAtUtc = request.ScheduledAt?.ToUniversalTime();
 
         MailRequestIdempotencyRow? existing;
         try
@@ -227,6 +386,7 @@ public static class MailRequestEndpoints
                 : JsonSerializer.Serialize(request.Metadata, MailerJsonContext.Default.DictionaryStringString),
             MaxAttempts = tenant.Retry.MaxAttempts,
             AcceptedAt = now,
+            ScheduledAt = scheduledAtUtc,
         };
 
         try
@@ -277,7 +437,8 @@ public static class MailRequestEndpoints
             return ServiceUnavailable();
         }
 
-        if (!queue.TrySignalWorkAvailable())
+        if (IsImmediatelyDispatchable(scheduledAtUtc, now)
+            && !queue.TrySignalWorkAvailable())
         {
             logger.LogWarning("WorkAvailable channel is full; request {MailRequestId} will be picked up by sweep.", request.MailRequestId);
         }
@@ -291,7 +452,11 @@ public static class MailRequestEndpoints
 
     internal static bool IsDispatchableQueued(MailRequestIdempotencyRow row, DateTimeOffset now) =>
         row.Status == MailRequestState.Queued
-        && (row.NextAttemptAt is null || row.NextAttemptAt <= now);
+        && (row.NextAttemptAt is null || row.NextAttemptAt <= now)
+        && (row.ScheduledAt is null || row.ScheduledAt <= now);
+
+    internal static bool IsImmediatelyDispatchable(DateTimeOffset? scheduledAtUtc, DateTimeOffset now) =>
+        scheduledAtUtc is null || scheduledAtUtc <= now;
 
     private static void SignalIfDispatchable(
         IMailRequestQueue queue,
@@ -315,7 +480,8 @@ public static class MailRequestEndpoints
     private static IResult? ValidateRequest(
         MailRequestCreateRequest request,
         string requestBody,
-        MailerTenant tenant)
+        MailerTenant tenant,
+        DateTimeOffset now)
     {
         if (request.To is null)
         {
@@ -362,6 +528,12 @@ public static class MailRequestEndpoints
             return Error(StatusCodes.Status422UnprocessableEntity, MailerErrorCodes.InvalidMetadata);
         }
 
+        var scheduleError = ValidateScheduledAt(request.ScheduledAt, now);
+        if (scheduleError is not null)
+        {
+            return scheduleError;
+        }
+
         string computedHash;
         try
         {
@@ -378,6 +550,27 @@ public static class MailRequestEndpoints
         if (!string.Equals(computedHash, request.PayloadHash, StringComparison.Ordinal))
         {
             return Error(StatusCodes.Status422UnprocessableEntity, MailerErrorCodes.InvalidPayloadHash);
+        }
+
+        return null;
+    }
+
+    internal static IResult? ValidateScheduledAt(DateTimeOffset? scheduledAt, DateTimeOffset now)
+    {
+        if (scheduledAt is null)
+        {
+            return null;
+        }
+
+        var scheduledAtUtc = scheduledAt.Value.ToUniversalTime();
+        if (scheduledAtUtc < now)
+        {
+            return Error(StatusCodes.Status422UnprocessableEntity, MailerErrorCodes.ScheduledAtInPast);
+        }
+
+        if (scheduledAtUtc > now.Add(MailRequestScheduleLimits.MaxScheduledAhead))
+        {
+            return Error(StatusCodes.Status422UnprocessableEntity, MailerErrorCodes.ScheduledAtTooFar);
         }
 
         return null;
@@ -443,6 +636,104 @@ public static class MailRequestEndpoints
 
         var token = authorization[prefix.Length..].Trim();
         return string.IsNullOrWhiteSpace(token) ? null : token;
+    }
+
+    private static bool TryAuthorizeScopedMailRequest(
+        HttpRequest httpRequest,
+        MailerTenantRegistry tenantRegistry,
+        string mailRequestId,
+        out Guid tenantId,
+        out string sourceService,
+        out Guid parsedMailRequestId,
+        out IResult? error)
+    {
+        tenantId = default;
+        sourceService = string.Empty;
+        parsedMailRequestId = default;
+        error = null;
+
+        if (!Guid.TryParse(mailRequestId, out parsedMailRequestId))
+        {
+            error = MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                "mail_request_id must be a UUID.",
+                StatusCodes.Status400BadRequest);
+            return false;
+        }
+
+        if (!TryParseRequiredGuidQuery(httpRequest, "tenant_id", out tenantId, out var queryParseError))
+        {
+            error = MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                queryParseError,
+                StatusCodes.Status400BadRequest);
+            return false;
+        }
+
+        if (!TryParseRequiredSourceServiceQuery(httpRequest, out sourceService, out queryParseError))
+        {
+            error = MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                queryParseError,
+                StatusCodes.Status400BadRequest);
+            return false;
+        }
+
+        var bearerToken = ReadBearerToken(httpRequest);
+        var tenant = tenantRegistry.Authorize(tenantId, bearerToken);
+        if (tenant is null)
+        {
+            error = Error(StatusCodes.Status401Unauthorized, MailerErrorCodes.UnauthorizedTenant);
+            return false;
+        }
+
+        if (!tenant.IsSourceServiceAllowed(sourceService))
+        {
+            error = Error(StatusCodes.Status403Forbidden, MailerErrorCodes.SourceServiceNotAllowed);
+            return false;
+        }
+
+        return true;
+    }
+
+    private static async Task<IResult> GetStatusResultAsync(
+        MailRequestRepository repository,
+        Guid tenantId,
+        string sourceService,
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        MailRequestStatusRow? statusRow;
+        try
+        {
+            statusRow = await repository.GetStatusByIdempotencyKeyAsync(
+                tenantId,
+                sourceService,
+                mailRequestId,
+                cancellationToken);
+        }
+        catch (Exception ex) when (IsTransientDatabaseException(ex))
+        {
+            return ServiceUnavailable();
+        }
+
+        if (statusRow is null)
+        {
+            return Error(StatusCodes.Status404NotFound, MailerErrorCodes.NotFound);
+        }
+
+        return MailerJsonResults.Ok(new MailRequestStatusResponse
+        {
+            MailRequestId = statusRow.MailRequestId,
+            Status = ToDeliveryStatus(statusRow.Status),
+            AttemptCount = statusRow.AttemptCount,
+            MaxAttempts = statusRow.MaxAttempts,
+            NextAttemptAt = statusRow.NextAttemptAt,
+            ScheduledAt = statusRow.ScheduledAt,
+            AcceptedAt = statusRow.AcceptedAt,
+            DeliveredAt = statusRow.DeliveredAt,
+            LastErrorCode = statusRow.LastErrorCode,
+        });
     }
 
     private static IResult Error(int statusCode, string code) =>

@@ -48,6 +48,36 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
     }
 
     [Fact]
+    public async Task Worker_does_not_claim_future_scheduled_request_until_due()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(3));
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        SignalWorker();
+        await Task.Delay(TimeSpan.FromMilliseconds(400), ct);
+
+        var beforeDue = await FindDispatchStateAsync(request.MailRequestId, ct);
+        Assert.NotNull(beforeDue);
+        Assert.Equal(MailRequestState.Queued, beforeDue.Status);
+        Assert.Equal(0, beforeDue.AttemptCount);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
+
+        await SetScheduledAtAsync(request.MailRequestId, DateTimeOffset.UtcNow.AddSeconds(-1), ct);
+        SignalWorker();
+
+        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 1, ct);
+        Assert.Equal(1, delivered.AttemptCount);
+        Assert.Single(fixture.DeliveryProvider.Sent);
+    }
+
+    [Fact]
     public async Task Worker_recovers_stale_processing_request()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -509,6 +539,24 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
             """;
         command.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(expiredAt));
         command.Parameters.AddWithValue("@Id", requestId.ToString("D"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task SetScheduledAtAsync(
+        Guid mailRequestId,
+        DateTimeOffset scheduledAt,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE mail_requests
+            SET scheduled_at = @ScheduledAt
+            WHERE mail_request_id = @MailRequestId;
+            """;
+        command.Parameters.AddWithValue("@ScheduledAt", SqliteTime.ToStorageUtc(scheduledAt));
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

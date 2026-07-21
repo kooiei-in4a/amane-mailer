@@ -45,6 +45,13 @@ public sealed record MailRequestCreateRequest
     [JsonPropertyName("metadata")]
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 
+    /// <summary>
+    /// Optional first-dispatch time (UTC). Null means immediate. Excluded from payload_hash.
+    /// Independent from <c>next_attempt_at</c> (retry backoff).
+    /// </summary>
+    [JsonPropertyName("scheduled_at")]
+    public DateTimeOffset? ScheduledAt { get; init; }
+
     [JsonPropertyName("payload_hash")]
     public required string PayloadHash { get; init; }
 }

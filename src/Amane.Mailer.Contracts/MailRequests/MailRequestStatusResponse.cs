@@ -22,6 +22,13 @@ public sealed record MailRequestStatusResponse
     [JsonPropertyName("next_attempt_at")]
     public DateTimeOffset? NextAttemptAt { get; init; }
 
+    /// <summary>
+    /// First-dispatch schedule (UTC). Null means no schedule gate (immediate when otherwise due).
+    /// Independent from <see cref="NextAttemptAt"/> (retry backoff).
+    /// </summary>
+    [JsonPropertyName("scheduled_at")]
+    public DateTimeOffset? ScheduledAt { get; init; }
+
     [JsonPropertyName("accepted_at")]
     public required DateTimeOffset AcceptedAt { get; init; }
 

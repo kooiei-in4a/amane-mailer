@@ -63,6 +63,7 @@ App と Mailer は同じ payload を JCS canonical JSON に正規化し、SHA-25
 | hash 除外 | `tenant_id` | 認証・ルーティング属性。tenant は Bearer token と URL 境界で検証する |
 | hash 除外 | `mail_request_id` | 冪等キーそのもの。内容ハッシュに含めると再生成・比較の責務が混ざる |
 | hash 除外 | `payload_hash` | 自己参照になるため除外 |
+| hash 除外 | `scheduled_at` | 初回配送スケジュール envelope。内容一致検証と分離し、再スケジュールを専用 API で行う |
 
 任意フィールドは、App が payload JSON に出力した場合だけ JCS 対象になる。明示的な `null` は `null` としてハッシュ対象に含まれる。
 
@@ -110,7 +111,7 @@ Mailer API の `202 Accepted` は「Mailer が依頼を永続化した」こと�
 `GET /internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}` を Consumer 向け HTTP API として提供する。
 
 - POST と同様に Bearer 認証 + `tenant_id` + `source_service` allowlist を適用する。
-- 返却は PII を含まない最小セット（`mail_request_id`, Worker 配送 `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`）。
+- 返却は PII を含まない最小セット（`mail_request_id`, Worker 配送 `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`）。
 - 存在しない ID および他 tenant の ID は **404 統一**（存在有無を漏らさない）。
 - Contracts 正本は `MailRequestStatusResponse`（`MailRequestCreateResponse.status` の acceptance 値と混同しない）。
 

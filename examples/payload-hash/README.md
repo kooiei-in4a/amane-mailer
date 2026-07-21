@@ -28,6 +28,7 @@ Routing envelope and self-reference are excluded:
 - `tenant_id`
 - `mail_request_id`
 - `payload_hash`
+- `scheduled_at`
 
 ## Null omission vs explicit null
 
@@ -141,7 +142,7 @@ values disagree for **that single request**—it does not compare against any
 previous request. Typical causes:
 
 1. **Included vs. excluded fields mixed up.** Hashing `tenant_id`,
-   `mail_request_id`, or `payload_hash` (routing/self-reference fields), or
+   `mail_request_id`, `payload_hash`, or `scheduled_at` (routing/schedule/self-reference fields), or
    omitting one of the delivery fields (`source_service`, `purpose`, `to`,
    `subject`, `html_body`, `text_body`, `reply_to`, `metadata`) that is
    actually present in the request JSON from the hash input.
