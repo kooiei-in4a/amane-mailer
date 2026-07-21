@@ -56,10 +56,12 @@ public sealed partial class AdminProviderRegisterAcsCommand(
         && string.Equals(args[2], "check-acs-preflight", StringComparison.Ordinal);
 
     /// <summary>
-    /// Non-interactive, side-effect-free health check for the two mounted directories: existence,
+    /// Non-interactive health check for the two mounted directories: existence,
     /// symlink/reparse-point rejection, non-permissive mode (Linux), an actual write probe, and
-    /// current registration state. Safe to run repeatedly (including from CI / deploy validation
-    /// scripts) because it never prompts and never writes a secret.
+    /// current registration state. The write probe creates and immediately deletes a small marker
+    /// file (<see cref="FileSystemSafetyGuard.EnsureDirectoryIsWritable"/>), so this is not fully
+    /// side-effect-free, but it never prompts and never writes a secret — safe to run repeatedly,
+    /// including from CI / deploy validation scripts.
     /// </summary>
     public int RunPreflightOnly()
     {

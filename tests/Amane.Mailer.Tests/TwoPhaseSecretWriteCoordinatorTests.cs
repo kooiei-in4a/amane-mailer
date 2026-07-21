@@ -42,6 +42,60 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
 
         Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack, ex.CanonicalCode);
         Assert.False(File.Exists(firstPath), "the first file must be rolled back, not left partially registered");
+        Assert.Empty(Directory.GetFiles(firstDir.Path));
+        // secondDir.Path contains the `secondPath` obstruction directory created above, which
+        // Directory.GetFiles does not return (it only lists files) — this isolates whether
+        // second's own temp file (`.platform-sender.json.tmp-*`) was left behind uncleaned.
+        Assert.Empty(Directory.GetFiles(secondDir.Path));
+    }
+
+    [Fact]
+    public void WriteBothCore_reports_rollback_failed_when_the_rollback_itself_fails()
+    {
+        // Forcing a real rollback delete to fail at exactly the right moment (after the first
+        // commit but before the second's failure) is not reliably reproducible through the real
+        // filesystem within a single synchronous WriteBoth call. ISecretFileWriter exists so this
+        // can be exercised deterministically instead.
+        var first = new FakeSecretFileWriter { CommitSucceeds = true, RollbackSucceeds = false };
+        var second = new FakeSecretFileWriter { CommitSucceeds = false };
+
+        var ex = Assert.Throws<SecretOperationException>(() =>
+            TwoPhaseSecretWriteCoordinator.WriteBothCore(first, "first-content", second, "second-content"));
+
+        Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedRollbackFailed, ex.CanonicalCode);
+        Assert.True(first.RollbackAttempted);
+        Assert.True(second.DiscardAttempted, "the second writer's temp file must still be discarded even when the first's rollback fails");
+    }
+
+    private sealed class FakeSecretFileWriter : ISecretFileWriter
+    {
+        public bool CommitSucceeds { get; init; } = true;
+
+        public bool RollbackSucceeds { get; init; } = true;
+
+        public bool RollbackAttempted { get; private set; }
+
+        public bool DiscardAttempted { get; private set; }
+
+        public void Prepare(string content)
+        {
+        }
+
+        public void Commit()
+        {
+            if (!CommitSucceeds)
+            {
+                throw new IOException("simulated commit failure");
+            }
+        }
+
+        public void DiscardPrepared() => DiscardAttempted = true;
+
+        public bool TryRollbackCommitted()
+        {
+            RollbackAttempted = true;
+            return RollbackSucceeds;
+        }
     }
 
     [Fact]
