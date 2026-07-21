@@ -27,6 +27,8 @@ config/mailer/tenants.production*.json
 # Local deploy rehearsal artifacts
 infra/deploy/data/
 infra/deploy/tenants.json
+infra/deploy/secrets/
+infra/deploy/config/platform-sender/
 infra/deploy/compose.acs-drill.yml
 infra/deploy/compose.mail-05a-client.yml
 infra/deploy/compose.worker-disabled.yml

@@ -173,4 +173,49 @@ public static class MailerCliHost
             error,
             cancellationToken);
     }
+
+    public static Task<int> RunAdminProviderRegisterAcsAsync(IConfiguration configuration, TextWriter error)
+    {
+        if (!TryResolveAcsAdminDirectories(configuration, error, out var acsDirectory, out var senderDirectory))
+        {
+            return Task.FromResult(2);
+        }
+
+        var command = new AdminProviderRegisterAcsCommand(
+            new AdminProviderRegisterAcsConsole(),
+            acsDirectory,
+            senderDirectory);
+        return Task.FromResult(command.Run());
+    }
+
+    public static Task<int> RunAdminProviderCheckAcsPreflightAsync(IConfiguration configuration, TextWriter error)
+    {
+        if (!TryResolveAcsAdminDirectories(configuration, error, out var acsDirectory, out var senderDirectory))
+        {
+            return Task.FromResult(2);
+        }
+
+        var command = new AdminProviderRegisterAcsCommand(
+            new AdminProviderRegisterAcsConsole(),
+            acsDirectory,
+            senderDirectory);
+        return Task.FromResult(command.RunPreflightOnly());
+    }
+
+    private static bool TryResolveAcsAdminDirectories(
+        IConfiguration configuration,
+        TextWriter error,
+        out string acsDirectory,
+        out string senderDirectory)
+    {
+        acsDirectory = configuration["MAILER_ACS_SECRET_DIRECTORY"] ?? string.Empty;
+        senderDirectory = configuration["MAILER_PLATFORM_SENDER_DIRECTORY"] ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(acsDirectory) && !string.IsNullOrWhiteSpace(senderDirectory))
+        {
+            return true;
+        }
+
+        error.WriteLine("MAILER_ACS_SECRET_DIRECTORY and MAILER_PLATFORM_SENDER_DIRECTORY must both be set.");
+        return false;
+    }
 }

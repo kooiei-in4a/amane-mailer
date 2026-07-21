@@ -30,6 +30,24 @@ tenant Bearer トークンなどの秘密情報は JSON に保存しません。
 deploy 固有の tenant ファイルは、デプロイ前にコンテナへ mount し、`tenants.schema.json` で検証してください。Docker イメージに含まれるのは安全な example と schema のみです。
 ローカル検証用ファイルには、schema に新しい environment 値を意図的に追加しない限り `develop` を使ってください。
 
+## Platform-owned sender（`platform-sender.json`）
+
+`platform-sender.json` / `platform-sender.schema.json` は、System Admin確認メールなど tenant に
+属さない platform-owned mail のsender情報（email・display name）専用の設定形式です。tenant JSON
+とは完全に独立しており、`tenant_id` / `source_services` / `token_env` などtenant固有の概念は
+一切持ちません。
+
+- schema: `platform-sender.schema.json`（`environment` は現時点 `staging` のみ、`provider` は
+  `acs` のみ、`live_sending` は常に `false` を要求する）
+- サンプル: `platform-sender.example.json`
+- 登録方法: `admin provider register-acs` CLI（対話入力のみ。command argument や環境変数では
+  秘密値を受け取らない）。詳細は [register-acs CLI runbook](../../docs/ops/register-acs-cli-runbook.md)
+  を参照
+
+このファイルは書き込み時点では runtime のどの送信経路からも読み込まれません（MAILER-ACS-INPUT-01
+のscope）。実際にSystem Admin確認メールの送信判断へ組み込むのは、正式なplatform-owned mail
+request契約を確立する別taskの責務です。既存tenantへの割当てや偽tenantの作成は行いません。
+
 ## Preflight
 
 起動前に、tenant JSON と現在の shell 環境変数を preflight できます。secret 値そのものは

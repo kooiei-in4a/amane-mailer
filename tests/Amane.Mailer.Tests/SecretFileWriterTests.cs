@@ -1,0 +1,119 @@
+using Amane.Mailer.Operations;
+using Amane.Mailer.Tests.TestSupport;
+
+namespace Amane.Mailer.Tests;
+
+public sealed class SecretFileWriterTests
+{
+    [Fact]
+    public void Prepare_then_commit_writes_content_and_removes_temp_file()
+    {
+        using var scratch = new ScratchDirectory();
+        var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
+        var writer = new SecretFileWriter(targetPath);
+
+        writer.Prepare("Endpoint=https://example;AccessKey=secret");
+        var entriesWhilePrepared = Directory.GetFiles(scratch.Path);
+        Assert.Single(entriesWhilePrepared);
+        Assert.NotEqual(targetPath, entriesWhilePrepared[0]);
+
+        writer.Commit();
+
+        Assert.True(File.Exists(targetPath));
+        Assert.Equal("Endpoint=https://example;AccessKey=secret", File.ReadAllText(targetPath));
+        Assert.Single(Directory.GetFiles(scratch.Path));
+    }
+
+    [Fact]
+    public void Commit_overwrites_a_pre_existing_empty_file()
+    {
+        using var scratch = new ScratchDirectory();
+        var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
+        File.WriteAllText(targetPath, string.Empty);
+
+        var writer = new SecretFileWriter(targetPath);
+        writer.Prepare("new-value");
+        writer.Commit();
+
+        Assert.Equal("new-value", File.ReadAllText(targetPath));
+    }
+
+    [Fact]
+    public void DiscardPrepared_removes_temp_file_without_touching_target()
+    {
+        using var scratch = new ScratchDirectory();
+        var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
+        var writer = new SecretFileWriter(targetPath);
+
+        writer.Prepare("value");
+        writer.DiscardPrepared();
+
+        Assert.False(File.Exists(targetPath));
+        Assert.Empty(Directory.GetFiles(scratch.Path));
+    }
+
+    [Fact]
+    public void RollbackCommitted_deletes_a_previously_committed_file()
+    {
+        using var scratch = new ScratchDirectory();
+        var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
+        var writer = new SecretFileWriter(targetPath);
+        writer.Prepare("value");
+        writer.Commit();
+        Assert.True(File.Exists(targetPath));
+
+        writer.RollbackCommitted();
+
+        Assert.False(File.Exists(targetPath));
+    }
+
+    [Fact]
+    public void Prepare_throws_when_target_directory_does_not_exist()
+    {
+        var missingDirectory = Path.Combine(Path.GetTempPath(), "amane-mailer-missing-" + Guid.NewGuid().ToString("N"));
+        var writer = new SecretFileWriter(Path.Combine(missingDirectory, "acs_connection_string"));
+
+        var ex = Assert.Throws<SecretOperationException>(() => writer.Prepare("value"));
+
+        Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedDirectoryUnsafe, ex.CanonicalCode);
+    }
+
+    [Fact]
+    public void Prepare_rejects_a_symlinked_target_file()
+    {
+        using var scratch = new ScratchDirectory();
+        var realPath = Path.Combine(scratch.Path, "real-secret");
+        File.WriteAllText(realPath, "unrelated");
+        var symlinkPath = Path.Combine(scratch.Path, "acs_connection_string");
+
+        try
+        {
+            File.CreateSymbolicLink(symlinkPath, realPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Assert.Skip("Symlink creation is not permitted in this test environment.");
+            return;
+        }
+
+        var writer = new SecretFileWriter(symlinkPath);
+        var thrown = Assert.Throws<SecretOperationException>(() => writer.Prepare("value"));
+        Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedDirectoryUnsafe, thrown.CanonicalCode);
+    }
+
+    private sealed class ScratchDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), "amane-mailer-secret-writer-" + Guid.NewGuid().ToString("N"));
+
+        public ScratchDirectory() => TestSecretDirectory.CreateSecure(Path);
+
+        public void Dispose()
+        {
+            if (Directory.Exists(Path))
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+        }
+    }
+}
