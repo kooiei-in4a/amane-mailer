@@ -19,7 +19,83 @@ public static class MailRequestEndpoints
     public static IEndpointRouteBuilder MapMailRequestEndpoints(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapPost("/internal/mail-requests", CreateMailRequestAsync);
+        endpoints.MapGet("/internal/mail-requests/{mailRequestId}", GetMailRequestStatusAsync);
         return endpoints;
+    }
+
+    private static async Task<IResult> GetMailRequestStatusAsync(
+        string mailRequestId,
+        HttpRequest httpRequest,
+        MailRequestRepository repository,
+        MailerTenantRegistry tenantRegistry,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(mailRequestId, out var parsedMailRequestId))
+        {
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                "mail_request_id must be a UUID.",
+                StatusCodes.Status400BadRequest);
+        }
+
+        if (!TryParseRequiredGuidQuery(httpRequest, "tenant_id", out var tenantId, out var queryParseError))
+        {
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                queryParseError,
+                StatusCodes.Status400BadRequest);
+        }
+
+        if (!TryParseRequiredSourceServiceQuery(httpRequest, out var sourceService, out queryParseError))
+        {
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                queryParseError,
+                StatusCodes.Status400BadRequest);
+        }
+
+        var bearerToken = ReadBearerToken(httpRequest);
+        var tenant = tenantRegistry.Authorize(tenantId, bearerToken);
+        if (tenant is null)
+        {
+            return Error(StatusCodes.Status401Unauthorized, MailerErrorCodes.UnauthorizedTenant);
+        }
+
+        if (!tenant.IsSourceServiceAllowed(sourceService))
+        {
+            return Error(StatusCodes.Status403Forbidden, MailerErrorCodes.SourceServiceNotAllowed);
+        }
+
+        MailRequestStatusRow? statusRow;
+        try
+        {
+            statusRow = await repository.GetStatusByIdempotencyKeyAsync(
+                tenantId,
+                sourceService,
+                parsedMailRequestId,
+                cancellationToken);
+        }
+        catch (Exception ex) when (IsTransientDatabaseException(ex))
+        {
+            return ServiceUnavailable();
+        }
+
+        if (statusRow is null)
+        {
+            return Error(StatusCodes.Status404NotFound, MailerErrorCodes.NotFound);
+        }
+
+        return MailerJsonResults.Ok(new MailRequestStatusResponse
+        {
+            MailRequestId = statusRow.MailRequestId,
+            Status = ToDeliveryStatus(statusRow.Status),
+            AttemptCount = statusRow.AttemptCount,
+            MaxAttempts = statusRow.MaxAttempts,
+            NextAttemptAt = statusRow.NextAttemptAt,
+            AcceptedAt = statusRow.AcceptedAt,
+            DeliveredAt = statusRow.DeliveredAt,
+            LastErrorCode = statusRow.LastErrorCode,
+        });
     }
 
     private static async Task<IResult> CreateMailRequestAsync(
@@ -390,6 +466,64 @@ public static class MailRequestEndpoints
         return exception.InnerException is not null
             && IsTransientDatabaseException(exception.InnerException);
     }
+
+    private static bool TryParseRequiredGuidQuery(
+        HttpRequest request,
+        string name,
+        out Guid value,
+        out string error)
+    {
+        if (!request.Query.TryGetValue(name, out var rawValues) || rawValues.Count == 0)
+        {
+            value = default;
+            error = $"{name} is required.";
+            return false;
+        }
+
+        if (!Guid.TryParse(rawValues[0], out value))
+        {
+            error = $"{name} must be a UUID.";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static bool TryParseRequiredSourceServiceQuery(
+        HttpRequest request,
+        out string value,
+        out string error)
+    {
+        if (!request.Query.TryGetValue("source_service", out var rawValues) || rawValues.Count == 0)
+        {
+            value = string.Empty;
+            error = "source_service is required.";
+            return false;
+        }
+
+        value = rawValues[0] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = "source_service must not be empty.";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static string ToDeliveryStatus(MailRequestState status) =>
+        status switch
+        {
+            MailRequestState.Queued => MailRequestStatus.Queued,
+            MailRequestState.Processing => MailRequestStatus.Processing,
+            MailRequestState.Delivered => MailRequestStatus.Delivered,
+            MailRequestState.Failed => MailRequestStatus.Failed,
+            MailRequestState.DeadLettered => MailRequestStatus.DeadLettered,
+            MailRequestState.Cancelled => MailRequestStatus.Cancelled,
+            _ => throw new ArgumentOutOfRangeException(nameof(status), status, null),
+        };
 
     private sealed class RequestBodyTooLargeException : Exception;
 }

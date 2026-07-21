@@ -107,6 +107,98 @@ paths:
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
 
+  /internal/mail-requests/{mail_request_id}:
+    get:
+      tags: [mail-requests]
+      summary: メール送信依頼の配送ステータスを照会する
+      description: >-
+        指定 tenant / source_service スコープ内の mail request の Worker 配送ステータスを返す。
+        存在しない ID および他 tenant の ID は存在有無を漏らさず 404 を返す。
+        返却 JSON には recipient / subject / body 等の PII は含めない。
+      operationId: getMailRequestStatus
+      security:
+        - tenantBearer: []
+      parameters:
+        - name: mail_request_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: 利用側生成の依頼 ID（POST 時と同じ値）。
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: 環境×プロダクト単位の識別子。Bearer トークンと対で認可される。
+        - name: source_service
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
+          description: 呼び出し元サービス名。テナントの source_services 許可リストに含まれる必要がある。
+      responses:
+        '200':
+          description: 配送ステータス（Worker 状態）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailRequestStatusResponse'
+              examples:
+                queued:
+                  value:
+                    mail_request_id: "018f7c2a-0000-7000-8000-000000000000"
+                    status: queued
+                    attempt_count: 0
+                    max_attempts: 5
+                    accepted_at: "2026-07-21T12:00:00Z"
+                delivered:
+                  value:
+                    mail_request_id: "018f7c2a-0000-7000-8000-000000000001"
+                    status: delivered
+                    attempt_count: 1
+                    max_attempts: 5
+                    accepted_at: "2026-07-21T12:00:00Z"
+                    delivered_at: "2026-07-21T12:05:00Z"
+        '400':
+          description: mail_request_id / tenant_id / source_service が不正または欠落
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                invalid: { value: { code: INVALID_REQUEST, message: "mail_request_id must be a UUID." } }
+        '401':
+          description: テナント/トークン不一致
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unauthorized: { value: { code: UNAUTHORIZED_TENANT } }
+        '403':
+          description: source_service がテナントの許可リスト外
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
+        '404':
+          description: 指定スコープ内に mail request が存在しない（他 tenant の ID も同様）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                notFound: { value: { code: NOT_FOUND } }
+        '503':
+          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+
   /healthz:
     get:
       tags: [health]
@@ -275,6 +367,44 @@ components:
           enum: [accepted, already_accepted]
           description: API 受付ステータス（Worker の配送ステータスとは別）。
 
+    MailRequestStatusResponse:
+      type: object
+      required:
+        - mail_request_id
+        - status
+        - attempt_count
+        - max_attempts
+        - accepted_at
+      properties:
+        mail_request_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, delivered, failed, dead_lettered, cancelled]
+          description: Worker 配送ステータス（API 受付ステータス accepted / already_accepted とは別）。
+        attempt_count:
+          type: integer
+          minimum: 0
+        max_attempts:
+          type: integer
+          minimum: 1
+        next_attempt_at:
+          type: [string, "null"]
+          format: date-time
+          description: 次回試行予定時刻（UTC）。queued で retry 待ちの場合のみ。
+        accepted_at:
+          type: string
+          format: date-time
+          description: 初回受付時刻（UTC）。
+        delivered_at:
+          type: [string, "null"]
+          format: date-time
+          description: 配送成功時刻（UTC）。status が delivered の場合のみ。
+        last_error_code:
+          type: [string, "null"]
+          description: 直近試行の sanitized error code（raw provider message は含めない）。
+
     MailDeliveryEventPayload:
       type: object
       additionalProperties: false
@@ -337,6 +467,7 @@ components:
             - INVALID_METADATA
             - UNAUTHORIZED_TENANT
             - MAILER_TEMPORARILY_UNAVAILABLE
+            - NOT_FOUND
         message:
           type: string
         retryable:
