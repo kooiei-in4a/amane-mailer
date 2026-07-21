@@ -53,7 +53,7 @@ public sealed class SecretFileWriterTests
     }
 
     [Fact]
-    public void RollbackCommitted_deletes_a_previously_committed_file()
+    public void TryRollbackCommitted_deletes_a_previously_committed_file_and_returns_true()
     {
         using var scratch = new ScratchDirectory();
         var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
@@ -62,9 +62,42 @@ public sealed class SecretFileWriterTests
         writer.Commit();
         Assert.True(File.Exists(targetPath));
 
-        writer.RollbackCommitted();
+        var rolledBack = writer.TryRollbackCommitted();
 
+        Assert.True(rolledBack);
         Assert.False(File.Exists(targetPath));
+    }
+
+    [Fact]
+    public void TryRollbackCommitted_returns_false_when_the_delete_itself_fails()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Skip("Directory write-permission enforcement is verified against real POSIX mode bits, Linux only.");
+            return;
+        }
+
+        using var scratch = new ScratchDirectory();
+        var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
+        var writer = new SecretFileWriter(targetPath);
+        writer.Prepare("value");
+        writer.Commit();
+        Assert.True(File.Exists(targetPath));
+
+        // Remove write permission on the containing directory so unlink() fails, simulating a
+        // rollback delete that cannot complete (not merely a crash).
+        File.SetUnixFileMode(scratch.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            var rolledBack = writer.TryRollbackCommitted();
+
+            Assert.False(rolledBack);
+            Assert.True(File.Exists(targetPath), "the target must still be present when rollback failed");
+        }
+        finally
+        {
+            File.SetUnixFileMode(scratch.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     [Fact]

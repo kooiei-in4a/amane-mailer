@@ -16,7 +16,7 @@ namespace Amane.Mailer.Operations;
 /// <see cref="Commit"/> would ever run.
 /// </para>
 /// </summary>
-public sealed class SecretFileWriter(string targetPath)
+public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
 {
     public string TargetPath { get; } = targetPath;
 
@@ -80,8 +80,16 @@ public sealed class SecretFileWriter(string targetPath)
     /// commit, used when a sibling write in the same two-phase operation subsequently fails.
     /// Deleting is safe because <see cref="Commit"/> is only reachable once preflight already
     /// confirmed the pre-commit state was absent/empty.
+    /// <para>
+    /// Returns <see langword="false"/> if the delete itself fails. The caller must not claim the
+    /// operation was rolled back in that case — <see cref="TwoPhaseSecretWriteCoordinator"/> maps
+    /// a failed rollback to a distinct canonical code
+    /// (<see cref="AdminProviderRegisterAcsResultCodes.RejectedRollbackFailed"/>) rather than
+    /// <see cref="AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack"/>, since the
+    /// latter implies the on-disk state is clean again when it may not be.
+    /// </para>
     /// </summary>
-    public void RollbackCommitted()
+    public bool TryRollbackCommitted()
     {
         try
         {
@@ -89,12 +97,12 @@ public sealed class SecretFileWriter(string targetPath)
             {
                 File.Delete(TargetPath);
             }
+
+            return true;
         }
         catch
         {
-            // Surfaced by the coordinator as RejectedPartialWriteRolledBack regardless; a failed
-            // rollback is caught by RegisteredSecretStateInspector on the next invocation
-            // (PartialOrCorrupt), which fails closed rather than silently retrying.
+            return false;
         }
     }
 }

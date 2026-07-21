@@ -6,12 +6,17 @@ namespace Amane.Mailer.Operations;
 /// prepare-then-commit pattern: both temp files are staged first, then both are committed in
 /// sequence. If the second commit fails after the first succeeded, the first is rolled back
 /// (deleted) so the on-disk state returns to "neither registered" rather than being left with
-/// only one of the two values.
+/// only one of the two values. Every failure path also discards whichever temp file(s) are still
+/// pending, so no <c>.tmp-*</c> file is ever left behind regardless of which step failed.
 /// <para>
 /// The one residual gap (a crash between the second commit failing and the rollback delete
 /// completing) is not recoverable in-process; <see cref="RegisteredSecretStateInspector"/>
 /// catches it on the next invocation as <see cref="RegisteredSecretState.PartialOrCorrupt"/> and
-/// fails closed instead of silently retrying.
+/// fails closed instead of silently retrying. If the rollback delete itself fails synchronously
+/// here (not a crash, an observed exception), that is reported as
+/// <see cref="AdminProviderRegisterAcsResultCodes.RejectedRollbackFailed"/> rather than
+/// <see cref="AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack"/> — the latter
+/// would incorrectly claim the on-disk state is clean again.
 /// </para>
 /// </summary>
 public static class TwoPhaseSecretWriteCoordinator
@@ -20,6 +25,18 @@ public static class TwoPhaseSecretWriteCoordinator
         SecretFileWriter first,
         string firstContent,
         SecretFileWriter second,
+        string secondContent) =>
+        WriteBothCore(first, firstContent, second, secondContent);
+
+    /// <summary>
+    /// Same logic as <see cref="WriteBoth"/>, expressed over <see cref="ISecretFileWriter"/> so
+    /// tests can substitute a fake that forces the rollback branch deterministically — see
+    /// <see cref="ISecretFileWriter"/> for why the real filesystem can't reliably do that.
+    /// </summary>
+    internal static void WriteBothCore(
+        ISecretFileWriter first,
+        string firstContent,
+        ISecretFileWriter second,
         string secondContent)
     {
         ArgumentNullException.ThrowIfNull(first);
@@ -52,10 +69,21 @@ public static class TwoPhaseSecretWriteCoordinator
         }
         catch (Exception ex)
         {
-            first.RollbackCommitted();
+            var rolledBack = first.TryRollbackCommitted();
+            second.DiscardPrepared();
+
+            if (rolledBack)
+            {
+                throw new SecretOperationException(
+                    AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack,
+                    "The second file failed to commit; the first was rolled back.",
+                    ex);
+            }
+
             throw new SecretOperationException(
-                AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack,
-                "The second file failed to commit; the first was rolled back.",
+                AdminProviderRegisterAcsResultCodes.RejectedRollbackFailed,
+                "The second file failed to commit and rolling back the first also failed. " +
+                "The first file's value may still be present on disk. Manual review is required.",
                 ex);
         }
     }

@@ -21,6 +21,15 @@ public static class AdminProviderRegisterAcsResultCodes
     public const string RejectedPartialState = "REJECTED_PARTIAL_STATE";
     public const string RejectedConcurrentExecution = "REJECTED_CONCURRENT_EXECUTION";
     public const string RejectedPartialWriteRolledBack = "REJECTED_PARTIAL_WRITE_ROLLED_BACK";
+
+    /// <summary>
+    /// The second file failed to commit AND rolling back the first also failed. Unlike
+    /// <see cref="RejectedPartialWriteRolledBack"/>, this does not claim the on-disk state is
+    /// clean again — it may still hold the first file's value. Manual review is required; do not
+    /// auto-retry.
+    /// </summary>
+    public const string RejectedRollbackFailed = "REJECTED_ROLLBACK_FAILED";
+
     public const string RejectedCancelled = "REJECTED_CANCELLED";
     public const string FailedUnexpected = "FAILED_UNEXPECTED";
 }
