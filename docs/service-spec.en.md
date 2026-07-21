@@ -43,6 +43,7 @@ The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contra
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
 | `POST` | `/internal/mail-requests` | Accept send request | Tenant Bearer |
+| `GET` | `/internal/mail-requests/{mail_request_id}` | Query delivery status (`tenant_id` / `source_service` as query params) | Tenant Bearer |
 | `GET` | `/healthz` | Liveness check | None |
 | `GET` | `/readyz` | Readiness (includes DB schema check) | None |
 
@@ -67,6 +68,21 @@ When intentionally changing the contract, update the DTOs / constants / payload 
 | Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | Multiple recipients / metadata / hash mismatch | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
 | Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+
+### Delivery Status Query (GET)
+
+`GET /internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}`
+
+| Situation | HTTP | code / status |
+|---|---|---|
+| Existing request for authorized tenant + allowed source_service | 200 | Worker delivery `status` (`queued` / `processing` / `delivered` / `failed` / `dead_lettered` / `cancelled`) |
+| Invalid or missing mail_request_id / tenant_id / source_service | 400 | `INVALID_REQUEST` |
+| Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
+| source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
+| Not found, or belongs to another tenant | 404 | `NOT_FOUND` (does not leak existence) |
+| Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+
+The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`). `last_error_code` is a sanitized error code only.
 
 ### Metadata secret policy (docs-first)
 

@@ -43,6 +43,7 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 | メソッド | パス | 用途 | 認証 |
 |---|---|---|---|
 | `POST` | `/internal/mail-requests` | 送信依頼の受付 | テナント Bearer |
+| `GET` | `/internal/mail-requests/{mail_request_id}` | 配送ステータス照会（`tenant_id` / `source_service` は query） | テナント Bearer |
 | `GET` | `/healthz` | 生存確認（liveness） | なし |
 | `GET` | `/readyz` | 受付可否（DB schema 確認込み readiness） | なし |
 
@@ -67,6 +68,21 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | 宛先複数 / メタデータ / hash 不一致 | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
 | 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+
+### 配送ステータス照会（GET）
+
+`GET /internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}`
+
+| 状況 | HTTP | code / status |
+|---|---|---|
+| 自 tenant・許可 source_service の既存依頼 | 200 | Worker 配送 `status`（`queued` / `processing` / `delivered` / `failed` / `dead_lettered` / `cancelled`） |
+| mail_request_id / tenant_id / source_service 不正・欠落 | 400 | `INVALID_REQUEST` |
+| トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
+| source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
+| 存在しない、または他 tenant の依頼 | 404 | `NOT_FOUND`（存在有無を漏らさない） |
+| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+
+返却 JSON は PII を含まない最小セット（`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`）。`last_error_code` は sanitized error code のみ。
 
 ### metadata の秘密情報ポリシー（docs-first）
 

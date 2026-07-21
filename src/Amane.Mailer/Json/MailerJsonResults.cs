@@ -28,6 +28,12 @@ public static class MailerJsonResults
             MailerJsonContext.Default.MailRequestCreateResponse,
             statusCode: StatusCodes.Status202Accepted);
 
+    public static IResult Ok(MailRequestStatusResponse response) =>
+        Results.Json(
+            response,
+            MailerJsonContext.Default.MailRequestStatusResponse,
+            statusCode: StatusCodes.Status200OK);
+
     public static IResult Health(bool healthy) =>
         Results.Json(
             new HealthStatusResponse(healthy),

@@ -92,6 +92,7 @@ dotnet add package Amane.Mailer.Contracts
 |---|---|---|
 | `MailRequestCreateRequest` | `Amane.Mailer.Contracts.MailRequests` | POST request DTO |
 | `MailRequestCreateResponse` | `Amane.Mailer.Contracts.MailRequests` | 202 response DTO |
+| `MailRequestStatusResponse` | `Amane.Mailer.Contracts.MailRequests` | GET delivery status response DTO |
 | `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient in `to` array |
 | `MailPayloadHasher` | `Amane.Mailer.Contracts.Security` | `payload_hash` computation helper |
 | `MailRequestAcceptanceStatus` | `Amane.Mailer.Contracts.MailRequests` | Response `status` constants |

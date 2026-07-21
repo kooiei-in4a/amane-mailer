@@ -379,6 +379,60 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
         };
     }
 
+    public async Task<MailRequestStatusRow?> GetStatusByIdempotencyKeyAsync(
+        Guid tenantId,
+        string sourceService,
+        Guid mailRequestId,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT
+                mr.mail_request_id,
+                mr.status,
+                mr.attempt_count,
+                mr.max_attempts,
+                mr.next_attempt_at,
+                mr.accepted_at,
+                mr.delivered_at,
+                COALESCE((
+                    SELECT ma.error_code
+                    FROM mail_attempts ma
+                    WHERE ma.request_id = mr.id
+                    ORDER BY ma.id DESC
+                    LIMIT 1
+                ), '') AS last_error_code
+            FROM mail_requests mr
+            WHERE mr.tenant_id = @TenantId
+              AND mr.source_service = @SourceService
+              AND mr.mail_request_id = @MailRequestId
+            LIMIT 1;
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+        command.Parameters.AddWithValue("@SourceService", sourceService);
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var lastErrorCode = reader.GetString(7);
+        return new MailRequestStatusRow(
+            MailRequestId: Guid.Parse(reader.GetString(0)),
+            Status: (MailRequestState)reader.GetInt32(1),
+            AttemptCount: reader.GetInt32(2),
+            MaxAttempts: reader.GetInt32(3),
+            NextAttemptAt: reader.IsDBNull(4) ? null : SqliteTime.FromStorage(reader.GetString(4)),
+            AcceptedAt: SqliteTime.FromStorage(reader.GetString(5)),
+            DeliveredAt: reader.IsDBNull(6) ? null : SqliteTime.FromStorage(reader.GetString(6)),
+            LastErrorCode: string.IsNullOrEmpty(lastErrorCode) ? null : lastErrorCode);
+    }
+
     public async Task InsertAcceptedAsync(
         AcceptedMailRequestInsert insert,
         CancellationToken cancellationToken = default)
