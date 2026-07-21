@@ -28,6 +28,7 @@ promise of exact scope or dates.
 - Consider broader database/provider support if real deployments need it.
 - Add stronger operational examples for multi-tenant environments.
 - Revisit API versioning once downstream integrations exist.
+- SDK follow-ups: status polling helpers and webhook signature verification.
 
 ## Non-goals For Now
 

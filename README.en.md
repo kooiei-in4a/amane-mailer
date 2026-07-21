@@ -97,7 +97,7 @@ Operational runbooks:
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
 
-After v0.4.0 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.4.0`)
+After v0.9.0 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.9.0`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
 run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
@@ -105,7 +105,7 @@ run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration.
 
-For the v0.4.0 release, the default smoke tag `v0.4.0` is expected to be a
+For the v0.9.0 release, the default smoke tag `v0.9.0` is expected to be a
 **multi-arch** GHCR runtime image after publish
 (`linux/amd64` and `linux/arm64`). For smoke runs, confirm the platform in the
 release notes or Docker manifest, then set `MAILER_IMAGE_PLATFORM=linux/amd64` or
@@ -142,6 +142,9 @@ The Contracts package targets `net8.0` for broader consumer compatibility. The M
 Minimum information to POST a mail request to a running Mailer and, when needed, query delivery status with GET.
 
 ### Submit a mail request (POST)
+
+**Official Consumer SDKs (TypeScript / Python):** request builder, automatic
+`payload_hash`, typed errors, and 503 retries — see [sdk/](sdk/README.md).
 
 - **Endpoint**: `POST http://mailer:8080/internal/mail-requests`
 - **Auth**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
@@ -207,7 +210,8 @@ To safely try a conflict, use a local environment only, keep the same
 - **Endpoint**: `GET http://mailer:8080/internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}`
 - **Auth**: same Bearer token as POST
 - **Required query params**: `tenant_id`, `source_service` (same values as the POST body)
-- **Response fields**: `mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`
+- **Response fields**: `mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`
+- **Optional**: POST `scheduled_at` (UTC) for deferred send. Pre-send cancel / reschedule are documented under OpenAPI `/cancel` and `/reschedule`
 - **No PII**: recipient, subject, and body are not returned
 
 `status` values describe Worker delivery state (`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`). They are separate from POST acceptance values `accepted` / `already_accepted`.
@@ -260,6 +264,9 @@ and compose smoke (arm64 Docker on `main` push). See
 - [Branch strategy and CI weighting](docs/ops/branch-and-ci-workflow.en.md) [(ja)](docs/ops/branch-and-ci-workflow.md)
 - [Service spec](docs/service-spec.en.md) [(ja)](docs/service-spec.md)
 - [OpenAPI HTTP reference](docs/api/openapi.yaml)
+- [Consumer SDKs](sdk/README.md)
+- [Webhook verification](docs/consumer/webhook-verification.md)
+- [Prometheus metrics and alerts](docs/ops/metrics-and-alerts.en.md) [(ja)](docs/ops/metrics-and-alerts.md)
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
 - [GHCR image publishing](docs/ops/ghcr-image-publish.en.md) [(ja)](docs/ops/ghcr-image-publish.md)
 - [Release artifact verification](docs/ops/release-artifact-verification.en.md) [(ja)](docs/ops/release-artifact-verification.md)

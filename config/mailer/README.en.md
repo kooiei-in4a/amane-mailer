@@ -26,6 +26,11 @@ Secrets such as tenant Bearer tokens are not stored in JSON. JSON stores the
 environment variable name in `token_env`; set the actual token value in that
 environment variable.
 
+Optional `webhook` enables outbound delivery-result webhooks. Set `url` and
+`secret_env` (secret value in the environment variable; never plaintext in
+tenant JSON). See [webhook verification](../../docs/consumer/webhook-verification.md)
+and the `webhook` definition in `tenants.schema.json`.
+
 `provider` normally comes from the tenant JSON. Setting `MAILER_PROVIDER` or the
 .NET environment-variable form `Mailer__Provider` (configuration key
 `Mailer:Provider`) overrides the provider for every tenant.

@@ -90,9 +90,13 @@ dotnet add package Amane.Mailer.Contracts
 
 | Type | Namespace | Purpose |
 |---|---|---|
-| `MailRequestCreateRequest` | `Amane.Mailer.Contracts.MailRequests` | POST request DTO |
+| `MailRequestCreateRequest` | `Amane.Mailer.Contracts.MailRequests` | POST request DTO (optional `scheduled_at`) |
 | `MailRequestCreateResponse` | `Amane.Mailer.Contracts.MailRequests` | 202 response DTO |
-| `MailRequestStatusResponse` | `Amane.Mailer.Contracts.MailRequests` | GET delivery status response DTO |
+| `MailRequestStatusResponse` | `Amane.Mailer.Contracts.MailRequests` | GET / cancel / reschedule status response DTO |
+| `MailRequestRescheduleRequest` | `Amane.Mailer.Contracts.MailRequests` | Reschedule request body |
+| `MailRequestScheduleLimits` | `Amane.Mailer.Contracts.MailRequests` | Max schedule horizon (`MaxScheduledAhead`) |
+| `MailDeliveryEventPayload` | `Amane.Mailer.Contracts.MailRequests` | Outbound delivery-result webhook JSON body |
+| `MailDeliveryEventType` | `Amane.Mailer.Contracts.MailRequests` | Webhook `event_type` / terminal status constants |
 | `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient in `to` array |
 | `MailPayloadHasher` | `Amane.Mailer.Contracts.Security` | `payload_hash` computation helper |
 | `MailRequestAcceptanceStatus` | `Amane.Mailer.Contracts.MailRequests` | Response `status` constants |

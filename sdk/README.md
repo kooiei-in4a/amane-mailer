@@ -10,7 +10,9 @@ Phase 1 scope (issue #218):
 - Typed handling for `accepted`, `already_accepted`, `IDEMPOTENCY_CONFLICT`, and retryable 503
 - Idempotent resend and exponential backoff for retryable errors
 
-Phase 2 (status polling) is tracked separately (#216).
+Status GET (#216) is available on the HTTP API. SDK status-polling helpers remain
+a follow-up (Phase 2). Webhook signature helpers wait on Consumer SDK follow-up
+after #219.
 
 ## Quickstart
 
