@@ -86,3 +86,12 @@ python3 scripts/pty-smoke-register-acs.py
 
 - ACS connection string、sender emailの実値。
 - raw exception、stack trace、対話入力の内容。
+
+## 9. Verified on（Docker 確認）
+
+2026-07-21、Windows + WSL2 + Docker Engine で確認:
+
+- 使い捨て `.env`（`.env.example` 由来、image=`ghcr.io/kooiei-in4a/amane-mailer:v0.3.0`）で `infra/deploy/compose.yml` に対し `docker compose ... config` を実行。
+- マウント境界（compose config + `docker inspect` Mounts）: `mailer` の ACS secret は `:ro` / `RW=false`。`mailer-acs-admin` の ACS secret と platform-sender は read-write（`RW=true`）。`mailer-migrate` には ACS / platform-sender マウントなし。
+- Image UID: `docker inspect ghcr.io/kooiei-in4a/amane-mailer:v0.3.0 --format '{{.Config.User}}'` → `1654`。ホスト dir は Linux ネイティブな WSL パス上で `1654:1654` / `0700` を準備（Windows `/mnt/c` の drvfs では `chown` / 実質的な `chmod 0700` 不可）。
+- 登録: 公開 `v0.3.0` には `admin provider register-acs` が含まれないため、ブランチからビルドしたローカル image `amane-mailer:pr206-verify`（`Config.User=1654`）で確認。compose profile `acs-admin` の `check-acs-preflight` → `SUCCESS`。実 PTY 経由で `docker compose ... run mailer-acs-admin` に合成入力のみを供給した interactive `register-acs` → `SUCCESS`。`acs_connection_string` と `platform-sender.json` が mode `600` uid/gid `1654` で出現（内容は記録しない）。検証後に合成ファイルを削除。
