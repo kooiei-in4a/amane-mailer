@@ -21,6 +21,7 @@ namespace Amane.Mailer.Json;
 [JsonSerializable(typeof(PlatformSenderAddress))]
 [JsonSerializable(typeof(MailRequestCreateRequest))]
 [JsonSerializable(typeof(MailRequestCreateResponse))]
+[JsonSerializable(typeof(MailRequestStatusResponse))]
 [JsonSerializable(typeof(MailRecipientDto))]
 [JsonSerializable(typeof(MailRecipientDto[]))]
 [JsonSerializable(typeof(Dictionary<string, string>))]

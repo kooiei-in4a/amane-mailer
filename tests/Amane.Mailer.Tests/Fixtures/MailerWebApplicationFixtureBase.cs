@@ -22,6 +22,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
 
     public WebApplicationFactory<global::Program> Factory => _factory!;
     public string ConnectionString => $"Data Source={_databasePath}";
+    public string TenantConfigPath => Path.Combine(_tenantConfigDirectory!, "tenants.json");
 
     protected virtual IReadOnlyDictionary<string, string?> ExtraConfiguration =>
         new Dictionary<string, string?>();

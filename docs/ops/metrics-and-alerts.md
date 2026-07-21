@@ -1,0 +1,124 @@
+[English](metrics-and-alerts.en.md)
+
+# Prometheus メトリクスとアラート runbook
+
+Amane Mailer の `/metrics` エンドポイントは、キュー滞留・配送結果・Worker heartbeat を Prometheus text format で公開します。Admin `/admin/ops` および CLI `db stats` と同じ `MailerDbStatsReader` 由来の gauge（queue / dead letter / heartbeat）に加え、プロセス起動以降の counter / histogram を in-memory で保持します。
+
+## エンドポイント
+
+| 項目 | 値 |
+|------|-----|
+| Path | `GET /metrics` |
+| Content-Type | `text/plain; version=0.0.4; charset=utf-8` |
+| 既定 | 有効（`Mailer:Metrics:Enabled=true`） |
+| 認証 | 既定はなし（内部ネットワーク分離を前提）。`Mailer:Metrics:BearerToken` 設定時は `Authorization: Bearer <token>` 必須 |
+| 無効化 | `Mailer:Metrics:Enabled=false` → **404** |
+| DB 未 migrate | **503** |
+
+### 設定例
+
+```bash
+# 任意: scrape 用 bearer
+export MAILER_METRICS_BEARER_TOKEN="replace-with-scrape-token"
+
+# 無効化する場合
+export Mailer__Metrics__Enabled=false
+```
+
+Compose / systemd では Mailer HTTP ポートを **内部ネットワークのみ** に publish し、Prometheus は同ネットワークまたは VPN から scrape してください。`/healthz`・`/readyz` と同様、インターネット直接公開は想定していません。
+
+## 公開メトリクス
+
+| メトリクス | 型 | ラベル | 意味 |
+|---|---|---|---|
+| `mail_requests_accepted_total` | counter | なし | プロセス起動以降に受け付けた mail request 数（再起動で reset） |
+| `mail_deliveries_total` | counter | `result`, `provider` | プロセス起動以降の完了 attempt 数。`result` は `delivered` / `failed` / `dead_lettered` |
+| `mail_delivery_duration_seconds` | histogram | `provider` | プロセス起動以降の attempt 所要時間（秒）。再起動で reset |
+| `mail_queue_ready_count` | gauge | なし | 即時配送可能な queued 件数（全 tenant 合算） |
+| `mail_queue_oldest_age_seconds` | gauge | なし | ready backlog 内の最古 updated_at からの経過秒 |
+| `mail_retries_total` | counter | なし | プロセス起動以降の再試行 attempt 数（`attempt_number > 1` の完了 attempt） |
+| `mail_dead_letters_total` | gauge | なし | 現在 dead_lettered 状態の request 数 |
+| `mail_worker_heartbeat_age_seconds` | gauge | `component` | `worker` / `sweep` の heartbeat 経過秒。行未存在時は series なし |
+
+**禁止ラベル（含めない）:** `recipient_email`, `subject`, `mail_request_id`, `tenant_id`, `source_service`
+
+### Admin / CLI との関係
+
+- **Gauge（queue / dead letter / heartbeat）:** CLI `db stats`（tenant 指定なし）および break-glass Admin ops と同じ service-wide 集計。
+- **Counter / histogram:** プロセス lifetime 内のイベントのみ。DB に直接 INSERT された履歴は含まれません。再起動後は counter / histogram が 0 から再開します。
+
+## Prometheus scrape 設定例
+
+```yaml
+scrape_configs:
+  - job_name: amane-mailer
+    scrape_interval: 30s
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - mailer.internal:5280
+    # bearer 設定時:
+    # authorization:
+    #   type: Bearer
+    #   credentials: replace-with-scrape-token
+```
+
+## 推奨アラート閾値例
+
+```yaml
+groups:
+  - name: amane-mailer
+    rules:
+      - alert: MailQueueOldestAgeHigh
+        expr: mail_queue_oldest_age_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ready queue oldest item is older than 5 minutes
+
+      - alert: MailWorkerHeartbeatStale
+        expr: mail_worker_heartbeat_age_seconds{component="worker"} > 120
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Worker heartbeat is stale
+
+      - alert: MailQueueReadyBacklogSpike
+        expr: deriv(mail_queue_ready_count[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Ready backlog is growing quickly
+
+      - alert: MailDeliveryFailureRateHigh
+        expr: rate(mail_deliveries_total{result="failed"}[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Failed delivery attempt rate is elevated
+```
+
+`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat アラートを primary、delivery rate は補助として運用してください。
+
+## セキュリティ注意
+
+- `/metrics` を公開インターネットに直接露出しない。
+- レスポンスに recipient / subject / mail_request_id / tenant_id は含めない。
+- bearer token は scrape 設定と同じ secret 管理境界でローテートする。
+- Admin UI（`/admin/ops`）とは別経路。Admin は session 認証 + tenant scope、metrics は ops 向け service-wide。
+
+## ローカル確認
+
+```bash
+curl -fsS http://127.0.0.1:5280/metrics | head
+```
+
+bearer 設定時:
+
+```bash
+curl -fsS -H "Authorization: Bearer replace-with-scrape-token" http://127.0.0.1:5280/metrics | head
+```

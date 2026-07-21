@@ -1,12 +1,16 @@
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Operations;
 using Microsoft.Data.Sqlite;
 using System.Text;
 
 namespace Amane.Mailer.Data.Sqlite;
 
-public sealed class MailRequestRepository(SqliteConnectionFactory connections)
+public sealed class MailRequestRepository(
+    SqliteConnectionFactory connections,
+    MailerRuntimeMetrics? runtimeMetrics = null)
 {
+    private readonly MailerRuntimeMetrics? _runtimeMetrics = runtimeMetrics;
     private const string ExpiredProcessingReaperProvider = "lease-reaper";
     private const string ExpiredProcessingMaxAttemptsErrorCode = "PROCESSING_LEASE_EXPIRED_MAX_ATTEMPTS";
     private const string ExpiredProcessingMaxAttemptsErrorMessage =
@@ -379,6 +383,60 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
         };
     }
 
+    public async Task<MailRequestStatusRow?> GetStatusByIdempotencyKeyAsync(
+        Guid tenantId,
+        string sourceService,
+        Guid mailRequestId,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT
+                mr.mail_request_id,
+                mr.status,
+                mr.attempt_count,
+                mr.max_attempts,
+                mr.next_attempt_at,
+                mr.accepted_at,
+                mr.delivered_at,
+                COALESCE((
+                    SELECT ma.error_code
+                    FROM mail_attempts ma
+                    WHERE ma.request_id = mr.id
+                    ORDER BY ma.id DESC
+                    LIMIT 1
+                ), '') AS last_error_code
+            FROM mail_requests mr
+            WHERE mr.tenant_id = @TenantId
+              AND mr.source_service = @SourceService
+              AND mr.mail_request_id = @MailRequestId
+            LIMIT 1;
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+        command.Parameters.AddWithValue("@SourceService", sourceService);
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var lastErrorCode = reader.GetString(7);
+        return new MailRequestStatusRow(
+            MailRequestId: Guid.Parse(reader.GetString(0)),
+            Status: (MailRequestState)reader.GetInt32(1),
+            AttemptCount: reader.GetInt32(2),
+            MaxAttempts: reader.GetInt32(3),
+            NextAttemptAt: reader.IsDBNull(4) ? null : SqliteTime.FromStorage(reader.GetString(4)),
+            AcceptedAt: SqliteTime.FromStorage(reader.GetString(5)),
+            DeliveredAt: reader.IsDBNull(6) ? null : SqliteTime.FromStorage(reader.GetString(6)),
+            LastErrorCode: string.IsNullOrEmpty(lastErrorCode) ? null : lastErrorCode);
+    }
+
     public async Task InsertAcceptedAsync(
         AcceptedMailRequestInsert insert,
         CancellationToken cancellationToken = default)
@@ -428,6 +486,7 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
 
             await command.ExecuteNonQueryAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+            _runtimeMetrics?.RecordRequestAccepted();
         }
         catch
         {
@@ -597,6 +656,7 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
             }
 
             var deadLettered = new List<ExpiredProcessingDeadLetteredRequest>(candidates.Count);
+            var recordedAttempts = new List<MailAttemptInsert>(candidates.Count);
             foreach (var candidate in candidates)
             {
                 await using (var update = connection.CreateCommand())
@@ -632,6 +692,20 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
                     await insertAttempt.ExecuteNonQueryAsync(cancellationToken);
                 }
 
+                recordedAttempts.Add(new MailAttemptInsert
+                {
+                    RequestId = candidate.Id,
+                    AttemptNumber = candidate.AttemptNumber,
+                    Provider = ExpiredProcessingReaperProvider,
+                    Status = MailRequestState.DeadLettered,
+                    ErrorCode = ExpiredProcessingMaxAttemptsErrorCode,
+                    ErrorMessage = ExpiredProcessingMaxAttemptsErrorMessage,
+                    Retryable = true,
+                    LockToken = candidate.LockToken,
+                    StartedAt = candidate.StartedAt,
+                    CompletedAt = now,
+                });
+
                 deadLettered.Add(new ExpiredProcessingDeadLetteredRequest(
                     candidate.Id,
                     candidate.MailRequestId,
@@ -641,6 +715,11 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
             }
 
             await transaction.CommitAsync(cancellationToken);
+            foreach (var attempt in recordedAttempts)
+            {
+                _runtimeMetrics?.RecordAttemptCompleted(attempt);
+            }
+
             return deadLettered;
         }
         catch
@@ -744,6 +823,7 @@ public sealed class MailRequestRepository(SqliteConnectionFactory connections)
             }
 
             await transaction.CommitAsync(cancellationToken);
+            _runtimeMetrics?.RecordAttemptCompleted(attempt);
             return true;
         }
         catch

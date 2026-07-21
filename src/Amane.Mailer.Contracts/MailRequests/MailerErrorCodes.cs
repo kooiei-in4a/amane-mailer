@@ -11,4 +11,5 @@ public static class MailerErrorCodes
     public const string InvalidMetadata = "INVALID_METADATA";
     public const string UnauthorizedTenant = "UNAUTHORIZED_TENANT";
     public const string MailerTemporarilyUnavailable = "MAILER_TEMPORARILY_UNAVAILABLE";
+    public const string NotFound = "NOT_FOUND";
 }
