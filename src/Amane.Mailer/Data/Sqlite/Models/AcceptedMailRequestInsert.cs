@@ -33,4 +33,6 @@ public sealed class AcceptedMailRequestInsert
     public required int MaxAttempts { get; init; }
 
     public required DateTimeOffset AcceptedAt { get; init; }
+
+    public DateTimeOffset? ScheduledAt { get; init; }
 }

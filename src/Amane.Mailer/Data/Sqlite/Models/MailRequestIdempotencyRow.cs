@@ -9,4 +9,6 @@ public sealed class MailRequestIdempotencyRow
     public MailRequestState Status { get; init; }
 
     public DateTimeOffset? NextAttemptAt { get; init; }
+
+    public DateTimeOffset? ScheduledAt { get; init; }
 }

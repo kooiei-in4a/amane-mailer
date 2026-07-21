@@ -99,6 +99,173 @@ paths:
                 invalidMetadata: { value: { code: INVALID_METADATA } }
                 invalidPayloadHash: { value: { code: INVALID_PAYLOAD_HASH } }
                 invalidRecipient: { value: { code: INVALID_REQUEST, message: "A valid recipient is required." } }
+                scheduledAtInPast: { value: { code: SCHEDULED_AT_IN_PAST } }
+                scheduledAtTooFar: { value: { code: SCHEDULED_AT_TOO_FAR } }
+        '503':
+          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+
+  /internal/mail-requests/{mail_request_id}/cancel:
+    post:
+      tags: [mail-requests]
+      summary: 送信前のメール依頼をキャンセルする
+      description: >-
+        `queued` かつ未 claim（送信前）の依頼のみキャンセルできる。
+        成功時は `cancelled` ステータスを返す。active `processing` / `delivered` 等は 422 INVALID_STATE。
+        他 tenant の ID は存在有無を漏らさず 404。
+      operationId: cancelMailRequest
+      security:
+        - tenantBearer: []
+      parameters:
+        - name: mail_request_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: source_service
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
+      responses:
+        '200':
+          description: キャンセル後の配送ステータス
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailRequestStatusResponse'
+        '400':
+          description: mail_request_id / tenant_id / source_service が不正または欠落
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: テナント/トークン不一致
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unauthorized: { value: { code: UNAUTHORIZED_TENANT } }
+        '403':
+          description: source_service がテナントの許可リスト外
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
+        '404':
+          description: 指定スコープ内に mail request が存在しない
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                notFound: { value: { code: NOT_FOUND } }
+        '422':
+          description: 送信前キャンセルできない状態
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                invalidState: { value: { code: INVALID_STATE } }
+        '503':
+          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+
+  /internal/mail-requests/{mail_request_id}/reschedule:
+    post:
+      tags: [mail-requests]
+      summary: 予約送信時刻を変更する
+      description: >-
+        `queued` かつ `attempt_count = 0`（未送信）の依頼の `scheduled_at` を更新する。
+        `null` を送るとスケジュールゲートを解除し即時配送対象になる。
+        API 時刻は UTC。過去時刻は 422 SCHEDULED_AT_IN_PAST、最大予約期間（30 日）超過は 422 SCHEDULED_AT_TOO_FAR。
+        `next_attempt_at`（再試行）とは独立。
+      operationId: rescheduleMailRequest
+      security:
+        - tenantBearer: []
+      parameters:
+        - name: mail_request_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: source_service
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailRequestRescheduleRequest'
+      responses:
+        '200':
+          description: 再スケジュール後の配送ステータス
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailRequestStatusResponse'
+        '400':
+          description: ボディまたはクエリが不正
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: テナント/トークン不一致
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                unauthorized: { value: { code: UNAUTHORIZED_TENANT } }
+        '403':
+          description: source_service がテナントの許可リスト外
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
+        '404':
+          description: 指定スコープ内に mail request が存在しない
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                notFound: { value: { code: NOT_FOUND } }
+        '422':
+          description: バリデーション失敗または再スケジュールできない状態
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                scheduledAtInPast: { value: { code: SCHEDULED_AT_IN_PAST } }
+                scheduledAtTooFar: { value: { code: SCHEDULED_AT_TOO_FAR } }
+                invalidState: { value: { code: INVALID_STATE } }
         '503':
           description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
           content:
@@ -311,6 +478,15 @@ components:
             Consumer は secret、Bearer token、パスワード、リセット URL のクエリ secret 等を
             metadata 値に入れないこと。subject / body / reply_to と同様、metadata は PII や
             user-controlled データを含みうる。
+        scheduled_at:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            初回配送予定時刻（UTC）。省略または null は即時配送。
+            Worker / Sweep は scheduled_at 到来前に claim しない。
+            next_attempt_at（再試行バックオフ）とは独立。
+            過去時刻は 422 SCHEDULED_AT_IN_PAST、受付時刻から 30 日超は 422 SCHEDULED_AT_TOO_FAR。
+            payload_hash 対象外（ルーティング / スケジュール envelope）。
         payload_hash:
           type: string
           description: >-
@@ -318,8 +494,8 @@ components:
             同一 mail_request_id で hash が違えば 409。
             hash 対象は MailPayloadHashContract.IncludedFields と同じ
             source_service, purpose, to, subject, html_body, text_body,
-            reply_to, metadata。tenant_id, mail_request_id, payload_hash は
-            routing envelope / 自己参照のため除外する。
+            reply_to, metadata。tenant_id, mail_request_id, payload_hash, scheduled_at は
+            routing / scheduling envelope / 自己参照のため除外する。
             計算手順: 対象フィールドのみ抽出する。任意フィールドは payload JSON に
             存在する場合だけ含め、明示的な null は null として含める。
             省略された任意フィールドは hash 対象外。キーをアルファベット昇順でソートし、スペースなし canonical JSON
@@ -393,6 +569,12 @@ components:
           type: [string, "null"]
           format: date-time
           description: 次回試行予定時刻（UTC）。queued で retry 待ちの場合のみ。
+        scheduled_at:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            初回配送予定時刻（UTC）。null はスケジュールゲートなし。
+            next_attempt_at（再試行）とは独立。
         accepted_at:
           type: string
           format: date-time
@@ -404,6 +586,17 @@ components:
         last_error_code:
           type: [string, "null"]
           description: 直近試行の sanitized error code（raw provider message は含めない）。
+
+    MailRequestRescheduleRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        scheduled_at:
+          type: [string, "null"]
+          format: date-time
+          description: >-
+            新しい初回配送予定時刻（UTC）。null はスケジュール解除（即時）。
+            過去時刻 / 30 日超は create と同じ 422 コード。
 
     MailDeliveryEventPayload:
       type: object
@@ -468,6 +661,9 @@ components:
             - UNAUTHORIZED_TENANT
             - MAILER_TEMPORARILY_UNAVAILABLE
             - NOT_FOUND
+            - SCHEDULED_AT_IN_PAST
+            - SCHEDULED_AT_TOO_FAR
+            - INVALID_STATE
         message:
           type: string
         retryable:

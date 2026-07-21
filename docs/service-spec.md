@@ -42,8 +42,10 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 
 | メソッド | パス | 用途 | 認証 |
 |---|---|---|---|
-| `POST` | `/internal/mail-requests` | 送信依頼の受付 | テナント Bearer |
+| `POST` | `/internal/mail-requests` | 送信依頼の受付（任意 `scheduled_at`） | テナント Bearer |
 | `GET` | `/internal/mail-requests/{mail_request_id}` | 配送ステータス照会（`tenant_id` / `source_service` は query） | テナント Bearer |
+| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | 送信前キャンセル（`queued` のみ） | テナント Bearer |
+| `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | 予約時刻変更（`queued` かつ `attempt_count=0`） | テナント Bearer |
 | `GET` | `/healthz` | 生存確認（liveness） | なし |
 | `GET` | `/readyz` | 受付可否（DB schema 確認込み readiness） | なし |
 
@@ -67,7 +69,10 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | 同一ID・内容差異 | 409 | `IDEMPOTENCY_CONFLICT` |
 | ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | 宛先複数 / メタデータ / hash 不一致 | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
+| 過去の `scheduled_at` / 最大予約期間超過 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+
+時刻は API 上 **UTC**。`scheduled_at` は初回配送予定で `next_attempt_at`（再試行）とは独立。省略または null は即時。最大予約期間は受付 / 再スケジュール時点から **30 日**（`MailRequestScheduleLimits.MaxScheduledAhead`）。`scheduled_at` は payload_hash 対象外。
 
 ### 配送ステータス照会（GET）
 
@@ -82,7 +87,34 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | 存在しない、または他 tenant の依頼 | 404 | `NOT_FOUND`（存在有無を漏らさない） |
 | 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 
-返却 JSON は PII を含まない最小セット（`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `accepted_at`, `delivered_at`, `last_error_code`）。`last_error_code` は sanitized error code のみ。
+返却 JSON は PII を含まない最小セット（`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`）。`last_error_code` は sanitized error code のみ。
+
+### 送信前キャンセル（POST cancel）
+
+`POST /internal/mail-requests/{mail_request_id}/cancel?tenant_id={uuid}&source_service={name}`
+
+| 状況 | HTTP | code / status |
+|---|---|---|
+| `queued` の依頼をキャンセル | 200 | `status: cancelled`（ステータス JSON） |
+| クエリ不正 | 400 | `INVALID_REQUEST` |
+| トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
+| source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
+| 存在しない / 他 tenant | 404 | `NOT_FOUND` |
+| `queued` 以外 | 422 | `INVALID_STATE` |
+| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+
+### 再スケジュール（POST reschedule）
+
+`POST /internal/mail-requests/{mail_request_id}/reschedule?tenant_id={uuid}&source_service={name}`
+
+ボディ: `{ "scheduled_at": "<UTC date-time>|null" }`（null はスケジュール解除＝即時）。
+
+| 状況 | HTTP | code / status |
+|---|---|---|
+| `queued` かつ `attempt_count=0` で更新成功 | 200 | 更新後ステータス JSON |
+| 過去時刻 / 30 日超 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
+| 許可状態以外 | 422 | `INVALID_STATE` |
+| 存在しない / 他 tenant | 404 | `NOT_FOUND` |
 
 ### metadata の秘密情報ポリシー（docs-first）
 
@@ -151,7 +183,8 @@ Contracts package の TFM を引き上げる場合は、CHANGELOG のリリー�
 | `metadata_json` | TEXT NULL | 任意 metadata |
 | `status` | INTEGER | 状態（下表） |
 | `attempt_count` / `max_attempts` | INTEGER | 試行回数 |
-| `next_attempt_at` | TEXT NULL | 次回試行時刻（UTC ISO8601） |
+| `next_attempt_at` | TEXT NULL | 次回試行時刻（UTC ISO8601）。再試行バックオフ専用 |
+| `scheduled_at` | TEXT NULL | 初回配送予定（UTC ISO8601）。null = 即時。`next_attempt_at` とは独立 |
 | `lock_token` / `lock_expires_at` | TEXT NULL | Worker リース |
 | `delivered_at` / `failed_at` / `completed_at` | TEXT NULL | 終端時刻 |
 | `accepted_at` / `created_at` / `updated_at` | TEXT | 監査タイムスタンプ |
@@ -160,7 +193,7 @@ Contracts package の TFM を引き上げる場合は、CHANGELOG のリリー�
 
 **部分インデックス:**
 
-- `idx_mail_requests_queued_due` — `status = 0` かつ `next_attempt_at` 順
+- `idx_mail_requests_queued_due` — `status = 0` を `scheduled_at`, `next_attempt_at`, `created_at` 順
 - `idx_mail_requests_processing_expired` — `status = 1` かつ `lock_expires_at` 順
 
 ### 3.2 `mail_attempts` — 送信試行履歴
@@ -195,7 +228,7 @@ Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する
 
 | 値 | 名前 | 意味 |
 |---|---|---|
-| **0** | `Queued` | 受付済み・配送待ち（`next_attempt_at` 到来で claim 対象） |
+| **0** | `Queued` | 受付済み・配送待ち（`scheduled_at` と `next_attempt_at` の両方が到来で claim 対象） |
 | **1** | `Processing` | Worker がリース取得・送信中 |
 | **2** | `Delivered` | 配送成功（終端） |
 | **3** | `Failed` | 非 retryable な provider 失敗（終端） |
@@ -287,7 +320,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `as_of_utc` | 集計基準時刻（UTC） |
 | `tenant_id` | 対象 tenant UUID、または `all` |
 | `status_queued` / `status_processing` / `status_delivered` / `status_failed` / `status_dead_lettered` / `status_cancelled` | `mail_requests.status` 別件数 |
-| `ready_backlog_count` | `queued` かつ `next_attempt_at IS NULL OR next_attempt_at <= now` の件数 |
+| `ready_backlog_count` | `queued` かつ `next_attempt_at` / `scheduled_at` がいずれも due（null または `<= now`）の件数 |
 | `oldest_queued_age_seconds` | ready backlog 内の最古 `updated_at` からの秒数（対象なしは 0） |
 | `queued_stale_count` | ready backlog のうち `updated_at` が `--queued-stale-minutes` より古い件数 |
 | `stale_processing_count` | `processing` かつ `updated_at` が `--stale-processing-minutes` より古い件数 |
