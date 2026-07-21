@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "amane-mailer"
+version = "0.0.0.dev0"
+description = "Official Python Consumer SDK for Amane Mailer"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+amane-mailer-send-local = "amane_mailer.scripts.send_local:main"
