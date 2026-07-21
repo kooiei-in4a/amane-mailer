@@ -11,6 +11,10 @@ info:
     - 冪等性: (tenant_id, source_service, mail_request_id) の一意制約。再送は 202 already_accepted、
       同一IDで内容差異は 409。
     - 本文/宛先/件名は利用側が組み立て、payload に載せて渡す（テンプレートは持たない）。
+    - 配送結果 Webhook: テナント設定で HTTPS エンドポイントを登録すると、
+      `delivered` / `failed` / `dead_lettered` / `cancelled` 時に
+      `MailDeliveryEventPayload` を HMAC 署名付き POST で Push する。
+      検証手順は docs/consumer/webhook-verification.md を参照。
   contact:
     name: Amane Mailer
 servers:
@@ -20,6 +24,8 @@ servers:
 tags:
   - name: mail-requests
     description: 送信依頼の受付
+  - name: delivery-webhooks
+    description: 配送結果 Webhook（Mailer → Consumer への outbound POST）
   - name: health
     description: ヘルス/レディネス
 
@@ -268,6 +274,52 @@ components:
           type: string
           enum: [accepted, already_accepted]
           description: API 受付ステータス（Worker の配送ステータスとは別）。
+
+    MailDeliveryEventPayload:
+      type: object
+      additionalProperties: false
+      description: >-
+        配送結果 Webhook の JSON 本文。recipient / subject / body 等の PII は含まない。
+        同一 mail request に対して 1 イベントのみ enqueue される。Consumer は event_id で重複排除する。
+      required:
+        - event_id
+        - event_type
+        - occurred_at
+        - tenant_id
+        - source_service
+        - mail_request_id
+        - status
+        - attempt_count
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          description: イベント一意 ID。Webhook 再送時も同一値。
+        event_type:
+          type: string
+          enum: [delivered, failed, dead_lettered, cancelled]
+        occurred_at:
+          type: string
+          format: date-time
+        tenant_id:
+          type: string
+          format: uuid
+        source_service:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
+        mail_request_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [delivered, failed, dead_lettered, cancelled]
+          description: 配送結果ステータス（#216 ステータス API と同一モデル）。
+        attempt_count:
+          type: integer
+          minimum: 0
+        last_error_code:
+          type: [string, "null"]
+          description: 最新 attempt の error_code（PII を含まない分類コード）。
 
     Error:
       type: object
