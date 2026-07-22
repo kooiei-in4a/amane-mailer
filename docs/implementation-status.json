@@ -45,7 +45,8 @@
       "status": "implemented",
       "trackingIssue": 6,
       "lastVerified": "2026-07-22",
-      "relatedAdrs": ["0013"]
+      "relatedAdrs": ["0013"],
+      "notes": "Auth audit follow-up events (logout, session expired, account locked, login rate limited) delivered via #90."
     },
     {
       "id": "admin-audit-network-identifier-hash",
