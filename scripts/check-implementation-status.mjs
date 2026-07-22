@@ -21,6 +21,13 @@ const REQUIRED_FEATURE_FIELDS = [
   'lastVerified',
   'relatedAdrs',
 ];
+const FEATURE_ALLOWED_KEYS = new Set([
+  ...REQUIRED_FEATURE_FIELDS,
+  'notes',
+  'resolution',
+  'supersededBy',
+  'evidence',
+]);
 const EVIDENCE_ALLOWED_KEYS = new Set([
   'files',
   'types',
@@ -114,13 +121,20 @@ function validateManifest(manifestPath, errors) {
   const seenIds = new Map();
   const knownIds = new Set();
 
-  for (const feature of manifest.features) {
+  for (let index = 0; index < manifest.features.length; index += 1) {
+    const feature = manifest.features[index];
     if (!isPlainObject(feature)) {
       fail(errors, 'Each feature entry must be a JSON object.');
       continue;
     }
 
     const label = typeof feature.id === 'string' ? `feature '${feature.id}'` : 'feature entry';
+
+    for (const key of Object.keys(feature)) {
+      if (!FEATURE_ALLOWED_KEYS.has(key)) {
+        fail(errors, `${label} has unsupported field '${key}'.`);
+      }
+    }
 
     for (const field of REQUIRED_FEATURE_FIELDS) {
       if (!(field in feature)) {
@@ -135,7 +149,7 @@ function validateManifest(manifestPath, errors) {
     } else if (seenIds.has(feature.id)) {
       fail(errors, `Duplicate feature id '${feature.id}' also appears at index ${seenIds.get(feature.id)}.`);
     } else {
-      seenIds.set(feature.id, manifest.features.indexOf(feature));
+      seenIds.set(feature.id, index);
       knownIds.add(feature.id);
     }
 
@@ -183,7 +197,7 @@ function validateManifest(manifestPath, errors) {
     }
 
     if ('supersededBy' in feature) {
-      validateSupersededBy(feature, label, errors, knownIds, { requireKnownTarget: false });
+      validateSupersededByShape(feature, label, errors);
     }
 
     if ('evidence' in feature) {
@@ -199,9 +213,7 @@ function validateManifest(manifestPath, errors) {
     }
 
     if ('supersededBy' in feature) {
-      validateSupersededBy(feature, `feature '${feature.id}'`, errors, knownIds, {
-        requireKnownTarget: true,
-      });
+      validateSupersededByTarget(feature, `feature '${feature.id}'`, errors, knownIds);
     }
   }
 }
@@ -237,7 +249,7 @@ function validateResolution(feature, label, errors) {
   }
 }
 
-function validateSupersededBy(feature, label, errors, knownIds, options) {
+function validateSupersededByShape(feature, label, errors) {
   const { supersededBy } = feature;
 
   if (typeof supersededBy !== 'string' || supersededBy.length === 0) {
@@ -249,12 +261,20 @@ function validateSupersededBy(feature, label, errors, knownIds, options) {
     fail(errors, `${label} field 'supersededBy' must reference a kebab-case feature id.`);
   }
 
-  if (options.requireKnownTarget && !knownIds.has(supersededBy)) {
-    fail(errors, `${label} field 'supersededBy' references unknown feature id '${supersededBy}'.`);
-  }
-
   if (supersededBy === feature.id) {
     fail(errors, `${label} field 'supersededBy' must not reference itself.`);
+  }
+}
+
+function validateSupersededByTarget(feature, label, errors, knownIds) {
+  const { supersededBy } = feature;
+
+  if (typeof supersededBy !== 'string' || supersededBy.length === 0) {
+    return;
+  }
+
+  if (!knownIds.has(supersededBy)) {
+    fail(errors, `${label} field 'supersededBy' references unknown feature id '${supersededBy}'.`);
   }
 }
 
@@ -360,6 +380,18 @@ function runSelfTest() {
     {
       fixture: 'scripts/fixtures/implementation-status/invalid-evidence.json',
       needle: "evidence has unsupported key 'widgets'",
+    },
+    {
+      fixture: 'scripts/fixtures/implementation-status/invalid-json-syntax.json',
+      needle: 'Manifest JSON syntax error',
+    },
+    {
+      fixture: 'scripts/fixtures/implementation-status/invalid-adr-format.json',
+      needle: "relatedAdrs entry '13'",
+    },
+    {
+      fixture: 'scripts/fixtures/implementation-status/invalid-unknown-key.json',
+      needle: "unsupported field 'supercededBy'",
     },
   ];
 
