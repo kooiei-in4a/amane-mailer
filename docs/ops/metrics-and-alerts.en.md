@@ -125,6 +125,10 @@ unstable right after a Mailer restart. Prefer queue / heartbeat alerts as
 primary signals and treat delivery rate as secondary. Use
 `mail_finalize_skipped_total` to detect strict lease fencing failures; when it
 increases, check for delivery evidence, Delivered convergence, and DeadLetter races.
+Admin manual retry is an audited explicit action that resets `attempt_count`, so
+requeueing a DeadLetter that already has delivered attempt evidence will perform a
+real resend (worker prior-success convergence does not apply). Check Admin attempt
+history for `provider_message_id` before retrying.
 
 ## Security notes
 
