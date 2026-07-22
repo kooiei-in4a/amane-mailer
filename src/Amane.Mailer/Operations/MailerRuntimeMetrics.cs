@@ -7,12 +7,16 @@ public sealed class MailerRuntimeMetrics
 {
     private long _acceptedTotal;
     private long _retriesTotal;
+    private long _finalizeSkippedTotal;
     private readonly object _gate = new();
     private readonly Dictionary<(string Result, string Provider), long> _deliveries = new();
     private readonly Dictionary<string, DeliveryDurationHistogram> _durations = new(StringComparer.Ordinal);
 
     public void RecordRequestAccepted() =>
         Interlocked.Increment(ref _acceptedTotal);
+
+    public void RecordFinalizeSkipped() =>
+        Interlocked.Increment(ref _finalizeSkippedTotal);
 
     public void RecordAttemptCompleted(MailAttemptInsert attempt)
     {
@@ -47,6 +51,7 @@ public sealed class MailerRuntimeMetrics
             return new MailerRuntimeMetricsSnapshot(
                 Interlocked.Read(ref _acceptedTotal),
                 Interlocked.Read(ref _retriesTotal),
+                Interlocked.Read(ref _finalizeSkippedTotal),
                 _deliveries
                     .Select(entry => (entry.Key.Result, entry.Key.Provider, entry.Value))
                     .ToArray(),
@@ -61,6 +66,7 @@ public sealed class MailerRuntimeMetrics
     {
         Interlocked.Exchange(ref _acceptedTotal, 0);
         Interlocked.Exchange(ref _retriesTotal, 0);
+        Interlocked.Exchange(ref _finalizeSkippedTotal, 0);
 
         lock (_gate)
         {
@@ -105,6 +111,7 @@ public sealed class MailerRuntimeMetrics
 public sealed record MailerRuntimeMetricsSnapshot(
     long AcceptedTotal,
     long RetriesTotal,
+    long FinalizeSkippedTotal,
     (string Result, string Provider, long Count)[] Deliveries,
     IReadOnlyDictionary<string, DeliveryDurationSnapshot> Durations);
 

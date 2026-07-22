@@ -37,6 +37,7 @@ Compose / systemd では Mailer HTTP ポートを **内部ネットワークの�
 | `mail_queue_ready_count` | gauge | なし | 即時配送可能な queued 件数（全 tenant 合算） |
 | `mail_queue_oldest_age_seconds` | gauge | なし | ready backlog 内の最古 updated_at からの経過秒 |
 | `mail_retries_total` | counter | なし | プロセス起動以降の再試行 attempt 数（`attempt_number > 1` の完了 attempt） |
+| `mail_finalize_skipped_total` | counter | なし | provider 送信成功の attempt は記録したが、lease 失効 / supersede で request finalize をスキップした回数 |
 | `mail_dead_letters_total` | gauge | なし | 現在 dead_lettered 状態の request 数 |
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | `worker` / `sweep` の heartbeat 経過秒。行未存在時は series なし |
 
@@ -100,9 +101,17 @@ groups:
           severity: warning
         annotations:
           summary: Failed delivery attempt rate is elevated
+
+      - alert: MailFinalizeSkipped
+        expr: increase(mail_finalize_skipped_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Delivered provider attempt finalize was skipped due to expired or superseded lock
 ```
 
-`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat アラートを primary、delivery rate は補助として運用してください。
+`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat アラートを primary、delivery rate は補助として運用してください。`mail_finalize_skipped_total` は稀な lease 競合の検知用で、増加時は二重送信リスクと reclaim 収束を確認してください。
 
 ## セキュリティ注意
 

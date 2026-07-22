@@ -66,6 +66,7 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         Assert.Contains("mail_queue_ready_count", body, StringComparison.Ordinal);
         Assert.Contains("mail_queue_oldest_age_seconds", body, StringComparison.Ordinal);
         Assert.Contains("mail_retries_total", body, StringComparison.Ordinal);
+        Assert.Contains("mail_finalize_skipped_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_dead_letters_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_worker_heartbeat_age_seconds", body, StringComparison.Ordinal);
     }
@@ -329,6 +330,94 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         Assert.Contains("mail_deliveries_total{result=\"failed\",provider=\"mailpit\"} 1", body, StringComparison.Ordinal);
         Assert.Contains("mail_retries_total 1", body, StringComparison.Ordinal);
         Assert.Contains("mail_delivery_duration_seconds_count{provider=\"mailpit\"} 1", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Metrics_finalize_skipped_increments_when_delivered_finalize_loses_lease()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var internalId = Guid.NewGuid();
+        var mailRequestId = Guid.NewGuid();
+        var lockToken = Guid.NewGuid();
+        var startedAt = FixedNow.AddSeconds(-2);
+        var completedAt = FixedNow;
+
+        await repository.InsertAcceptedAsync(
+            new AcceptedMailRequestInsert
+            {
+                Id = internalId,
+                TenantId = MailerWebApplicationFixtureBase.TenantId,
+                SourceService = MailerWebApplicationFixtureBase.SourceService,
+                MailRequestId = mailRequestId,
+                Purpose = "MetricsFinalizeSkip",
+                PayloadJson = "{}",
+                PayloadHash = new string('2', 64),
+                Subject = "finalize skip subject",
+                RecipientEmail = "finalize-skip@example.com",
+                MaxAttempts = 3,
+                AcceptedAt = FixedNow.AddMinutes(-5),
+            },
+            ct);
+
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(ct);
+        await using var claim = connection.CreateCommand();
+        claim.CommandText = """
+            UPDATE mail_requests
+            SET status = @ProcessingStatus,
+                lock_token = @LockToken,
+                lock_expires_at = @LockExpiresAt,
+                attempt_count = 1,
+                updated_at = @UpdatedAt
+            WHERE id = @Id;
+            """;
+        claim.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+        claim.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
+        claim.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(FixedNow.AddMinutes(-1)));
+        claim.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(FixedNow));
+        claim.Parameters.AddWithValue("@Id", internalId.ToString("D"));
+        await claim.ExecuteNonQueryAsync(ct);
+
+        var finalized = await repository.FinalizeAsync(
+            internalId,
+            lockToken,
+            completedAt,
+            MailRequestFinalizeOutcome.Delivered,
+            nextAttemptAt: null,
+            lastErrorMessage: null,
+            new MailAttemptInsert
+            {
+                RequestId = internalId,
+                AttemptNumber = 1,
+                Provider = "mailpit",
+                Status = MailRequestState.Delivered,
+                ProviderMessageId = "provider-msg-finalize-skip",
+                Retryable = false,
+                LockToken = lockToken,
+                StartedAt = startedAt,
+                CompletedAt = completedAt,
+            },
+            ct);
+        // Strict lease fencing fails, but the same lock_token still owns the row so
+        // the request is completed via the expired-lease delivered recovery path.
+        Assert.True(finalized);
+
+        var priorSuccess = await repository.FindSuccessfulDeliveryAttemptAsync(internalId, ct);
+        Assert.NotNull(priorSuccess);
+        Assert.Equal("provider-msg-finalize-skip", priorSuccess!.ProviderMessageId);
+
+        var state = await repository.FindDispatchStateByMailRequestIdAsync(mailRequestId, ct);
+        Assert.NotNull(state);
+        Assert.Equal(MailRequestState.Delivered, state!.Status);
+
+        using var client = CreateClient(fixture.Factory);
+        using var response = await client.GetAsync("/metrics", ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Contains("mail_finalize_skipped_total 1", body, StringComparison.Ordinal);
+        Assert.Contains("mail_deliveries_total{result=\"delivered\",provider=\"mailpit\"} 1", body, StringComparison.Ordinal);
     }
 
     private WebApplicationFactory<global::Program> CreateFactory(IReadOnlyDictionary<string, string?> extraConfiguration)

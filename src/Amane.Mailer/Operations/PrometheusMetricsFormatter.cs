@@ -48,6 +48,10 @@ public static class PrometheusMetricsFormatter
             "Total retry delivery attempts (attempt_number > 1) since process start.");
         AppendCounter(builder, "mail_retries_total", runtime.RetriesTotal);
 
+        AppendHelpType(builder, "mail_finalize_skipped_total", "counter",
+            "Total times a delivered provider attempt was recorded but request finalize was skipped because the lock expired or was superseded.");
+        AppendCounter(builder, "mail_finalize_skipped_total", runtime.FinalizeSkippedTotal);
+
         AppendHelpType(builder, "mail_dead_letters_total", "gauge",
             "Current number of dead-lettered mail requests.");
         AppendGauge(builder, "mail_dead_letters_total", stats.DeadLetteredCount);
