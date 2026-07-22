@@ -10,6 +10,9 @@ info:
     - 認証: テナント単位の Bearer トークン
     - 冪等性: (tenant_id, source_service, mail_request_id) の一意制約。再送は 202 already_accepted、
       同一IDで内容差異は 409。
+    - 実配送の一意性: HTTP 受付の冪等性とは別契約。実メール配送は exactly-once ではなく
+      at-least-once（ACS は決定論的 operation id による緩和のみ、Mailpit は冪等性なし）。
+      詳細は docs/service-spec.md の「配送一意性（実送信の保証）」節を参照。
     - 本文/宛先/件名は利用側が組み立て、payload に載せて渡す（テンプレートは持たない）。
     - 配送結果 Webhook: テナント設定で HTTPS エンドポイントを登録すると、
       `delivered` / `failed` / `dead_lettered` / `cancelled` 時に
@@ -37,6 +40,8 @@ paths:
       description: >-
         送信依頼を Mailer DB に永続化し 202 を返す（ACS 送信完了ではない）。
         実際の送信は Worker が非同期に行う。リクエストボディ上限は 256,000 バイト。
+        202 は受付の成功のみを表し、実メール配送の exactly-once は保証しない
+        （at-least-once。詳細は docs/service-spec.md の「配送一意性（実送信の保証）」節）。
       operationId: createMailRequest
       security:
         - tenantBearer: []
