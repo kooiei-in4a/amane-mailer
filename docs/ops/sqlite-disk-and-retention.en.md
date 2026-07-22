@@ -47,6 +47,7 @@ In order:
    - explicit purge: `db admin-audit purge --older-than-days <days>`
 3. **Shrink WAL** during a maintenance window
    - Re-check size after process-stop checkpoint (`MailerWalCheckpointShutdownService`)
+   - Preferred ops command: `db checkpoint` (runs `PRAGMA wal_checkpoint(TRUNCATE)` internally)
    - Manual `PRAGMA wal_checkpoint(TRUNCATE);` only under your backup/maintenance policy
 4. **Confirm recovery**
    - `/readyz` returns 200

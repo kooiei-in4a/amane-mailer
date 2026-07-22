@@ -46,6 +46,7 @@ HTTP 上は `STORAGE_FULL`（503, `retryable: false`）として busy/locked 由
    - 明示 purge: `db admin-audit purge --older-than-days <days>`
 3. **WAL を縮退させる**（運用ウィンドウで）
    - プロセス停止時の checkpoint（`MailerWalCheckpointShutdownService`）後にサイズを再確認
+   - 運用向け既定コマンド: `db checkpoint`（内部で `PRAGMA wal_checkpoint(TRUNCATE)`）
    - 手動で `PRAGMA wal_checkpoint(TRUNCATE);` を打つ場合はメンテウィンドウとバックアップ方針に従う
 4. **容量復旧後に API / Worker の回復を確認する**
    - `/readyz` が 200

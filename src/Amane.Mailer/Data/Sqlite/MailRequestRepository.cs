@@ -4,6 +4,8 @@ using Amane.Mailer.Operations;
 
 namespace Amane.Mailer.Data.Sqlite;
 
+// Unsealed + virtual find/insert: test seam for STORAGE_FULL API regression (#244).
+// Prefer keeping other members non-virtual; do not treat this as a public extension point.
 public class MailRequestRepository
 {
     private readonly MailRequestClaimStore _claimStore;

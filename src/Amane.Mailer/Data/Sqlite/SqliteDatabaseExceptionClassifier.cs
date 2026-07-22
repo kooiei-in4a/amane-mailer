@@ -27,7 +27,8 @@ public static class SqliteDatabaseExceptionClassifier
 
     /// <summary>
     /// Short-lived DB conditions where callers may retry soon (busy/locked/ioerr/cantopen/timeout).
-    /// Does not include SQLITE_FULL.
+    /// Does not include SQLITE_FULL. If any exception in the chain is SQLITE_FULL, that wins
+    /// over an outer TimeoutException / busy wrapper so consumers get STORAGE_FULL.
     /// </summary>
     public static bool IsTransient(Exception exception)
     {
