@@ -16,7 +16,6 @@ public static class AmaneMailerServiceCollectionExtensions
         IConfiguration configuration)
     {
         services.AddSingleton(TimeProvider.System);
-        services.AddSingleton<MailDeliveryInflightTracker>();
         services.AddMailerAdmin(configuration);
 
         services.AddSingleton(provider =>
@@ -38,9 +37,13 @@ public static class AmaneMailerServiceCollectionExtensions
         });
 
         services.AddOptions<HostOptions>()
-            .Configure<MailerWorkerOptions>((options, workerOptions) =>
+            .Configure<MailerWorkerOptions, MailerWebhookOptions>((options, workerOptions, webhookOptions) =>
             {
-                options.ShutdownTimeout = workerOptions.HostShutdownTimeout;
+                var mailHostTimeout = workerOptions.HostShutdownTimeout;
+                var webhookHostTimeout = webhookOptions.HostShutdownTimeout;
+                options.ShutdownTimeout = mailHostTimeout > webhookHostTimeout
+                    ? mailHostTimeout
+                    : webhookHostTimeout;
             });
 
         services.AddSingleton(provider =>
@@ -98,6 +101,11 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<MailerDbStatsReader>();
         services.AddSingleton<MailerDbStorageInfoReader>();
 
+        services.AddSingleton<MailRequestClaimStore>();
+        services.AddSingleton<MailRequestAcceptStore>();
+        services.AddSingleton<MailRequestConsumerMutations>();
+        services.AddSingleton<MailRequestAdminQueries>();
+        services.AddSingleton<WorkerHeartbeatStore>();
         services.AddSingleton<MailRequestRepository>();
         services.AddSingleton<AdminAuditRepository>();
         services.AddSingleton<DeliveryEventRepository>();

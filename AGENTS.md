@@ -72,6 +72,9 @@ dotnet test Amane.Mailer.slnx -c Release --no-build --filter "FullyQualifiedName
 # OpenAPI structural validation
 node scripts/validate-openapi.mjs docs/api/openapi.yaml
 
+# Implementation status manifest validation (#246 Phase 2)
+node scripts/check-implementation-status.mjs
+
 # Native AOT publish smoke — required when runtime, dependencies, or serialization changes
 dotnet publish src/Amane.Mailer/Amane.Mailer.csproj `
   -c Release -r linux-x64 --self-contained --no-restore `
@@ -128,8 +131,9 @@ Read in this order when context is unclear:
 
 1. Target GitHub issue
 2. Related ADR in `docs/adr/`
-3. [docs/service-spec.md](docs/service-spec.md) and [docs/api/openapi.yaml](docs/api/openapi.yaml)
-4. Ops runbooks in `docs/ops/` when changing deployment or operations
+3. [docs/implementation-status.json](docs/implementation-status.json) for current implementation status (ADRs record design rationale)
+4. [docs/service-spec.md](docs/service-spec.md) and [docs/api/openapi.yaml](docs/api/openapi.yaml)
+5. Ops runbooks in `docs/ops/` when changing deployment or operations
 
 Do not add references to non-public issue trackers, private paths, or docs that
 do not exist in the public repository. Prefer public GitHub issue links when an

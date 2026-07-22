@@ -15,6 +15,11 @@
       private infrastructure details were added.
 - [ ] Any new GitHub Actions are pinned to full-length commit SHAs.
 
+## Implementation Status
+
+- [ ] If this PR changes or touches related feature behavior, `docs/implementation-status.json` was reviewed and updated as needed.
+- [ ] ADRs were not updated with a new duplicate "current implementation status" section.
+
 ## Notes
 
 - TBD

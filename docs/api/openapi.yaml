@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Amane Mailer Service API
-  version: "0.9.0"
+  version: "0.9.1"
   description: >-
     汎用メール送信マイクロサービス。送信依頼を受け付けて永続化し、
     バックグラウンド Worker が ACS (Azure Communication Services) または Mailpit
@@ -10,6 +10,9 @@ info:
     - 認証: テナント単位の Bearer トークン
     - 冪等性: (tenant_id, source_service, mail_request_id) の一意制約。再送は 202 already_accepted、
       同一IDで内容差異は 409。
+    - 実配送の一意性: HTTP 受付の冪等性とは別契約。実メール配送は exactly-once ではなく
+      at-least-once（ACS は決定論的 operation id による緩和のみ、Mailpit は冪等性なし）。
+      詳細は docs/service-spec.md の「配送一意性（実送信の保証）」節を参照。
     - 本文/宛先/件名は利用側が組み立て、payload に載せて渡す（テンプレートは持たない）。
     - 配送結果 Webhook: テナント設定で HTTPS エンドポイントを登録すると、
       `delivered` / `failed` / `dead_lettered` / `cancelled` 時に
@@ -37,6 +40,8 @@ paths:
       description: >-
         送信依頼を Mailer DB に永続化し 202 を返す（ACS 送信完了ではない）。
         実際の送信は Worker が非同期に行う。リクエストボディ上限は 256,000 バイト。
+        202 は受付の成功のみを表し、実メール配送の exactly-once は保証しない
+        （at-least-once。詳細は docs/service-spec.md の「配送一意性（実送信の保証）」節）。
       operationId: createMailRequest
       security:
         - tenantBearer: []
@@ -102,12 +107,15 @@ paths:
                 scheduledAtInPast: { value: { code: SCHEDULED_AT_IN_PAST } }
                 scheduledAtTooFar: { value: { code: SCHEDULED_AT_TOO_FAR } }
         '503':
-          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          description: >-
+            DB 障害等。busy/locked 等の一過性障害は `MAILER_TEMPORARILY_UNAVAILABLE`
+            (retryable=true)。SQLITE_FULL（disk 枯渇）は `STORAGE_FULL`（retryable=false）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+                storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
   /internal/mail-requests/{mail_request_id}/cancel:
     post:
@@ -180,12 +188,15 @@ paths:
               examples:
                 invalidState: { value: { code: INVALID_STATE } }
         '503':
-          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          description: >-
+            DB 障害等。busy/locked 等の一過性障害は `MAILER_TEMPORARILY_UNAVAILABLE`
+            (retryable=true)。SQLITE_FULL（disk 枯渇）は `STORAGE_FULL`（retryable=false）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+                storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
   /internal/mail-requests/{mail_request_id}/reschedule:
     post:
@@ -274,12 +285,15 @@ paths:
               examples:
                 tooLarge: { value: { code: REQUEST_TOO_LARGE } }
         '503':
-          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          description: >-
+            DB 障害等。busy/locked 等の一過性障害は `MAILER_TEMPORARILY_UNAVAILABLE`
+            (retryable=true)。SQLITE_FULL（disk 枯渇）は `STORAGE_FULL`（retryable=false）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+                storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
   /internal/mail-requests/{mail_request_id}:
     get:
@@ -366,12 +380,15 @@ paths:
               examples:
                 notFound: { value: { code: NOT_FOUND } }
         '503':
-          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          description: >-
+            DB 障害等。busy/locked 等の一過性障害は `MAILER_TEMPORARILY_UNAVAILABLE`
+            (retryable=true)。SQLITE_FULL（disk 枯渇）は `STORAGE_FULL`（retryable=false）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+                storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
   /healthz:
     get:
@@ -392,13 +409,14 @@ paths:
   /readyz:
     get:
       tags: [health]
-      summary: 受付可否（readiness、DB schema + Worker/Sweep 稼働確認）
+      summary: 受付可否（readiness、DB schema + Worker/Sweep 稼働・heartbeat 鮮度）
       operationId: readyz
       security: []
       responses:
         '200':
           description: >-
-            受付可能（DB schema OK、Worker 有効時は Worker/Sweep 両サービス稼働中）
+            受付可能（DB schema OK。Worker 有効時は Worker/Sweep 両サービス稼働中かつ
+            heartbeat が Mailer:Healthcheck:MaxHeartbeatStalenessSeconds 以内）
           content:
             application/json:
               schema:
@@ -407,7 +425,8 @@ paths:
                   ready: { type: boolean, const: true }
         '503':
           description: >-
-            DB 未接続・schema 未適用、または Worker/Sweep BackgroundService が停止中
+            DB 未接続・schema 未適用、Worker/Sweep BackgroundService が停止中、
+            または worker/sweep heartbeat が閾値を超えて古い
           content:
             application/json:
               schema:
@@ -667,6 +686,7 @@ components:
             - INVALID_METADATA
             - UNAUTHORIZED_TENANT
             - MAILER_TEMPORARILY_UNAVAILABLE
+            - STORAGE_FULL
             - NOT_FOUND
             - SCHEDULED_AT_IN_PAST
             - SCHEDULED_AT_TOO_FAR
@@ -675,4 +695,6 @@ components:
           type: string
         retryable:
           type: boolean
-          description: true の場合、呼び出し側はバックオフ後にリトライしてよい。
+          description: >-
+            true の場合、呼び出し側はバックオフ後にリトライしてよい。
+            STORAGE_FULL は disk 解放や retention 調整が必要な構造的事象のため false。

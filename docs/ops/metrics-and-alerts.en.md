@@ -43,6 +43,7 @@ internet exposure is not intended.
 | `mail_queue_ready_count` | gauge | none | Immediately deliverable queued count (all tenants) |
 | `mail_queue_oldest_age_seconds` | gauge | none | Age of oldest `updated_at` in the ready backlog |
 | `mail_retries_total` | counter | none | Retry attempts since process start (`attempt_number > 1` completed attempts) |
+| `mail_finalize_skipped_total` | counter | none | Delivered finalize attempts where strict lease fencing (`lock_expires_at`) failed. Includes delayed completion under the same lock and superseded/terminal races |
 | `mail_dead_letters_total` | gauge | none | Current dead_lettered request count |
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | Heartbeat age for `worker` / `sweep`. No series when the row is missing |
 
@@ -109,11 +110,33 @@ groups:
           severity: warning
         annotations:
           summary: Failed delivery attempt rate is elevated
+
+      - alert: MailFinalizeSkipped
+        expr: increase(mail_finalize_skipped_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Delivered finalize hit strict lease fencing failure (delayed complete or superseded/terminal race)
 ```
 
 Because `mail_deliveries_total` is an in-process counter, `rate()` can be briefly
 unstable right after a Mailer restart. Prefer queue / heartbeat alerts as
-primary signals and treat delivery rate as secondary.
+primary signals and treat delivery rate as secondary. Use
+`mail_finalize_skipped_total` to detect strict lease fencing failures; when it
+increases, check for delivery evidence, Delivered convergence, and DeadLetter races.
+Admin manual retry is an audited explicit action that resets `attempt_count`, so
+requeueing a DeadLetter that already has delivered attempt evidence will perform a
+real resend (worker prior-success convergence does not apply). Check Admin attempt
+history for `provider_message_id` before retrying.
+
+## Disk exhaustion, WAL, and retention
+
+A rising `mail_queue_oldest_age_seconds` can indicate Worker stall or provider
+outage, and can also be an early signal of SQLite disk exhaustion
+(HTTP `STORAGE_FULL`). For diagnosis, remediation, and an additional critical
+threshold example, see
+[sqlite-disk-and-retention.en.md](sqlite-disk-and-retention.en.md).
 
 ## Security notes
 

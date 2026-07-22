@@ -2,10 +2,12 @@ using System.Net;
 using System.Text;
 using Amane.Mailer.Api;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Tests.Fixtures;
 using Amane.Mailer.Contracts.MailRequests;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -686,6 +688,69 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
+    public async Task Sqlite_full_returns_503_storage_full_not_retryable()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-storage-full-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+
+        try
+        {
+            var tenantConfigPath = Path.Combine(root, "tenants.json");
+            await File.WriteAllTextAsync(tenantConfigPath, TenantConfigJson, ct);
+
+            using var storageFullFactory = new WebApplicationFactory<global::Program>()
+                .WithWebHostBuilder(builder =>
+                {
+                    builder.UseEnvironment("Testing");
+                    builder.ConfigureAppConfiguration((_, configuration) =>
+                        configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                        {
+                            ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                            ["MAILER_TENANTS_PATH"] = tenantConfigPath,
+                            ["Mailer:Worker:Enabled"] = "False",
+                            ["MAIL_SERVICE_TOKEN"] = MailerWebApplicationFixtureBase.Token,
+                        }));
+                    builder.ConfigureServices(services =>
+                    {
+                        services.RemoveAll<IHostedService>();
+                        services.RemoveAll<MailRequestRepository>();
+                        services.AddSingleton<MailRequestRepository>(sp =>
+                            new StorageFullMailRequestRepository(
+                                sp.GetRequiredService<MailRequestClaimStore>(),
+                                sp.GetRequiredService<MailRequestAcceptStore>(),
+                                sp.GetRequiredService<MailRequestConsumerMutations>(),
+                                sp.GetRequiredService<MailRequestAdminQueries>(),
+                                sp.GetRequiredService<WorkerHeartbeatStore>()));
+                    });
+                });
+
+            using var client = storageFullFactory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+            });
+            client.DefaultRequestHeaders.Authorization = new("Bearer", MailerWebApplicationFixtureBase.Token);
+            var request = MailRequestTestData.CreateRequest();
+
+            using var response = await client.PostAsync(
+                "/internal/mail-requests",
+                MailRequestTestData.ToJsonContent(request),
+                ct);
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            Assert.Equal(
+                MailerErrorCodes.StorageFull,
+                await MailRequestTestData.ReadCodeAsync(response, ct));
+            Assert.False(await MailRequestTestData.ReadRetryableAsync(response, ct));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Health_and_ready_endpoints_are_ok()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -753,4 +818,29 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
           ]
         }
         """;
+
+    private sealed class StorageFullMailRequestRepository(
+        MailRequestClaimStore claimStore,
+        MailRequestAcceptStore acceptStore,
+        MailRequestConsumerMutations consumerMutations,
+        MailRequestAdminQueries adminQueries,
+        WorkerHeartbeatStore heartbeatStore)
+        : MailRequestRepository(claimStore, acceptStore, consumerMutations, adminQueries, heartbeatStore)
+    {
+        public override Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
+            Guid tenantId,
+            string sourceService,
+            Guid mailRequestId,
+            CancellationToken cancellationToken = default) =>
+            throw new SqliteException(
+                "database or disk is full",
+                SqliteDatabaseExceptionClassifier.SqliteFull);
+
+        public override Task InsertAcceptedAsync(
+            AcceptedMailRequestInsert insert,
+            CancellationToken cancellationToken = default) =>
+            throw new SqliteException(
+                "database or disk is full",
+                SqliteDatabaseExceptionClassifier.SqliteFull);
+    }
 }

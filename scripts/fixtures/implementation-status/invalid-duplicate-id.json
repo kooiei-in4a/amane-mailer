@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "features": [
+    {
+      "id": "sample-feature",
+      "status": "planned",
+      "trackingIssue": 1,
+      "lastVerified": "2026-07-22",
+      "relatedAdrs": ["0013"]
+    },
+    {
+      "id": "sample-feature",
+      "status": "implemented",
+      "trackingIssue": 2,
+      "lastVerified": "2026-07-22",
+      "relatedAdrs": ["0014"]
+    }
+  ]
+}

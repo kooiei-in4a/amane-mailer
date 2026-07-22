@@ -11,18 +11,20 @@
 
 運用者は Admin UI から dead-letter や terminal failure を **手動再送**または**手動キャンセル**して復旧したい。[ADR 0013](0013-admin-threat-model-and-pii-policy.md) は配送操作の監査と tenant scope を要求しているが、状態遷移そのものは未定義だった。
 
-現行 runtime（2026-07-03）の事実:
+採択時点（2026-07-03 / [#101](https://github.com/kooiei-in4a/amane-mailer/issues/101) 実装前）の runtime 事実:
 
-| 項目 | 現状 |
+| 項目 | 当時の現状 |
 |------|------|
 | `MailRequestState` | `Queued`, `Processing`, `Delivered`, `Failed`, `DeadLettered` の 5 値（`Cancelled` なし） |
 | Worker claim | `Queued`（`next_attempt_at` 到来）または **期限切れ** `Processing` のみ |
 | Worker finalize | `RetryScheduled` は **`Queued` に戻す**（`Failed` 状態には戻さない） |
 | `Failed` | **終端**の非 retryable provider 失敗（`completed_at` / `failed_at` 設定） |
 | `DeadLettered` | **終端**（最大試行超過または stale `Processing` の reaper） |
-| Admin UI | Dead Letter 画面の「再送する」は disabled（未実装） |
+| Admin UI | Dead Letter 画面の「再送する」は disabled |
 | DB CHECK | `mail_requests.status IN (0,1,2,3,4)`（[001_initial.sql](../../src/Amane.Mailer/Data/Migrations/001_initial.sql)） |
 | HTTP 公開 API | 手動再送・キャンセルは **Admin 専用**。`POST /internal/mail-requests` 契約の対象外 |
+
+**現行の実装状況は [実装ステータスマニフェスト](../implementation-status.json) を正本とする**（feature ID: `admin-manual-retry`）。本 ADR の Decision 節は設計判断の正本であり、上表は採択前ギャップの記録である。
 
 手動操作は Worker の `TryClaimOneAsync` / `FinalizeAsync` / `DeadLetterExpiredProcessingAtMaxAttemptsAsync` と **同一 SQLite 行を競合更新**する。原子的 conditional `UPDATE` と tenant scope 認可が必須である。
 

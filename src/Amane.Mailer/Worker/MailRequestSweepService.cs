@@ -35,7 +35,11 @@ public sealed class MailRequestSweepService(
                     }
                     catch (Exception ex)
                     {
-                        logger.LogError(ex, "Mail request sweep failed.");
+                        SqliteDatabaseExceptionLogging.LogError(
+                            logger,
+                            ex,
+                            "Mail request sweep failed due to SQLite storage full (SQLITE_FULL).",
+                            "Mail request sweep failed.");
                     }
                 }
             }
@@ -77,7 +81,11 @@ public sealed class MailRequestSweepService(
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            logger.LogWarning(ex, "Failed to update sweep heartbeat.");
+            SqliteDatabaseExceptionLogging.LogWarning(
+                logger,
+                ex,
+                "Failed to update sweep heartbeat due to SQLite storage full (SQLITE_FULL).",
+                "Failed to update sweep heartbeat.");
         }
     }
 }

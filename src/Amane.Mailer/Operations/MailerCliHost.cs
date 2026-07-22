@@ -6,9 +6,6 @@ namespace Amane.Mailer.Operations;
 
 public static class MailerCliHost
 {
-    private const string WorkerHeartbeatName = "worker";
-    private const string SweepHeartbeatName = "sweep";
-
     public static bool IsHealthCheckCommand(IReadOnlyList<string> args) =>
         args.Count == 1 && string.Equals(args[0], "healthcheck", StringComparison.Ordinal);
 
@@ -74,21 +71,9 @@ public static class MailerCliHost
                 return DbMigrateCommand.SuccessExitCode;
 
             var healthcheckOptions = MailerHealthcheckOptions.Load(configuration);
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             var heartbeats = await repository.GetHeartbeatsAsync(cancellationToken);
-
-            var workerHeartbeat = heartbeats.FirstOrDefault(h =>
-                string.Equals(h.Name, WorkerHeartbeatName, StringComparison.Ordinal));
-            var sweepHeartbeat = heartbeats.FirstOrDefault(h =>
-                string.Equals(h.Name, SweepHeartbeatName, StringComparison.Ordinal));
-
-            if (workerHeartbeat is null || sweepHeartbeat is null)
-                return 1;
-
-            var now = DateTimeOffset.UtcNow;
-            if (now - workerHeartbeat.LastHeartbeatAt > healthcheckOptions.MaxHeartbeatStaleness)
-                return 1;
-            if (now - sweepHeartbeat.LastHeartbeatAt > healthcheckOptions.MaxHeartbeatStaleness)
+            if (!WorkerHeartbeatFreshness.AreFresh(heartbeats, healthcheckOptions.MaxHeartbeatStaleness))
                 return 1;
 
             return DbMigrateCommand.SuccessExitCode;

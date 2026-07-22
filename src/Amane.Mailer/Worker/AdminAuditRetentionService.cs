@@ -21,7 +21,11 @@ public sealed class AdminAuditRetentionService(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Admin audit retention sweep failed during startup.");
+            SqliteDatabaseExceptionLogging.LogError(
+                logger,
+                ex,
+                "Admin audit retention sweep failed during startup due to SQLite storage full (SQLITE_FULL).",
+                "Admin audit retention sweep failed during startup.");
         }
 
         using var timer = new PeriodicTimer(retentionOptions.SweepInterval);
@@ -40,7 +44,11 @@ public sealed class AdminAuditRetentionService(
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Admin audit retention sweep failed.");
+                    SqliteDatabaseExceptionLogging.LogError(
+                        logger,
+                        ex,
+                        "Admin audit retention sweep failed due to SQLite storage full (SQLITE_FULL).",
+                        "Admin audit retention sweep failed.");
                 }
             }
         }

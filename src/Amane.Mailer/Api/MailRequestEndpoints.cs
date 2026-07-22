@@ -54,6 +54,10 @@ public static class MailRequestEndpoints
                 parsedMailRequestId,
                 cancellationToken);
         }
+        catch (Exception ex) when (IsStorageFullDatabaseException(ex))
+        {
+            return StorageFull();
+        }
         catch (Exception ex) when (IsTransientDatabaseException(ex))
         {
             return ServiceUnavailable();
@@ -109,6 +113,10 @@ public static class MailRequestEndpoints
                 parsedMailRequestId,
                 now,
                 cancellationToken);
+        }
+        catch (Exception ex) when (IsStorageFullDatabaseException(ex))
+        {
+            return StorageFull();
         }
         catch (Exception ex) when (IsTransientDatabaseException(ex))
         {
@@ -221,6 +229,10 @@ public static class MailRequestEndpoints
                 scheduledAtUtc,
                 now,
                 cancellationToken);
+        }
+        catch (Exception ex) when (IsStorageFullDatabaseException(ex))
+        {
+            return StorageFull();
         }
         catch (Exception ex) when (IsTransientDatabaseException(ex))
         {
@@ -344,6 +356,10 @@ public static class MailRequestEndpoints
                 request.MailRequestId,
                 cancellationToken);
         }
+        catch (Exception ex) when (IsStorageFullDatabaseException(ex))
+        {
+            return StorageFull();
+        }
         catch (Exception ex) when (IsTransientDatabaseException(ex))
         {
             return ServiceUnavailable();
@@ -404,6 +420,10 @@ public static class MailRequestEndpoints
                     request.MailRequestId,
                     cancellationToken);
             }
+            catch (Exception duplicateReadException) when (IsStorageFullDatabaseException(duplicateReadException))
+            {
+                return StorageFull();
+            }
             catch (Exception duplicateReadException) when (IsTransientDatabaseException(duplicateReadException))
             {
                 return ServiceUnavailable();
@@ -411,6 +431,11 @@ public static class MailRequestEndpoints
 
             if (duplicate is null)
             {
+                if (IsStorageFullDatabaseException(ex))
+                {
+                    return StorageFull();
+                }
+
                 if (IsTransientDatabaseException(ex))
                 {
                     return ServiceUnavailable();
@@ -431,6 +456,10 @@ public static class MailRequestEndpoints
                 MailRequestId = request.MailRequestId,
                 Status = MailRequestAcceptanceStatus.AlreadyAccepted,
             });
+        }
+        catch (Exception ex) when (IsStorageFullDatabaseException(ex))
+        {
+            return StorageFull();
         }
         catch (Exception ex) when (IsTransientDatabaseException(ex))
         {
@@ -712,6 +741,10 @@ public static class MailRequestEndpoints
                 mailRequestId,
                 cancellationToken);
         }
+        catch (Exception ex) when (IsStorageFullDatabaseException(ex))
+        {
+            return StorageFull();
+        }
         catch (Exception ex) when (IsTransientDatabaseException(ex))
         {
             return ServiceUnavailable();
@@ -742,21 +775,14 @@ public static class MailRequestEndpoints
     private static IResult ServiceUnavailable() =>
         MailerJsonResults.ServiceUnavailable();
 
-    private static bool IsTransientDatabaseException(Exception exception)
-    {
-        if (exception is TimeoutException)
-        {
-            return true;
-        }
+    private static IResult StorageFull() =>
+        MailerJsonResults.StorageFull();
 
-        if (exception is SqliteException sqlite)
-        {
-            return sqlite.SqliteErrorCode is 5 or 6 or 10 or 13 or 14;
-        }
+    private static bool IsStorageFullDatabaseException(Exception exception) =>
+        SqliteDatabaseExceptionClassifier.IsStorageFull(exception);
 
-        return exception.InnerException is not null
-            && IsTransientDatabaseException(exception.InnerException);
-    }
+    private static bool IsTransientDatabaseException(Exception exception) =>
+        SqliteDatabaseExceptionClassifier.IsTransient(exception);
 
     private static bool TryParseRequiredGuidQuery(
         HttpRequest request,

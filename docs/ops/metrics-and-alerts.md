@@ -37,6 +37,7 @@ Compose / systemd では Mailer HTTP ポートを **内部ネットワークの�
 | `mail_queue_ready_count` | gauge | なし | 即時配送可能な queued 件数（全 tenant 合算） |
 | `mail_queue_oldest_age_seconds` | gauge | なし | ready backlog 内の最古 updated_at からの経過秒 |
 | `mail_retries_total` | counter | なし | プロセス起動以降の再試行 attempt 数（`attempt_number > 1` の完了 attempt） |
+| `mail_finalize_skipped_total` | counter | なし | delivered finalize で strict lease fencing（`lock_expires_at` 条件）に失敗した回数。同一 lock での遅延完了や supersede / terminal 競合を含む |
 | `mail_dead_letters_total` | gauge | なし | 現在 dead_lettered 状態の request 数 |
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | `worker` / `sweep` の heartbeat 経過秒。行未存在時は series なし |
 
@@ -100,9 +101,24 @@ groups:
           severity: warning
         annotations:
           summary: Failed delivery attempt rate is elevated
+
+      - alert: MailFinalizeSkipped
+        expr: increase(mail_finalize_skipped_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Delivered finalize hit strict lease fencing failure (delayed complete or superseded/terminal race)
 ```
 
-`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat アラートを primary、delivery rate は補助として運用してください。
+`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat アラートを primary、delivery rate は補助として運用してください。`mail_finalize_skipped_total` は strict lease fencing 失敗の検知用で、増加時は証跡の有無・Delivered 収束・DeadLetter との競合を確認してください。Admin 手動リトライは監査付きの明示操作として `attempt_count` をリセットするため、delivered 証跡付きの DeadLetter を再投入すると実再送になります（worker の prior-success 収束は適用されません）。再送前に Admin attempt 履歴の `provider_message_id` を確認してください。
+
+## disk 枯渇・WAL・retention
+
+`mail_queue_oldest_age_seconds` の上昇は Worker 停滞や provider 障害に加え、
+SQLite disk 枯渇（HTTP `STORAGE_FULL`）の早期シグナルにもなります。
+診断・対処・追加の critical 閾値例は
+[sqlite-disk-and-retention.md](sqlite-disk-and-retention.md) を参照してください。
 
 ## セキュリティ注意
 

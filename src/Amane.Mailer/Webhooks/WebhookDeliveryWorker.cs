@@ -2,6 +2,7 @@ using System.Text.Json;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.Json;
 using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Worker;
 
 namespace Amane.Mailer.Webhooks;
 
@@ -14,22 +15,49 @@ public sealed class WebhookDeliveryWorker(
     TimeProvider timeProvider,
     ILogger<WebhookDeliveryWorker> logger) : BackgroundService
 {
+    private readonly InflightTracker _inflightTracker = new();
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        while (!stoppingToken.IsCancellationRequested)
+        try
         {
-            await queue.Reader.WaitToReadAsync(stoppingToken);
-
+            // Stopping cancels WaitToReadAsync / claim loops so no new work is claimed.
+            // In-flight HTTP delivery uses DeliveryTimeout (not linked to stoppingToken),
+            // matching MailRequestWorker, and is drained in finally below.
             while (!stoppingToken.IsCancellationRequested)
             {
-                var now = timeProvider.GetUtcNow();
-                var row = await repository.TryClaimOneAsync(now, webhookOptions.LeaseDuration, stoppingToken);
-                if (row is null)
+                try
+                {
+                    await queue.Reader.WaitToReadAsync(stoppingToken);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     break;
                 }
 
-                await DeliverClaimedEventAsync(row, stoppingToken);
+                while (!stoppingToken.IsCancellationRequested)
+                {
+                    var now = timeProvider.GetUtcNow();
+                    var row = await repository.TryClaimOneAsync(now, webhookOptions.LeaseDuration, stoppingToken);
+                    if (row is null)
+                    {
+                        break;
+                    }
+
+                    using var inflight = _inflightTracker.Enter();
+                    await DeliverClaimedEventAsync(row, stoppingToken);
+                }
+            }
+        }
+        finally
+        {
+            await _inflightTracker.WaitForZeroAsync(webhookOptions.ShutdownDrainTimeout, CancellationToken.None);
+
+            if (_inflightTracker.InflightCount > 0)
+            {
+                logger.LogWarning(
+                    "Shutdown grace period elapsed with {InflightCount} in-flight webhook deliveries still active.",
+                    _inflightTracker.InflightCount);
             }
         }
     }

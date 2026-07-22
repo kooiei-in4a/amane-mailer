@@ -217,6 +217,11 @@ jobs:
       - name: Check Contracts/runtime/OpenAPI drift
         run: node scripts/check-contract-drift.mjs
 
+      - name: Check implementation status manifest
+        run: |
+          node scripts/check-implementation-status.mjs
+          node scripts/check-implementation-status.mjs --self-test
+
       - name: Check release smoke default tag drift
         run: node scripts/check-release-smoke-tag-drift.mjs
 
