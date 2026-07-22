@@ -13,6 +13,45 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-07-22
+
+### Fixed
+
+- Prevent duplicate provider send when finalize loses the processing lease, and
+  persist delivered evidence even if a reaper already terminalized the request
+  (#238).
+- Fail `GET /readyz` when worker or sweep heartbeats are stale so orchestrators
+  do not treat a hung background path as ready (#241).
+- Classify SQLite `SQLITE_FULL` as `STORAGE_FULL` and document disk / retention
+  recovery in the ops runbook (#244).
+- Drain in-flight webhook deliveries on graceful shutdown so stop does not cut
+  off mid-send (#245).
+
+### Changed
+
+- Split `MailRequestRepository` into focused store types for accept, claim,
+  consumer mutations, and admin queries (#242).
+- Align public release image defaults and smoke guidance on `v0.9.1`.
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `0.9.1`.
+
+### Documentation
+
+- Document delivery uniqueness guarantees in the service spec (#239).
+- Introduce `docs/implementation-status.json` as the current-status manifest,
+  with CI format validation (#250, #252).
+- Refresh ADR 0013/0014/0015 implementation status notes (#240).
+- Add regression coverage for manual cancel vs worker claim races (#243).
+- Add v0.9.1 release evidence draft.
+
+### Breaking / Migration
+
+- No breaking public HTTP contract change. Existing POST acceptance behavior is
+  unchanged.
+- No manual database migration is required for this release.
+- Operators should treat `STORAGE_FULL` as a disk / SQLite capacity incident and
+  follow [sqlite-disk-and-retention](docs/ops/sqlite-disk-and-retention.md).
+
 ## [0.9.0] - 2026-07-22
 
 ### Added
