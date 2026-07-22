@@ -23,7 +23,7 @@ public sealed class MailRequestWorker : BackgroundService
     private readonly MailerRuntimeMetrics _runtimeMetrics;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<MailRequestWorker> _logger;
-    private readonly MailDeliveryInflightTracker _inflightTracker;
+    private readonly InflightTracker _inflightTracker = new();
     private readonly SemaphoreSlim _sendConcurrency;
 
     public MailRequestWorker(
@@ -37,7 +37,6 @@ public sealed class MailRequestWorker : BackgroundService
         ExpiredProcessingReaper expiredProcessingReaper,
         DeliveryEventEnqueuer deliveryEventEnqueuer,
         WorkerServiceStatus serviceStatus,
-        MailDeliveryInflightTracker inflightTracker,
         MailerRuntimeMetrics runtimeMetrics,
         TimeProvider timeProvider,
         ILogger<MailRequestWorker> logger)
@@ -52,7 +51,6 @@ public sealed class MailRequestWorker : BackgroundService
         _expiredProcessingReaper = expiredProcessingReaper;
         _deliveryEventEnqueuer = deliveryEventEnqueuer;
         _serviceStatus = serviceStatus;
-        _inflightTracker = inflightTracker;
         _runtimeMetrics = runtimeMetrics;
         _timeProvider = timeProvider;
         _logger = logger;
