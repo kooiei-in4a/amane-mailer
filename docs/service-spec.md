@@ -44,10 +44,10 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 |---|---|---|---|
 | `POST` | `/internal/mail-requests` | 送信依頼の受付（任意 `scheduled_at`） | テナント Bearer |
 | `GET` | `/internal/mail-requests/{mail_request_id}` | 配送ステータス照会（`tenant_id` / `source_service` は query） | テナント Bearer |
-| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | 送信前キャンセル（`queued` のみ） | テナント Bearer |
+| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | 送信前キャンセル（`queued`；既 `cancelled` は冪等） | テナント Bearer |
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | 予約時刻変更（`queued` かつ `attempt_count=0`） | テナント Bearer |
 | `GET` | `/healthz` | 生存確認（liveness） | なし |
-| `GET` | `/readyz` | 受付可否（DB schema + Worker/Sweep 稼働・heartbeat 鮮度） | なし |
+| `GET` | `/readyz` | 受付可否（現行 migration schema + Worker/Sweep 稼働・heartbeat 鮮度） | なし |
 | `GET` | `/metrics` | Prometheus メトリクス（ops。詳細は [metrics-and-alerts.md](ops/metrics-and-alerts.md)） | 既定なし（optional bearer） |
 
 ### 契約同期と drift review
@@ -99,13 +99,17 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | 状況 | HTTP | code / status |
 |---|---|---|
 | `queued` の依頼をキャンセル | 200 | `status: cancelled`（ステータス JSON） |
+| 既に `cancelled`（同一キー再 cancel） | 200 | `status: cancelled`（冪等） |
 | クエリ不正 | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 存在しない / 他 tenant | 404 | `NOT_FOUND` |
-| `queued` 以外 | 422 | `INVALID_STATE` |
+| `queued` / `cancelled` 以外 | 422 | `INVALID_STATE` |
 | 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
+
+Cancel の DB 更新（`Cancelled` commit）が成功したあと、webhook enqueue や status 再取得の一時失敗で
+「未キャンセル」を示す HTTP 失敗を返さない。enqueue は best-effort で、欠落は reconcile が補完し得る。
 
 ### 再スケジュール（POST reschedule）
 
@@ -252,7 +256,7 @@ DDL: `src/Amane.Mailer/Data/Migrations/002_worker_heartbeats.sql`
 | `name` | TEXT PK | サービス名（`worker` / `sweep`） |
 | `last_heartbeat_at` | TEXT | 最終 heartbeat 時刻（UTC ISO8601） |
 
-Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する。CLI `healthcheck` と `GET /readyz`（Worker 有効時）が両行の存在と鮮度を検証する。鮮度閾値は `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds`（既定 300 秒）。Docker HEALTHCHECK は CLI `healthcheck` を使用する。
+Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する。CLI `healthcheck` と `GET /readyz` は、現行バイナリが必要とする applied migration（version + checksum）を含む schema 準備状況を検証し、Worker 有効時は両 heartbeat 行の存在と鮮度も検証する。鮮度閾値は `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds`（既定 300 秒）。Docker HEALTHCHECK は CLI `healthcheck` を使用する。
 
 ### 3.4 状態遷移（`mail_requests.status`）
 
@@ -313,7 +317,7 @@ Web ホスト起動前に `argv` で早期分岐。コンテナ `ENTRYPOINT` は
 
 | サブコマンド | 用途 | 終了コード |
 |---|---|---|
-| `healthcheck` | SQLite schema + Worker/Sweep heartbeat 鮮度確認（Docker `HEALTHCHECK`） | 0=healthy / 1=unhealthy |
+| `healthcheck` | 現行 SQLite schema（applied migration version + checksum）+ Worker/Sweep heartbeat 鮮度確認（Docker `HEALTHCHECK`） | 0=healthy / 1=unhealthy |
 | `db migrate` | 未適用 SQL マイグレーションを適用 | 0=成功 |
 | `db checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` で `-wal` をクリーンアップ | 0=成功 |
 | `db backup <absolute-path>` | オンライン SQLite バックアップ（Backup API） | 0=成功 / 2=usage error |
@@ -505,3 +509,5 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-22 | `/readyz` に Worker/Sweep heartbeat 鮮度チェックを追加（#241）。CLI healthcheck と同じ閾値を共有 |
 | 2026-07-22 | 配送一意性（実送信の保証）節を追加（#239）。#238 の finalize 証跡・reclaim 収束と整合 |
 | 2026-07-22 | `WebhookDeliveryWorker` の shutdown drain（新規 claim 停止 + inflight 待機）を明記（#245） |
+| 2026-07-23 | `/readyz` / CLI `healthcheck` が現行 migration version + checksum を要求（#267） |
+| 2026-07-23 | Consumer cancel の冪等成功と commit 後 HTTP 失敗の回避（#269） |

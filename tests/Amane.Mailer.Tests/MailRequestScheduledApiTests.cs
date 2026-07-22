@@ -152,6 +152,32 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
+    public async Task Cancel_already_cancelled_request_is_idempotent()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(4));
+
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+
+        using var firstCancel = await client.PostAsync(CancelUrl(request.MailRequestId), content: null, ct);
+        Assert.Equal(HttpStatusCode.OK, firstCancel.StatusCode);
+        Assert.Equal(
+            MailRequestStatus.Cancelled,
+            await MailRequestTestData.ReadStatusAsync(firstCancel, ct));
+
+        using var secondCancel = await client.PostAsync(CancelUrl(request.MailRequestId), content: null, ct);
+        Assert.Equal(HttpStatusCode.OK, secondCancel.StatusCode);
+        Assert.Equal(
+            MailRequestStatus.Cancelled,
+            await MailRequestTestData.ReadStatusAsync(secondCancel, ct));
+    }
+
+    [Fact]
     public async Task Cancel_delivered_request_returns_invalid_state()
     {
         var ct = TestContext.Current.CancellationToken;

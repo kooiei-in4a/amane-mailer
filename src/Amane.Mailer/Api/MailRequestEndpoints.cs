@@ -89,6 +89,7 @@ public static class MailRequestEndpoints
         DeliveryEventEnqueuer deliveryEventEnqueuer,
         MailerTenantRegistry tenantRegistry,
         TimeProvider timeProvider,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (!TryAuthorizeScopedMailRequest(
@@ -133,17 +134,26 @@ public static class MailRequestEndpoints
             return Error(StatusCodes.Status422UnprocessableEntity, MailerErrorCodes.InvalidState);
         }
 
+        // Cancel is already committed. Webhook enqueue is best-effort; reconcile covers gaps (#269).
         if (result.InternalRequestId is Guid internalId)
         {
-            await deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(internalId, cancellationToken);
+            try
+            {
+                await deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(internalId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                var logger = loggerFactory.CreateLogger("MailRequestEndpoints");
+                logger.LogWarning(
+                    ex,
+                    "Failed to enqueue cancel delivery event for mail request {MailRequestId}.",
+                    parsedMailRequestId);
+            }
         }
 
-        return await GetStatusResultAsync(
-            repository,
-            tenantId,
-            sourceService,
-            parsedMailRequestId,
-            cancellationToken);
+        // Prefer the committed snapshot over a post-commit re-read so non-transient re-read
+        // faults cannot turn a successful cancel into HTTP 5xx (#269).
+        return StatusOk(result.StatusSnapshot!);
     }
 
     private static async Task<IResult> RescheduleMailRequestAsync(
@@ -755,7 +765,11 @@ public static class MailRequestEndpoints
             return Error(StatusCodes.Status404NotFound, MailerErrorCodes.NotFound);
         }
 
-        return MailerJsonResults.Ok(new MailRequestStatusResponse
+        return StatusOk(statusRow);
+    }
+
+    private static IResult StatusOk(MailRequestStatusRow statusRow) =>
+        MailerJsonResults.Ok(new MailRequestStatusResponse
         {
             MailRequestId = statusRow.MailRequestId,
             Status = ToDeliveryStatus(statusRow.Status),
@@ -767,7 +781,6 @@ public static class MailRequestEndpoints
             DeliveredAt = statusRow.DeliveredAt,
             LastErrorCode = statusRow.LastErrorCode,
         });
-    }
 
     private static IResult Error(int statusCode, string code) =>
         MailerJsonResults.Error(code, statusCode);

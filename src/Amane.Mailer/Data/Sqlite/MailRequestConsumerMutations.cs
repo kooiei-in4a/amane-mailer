@@ -249,21 +249,47 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
                 {
                     var internalId = Guid.Parse(reader.GetString(0));
                     await reader.DisposeAsync();
+                    var snapshot = await MailRequestRepositorySql.ReadStatusByIdempotencyKeyAsync(
+                        connection,
+                        tenantId,
+                        sourceService,
+                        mailRequestId,
+                        cancellationToken);
+                    if (snapshot is null)
+                    {
+                        throw new InvalidOperationException(
+                            "Cancelled mail request row was not readable after update.");
+                    }
+
                     await transaction.CommitAsync(cancellationToken);
-                    return new(ManualMailRequestMutationStatus.Succeeded, internalId);
+                    return new(ManualMailRequestMutationStatus.Succeeded, internalId, snapshot);
                 }
             }
 
-            var exists = await MailRequestRepositorySql.ExistsByIdempotencyKeyAsync(
+            var existing = await MailRequestRepositorySql.ReadStatusWithInternalIdByIdempotencyKeyAsync(
                 connection,
                 tenantId,
                 sourceService,
                 mailRequestId,
                 cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-            return new(exists
-                ? ManualMailRequestMutationStatus.InvalidState
-                : ManualMailRequestMutationStatus.NotFound);
+
+            if (existing is null)
+            {
+                return new(ManualMailRequestMutationStatus.NotFound);
+            }
+
+            // Already cancelled: idempotent success so callers can converge after a prior
+            // commit succeeded but the HTTP response failed (#269).
+            if (existing.Value.Status.Status == MailRequestState.Cancelled)
+            {
+                return new(
+                    ManualMailRequestMutationStatus.Succeeded,
+                    existing.Value.InternalRequestId,
+                    existing.Value.Status);
+            }
+
+            return new(ManualMailRequestMutationStatus.InvalidState);
         }
         catch
         {
