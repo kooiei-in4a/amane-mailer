@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Canonical current implementation status. ADRs record design rationale; this file records present-day status (#246 / #250). Allowed status values: planned, partial, implemented, deferred, removed.",
+  "description": "Canonical current implementation status. ADRs record design rationale; this file records present-day status (#246 / #250). Allowed status values: planned, partial, implemented, deferred, removed. Rollout: Phase 1 (#250) manifest + ADR links; Phase 2 (#252) CI format check; Phase 3+ (GitHub Issue state / evidence) deferred until staleness recurs or maintainer reopens #246.",
   "features": [
     {
       "id": "admin-audit-retention-sweep",

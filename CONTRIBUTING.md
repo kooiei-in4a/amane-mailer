@@ -56,6 +56,9 @@ Use GitHub Issues. For security vulnerabilities, see [Security](#security) below
 - Keep PRs focused on a single concern.
 - Include or update tests for behaviour changes.
 - Update documentation when adding or changing features.
+- When a PR changes tracked feature behavior, update `docs/implementation-status.json`
+  and confirm the PR template Implementation Status checklist. CI checks manifest
+  format only; do not duplicate current status prose in ADRs.
 
 ## Security
 
