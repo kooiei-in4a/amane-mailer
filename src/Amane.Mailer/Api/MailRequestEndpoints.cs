@@ -89,6 +89,7 @@ public static class MailRequestEndpoints
         DeliveryEventEnqueuer deliveryEventEnqueuer,
         MailerTenantRegistry tenantRegistry,
         TimeProvider timeProvider,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (!TryAuthorizeScopedMailRequest(
@@ -133,16 +134,29 @@ public static class MailRequestEndpoints
             return Error(StatusCodes.Status422UnprocessableEntity, MailerErrorCodes.InvalidState);
         }
 
+        // Cancel is already committed. Webhook enqueue is best-effort; reconcile covers gaps (#269).
         if (result.InternalRequestId is Guid internalId)
         {
-            await deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(internalId, cancellationToken);
+            try
+            {
+                await deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(internalId, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                var logger = loggerFactory.CreateLogger("MailRequestEndpoints");
+                logger.LogWarning(
+                    ex,
+                    "Failed to enqueue cancel delivery event for mail request {MailRequestId}.",
+                    parsedMailRequestId);
+            }
         }
 
-        return await GetStatusResultAsync(
+        return await GetStatusResultAfterSuccessfulCancelAsync(
             repository,
             tenantId,
             sourceService,
             parsedMailRequestId,
+            result.StatusSnapshot,
             cancellationToken);
     }
 
@@ -755,7 +769,56 @@ public static class MailRequestEndpoints
             return Error(StatusCodes.Status404NotFound, MailerErrorCodes.NotFound);
         }
 
+        return StatusOk(statusRow);
+    }
+
+    private static async Task<IResult> GetStatusResultAfterSuccessfulCancelAsync(
+        MailRequestRepository repository,
+        Guid tenantId,
+        string sourceService,
+        Guid mailRequestId,
+        MailRequestStatusRow? fallbackSnapshot,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var statusRow = await repository.GetStatusByIdempotencyKeyAsync(
+                tenantId,
+                sourceService,
+                mailRequestId,
+                cancellationToken);
+            if (statusRow is not null)
+            {
+                return StatusOk(statusRow);
+            }
+        }
+        catch (Exception ex) when (IsStorageFullDatabaseException(ex) || IsTransientDatabaseException(ex))
+        {
+            // Cancel already committed; do not report failure after success (#269).
+        }
+
+        if (fallbackSnapshot is not null)
+        {
+            return StatusOk(fallbackSnapshot);
+        }
+
+        // Mutation always supplies a snapshot on success; keep a safe cancelled body if not.
         return MailerJsonResults.Ok(new MailRequestStatusResponse
+        {
+            MailRequestId = mailRequestId,
+            Status = MailRequestStatus.Cancelled,
+            AttemptCount = 0,
+            MaxAttempts = 1,
+            NextAttemptAt = null,
+            ScheduledAt = null,
+            AcceptedAt = DateTimeOffset.UtcNow,
+            DeliveredAt = null,
+            LastErrorCode = null,
+        });
+    }
+
+    private static IResult StatusOk(MailRequestStatusRow statusRow) =>
+        MailerJsonResults.Ok(new MailRequestStatusResponse
         {
             MailRequestId = statusRow.MailRequestId,
             Status = ToDeliveryStatus(statusRow.Status),
@@ -767,7 +830,6 @@ public static class MailRequestEndpoints
             DeliveredAt = statusRow.DeliveredAt,
             LastErrorCode = statusRow.LastErrorCode,
         });
-    }
 
     private static IResult Error(int statusCode, string code) =>
         MailerJsonResults.Error(code, statusCode);

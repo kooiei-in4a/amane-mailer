@@ -30,8 +30,7 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
 
     public async Task<bool> CanConnectToMigratedSchemaAsync(CancellationToken cancellationToken = default)
     {
-        await using var connection = CreateSchemaProbeConnection();
-        await connection.OpenAsync(cancellationToken);
+        await using var connection = await OpenSchemaProbeConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT COUNT(*)
@@ -41,6 +40,18 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
             """;
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is long tableCount && tableCount == 4L;
+    }
+
+    /// <summary>
+    /// Opens the configured database without creating a missing file (when using the default
+    /// ReadWriteCreate mode). Used by readiness probes that must not create an empty DB.
+    /// </summary>
+    public async Task<SqliteConnection> OpenSchemaProbeConnectionAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var connection = CreateSchemaProbeConnection();
+        await connection.OpenAsync(cancellationToken);
+        return connection;
     }
 
     public async Task RunWalCheckpointTruncateAsync(CancellationToken cancellationToken = default)

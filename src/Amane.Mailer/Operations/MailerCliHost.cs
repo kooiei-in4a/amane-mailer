@@ -62,7 +62,8 @@ public static class MailerCliHost
         try
         {
             var factory = new SqliteConnectionFactory(configuration);
-            var ok = await factory.CanConnectToMigratedSchemaAsync(cancellationToken);
+            var runner = new SqlMigrationRunner(factory);
+            var ok = await runner.IsCurrentSchemaReadyAsync(cancellationToken);
             if (!ok)
                 return 1;
 
