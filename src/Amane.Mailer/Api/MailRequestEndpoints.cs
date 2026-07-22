@@ -151,13 +151,9 @@ public static class MailRequestEndpoints
             }
         }
 
-        return await GetStatusResultAfterSuccessfulCancelAsync(
-            repository,
-            tenantId,
-            sourceService,
-            parsedMailRequestId,
-            result.StatusSnapshot,
-            cancellationToken);
+        // Prefer the committed snapshot over a post-commit re-read so non-transient re-read
+        // faults cannot turn a successful cancel into HTTP 5xx (#269).
+        return StatusOk(result.StatusSnapshot!);
     }
 
     private static async Task<IResult> RescheduleMailRequestAsync(
@@ -770,51 +766,6 @@ public static class MailRequestEndpoints
         }
 
         return StatusOk(statusRow);
-    }
-
-    private static async Task<IResult> GetStatusResultAfterSuccessfulCancelAsync(
-        MailRequestRepository repository,
-        Guid tenantId,
-        string sourceService,
-        Guid mailRequestId,
-        MailRequestStatusRow? fallbackSnapshot,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var statusRow = await repository.GetStatusByIdempotencyKeyAsync(
-                tenantId,
-                sourceService,
-                mailRequestId,
-                cancellationToken);
-            if (statusRow is not null)
-            {
-                return StatusOk(statusRow);
-            }
-        }
-        catch (Exception ex) when (IsStorageFullDatabaseException(ex) || IsTransientDatabaseException(ex))
-        {
-            // Cancel already committed; do not report failure after success (#269).
-        }
-
-        if (fallbackSnapshot is not null)
-        {
-            return StatusOk(fallbackSnapshot);
-        }
-
-        // Mutation always supplies a snapshot on success; keep a safe cancelled body if not.
-        return MailerJsonResults.Ok(new MailRequestStatusResponse
-        {
-            MailRequestId = mailRequestId,
-            Status = MailRequestStatus.Cancelled,
-            AttemptCount = 0,
-            MaxAttempts = 1,
-            NextAttemptAt = null,
-            ScheduledAt = null,
-            AcceptedAt = DateTimeOffset.UtcNow,
-            DeliveredAt = null,
-            LastErrorCode = null,
-        });
     }
 
     private static IResult StatusOk(MailRequestStatusRow statusRow) =>
