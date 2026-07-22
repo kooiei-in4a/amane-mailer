@@ -7,7 +7,7 @@
 
 ## Context
 
-[ADR 0013](0013-admin-threat-model-and-pii-policy.md) は管理画面の脅威モデル、Cookie + PBKDF2 認証、tenant scope、login throttle、監査ログの**目標**を定めた。公開レビュー後も、次のギャップが stricter 環境での採用 blocker として残っている。
+[ADR 0013](0013-admin-threat-model-and-pii-policy.md) は管理画面の脅威モデル、Cookie + PBKDF2 認証、tenant scope、login throttle、監査ログの**目標**を定めた。公開レビュー後も、設計時点では次のギャップが stricter 環境での採用 blocker として残っていた。
 
 | ギャップ | ADR 0013 参照 | 現状（2026-06-28 設計時点） |
 |----------|---------------|---------------------------|
@@ -16,7 +16,9 @@
 | login throttle の再起動耐性 | D-04, D-11 | in-memory `ConcurrentDictionary` のみ |
 | 監査イベントの残件 | D-08 | login success/failure と body view は永続化済み。logout / session expired / login rate limited、retention sweep、network identifier hash 化は未実装 |
 
-**実装ステータス（2026-07-03）:** Phase 1（durable session、SQLite throttle、auth 監査イベント、network identifier hash 化）と Phase 2（per-admin tenant scope、scoped / break-glass 認可、multi-tenant fail-closed）は実装済み。Phase 3（audit retention sweep）は未実装。詳細は [ADR 0013 実装ステータス表](0013-admin-threat-model-and-pii-policy.md#実装ステータス2026-07-03-時点) を参照。
+上表は **2026-06-28 設計時点**のギャップ記録である。現行の実装状況は直後の実装ステータスと [ADR 0013 実装ステータス表](0013-admin-threat-model-and-pii-policy.md#実装ステータス2026-07-22-時点) を正とする。
+
+**実装ステータス（2026-07-22）:** Phase 1（durable session、SQLite throttle、auth 監査イベント、network identifier hash 化）と Phase 2（per-admin tenant scope、scoped / break-glass 認可、multi-tenant fail-closed）は実装済み。Phase 3（audit retention sweep / purge CLI）も実装済み（[#92](https://github.com/kooiei-in4a/amane-mailer/issues/92)）。詳細は [ADR 0013 実装ステータス表](0013-admin-threat-model-and-pii-policy.md#実装ステータス2026-07-22-時点) を参照。
 
 [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) で audit 永続化の基盤（`admin_audit_events` テーブル、login/body view 記録）は完了した。本 ADR は**残りの Admin 基盤強化を広い実装に入る前に凍結する設計判断**を記録する。
 
