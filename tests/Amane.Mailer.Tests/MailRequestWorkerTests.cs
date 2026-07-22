@@ -130,31 +130,20 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
     public async Task Worker_dead_letters_expired_processing_request_at_max_attempts_without_resending()
     {
         var ct = TestContext.Current.CancellationToken;
-        fixture.DeliveryProvider.HoldNextSendIgnoringCancellation();
-        var request = await SeedQueuedRequestAsync(attemptCount: 2, ct);
-
-        var processing = await WaitUntilStatusAsync(
-            request.MailRequestId,
-            MailRequestState.Processing,
-            minAttemptCount: 3,
-            ct);
-
-        await ExpireProcessingLeaseAsync(processing.Id, ct);
-        fixture.DeliveryProvider.ReleaseHeldSend();
-        SignalWorker();
+        var request = MailRequestTestData.CreateRequest();
+        await SeedExpiredProcessingRequestAsync(request, ct, attemptCount: 3);
 
         var deadLettered = await WaitUntilStatusAsync(
             request.MailRequestId,
             MailRequestState.DeadLettered,
             minAttemptCount: 3,
             ct);
-        await WaitUntilSentCountAsync(expectedCount: 1, ct);
 
         Assert.Equal(3, deadLettered.AttemptCount);
         Assert.NotNull(deadLettered.CompletedAt);
         Assert.Null(deadLettered.LockToken);
         Assert.Contains("max_attempts", deadLettered.LastErrorMessage ?? string.Empty, StringComparison.Ordinal);
-        Assert.Single(fixture.DeliveryProvider.Sent);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
 
         var terminalColumns = await ReadTerminalColumnsAsync(deadLettered.Id, ct);
         Assert.NotNull(terminalColumns.CompletedAt);
@@ -168,6 +157,36 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         Assert.Equal(MailRequestState.DeadLettered, attempt.Status);
         Assert.Equal("PROCESSING_LEASE_EXPIRED_MAX_ATTEMPTS", attempt.ErrorCode);
         Assert.True(attempt.Retryable);
+    }
+
+    [Fact]
+    public async Task Worker_marks_delivered_when_send_succeeds_after_lease_expiry_at_max_attempts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        fixture.DeliveryProvider.HoldNextSendIgnoringCancellation();
+        var request = await SeedQueuedRequestAsync(attemptCount: 2, ct);
+
+        var processing = await WaitUntilStatusAsync(
+            request.MailRequestId,
+            MailRequestState.Processing,
+            minAttemptCount: 3,
+            ct);
+
+        await ExpireProcessingLeaseAsync(processing.Id, ct);
+        fixture.DeliveryProvider.ReleaseHeldSend();
+
+        var delivered = await WaitUntilStatusAsync(
+            request.MailRequestId,
+            MailRequestState.Delivered,
+            minAttemptCount: 3,
+            ct);
+        Assert.Single(fixture.DeliveryProvider.Sent);
+
+        var attempts = await ListAttemptsAsync(delivered.Id, ct);
+        Assert.Contains(
+            attempts,
+            attempt => attempt.Status == MailRequestState.Delivered
+                && !string.IsNullOrWhiteSpace(attempt.ProviderMessageId));
     }
 
     [Fact]
@@ -227,14 +246,21 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         Assert.NotNull(processing.LockToken);
         var staleToken = processing.LockToken!.Value;
 
+        // Expire the lease but keep the same lock_token. Releasing the held send
+        // lets the first worker finish provider delivery; strict lease fencing fails,
+        // but success evidence is persisted and the request converges to Delivered (#238).
         await ExpireProcessingLeaseAsync(processing.Id, ct);
-        SignalWorker();
-
-        await WaitUntilAttemptCountAsync(request.MailRequestId, minAttemptCount: 2, ct);
         fixture.DeliveryProvider.ReleaseHeldSend();
 
-        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 2, ct);
+        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 1, ct);
         Assert.Equal(MailRequestState.Delivered, delivered.Status);
+        Assert.Single(fixture.DeliveryProvider.Sent);
+
+        var attempts = await ListAttemptsAsync(delivered.Id, ct);
+        Assert.Contains(
+            attempts,
+            attempt => attempt.Status == MailRequestState.Delivered
+                && !string.IsNullOrWhiteSpace(attempt.ProviderMessageId));
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
@@ -262,7 +288,99 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         var afterStaleFinalize = await FindDispatchStateAsync(request.MailRequestId, ct);
         Assert.NotNull(afterStaleFinalize);
         Assert.Equal(MailRequestState.Delivered, afterStaleFinalize!.Status);
-        Assert.Equal(2, afterStaleFinalize.AttemptCount);
+        Assert.Equal(1, afterStaleFinalize.AttemptCount);
+    }
+
+    [Fact]
+    public async Task Worker_skips_resend_when_prior_delivery_attempt_exists()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var now = DateTimeOffset.UtcNow;
+        var request = MailRequestTestData.CreateRequest();
+        var internalId = Guid.CreateVersion7(now);
+        var expiredLockToken = Guid.CreateVersion7(now);
+
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+            await repository.InsertAcceptedAsync(
+                new AcceptedMailRequestInsert
+                {
+                    Id = internalId,
+                    TenantId = request.TenantId,
+                    SourceService = request.SourceService,
+                    MailRequestId = request.MailRequestId,
+                    Purpose = request.Purpose,
+                    PayloadJson = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    PayloadHash = request.PayloadHash,
+                    Subject = request.Subject,
+                    HtmlBody = request.HtmlBody,
+                    TextBody = request.TextBody,
+                    ReplyTo = request.ReplyTo,
+                    RecipientEmail = request.To[0].Email,
+                    RecipientDisplayName = request.To[0].DisplayName,
+                    MaxAttempts = 3,
+                    AcceptedAt = now,
+                },
+                ct);
+        }
+
+        await using (var connection = new SqliteConnection(fixture.ConnectionString))
+        {
+            await connection.OpenAsync(ct);
+            await using (var update = connection.CreateCommand())
+            {
+                update.CommandText = """
+                    UPDATE mail_requests
+                    SET
+                        status = @ProcessingStatus,
+                        attempt_count = 1,
+                        lock_token = @LockToken,
+                        lock_expires_at = @LockExpiresAt,
+                        updated_at = @UpdatedAt
+                    WHERE id = @Id;
+                    """;
+                update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+                update.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
+                update.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                update.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                update.Parameters.AddWithValue("@Id", internalId.ToString("D"));
+                await update.ExecuteNonQueryAsync(ct);
+            }
+
+            await using (var insertAttempt = connection.CreateCommand())
+            {
+                insertAttempt.CommandText = """
+                    INSERT INTO mail_attempts (
+                        request_id, attempt_number, provider, status,
+                        provider_message_id, error_code, error_message, retryable,
+                        lock_token, started_at, completed_at)
+                    VALUES (
+                        @RequestId, 1, 'mailpit', @DeliveredStatus,
+                        @ProviderMessageId, NULL, NULL, 0,
+                        @LockToken, @StartedAt, @CompletedAt);
+                    """;
+                insertAttempt.Parameters.AddWithValue("@RequestId", internalId.ToString("D"));
+                insertAttempt.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+                insertAttempt.Parameters.AddWithValue("@ProviderMessageId", "prior-success-provider-msg");
+                insertAttempt.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
+                insertAttempt.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
+                insertAttempt.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                await insertAttempt.ExecuteNonQueryAsync(ct);
+            }
+        }
+
+        SignalWorker();
+
+        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 2, ct);
+        Assert.Equal(MailRequestState.Delivered, delivered.Status);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
+
+        var prior = await ListAttemptsAsync(delivered.Id, ct);
+        Assert.Contains(
+            prior,
+            attempt => attempt.Status == MailRequestState.Delivered
+                && attempt.ProviderMessageId == "prior-success-provider-msg");
     }
 
     [Fact]
@@ -391,29 +509,41 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         Guid requestId,
         CancellationToken cancellationToken)
     {
+        var attempts = await ListAttemptsAsync(requestId, cancellationToken);
+        Assert.Single(attempts);
+        return attempts[0];
+    }
+
+    private async Task<IReadOnlyList<MailAttemptRecord>> ListAttemptsAsync(
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
         await using var connection = new SqliteConnection(fixture.ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT attempt_number, provider, status, error_code, error_message, retryable
+            SELECT attempt_number, provider, status, error_code, error_message, retryable, provider_message_id
             FROM mail_attempts
-            WHERE request_id = @RequestId;
+            WHERE request_id = @RequestId
+            ORDER BY id ASC;
             """;
         command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
 
+        var attempts = new List<MailAttemptRecord>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        Assert.True(await reader.ReadAsync(cancellationToken));
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            attempts.Add(new MailAttemptRecord(
+                reader.GetInt32(0),
+                reader.GetString(1),
+                (MailRequestState)reader.GetInt32(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.GetInt32(5) == 1,
+                reader.IsDBNull(6) ? null : reader.GetString(6)));
+        }
 
-        var attempt = new MailAttemptRecord(
-            reader.GetInt32(0),
-            reader.GetString(1),
-            (MailRequestState)reader.GetInt32(2),
-            reader.IsDBNull(3) ? null : reader.GetString(3),
-            reader.IsDBNull(4) ? null : reader.GetString(4),
-            reader.GetInt32(5) == 1);
-
-        Assert.False(await reader.ReadAsync(cancellationToken));
-        return attempt;
+        return attempts;
     }
 
     private async Task<MailRequestCreateRequest> SeedQueuedRequestAsync(
@@ -474,7 +604,8 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
 
     private async Task SeedExpiredProcessingRequestAsync(
         MailRequestCreateRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int attemptCount = 1)
     {
         var body = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var now = DateTimeOffset.UtcNow;
@@ -511,12 +642,13 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
             UPDATE mail_requests
             SET
                 status = 1,
-                attempt_count = 1,
+                attempt_count = @AttemptCount,
                 lock_token = @LockToken,
                 lock_expires_at = @LockExpiresAt,
                 updated_at = @UpdatedAt
             WHERE mail_request_id = @MailRequestId;
             """;
+        command.Parameters.AddWithValue("@AttemptCount", attemptCount);
         command.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
         command.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(expiredAt));
         command.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(expiredAt));
@@ -589,5 +721,6 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         MailRequestState Status,
         string? ErrorCode,
         string? ErrorMessage,
-        bool Retryable);
+        bool Retryable,
+        string? ProviderMessageId = null);
 }

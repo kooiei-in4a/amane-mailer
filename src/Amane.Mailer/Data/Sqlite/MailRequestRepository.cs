@@ -818,27 +818,36 @@ public sealed class MailRequestRepository(
                 var affected = await update.ExecuteNonQueryAsync(cancellationToken);
                 if (affected == 0)
                 {
+                    // Provider send may already have succeeded under an expired/superseded lock,
+                    // or a sweep reaper may have terminalized the row while send was in flight.
+                    // Always persist delivered evidence + skip metric; only best-effort complete
+                    // to Delivered while the row is still Processing under the same lock (#238).
+                    if (attempt.Status == MailRequestState.Delivered)
+                    {
+                        await InsertMailAttemptAsync(connection, insertAttemptSql, attempt, cancellationToken);
+                        var completedUnderLock = false;
+                        if (await IsProcessingAsync(connection, id, cancellationToken))
+                        {
+                            completedUnderLock = await TryMarkDeliveredUnderLockIgnoringExpiryAsync(
+                                connection,
+                                id,
+                                lockToken,
+                                nowStorage,
+                                cancellationToken);
+                        }
+
+                        await transaction.CommitAsync(cancellationToken);
+                        _runtimeMetrics?.RecordAttemptCompleted(attempt);
+                        _runtimeMetrics?.RecordFinalizeSkipped();
+                        return completedUnderLock;
+                    }
+
                     await transaction.CommitAsync(cancellationToken);
                     return false;
                 }
             }
 
-            await using (var insertAttempt = connection.CreateCommand())
-            {
-                insertAttempt.CommandText = insertAttemptSql;
-                insertAttempt.Parameters.AddWithValue("@RequestId", attempt.RequestId.ToString("D"));
-                insertAttempt.Parameters.AddWithValue("@AttemptNumber", attempt.AttemptNumber);
-                insertAttempt.Parameters.AddWithValue("@Provider", attempt.Provider);
-                insertAttempt.Parameters.AddWithValue("@AttemptStatus", (int)attempt.Status);
-                insertAttempt.Parameters.AddWithValue("@ProviderMessageId", (object?)attempt.ProviderMessageId ?? DBNull.Value);
-                insertAttempt.Parameters.AddWithValue("@ErrorCode", (object?)attempt.ErrorCode ?? DBNull.Value);
-                insertAttempt.Parameters.AddWithValue("@ErrorMessage", (object?)attempt.ErrorMessage ?? DBNull.Value);
-                insertAttempt.Parameters.AddWithValue("@Retryable", attempt.Retryable ? 1 : 0);
-                insertAttempt.Parameters.AddWithValue("@LockToken", attempt.LockToken.ToString("D"));
-                insertAttempt.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(attempt.StartedAt));
-                insertAttempt.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(attempt.CompletedAt));
-                await insertAttempt.ExecuteNonQueryAsync(cancellationToken);
-            }
+            await InsertMailAttemptAsync(connection, insertAttemptSql, attempt, cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
             _runtimeMetrics?.RecordAttemptCompleted(attempt);
@@ -849,6 +858,160 @@ public sealed class MailRequestRepository(
             await transaction.RollbackAsync(cancellationToken);
             throw;
         }
+    }
+
+    public async Task<SuccessfulDeliveryAttempt?> FindSuccessfulDeliveryAttemptAsync(
+        Guid requestId,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT attempt_number, provider, provider_message_id
+            FROM mail_attempts
+            WHERE request_id = @RequestId
+              AND status = @DeliveredStatus
+            ORDER BY id ASC
+            LIMIT 1;
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+        command.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new SuccessfulDeliveryAttempt(
+            AttemptNumber: reader.GetInt32(0),
+            Provider: reader.GetString(1),
+            ProviderMessageId: reader.IsDBNull(2) ? null : reader.GetString(2));
+    }
+
+    public async Task<bool> TryMarkDeliveredAsync(
+        Guid id,
+        Guid lockToken,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+
+        const string updateSql = """
+            UPDATE mail_requests
+            SET
+                status = @DeliveredStatus,
+                next_attempt_at = NULL,
+                lock_token = NULL,
+                lock_expires_at = NULL,
+                updated_at = @Now,
+                completed_at = @Now,
+                delivered_at = @Now,
+                failed_at = NULL,
+                last_error_message = NULL
+            WHERE id = @Id
+              AND status = @ProcessingStatus
+              AND lock_token = @LockToken
+              AND lock_expires_at > @Now;
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            await using var update = connection.CreateCommand();
+            update.CommandText = updateSql;
+            update.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+            update.Parameters.AddWithValue("@Now", nowStorage);
+            update.Parameters.AddWithValue("@Id", id.ToString("D"));
+            update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+            update.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
+
+            var affected = await update.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return affected > 0;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    private static async Task InsertMailAttemptAsync(
+        SqliteConnection connection,
+        string insertAttemptSql,
+        MailAttemptInsert attempt,
+        CancellationToken cancellationToken)
+    {
+        await using var insertAttempt = connection.CreateCommand();
+        insertAttempt.CommandText = insertAttemptSql;
+        insertAttempt.Parameters.AddWithValue("@RequestId", attempt.RequestId.ToString("D"));
+        insertAttempt.Parameters.AddWithValue("@AttemptNumber", attempt.AttemptNumber);
+        insertAttempt.Parameters.AddWithValue("@Provider", attempt.Provider);
+        insertAttempt.Parameters.AddWithValue("@AttemptStatus", (int)attempt.Status);
+        insertAttempt.Parameters.AddWithValue("@ProviderMessageId", (object?)attempt.ProviderMessageId ?? DBNull.Value);
+        insertAttempt.Parameters.AddWithValue("@ErrorCode", (object?)attempt.ErrorCode ?? DBNull.Value);
+        insertAttempt.Parameters.AddWithValue("@ErrorMessage", (object?)attempt.ErrorMessage ?? DBNull.Value);
+        insertAttempt.Parameters.AddWithValue("@Retryable", attempt.Retryable ? 1 : 0);
+        insertAttempt.Parameters.AddWithValue("@LockToken", attempt.LockToken.ToString("D"));
+        insertAttempt.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(attempt.StartedAt));
+        insertAttempt.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(attempt.CompletedAt));
+        await insertAttempt.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task<bool> IsProcessingAsync(
+        SqliteConnection connection,
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT 1
+            FROM mail_requests
+            WHERE id = @Id
+              AND status = @ProcessingStatus
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@Id", id.ToString("D"));
+        command.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null && result is not DBNull;
+    }
+
+    private static async Task<bool> TryMarkDeliveredUnderLockIgnoringExpiryAsync(
+        SqliteConnection connection,
+        Guid id,
+        Guid lockToken,
+        string nowStorage,
+        CancellationToken cancellationToken)
+    {
+        await using var update = connection.CreateCommand();
+        update.CommandText = """
+            UPDATE mail_requests
+            SET
+                status = @DeliveredStatus,
+                next_attempt_at = NULL,
+                lock_token = NULL,
+                lock_expires_at = NULL,
+                updated_at = @Now,
+                completed_at = @Now,
+                delivered_at = @Now,
+                failed_at = NULL,
+                last_error_message = NULL
+            WHERE id = @Id
+              AND status = @ProcessingStatus
+              AND lock_token = @LockToken;
+            """;
+        update.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+        update.Parameters.AddWithValue("@Now", nowStorage);
+        update.Parameters.AddWithValue("@Id", id.ToString("D"));
+        update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+        update.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
+        var affected = await update.ExecuteNonQueryAsync(cancellationToken);
+        return affected > 0;
     }
 
     public async Task<bool> HasDispatchableWorkAsync(

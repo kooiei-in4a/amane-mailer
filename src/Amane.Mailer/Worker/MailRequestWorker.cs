@@ -2,6 +2,7 @@ using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Queue;
 using Amane.Mailer.Webhooks;
 
@@ -19,6 +20,7 @@ public sealed class MailRequestWorker : BackgroundService
     private readonly ExpiredProcessingReaper _expiredProcessingReaper;
     private readonly DeliveryEventEnqueuer _deliveryEventEnqueuer;
     private readonly WorkerServiceStatus _serviceStatus;
+    private readonly MailerRuntimeMetrics _runtimeMetrics;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<MailRequestWorker> _logger;
     private readonly MailDeliveryInflightTracker _inflightTracker;
@@ -36,6 +38,7 @@ public sealed class MailRequestWorker : BackgroundService
         DeliveryEventEnqueuer deliveryEventEnqueuer,
         WorkerServiceStatus serviceStatus,
         MailDeliveryInflightTracker inflightTracker,
+        MailerRuntimeMetrics runtimeMetrics,
         TimeProvider timeProvider,
         ILogger<MailRequestWorker> logger)
     {
@@ -50,6 +53,7 @@ public sealed class MailRequestWorker : BackgroundService
         _deliveryEventEnqueuer = deliveryEventEnqueuer;
         _serviceStatus = serviceStatus;
         _inflightTracker = inflightTracker;
+        _runtimeMetrics = runtimeMetrics;
         _timeProvider = timeProvider;
         _logger = logger;
         _sendConcurrency = new SemaphoreSlim(_workerOptions.MaxSendConcurrency);
@@ -226,6 +230,18 @@ public sealed class MailRequestWorker : BackgroundService
             return;
         }
 
+        // A prior provider success may exist when finalize lost the lease race (#238).
+        // Converge to Delivered without resending. First attempts cannot have prior evidence.
+        if (row.AttemptCount > 1)
+        {
+            var priorSuccess = await _repository.FindSuccessfulDeliveryAttemptAsync(row.Id, stoppingToken);
+            if (priorSuccess is not null)
+            {
+                await ConvergeDeliveredFromPriorSuccessAsync(row, priorSuccess, startedAt);
+                return;
+            }
+        }
+
         var providerName = _mailerOptions.ResolveProvider(tenant);
         var job = new MailSendJob(
             row.MailRequestId,
@@ -254,6 +270,37 @@ public sealed class MailRequestWorker : BackgroundService
 
         var completedAt = _timeProvider.GetUtcNow();
         await FinalizeDeliveryResultAsync(row, tenant, providerName, result, startedAt, completedAt);
+    }
+
+    private async Task ConvergeDeliveredFromPriorSuccessAsync(
+        MailRequestRow row,
+        SuccessfulDeliveryAttempt priorSuccess,
+        DateTimeOffset now)
+    {
+        using var finalizeTimeout = new CancellationTokenSource(_workerOptions.FinalizeTimeout);
+        var finalized = await _repository.TryMarkDeliveredAsync(
+            row.Id,
+            row.LockToken,
+            now,
+            finalizeTimeout.Token);
+
+        if (!finalized)
+        {
+            _runtimeMetrics.RecordFinalizeSkipped();
+            _logger.LogWarning(
+                "Skipped delivered converge for mail request {MailRequestId} with prior provider message id {ProviderMessageId} because the lock token expired or was superseded.",
+                row.MailRequestId,
+                priorSuccess.ProviderMessageId);
+            return;
+        }
+
+        await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
+        _logger.LogInformation(
+            "Converged mail request {MailRequestId} to Delivered from prior provider success without resending. PriorAttempt={PriorAttemptNumber}; Provider={Provider}; ProviderMessageId={ProviderMessageId}",
+            row.MailRequestId,
+            priorSuccess.AttemptNumber,
+            priorSuccess.Provider,
+            priorSuccess.ProviderMessageId);
     }
 
     private async Task FinalizeDeliveryResultAsync(

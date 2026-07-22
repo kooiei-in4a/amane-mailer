@@ -98,7 +98,7 @@ Mailer API の `202 Accepted` は「Mailer が依頼を永続化した」こと�
 
 現在の SQLite deployment では Mailer Worker は 1 レプリカ固定で運用する。実装は SQLite 上の `lock_token` / `lock_expires_at` lease と fencing で stale `processing` を再 claim できるが、単一 SQLite ファイルを共有する複数 Worker の水平化は現在の運用対象外とする。
 
-配送セマンティクスは at-least-once とする。Provider 送信成功後、Mailer DB の `delivered` 更新前にプロセスが停止した場合、stale `processing` 復旧により同じメールが再送される可能性がある。現在の SQLite deployment では許容リスクとして runbook に記載し、将来必要に応じて provider message id 確認または配信結果照会を追加する。
+配送セマンティクスは at-least-once とする。lease 失効後の finalize 競合では delivered attempt 証跡を残し reclaim 時の再送を抑止する（#238）が、Finalize 自体の例外 / timeout や Admin 手動リトライなどでは同一依頼が再送されうる。詳細な運用上の注意は metrics runbook（`mail_finalize_skipped_total`）を参照する。
 
 ### D-08. GET 状態確認 API は MVP 外
 
