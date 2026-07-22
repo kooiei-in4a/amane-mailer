@@ -1,6 +1,6 @@
 namespace Amane.Mailer.Worker;
 
-public sealed class MailDeliveryInflightTracker
+public sealed class InflightTracker
 {
     private int _inflightCount;
 
@@ -29,7 +29,7 @@ public sealed class MailDeliveryInflightTracker
         }
     }
 
-    public readonly struct InflightScope(MailDeliveryInflightTracker tracker) : IDisposable
+    public readonly struct InflightScope(InflightTracker tracker) : IDisposable
     {
         public void Dispose() => Interlocked.Decrement(ref tracker._inflightCount);
     }

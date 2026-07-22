@@ -9,6 +9,7 @@ public sealed record MailerWebhookOptions
     public const int DefaultDeliveryTimeoutSeconds = 30;
     public const int DefaultLeaseDurationSeconds = 60;
     public const int FinalizeTimeoutSeconds = 10;
+    public const int HostShutdownSlackSeconds = MailerWorkerOptions.HostShutdownSlackSeconds;
 
     public int MaxAttempts { get; init; } = DefaultMaxAttempts;
 
@@ -27,6 +28,11 @@ public sealed record MailerWebhookOptions
     public TimeSpan LeaseDuration => TimeSpan.FromSeconds(LeaseDurationSeconds);
 
     public TimeSpan FinalizeTimeout => TimeSpan.FromSeconds(FinalizeTimeoutSeconds);
+
+    public TimeSpan ShutdownDrainTimeout => DeliveryTimeout + FinalizeTimeout;
+
+    public TimeSpan HostShutdownTimeout =>
+        ShutdownDrainTimeout + TimeSpan.FromSeconds(HostShutdownSlackSeconds);
 
     public static MailerWebhookOptions Load(IConfiguration configuration) =>
         new()

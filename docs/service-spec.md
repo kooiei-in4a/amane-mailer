@@ -299,6 +299,7 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 - payload に PII（recipient, subject, body 等）は含めない。
 - Consumer 重複排除契約は `event_id`（同一 mail request で不変）。
 - 配信失敗時は指数バックオフで再送し、上限超過で webhook Dead Letter として記録する。
+- shutdown 中は `stoppingToken` により新規 claim を行わない。インフライト配信は最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する（`MailRequestWorker` と同型の drain）。
 - SSRF 対策: HTTPS 必須、private/metadata IP ブロック、optional `allowed_host_suffixes`。
 - 検証手順: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
 - OpenAPI schema: `MailDeliveryEventPayload`
@@ -459,7 +460,7 @@ docker compose --env-file .env -f compose.yml up -d mailer
 SIGTERM 受信時の運用順序：
 
 1. Generic Host が `ApplicationStopping` を発火し、Kestrel が新規 HTTP 受付を停止する
-2. `MailRequestWorker` がインフライト送信を最大 `SendTimeoutSeconds + 10秒` 待機する
+2. `MailRequestWorker` がインフライト送信を最大 `SendTimeoutSeconds + FinalizeTimeoutSeconds` 待機する。`WebhookDeliveryWorker` は新規 claim を止め、インフライト webhook 配信を最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する。待機を使い切っても残る場合は warning ログを出す
 3. Worker / Sweep / Retention など全 HostedService の `StopAsync` 完了後、`MailerWalCheckpointShutdownService.StoppedAsync` が `PRAGMA wal_checkpoint(TRUNCATE)` を実行する
 4. Generic Host が `ApplicationStopped` を発火する
 
@@ -467,7 +468,7 @@ WAL TRUNCATE は shutdown cleanup の best-effort であり、配送 durability 
 自体で担保する。checkpoint が失敗した場合は error log、shutdown timeout で中断された場合は
 warning log を出す。
 
-compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions.ShutdownTimeout` は worker 設定から `SendTimeoutSeconds + 25秒` 以上に設定する。`SendTimeoutSeconds` を増やす場合は `MAILER_STOP_GRACE_PERIOD` も併せて増やす。
+compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions.ShutdownTimeout` は mail / webhook 双方の drain 所要時間の大きい方に slack（15 秒）を加えた値とする（既定設定では mail 側が支配的で `SendTimeoutSeconds + 25秒` 以上）。`SendTimeoutSeconds` や webhook `DeliveryTimeoutSeconds` を増やす場合は `MAILER_STOP_GRACE_PERIOD` も併せて増やす。
 
 ---
 
@@ -503,3 +504,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-03 | ADR 0015 に追随: `Cancelled` 状態、手動再送・手動キャンセル遷移、`Failed` 定義修正 |
 | 2026-07-22 | `/readyz` に Worker/Sweep heartbeat 鮮度チェックを追加（#241）。CLI healthcheck と同じ閾値を共有 |
 | 2026-07-22 | 配送一意性（実送信の保証）節を追加（#239）。#238 の finalize 証跡・reclaim 収束と整合 |
+| 2026-07-22 | `WebhookDeliveryWorker` の shutdown drain（新規 claim 停止 + inflight 待機）を明記（#245） |

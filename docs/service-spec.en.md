@@ -303,6 +303,9 @@ Consumer.
   for the same mail request event).
 - Failed deliveries use exponential backoff; exceeding the retry limit records a
   webhook Dead Letter.
+- During shutdown, `stoppingToken` stops new claims. In-flight deliveries wait up
+  to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` (same drain pattern as
+  `MailRequestWorker`).
 - SSRF controls: HTTPS required, private/metadata IP blocked, optional
   `allowed_host_suffixes`.
 - Verification steps: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
@@ -464,7 +467,7 @@ See the [backup operations runbook](ops/backup-operations.en.md) for procedures.
 Operational sequence on SIGTERM:
 
 1. Generic Host fires `ApplicationStopping`; Kestrel stops accepting new HTTP requests
-2. `MailRequestWorker` waits up to `SendTimeoutSeconds + 10 seconds` for in-flight sends
+2. `MailRequestWorker` waits up to `SendTimeoutSeconds + FinalizeTimeoutSeconds` for in-flight sends. `WebhookDeliveryWorker` stops new claims and waits up to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` for in-flight webhook deliveries. If the drain window expires with work still active, a warning is logged
 3. After all HostedServices (Worker / Sweep / Retention, etc.) complete `StopAsync`, `MailerWalCheckpointShutdownService.StoppedAsync` runs `PRAGMA wal_checkpoint(TRUNCATE)`
 4. Generic Host fires `ApplicationStopped`
 
@@ -472,7 +475,7 @@ WAL TRUNCATE is best-effort shutdown cleanup; delivery durability is guaranteed 
 itself. On checkpoint failure, an error log is emitted; if shutdown timeout interrupts, a
 warning log is emitted.
 
-Compose defaults to `stop_grace_period=120s`; app-side `HostOptions.ShutdownTimeout` is set to at least `SendTimeoutSeconds + 25 seconds` from worker config. When increasing `SendTimeoutSeconds`, also increase `MAILER_STOP_GRACE_PERIOD`.
+Compose defaults to `stop_grace_period=120s`; app-side `HostOptions.ShutdownTimeout` is the larger of the mail and webhook drain requirements plus slack (15 seconds). With defaults, the mail side dominates (`SendTimeoutSeconds + 25 seconds` or more). When increasing `SendTimeoutSeconds` or webhook `DeliveryTimeoutSeconds`, also increase `MAILER_STOP_GRACE_PERIOD`.
 
 ---
 
@@ -508,3 +511,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-03 | Followed ADR 0015: `Cancelled` state, manual retry/cancel transitions, `Failed` definition fix |
 | 2026-07-22 | Added Worker/Sweep heartbeat freshness check to `/readyz` (#241). Shares the same threshold as CLI healthcheck |
 | 2026-07-22 | Added the "Delivery uniqueness (actual send guarantees)" section (#239). Consistent with #238 finalize evidence / reclaim convergence |
+| 2026-07-22 | Documented `WebhookDeliveryWorker` shutdown drain (stop new claims + wait for in-flight) (#245) |
