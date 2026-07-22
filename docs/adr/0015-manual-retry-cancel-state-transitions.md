@@ -24,7 +24,7 @@
 | DB CHECK | `mail_requests.status IN (0,1,2,3,4)`（[001_initial.sql](../../src/Amane.Mailer/Data/Migrations/001_initial.sql)） |
 | HTTP 公開 API | 手動再送・キャンセルは **Admin 専用**。`POST /internal/mail-requests` 契約の対象外 |
 
-**実装ステータス（2026-07-22）:** [#101](https://github.com/kooiei-in4a/amane-mailer/issues/101) により手動再送・手動キャンセルは実装済み。Admin UI の Dead Letter 一覧・詳細の「再送する」、詳細の「キャンセルする」（有効 lock 中の `Processing` は disabled）、`MailRequestState.Cancelled`、DB CHECK `0..5`（[007_mail_request_cancelled_status.sql](../../src/Amane.Mailer/Data/Migrations/007_mail_request_cancelled_status.sql)）を含む。本 ADR の Decision 節は設計判断の正本であり、上表は採択前ギャップの記録である。
+**現行の実装状況は [実装ステータスマニフェスト](../implementation-status.json) を正本とする**（feature ID: `admin-manual-retry`）。本 ADR の Decision 節は設計判断の正本であり、上表は採択前ギャップの記録である。
 
 手動操作は Worker の `TryClaimOneAsync` / `FinalizeAsync` / `DeadLetterExpiredProcessingAtMaxAttemptsAsync` と **同一 SQLite 行を競合更新**する。原子的 conditional `UPDATE` と tenant scope 認可が必須である。
 

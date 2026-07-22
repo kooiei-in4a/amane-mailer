@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "description": "Canonical current implementation status. ADRs record design rationale; this file records present-day status (#246 / #250).",
+  "features": [
+    {
+      "id": "admin-audit-retention-sweep",
+      "status": "implemented",
+      "trackingIssue": 92,
+      "lastVerified": "2026-07-22",
+      "relatedAdrs": ["0013", "0014"],
+      "notes": "AdminAuditRetentionService batch purge and db admin-audit purge CLI. Regression: tests/Amane.Mailer.Tests/Admin/AdminAuditRetentionTests.cs"
+    },
+    {
+      "id": "admin-manual-retry",
+      "status": "implemented",
+      "trackingIssue": 101,
+      "lastVerified": "2026-07-22",
+      "relatedAdrs": ["0015"],
+      "notes": "Includes manual cancel and MailRequestState.Cancelled from the same tracking issue (#101)."
+    },
+    {
+      "id": "admin-durable-login-throttle",
+      "status": "implemented",
+      "trackingIssue": 89,
+      "lastVerified": "2026-07-22",
+      "relatedAdrs": ["0013", "0014"]
+    },
+    {
+      "id": "admin-durable-session-store",
+      "status": "implemented",
+      "trackingIssue": 88,
+      "lastVerified": "2026-07-22",
+      "relatedAdrs": ["0013", "0014"]
+    },
+    {
+      "id": "admin-per-admin-tenant-scope",
+      "status": "implemented",
+      "trackingIssue": 91,
+      "lastVerified": "2026-07-22",
+      "relatedAdrs": ["0013", "0014"],
+      "notes": "Scoped and break-glass authorization; startup fail-closed when 2+ effective tenants. Env bootstrap admin receives all configured tenant scopes on first seed (not break-glass)."
+    },
+    {
+      "id": "admin-audit-event-persistence",
+      "status": "implemented",
+      "trackingIssue": 6,
+      "lastVerified": "2026-07-22",
+      "relatedAdrs": ["0013"]
+    },
+    {
+      "id": "admin-audit-network-identifier-hash",
+      "status": "implemented",
+      "trackingIssue": 55,
+      "lastVerified": "2026-07-22",
+      "relatedAdrs": ["0013", "0014"],
+      "notes": "No dedicated implementation issue. Delivered in Phase 1 via #89 (throttle key) and #90 (audit source_ip hash). When MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true, keyed hash is used and missing key causes startup fail-closed."
+    }
+  ]
+}
