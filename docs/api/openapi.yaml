@@ -392,13 +392,14 @@ paths:
   /readyz:
     get:
       tags: [health]
-      summary: 受付可否（readiness、DB schema + Worker/Sweep 稼働確認）
+      summary: 受付可否（readiness、DB schema + Worker/Sweep 稼働・heartbeat 鮮度）
       operationId: readyz
       security: []
       responses:
         '200':
           description: >-
-            受付可能（DB schema OK、Worker 有効時は Worker/Sweep 両サービス稼働中）
+            受付可能（DB schema OK。Worker 有効時は Worker/Sweep 両サービス稼働中かつ
+            heartbeat が Mailer:Healthcheck:MaxHeartbeatStalenessSeconds 以内）
           content:
             application/json:
               schema:
@@ -407,7 +408,8 @@ paths:
                   ready: { type: boolean, const: true }
         '503':
           description: >-
-            DB 未接続・schema 未適用、または Worker/Sweep BackgroundService が停止中
+            DB 未接続・schema 未適用、Worker/Sweep BackgroundService が停止中、
+            または worker/sweep heartbeat が閾値を超えて古い
           content:
             application/json:
               schema:

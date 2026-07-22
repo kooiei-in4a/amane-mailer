@@ -154,6 +154,8 @@ app.MapGet("/healthz", () => MailerJsonResults.Health(true));
 app.MapGet("/readyz", async (
     SqliteConnectionFactory connections,
     WorkerServiceStatus serviceStatus,
+    MailRequestRepository repository,
+    MailerHealthcheckOptions healthcheckOptions,
     IConfiguration configuration,
     CancellationToken cancellationToken) =>
 {
@@ -164,8 +166,15 @@ app.MapGet("/readyz", async (
             return MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
 
         var workerEnabled = configuration.GetValue("Mailer:Worker:Enabled", true);
-        if (workerEnabled && (!serviceStatus.IsWorkerRunning || !serviceStatus.IsSweepRunning))
-            return MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
+        if (workerEnabled)
+        {
+            if (!serviceStatus.IsWorkerRunning || !serviceStatus.IsSweepRunning)
+                return MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
+
+            var heartbeats = await repository.GetHeartbeatsAsync(cancellationToken);
+            if (!WorkerHeartbeatFreshness.AreFresh(heartbeats, healthcheckOptions.MaxHeartbeatStaleness))
+                return MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
+        }
 
         return MailerJsonResults.Ready(true);
     }
