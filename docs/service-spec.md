@@ -142,6 +142,28 @@ OpenAPI・Contracts README・`SECURITY.md` と整合する。値の強制拒否�
 - 同一キーの再送は 202 `already_accepted`、内容（`payload_hash`）が違えば 409。
 - `mail_request_id` は利用側生成（UUIDv7 推奨）。
 
+### 配送一意性（実送信の保証）
+
+HTTP 受付の冪等性（上記「冪等性」節）と、**ACS/Mailpit 経由の実メール送信の一意性は別契約**である。Consumer は「同一 `mail_request_id` で必ず 1 通だけ届く（exactly-once）」と期待してはならない。
+
+Mailer の配送セマンティクスは **at-least-once**（同一依頼から複数通の実送信が起こりうる）である。以下は現在の実装に基づく保証の要約である。正本は [ADR 0012 D-07](adr/0012-mail-via-mailer-microservice.md) および本節。
+
+| 対象 | 保証 | 備考 |
+|---|---|---|
+| HTTP 受付 | at-most-once 永続化 | 同一 `(tenant_id, source_service, mail_request_id)` は 1 行。再 POST は `already_accepted` |
+| 実メール配送（全体） | **not exactly-once** / at-least-once | 自動リトライ・手動再送・provider 挙動により重複しうる |
+| ACS (`provider=acs`) | 決定論的 operation id（UUIDv5）による**緩和のみ** | `tenant_id` + `source_service:mail_request_id` から生成（`AcsOperationIdFactory`）。ACS サーバ側の重複排除として機能する保証は本リポジトリでは検証・保証しない |
+| Mailpit (`provider=mailpit`) | **冪等性なし**（best-effort） | 再送のたびに SMTP 送信が発生しうる（開発/検証向け） |
+| Worker 自動リトライ | at-least-once | retryable 失敗は `Queued` に戻り再配送 |
+| lease 失効後の finalize 競合（#238） | **再送抑止** | provider 送信成功の証跡を `mail_attempts` に残し、reclaim 時は実送信をスキップして `Delivered` へ収束。finalize skip は `mail_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)） |
+| Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す。過去に `Delivered` だった依頼でも再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
+| 配送結果 Webhook | `event_id` による重複排除 | **実メール送信とは別契約**。Consumer は同一 `event_id` の再 POST を冪等に処理する（[webhook-verification.md](consumer/webhook-verification.md)） |
+
+**Consumer 向け推奨:**
+
+- 業務上の重複通知を避ける必要がある場合は、利用側で `mail_request_id` または独自の相関 ID で去重する。
+- `GET /internal/mail-requests/{mail_request_id}` で `delivered` を確認しても、既に複数通送信済みの可能性は排除できない（特に Mailpit・手動再送）。
+
 ### バージョニングポリシー
 
 service release（GitHub Release tag）、Docker image tag、`Amane.Mailer.Contracts` NuGet package、OpenAPI `info.version` はすべて同一の `X.Y.Z` を使用する。1 つのリリースで 4 つが揃う。
@@ -476,3 +498,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-06-27 | `v0.1.1` patch release 準備として Contracts package と OpenAPI `info.version` を `0.1.1` に更新 |
 | 2026-07-03 | ADR 0015 に追随: `Cancelled` 状態、手動再送・手動キャンセル遷移、`Failed` 定義修正 |
 | 2026-07-22 | `/readyz` に Worker/Sweep heartbeat 鮮度チェックを追加（#241）。CLI healthcheck と同じ閾値を共有 |
+| 2026-07-22 | 配送一意性（実送信の保証）節を追加（#239）。#238 の finalize 証跡・reclaim 収束と整合 |
