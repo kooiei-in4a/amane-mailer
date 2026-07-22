@@ -468,7 +468,7 @@ WAL TRUNCATE は shutdown cleanup の best-effort であり、配送 durability 
 自体で担保する。checkpoint が失敗した場合は error log、shutdown timeout で中断された場合は
 warning log を出す。
 
-compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions.ShutdownTimeout` は mail / webhook 双方の drain 所要時間の大きい方に slack（15 秒）を加えた値とする（既定設定では mail 側が支配的で `SendTimeoutSeconds + 25秒` 以上）。`SendTimeoutSeconds` や webhook `DeliveryTimeoutSeconds` を増やす場合は `MAILER_STOP_GRACE_PERIOD` も併せて増やす。
+compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions.ShutdownTimeout` は mail / webhook 双方の drain 所要時間の大きい方に slack（15 秒）を加えた値とする（既定設定では mail 側が支配的で `SendTimeoutSeconds + 25秒` 以上）。HostedService の `StopAsync` は既定で逐次（`ServicesStopConcurrently=false`）のため、両 worker が同時に最大長のインフライトを抱える最悪ケースでは `max()` を超える加算待ちになり得る。その場合の打ち切り分は lease 失効後の reclaim / 冪等収束（#238）で吸収する前提であり、`max()` は concurrent drain 仮定ではなく「片側の最大 drain + slack」のホスト上限である。`SendTimeoutSeconds` や webhook `DeliveryTimeoutSeconds` を増やす場合は `MAILER_STOP_GRACE_PERIOD` も併せて増やす。
 
 ---
 

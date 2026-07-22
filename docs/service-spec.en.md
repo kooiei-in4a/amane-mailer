@@ -475,7 +475,7 @@ WAL TRUNCATE is best-effort shutdown cleanup; delivery durability is guaranteed 
 itself. On checkpoint failure, an error log is emitted; if shutdown timeout interrupts, a
 warning log is emitted.
 
-Compose defaults to `stop_grace_period=120s`; app-side `HostOptions.ShutdownTimeout` is the larger of the mail and webhook drain requirements plus slack (15 seconds). With defaults, the mail side dominates (`SendTimeoutSeconds + 25 seconds` or more). When increasing `SendTimeoutSeconds` or webhook `DeliveryTimeoutSeconds`, also increase `MAILER_STOP_GRACE_PERIOD`.
+Compose defaults to `stop_grace_period=120s`; app-side `HostOptions.ShutdownTimeout` is the larger of the mail and webhook drain requirements plus slack (15 seconds). With defaults, the mail side dominates (`SendTimeoutSeconds + 25 seconds` or more). HostedService `StopAsync` runs sequentially by default (`ServicesStopConcurrently=false`), so when both workers hold a max-duration in-flight op at SIGTERM the additive wait can exceed `max()`. Any truncation is absorbed by lease-expiry reclaim / idempotent convergence (#238); `max()` is therefore a per-side drain + slack host ceiling, not a concurrent-drain bound. When increasing `SendTimeoutSeconds` or webhook `DeliveryTimeoutSeconds`, also increase `MAILER_STOP_GRACE_PERIOD`.
 
 ---
 
