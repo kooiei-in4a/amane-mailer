@@ -153,6 +153,7 @@ app.MapGet("/healthz", () => MailerJsonResults.Health(true));
 
 app.MapGet("/readyz", async (
     SqliteConnectionFactory connections,
+    SqlMigrationRunner migrationRunner,
     WorkerServiceStatus serviceStatus,
     MailRequestRepository repository,
     MailerHealthcheckOptions healthcheckOptions,
@@ -161,7 +162,7 @@ app.MapGet("/readyz", async (
 {
     try
     {
-        var canConnect = await connections.CanConnectToMigratedSchemaAsync(cancellationToken);
+        var canConnect = await migrationRunner.IsCurrentSchemaReadyAsync(cancellationToken);
         if (!canConnect)
             return MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
 

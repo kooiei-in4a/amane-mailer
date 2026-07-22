@@ -44,10 +44,10 @@ The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contra
 |---|---|---|---|
 | `POST` | `/internal/mail-requests` | Accept send request (optional `scheduled_at`) | Tenant Bearer |
 | `GET` | `/internal/mail-requests/{mail_request_id}` | Query delivery status (`tenant_id` / `source_service` as query params) | Tenant Bearer |
-| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | Pre-send cancel (`queued` only) | Tenant Bearer |
+| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | Pre-send cancel (`queued`; already `cancelled` is idempotent) | Tenant Bearer |
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | Change schedule (`queued` and `attempt_count=0`) | Tenant Bearer |
 | `GET` | `/healthz` | Liveness check | None |
-| `GET` | `/readyz` | Readiness (DB schema + Worker/Sweep running + heartbeat freshness) | None |
+| `GET` | `/readyz` | Readiness (current migration schema + Worker/Sweep running + heartbeat freshness) | None |
 | `GET` | `/metrics` | Prometheus metrics (ops; see [metrics-and-alerts.en.md](ops/metrics-and-alerts.en.md)) | None by default (optional bearer) |
 
 ### Contract Sync and Drift Review
@@ -99,13 +99,18 @@ The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attem
 | Situation | HTTP | code / status |
 |---|---|---|
 | Cancel a `queued` request | 200 | `status: cancelled` (status JSON) |
+| Already `cancelled` (same-key re-cancel) | 200 | `status: cancelled` (idempotent) |
 | Invalid query | 400 | `INVALID_REQUEST` |
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Missing / other tenant | 404 | `NOT_FOUND` |
-| Not `queued` | 422 | `INVALID_STATE` |
+| Neither `queued` nor `cancelled` | 422 | `INVALID_STATE` |
 | Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
+
+After a successful cancel DB update (`Cancelled` commit), transient webhook enqueue or status
+re-read failures must not return an HTTP failure that implies the request was not cancelled.
+Enqueue is best-effort; gaps may be filled by reconcile.
 
 ### Reschedule (POST reschedule)
 
@@ -252,7 +257,7 @@ DDL: `src/Amane.Mailer/Data/Migrations/002_worker_heartbeats.sql`
 | `name` | TEXT PK | Service name (`worker` / `sweep`) |
 | `last_heartbeat_at` | TEXT | Last heartbeat time (UTC ISO8601) |
 
-Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthcheck` and `GET /readyz` (when Worker is enabled) validate the presence and freshness of both rows. Freshness threshold is `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` (default 300 seconds). Docker HEALTHCHECK uses the CLI `healthcheck`.
+Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthcheck` and `GET /readyz` verify that the schema required by the current binary is ready (applied migration versions + checksums), and when Worker is enabled also validate the presence and freshness of both heartbeat rows. Freshness threshold is `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` (default 300 seconds). Docker HEALTHCHECK uses the CLI `healthcheck`.
 
 ### 3.4 State Transitions (`mail_requests.status`)
 
@@ -320,7 +325,7 @@ Early branching on `argv` before Web host startup. Container `ENTRYPOINT` is `./
 
 | Subcommand | Purpose | Exit code |
 |---|---|---|
-| `healthcheck` | SQLite schema + Worker/Sweep heartbeat freshness check (Docker `HEALTHCHECK`) | 0=healthy / 1=unhealthy |
+| `healthcheck` | Current SQLite schema (applied migration version + checksum) + Worker/Sweep heartbeat freshness check (Docker `HEALTHCHECK`) | 0=healthy / 1=unhealthy |
 | `db migrate` | Apply pending SQL migrations | 0=success |
 | `db checkpoint` | Clean up `-wal` via `PRAGMA wal_checkpoint(TRUNCATE)` | 0=success |
 | `db backup <absolute-path>` | Online SQLite backup (Backup API) | 0=success / 2=usage error |
@@ -512,3 +517,5 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-22 | Added Worker/Sweep heartbeat freshness check to `/readyz` (#241). Shares the same threshold as CLI healthcheck |
 | 2026-07-22 | Added the "Delivery uniqueness (actual send guarantees)" section (#239). Consistent with #238 finalize evidence / reclaim convergence |
 | 2026-07-22 | Documented `WebhookDeliveryWorker` shutdown drain (stop new claims + wait for in-flight) (#245) |
+| 2026-07-23 | `/readyz` / CLI `healthcheck` require current migration version + checksum (#267) |
+| 2026-07-23 | Consumer cancel is idempotent for already-cancelled; post-commit HTTP failures avoided (#269) |

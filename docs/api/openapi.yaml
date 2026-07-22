@@ -123,7 +123,9 @@ paths:
       summary: 送信前のメール依頼をキャンセルする
       description: >-
         `queued` かつ未 claim（送信前）の依頼のみキャンセルできる。
-        成功時は `cancelled` ステータスを返す。active `processing` / `delivered` 等は 422 INVALID_STATE。
+        成功時は `cancelled` ステータスを返す。既に `cancelled` の同一キーへの再 cancel は冪等に 200 を返す。
+        active `processing` / `delivered` 等は 422 INVALID_STATE。
+        webhook enqueue は best-effort（失敗しても cancel HTTP 成功を崩さない。欠落は reconcile で補完し得る）。
         他 tenant の ID は存在有無を漏らさず 404。
       operationId: cancelMailRequest
       security:
@@ -409,13 +411,14 @@ paths:
   /readyz:
     get:
       tags: [health]
-      summary: 受付可否（readiness、DB schema + Worker/Sweep 稼働・heartbeat 鮮度）
+      summary: 受付可否（readiness、現行 migration schema + Worker/Sweep 稼働・heartbeat 鮮度）
       operationId: readyz
       security: []
       responses:
         '200':
           description: >-
-            受付可能（DB schema OK。Worker 有効時は Worker/Sweep 両サービス稼働中かつ
+            受付可能（現行バイナリが必要とする migration が applied かつ checksum 一致。
+            Worker 有効時は Worker/Sweep 両サービス稼働中かつ
             heartbeat が Mailer:Healthcheck:MaxHeartbeatStalenessSeconds 以内）
           content:
             application/json:
@@ -425,7 +428,8 @@ paths:
                   ready: { type: boolean, const: true }
         '503':
           description: >-
-            DB 未接続・schema 未適用、Worker/Sweep BackgroundService が停止中、
+            DB 未接続・現行 schema 未適用 / migration checksum 不一致、
+            Worker/Sweep BackgroundService が停止中、
             または worker/sweep heartbeat が閾値を超えて古い
           content:
             application/json:
