@@ -71,7 +71,7 @@ public static class MailerCliHost
                 return DbMigrateCommand.SuccessExitCode;
 
             var healthcheckOptions = MailerHealthcheckOptions.Load(configuration);
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             var heartbeats = await repository.GetHeartbeatsAsync(cancellationToken);
             if (!WorkerHeartbeatFreshness.AreFresh(heartbeats, healthcheckOptions.MaxHeartbeatStaleness))
                 return 1;

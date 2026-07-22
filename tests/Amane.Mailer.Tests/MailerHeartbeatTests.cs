@@ -21,7 +21,7 @@ public sealed class MailerHeartbeatTests
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
 
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             var t1 = new DateTimeOffset(2026, 6, 24, 10, 0, 0, TimeSpan.Zero);
             await repository.UpsertHeartbeatAsync("worker", t1, ct);
 
@@ -58,7 +58,7 @@ public sealed class MailerHeartbeatTests
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
 
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             var heartbeats = await repository.GetHeartbeatsAsync(ct);
 
             Assert.Empty(heartbeats);
@@ -84,7 +84,7 @@ public sealed class MailerHeartbeatTests
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
 
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             var now = new DateTimeOffset(2026, 6, 24, 10, 0, 0, TimeSpan.Zero);
             await repository.UpsertHeartbeatAsync("worker", now, ct);
             await repository.UpsertHeartbeatAsync("sweep", now.AddSeconds(5), ct);
@@ -116,7 +116,7 @@ public sealed class MailerHeartbeatTests
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
 
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             var now = DateTimeOffset.UtcNow;
             await repository.UpsertHeartbeatAsync("worker", now, ct);
             await repository.UpsertHeartbeatAsync("sweep", now, ct);
@@ -146,7 +146,7 @@ public sealed class MailerHeartbeatTests
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
 
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             var now = DateTimeOffset.UtcNow;
             await repository.UpsertHeartbeatAsync("worker", now.AddMinutes(-10), ct);
             await repository.UpsertHeartbeatAsync("sweep", now, ct);
@@ -176,7 +176,7 @@ public sealed class MailerHeartbeatTests
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
 
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             var now = DateTimeOffset.UtcNow;
             await repository.UpsertHeartbeatAsync("worker", now, ct);
             await repository.UpsertHeartbeatAsync("sweep", now.AddMinutes(-10), ct);
@@ -231,7 +231,7 @@ public sealed class MailerHeartbeatTests
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
 
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             await repository.UpsertHeartbeatAsync("worker", DateTimeOffset.UtcNow, ct);
 
             var exitCode = await MailerCliHost.RunHealthCheckAsync(configuration, ct);
@@ -259,7 +259,7 @@ public sealed class MailerHeartbeatTests
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
 
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             await repository.UpsertHeartbeatAsync("sweep", DateTimeOffset.UtcNow, ct);
 
             var exitCode = await MailerCliHost.RunHealthCheckAsync(configuration, ct);
@@ -320,7 +320,7 @@ public sealed class MailerHeartbeatTests
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
 
-            var repository = new MailRequestRepository(factory);
+            var repository = MailRequestRepository.CreateStandalone(factory);
             await repository.UpsertHeartbeatAsync("worker", now.AddSeconds(-30), ct);
             await repository.UpsertHeartbeatAsync("sweep", now.AddSeconds(-45), ct);
 
