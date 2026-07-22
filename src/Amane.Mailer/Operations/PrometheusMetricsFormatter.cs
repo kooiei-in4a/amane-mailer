@@ -49,7 +49,7 @@ public static class PrometheusMetricsFormatter
         AppendCounter(builder, "mail_retries_total", runtime.RetriesTotal);
 
         AppendHelpType(builder, "mail_finalize_skipped_total", "counter",
-            "Total times a delivered provider attempt was recorded but request finalize was skipped because the lock expired or was superseded.");
+            "Total delivered finalize attempts where strict lease fencing failed (includes delayed completion under the same lock and superseded/terminal races).");
         AppendCounter(builder, "mail_finalize_skipped_total", runtime.FinalizeSkippedTotal);
 
         AppendHelpType(builder, "mail_dead_letters_total", "gauge",

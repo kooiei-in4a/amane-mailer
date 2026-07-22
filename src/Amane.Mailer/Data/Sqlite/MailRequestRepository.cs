@@ -818,20 +818,24 @@ public sealed class MailRequestRepository(
                 var affected = await update.ExecuteNonQueryAsync(cancellationToken);
                 if (affected == 0)
                 {
-                    // Provider send may already have succeeded under an expired lease.
-                    // Persist delivered evidence and best-effort complete under the same
-                    // lock_token (without requiring an unexpired lease) so we do not
-                    // leave a successful send as Processing for reclaim/reaper (#238).
-                    if (attempt.Status == MailRequestState.Delivered
-                        && await IsProcessingAsync(connection, id, cancellationToken))
+                    // Provider send may already have succeeded under an expired/superseded lock,
+                    // or a sweep reaper may have terminalized the row while send was in flight.
+                    // Always persist delivered evidence + skip metric; only best-effort complete
+                    // to Delivered while the row is still Processing under the same lock (#238).
+                    if (attempt.Status == MailRequestState.Delivered)
                     {
                         await InsertMailAttemptAsync(connection, insertAttemptSql, attempt, cancellationToken);
-                        var completedUnderLock = await TryMarkDeliveredUnderLockIgnoringExpiryAsync(
-                            connection,
-                            id,
-                            lockToken,
-                            nowStorage,
-                            cancellationToken);
+                        var completedUnderLock = false;
+                        if (await IsProcessingAsync(connection, id, cancellationToken))
+                        {
+                            completedUnderLock = await TryMarkDeliveredUnderLockIgnoringExpiryAsync(
+                                connection,
+                                id,
+                                lockToken,
+                                nowStorage,
+                                cancellationToken);
+                        }
+
                         await transaction.CommitAsync(cancellationToken);
                         _runtimeMetrics?.RecordAttemptCompleted(attempt);
                         _runtimeMetrics?.RecordFinalizeSkipped();

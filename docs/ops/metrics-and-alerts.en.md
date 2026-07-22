@@ -43,7 +43,7 @@ internet exposure is not intended.
 | `mail_queue_ready_count` | gauge | none | Immediately deliverable queued count (all tenants) |
 | `mail_queue_oldest_age_seconds` | gauge | none | Age of oldest `updated_at` in the ready backlog |
 | `mail_retries_total` | counter | none | Retry attempts since process start (`attempt_number > 1` completed attempts) |
-| `mail_finalize_skipped_total` | counter | none | Times a delivered provider attempt was recorded but request finalize was skipped because the lock expired or was superseded |
+| `mail_finalize_skipped_total` | counter | none | Delivered finalize attempts where strict lease fencing (`lock_expires_at`) failed. Includes delayed completion under the same lock and superseded/terminal races |
 | `mail_dead_letters_total` | gauge | none | Current dead_lettered request count |
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | Heartbeat age for `worker` / `sweep`. No series when the row is missing |
 
@@ -117,14 +117,14 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: Delivered provider attempt finalize was skipped due to expired or superseded lock
+          summary: Delivered finalize hit strict lease fencing failure (delayed complete or superseded/terminal race)
 ```
 
 Because `mail_deliveries_total` is an in-process counter, `rate()` can be briefly
 unstable right after a Mailer restart. Prefer queue / heartbeat alerts as
 primary signals and treat delivery rate as secondary. Use
-`mail_finalize_skipped_total` to detect rare lease races; when it increases,
-verify reclaim convergence and duplicate-send risk.
+`mail_finalize_skipped_total` to detect strict lease fencing failures; when it
+increases, check for delivery evidence, Delivered convergence, and DeadLetter races.
 
 ## Security notes
 
