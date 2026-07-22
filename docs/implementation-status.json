@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Canonical current implementation status. ADRs record design rationale; this file records present-day status (#246 / #250).",
+  "description": "Canonical current implementation status. ADRs record design rationale; this file records present-day status (#246 / #250). Allowed status values: planned, partial, implemented, deferred, removed.",
   "features": [
     {
       "id": "admin-audit-retention-sweep",
@@ -16,7 +16,7 @@
       "trackingIssue": 101,
       "lastVerified": "2026-07-22",
       "relatedAdrs": ["0015"],
-      "notes": "Includes manual cancel and MailRequestState.Cancelled from the same tracking issue (#101)."
+      "notes": "Includes manual cancel and MailRequestState.Cancelled from the same tracking issue (#101). Migration 007_mail_request_cancelled_status.sql extends mail_requests.status CHECK to 0..5."
     },
     {
       "id": "admin-durable-login-throttle",

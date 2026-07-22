@@ -16,7 +16,7 @@
 | login throttle の再起動耐性 | D-04, D-11 | in-memory `ConcurrentDictionary` のみ |
 | 監査イベントの残件 | D-08 | login success/failure と body view は永続化済み。logout / session expired / login rate limited、retention sweep、network identifier hash 化は未実装 |
 
-上表は **2026-06-28 設計時点**のギャップ記録である。**現行の実装状況は [実装ステータスマニフェスト](../implementation-status.json) を正本とする。** 本 ADR の Decision 節は設計判断の正本であり、上表は採択前ギャップの記録である。
+上表は **2026-06-28 設計時点**のギャップ記録である。**現行の実装状況は [実装ステータスマニフェスト](../implementation-status.json) を正本とする。** 本 ADR の Decision 節は設計判断の正本である。
 
 [#6](https://github.com/kooiei-in4a/amane-mailer/issues/6) で audit 永続化の基盤（`admin_audit_events` テーブル、login/body view 記録）は完了した。本 ADR は**残りの Admin 基盤強化を広い実装に入る前に凍結する設計判断**を記録する。
 
