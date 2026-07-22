@@ -156,12 +156,12 @@ Mailer の配送セマンティクスは **at-least-once**（同一依頼から�
 | Mailpit (`provider=mailpit`) | **冪等性なし**（best-effort） | 再送のたびに SMTP 送信が発生しうる（開発/検証向け） |
 | Worker 自動リトライ | at-least-once | retryable 失敗は `Queued` に戻り再配送 |
 | lease 失効後の finalize 競合（#238） | **再送抑止** | provider 送信成功の証跡を `mail_attempts` に残し、reclaim 時は実送信をスキップして `Delivered` へ収束。finalize skip は `mail_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)） |
-| Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す。過去に `Delivered` だった依頼でも再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
+| Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す（`attempt_count` を 0 リセット）。provider 送信が成功済みでも row が `Delivered` へ収束していなければ再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
 | 配送結果 Webhook | `event_id` による重複排除 | **実メール送信とは別契約**。Consumer は同一 `event_id` の再 POST を冪等に処理する（[webhook-verification.md](consumer/webhook-verification.md)） |
 
 **Consumer 向け推奨:**
 
-- 業務上の重複通知を避ける必要がある場合は、利用側で `mail_request_id` または独自の相関 ID で去重する。
+- 業務上の重複通知を避ける必要がある場合は、利用側で `mail_request_id` または独自の相関 ID で重複排除する。
 - `GET /internal/mail-requests/{mail_request_id}` で `delivered` を確認しても、既に複数通送信済みの可能性は排除できない（特に Mailpit・手動再送）。
 
 ### バージョニングポリシー
