@@ -72,6 +72,9 @@ dotnet test Amane.Mailer.slnx -c Release --no-build --filter "FullyQualifiedName
 # OpenAPI structural validation
 node scripts/validate-openapi.mjs docs/api/openapi.yaml
 
+# Implementation status manifest validation (#246 Phase 2)
+node scripts/check-implementation-status.mjs
+
 # Native AOT publish smoke — required when runtime, dependencies, or serialization changes
 dotnet publish src/Amane.Mailer/Amane.Mailer.csproj `
   -c Release -r linux-x64 --self-contained --no-restore `
