@@ -4,7 +4,7 @@ using Amane.Mailer.Operations;
 
 namespace Amane.Mailer.Data.Sqlite;
 
-public sealed class MailRequestRepository
+public class MailRequestRepository
 {
     private readonly MailRequestClaimStore _claimStore;
     private readonly MailRequestAcceptStore _acceptStore;
@@ -68,7 +68,7 @@ public sealed class MailRequestRepository
         CancellationToken cancellationToken = default) =>
         _adminQueries.ListAttemptsForAdminAsync(requestId, cancellationToken);
 
-    public Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
+    public virtual Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
         Guid tenantId,
         string sourceService,
         Guid mailRequestId,
@@ -82,7 +82,7 @@ public sealed class MailRequestRepository
         CancellationToken cancellationToken = default) =>
         _acceptStore.GetStatusByIdempotencyKeyAsync(tenantId, sourceService, mailRequestId, cancellationToken);
 
-    public Task InsertAcceptedAsync(
+    public virtual Task InsertAcceptedAsync(
         AcceptedMailRequestInsert insert,
         CancellationToken cancellationToken = default) =>
         _acceptStore.InsertAcceptedAsync(insert, cancellationToken);

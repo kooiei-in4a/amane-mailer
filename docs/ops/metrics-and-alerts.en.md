@@ -130,6 +130,14 @@ requeueing a DeadLetter that already has delivered attempt evidence will perform
 real resend (worker prior-success convergence does not apply). Check Admin attempt
 history for `provider_message_id` before retrying.
 
+## Disk exhaustion, WAL, and retention
+
+A rising `mail_queue_oldest_age_seconds` can indicate Worker stall or provider
+outage, and can also be an early signal of SQLite disk exhaustion
+(HTTP `STORAGE_FULL`). For diagnosis, remediation, and an additional critical
+threshold example, see
+[sqlite-disk-and-retention.en.md](sqlite-disk-and-retention.en.md).
+
 ## Security notes
 
 - Do not expose `/metrics` directly to the public internet.

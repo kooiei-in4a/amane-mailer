@@ -71,7 +71,8 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | 宛先複数 / メタデータ / hash 不一致 | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
 | 過去の `scheduled_at` / 最大予約期間超過 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
-| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
 
 時刻は API 上 **UTC**。`scheduled_at` は初回配送予定で `next_attempt_at`（再試行）とは独立。省略または null は即時。最大予約期間は受付 / 再スケジュール時点から **30 日**（`MailRequestScheduleLimits.MaxScheduledAhead`）。`scheduled_at` は payload_hash 対象外。
 
@@ -86,7 +87,8 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 存在しない、または他 tenant の依頼 | 404 | `NOT_FOUND`（存在有無を漏らさない） |
-| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
 
 返却 JSON は PII を含まない最小セット（`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`）。`last_error_code` は sanitized error code のみ。
 
@@ -102,7 +104,8 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 存在しない / 他 tenant | 404 | `NOT_FOUND` |
 | `queued` 以外 | 422 | `INVALID_STATE` |
-| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
 
 ### 再スケジュール（POST reschedule）
 
@@ -120,7 +123,8 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | 過去時刻 / 30 日超 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | 許可状態以外 | 422 | `INVALID_STATE` |
-| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
 
 ### metadata の秘密情報ポリシー（docs-first）
 

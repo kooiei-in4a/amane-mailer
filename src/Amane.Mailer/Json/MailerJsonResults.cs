@@ -17,8 +17,14 @@ public static class MailerJsonResults
             statusCode: statusCode);
 
     public static IResult ServiceUnavailable() =>
+        ServiceUnavailable(MailerErrorCodes.MailerTemporarilyUnavailable, retryable: true);
+
+    public static IResult StorageFull() =>
+        ServiceUnavailable(MailerErrorCodes.StorageFull, retryable: false);
+
+    public static IResult ServiceUnavailable(string code, bool retryable) =>
         Results.Json(
-            new MailerServiceUnavailableResponse(MailerErrorCodes.MailerTemporarilyUnavailable, Retryable: true),
+            new MailerServiceUnavailableResponse(code, Retryable: retryable),
             MailerJsonContext.Default.MailerServiceUnavailableResponse,
             statusCode: StatusCodes.Status503ServiceUnavailable);
 
