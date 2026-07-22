@@ -47,7 +47,7 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 | `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | 送信前キャンセル（`queued` のみ） | テナント Bearer |
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | 予約時刻変更（`queued` かつ `attempt_count=0`） | テナント Bearer |
 | `GET` | `/healthz` | 生存確認（liveness） | なし |
-| `GET` | `/readyz` | 受付可否（DB schema 確認込み readiness） | なし |
+| `GET` | `/readyz` | 受付可否（DB schema + Worker/Sweep 稼働・heartbeat 鮮度） | なし |
 | `GET` | `/metrics` | Prometheus メトリクス（ops。詳細は [metrics-and-alerts.md](ops/metrics-and-alerts.md)） | 既定なし（optional bearer） |
 
 ### 契約同期と drift review
@@ -226,7 +226,7 @@ DDL: `src/Amane.Mailer/Data/Migrations/002_worker_heartbeats.sql`
 | `name` | TEXT PK | サービス名（`worker` / `sweep`） |
 | `last_heartbeat_at` | TEXT | 最終 heartbeat 時刻（UTC ISO8601） |
 
-Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する。CLI `healthcheck` が別プロセスから両行の存在と鮮度を検証し、Docker HEALTHCHECK の判定に使用する。
+Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する。CLI `healthcheck` と `GET /readyz`（Worker 有効時）が両行の存在と鮮度を検証する。鮮度閾値は `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds`（既定 300 秒）。Docker HEALTHCHECK は CLI `healthcheck` を使用する。
 
 ### 3.4 状態遷移（`mail_requests.status`）
 
@@ -475,3 +475,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-06-27 | バージョニングポリシー節追加（#5）。OpenAPI `info.version` を release/package と同一の `0.1.0` に修正 |
 | 2026-06-27 | `v0.1.1` patch release 準備として Contracts package と OpenAPI `info.version` を `0.1.1` に更新 |
 | 2026-07-03 | ADR 0015 に追随: `Cancelled` 状態、手動再送・手動キャンセル遷移、`Failed` 定義修正 |
+| 2026-07-22 | `/readyz` に Worker/Sweep heartbeat 鮮度チェックを追加（#241）。CLI healthcheck と同じ閾値を共有 |

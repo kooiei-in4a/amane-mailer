@@ -47,7 +47,7 @@ The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contra
 | `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | Pre-send cancel (`queued` only) | Tenant Bearer |
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | Change schedule (`queued` and `attempt_count=0`) | Tenant Bearer |
 | `GET` | `/healthz` | Liveness check | None |
-| `GET` | `/readyz` | Readiness (includes DB schema check) | None |
+| `GET` | `/readyz` | Readiness (DB schema + Worker/Sweep running + heartbeat freshness) | None |
 | `GET` | `/metrics` | Prometheus metrics (ops; see [metrics-and-alerts.en.md](ops/metrics-and-alerts.en.md)) | None by default (optional bearer) |
 
 ### Contract Sync and Drift Review
@@ -226,7 +226,7 @@ DDL: `src/Amane.Mailer/Data/Migrations/002_worker_heartbeats.sql`
 | `name` | TEXT PK | Service name (`worker` / `sweep`) |
 | `last_heartbeat_at` | TEXT | Last heartbeat time (UTC ISO8601) |
 
-Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthcheck` validates the presence and freshness of both rows from a separate process and uses them for Docker HEALTHCHECK evaluation.
+Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthcheck` and `GET /readyz` (when Worker is enabled) validate the presence and freshness of both rows. Freshness threshold is `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` (default 300 seconds). Docker HEALTHCHECK uses the CLI `healthcheck`.
 
 ### 3.4 State Transitions (`mail_requests.status`)
 
@@ -480,3 +480,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-06-27 | Added Versioning Policy section (#5). Fixed OpenAPI `info.version` to `0.1.0` to match release/package |
 | 2026-06-27 | Prepared the `v0.1.1` patch release by updating the Contracts package and OpenAPI `info.version` to `0.1.1` |
 | 2026-07-03 | Followed ADR 0015: `Cancelled` state, manual retry/cancel transitions, `Failed` definition fix |
+| 2026-07-22 | Added Worker/Sweep heartbeat freshness check to `/readyz` (#241). Shares the same threshold as CLI healthcheck |
