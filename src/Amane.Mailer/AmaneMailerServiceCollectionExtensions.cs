@@ -98,6 +98,11 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<MailerDbStatsReader>();
         services.AddSingleton<MailerDbStorageInfoReader>();
 
+        services.AddSingleton<MailRequestClaimStore>();
+        services.AddSingleton<MailRequestAcceptStore>();
+        services.AddSingleton<MailRequestConsumerMutations>();
+        services.AddSingleton<MailRequestAdminQueries>();
+        services.AddSingleton<WorkerHeartbeatStore>();
         services.AddSingleton<MailRequestRepository>();
         services.AddSingleton<AdminAuditRepository>();
         services.AddSingleton<DeliveryEventRepository>();
