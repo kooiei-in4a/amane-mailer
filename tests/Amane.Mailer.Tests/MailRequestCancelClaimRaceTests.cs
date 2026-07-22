@@ -79,6 +79,12 @@ public sealed class MailRequestCancelClaimRaceTests
         Assert.Equal(2, state.AttemptCount);
         Assert.Equal(claimLockToken, state.LockToken);
         Assert.Equal(now.Add(LeaseDuration), state.LockExpiresAt);
+
+        // ADR 0015 D-04 / #101: losing cancel must record audit failure with lock_held.
+        var audit = await ReadLatestCancelAuditAsync(db.ConnectionString, internalId, ct);
+        Assert.NotNull(audit);
+        Assert.Equal(AdminAuditLog.Results.Failure, audit.Value.Result);
+        Assert.Equal(AdminAuditLog.ErrorCodes.LockHeld, audit.Value.ErrorCode);
     }
 
     [Fact]
@@ -220,6 +226,33 @@ public sealed class MailRequestCancelClaimRaceTests
             reader.IsDBNull(2) ? null : Guid.Parse(reader.GetString(2)),
             reader.IsDBNull(3) ? null : SqliteTime.FromStorage(reader.GetString(3)),
             reader.IsDBNull(4) ? null : reader.GetString(4));
+    }
+
+    private static async Task<(string Result, string? ErrorCode)?> ReadLatestCancelAuditAsync(
+        string connectionString,
+        Guid internalId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT result, error_code
+            FROM admin_audit_events
+            WHERE target_id = @TargetId
+              AND event_type = @EventType
+            ORDER BY id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@TargetId", internalId.ToString("D"));
+        command.Parameters.AddWithValue("@EventType", AdminAuditLog.EventTypes.ManualCancelRequested);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+
+        return (
+            reader.GetString(0),
+            reader.IsDBNull(1) ? null : reader.GetString(1));
     }
 
     private sealed class RaceTestDatabase : IAsyncDisposable
