@@ -71,7 +71,8 @@ When intentionally changing the contract, update the DTOs / constants / payload 
 | Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | Multiple recipients / metadata / hash mismatch | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
 | Past `scheduled_at` / beyond max schedule horizon | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
-| Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
 
 API times are **UTC**. `scheduled_at` is the first-dispatch schedule and is independent of `next_attempt_at` (retry backoff). Omit or null means immediate. Max schedule horizon is **30 days** from accept / reschedule time (`MailRequestScheduleLimits.MaxScheduledAhead`). `scheduled_at` is excluded from payload_hash.
 
@@ -86,7 +87,8 @@ API times are **UTC**. `scheduled_at` is the first-dispatch schedule and is inde
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Not found, or belongs to another tenant | 404 | `NOT_FOUND` (does not leak existence) |
-| Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
 
 The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`). `last_error_code` is a sanitized error code only.
 
@@ -102,7 +104,8 @@ The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attem
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Missing / other tenant | 404 | `NOT_FOUND` |
 | Not `queued` | 422 | `INVALID_STATE` |
-| Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
 
 ### Reschedule (POST reschedule)
 
@@ -120,7 +123,8 @@ Body: `{ "scheduled_at": "<UTC date-time>|null" }` (null clears the schedule gat
 | Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | Past time / beyond 30 days | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | Disallowed state | 422 | `INVALID_STATE` |
-| Transient DB failure | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
 
 ### Metadata secret policy (docs-first)
 

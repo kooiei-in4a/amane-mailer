@@ -4,7 +4,9 @@ using Amane.Mailer.Operations;
 
 namespace Amane.Mailer.Data.Sqlite;
 
-public sealed class MailRequestRepository
+// Unsealed + virtual find/insert: test seam for STORAGE_FULL API regression (#244).
+// Prefer keeping other members non-virtual; do not treat this as a public extension point.
+public class MailRequestRepository
 {
     private readonly MailRequestClaimStore _claimStore;
     private readonly MailRequestAcceptStore _acceptStore;
@@ -68,7 +70,7 @@ public sealed class MailRequestRepository
         CancellationToken cancellationToken = default) =>
         _adminQueries.ListAttemptsForAdminAsync(requestId, cancellationToken);
 
-    public Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
+    public virtual Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
         Guid tenantId,
         string sourceService,
         Guid mailRequestId,
@@ -82,7 +84,7 @@ public sealed class MailRequestRepository
         CancellationToken cancellationToken = default) =>
         _acceptStore.GetStatusByIdempotencyKeyAsync(tenantId, sourceService, mailRequestId, cancellationToken);
 
-    public Task InsertAcceptedAsync(
+    public virtual Task InsertAcceptedAsync(
         AcceptedMailRequestInsert insert,
         CancellationToken cancellationToken = default) =>
         _acceptStore.InsertAcceptedAsync(insert, cancellationToken);

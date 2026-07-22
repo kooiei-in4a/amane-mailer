@@ -102,7 +102,11 @@ public sealed class MailRequestWorker : BackgroundService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Mailer worker startup recovery failed.");
+            SqliteDatabaseExceptionLogging.LogError(
+                _logger,
+                ex,
+                "Mailer worker startup recovery failed due to SQLite storage full (SQLITE_FULL).",
+                "Mailer worker startup recovery failed.");
         }
     }
 
@@ -144,7 +148,11 @@ public sealed class MailRequestWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Mailer worker drain loop failed.");
+                SqliteDatabaseExceptionLogging.LogError(
+                    _logger,
+                    ex,
+                    "Mailer worker drain loop failed due to SQLite storage full (SQLITE_FULL).",
+                    "Mailer worker drain loop failed.");
             }
         }
     }
@@ -197,7 +205,11 @@ public sealed class MailRequestWorker : BackgroundService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Failed to update worker heartbeat.");
+            SqliteDatabaseExceptionLogging.LogWarning(
+                _logger,
+                ex,
+                "Failed to update worker heartbeat due to SQLite storage full (SQLITE_FULL).",
+                "Failed to update worker heartbeat.");
         }
     }
 
