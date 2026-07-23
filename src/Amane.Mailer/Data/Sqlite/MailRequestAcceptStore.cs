@@ -70,6 +70,7 @@ public sealed class MailRequestAcceptStore(
                     SELECT ma.error_code
                     FROM mail_attempts ma
                     WHERE ma.request_id = mr.id
+                      AND IFNULL(ma.error_code, '') <> @SupersededErrorCode
                     ORDER BY ma.id DESC
                     LIMIT 1
                 ), '') AS last_error_code
@@ -86,6 +87,9 @@ public sealed class MailRequestAcceptStore(
         command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
         command.Parameters.AddWithValue("@SourceService", sourceService);
         command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        command.Parameters.AddWithValue(
+            "@SupersededErrorCode",
+            MailRequestConsumerMutations.SupersededByManualRetryErrorCode);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
