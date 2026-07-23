@@ -117,7 +117,14 @@ public sealed record MailerAdminOptions
             throw new InvalidOperationException("AMANE_ADMIN_PASSWORD_HASH must be set when AMANE_ADMIN_ENABLED=true.");
 
         if (!AdminPasswordHasher.IsSupportedHash(PasswordHash))
-            throw new InvalidOperationException("AMANE_ADMIN_PASSWORD_HASH must use the pbkdf2:sha256 format.");
+        {
+            throw new InvalidOperationException(
+                "AMANE_ADMIN_PASSWORD_HASH must use pbkdf2:sha256 with iterations "
+                + $"{AdminPasswordHasher.MinIterations}-{AdminPasswordHasher.MaxIterations}, "
+                + $"salt {AdminPasswordHasher.MinSaltSize}-{AdminPasswordHasher.MaxSaltSize} bytes, "
+                + $"and hash {AdminPasswordHasher.MinHashSize}-{AdminPasswordHasher.MaxHashSize} bytes. "
+                + "Generate a compliant hash with 'admin hash-password'. Legacy weaker hashes are rejected.");
+        }
 
         if (!IPAddress.TryParse(AllowedLocalAddress, out _))
             throw new InvalidOperationException(

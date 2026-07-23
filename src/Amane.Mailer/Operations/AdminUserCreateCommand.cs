@@ -132,7 +132,12 @@ public sealed class AdminUserCreateCommand(
                     if (!AdminPasswordHasher.IsSupportedHash(value))
                     {
                         options = default;
-                        error = "--password-hash must be a supported pbkdf2:sha256 hash.";
+                        error =
+                            "--password-hash must be pbkdf2:sha256 with iterations "
+                            + $"{AdminPasswordHasher.MinIterations}-{AdminPasswordHasher.MaxIterations}, "
+                            + $"salt {AdminPasswordHasher.MinSaltSize}-{AdminPasswordHasher.MaxSaltSize} bytes, "
+                            + $"and hash {AdminPasswordHasher.MinHashSize}-{AdminPasswordHasher.MaxHashSize} bytes "
+                            + "(use 'admin hash-password'; legacy weaker hashes are rejected).";
                         return false;
                     }
 
