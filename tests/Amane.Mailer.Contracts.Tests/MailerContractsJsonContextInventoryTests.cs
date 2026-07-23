@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Amane.Mailer.Contracts.Json;
@@ -61,7 +60,9 @@ public sealed class MailerContractsJsonContextInventoryTests
     [Fact]
     public void Untyped_serialize_rejects_unregistered_type_without_reflection_fallback()
     {
-        // Consumer posture: Contracts context alone, no reflection fallback.
+        // Verifies the source-generated context has no implicit reflection fallback for
+        // unregistered types when it is the sole TypeInfoResolver. This does not exercise
+        // JsonSerializerIsReflectionEnabledByDefault (entry-assembly runtimeconfig switch).
         var options = new JsonSerializerOptions
         {
             TypeInfoResolver = MailerContractsJsonContext.Default,
