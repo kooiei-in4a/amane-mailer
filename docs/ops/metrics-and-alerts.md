@@ -48,7 +48,7 @@ Compose / systemd では Mailer HTTP ポートを **内部ネットワークの�
 ### Admin / CLI との関係
 
 - **Gauge（queue / dead letter / heartbeat）:** CLI `db stats`（tenant 指定なし）および break-glass Admin ops と同じ service-wide 集計。
-- **Gauge（webhook pending / dead-letter）:** CLI `db stats` および Admin ops の `webhook_events_*` と同じ `CountOperationalAsync` 集計。
+- **Gauge（webhook pending / dead-letter）:** CLI `db stats`（tenant 指定なし）および Admin ops の **service-wide** webhook 件数と同じ `CountOperationalAsync` 集計。Admin の tenant-scoped dead-letter 件数とは別物。
 - **Counter / histogram:** プロセス lifetime 内のイベントのみ。DB に直接 INSERT された履歴は含まれません。再起動後は counter / histogram が 0 から再開します。
 
 ## Prometheus scrape 設定例

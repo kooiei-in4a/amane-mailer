@@ -57,8 +57,10 @@ internet exposure is not intended.
 
 - **Gauges (queue / dead letter / heartbeat):** Same service-wide aggregation as
   CLI `db stats` (no tenant filter) and break-glass Admin ops.
-- **Gauges (webhook pending / dead-letter):** Same `CountOperationalAsync`
-  aggregation as CLI `db stats` and Admin ops `webhook_events_*`.
+- **Gauges (webhook pending / dead-letter):** Same service-wide
+  `CountOperationalAsync` aggregation as CLI `db stats` (no tenant filter) and
+  Admin ops' **service-wide** webhook counts (not the tenant-scoped dead-letter
+  count).
 - **Counters / histograms:** Process-lifetime events only. Rows inserted directly
   into the DB are not included. After restart, counters and histograms start at 0.
 

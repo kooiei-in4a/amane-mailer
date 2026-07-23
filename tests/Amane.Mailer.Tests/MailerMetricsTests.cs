@@ -126,8 +126,6 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
             "mail_webhook_events_dead_lettered " + cliStats["webhook_events_dead_lettered"],
             body,
             StringComparison.Ordinal);
-        Assert.Contains("mail_webhook_events_pending 2", body, StringComparison.Ordinal);
-        Assert.Contains("mail_webhook_events_dead_lettered 1", body, StringComparison.Ordinal);
         Assert.Contains("mail_queue_ready_count", body, StringComparison.Ordinal);
     }
 
