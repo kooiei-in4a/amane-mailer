@@ -37,7 +37,10 @@ public static class MailerAdminExtensions
             var configuration = provider.GetRequiredService<IConfiguration>();
             var connections = provider.GetRequiredService<SqliteConnectionFactory>();
             var adminOptions = provider.GetRequiredService<MailerAdminOptions>();
-            var options = MailerAdminDbOpsOptions.Load(configuration, connections.ConnectionString);
+            var options = MailerAdminDbOpsOptions.Load(
+                configuration,
+                connections.ConnectionString,
+                adminOptions.Enabled);
             options.Validate(adminOptions.Enabled, connections);
             return options;
         });

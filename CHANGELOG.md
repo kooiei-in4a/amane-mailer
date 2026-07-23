@@ -15,11 +15,22 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ### Changed
 
+- Parse Admin boolean and positive-integer environment variables strictly so
+  typos fail at options `Load` / startup instead of silently falling back to
+  defaults (#280). `AMANE_ADMIN_ENABLED` is always strict; other Admin UI
+  settings are enforced only when Admin is enabled so mail delivery is not
+  aborted by unused Admin typos. Audit retention numerics remain always-strict
+  because the worker sweep reads them. Unset variables keep existing defaults.
 - Map provider delivery failures to a stable `error_code` taxonomy
   (`MailDeliveryErrorCodes` / `ProviderErrorClassifier`) instead of library
   exception type names (#279). Unknown exceptions become `PROVIDER_UNKNOWN`
   with `retryable: false`, so the worker marks the request `Failed` on that
   attempt without further retries. Existing attempt rows are left unchanged.
+
+### Documentation
+
+- Document Admin boolean (`true`/`false`) and positive-integer allowed values
+  in the local Mailer Docker runbooks (#280).
 
 ## [0.9.1] - 2026-07-22
 

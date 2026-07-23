@@ -74,6 +74,39 @@ public sealed class AdminAuditRetentionTests : IClassFixture<AdminAuditRetention
     }
 
     [Fact]
+    public void Unset_retention_numeric_env_vars_keep_defaults()
+    {
+        var options = MailerAdminAuditRetentionOptions.Load(new ConfigurationBuilder().Build());
+
+        Assert.Equal(MailerAdminAuditRetentionOptions.DefaultRetentionDays, options.RetentionDays);
+        Assert.Equal(MailerAdminAuditRetentionOptions.DefaultSweepIntervalHours, options.SweepIntervalHours);
+        Assert.Null(options.SweepIntervalSeconds);
+        Assert.Equal(MailerAdminAuditRetentionOptions.DefaultBatchSize, options.BatchSize);
+    }
+
+    [Theory]
+    [InlineData("MAILER_ADMIN_AUDIT_RETENTION_DAYS", "0")]
+    [InlineData("AMANE_ADMIN_AUDIT_RETENTION_DAYS", "abc")]
+    [InlineData("AMANE_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_HOURS", "-1")]
+    [InlineData("AMANE_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_SECONDS", "0")]
+    [InlineData("AMANE_ADMIN_AUDIT_RETENTION_BATCH_SIZE", "nope")]
+    public void Invalid_retention_numeric_env_vars_fail_load(string key, string value)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [key] = value,
+            })
+            .Build();
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            MailerAdminAuditRetentionOptions.Load(configuration));
+
+        Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("positive integer", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task DeleteOlderThanAsync_removes_only_expired_audit_rows()
     {
         var ct = TestContext.Current.CancellationToken;
