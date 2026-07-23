@@ -468,12 +468,29 @@ for (const status of deliveryStatuses) {
 }
 
 const runtimeJsonContext = read('src/Amane.Mailer/Json/MailerJsonContext.cs');
+// Keep in sync with tests/Amane.Mailer.Tests/Json/MailerJsonContextInventoryTests.cs
 for (const typeName of [
+  'MailerErrorResponse',
+  'MailerValidationErrorResponse',
+  'MailerServiceUnavailableResponse',
+  'HealthStatusResponse',
+  'ReadyStatusResponse',
+  'MailerTenantsFile',
+  'MailerTenant',
+  'MailerAddress',
+  'MailerRetryOptions',
+  'MailerWebhookConfig',
+  'List<MailerTenant>',
+  'MailDeliveryEventPayload',
+  'PlatformSenderFile',
+  'PlatformSenderAddress',
   'MailRequestCreateRequest',
   'MailRequestCreateResponse',
   'MailRequestStatusResponse',
+  'MailRequestRescheduleRequest',
   'MailRecipientDto',
-  'MailDeliveryEventPayload',
+  'MailRecipientDto[]',
+  'Dictionary<string, string>',
 ]) {
   assertContains(
     runtimeJsonContext,
@@ -488,12 +505,16 @@ assertContains(
 );
 
 const contractsJsonContext = read('src/Amane.Mailer.Contracts/Json/MailerContractsJsonContext.cs');
+// Keep in sync with tests/Amane.Mailer.Contracts.Tests/MailerContractsJsonContextInventoryTests.cs
 for (const typeName of [
   'MailRequestCreateRequest',
   'MailRequestCreateResponse',
   'MailRequestStatusResponse',
-  'MailRecipientDto',
+  'MailRequestRescheduleRequest',
   'MailDeliveryEventPayload',
+  'MailRecipientDto',
+  'MailRecipientDto[]',
+  'Dictionary<string, string>',
 ]) {
   assertContains(
     contractsJsonContext,
