@@ -37,7 +37,12 @@ public sealed record MailerAdminOptions
 
     public static MailerAdminOptions Load(IConfiguration configuration)
     {
+        // ENABLED is always strict-parsed. Other Admin UI settings are only load-bearing when
+        // Admin is on (mirrors Validate early-return), so typos must not abort mail delivery.
         var enabled = ReadBoolean(configuration, "AMANE_ADMIN_ENABLED", "MAILER_ADMIN_ENABLED") ?? false;
+        if (!enabled)
+            return new() { Enabled = false };
+
         var listPiiVisible = string.Equals(
             ReadString(configuration, "AMANE_ADMIN_PII_LIST_MODE", "MAILER_ADMIN_PII_LIST_MODE", string.Empty),
             "visible",
@@ -50,7 +55,7 @@ public sealed record MailerAdminOptions
 
         return new()
         {
-            Enabled = enabled,
+            Enabled = true,
             Username = ReadString(configuration, "AMANE_ADMIN_USERNAME", "MAILER_ADMIN_USERNAME", "admin"),
             PasswordHash = ReadString(configuration, "AMANE_ADMIN_PASSWORD_HASH", "MAILER_ADMIN_PASSWORD_HASH", string.Empty),
             AllowedLocalAddress = ReadString(

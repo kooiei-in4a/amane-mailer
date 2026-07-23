@@ -171,7 +171,7 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
     }
 
     [Fact]
-    public void Invalid_db_ops_enabled_boolean_fails_load()
+    public void Invalid_db_ops_enabled_boolean_fails_load_when_admin_enabled()
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -181,11 +181,27 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
             .Build();
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            MailerAdminDbOpsOptions.Load(configuration, "Data Source=:memory:"));
+            MailerAdminDbOpsOptions.Load(configuration, "Data Source=:memory:", adminEnabled: true));
 
         Assert.Contains("AMANE_ADMIN_DB_OPS_ENABLED", exception.Message, StringComparison.Ordinal);
         Assert.Contains("true", exception.Message, StringComparison.Ordinal);
         Assert.Contains("false", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Invalid_db_ops_enabled_boolean_is_ignored_when_admin_disabled()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AMANE_ADMIN_DB_OPS_ENABLED"] = "yes",
+            })
+            .Build();
+
+        var options = MailerAdminDbOpsOptions.Load(configuration, "Data Source=:memory:", adminEnabled: false);
+
+        Assert.False(options.Enabled);
+        Assert.Equal(string.Empty, options.BackupDirectory);
     }
 
     [Fact]

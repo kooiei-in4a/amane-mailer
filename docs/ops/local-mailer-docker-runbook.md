@@ -95,16 +95,16 @@ Mailer コンテナは `ConnectionStrings__Mailer` で同一 SQLite DB を参照
 
 ## Admin boolean / numeric environment values
 
-Admin の boolean / 正の数値 env は **strict parse** です。
+Admin UI の boolean / 正の数値 env は **strict parse** です。ただし **Admin UI 用の値は `AMANE_ADMIN_ENABLED=true` のときだけ** 検証します（`Validate()` と同様）。Admin が無効のとき、mask / login limit などの typo は配送本体の起動を止めません。
 
 | 種別 | 許容値 | 未設定 | 不正値 |
 |------|--------|--------|--------|
-| boolean | `true` / `false`（大文字小文字は不問。`bool.TryParse` 互換） | 既存 default（例: `AMANE_ADMIN_ENABLED` → `false`、mask 系 → PII list mode に応じた default） | **起動失敗**（`Load` が例外） |
-| 正の整数 | `1` 以上の整数 | 既存 default（例: login failure limit `5`、audit retention days `180`） | **起動失敗**（`0` / 負数 / 非数値も不可） |
+| `AMANE_ADMIN_ENABLED` / `MAILER_ADMIN_ENABLED` | `true` / `false`（`bool.TryParse` 互換） | `false` | **常に起動失敗** |
+| その他 Admin UI boolean（mask / hash-network / db-ops 等） | `true` / `false` | 既存 default | **Admin 有効時のみ起動失敗** |
+| Admin UI 正の整数（login failure limit 等） | `1` 以上の整数 | 既存 default | **Admin 有効時のみ起動失敗** |
+| audit retention 数値（`MAILER_ADMIN_AUDIT_RETENTION_*`） | `1` 以上の整数 | 既存 default（例: 180 日） | **常に起動失敗**（worker の audit sweep が参照するため。Admin UI の on/off とは独立） |
 
-対象例: `AMANE_ADMIN_ENABLED`、`AMANE_ADMIN_MASK_RECIPIENTS` / `MASK_SUBJECTS`、`AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS`、`AMANE_ADMIN_LOGIN_FAILURE_LIMIT`、`AMANE_ADMIN_DB_OPS_ENABLED`、`MAILER_ADMIN_AUDIT_RETENTION_DAYS` など（`MAILER_ADMIN_*` fallback も同じ規則）。
-
-typo（例: `tru`、`yes`、`abc`）は silent default にせず、startup で検出します。
+typo（例: `tru`、`yes`、`abc`）は silent default にせず、上記の適用範囲で startup 検出します。
 
 ## Admin audit identifier hash key rotation
 

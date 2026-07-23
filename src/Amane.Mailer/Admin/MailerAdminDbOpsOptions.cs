@@ -9,8 +9,15 @@ public sealed record MailerAdminDbOpsOptions
 
     public string BackupDirectory { get; init; } = string.Empty;
 
-    public static MailerAdminDbOpsOptions Load(IConfiguration configuration, string mailerConnectionString)
+    public static MailerAdminDbOpsOptions Load(
+        IConfiguration configuration,
+        string mailerConnectionString,
+        bool adminEnabled = true)
     {
+        // DbOps is Admin-only. When Admin is off, ignore DbOps env typos so mail delivery still starts.
+        if (!adminEnabled)
+            return new() { Enabled = false };
+
         var enabled = ReadBoolean(
             configuration,
             "AMANE_ADMIN_DB_OPS_ENABLED",

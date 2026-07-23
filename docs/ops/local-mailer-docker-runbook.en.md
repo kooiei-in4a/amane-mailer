@@ -94,16 +94,16 @@ The Mailer container must reference the same SQLite database via `ConnectionStri
 
 ## Admin boolean / numeric environment values
 
-Admin boolean and positive-integer environment variables use **strict parse**.
+Admin UI boolean and positive-integer environment variables use **strict parse**. Admin UI values are enforced **only when `AMANE_ADMIN_ENABLED=true`** (same gate as `Validate()`). When Admin is disabled, typos in mask / login-limit settings do not abort mail delivery startup.
 
 | Kind | Allowed values | Unset | Invalid |
 |------|----------------|-------|---------|
-| boolean | `true` / `false` (case-insensitive; `bool.TryParse` compatible) | Existing defaults (for example `AMANE_ADMIN_ENABLED` → `false`; mask flags follow PII list mode) | **Startup failure** (`Load` throws) |
-| positive integer | Integer ≥ `1` | Existing defaults (for example login failure limit `5`, audit retention days `180`) | **Startup failure** (`0`, negative, or non-numeric) |
+| `AMANE_ADMIN_ENABLED` / `MAILER_ADMIN_ENABLED` | `true` / `false` (`bool.TryParse` compatible) | `false` | **Always fails startup** |
+| Other Admin UI booleans (mask / hash-network / db-ops, etc.) | `true` / `false` | Existing defaults | **Fails startup only when Admin is enabled** |
+| Admin UI positive integers (login failure limit, etc.) | Integer ≥ `1` | Existing defaults | **Fails startup only when Admin is enabled** |
+| Audit retention numerics (`MAILER_ADMIN_AUDIT_RETENTION_*`) | Integer ≥ `1` | Existing defaults (e.g. 180 days) | **Always fails startup** (used by the worker audit sweep; independent of Admin UI on/off) |
 
-Examples: `AMANE_ADMIN_ENABLED`, `AMANE_ADMIN_MASK_RECIPIENTS` / `MASK_SUBJECTS`, `AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS`, `AMANE_ADMIN_LOGIN_FAILURE_LIMIT`, `AMANE_ADMIN_DB_OPS_ENABLED`, `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (and the matching `MAILER_ADMIN_*` fallbacks).
-
-Typos such as `tru`, `yes`, or `abc` are not silently defaulted; they fail at startup.
+Typos such as `tru`, `yes`, or `abc` are not silently defaulted within the scopes above.
 
 ## Admin audit retention
 
