@@ -165,12 +165,13 @@ Mailer の配送セマンティクスは **at-least-once**（同一依頼から�
 | Worker 自動リトライ | at-least-once | retryable 失敗は `Queued` に戻り再配送 |
 | lease 失効後の finalize 競合（#238） | **再送抑止** | provider 送信成功の証跡を `mail_attempts` に残し、reclaim 時は実送信をスキップして `Delivered` へ収束。finalize skip は `mail_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)） |
 | Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す（`attempt_count` を 0 リセット）。旧サイクルの Delivered 証跡は prior-success 収束に使わない（#268）。provider 送信が成功済みでも row が `Delivered` へ収束していなければ再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
-| 配送結果 Webhook | `event_id` による重複排除 | **実メール送信とは別契約**。Consumer は同一 `event_id` の再 POST を冪等に処理する（[webhook-verification.md](consumer/webhook-verification.md)） |
+| 配送結果 Webhook | **first-wins**（同一 mail request 世代で高々 1 event）+ `event_id` による再 POST 冪等 | **実メール送信とは別契約**。最初に enqueue された終端状態のみ通知。Admin 手動再送後の別終端（例: `failed` → 再送 → `delivered`）は webhook を再送しない。Consumer は同一 `event_id` の再 POST を冪等に処理する（[webhook-verification.md](consumer/webhook-verification.md)） |
 
 **Consumer 向け推奨:**
 
 - 業務上の重複通知を避ける必要がある場合は、利用側で `mail_request_id` または独自の相関 ID で重複排除する。
 - `GET /internal/mail-requests/{mail_request_id}` で `delivered` を確認しても、既に複数通送信済みの可能性は排除できない（特に Mailpit・手動再送）。
+- Admin 手動再送後は status GET と webhook の終端状態が一致しないことがある（webhook は first-wins）。最新状態は status GET を正とする。
 
 ### バージョニングポリシー
 
@@ -299,6 +300,11 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 `delivery_events` outbox へ `MailDeliveryEventPayload` を enqueue し、
 `WebhookDeliveryWorker` が HMAC 署名付き HTTPS POST で Consumer へ配信する。
 
+- **first-wins:** 同一 `(tenant_id, source_service, mail_request_id)` 世代では高々 1 event
+  （`ON CONFLICT DO NOTHING`）。最初に enqueue された終端状態のみが残る。Admin 手動再送で
+  別の終端（例: `failed` → `Queued` → `delivered`）へ進んでも、2 つ目の event は作らず、
+  既存 event も更新しない。最新終端の再通知が必要なら別 issue / ADR で設計する（本契約の非目標）。
+- reconcile は **欠落**（outbox 行が無い terminal request）のみ補完する。既存 event の上書きはしない。
 - secret は `webhook.secret_env` が指す環境変数から読み込む（tenant JSON 平文禁止）。
 - payload に PII（recipient, subject, body 等）は含めない。
 - Consumer 重複排除契約は `event_id`（同一 mail request 世代の webhook 再送で不変）。request retention 後に同一 `mail_request_id` を再利用した場合は新しい `event_id` が発行される。
@@ -518,3 +524,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-23 | Consumer cancel の冪等成功と commit 後 HTTP 失敗の回避（#269） |
 | 2026-07-23 | effective provider / ACS live-sending の startup 検証を明記。`/readyz` は含めない（#272）。Mailpit は SMTP 受理後の disconnect 失敗を再送対象にしない（#275） |
 | 2026-07-23 | `MailRequestWorker` shutdown: Semaphore 待ち後続 wave は送信開始しない（#271） |
+| 2026-07-24 | 配送結果 Webhook の first-wins（最初の終端のみ通知。Admin 手動再送後の再通知なし）を明記（#273） |

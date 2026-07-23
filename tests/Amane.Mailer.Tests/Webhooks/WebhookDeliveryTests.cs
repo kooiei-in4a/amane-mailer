@@ -209,6 +209,52 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
     }
 
     [Fact]
+    public async Task Admin_manual_retry_after_failed_does_not_enqueue_second_delivered_webhook()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        fixture.DeliveryProvider.QueueResult(MailDeliveryResult.Failure(
+            "SMTP_CONNECT_FAILED",
+            "transport failure",
+            retryable: false));
+
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest();
+
+        using var createResponse = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Accepted, createResponse.StatusCode);
+        await WaitUntilMailStatusAsync(request.MailRequestId, MailRequestState.Failed, ct);
+
+        var failedDelivery = await fixture.WebhookHandler.WaitForSuccessfulDeliveryAsync(TimeSpan.FromSeconds(15), ct);
+        Assert.Equal(MailDeliveryEventType.Failed, failedDelivery.Payload.EventType);
+        var failedEventId = failedDelivery.Payload.EventId;
+        var attemptsAfterFailedWebhook = fixture.WebhookHandler.AttemptCount;
+
+        var internalId = await ReadInternalRequestIdAsync(request.MailRequestId, ct);
+        var adminClient = CreateAdminClient();
+        await LoginAdminAsync(adminClient, ct);
+        var csrf = await ReadCsrfTokenFromAdminPageAsync(adminClient, $"/admin/mail-requests/{internalId:D}", ct);
+
+        using var retryResponse = await adminClient.PostAsync(
+            $"/admin/mail-requests/{internalId:D}/retry",
+            CreateCsrfContent(csrf),
+            ct);
+
+        Assert.Equal(HttpStatusCode.SeeOther, retryResponse.StatusCode);
+        await WaitUntilMailStatusAsync(request.MailRequestId, MailRequestState.Delivered, ct);
+
+        // first-wins: later Delivered must not insert/replace the Failed outbox event (#273).
+        await Task.Delay(1500, ct);
+        Assert.Equal(attemptsAfterFailedWebhook, fixture.WebhookHandler.AttemptCount);
+        Assert.Equal(1, await CountDeliveryEventsAsync(request.MailRequestId, ct));
+        Assert.Equal(MailDeliveryEventType.Failed, await ReadDeliveryEventTypeAsync(request.MailRequestId, ct));
+        Assert.Equal(failedEventId, await ReadDeliveryEventIdAsync(request.MailRequestId, ct));
+    }
+
+    [Fact]
     public async Task Reaper_dead_letters_expired_processing_and_enqueues_webhook()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -293,6 +339,77 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
         command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is long value && value == 1L;
+    }
+
+    private async Task<int> CountDeliveryEventsAsync(
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM delivery_events
+            WHERE mail_request_id = @MailRequestId;
+            """;
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is long value ? (int)value : 0;
+    }
+
+    private async Task<string> ReadDeliveryEventTypeAsync(
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT event_type
+            FROM delivery_events
+            WHERE mail_request_id = @MailRequestId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Assert.IsType<string>(result);
+    }
+
+    private async Task<Guid> ReadDeliveryEventIdAsync(
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id
+            FROM delivery_events
+            WHERE mail_request_id = @MailRequestId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Guid.Parse(Assert.IsType<string>(result));
+    }
+
+    private async Task<Guid> ReadInternalRequestIdAsync(
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT id
+            FROM mail_requests
+            WHERE mail_request_id = @MailRequestId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Guid.Parse(Assert.IsType<string>(result));
     }
 
     private HttpClient CreateAuthorizedClient()

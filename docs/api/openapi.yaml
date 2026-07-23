@@ -17,6 +17,8 @@ info:
     - 配送結果 Webhook: テナント設定で HTTPS エンドポイントを登録すると、
       `delivered` / `failed` / `dead_lettered` / `cancelled` 時に
       `MailDeliveryEventPayload` を HMAC 署名付き POST で Push する。
+      同一 mail request 世代では **first-wins**（最初の終端状態のみ enqueue。
+      Admin 手動再送後の別終端は webhook 再送しない）。
       検証手順は docs/consumer/webhook-verification.md を参照。
   contact:
     name: Amane Mailer
@@ -633,7 +635,9 @@ components:
       additionalProperties: false
       description: >-
         配送結果 Webhook の JSON 本文。recipient / subject / body 等の PII は含まない。
-        同一 mail request に対して 1 イベントのみ enqueue される。Consumer は event_id で重複排除する。
+        同一 mail request 世代に対して高々 1 イベントのみ enqueue される（first-wins:
+        最初の終端状態が残り、Admin 手動再送後の別終端では再 enqueue / 更新しない）。
+        Consumer は event_id で重複排除する。最新状態は status GET を正とする。
       required:
         - event_id
         - event_type
