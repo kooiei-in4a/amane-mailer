@@ -304,8 +304,9 @@ Consumer.
 - Read the secret from the environment variable named by `webhook.secret_env`
   (never store plaintext secrets in tenant JSON).
 - Payload excludes PII (recipient, subject, body, and related fields).
-- Consumer deduplication contract uses `event_id` (stable across webhook retries
-  for the same mail request event).
+- Consumer deduplication contract uses `event_id` (stable across webhook retries for the
+  same mail-request generation). After request retention, reusing the same `mail_request_id`
+  idempotency key issues a new `event_id`.
 - Failed deliveries use exponential backoff; exceeding the retry limit records a
   webhook Dead Letter.
 - During shutdown, `stoppingToken` stops new claims. In-flight deliveries wait up
@@ -414,7 +415,7 @@ values, body, and metadata are not output.
 | `Mailer__Worker__SendTimeoutSeconds` | `90` | Per-message send timeout |
 | `Mailer__Worker__LeaseDurationSeconds` | `120` | Processing lease TTL |
 | `Mailer__Sweep__IntervalSeconds` | `30` | Stale sweep interval |
-| `Mailer__Retention__Days` | `90` | Terminal record retention days |
+| `Mailer__Retention__Days` | `90` | Terminal record retention days (purges `mail_requests` and matching `delivery_events` for the same idempotency key in one transaction) |
 | `Mailer__Retention__SweepIntervalHours` | `24` | Retention purge cycle |
 | `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | Heartbeat stale threshold (seconds). Must be `>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` and `> WorkerHeartbeatIntervalSeconds` and `> Sweep:IntervalSeconds` |
 | `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | Worker heartbeat update interval when idle (seconds). Sweep update interval follows `Mailer__Sweep__IntervalSeconds` |
@@ -492,7 +493,7 @@ Compose defaults to `stop_grace_period=120s`; app-side `HostOptions.ShutdownTime
 ## 8. Data Ownership
 
 `/app/data/mailer.db` is the **source of truth for send requests** (recipient · subject · body = PII, send attempt history, ACS operation id).
-Backups are taken via the **`db backup` CLI** from the same container. Retention automatically purges terminal records.
+Backups are taken via the **`db backup` CLI** from the same container. Retention automatically purges terminal `mail_requests` and their matching `delivery_events`.
 
 ---
 

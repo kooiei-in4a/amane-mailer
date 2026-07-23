@@ -58,8 +58,16 @@ Reject requests when:
 ## Idempotency contract
 
 Mailer enqueues at most one delivery-result event per
-`(tenant_id, source_service, mail_request_id)`. Retries reuse the same `event_id` and body.
-Consumers must treat duplicate POSTs with the same `event_id` as success.
+`(tenant_id, source_service, mail_request_id)` **while the corresponding mail request row
+exists**. Retries reuse the same `event_id` and body. Consumers must treat duplicate POSTs
+with the same `event_id` as success.
+
+When request retention purges a terminal `mail_requests` row, Mailer deletes the matching
+`delivery_events` row in the same transaction. After that purge, a Consumer may reuse the same
+`mail_request_id` idempotency key for a new request; Mailer will enqueue a new delivery-result
+event with a new `event_id`. Consumer deduplication by `event_id` still applies across
+webhook retries for the same logical delivery, but not across separate mail-request
+generations after retention.
 
 A periodic reconciliation sweep also scans terminal `mail_requests` that are missing a
 corresponding `delivery_events` row and enqueues them, covering crash/retry gaps between

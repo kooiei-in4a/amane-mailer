@@ -137,6 +137,54 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
     }
 
     [Fact]
+    public async Task Retention_purge_allows_new_webhook_after_idempotency_key_reuse()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest();
+
+        using var firstResponse = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Accepted, firstResponse.StatusCode);
+        await WaitUntilMailDeliveredAsync(request.MailRequestId, ct);
+
+        var firstDelivery = await fixture.WebhookHandler.WaitForSuccessfulDeliveryAsync(TimeSpan.FromSeconds(15), ct);
+        var firstEventId = firstDelivery.Payload.EventId;
+
+        await AgeCompletedRequestAsync(request.MailRequestId, DateTimeOffset.UtcNow.AddDays(-120), ct);
+
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+            var deleted = await repository.DeleteExpiredCompletedAsync(
+                DateTimeOffset.UtcNow.AddDays(-90),
+                batchSize: 100,
+                ct);
+
+            Assert.Equal(1, deleted);
+        }
+
+        Assert.False(await DeliveryEventExistsAsync(request.MailRequestId, ct));
+        fixture.WebhookHandler.Reset();
+
+        using var secondResponse = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Accepted, secondResponse.StatusCode);
+        await WaitUntilMailDeliveredAsync(request.MailRequestId, ct);
+
+        var secondDelivery = await fixture.WebhookHandler.WaitForSuccessfulDeliveryAsync(TimeSpan.FromSeconds(15), ct);
+        Assert.Equal(request.MailRequestId, secondDelivery.Payload.MailRequestId);
+        Assert.Equal(MailDeliveryEventType.Delivered, secondDelivery.Payload.EventType);
+        Assert.NotEqual(firstEventId, secondDelivery.Payload.EventId);
+    }
+
+    [Fact]
     public async Task Admin_cancel_enqueues_cancelled_webhook()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -205,6 +253,46 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
         command.CommandText = "DELETE FROM delivery_events WHERE mail_request_id = @MailRequestId;";
         command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task AgeCompletedRequestAsync(
+        Guid mailRequestId,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE mail_requests
+            SET
+                completed_at = @CompletedAt,
+                delivered_at = @CompletedAt,
+                updated_at = @CompletedAt
+            WHERE mail_request_id = @MailRequestId;
+            """;
+        command.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(completedAt));
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task<bool> DeliveryEventExistsAsync(
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM delivery_events
+                WHERE mail_request_id = @MailRequestId
+            );
+            """;
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is long value && value == 1L;
     }
 
     private HttpClient CreateAuthorizedClient()

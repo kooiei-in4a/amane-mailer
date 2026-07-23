@@ -5,6 +5,8 @@ public sealed record MailerRetentionOptions
     public const int DefaultRetentionDays = 90;
     public const int DefaultSweepIntervalHours = 24;
     public const int DefaultBatchSize = 100;
+    // Caps bind variables for multi-row delivery_events DELETE (3 params/row) under classic SQLite limits.
+    public const int MaxBatchSize = 250;
 
     public int RetentionDays { get; init; } = DefaultRetentionDays;
 
@@ -29,8 +31,9 @@ public sealed record MailerRetentionOptions
                 1,
                 configuration.GetValue("Mailer:Retention:SweepIntervalHours", DefaultSweepIntervalHours)),
             SweepIntervalSeconds = configuration.GetValue<int?>("Mailer:Retention:SweepIntervalSeconds"),
-            BatchSize = Math.Max(
+            BatchSize = Math.Clamp(
+                configuration.GetValue("Mailer:Retention:BatchSize", DefaultBatchSize),
                 1,
-                configuration.GetValue("Mailer:Retention:BatchSize", DefaultBatchSize)),
+                MaxBatchSize),
         };
 }

@@ -301,7 +301,7 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 
 - secret は `webhook.secret_env` が指す環境変数から読み込む（tenant JSON 平文禁止）。
 - payload に PII（recipient, subject, body 等）は含めない。
-- Consumer 重複排除契約は `event_id`（同一 mail request で不変）。
+- Consumer 重複排除契約は `event_id`（同一 mail request 世代の webhook 再送で不変）。request retention 後に同一 `mail_request_id` を再利用した場合は新しい `event_id` が発行される。
 - 配信失敗時は指数バックオフで再送し、上限超過で webhook Dead Letter として記録する。
 - shutdown 中は `stoppingToken` により新規 claim を行わない。インフライト配信は最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する（`MailRequestWorker` と同型の drain）。
 - SSRF 対策: HTTPS 必須。IPv4 private / loopback / link-local / CGNAT / multicast / reserved、
@@ -406,7 +406,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `Mailer__Worker__SendTimeoutSeconds` | `90` | 1 通あたり送信タイムアウト |
 | `Mailer__Worker__LeaseDurationSeconds` | `120` | Processing リース TTL |
 | `Mailer__Sweep__IntervalSeconds` | `30` | 滞留スイープ間隔 |
-| `Mailer__Retention__Days` | `90` | 終端レコード保持日数 |
+| `Mailer__Retention__Days` | `90` | 終端レコード保持日数（`mail_requests` と同一冪等キーの `delivery_events` を同時パージ） |
 | `Mailer__Retention__SweepIntervalHours` | `24` | Retention パージ周期 |
 | `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | heartbeat stale 判定閾値（秒）。`>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` かつ `> WorkerHeartbeatIntervalSeconds` かつ `> Sweep:IntervalSeconds` |
 | `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | Worker idle 時の heartbeat 更新間隔（秒）。Sweep の更新間隔は `Mailer__Sweep__IntervalSeconds` に従う |
@@ -484,7 +484,7 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 ## 8. データ所有
 
 `/app/data/mailer.db` が **送信依頼の正本**（宛先・件名・本文＝PII、送信試行履歴、ACS operation id）。
-バックアップは **`db backup` CLI** で同一コンテナから取得。Retention が終端レコードを自動パージ。
+バックアップは **`db backup` CLI** で同一コンテナから取得。Retention が終端 `mail_requests` と対応する `delivery_events` を自動パージ。
 
 ---
 
