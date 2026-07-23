@@ -15,6 +15,10 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ### Changed
 
+- Enforce Admin PBKDF2 password-hash parameter bounds (iterations
+  600,000–10,000,000; salt 16–64 bytes; hash 32–64 bytes) at startup and
+  `admin user create`, rejecting legacy weaker hashes (#281). Regenerate with
+  `admin hash-password` if an older hash is rejected.
 - Parse Admin boolean and positive-integer environment variables strictly so
   typos fail at options `Load` / startup instead of silently falling back to
   defaults (#280). `AMANE_ADMIN_ENABLED` is always strict; other Admin UI
