@@ -101,7 +101,8 @@ dotnet add package Amane.Mailer.Contracts
 | `MailPayloadHasher` | `Amane.Mailer.Contracts.Security` | `payload_hash` computation helper |
 | `MailRequestAcceptanceStatus` | `Amane.Mailer.Contracts.MailRequests` | Response `status` constants |
 | `MailRequestStatus` | `Amane.Mailer.Contracts.MailRequests` | Worker delivery status constants |
-| `MailerErrorCodes` | `Amane.Mailer.Contracts.MailRequests` | Error code constants |
+| `MailerErrorCodes` | `Amane.Mailer.Contracts.MailRequests` | HTTP acceptance error code constants |
+| `MailDeliveryErrorCodes` | `Amane.Mailer.Contracts.MailRequests` | Delivery attempt / `last_error_code` constants |
 
 ## Minimal Example
 

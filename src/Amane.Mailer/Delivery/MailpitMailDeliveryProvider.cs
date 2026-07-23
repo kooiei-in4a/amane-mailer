@@ -1,4 +1,5 @@
 using Amane.Mailer.Configuration;
+using Amane.Mailer.Contracts.MailRequests;
 using MailKit.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -72,10 +73,11 @@ public sealed class MailpitMailDeliveryProvider
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            var (errorCode, retryable) = ProviderErrorClassifier.Classify(ex);
             return MailDeliveryResult.Failure(
-                ex.GetType().Name,
+                errorCode,
                 ProviderErrorSanitizer.Sanitize(ex.Message),
-                retryable: true);
+                retryable);
         }
     }
 }

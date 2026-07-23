@@ -1,4 +1,5 @@
 using Amane.Mailer.Configuration;
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Delivery;
 using Amane.Mailer.Tests.Fixtures;
 using MailKit.Security;
@@ -27,6 +28,7 @@ public sealed class MailpitMailDeliveryProviderTests
 
         Assert.False(result.Succeeded);
         Assert.True(result.Retryable);
+        Assert.Equal(MailDeliveryErrorCodes.ProviderNetwork, result.ErrorCode);
         Assert.False(string.IsNullOrWhiteSpace(result.ErrorMessage));
     }
 
@@ -116,10 +118,43 @@ public sealed class MailpitMailDeliveryProviderTests
 
         Assert.False(result.Succeeded);
         Assert.True(result.Retryable);
-        Assert.Equal(nameof(IOException), result.ErrorCode);
+        Assert.Equal(MailDeliveryErrorCodes.ProviderNetwork, result.ErrorCode);
         Assert.Equal(1, smtp.ConnectCount);
         Assert.Equal(1, smtp.SendCount);
         Assert.Equal(0, smtp.DisconnectCount);
+    }
+
+    [Fact]
+    public async Task SendAsync_maps_unknown_exception_to_provider_unknown_non_retryable()
+    {
+        var smtp = new ScriptedMailpitSmtpClient(
+            connect: null,
+            send: new InvalidOperationException("unexpected smtp client failure"),
+            disconnect: null);
+
+        var provider = new MailpitMailDeliveryProvider(
+            new MailerOptions
+            {
+                MailpitSmtpHost = "127.0.0.1",
+                MailpitSmtpPort = 1025,
+                MailpitUseSsl = false,
+            },
+            NullLogger<MailpitMailDeliveryProvider>.Instance,
+            () => smtp);
+
+        var result = await provider.SendAsync(
+            CreateJob(),
+            CreateTenant(),
+            "mailpit",
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.Retryable);
+        Assert.Equal(MailDeliveryErrorCodes.ProviderUnknown, result.ErrorCode);
+        Assert.DoesNotContain(
+            nameof(InvalidOperationException),
+            result.ErrorCode,
+            StringComparison.Ordinal);
     }
 
     private static MailSendJob CreateJob()
