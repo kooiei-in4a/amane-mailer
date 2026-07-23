@@ -304,7 +304,11 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 - Consumer 重複排除契約は `event_id`（同一 mail request で不変）。
 - 配信失敗時は指数バックオフで再送し、上限超過で webhook Dead Letter として記録する。
 - shutdown 中は `stoppingToken` により新規 claim を行わない。インフライト配信は最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する（`MailRequestWorker` と同型の drain）。
-- SSRF 対策: HTTPS 必須、private/metadata IP ブロック、optional `allowed_host_suffixes`。
+- SSRF 対策: HTTPS 必須。IPv4 private / loopback / link-local / CGNAT / multicast / reserved、
+  IPv4-mapped、IPv6 loopback / link-local / site-local / ULA / multicast / unspecified、
+  廃止済み IPv4-compatible IPv6（`::/96`、例: `::10.0.0.1`）、
+  および NAT64 well-known prefix（`64:ff9b::/96`）・6to4（`2002::/16`）上の
+  private 等ブロック対象 IPv4 埋め込みを拒否。optional `allowed_host_suffixes`。
 - 検証手順: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
 - OpenAPI schema: `MailDeliveryEventPayload`
 - Admin / ops 確認: `/admin/webhook-dead-letters`、`db stats` の webhook 件数
