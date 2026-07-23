@@ -381,6 +381,7 @@ public sealed class MailRequestClaimStore(
             FROM mail_attempts
             WHERE request_id = @RequestId
               AND status = @DeliveredStatus
+              AND IFNULL(error_code, '') <> @SupersededErrorCode
             ORDER BY id ASC
             LIMIT 1;
             """;
@@ -390,6 +391,9 @@ public sealed class MailRequestClaimStore(
         command.CommandText = sql;
         command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
         command.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+        command.Parameters.AddWithValue(
+            "@SupersededErrorCode",
+            MailRequestConsumerMutations.SupersededByManualRetryErrorCode);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))

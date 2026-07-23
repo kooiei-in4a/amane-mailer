@@ -65,6 +65,7 @@ public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
                     SELECT ma.error_code
                     FROM mail_attempts ma
                     WHERE ma.request_id = mr.id
+                      AND IFNULL(ma.error_code, '') <> @SupersededErrorCode
                     ORDER BY ma.id DESC
                     LIMIT 1
                 ), '') AS last_error_code,
@@ -78,6 +79,9 @@ public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         command.Parameters.AddWithValue("@Id", internalRequestId.ToString("D"));
+        command.Parameters.AddWithValue(
+            "@SupersededErrorCode",
+            MailRequestConsumerMutations.SupersededByManualRetryErrorCode);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))

@@ -9,6 +9,13 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
     internal const string OperatorCancelledLastErrorMessage = "operator_cancelled";
     internal const string ConsumerCancelledLastErrorMessage = "consumer_cancelled";
 
+    /// <summary>
+    /// Marks a prior-cycle Delivered attempt as ineligible for worker prior-success
+    /// convergence after Admin manual retry (#268). Status and provider_message_id stay
+    /// intact for Admin history.
+    /// </summary>
+    internal const string SupersededByManualRetryErrorCode = "superseded_by_manual_retry";
+
     public async Task<ManualMailRequestMutationResult> TryManualRetryAsync(
         Guid id,
         IReadOnlySet<Guid>? allowedTenantIds,
@@ -56,6 +63,26 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
                 var affected = await update.ExecuteNonQueryAsync(cancellationToken);
                 if (affected > 0)
                 {
+                    // Invalidate prior-cycle Delivered evidence so reclaim/retry in the new
+                    // dispatch cycle cannot skip real send via #238 prior-success (#268).
+                    await using (var invalidate = connection.CreateCommand())
+                    {
+                        invalidate.CommandText = """
+                            UPDATE mail_attempts
+                            SET error_code = @SupersededErrorCode
+                            WHERE request_id = @Id
+                              AND status = @DeliveredStatus;
+                            """;
+                        invalidate.Parameters.AddWithValue(
+                            "@SupersededErrorCode",
+                            SupersededByManualRetryErrorCode);
+                        invalidate.Parameters.AddWithValue("@Id", id.ToString("D"));
+                        invalidate.Parameters.AddWithValue(
+                            "@DeliveredStatus",
+                            (int)MailRequestState.Delivered);
+                        await invalidate.ExecuteNonQueryAsync(cancellationToken);
+                    }
+
                     await auditRepository.WriteAsync(
                         auditTemplate with
                         {

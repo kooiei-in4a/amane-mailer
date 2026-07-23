@@ -164,7 +164,7 @@ Mailer の配送セマンティクスは **at-least-once**（同一依頼から�
 | Mailpit (`provider=mailpit`) | **冪等性なし**（best-effort） | 再送のたびに SMTP 送信が発生しうる（開発/検証向け）。ただし SMTP DATA 受理後の disconnect 失敗だけを理由に再送スケジュールしない（#275） |
 | Worker 自動リトライ | at-least-once | retryable 失敗は `Queued` に戻り再配送 |
 | lease 失効後の finalize 競合（#238） | **再送抑止** | provider 送信成功の証跡を `mail_attempts` に残し、reclaim 時は実送信をスキップして `Delivered` へ収束。finalize skip は `mail_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)） |
-| Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す（`attempt_count` を 0 リセット）。provider 送信が成功済みでも row が `Delivered` へ収束していなければ再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
+| Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す（`attempt_count` を 0 リセット）。旧サイクルの Delivered 証跡は prior-success 収束に使わない（#268）。provider 送信が成功済みでも row が `Delivered` へ収束していなければ再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
 | 配送結果 Webhook | `event_id` による重複排除 | **実メール送信とは別契約**。Consumer は同一 `event_id` の再 POST を冪等に処理する（[webhook-verification.md](consumer/webhook-verification.md)） |
 
 **Consumer 向け推奨:**

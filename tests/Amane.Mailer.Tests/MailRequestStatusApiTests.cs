@@ -1,10 +1,14 @@
 using System.Net;
 using System.Text.Json;
+using Amane.Mailer.Admin;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Tests.Fixtures;
+using Amane.Mailer.Webhooks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Amane.Mailer.Tests;
 
@@ -283,6 +287,136 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
 
         Assert.Equal(MailRequestStatus.Processing, root.GetProperty("status").GetString());
         Assert.Equal(1, root.GetProperty("attempt_count").GetInt32());
+    }
+
+    [Fact]
+    public async Task Get_after_manual_retry_does_not_expose_superseded_prior_success_error_code()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var now = DateTimeOffset.UtcNow;
+        var mailRequestId = Guid.NewGuid();
+        var internalId = Guid.CreateVersion7(now);
+        var tenantId = MailerWebApplicationFixtureBase.TenantId;
+        var sourceService = MailerWebApplicationFixtureBase.SourceService;
+
+        await using (var connection = new SqliteConnection(fixture.ConnectionString))
+        {
+            await connection.OpenAsync(ct);
+            await using (var insertRequest = connection.CreateCommand())
+            {
+                insertRequest.CommandText = """
+                    INSERT INTO mail_requests (
+                        id, tenant_id, source_service, mail_request_id, purpose,
+                        payload_json, payload_hash, subject, recipient_email,
+                        status, attempt_count, max_attempts,
+                        accepted_at, created_at, updated_at, completed_at, failed_at)
+                    VALUES (
+                        @Id, @TenantId, @SourceService, @MailRequestId, 'test',
+                        '{}', @PayloadHash, 'subject', 'user@example.com',
+                        @Status, 3, 3,
+                        @Now, @Now, @Now, @Now, @Now);
+                    """;
+                insertRequest.Parameters.AddWithValue("@Id", internalId.ToString("D"));
+                insertRequest.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+                insertRequest.Parameters.AddWithValue("@SourceService", sourceService);
+                insertRequest.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+                insertRequest.Parameters.AddWithValue("@PayloadHash", new string('a', 64));
+                insertRequest.Parameters.AddWithValue("@Status", (int)MailRequestState.DeadLettered);
+                insertRequest.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
+                await insertRequest.ExecuteNonQueryAsync(ct);
+            }
+
+            await using (var insertAttempt = connection.CreateCommand())
+            {
+                insertAttempt.CommandText = """
+                    INSERT INTO mail_attempts (
+                        request_id, attempt_number, provider, status,
+                        provider_message_id, error_code, error_message, retryable,
+                        lock_token, started_at, completed_at)
+                    VALUES (
+                        @RequestId, 3, 'mailpit', @DeliveredStatus,
+                        'old-cycle-provider-msg', NULL, NULL, 0,
+                        @LockToken, @StartedAt, @CompletedAt);
+                    """;
+                insertAttempt.Parameters.AddWithValue("@RequestId", internalId.ToString("D"));
+                insertAttempt.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+                insertAttempt.Parameters.AddWithValue("@LockToken", Guid.CreateVersion7(now).ToString("D"));
+                insertAttempt.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
+                insertAttempt.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                await insertAttempt.ExecuteNonQueryAsync(ct);
+            }
+        }
+
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+            var auditRepository = scope.ServiceProvider.GetRequiredService<AdminAuditRepository>();
+            var retry = await repository.TryManualRetryAsync(
+                internalId,
+                allowedTenantIds: null,
+                now,
+                auditRepository,
+                new AdminAuditEvent
+                {
+                    EventType = AdminAuditLog.EventTypes.ManualRetryRequested,
+                    Actor = "status-api-test-admin",
+                    OccurredAt = now,
+                    TargetType = AdminAuditLog.TargetTypes.MailRequest,
+                    TargetId = internalId.ToString("D"),
+                    Result = AdminAuditLog.Results.Success,
+                },
+                ct);
+            Assert.Equal(ManualMailRequestMutationStatus.Succeeded, retry.Status);
+        }
+
+        using var client = CreateAuthorizedClient();
+        using (var getAfterRetry = await client.GetAsync(StatusUrl(mailRequestId), ct))
+        {
+            Assert.Equal(HttpStatusCode.OK, getAfterRetry.StatusCode);
+            var body = await getAfterRetry.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            Assert.Equal(MailRequestStatus.Queued, root.GetProperty("status").GetString());
+            Assert.False(root.TryGetProperty("last_error_code", out _));
+        }
+
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+            var auditRepository = scope.ServiceProvider.GetRequiredService<AdminAuditRepository>();
+            var deliveryEvents = scope.ServiceProvider.GetRequiredService<DeliveryEventRepository>();
+
+            var cancel = await repository.TryManualCancelAsync(
+                internalId,
+                allowedTenantIds: null,
+                now.AddSeconds(1),
+                auditRepository,
+                new AdminAuditEvent
+                {
+                    EventType = AdminAuditLog.EventTypes.ManualCancelRequested,
+                    Actor = "status-api-test-admin",
+                    OccurredAt = now.AddSeconds(1),
+                    TargetType = AdminAuditLog.TargetTypes.MailRequest,
+                    TargetId = internalId.ToString("D"),
+                    Result = AdminAuditLog.Results.Success,
+                },
+                ct);
+            Assert.Equal(ManualMailRequestMutationStatus.Succeeded, cancel.Status);
+
+            var webhookContext = await deliveryEvents.FindContextByInternalRequestIdAsync(internalId, ct);
+            Assert.NotNull(webhookContext);
+            Assert.NotEqual(
+                MailRequestRepository.SupersededByManualRetryErrorCode,
+                webhookContext!.LastErrorCode);
+            Assert.Null(webhookContext.LastErrorCode);
+        }
+
+        using var getAfterCancel = await client.GetAsync(StatusUrl(mailRequestId), ct);
+        Assert.Equal(HttpStatusCode.OK, getAfterCancel.StatusCode);
+        var cancelBody = await getAfterCancel.Content.ReadAsStringAsync(ct);
+        using var cancelDoc = JsonDocument.Parse(cancelBody);
+        Assert.Equal(MailRequestStatus.Cancelled, cancelDoc.RootElement.GetProperty("status").GetString());
+        Assert.False(cancelDoc.RootElement.TryGetProperty("last_error_code", out _));
     }
 
     private static string StatusUrl(
