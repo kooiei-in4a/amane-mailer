@@ -260,7 +260,8 @@ public sealed class MailRequestWorker : BackgroundService
         }
 
         // A prior provider success may exist when finalize lost the lease race (#238).
-        // Converge to Delivered without resending. First attempts cannot have prior evidence.
+        // Converge to Delivered without resending. Evidence superseded by Admin manual retry
+        // (#268) is ignored so a new dispatch cycle still performs real sends.
         if (row.AttemptCount > 1)
         {
             var priorSuccess = await _repository.FindSuccessfulDeliveryAttemptAsync(row.Id, stoppingToken);

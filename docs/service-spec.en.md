@@ -165,7 +165,7 @@ Mailer delivery semantics are **at-least-once** (a single accepted request may r
 | Mailpit (`provider=mailpit`) | **No idempotency** (best-effort) | Each retry may perform a new SMTP send (development / verification use). Disconnect failure after SMTP DATA acceptance alone does not schedule a retry (#275) |
 | Worker automatic retry | at-least-once | Retryable failures return to `Queued` and are delivered again |
 | Finalize race after lease expiry (#238) | **Resend suppression** | Successful provider sends are recorded in `mail_attempts`; reclaim skips the actual send and converges to `Delivered`. Finalize skips are observable via `mail_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)) |
-| Admin manual retry | **Intentional redelivery** | Moves `DeadLettered` / `Failed` back to `Queued` (resets `attempt_count` to 0). May resend even when a provider send already succeeded but the row had not converged to `Delivered` ([ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) maintains at-least-once) |
+| Admin manual retry | **Intentional redelivery** | Moves `DeadLettered` / `Failed` back to `Queued` (resets `attempt_count` to 0). Prior-cycle Delivered evidence is not used for prior-success convergence (#268). May resend even when a provider send already succeeded but the row had not converged to `Delivered` ([ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) maintains at-least-once) |
 | Delivery result webhook | Deduplication by `event_id` | **Separate contract from actual email delivery**. Consumers must treat duplicate POSTs with the same `event_id` as idempotent ([webhook-verification.md](consumer/webhook-verification.md)) |
 
 **Consumer recommendations:**

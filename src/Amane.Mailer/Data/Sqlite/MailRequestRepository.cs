@@ -20,6 +20,9 @@ public class MailRequestRepository
     internal const string ConsumerCancelledLastErrorMessage =
         MailRequestConsumerMutations.ConsumerCancelledLastErrorMessage;
 
+    internal const string SupersededByManualRetryErrorCode =
+        MailRequestConsumerMutations.SupersededByManualRetryErrorCode;
+
     public MailRequestRepository(
         MailRequestClaimStore claimStore,
         MailRequestAcceptStore acceptStore,

@@ -111,7 +111,7 @@ groups:
           summary: Delivered finalize hit strict lease fencing failure (delayed complete or superseded/terminal race)
 ```
 
-`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat アラートを primary、delivery rate は補助として運用してください。`mail_finalize_skipped_total` は strict lease fencing 失敗の検知用で、増加時は証跡の有無・Delivered 収束・DeadLetter との競合を確認してください。Admin 手動リトライは監査付きの明示操作として `attempt_count` をリセットするため、delivered 証跡付きの DeadLetter を再投入すると実再送になります（worker の prior-success 収束は適用されません）。再送前に Admin attempt 履歴の `provider_message_id` を確認してください。
+`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat アラートを primary、delivery rate は補助として運用してください。`mail_finalize_skipped_total` は strict lease fencing 失敗の検知用で、増加時は証跡の有無・Delivered 収束・DeadLetter との競合を確認してください。Admin 手動リトライは監査付きの明示操作として `attempt_count` をリセットし、旧サイクルの Delivered 証跡を prior-success 収束の対象外にします（#268）。そのため delivered 証跡付きの DeadLetter を再投入すると新サイクルでは実再送されます。同一サイクル内の #238 prior-success 収束は維持されます。再送前に Admin attempt 履歴の `provider_message_id` を確認してください。
 
 ## disk 枯渇・WAL・retention
 
