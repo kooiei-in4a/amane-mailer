@@ -1,5 +1,6 @@
 using Azure;
 using Amane.Mailer.Configuration;
+using Amane.Mailer.Contracts.MailRequests;
 using AcsEmailAddress = Azure.Communication.Email.EmailAddress;
 using AcsEmailClient = Azure.Communication.Email.EmailClient;
 using AcsEmailContent = Azure.Communication.Email.EmailContent;
@@ -23,7 +24,7 @@ public sealed class AcsMailDeliveryProvider(MailerOptions options)
         if (string.IsNullOrWhiteSpace(options.AcsConnectionString))
         {
             return MailDeliveryResult.Failure(
-                "ACS_NOT_CONFIGURED",
+                MailDeliveryErrorCodes.AcsNotConfigured,
                 "ACS_CONNECTION_STRING is required when MAILER_PROVIDER=acs.",
                 retryable: false);
         }
@@ -63,22 +64,26 @@ public sealed class AcsMailDeliveryProvider(MailerOptions options)
             }
 
             var status = operation.HasValue ? operation.Value.Status.ToString() : "Unknown";
-            return MailDeliveryResult.Failure("ACS_SEND_FAILED", status, retryable: false);
+            return MailDeliveryResult.Failure(
+                MailDeliveryErrorCodes.AcsSendFailed,
+                status,
+                retryable: false);
         }
         catch (RequestFailedException ex)
         {
             var retryable = ex.Status is 408 or 429 or >= 500;
             return MailDeliveryResult.Failure(
-                "ACS_REQUEST_FAILED",
+                MailDeliveryErrorCodes.AcsRequestFailed,
                 ProviderErrorSanitizer.Sanitize(ex.Message),
                 retryable);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            var (errorCode, retryable) = ProviderErrorClassifier.Classify(ex);
             return MailDeliveryResult.Failure(
-                ex.GetType().Name,
+                errorCode,
                 ProviderErrorSanitizer.Sanitize(ex.Message),
-                retryable: true);
+                retryable);
         }
     }
 }

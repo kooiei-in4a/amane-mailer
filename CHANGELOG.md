@@ -13,6 +13,13 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+### Changed
+
+- Map provider delivery failures to a stable `error_code` taxonomy
+  (`MailDeliveryErrorCodes` / `ProviderErrorClassifier`) instead of library
+  exception type names (#279). Unknown exceptions become `PROVIDER_UNKNOWN`
+  with `retryable: false`. Existing attempt rows are left unchanged.
+
 ## [0.9.1] - 2026-07-22
 
 ### Fixed

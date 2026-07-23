@@ -1,4 +1,5 @@
 using Amane.Mailer.Configuration;
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
@@ -293,7 +294,7 @@ public sealed class MailRequestWorker : BackgroundService
         catch (OperationCanceledException)
         {
             result = MailDeliveryResult.Failure(
-                "SEND_TIMEOUT",
+                MailDeliveryErrorCodes.SendTimeout,
                 $"Mail delivery exceeded {_workerOptions.SendTimeoutSeconds} seconds.",
                 retryable: true);
         }

@@ -90,7 +90,7 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
 
-返却 JSON は PII を含まない最小セット（`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`）。`last_error_code` は sanitized error code のみ。
+返却 JSON は PII を含まない最小セット（`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`）。`last_error_code` は delivery attempt の stable taxonomy（`MailDeliveryErrorCodes` / `ProviderErrorClassifier`）のみ。library の exception 型名は使わない。詳細は [SECURITY.md](../SECURITY.md) の Provider Error Sanitization を参照。
 
 ### 送信前キャンセル（POST cancel）
 

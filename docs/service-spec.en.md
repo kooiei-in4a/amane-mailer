@@ -90,7 +90,7 @@ API times are **UTC**. `scheduled_at` is the first-dispatch schedule and is inde
 | Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
 
-The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`). `last_error_code` is a sanitized error code only.
+The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`). `last_error_code` is from the stable delivery taxonomy (`MailDeliveryErrorCodes` / `ProviderErrorClassifier`) only — not library exception type names. See Provider Error Sanitization in [SECURITY.md](../SECURITY.md).
 
 ### Pre-send cancel (POST cancel)
 
