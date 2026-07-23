@@ -1,4 +1,5 @@
 using System.Text;
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
 using Microsoft.Data.Sqlite;
@@ -555,6 +556,7 @@ public sealed class MailRequestClaimStore(
             LIMIT @BatchSize;
             """;
 
+        var effectiveBatchSize = Math.Clamp(batchSize, 1, MailerRetentionOptions.MaxBatchSize);
         var completedBeforeStorage = SqliteTime.ToStorageUtc(completedBefore);
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
@@ -562,7 +564,7 @@ public sealed class MailRequestClaimStore(
         try
         {
             var batch = new List<(string Id, string TenantId, string SourceService, string MailRequestId)>(
-                Math.Max(1, batchSize));
+                effectiveBatchSize);
 
             await using (var select = connection.CreateCommand())
             {
@@ -572,7 +574,7 @@ public sealed class MailRequestClaimStore(
                 select.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
                 select.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
                 select.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
-                select.Parameters.AddWithValue("@BatchSize", batchSize);
+                select.Parameters.AddWithValue("@BatchSize", effectiveBatchSize);
 
                 await using var reader = await select.ExecuteReaderAsync(cancellationToken);
                 while (await reader.ReadAsync(cancellationToken))

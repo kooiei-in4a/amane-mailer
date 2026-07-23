@@ -132,6 +132,39 @@ public sealed class MailRequestRetentionTests(MailerRetentionFixture fixture)
         Assert.False(await DeliveryEventExistsAsync(second.MailRequestId, ct));
     }
 
+    [Fact]
+    public async Task DeleteExpiredCompletedAsync_purges_multiple_requests_and_events_in_one_batch()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var completedAt = DateTimeOffset.UtcNow.AddDays(-120);
+        var requests = new[]
+        {
+            MailRequestTestData.CreateRequest(),
+            MailRequestTestData.CreateRequest(),
+            MailRequestTestData.CreateRequest(),
+        };
+
+        foreach (var request in requests)
+        {
+            await SeedDeliveredRequestAsync(request, completedAt, ct);
+            await SeedDeliveryEventAsync(request, ct);
+        }
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var deleted = await repository.DeleteExpiredCompletedAsync(
+            DateTimeOffset.UtcNow.AddDays(-90),
+            batchSize: 100,
+            ct);
+
+        Assert.Equal(3, deleted);
+        foreach (var request in requests)
+        {
+            Assert.Null(await repository.FindDispatchStateByMailRequestIdAsync(request.MailRequestId, ct));
+            Assert.False(await DeliveryEventExistsAsync(request.MailRequestId, ct));
+        }
+    }
+
     private async Task SeedDeliveryEventAsync(
         MailRequestCreateRequest request,
         CancellationToken cancellationToken)
