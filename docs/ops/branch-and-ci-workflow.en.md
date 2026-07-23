@@ -65,6 +65,16 @@ coverage.
 
 Ambiguous paths fail secure toward final CI (for example `workflow_dispatch`).
 
+### NuGet vulnerability audit
+
+Known NuGet vulnerabilities (including transitive packages) are checked by a
+separate workflow
+[`.github/workflows/nuget-vulnerability-audit.yml`](../../.github/workflows/nuget-vulnerability-audit.yml)
+on a weekly schedule / `workflow_dispatch`, and again before push in
+`publish-image.yml` and `publish-contracts.yml`. See
+[NuGet vulnerability audit](nuget-vulnerability-audit.en.md). This complements
+Dependabot; it does not replace it. npm / Python are out of scope.
+
 ### concurrency
 
 `concurrency.group: ci-${{ github.workflow }}-${{ github.ref }}` with `cancel-in-progress: true` cancels in-progress runs for the same ref on rapid pushes. Push and pull_request use different refs and therefore different groups.
