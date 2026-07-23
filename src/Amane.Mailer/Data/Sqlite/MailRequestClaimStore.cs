@@ -109,7 +109,7 @@ public sealed class MailRequestClaimStore(
         CancellationToken cancellationToken = default)
     {
         const string selectSql = """
-            SELECT id, mail_request_id, attempt_count, lock_token, updated_at
+            SELECT id, tenant_id, mail_request_id, attempt_count, lock_token, updated_at
             FROM mail_requests
             WHERE status = @ProcessingStatus
               AND lock_token IS NOT NULL
@@ -158,7 +158,7 @@ public sealed class MailRequestClaimStore(
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
         try
         {
-            var candidates = new List<(Guid Id, Guid MailRequestId, int AttemptNumber, Guid LockToken, DateTimeOffset StartedAt)>();
+            var candidates = new List<(Guid Id, Guid TenantId, Guid MailRequestId, int AttemptNumber, Guid LockToken, DateTimeOffset StartedAt)>();
 
             await using (var select = connection.CreateCommand())
             {
@@ -173,9 +173,10 @@ public sealed class MailRequestClaimStore(
                     candidates.Add((
                         Guid.Parse(reader.GetString(0)),
                         Guid.Parse(reader.GetString(1)),
-                        reader.GetInt32(2),
-                        Guid.Parse(reader.GetString(3)),
-                        SqliteTime.FromStorage(reader.GetString(4))));
+                        Guid.Parse(reader.GetString(2)),
+                        reader.GetInt32(3),
+                        Guid.Parse(reader.GetString(4)),
+                        SqliteTime.FromStorage(reader.GetString(5))));
                 }
             }
 
@@ -238,6 +239,7 @@ public sealed class MailRequestClaimStore(
 
                 deadLettered.Add(new ExpiredProcessingDeadLetteredRequest(
                     candidate.Id,
+                    candidate.TenantId,
                     candidate.MailRequestId,
                     candidate.AttemptNumber,
                     ExpiredProcessingMaxAttemptsErrorCode,
