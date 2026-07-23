@@ -75,25 +75,106 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
         }
 
         var directory = Path.GetDirectoryName(absoluteDestinationPath);
-        if (!string.IsNullOrEmpty(directory))
+        if (string.IsNullOrEmpty(directory))
         {
-            Directory.CreateDirectory(directory);
+            throw new ArgumentException("Backup destination must include a directory.", nameof(absoluteDestinationPath));
         }
 
-        if (File.Exists(absoluteDestinationPath))
-        {
-            File.Delete(absoluteDestinationPath);
-        }
+        Directory.CreateDirectory(directory);
 
-        await using var source = await OpenConnectionAsync(cancellationToken);
-        var destinationBuilder = new SqliteConnectionStringBuilder
+        // Write to a same-directory temp file, verify it opens, then replace the destination.
+        // Never delete the existing destination first — a mid-flight failure must leave the
+        // previous good backup intact (fixed-path overwrite / CLI reuse).
+        var tempPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(absoluteDestinationPath)}.tmp-{Guid.NewGuid():N}");
+        var replaced = false;
+
+        try
         {
-            DataSource = absoluteDestinationPath,
+            await using (var source = await OpenConnectionAsync(cancellationToken))
+            {
+                var destinationBuilder = new SqliteConnectionStringBuilder
+                {
+                    DataSource = tempPath,
+                    // Windows keeps pooled handles open after dispose; File.Move would fail.
+                    Pooling = false,
+                };
+
+                await using var destination = new SqliteConnection(destinationBuilder.ConnectionString);
+                await destination.OpenAsync(cancellationToken);
+                await using (var journalMode = destination.CreateCommand())
+                {
+                    // Avoid leaving temp-wal/temp-shm beside the staging file on Windows.
+                    journalMode.CommandText = "PRAGMA journal_mode = DELETE;";
+                    await journalMode.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                source.BackupDatabase(destination);
+            }
+
+            await VerifyBackupFileAsync(tempPath, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(tempPath, absoluteDestinationPath, overwrite: true);
+            replaced = true;
+            // Move renames only the main file; drop any leftover temp sidecars.
+            TryDeleteBackupArtifacts(tempPath);
+        }
+        finally
+        {
+            if (!replaced)
+            {
+                TryDeleteBackupArtifacts(tempPath);
+            }
+        }
+    }
+
+    private static async Task VerifyBackupFileAsync(string absolutePath, CancellationToken cancellationToken)
+    {
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = absolutePath,
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
         };
 
-        await using var destination = new SqliteConnection(destinationBuilder.ConnectionString);
-        await destination.OpenAsync(cancellationToken);
-        source.BackupDatabase(destination);
+        await using var connection = new SqliteConnection(builder.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1;";
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        if (result is not long value || value != 1L)
+        {
+            throw new InvalidOperationException("Backup verification failed.");
+        }
+    }
+
+    private static void TryDeleteBackupArtifacts(string absolutePath)
+    {
+        TryDeleteFile(absolutePath);
+        TryDeleteFile(absolutePath + "-wal");
+        TryDeleteFile(absolutePath + "-shm");
+        TryDeleteFile(absolutePath + "-journal");
+    }
+
+    private static void TryDeleteFile(string absolutePath)
+    {
+        try
+        {
+            if (File.Exists(absolutePath))
+            {
+                File.Delete(absolutePath);
+            }
+        }
+        catch (IOException)
+        {
+            // Best-effort cleanup of an incomplete temp backup.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Best-effort cleanup of an incomplete temp backup.
+        }
     }
 
     public string? GetConfiguredDatabasePath()

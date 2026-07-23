@@ -342,7 +342,7 @@ Early branching on `argv` before Web host startup. Container `ENTRYPOINT` is `./
 | `healthcheck` | Current SQLite schema (applied migration version + checksum) + Worker/Sweep heartbeat freshness check (Docker `HEALTHCHECK`) | 0=healthy / 1=unhealthy |
 | `db migrate` | Apply pending SQL migrations | 0=success |
 | `db checkpoint` | Clean up `-wal` via `PRAGMA wal_checkpoint(TRUNCATE)` | 0=success |
-| `db backup <absolute-path>` | Online SQLite backup (Backup API) | 0=success / 2=usage error |
+| `db backup <absolute-path>` | Online SQLite backup (Backup API). Writes to a same-directory temp file, verifies it, then atomically replaces the destination. A mid-flight failure leaves any previous good backup intact. Prefer a timestamped path for retention | 0=success / 2=usage error |
 | `db stats [--tenant-id <uuid>]` | Output `mail_requests` status counts, ready backlog, oldest queued age, stale processing, and dead-letter counts from SQLite as `key=value` | 0=success / 1=schema unavailable / 2=usage error |
 | `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | Output one request's state, attempt count, and provider message id presence as `key=value` (does not expose secrets / recipient) | 0=success / 1=schema unavailable / 2=usage error |
 
@@ -364,7 +364,7 @@ migrations instead of relying on a numbered migration for that metadata change.
 ```bash
 docker compose --profile ops run --rm mailer-migrate          # db migrate
 docker compose exec mailer ./Amane.Mailer db checkpoint
-docker compose exec mailer ./Amane.Mailer db backup /app/data/backups/mailer.db  # plaintext; use backup-mailer.sh in production
+docker compose exec mailer ./Amane.Mailer db backup "/app/data/backups/mailer-$(date -u +%Y%m%dT%H%M%SZ).db"  # plaintext; use backup-mailer.sh in production. Fixed-path overwrite keeps the previous good backup on mid-flight failure, but prefer a timestamped path for retention
 docker compose exec mailer ./Amane.Mailer db stats --tenant-id <tenant-uuid>
 docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-uuid> --source-service <source-service> --mail-request-id <request-uuid>
 ```

@@ -330,7 +330,7 @@ Web ホスト起動前に `argv` で早期分岐。コンテナ `ENTRYPOINT` は
 | `healthcheck` | 現行 SQLite schema（applied migration version + checksum）+ Worker/Sweep heartbeat 鮮度確認（Docker `HEALTHCHECK`） | 0=healthy / 1=unhealthy |
 | `db migrate` | 未適用 SQL マイグレーションを適用 | 0=成功 |
 | `db checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` で `-wal` をクリーンアップ | 0=成功 |
-| `db backup <absolute-path>` | オンライン SQLite バックアップ（Backup API） | 0=成功 / 2=usage error |
+| `db backup <absolute-path>` | オンライン SQLite バックアップ（Backup API）。同ディレクトリの temp へ書いて検証後に destination を atomic replace する。途中失敗時も既存の正常 backup は残る。世代管理のため timestamp 付き path を推奨 | 0=成功 / 2=usage error |
 | `db stats [--tenant-id <uuid>]` | SQLite `mail_requests` の status 別件数、ready backlog、oldest queued age、stale processing、dead-letter 件数を `key=value` で出力 | 0=成功 / 1=schema unavailable / 2=usage error |
 | `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | 1 request の状態、attempt 件数、provider message id の有無を `key=value` で出力（secret / recipient は出さない） | 0=成功 / 1=schema unavailable / 2=usage error |
 
@@ -352,7 +352,7 @@ migration 適用前に追加・backfill する。
 ```bash
 docker compose --profile ops run --rm mailer-migrate          # db migrate
 docker compose exec mailer ./Amane.Mailer db checkpoint
-docker compose exec mailer ./Amane.Mailer db backup /app/data/backups/mailer.db  # 平文。本番運用は backup-mailer.sh を使うこと
+docker compose exec mailer ./Amane.Mailer db backup "/app/data/backups/mailer-$(date -u +%Y%m%dT%H%M%SZ).db"  # 平文。本番運用は backup-mailer.sh を使うこと。固定 path 上書きも途中失敗時は旧 backup を残すが、世代管理には timestamp 付き path を推奨
 docker compose exec mailer ./Amane.Mailer db stats --tenant-id <tenant-uuid>
 docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-uuid> --source-service <source-service> --mail-request-id <request-uuid>
 ```
