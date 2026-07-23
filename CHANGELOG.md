@@ -15,6 +15,9 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ### Changed
 
+- Include structured `RequestId` (internal id) and `TenantId` on Worker and
+  ExpiredProcessingReaper request logs so the same `mail_request_id` can be
+  distinguished across tenants without logging mail-payload PII (#285).
 - Enforce Admin PBKDF2 password-hash parameter bounds (iterations
   600,000–10,000,000; salt 16–64 bytes; hash 32–64 bytes) at startup and
   `admin user create`, rejecting legacy weaker hashes (#281). Regenerate with
