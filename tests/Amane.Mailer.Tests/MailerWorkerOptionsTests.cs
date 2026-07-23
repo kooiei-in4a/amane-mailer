@@ -25,4 +25,23 @@ public sealed class MailerWorkerOptionsTests
 
         Assert.Throws<InvalidOperationException>(() => options.Validate());
     }
+
+    [Fact]
+    public void ShutdownDrainTimeout_covers_one_in_flight_wave_not_full_batch()
+    {
+        // Multi-wave batches cancel semaphore waiters on shutdown (#271);
+        // drain budget stays one SendTimeout + FinalizeTimeout window.
+        var options = new MailerWorkerOptions
+        {
+            BatchClaimSize = 8,
+            MaxSendConcurrency = 2,
+            SendTimeoutSeconds = 90,
+            LeaseDurationSeconds = 400,
+        };
+
+        options.Validate();
+        Assert.Equal(
+            TimeSpan.FromSeconds(90 + MailerWorkerOptions.FinalizeTimeoutSeconds),
+            options.ShutdownDrainTimeout);
+    }
 }

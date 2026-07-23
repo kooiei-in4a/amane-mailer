@@ -478,7 +478,7 @@ See the [backup operations runbook](ops/backup-operations.en.md) for procedures.
 Operational sequence on SIGTERM:
 
 1. Generic Host fires `ApplicationStopping`; Kestrel stops accepting new HTTP requests
-2. `MailRequestWorker` waits up to `SendTimeoutSeconds + FinalizeTimeoutSeconds` for in-flight sends. `WebhookDeliveryWorker` stops new claims and waits up to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` for in-flight webhook deliveries. If the drain window expires with work still active, a warning is logged
+2. `MailRequestWorker` stops new claims and does not start later semaphore-waiting send waves after `stoppingToken` cancels (including when `BatchClaimSize > MaxSendConcurrency`; unstarted Processing rows rely on lease reclaim). Only already-started in-flight sends wait up to `SendTimeoutSeconds + FinalizeTimeoutSeconds`. `WebhookDeliveryWorker` stops new claims and waits up to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` for in-flight webhook deliveries. If the drain window expires with work still active, a warning is logged
 3. After all HostedServices (Worker / Sweep / Retention, etc.) complete `StopAsync`, `MailerWalCheckpointShutdownService.StoppedAsync` runs `PRAGMA wal_checkpoint(TRUNCATE)`
 4. Generic Host fires `ApplicationStopped`
 
@@ -526,3 +526,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-23 | `/readyz` / CLI `healthcheck` require current migration version + checksum (#267) |
 | 2026-07-23 | Consumer cancel is idempotent for already-cancelled; post-commit HTTP failures avoided (#269) |
 | 2026-07-23 | Documented startup validation for effective provider / ACS live-sending; not part of `/readyz` (#272). Mailpit treats post-accept disconnect failure as success, not retry (#275) |
+| 2026-07-23 | `MailRequestWorker` shutdown: later semaphore-waiting send waves do not start (#271) |

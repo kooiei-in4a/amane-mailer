@@ -469,7 +469,7 @@ docker compose --env-file .env -f compose.yml up -d mailer
 SIGTERM 受信時の運用順序：
 
 1. Generic Host が `ApplicationStopping` を発火し、Kestrel が新規 HTTP 受付を停止する
-2. `MailRequestWorker` がインフライト送信を最大 `SendTimeoutSeconds + FinalizeTimeoutSeconds` 待機する。`WebhookDeliveryWorker` は新規 claim を止め、インフライト webhook 配信を最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する。待機を使い切っても残る場合は warning ログを出す
+2. `MailRequestWorker` は新規 claim を止め、既に Semaphore 待ちの後続 wave は `stoppingToken` で送信開始しない（`BatchClaimSize > MaxSendConcurrency` でも同様。未開始の Processing は lease reclaim）。開始済みのインフライト送信のみ最大 `SendTimeoutSeconds + FinalizeTimeoutSeconds` 待機する。`WebhookDeliveryWorker` は新規 claim を止め、インフライト webhook 配信を最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する。待機を使い切っても残る場合は warning ログを出す
 3. Worker / Sweep / Retention など全 HostedService の `StopAsync` 完了後、`MailerWalCheckpointShutdownService.StoppedAsync` が `PRAGMA wal_checkpoint(TRUNCATE)` を実行する
 4. Generic Host が `ApplicationStopped` を発火する
 
@@ -517,3 +517,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-23 | `/readyz` / CLI `healthcheck` が現行 migration version + checksum を要求（#267） |
 | 2026-07-23 | Consumer cancel の冪等成功と commit 後 HTTP 失敗の回避（#269） |
 | 2026-07-23 | effective provider / ACS live-sending の startup 検証を明記。`/readyz` は含めない（#272）。Mailpit は SMTP 受理後の disconnect 失敗を再送対象にしない（#275） |
+| 2026-07-23 | `MailRequestWorker` shutdown: Semaphore 待ち後続 wave は送信開始しない（#271） |
