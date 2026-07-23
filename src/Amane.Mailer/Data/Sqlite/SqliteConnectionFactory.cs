@@ -142,8 +142,9 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
 
     /// <summary>
     /// Test-only gate invoked after the temp backup is verified and before atomic replace.
+    /// Instance-scoped so parallel tests cannot observe another fixture's injected fault.
     /// </summary>
-    internal static Func<CancellationToken, Task>? BeforeAtomicReplaceForTests { get; set; }
+    internal Func<CancellationToken, Task>? BeforeAtomicReplaceForTests { get; set; }
 
     private static async Task VerifyBackupFileAsync(string absolutePath, CancellationToken cancellationToken)
     {

@@ -124,24 +124,30 @@ public sealed class SqliteBackupAtomicityTests
             await SeedMarkerAsync(databasePath, "should-not-land", ct);
 
             var sawTempBeforeReplace = false;
-            SqliteConnectionFactory.BeforeAtomicReplaceForTests = _ =>
+            factory.BeforeAtomicReplaceForTests = _ =>
             {
                 Assert.NotEmpty(ListTempBackupArtifacts(backupPath));
                 sawTempBeforeReplace = true;
                 throw new IOException("injected replace failure");
             };
 
-            var exception = await Assert.ThrowsAsync<IOException>(
-                () => factory.BackupToAsync(backupPath, ct));
+            try
+            {
+                var exception = await Assert.ThrowsAsync<IOException>(
+                    () => factory.BackupToAsync(backupPath, ct));
 
-            Assert.Equal("injected replace failure", exception.Message);
-            Assert.True(sawTempBeforeReplace);
-            Assert.Equal("good-backup", await ReadMarkerAsync(backupPath, ct));
-            Assert.Empty(ListTempBackupArtifacts(backupPath));
+                Assert.Equal("injected replace failure", exception.Message);
+                Assert.True(sawTempBeforeReplace);
+                Assert.Equal("good-backup", await ReadMarkerAsync(backupPath, ct));
+                Assert.Empty(ListTempBackupArtifacts(backupPath));
+            }
+            finally
+            {
+                factory.BeforeAtomicReplaceForTests = null;
+            }
         }
         finally
         {
-            SqliteConnectionFactory.BeforeAtomicReplaceForTests = null;
             SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
