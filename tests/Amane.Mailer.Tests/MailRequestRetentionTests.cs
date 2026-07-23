@@ -88,6 +88,50 @@ public sealed class MailRequestRetentionTests(MailerRetentionFixture fixture)
         Assert.False(await DeliveryEventExistsAsync(expiredRequest.MailRequestId, ct));
     }
 
+    [Fact]
+    public async Task DeleteExpiredCompletedAsync_batch_boundary_keeps_request_and_event_aligned()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var completedAt = DateTimeOffset.UtcNow.AddDays(-120);
+        var first = MailRequestTestData.CreateRequest();
+        var second = MailRequestTestData.CreateRequest();
+
+        await SeedDeliveredRequestAsync(first, completedAt, ct);
+        await SeedDeliveredRequestAsync(second, completedAt, ct);
+        await SeedDeliveryEventAsync(first, ct);
+        await SeedDeliveryEventAsync(second, ct);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var deleted = await repository.DeleteExpiredCompletedAsync(
+            DateTimeOffset.UtcNow.AddDays(-90),
+            batchSize: 1,
+            ct);
+
+        Assert.Equal(1, deleted);
+
+        var firstState = await repository.FindDispatchStateByMailRequestIdAsync(first.MailRequestId, ct);
+        var secondState = await repository.FindDispatchStateByMailRequestIdAsync(second.MailRequestId, ct);
+        var firstEventExists = await DeliveryEventExistsAsync(first.MailRequestId, ct);
+        var secondEventExists = await DeliveryEventExistsAsync(second.MailRequestId, ct);
+
+        Assert.True(
+            (firstState is null && !firstEventExists && secondState is not null && secondEventExists)
+            || (secondState is null && !secondEventExists && firstState is not null && firstEventExists),
+            "A batchSize=1 purge with tied completed_at must delete the selected request and its delivery_event together, leaving the other pair intact.");
+
+        var remainingDeleted = await repository.DeleteExpiredCompletedAsync(
+            DateTimeOffset.UtcNow.AddDays(-90),
+            batchSize: 1,
+            ct);
+
+        Assert.Equal(1, remainingDeleted);
+        Assert.Null(await repository.FindDispatchStateByMailRequestIdAsync(first.MailRequestId, ct));
+        Assert.Null(await repository.FindDispatchStateByMailRequestIdAsync(second.MailRequestId, ct));
+        Assert.False(await DeliveryEventExistsAsync(first.MailRequestId, ct));
+        Assert.False(await DeliveryEventExistsAsync(second.MailRequestId, ct));
+    }
+
     private async Task SeedDeliveryEventAsync(
         MailRequestCreateRequest request,
         CancellationToken cancellationToken)

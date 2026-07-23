@@ -41,9 +41,10 @@ HTTP 上は `STORAGE_FULL`（503, `retryable: false`）として busy/locked 由
 
 1. **volume の空き容量を確保する**（不要ファイル削除、volume 拡張）
 2. **retention を確認・必要なら短縮する**
-   - mail request retention: `Mailer:Retention:*` / 関連 env（終端 `mail_requests` と同一 `(tenant_id, source_service, mail_request_id)` の `delivery_events` を同時パージ）
+   - mail request retention: `Mailer:Retention:*` / 関連 env（終端 `mail_requests` と同一 `(tenant_id, source_service, mail_request_id)` の `delivery_events` を同時パージ。webhook 未配送 pending を含む status に関わらず削除する）
    - admin audit retention: `MAILER_ADMIN_AUDIT_RETENTION_DAYS`（既定 180 日）
    - 明示 purge: `db admin-audit purge --older-than-days <days>`
+   - 注意: この同時パージは今後の retention 実行にのみ効く。fix 適用前に既に孤立した `delivery_events`（対応する `mail_requests` が無い行）は自動では消えない。必要ならメンテウィンドウで手動削除する
 3. **WAL を縮退させる**（運用ウィンドウで）
    - プロセス停止時の checkpoint（`MailerWalCheckpointShutdownService`）後にサイズを再確認
    - 運用向け既定コマンド: `db checkpoint`（内部で `PRAGMA wal_checkpoint(TRUNCATE)`）

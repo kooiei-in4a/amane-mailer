@@ -1,3 +1,4 @@
+using System.Text;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
 using Microsoft.Data.Sqlite;
@@ -541,32 +542,17 @@ public sealed class MailRequestClaimStore(
         int batchSize,
         CancellationToken cancellationToken = default)
     {
-        const string expiredBatchPredicate = """
-            status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus)
+        // Select the expired batch once, then delete matching delivery_events and
+        // mail_requests from that fixed set. Two independent ORDER BY ... LIMIT
+        // queries can diverge on completed_at ties; a single selection avoids orphans.
+        const string selectBatchSql = """
+            SELECT id, tenant_id, source_service, mail_request_id
+            FROM mail_requests
+            WHERE status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus)
               AND completed_at IS NOT NULL
               AND completed_at < @CompletedBefore
-            """;
-
-        const string deleteDeliveryEventsSql = $"""
-            DELETE FROM delivery_events
-            WHERE (tenant_id, source_service, mail_request_id) IN (
-                SELECT tenant_id, source_service, mail_request_id
-                FROM mail_requests
-                WHERE {expiredBatchPredicate}
-                ORDER BY completed_at ASC
-                LIMIT @BatchSize
-            );
-            """;
-
-        const string deleteMailRequestsSql = $"""
-            DELETE FROM mail_requests
-            WHERE id IN (
-                SELECT id
-                FROM mail_requests
-                WHERE {expiredBatchPredicate}
-                ORDER BY completed_at ASC
-                LIMIT @BatchSize
-            );
+            ORDER BY completed_at ASC, id ASC
+            LIMIT @BatchSize;
             """;
 
         var completedBeforeStorage = SqliteTime.ToStorageUtc(completedBefore);
@@ -575,28 +561,78 @@ public sealed class MailRequestClaimStore(
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
         try
         {
+            var batch = new List<(string Id, string TenantId, string SourceService, string MailRequestId)>(
+                Math.Max(1, batchSize));
+
+            await using (var select = connection.CreateCommand())
+            {
+                select.CommandText = selectBatchSql;
+                select.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+                select.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
+                select.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
+                select.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
+                select.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
+                select.Parameters.AddWithValue("@BatchSize", batchSize);
+
+                await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    batch.Add((
+                        reader.GetString(0),
+                        reader.GetString(1),
+                        reader.GetString(2),
+                        reader.GetString(3)));
+                }
+            }
+
+            if (batch.Count == 0)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return 0;
+            }
+
             await using (var deleteEvents = connection.CreateCommand())
             {
-                deleteEvents.CommandText = deleteDeliveryEventsSql;
-                deleteEvents.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
-                deleteEvents.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
-                deleteEvents.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
-                deleteEvents.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
-                deleteEvents.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
-                deleteEvents.Parameters.AddWithValue("@BatchSize", batchSize);
+                var eventTuples = new StringBuilder();
+                for (var i = 0; i < batch.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        eventTuples.Append(", ");
+                    }
+
+                    eventTuples.Append($"(@TenantId{i}, @SourceService{i}, @MailRequestId{i})");
+                    deleteEvents.Parameters.AddWithValue($"@TenantId{i}", batch[i].TenantId);
+                    deleteEvents.Parameters.AddWithValue($"@SourceService{i}", batch[i].SourceService);
+                    deleteEvents.Parameters.AddWithValue($"@MailRequestId{i}", batch[i].MailRequestId);
+                }
+
+                deleteEvents.CommandText = $"""
+                    DELETE FROM delivery_events
+                    WHERE (tenant_id, source_service, mail_request_id) IN ({eventTuples});
+                    """;
                 _ = await deleteEvents.ExecuteNonQueryAsync(cancellationToken);
             }
 
             int deleted;
             await using (var deleteRequests = connection.CreateCommand())
             {
-                deleteRequests.CommandText = deleteMailRequestsSql;
-                deleteRequests.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
-                deleteRequests.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
-                deleteRequests.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
-                deleteRequests.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
-                deleteRequests.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
-                deleteRequests.Parameters.AddWithValue("@BatchSize", batchSize);
+                var idList = new StringBuilder();
+                for (var i = 0; i < batch.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        idList.Append(", ");
+                    }
+
+                    idList.Append($"@Id{i}");
+                    deleteRequests.Parameters.AddWithValue($"@Id{i}", batch[i].Id);
+                }
+
+                deleteRequests.CommandText = $"""
+                    DELETE FROM mail_requests
+                    WHERE id IN ({idList});
+                    """;
                 deleted = await deleteRequests.ExecuteNonQueryAsync(cancellationToken);
             }
 
