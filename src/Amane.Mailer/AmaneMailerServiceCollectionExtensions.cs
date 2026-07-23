@@ -22,7 +22,12 @@ public static class AmaneMailerServiceCollectionExtensions
             MailerTenantRegistry.Load(provider.GetRequiredService<IConfiguration>()));
 
         services.AddSingleton(provider =>
-            MailerOptions.Load(provider.GetRequiredService<IConfiguration>()));
+        {
+            var options = MailerOptions.Load(provider.GetRequiredService<IConfiguration>());
+            var tenants = provider.GetRequiredService<MailerTenantRegistry>();
+            options.ValidateEffectiveProviders(tenants.ListTenants());
+            return options;
+        });
 
         services.AddSingleton(provider =>
         {

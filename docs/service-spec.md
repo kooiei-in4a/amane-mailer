@@ -47,7 +47,7 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 | `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | 送信前キャンセル（`queued`；既 `cancelled` は冪等） | テナント Bearer |
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | 予約時刻変更（`queued` かつ `attempt_count=0`） | テナント Bearer |
 | `GET` | `/healthz` | 生存確認（liveness） | なし |
-| `GET` | `/readyz` | 受付可否（現行 migration schema + Worker/Sweep 稼働・heartbeat 鮮度） | なし |
+| `GET` | `/readyz` | 受付可否（現行 migration schema + Worker/Sweep 稼働・heartbeat 鮮度。provider / ACS 設定検証は含まない＝startup-only） | なし |
 | `GET` | `/metrics` | Prometheus メトリクス（ops。詳細は [metrics-and-alerts.md](ops/metrics-and-alerts.md)） | 既定なし（optional bearer） |
 
 ### 契約同期と drift review
@@ -161,7 +161,7 @@ Mailer の配送セマンティクスは **at-least-once**（同一依頼から�
 | HTTP 受付 | at-most-once 永続化 | 同一 `(tenant_id, source_service, mail_request_id)` は 1 行。再 POST は `already_accepted` |
 | 実メール配送（全体） | **not exactly-once** / at-least-once | 自動リトライ・手動再送・provider 挙動により重複しうる |
 | ACS (`provider=acs`) | 決定論的 operation id（UUIDv5）による**緩和のみ** | `tenant_id` + `source_service:mail_request_id` から生成（`AcsOperationIdFactory`）。ACS サーバ側の重複排除として機能する保証は本リポジトリでは検証・保証しない |
-| Mailpit (`provider=mailpit`) | **冪等性なし**（best-effort） | 再送のたびに SMTP 送信が発生しうる（開発/検証向け） |
+| Mailpit (`provider=mailpit`) | **冪等性なし**（best-effort） | 再送のたびに SMTP 送信が発生しうる（開発/検証向け）。ただし SMTP DATA 受理後の disconnect 失敗だけを理由に再送スケジュールしない（#275） |
 | Worker 自動リトライ | at-least-once | retryable 失敗は `Queued` に戻り再配送 |
 | lease 失効後の finalize 競合（#238） | **再送抑止** | provider 送信成功の証跡を `mail_attempts` に残し、reclaim 時は実送信をスキップして `Delivered` へ収束。finalize skip は `mail_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)） |
 | Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す（`attempt_count` を 0 リセット）。provider 送信が成功済みでも row が `Delivered` へ収束していなければ再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
@@ -304,7 +304,11 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 - Consumer 重複排除契約は `event_id`（同一 mail request で不変）。
 - 配信失敗時は指数バックオフで再送し、上限超過で webhook Dead Letter として記録する。
 - shutdown 中は `stoppingToken` により新規 claim を行わない。インフライト配信は最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する（`MailRequestWorker` と同型の drain）。
-- SSRF 対策: HTTPS 必須、private/metadata IP ブロック、optional `allowed_host_suffixes`。
+- SSRF 対策: HTTPS 必須。IPv4 private / loopback / link-local / CGNAT / multicast / reserved、
+  IPv4-mapped、IPv6 loopback / link-local / site-local / ULA / multicast / unspecified、
+  廃止済み IPv4-compatible IPv6（`::/96`、例: `::10.0.0.1`）、
+  および NAT64 well-known prefix（`64:ff9b::/96`）・6to4（`2002::/16`）上の
+  private 等ブロック対象 IPv4 埋め込みを拒否。optional `allowed_host_suffixes`。
 - 検証手順: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
 - OpenAPI schema: `MailDeliveryEventPayload`
 - Admin / ops 確認: `/admin/webhook-dead-letters`、`db stats` の webhook 件数
@@ -389,7 +393,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | **`ACS_CONNECTION_STRING_FILE`** | **ACS 接続文字列ファイル** | **Staging/Production deploy（`infra/deploy/compose.yml`）の正本。`admin provider register-acs` が書く `acs_connection_string` を指す。`MAILER_REQUIRE_ACS_SECRET_FILE=true` のとき bare env へのフォールバックはしない** |
 | `ACS_CONNECTION_STRING` | ACS 接続文字列（環境変数） | local Mailpit compose、および local ACS drill（`mail-05a-acs-drill.sh` の compose override）向け。Staging/Production の `compose.yml` では参照しない |
 | `MAIL_SERVICE_TOKEN_*` | テナント Bearer トークン | `tenants.json` の `token_env` が指定 |
-| `MAILER_PROVIDER` | provider グローバル上書き（任意） | `acs` / `mailpit` |
+| `MAILER_PROVIDER` | provider グローバル上書き（任意） | `acs` / `mailpit`。未知値は **startup fail-closed**（`/readyz` では再検証しない） |
 | `MAILER_TENANTS_PATH` | tenants.json の場所 | 例 `/app/config/mailer/tenants.json` |
 
 ### 5.2 Worker / Sweep / Retention（環境変数）
@@ -427,6 +431,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 
 - `provider=acs` でも `live_sending=false` のテナントは `LIVE_SENDING_DISABLED` で**送らない**。
 - develop / staging は原則 `false`、production のみ `true`。
+- effective provider（`MAILER_PROVIDER` override 含む）が `acs` かつ `live_sending=true` のテナントがある場合、ACS 接続文字列（`ACS_CONNECTION_STRING_FILE` / `ACS_CONNECTION_STRING`）が無いと **startup fail-closed**。`live_sending=false` のみの構成では ACS secret は起動時必須ではない（offline `scripts/validate-tenant-config.mjs` と同じ）。provider / ACS のこの検証は startup-only で、`/readyz` には含めない。
 
 ---
 
@@ -511,3 +516,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-22 | `WebhookDeliveryWorker` の shutdown drain（新規 claim 停止 + inflight 待機）を明記（#245） |
 | 2026-07-23 | `/readyz` / CLI `healthcheck` が現行 migration version + checksum を要求（#267） |
 | 2026-07-23 | Consumer cancel の冪等成功と commit 後 HTTP 失敗の回避（#269） |
+| 2026-07-23 | effective provider / ACS live-sending の startup 検証を明記。`/readyz` は含めない（#272）。Mailpit は SMTP 受理後の disconnect 失敗を再送対象にしない（#275） |
