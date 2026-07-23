@@ -38,9 +38,11 @@ public sealed class ExpiredProcessingReaper(
     private void LogExpiredProcessingDeadLetter(ExpiredProcessingDeadLetteredRequest request)
     {
         logger.LogError(
-            "Mail request {MailRequestId} was dead-lettered after its processing lease expired at attempt {AttemptNumber}. ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
+            "Mail request {MailRequestId} was dead-lettered after its processing lease expired at attempt {AttemptNumber}. RequestId={RequestId}; TenantId={TenantId}; ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
             request.MailRequestId,
             request.AttemptNumber,
+            request.Id,
+            request.TenantId,
             request.ErrorCode,
             request.ErrorMessage);
     }
