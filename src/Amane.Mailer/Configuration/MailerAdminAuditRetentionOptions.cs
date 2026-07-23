@@ -79,12 +79,23 @@ public sealed record MailerAdminAuditRetentionOptions
     private static int ReadRetentionDays(IConfiguration configuration)
     {
         var value = configuration["MAILER_ADMIN_AUDIT_RETENTION_DAYS"];
+        var key = "MAILER_ADMIN_AUDIT_RETENTION_DAYS";
         if (string.IsNullOrWhiteSpace(value))
+        {
             value = configuration["AMANE_ADMIN_AUDIT_RETENTION_DAYS"];
+            key = "AMANE_ADMIN_AUDIT_RETENTION_DAYS";
+        }
 
-        return int.TryParse(value, out var parsed) && parsed > 0
-            ? parsed
-            : DefaultRetentionDays;
+        if (string.IsNullOrWhiteSpace(value))
+            return DefaultRetentionDays;
+
+        if (!int.TryParse(value, out var parsed) || parsed <= 0)
+        {
+            throw new InvalidOperationException(
+                $"{key} must be a positive integer.");
+        }
+
+        return parsed;
     }
 
     private static int ReadPositiveInt(
@@ -94,10 +105,23 @@ public sealed record MailerAdminAuditRetentionOptions
         string fallbackKey)
     {
         var value = configuration[primaryKey];
+        var key = primaryKey;
         if (string.IsNullOrWhiteSpace(value))
+        {
             value = configuration[fallbackKey];
+            key = fallbackKey;
+        }
 
-        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : defaultValue;
+        if (string.IsNullOrWhiteSpace(value))
+            return defaultValue;
+
+        if (!int.TryParse(value, out var parsed) || parsed <= 0)
+        {
+            throw new InvalidOperationException(
+                $"{key} must be a positive integer.");
+        }
+
+        return parsed;
     }
 
     private static int? ReadOptionalPositiveInt(
@@ -106,10 +130,23 @@ public sealed record MailerAdminAuditRetentionOptions
         string fallbackKey)
     {
         var value = configuration[primaryKey];
+        var key = primaryKey;
         if (string.IsNullOrWhiteSpace(value))
+        {
             value = configuration[fallbackKey];
+            key = fallbackKey;
+        }
 
-        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : null;
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        if (!int.TryParse(value, out var parsed) || parsed <= 0)
+        {
+            throw new InvalidOperationException(
+                $"{key} must be a positive integer.");
+        }
+
+        return parsed;
     }
 
     internal static bool IsLocalDevelopmentEnvironment(IConfiguration configuration) =>

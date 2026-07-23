@@ -186,71 +186,76 @@ public sealed record MailerAdminOptions
     private static bool? ReadBoolean(IConfiguration configuration, string primaryKey, string fallbackKey)
     {
         var value = configuration[primaryKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
+        var key = primaryKey;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = configuration[fallbackKey];
+            key = fallbackKey;
+        }
 
-        value = configuration[fallbackKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
 
-        return null;
+        if (!bool.TryParse(value, out var parsed))
+        {
+            throw new InvalidOperationException(
+                $"{key} must be 'true' or 'false'.");
+        }
+
+        return parsed;
     }
 
     private static int ReadPositiveInt(
         IConfiguration configuration,
         int defaultValue,
         string primaryKey,
-        string fallbackKey)
-    {
-        var value = configuration[primaryKey];
-        if (string.IsNullOrWhiteSpace(value))
-            value = configuration[fallbackKey];
-
-        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : defaultValue;
-    }
+        string fallbackKey) =>
+        ReadPositiveDurationValue(configuration, defaultValue, primaryKey, fallbackKey);
 
     private static TimeSpan ReadPositiveSeconds(
         IConfiguration configuration,
         int defaultSeconds,
         string primaryKey,
-        string fallbackKey)
-    {
-        var value = configuration[primaryKey];
-        if (string.IsNullOrWhiteSpace(value))
-            value = configuration[fallbackKey];
-
-        return int.TryParse(value, out var parsed) && parsed > 0
-            ? TimeSpan.FromSeconds(parsed)
-            : TimeSpan.FromSeconds(defaultSeconds);
-    }
+        string fallbackKey) =>
+        TimeSpan.FromSeconds(ReadPositiveDurationValue(configuration, defaultSeconds, primaryKey, fallbackKey));
 
     private static TimeSpan ReadPositiveMinutes(
         IConfiguration configuration,
         int defaultMinutes,
         string primaryKey,
-        string fallbackKey)
-    {
-        var value = configuration[primaryKey];
-        if (string.IsNullOrWhiteSpace(value))
-            value = configuration[fallbackKey];
-
-        return int.TryParse(value, out var parsed) && parsed > 0
-            ? TimeSpan.FromMinutes(parsed)
-            : TimeSpan.FromMinutes(defaultMinutes);
-    }
+        string fallbackKey) =>
+        TimeSpan.FromMinutes(ReadPositiveDurationValue(configuration, defaultMinutes, primaryKey, fallbackKey));
 
     private static TimeSpan ReadPositiveHours(
         IConfiguration configuration,
         int defaultHours,
         string primaryKey,
+        string fallbackKey) =>
+        TimeSpan.FromHours(ReadPositiveDurationValue(configuration, defaultHours, primaryKey, fallbackKey));
+
+    private static int ReadPositiveDurationValue(
+        IConfiguration configuration,
+        int defaultValue,
+        string primaryKey,
         string fallbackKey)
     {
         var value = configuration[primaryKey];
+        var key = primaryKey;
         if (string.IsNullOrWhiteSpace(value))
+        {
             value = configuration[fallbackKey];
+            key = fallbackKey;
+        }
 
-        return int.TryParse(value, out var parsed) && parsed > 0
-            ? TimeSpan.FromHours(parsed)
-            : TimeSpan.FromHours(defaultHours);
+        if (string.IsNullOrWhiteSpace(value))
+            return defaultValue;
+
+        if (!int.TryParse(value, out var parsed) || parsed <= 0)
+        {
+            throw new InvalidOperationException(
+                $"{key} must be a positive integer.");
+        }
+
+        return parsed;
     }
 }

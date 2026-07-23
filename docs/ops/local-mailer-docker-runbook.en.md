@@ -92,6 +92,19 @@ docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps ma
 
 The Mailer container must reference the same SQLite database via `ConnectionStrings__Mailer`. Re-running scoped admin creation for the same username updates tenant scopes and revokes all active sessions for that admin immediately (ADR 0013 D-04).
 
+## Admin boolean / numeric environment values
+
+Admin boolean and positive-integer environment variables use **strict parse**.
+
+| Kind | Allowed values | Unset | Invalid |
+|------|----------------|-------|---------|
+| boolean | `true` / `false` (case-insensitive; `bool.TryParse` compatible) | Existing defaults (for example `AMANE_ADMIN_ENABLED` → `false`; mask flags follow PII list mode) | **Startup failure** (`Load` throws) |
+| positive integer | Integer ≥ `1` | Existing defaults (for example login failure limit `5`, audit retention days `180`) | **Startup failure** (`0`, negative, or non-numeric) |
+
+Examples: `AMANE_ADMIN_ENABLED`, `AMANE_ADMIN_MASK_RECIPIENTS` / `MASK_SUBJECTS`, `AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS`, `AMANE_ADMIN_LOGIN_FAILURE_LIMIT`, `AMANE_ADMIN_DB_OPS_ENABLED`, `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (and the matching `MAILER_ADMIN_*` fallbacks).
+
+Typos such as `tru`, `yes`, or `abc` are not silently defaulted; they fail at startup.
+
 ## Admin audit retention
 
 `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (fallback: `AMANE_ADMIN_AUDIT_RETENTION_DAYS`)

@@ -93,6 +93,19 @@ docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps ma
 
 Mailer コンテナは `ConnectionStrings__Mailer` で同一 SQLite DB を参照する必要があります。scoped 管理者の再作成（同一 username）は tenant scope を更新し、対象管理者の全 session を即時失効します（ADR 0013 D-04）。
 
+## Admin boolean / numeric environment values
+
+Admin の boolean / 正の数値 env は **strict parse** です。
+
+| 種別 | 許容値 | 未設定 | 不正値 |
+|------|--------|--------|--------|
+| boolean | `true` / `false`（大文字小文字は不問。`bool.TryParse` 互換） | 既存 default（例: `AMANE_ADMIN_ENABLED` → `false`、mask 系 → PII list mode に応じた default） | **起動失敗**（`Load` が例外） |
+| 正の整数 | `1` 以上の整数 | 既存 default（例: login failure limit `5`、audit retention days `180`） | **起動失敗**（`0` / 負数 / 非数値も不可） |
+
+対象例: `AMANE_ADMIN_ENABLED`、`AMANE_ADMIN_MASK_RECIPIENTS` / `MASK_SUBJECTS`、`AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS`、`AMANE_ADMIN_LOGIN_FAILURE_LIMIT`、`AMANE_ADMIN_DB_OPS_ENABLED`、`MAILER_ADMIN_AUDIT_RETENTION_DAYS` など（`MAILER_ADMIN_*` fallback も同じ規則）。
+
+typo（例: `tru`、`yes`、`abc`）は silent default にせず、startup で検出します。
+
 ## Admin audit identifier hash key rotation
 
 `AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`（または `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`）の環境では、

@@ -126,13 +126,22 @@ public sealed record MailerAdminDbOpsOptions
     private static bool? ReadBoolean(IConfiguration configuration, string primaryKey, string fallbackKey)
     {
         var value = configuration[primaryKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
+        var key = primaryKey;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = configuration[fallbackKey];
+            key = fallbackKey;
+        }
 
-        value = configuration[fallbackKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
 
-        return null;
+        if (!bool.TryParse(value, out var parsed))
+        {
+            throw new InvalidOperationException(
+                $"{key} must be 'true' or 'false'.");
+        }
+
+        return parsed;
     }
 }

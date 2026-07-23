@@ -171,6 +171,24 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
     }
 
     [Fact]
+    public void Invalid_db_ops_enabled_boolean_fails_load()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AMANE_ADMIN_DB_OPS_ENABLED"] = "yes",
+            })
+            .Build();
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            MailerAdminDbOpsOptions.Load(configuration, "Data Source=:memory:"));
+
+        Assert.Contains("AMANE_ADMIN_DB_OPS_ENABLED", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("true", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("false", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Backup_without_csrf_returns_bad_request()
     {
         var ct = TestContext.Current.CancellationToken;
