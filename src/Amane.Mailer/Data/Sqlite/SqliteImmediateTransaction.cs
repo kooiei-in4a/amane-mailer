@@ -34,8 +34,15 @@ public sealed class SqliteImmediateTransaction(SqliteConnection connection) : IA
         _completed = true;
     }
 
+    /// <summary>
+    /// Rolls back the open transaction. Request cancellation is ignored so catch-path rollback
+    /// cannot replace the original exception with <see cref="OperationCanceledException"/> (#277).
+    /// </summary>
     public async Task RollbackAsync(CancellationToken cancellationToken = default)
     {
+        // Keep the parameter for call-site compatibility; never forward a cancelled token.
+        _ = cancellationToken;
+
         if (_completed)
         {
             return;
@@ -43,7 +50,7 @@ public sealed class SqliteImmediateTransaction(SqliteConnection connection) : IA
 
         await using var command = connection.CreateCommand();
         command.CommandText = "ROLLBACK;";
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await command.ExecuteNonQueryAsync(CancellationToken.None);
         _completed = true;
     }
 
