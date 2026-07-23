@@ -97,11 +97,12 @@ as `error_code`. Rows written before this taxonomy may still contain legacy
 type-name codes; new failures use the stable codes only. No database rewrite
 is performed.
 
-Unknown provider exceptions map to `PROVIDER_UNKNOWN` with `retryable: false`
-so monitoring is not tied to library type names and unexpected failures do not
-auto-retry indefinitely. Transient network/timeout/protocol buckets remain
-retryable; auth/TLS failures are not. Raw provider responses are intentionally
-not stored anywhere.
+Unknown provider exceptions map to `PROVIDER_UNKNOWN` with `retryable: false`.
+The worker does not schedule further attempts for non-retryable failures, so
+`PROVIDER_UNKNOWN` ends the delivery as `Failed` on that attempt (it is not
+retried up to `max_attempts`, and it is not dead-lettered). Transient
+network/timeout/protocol buckets remain retryable; auth/TLS failures are not.
+Raw provider responses are intentionally not stored anywhere.
 
 ## Mail Request Metadata
 
