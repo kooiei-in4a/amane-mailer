@@ -47,7 +47,7 @@ The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contra
 | `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | Pre-send cancel (`queued`; already `cancelled` is idempotent) | Tenant Bearer |
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | Change schedule (`queued` and `attempt_count=0`) | Tenant Bearer |
 | `GET` | `/healthz` | Liveness check | None |
-| `GET` | `/readyz` | Readiness (current migration schema + Worker/Sweep running + heartbeat freshness) | None |
+| `GET` | `/readyz` | Readiness (current migration schema + Worker/Sweep running + heartbeat freshness; provider / ACS config checks are startup-only and not included) | None |
 | `GET` | `/metrics` | Prometheus metrics (ops; see [metrics-and-alerts.en.md](ops/metrics-and-alerts.en.md)) | None by default (optional bearer) |
 
 ### Contract Sync and Drift Review
@@ -162,7 +162,7 @@ Mailer delivery semantics are **at-least-once** (a single accepted request may r
 | HTTP acceptance | at-most-once persistence | One row per `(tenant_id, source_service, mail_request_id)`. Re-POST returns `already_accepted` |
 | Actual email delivery (overall) | **not exactly-once** / at-least-once | Duplicates are possible due to automatic retries, manual retry, and provider behavior |
 | ACS (`provider=acs`) | **Mitigation only** via deterministic operation id (UUIDv5) | Derived from `tenant_id` + `source_service:mail_request_id` (`AcsOperationIdFactory`). This repository does not verify or guarantee ACS server-side deduplication |
-| Mailpit (`provider=mailpit`) | **No idempotency** (best-effort) | Each retry may perform a new SMTP send (development / verification use) |
+| Mailpit (`provider=mailpit`) | **No idempotency** (best-effort) | Each retry may perform a new SMTP send (development / verification use). Disconnect failure after SMTP DATA acceptance alone does not schedule a retry (#275) |
 | Worker automatic retry | at-least-once | Retryable failures return to `Queued` and are delivered again |
 | Finalize race after lease expiry (#238) | **Resend suppression** | Successful provider sends are recorded in `mail_attempts`; reclaim skips the actual send and converges to `Delivered`. Finalize skips are observable via `mail_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)) |
 | Admin manual retry | **Intentional redelivery** | Moves `DeadLettered` / `Failed` back to `Queued` (resets `attempt_count` to 0). May resend even when a provider send already succeeded but the row had not converged to `Delivered` ([ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) maintains at-least-once) |
@@ -397,7 +397,7 @@ values, body, and metadata are not output.
 | **`ACS_CONNECTION_STRING_FILE`** | **ACS connection string file** | **Canonical for Staging/Production deploy (`infra/deploy/compose.yml`). Points at the `acs_connection_string` file written by `admin provider register-acs`. When `MAILER_REQUIRE_ACS_SECRET_FILE=true`, there is no fallback to the bare env var** |
 | `ACS_CONNECTION_STRING` | ACS connection string (environment variable) | For local Mailpit compose and the local ACS drill (`mail-05a-acs-drill.sh` compose override). Not referenced by Staging/Production `compose.yml` |
 | `MAIL_SERVICE_TOKEN_*` | Tenant Bearer tokens | Specified by `token_env` in `tenants.json` |
-| `MAILER_PROVIDER` | Global provider override (optional) | `acs` / `mailpit` |
+| `MAILER_PROVIDER` | Global provider override (optional) | `acs` / `mailpit`. Unknown values **fail closed at startup** (not re-checked by `/readyz`) |
 | `MAILER_TENANTS_PATH` | Location of tenants.json | e.g. `/app/config/mailer/tenants.json` |
 
 ### 5.2 Worker / Sweep / Retention (Environment Variables)
@@ -435,6 +435,7 @@ Schema: [config/mailer/tenants.schema.json](../config/mailer/tenants.schema.json
 
 - Even with `provider=acs`, tenants with `live_sending=false` **do not send** — they fail with `LIVE_SENDING_DISABLED`.
 - develop / staging should use `false` in principle; production only `true`.
+- When any tenant has effective provider `acs` (including `MAILER_PROVIDER` override) and `live_sending=true`, a missing ACS connection string (`ACS_CONNECTION_STRING_FILE` / `ACS_CONNECTION_STRING`) causes **startup fail-closed**. Configurations with only `live_sending=false` do not require an ACS secret at startup (same policy as offline `scripts/validate-tenant-config.mjs`). Provider / ACS validation is startup-only and is not part of `/readyz`.
 
 ---
 
@@ -519,3 +520,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-22 | Documented `WebhookDeliveryWorker` shutdown drain (stop new claims + wait for in-flight) (#245) |
 | 2026-07-23 | `/readyz` / CLI `healthcheck` require current migration version + checksum (#267) |
 | 2026-07-23 | Consumer cancel is idempotent for already-cancelled; post-commit HTTP failures avoided (#269) |
+| 2026-07-23 | Documented startup validation for effective provider / ACS live-sending; not part of `/readyz` (#272). Mailpit treats post-accept disconnect failure as success, not retry (#275) |
