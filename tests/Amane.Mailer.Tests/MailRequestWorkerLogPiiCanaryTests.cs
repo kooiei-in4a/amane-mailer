@@ -121,14 +121,20 @@ public sealed class MailRequestWorkerLogPiiCanaryTests
             Assert.Contains(errorCode, logs, StringComparison.Ordinal);
             Assert.Contains(triageMessage, logs, StringComparison.Ordinal);
 
+            // Recipient / bearer / ACS fragments are embedded in the raw provider
+            // error and exercise ProviderErrorSanitizer before logging.
             Assert.DoesNotContain(recipientCanary, logs, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(bearerCanary, logs, StringComparison.Ordinal);
+            Assert.DoesNotContain(accessKeyCanary, logs, StringComparison.Ordinal);
+            Assert.DoesNotContain(acsEndpointHost, logs, StringComparison.OrdinalIgnoreCase);
+
+            // Subject / body / metadata are never interpolated into Worker failure
+            // log templates today; these asserts are regression guards against a
+            // future template that starts logging mail-payload fields.
             Assert.DoesNotContain(subjectCanary, logs, StringComparison.Ordinal);
             Assert.DoesNotContain(htmlBodyCanary, logs, StringComparison.Ordinal);
             Assert.DoesNotContain(textBodyCanary, logs, StringComparison.Ordinal);
             Assert.DoesNotContain(metadataCanary, logs, StringComparison.Ordinal);
-            Assert.DoesNotContain(bearerCanary, logs, StringComparison.Ordinal);
-            Assert.DoesNotContain(accessKeyCanary, logs, StringComparison.Ordinal);
-            Assert.DoesNotContain(acsEndpointHost, logs, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
