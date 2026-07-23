@@ -187,6 +187,13 @@ public sealed class MailRequestWorker : BackgroundService
         var sendTasks = batch.Select(row => DispatchClaimedAsync(row, stoppingToken));
         await Task.WhenAll(sendTasks);
 
+        // Do not start another claim wave after shutdown began; semaphore waiters
+        // already cancelled in DispatchClaimedAsync leave Processing for lease reclaim.
+        if (stoppingToken.IsCancellationRequested)
+        {
+            return;
+        }
+
         if (batch.Count == _workerOptions.BatchClaimSize)
         {
             await WriteHeartbeatAsync(stoppingToken);
@@ -213,7 +220,19 @@ public sealed class MailRequestWorker : BackgroundService
 
     private async Task DispatchClaimedAsync(MailRequestRow row, CancellationToken stoppingToken)
     {
-        await _sendConcurrency.WaitAsync(CancellationToken.None);
+        try
+        {
+            // Honor stoppingToken so later waves waiting on the semaphore do not
+            // start new sends after shutdown begins (#271). In-flight sends still
+            // use SendTimeout (not linked to stopping) and are drained in finally.
+            await _sendConcurrency.WaitAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Claimed but never started: leave Processing for lease reclaim.
+            return;
+        }
+
         using var inflight = _inflightTracker.Enter();
         try
         {
