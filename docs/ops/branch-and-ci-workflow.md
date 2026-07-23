@@ -64,6 +64,15 @@ release PR の待ち時間を短くしつつ、最終的な `main` コミット�
 
 判定に迷う経路は fail-secure で最終 CI 側に倒します（例: `workflow_dispatch`）。
 
+### NuGet vulnerability audit
+
+NuGet の既知脆弱性（transitive 含む）は別 workflow
+[`.github/workflows/nuget-vulnerability-audit.yml`](../../.github/workflows/nuget-vulnerability-audit.yml)
+で週次 schedule / `workflow_dispatch` し、`publish-image.yml` と
+`publish-contracts.yml` でも push 前に同じスクリプトを実行します。
+手順は [NuGet vulnerability audit](nuget-vulnerability-audit.md) を参照してください。
+Dependabot の代替ではなく併用です。npm / Python は対象外です。
+
 ### concurrency
 
 `concurrency.group: ci-${{ github.workflow }}-${{ github.ref }}` と `cancel-in-progress: true` により、
