@@ -2,7 +2,7 @@
 
 # Prometheus メトリクスとアラート runbook
 
-Amane Mailer の `/metrics` エンドポイントは、キュー滞留・配送結果・Worker heartbeat を Prometheus text format で公開します。Admin `/admin/ops` および CLI `db stats` と同じ `MailerDbStatsReader` 由来の gauge（queue / dead letter / heartbeat）に加え、プロセス起動以降の counter / histogram を in-memory で保持します。
+Amane Mailer の `/metrics` エンドポイントは、キュー滞留・配送結果・Webhook outbox・Worker heartbeat を Prometheus text format で公開します。Admin `/admin/ops` および CLI `db stats` と同じ `MailerDbStatsReader` 由来の gauge（queue / dead letter / heartbeat）と、同じ `DeliveryEventRepository.CountOperationalAsync` 由来の Webhook backlog gauge に加え、プロセス起動以降の counter / histogram を in-memory で保持します。
 
 ## エンドポイント
 
@@ -39,6 +39,8 @@ Compose / systemd では Mailer HTTP ポートを **内部ネットワークの�
 | `mail_retries_total` | counter | なし | プロセス起動以降の再試行 attempt 数（`attempt_number > 1` の完了 attempt） |
 | `mail_finalize_skipped_total` | counter | なし | delivered finalize で strict lease fencing（`lock_expires_at` 条件）に失敗した回数。同一 lock での遅延完了や supersede / terminal 競合を含む |
 | `mail_dead_letters_total` | gauge | なし | 現在 dead_lettered 状態の request 数 |
+| `mail_webhook_events_pending` | gauge | なし | Webhook outbox の pending / delivering 件数（CLI `webhook_events_pending` と同集計） |
+| `mail_webhook_events_dead_lettered` | gauge | なし | Webhook outbox の dead_lettered 件数（CLI `webhook_events_dead_lettered` と同集計） |
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | `worker` / `sweep` の heartbeat 経過秒。行未存在時は series なし |
 
 **禁止ラベル（含めない）:** `recipient_email`, `subject`, `mail_request_id`, `tenant_id`, `source_service`
@@ -46,6 +48,7 @@ Compose / systemd では Mailer HTTP ポートを **内部ネットワークの�
 ### Admin / CLI との関係
 
 - **Gauge（queue / dead letter / heartbeat）:** CLI `db stats`（tenant 指定なし）および break-glass Admin ops と同じ service-wide 集計。
+- **Gauge（webhook pending / dead-letter）:** CLI `db stats` および Admin ops の `webhook_events_*` と同じ `CountOperationalAsync` 集計。
 - **Counter / histogram:** プロセス lifetime 内のイベントのみ。DB に直接 INSERT された履歴は含まれません。再起動後は counter / histogram が 0 から再開します。
 
 ## Prometheus scrape 設定例
@@ -109,9 +112,25 @@ groups:
           severity: warning
         annotations:
           summary: Delivered finalize hit strict lease fencing failure (delayed complete or superseded/terminal race)
+
+      - alert: MailWebhookBacklogHigh
+        expr: mail_webhook_events_pending > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Delivery-result webhook outbox backlog is elevated
+
+      - alert: MailWebhookDeadLettersPresent
+        expr: mail_webhook_events_dead_lettered > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Delivery-result webhook outbox has dead-lettered events
 ```
 
-`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat アラートを primary、delivery rate は補助として運用してください。`mail_finalize_skipped_total` は strict lease fencing 失敗の検知用で、増加時は証跡の有無・Delivered 収束・DeadLetter との競合を確認してください。Admin 手動リトライは監査付きの明示操作として `attempt_count` をリセットし、旧サイクルの Delivered 証跡を prior-success 収束の対象外にします（#268）。そのため delivered 証跡付きの DeadLetter を再投入すると新サイクルでは実再送されます。同一サイクル内の #238 prior-success 収束は維持されます。再送前に Admin attempt 履歴の `provider_message_id` を確認してください。
+`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat / webhook backlog アラートを primary、delivery rate は補助として運用してください。`mail_finalize_skipped_total` は strict lease fencing 失敗の検知用で、増加時は証跡の有無・Delivered 収束・DeadLetter との競合を確認してください。Webhook backlog はメール配送が正常でも通知だけ止まる障害の早期検知用です。Admin 手動リトライは監査付きの明示操作として `attempt_count` をリセットし、旧サイクルの Delivered 証跡を prior-success 収束の対象外にします（#268）。そのため delivered 証跡付きの DeadLetter を再投入すると新サイクルでは実再送されます。同一サイクル内の #238 prior-success 収束は維持されます。再送前に Admin attempt 履歴の `provider_message_id` を確認してください。
 
 ## disk 枯渇・WAL・retention
 
