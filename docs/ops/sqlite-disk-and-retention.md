@@ -41,7 +41,7 @@ HTTP 上は `STORAGE_FULL`（503, `retryable: false`）として busy/locked 由
 
 1. **volume の空き容量を確保する**（不要ファイル削除、volume 拡張）
 2. **retention を確認・必要なら短縮する**
-   - mail request retention: `Mailer:Retention:*` / 関連 env
+   - mail request retention: `Mailer:Retention:*` / 関連 env（終端 `mail_requests` と同一 `(tenant_id, source_service, mail_request_id)` の `delivery_events` を同時パージ）
    - admin audit retention: `MAILER_ADMIN_AUDIT_RETENTION_DAYS`（既定 180 日）
    - 明示 purge: `db admin-audit purge --older-than-days <days>`
 3. **WAL を縮退させる**（運用ウィンドウで）

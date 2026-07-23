@@ -42,7 +42,7 @@ In order:
 
 1. **Free or expand volume capacity**
 2. **Review and tighten retention if needed**
-   - mail request retention: `Mailer:Retention:*` / related env
+   - mail request retention: `Mailer:Retention:*` / related env (purges terminal `mail_requests` and matching `delivery_events` for the same `(tenant_id, source_service, mail_request_id)` in one transaction)
    - admin audit retention: `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (default 180 days)
    - explicit purge: `db admin-audit purge --older-than-days <days>`
 3. **Shrink WAL** during a maintenance window

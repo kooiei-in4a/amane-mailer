@@ -541,14 +541,29 @@ public sealed class MailRequestClaimStore(
         int batchSize,
         CancellationToken cancellationToken = default)
     {
-        const string sql = """
+        const string expiredBatchPredicate = """
+            status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus)
+              AND completed_at IS NOT NULL
+              AND completed_at < @CompletedBefore
+            """;
+
+        const string deleteDeliveryEventsSql = $"""
+            DELETE FROM delivery_events
+            WHERE (tenant_id, source_service, mail_request_id) IN (
+                SELECT tenant_id, source_service, mail_request_id
+                FROM mail_requests
+                WHERE {expiredBatchPredicate}
+                ORDER BY completed_at ASC
+                LIMIT @BatchSize
+            );
+            """;
+
+        const string deleteMailRequestsSql = $"""
             DELETE FROM mail_requests
             WHERE id IN (
                 SELECT id
                 FROM mail_requests
-                WHERE status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus)
-                  AND completed_at IS NOT NULL
-                  AND completed_at < @CompletedBefore
+                WHERE {expiredBatchPredicate}
                 ORDER BY completed_at ASC
                 LIMIT @BatchSize
             );
@@ -560,16 +575,31 @@ public sealed class MailRequestClaimStore(
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
         try
         {
-            await using var command = connection.CreateCommand();
-            command.CommandText = sql;
-            command.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
-            command.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
-            command.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
-            command.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
-            command.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
-            command.Parameters.AddWithValue("@BatchSize", batchSize);
+            await using (var deleteEvents = connection.CreateCommand())
+            {
+                deleteEvents.CommandText = deleteDeliveryEventsSql;
+                deleteEvents.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+                deleteEvents.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
+                deleteEvents.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
+                deleteEvents.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
+                deleteEvents.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
+                deleteEvents.Parameters.AddWithValue("@BatchSize", batchSize);
+                _ = await deleteEvents.ExecuteNonQueryAsync(cancellationToken);
+            }
 
-            var deleted = await command.ExecuteNonQueryAsync(cancellationToken);
+            int deleted;
+            await using (var deleteRequests = connection.CreateCommand())
+            {
+                deleteRequests.CommandText = deleteMailRequestsSql;
+                deleteRequests.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+                deleteRequests.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
+                deleteRequests.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
+                deleteRequests.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
+                deleteRequests.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
+                deleteRequests.Parameters.AddWithValue("@BatchSize", batchSize);
+                deleted = await deleteRequests.ExecuteNonQueryAsync(cancellationToken);
+            }
+
             await transaction.CommitAsync(cancellationToken);
             return deleted;
         }
