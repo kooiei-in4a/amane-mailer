@@ -39,6 +39,40 @@ public sealed class SqliteBackupAtomicityTests
     }
 
     [Fact]
+    public async Task BackupToAsync_overwrite_invalidates_pooled_readers_of_destination()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-backup-pool", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+        var backupPath = Path.Combine(root, "backups", "mailer.db");
+
+        try
+        {
+            var factory = CreateFactory(databasePath);
+            await new SqlMigrationRunner(factory).ApplyPendingAsync(ct);
+            await SeedMarkerAsync(databasePath, "v1", ct);
+            await factory.BackupToAsync(backupPath, ct);
+
+            // Intentionally pool a handle to the destination, then overwrite. Without
+            // InvalidatePooledConnectionsTo before Move, Linux can keep serving v1 and
+            // Windows can fail the replace with a sharing violation.
+            Assert.Equal("v1", await ReadMarkerAsync(backupPath, ct, pooling: true));
+
+            await SeedMarkerAsync(databasePath, "v2", ct);
+            await factory.BackupToAsync(backupPath, ct);
+
+            Assert.Equal("v2", await ReadMarkerAsync(backupPath, ct, pooling: true));
+            Assert.Equal("v2", await ReadMarkerAsync(backupPath, ct, pooling: false));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task BackupToAsync_cancelled_before_replace_preserves_existing_destination()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -71,6 +105,48 @@ public sealed class SqliteBackupAtomicityTests
         }
     }
 
+    [Fact]
+    public async Task BackupToAsync_fault_after_temp_verify_preserves_destination_and_cleans_temp()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-backup-midflight", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+        var backupPath = Path.Combine(root, "backups", "mailer.db");
+
+        try
+        {
+            var factory = CreateFactory(databasePath);
+            await new SqlMigrationRunner(factory).ApplyPendingAsync(ct);
+            await SeedMarkerAsync(databasePath, "good-backup", ct);
+            await factory.BackupToAsync(backupPath, ct);
+
+            await SeedMarkerAsync(databasePath, "should-not-land", ct);
+
+            var sawTempBeforeReplace = false;
+            SqliteConnectionFactory.BeforeAtomicReplaceForTests = _ =>
+            {
+                Assert.NotEmpty(ListTempBackupArtifacts(backupPath));
+                sawTempBeforeReplace = true;
+                throw new IOException("injected replace failure");
+            };
+
+            var exception = await Assert.ThrowsAsync<IOException>(
+                () => factory.BackupToAsync(backupPath, ct));
+
+            Assert.Equal("injected replace failure", exception.Message);
+            Assert.True(sawTempBeforeReplace);
+            Assert.Equal("good-backup", await ReadMarkerAsync(backupPath, ct));
+            Assert.Empty(ListTempBackupArtifacts(backupPath));
+        }
+        finally
+        {
+            SqliteConnectionFactory.BeforeAtomicReplaceForTests = null;
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static SqliteConnectionFactory CreateFactory(string databasePath)
     {
         var configuration = new ConfigurationBuilder()
@@ -94,7 +170,12 @@ public sealed class SqliteBackupAtomicityTests
 
     private static async Task SeedMarkerAsync(string databasePath, string marker, CancellationToken cancellationToken)
     {
-        await using var connection = new SqliteConnection($"Data Source={databasePath}");
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Pooling = false,
+        };
+        await using var connection = new SqliteConnection(builder.ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using (var create = connection.CreateCommand())
         {
@@ -116,9 +197,17 @@ public sealed class SqliteBackupAtomicityTests
         await upsert.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private static async Task<string> ReadMarkerAsync(string databasePath, CancellationToken cancellationToken)
+    private static async Task<string> ReadMarkerAsync(
+        string databasePath,
+        CancellationToken cancellationToken,
+        bool pooling = false)
     {
-        await using var connection = new SqliteConnection($"Data Source={databasePath}");
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Pooling = pooling,
+        };
+        await using var connection = new SqliteConnection(builder.ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = "SELECT marker FROM backup_atomicity_marker WHERE id = 1;";

@@ -115,7 +115,17 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
             }
 
             await VerifyBackupFileAsync(tempPath, cancellationToken);
+            if (BeforeAtomicReplaceForTests is { } beforeReplace)
+            {
+                await beforeReplace(cancellationToken);
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
+            // Drop pooled handles to the destination before replace:
+            // - Windows: an idle pooled handle keeps the file locked and Move fails.
+            // - Linux: rename can succeed while pooled handles keep the previous inode,
+            //   so later opens of the same path would read stale content.
+            InvalidatePooledConnectionsTo(absoluteDestinationPath);
             File.Move(tempPath, absoluteDestinationPath, overwrite: true);
             replaced = true;
             // Move renames only the main file; drop any leftover temp sidecars.
@@ -129,6 +139,11 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
             }
         }
     }
+
+    /// <summary>
+    /// Test-only gate invoked after the temp backup is verified and before atomic replace.
+    /// </summary>
+    internal static Func<CancellationToken, Task>? BeforeAtomicReplaceForTests { get; set; }
 
     private static async Task VerifyBackupFileAsync(string absolutePath, CancellationToken cancellationToken)
     {
@@ -147,6 +162,29 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
         if (result is not long value || value != 1L)
         {
             throw new InvalidOperationException("Backup verification failed.");
+        }
+    }
+
+    private static void InvalidatePooledConnectionsTo(string absolutePath)
+    {
+        // Pool keys include the full connection string. Clear common variants so a prior
+        // open of the backup path cannot keep the file locked (Windows) or pinned to a
+        // replaced inode after rename (Linux). Do not ClearAllPools — backup can run in a
+        // live process that still needs the active mailer DB pool.
+        var fullPath = Path.GetFullPath(absolutePath);
+        SqliteConnectionStringBuilder[] builders =
+        [
+            new() { DataSource = fullPath },
+            new() { DataSource = fullPath, Pooling = true },
+            new() { DataSource = fullPath, Pooling = false },
+            new() { DataSource = fullPath, Mode = SqliteOpenMode.ReadOnly },
+            new() { DataSource = fullPath, Mode = SqliteOpenMode.ReadOnly, Pooling = true },
+            new() { DataSource = fullPath, Mode = SqliteOpenMode.ReadOnly, Pooling = false },
+        ];
+        foreach (var builder in builders)
+        {
+            using var connection = new SqliteConnection(builder.ConnectionString);
+            SqliteConnection.ClearPool(connection);
         }
     }
 
