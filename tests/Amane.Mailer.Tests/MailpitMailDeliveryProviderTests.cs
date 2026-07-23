@@ -61,6 +61,36 @@ public sealed class MailpitMailDeliveryProviderTests
     }
 
     [Fact]
+    public async Task SendAsync_treats_disconnect_cancellation_after_accepted_send_as_success()
+    {
+        var smtp = new ScriptedMailpitSmtpClient(
+            connect: null,
+            send: null,
+            disconnect: new OperationCanceledException());
+
+        var provider = new MailpitMailDeliveryProvider(
+            new MailerOptions
+            {
+                MailpitSmtpHost = "127.0.0.1",
+                MailpitSmtpPort = 1025,
+                MailpitUseSsl = false,
+            },
+            NullLogger<MailpitMailDeliveryProvider>.Instance,
+            () => smtp);
+
+        var result = await provider.SendAsync(
+            CreateJob(),
+            CreateTenant(),
+            "mailpit",
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(1, smtp.ConnectCount);
+        Assert.Equal(1, smtp.SendCount);
+        Assert.Equal(1, smtp.DisconnectCount);
+    }
+
+    [Fact]
     public async Task SendAsync_keeps_retryable_failure_when_send_throws()
     {
         var smtp = new ScriptedMailpitSmtpClient(

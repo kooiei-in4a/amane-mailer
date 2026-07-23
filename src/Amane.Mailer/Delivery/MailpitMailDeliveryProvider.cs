@@ -55,13 +55,13 @@ public sealed class MailpitMailDeliveryProvider
                 cancellationToken);
             await client.SendAsync(message, cancellationToken);
 
-            // SMTP DATA accepted: do not convert later disconnect failures into retryable
-            // Failure (that would schedule a duplicate send). (#275)
+            // SMTP DATA accepted: do not convert later disconnect failures (including send-timeout
+            // cancellation) into retryable Failure — that would schedule a duplicate send. (#275)
             try
             {
                 await client.DisconnectAsync(true, cancellationToken);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex)
             {
                 _logger.LogWarning(
                     "Mailpit SMTP disconnect failed after the message was accepted; treating send as success. ErrorType={ErrorType}",
