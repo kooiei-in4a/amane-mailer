@@ -2,11 +2,12 @@
 
 # Prometheus metrics and alerts runbook
 
-Amane Mailer's `/metrics` endpoint exposes queue backlog, delivery results, and
-Worker heartbeat in Prometheus text format. Gauge series for queue / dead letter
-/ heartbeat reuse the same `MailerDbStatsReader` aggregation as Admin
-`/admin/ops` and CLI `db stats`. Counters and histograms are held in-memory for
-the process lifetime.
+Amane Mailer's `/metrics` endpoint exposes queue backlog, delivery results,
+Webhook outbox backlog, and Worker heartbeat in Prometheus text format. Gauge
+series for queue / dead letter / heartbeat reuse the same `MailerDbStatsReader`
+aggregation as Admin `/admin/ops` and CLI `db stats`. Webhook pending /
+dead-letter gauges reuse the same `DeliveryEventRepository.CountOperationalAsync`
+aggregation. Counters and histograms are held in-memory for the process lifetime.
 
 ## Endpoint
 
@@ -45,6 +46,8 @@ internet exposure is not intended.
 | `mail_retries_total` | counter | none | Retry attempts since process start (`attempt_number > 1` completed attempts) |
 | `mail_finalize_skipped_total` | counter | none | Delivered finalize attempts where strict lease fencing (`lock_expires_at`) failed. Includes delayed completion under the same lock and superseded/terminal races |
 | `mail_dead_letters_total` | gauge | none | Current dead_lettered request count |
+| `mail_webhook_events_pending` | gauge | none | Webhook outbox pending / delivering count (same aggregation as CLI `webhook_events_pending`) |
+| `mail_webhook_events_dead_lettered` | gauge | none | Webhook outbox dead_lettered count (same aggregation as CLI `webhook_events_dead_lettered`) |
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | Heartbeat age for `worker` / `sweep`. No series when the row is missing |
 
 **Forbidden labels (must not include):** `recipient_email`, `subject`,
@@ -54,6 +57,10 @@ internet exposure is not intended.
 
 - **Gauges (queue / dead letter / heartbeat):** Same service-wide aggregation as
   CLI `db stats` (no tenant filter) and break-glass Admin ops.
+- **Gauges (webhook pending / dead-letter):** Same service-wide
+  `CountOperationalAsync` aggregation as CLI `db stats` (no tenant filter) and
+  Admin ops' **service-wide** webhook counts (not the tenant-scoped dead-letter
+  count).
 - **Counters / histograms:** Process-lifetime events only. Rows inserted directly
   into the DB are not included. After restart, counters and histograms start at 0.
 
@@ -118,19 +125,36 @@ groups:
           severity: warning
         annotations:
           summary: Delivered finalize hit strict lease fencing failure (delayed complete or superseded/terminal race)
+
+      - alert: MailWebhookBacklogHigh
+        expr: mail_webhook_events_pending > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Delivery-result webhook outbox backlog is elevated
+
+      - alert: MailWebhookDeadLettersPresent
+        expr: mail_webhook_events_dead_lettered > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Delivery-result webhook outbox has dead-lettered events
 ```
 
 Because `mail_deliveries_total` is an in-process counter, `rate()` can be briefly
-unstable right after a Mailer restart. Prefer queue / heartbeat alerts as
-primary signals and treat delivery rate as secondary. Use
+unstable right after a Mailer restart. Prefer queue / heartbeat / webhook backlog
+alerts as primary signals and treat delivery rate as secondary. Use
 `mail_finalize_skipped_total` to detect strict lease fencing failures; when it
 increases, check for delivery evidence, Delivered convergence, and DeadLetter races.
-Admin manual retry is an audited explicit action that resets `attempt_count` and
-marks prior-cycle Delivered attempt evidence as ineligible for worker prior-success
-convergence (#268). Requeueing a DeadLetter that already has delivered attempt
-evidence therefore performs a real resend in the new dispatch cycle. Same-cycle
-#238 prior-success convergence is unchanged. Check Admin attempt history for
-`provider_message_id` before retrying.
+Webhook backlog gauges help detect cases where mail delivery succeeds but
+consumer notifications stall. Admin manual retry is an audited explicit action that
+resets `attempt_count` and marks prior-cycle Delivered attempt evidence as
+ineligible for worker prior-success convergence (#268). Requeueing a DeadLetter
+that already has delivered attempt evidence therefore performs a real resend in
+the new dispatch cycle. Same-cycle #238 prior-success convergence is unchanged.
+Check Admin attempt history for `provider_message_id` before retrying.
 
 ## Disk exhaustion, WAL, and retention
 

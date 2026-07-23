@@ -8,7 +8,11 @@ public static class PrometheusMetricsFormatter
 {
     internal static readonly double[] DurationBucketUpperBounds = [0.1, 0.5, 1, 2.5, 5, 10, 30];
 
-    public static string Format(MailerDbStatsResult stats, MailerRuntimeMetricsSnapshot runtime)
+    public static string Format(
+        MailerDbStatsResult stats,
+        MailerRuntimeMetricsSnapshot runtime,
+        long webhookEventsPending = 0,
+        long webhookEventsDeadLettered = 0)
     {
         var builder = new StringBuilder(2048);
 
@@ -55,6 +59,14 @@ public static class PrometheusMetricsFormatter
         AppendHelpType(builder, "mail_dead_letters_total", "gauge",
             "Current number of dead-lettered mail requests.");
         AppendGauge(builder, "mail_dead_letters_total", stats.DeadLetteredCount);
+
+        AppendHelpType(builder, "mail_webhook_events_pending", "gauge",
+            "Delivery-result webhook outbox events pending or in delivery (same aggregation as CLI webhook_events_pending).");
+        AppendGauge(builder, "mail_webhook_events_pending", webhookEventsPending);
+
+        AppendHelpType(builder, "mail_webhook_events_dead_lettered", "gauge",
+            "Delivery-result webhook outbox events currently dead-lettered (same aggregation as CLI webhook_events_dead_lettered).");
+        AppendGauge(builder, "mail_webhook_events_dead_lettered", webhookEventsDeadLettered);
 
         AppendHelpType(builder, "mail_worker_heartbeat_age_seconds", "gauge",
             "Age in seconds since the last worker heartbeat.");
