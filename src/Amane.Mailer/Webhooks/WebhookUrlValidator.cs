@@ -153,6 +153,13 @@ public sealed class WebhookUrlValidator
                 return true;
             }
 
+            // Deprecated IPv4-compatible IPv6 (::/96, excluding :: and ::1 already handled above).
+            // No legitimate webhook target uses this form — fail closed.
+            if (IsIpv4CompatibleIpv6Prefix(bytes))
+            {
+                return true;
+            }
+
             // NAT64 well-known prefix 64:ff9b::/96 — block when the embedded IPv4 is blocked.
             if (IsNat64WellKnownPrefix(bytes))
             {
@@ -187,6 +194,25 @@ public sealed class WebhookUrlValidator
             >= 240 => true,
             _ => false,
         };
+    }
+
+    private static bool IsIpv4CompatibleIpv6Prefix(ReadOnlySpan<byte> bytes)
+    {
+        // ::/96 => 0000:0000:0000:0000:0000:0000:<ipv4>
+        if (bytes.Length != 16)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < 12; i++)
+        {
+            if (bytes[i] != 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool IsNat64WellKnownPrefix(ReadOnlySpan<byte> bytes)

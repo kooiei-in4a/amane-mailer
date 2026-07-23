@@ -313,8 +313,9 @@ Consumer.
   `MailRequestWorker`).
 - SSRF controls: HTTPS required. Blocks IPv4 private / loopback / link-local /
   CGNAT / multicast / reserved, IPv4-mapped, IPv6 loopback / link-local /
-  site-local / ULA / multicast / unspecified, and private (or otherwise blocked)
-  IPv4 embeddings under the NAT64 well-known prefix (`64:ff9b::/96`) and 6to4
+  site-local / ULA / multicast / unspecified, deprecated IPv4-compatible IPv6
+  (`::/96`, e.g. `::10.0.0.1`), and private (or otherwise blocked) IPv4
+  embeddings under the NAT64 well-known prefix (`64:ff9b::/96`) and 6to4
   (`2002::/16`). Optional `allowed_host_suffixes`.
 - Verification steps: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
 - OpenAPI schema: `MailDeliveryEventPayload`
