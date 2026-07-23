@@ -130,35 +130,81 @@ public sealed class WebhookUrlValidator
 
         if (address.AddressFamily == AddressFamily.InterNetwork)
         {
-            var bytes = address.GetAddressBytes();
-            return bytes[0] switch
-            {
-                0 => true,
-                10 => true,
-                127 => true,
-                169 when bytes[1] == 254 => true,
-                172 when bytes[1] is >= 16 and <= 31 => true,
-                192 when bytes[1] == 168 => true,
-                100 when bytes[1] is >= 64 and <= 127 => true,
-                // IPv4 multicast/reserved ranges are not useful webhook targets over TCP.
-                >= 224 and <= 239 => true,
-                >= 240 => true,
-                _ => false,
-            };
+            return IsBlockedIpv4Address(address.GetAddressBytes());
         }
 
         if (address.AddressFamily == AddressFamily.InterNetworkV6)
         {
-            if (address.IsIPv6LinkLocal || address.IsIPv6SiteLocal)
+            if (address.IsIPv6LinkLocal || address.IsIPv6SiteLocal || address.IsIPv6Multicast)
+            {
+                return true;
+            }
+
+            if (address.Equals(IPAddress.IPv6Any))
             {
                 return true;
             }
 
             var bytes = address.GetAddressBytes();
-            return bytes[0] == 0xFC || bytes[0] == 0xFD;
+
+            // Unique local addresses (fc00::/7).
+            if (bytes[0] is 0xFC or 0xFD)
+            {
+                return true;
+            }
+
+            // NAT64 well-known prefix 64:ff9b::/96 — block when the embedded IPv4 is blocked.
+            if (IsNat64WellKnownPrefix(bytes))
+            {
+                return IsBlockedIpv4Address(bytes.AsSpan(12, 4));
+            }
+
+            // 6to4 2002::/16 — block when the embedded IPv4 is blocked.
+            if (bytes[0] == 0x20 && bytes[1] == 0x02)
+            {
+                return IsBlockedIpv4Address(bytes.AsSpan(2, 4));
+            }
+
+            return false;
         }
 
         return true;
+    }
+
+    private static bool IsBlockedIpv4Address(ReadOnlySpan<byte> bytes)
+    {
+        return bytes[0] switch
+        {
+            0 => true,
+            10 => true,
+            127 => true,
+            169 when bytes[1] == 254 => true,
+            172 when bytes[1] is >= 16 and <= 31 => true,
+            192 when bytes[1] == 168 => true,
+            100 when bytes[1] is >= 64 and <= 127 => true,
+            // IPv4 multicast/reserved ranges are not useful webhook targets over TCP.
+            >= 224 and <= 239 => true,
+            >= 240 => true,
+            _ => false,
+        };
+    }
+
+    private static bool IsNat64WellKnownPrefix(ReadOnlySpan<byte> bytes)
+    {
+        // 64:ff9b::/96 => 0064:ff9b:0000:0000:0000:0000:<ipv4>
+        return bytes.Length == 16
+            && bytes[0] == 0x00
+            && bytes[1] == 0x64
+            && bytes[2] == 0xFF
+            && bytes[3] == 0x9B
+            && bytes[4] == 0x00
+            && bytes[5] == 0x00
+            && bytes[6] == 0x00
+            && bytes[7] == 0x00
+            && bytes[8] == 0x00
+            && bytes[9] == 0x00
+            && bytes[10] == 0x00
+            && bytes[11] == 0x00;
     }
 }
 
