@@ -38,6 +38,9 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 - Document Admin boolean (`true`/`false`) and positive-integer allowed values
   in the local Mailer Docker runbooks (#280).
+- Clarify delivery-result webhook first-wins: only the first terminal state is
+  notified; Admin manual retry that later reaches `delivered` does not enqueue a
+  second webhook (#273).
 
 ## [0.9.1] - 2026-07-22
 

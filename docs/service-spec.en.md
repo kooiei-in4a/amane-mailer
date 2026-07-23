@@ -166,12 +166,13 @@ Mailer delivery semantics are **at-least-once** (a single accepted request may r
 | Worker automatic retry | at-least-once | Retryable failures return to `Queued` and are delivered again |
 | Finalize race after lease expiry (#238) | **Resend suppression** | Successful provider sends are recorded in `mail_attempts`; reclaim skips the actual send and converges to `Delivered`. Finalize skips are observable via `mail_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)) |
 | Admin manual retry | **Intentional redelivery** | Moves `DeadLettered` / `Failed` back to `Queued` (resets `attempt_count` to 0). Prior-cycle Delivered evidence is not used for prior-success convergence (#268). May resend even when a provider send already succeeded but the row had not converged to `Delivered` ([ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) maintains at-least-once) |
-| Delivery result webhook | Deduplication by `event_id` | **Separate contract from actual email delivery**. Consumers must treat duplicate POSTs with the same `event_id` as idempotent ([webhook-verification.md](consumer/webhook-verification.md)) |
+| Delivery result webhook | **first-wins** (at most one event per mail-request generation) + `event_id` dedup for re-POSTs | **Separate contract from actual email delivery**. Only the first enqueued terminal state is notified. Admin manual retry that reaches a later terminal (e.g. `failed` → retry → `delivered`) does **not** send another webhook. Consumers must treat duplicate POSTs with the same `event_id` as idempotent ([webhook-verification.md](consumer/webhook-verification.md)) |
 
 **Consumer recommendations:**
 
 - If duplicate notifications are unacceptable for business logic, deduplicate on the consumer side using `mail_request_id` or a custom correlation id.
 - Observing `delivered` via `GET /internal/mail-requests/{mail_request_id}` does not rule out multiple messages already sent (especially with Mailpit or manual retry).
+- After Admin manual retry, status GET and the webhook terminal may diverge (webhook is first-wins). Treat status GET as authoritative for the current mail-request state.
 
 ### Versioning Policy
 
@@ -301,6 +302,14 @@ reaches a terminal state (`delivered` / `failed` / `dead_lettered` /
 `cancelled`). `WebhookDeliveryWorker` delivers an HMAC-signed HTTPS POST to the
 Consumer.
 
+- **first-wins:** At most one event per `(tenant_id, source_service, mail_request_id)`
+  generation (`ON CONFLICT DO NOTHING`). Only the first enqueued terminal state remains.
+  If Admin manual retry later reaches a different terminal (e.g. `failed` → `Queued` →
+  `delivered`), Mailer does not insert a second event and does not update the existing
+  one. Re-notifying the latest terminal is out of scope for this contract and would need
+  a separate issue / ADR.
+- Reconciliation only fills **missing** outbox rows for terminal requests; it never
+  overwrites an existing event.
 - Read the secret from the environment variable named by `webhook.secret_env`
   (never store plaintext secrets in tenant JSON).
 - Payload excludes PII (recipient, subject, body, and related fields).
@@ -527,3 +536,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-23 | Consumer cancel is idempotent for already-cancelled; post-commit HTTP failures avoided (#269) |
 | 2026-07-23 | Documented startup validation for effective provider / ACS live-sending; not part of `/readyz` (#272). Mailpit treats post-accept disconnect failure as success, not retry (#275) |
 | 2026-07-23 | `MailRequestWorker` shutdown: later semaphore-waiting send waves do not start (#271) |
+| 2026-07-24 | Documented delivery-result webhook first-wins (first terminal only; no re-notify after Admin manual retry) (#273) |
