@@ -547,66 +547,30 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         int minAttemptCount,
         CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        // Prefer provider activity pulses (send start/complete) over fixed 100ms spin.
+        // Paths that never call the provider (lease reaper, missing tenant) still use a short fallback.
         MailRequestDispatchState? lastStored = null;
-
-        while (DateTimeOffset.UtcNow < deadline)
+        try
         {
-            var stored = await FindDispatchStateAsync(mailRequestId, cancellationToken);
-            lastStored = stored;
-            if (stored?.Status == status && stored.AttemptCount >= minAttemptCount)
-            {
-                return stored;
-            }
-
-            await Task.Delay(100, cancellationToken);
+            return await ConditionWait.UntilAsync<MailRequestDispatchState>(
+                async ct =>
+                {
+                    lastStored = await FindDispatchStateAsync(mailRequestId, ct);
+                    return lastStored;
+                },
+                stored => stored.Status == status && stored.AttemptCount >= minAttemptCount,
+                ConditionWait.DefaultTimeout,
+                cancellationToken,
+                wake: fixture.DeliveryProvider.Activity);
         }
-
-        var lastState = lastStored is null
-            ? "not found"
-            : $"{lastStored.Status} attempt_count={lastStored.AttemptCount} lock_token={(lastStored.LockToken is null ? "null" : "present")}";
-        throw new TimeoutException(
-            $"Mail request did not reach status '{status}' with attempt_count >= {minAttemptCount}. Last state: {lastState}.");
-    }
-
-    private async Task WaitUntilAttemptCountAsync(
-        Guid mailRequestId,
-        int minAttemptCount,
-        CancellationToken cancellationToken)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
-
-        while (DateTimeOffset.UtcNow < deadline)
+        catch (TimeoutException)
         {
-            var stored = await FindDispatchStateAsync(mailRequestId, cancellationToken);
-            if (stored?.AttemptCount >= minAttemptCount)
-            {
-                return;
-            }
-
-            await Task.Delay(100, cancellationToken);
+            var lastState = lastStored is null
+                ? "not found"
+                : $"{lastStored.Status} attempt_count={lastStored.AttemptCount} lock_token={(lastStored.LockToken is null ? "null" : "present")}";
+            throw new TimeoutException(
+                $"Mail request did not reach status '{status}' with attempt_count >= {minAttemptCount}. Last state: {lastState}.");
         }
-
-        throw new TimeoutException($"Mail request did not reach attempt_count >= {minAttemptCount}.");
-    }
-
-    private async Task WaitUntilSentCountAsync(
-        int expectedCount,
-        CancellationToken cancellationToken)
-    {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
-
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (fixture.DeliveryProvider.Sent.Count == expectedCount)
-            {
-                return;
-            }
-
-            await Task.Delay(100, cancellationToken);
-        }
-
-        throw new TimeoutException($"Mailer provider did not record {expectedCount} sent message(s).");
     }
 
     private async Task<MailRequestDispatchState?> FindDispatchStateAsync(

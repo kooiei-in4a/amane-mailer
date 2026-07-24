@@ -10,12 +10,18 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
     private readonly ConcurrentQueue<CapturedMail> _sent = new();
     private readonly ConcurrentQueue<MailDeliveryResult> _results = new();
     private readonly object _holdGate = new();
+    private readonly AsyncPulse _activity = new();
     private TaskCompletionSource? _holdCompletion;
     private bool _ignoreHoldCancellation;
     private bool _holdConsumed;
     private TimeSpan? _sendDelay;
 
     public IReadOnlyCollection<CapturedMail> Sent => _sent.ToArray();
+
+    /// <summary>
+    /// Pulsed when a send starts or completes. Used as a wake hint for DB status waits.
+    /// </summary>
+    internal AsyncPulse Activity => _activity;
 
     public void Reset()
     {
@@ -34,6 +40,8 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
             _holdConsumed = false;
             _sendDelay = null;
         }
+
+        _activity.Pulse();
     }
 
     public void HoldNextSend()
@@ -65,6 +73,8 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
             _ignoreHoldCancellation = false;
             _holdConsumed = false;
         }
+
+        _activity.Pulse();
     }
 
     public void SetSendDelay(TimeSpan delay)
@@ -101,27 +111,36 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
             delay = _sendDelay;
         }
 
-        if (hold is not null)
-        {
-            if (ignoreHoldCancellation)
-            {
-                await hold.Task;
-            }
-            else
-            {
-                await hold.Task.WaitAsync(cancellationToken);
-            }
-        }
+        _activity.Pulse();
 
-        if (delay is not null)
+        try
         {
-            await Task.Delay(delay.Value, cancellationToken);
-        }
+            if (hold is not null)
+            {
+                if (ignoreHoldCancellation)
+                {
+                    await hold.Task;
+                }
+                else
+                {
+                    await hold.Task.WaitAsync(cancellationToken);
+                }
+            }
 
-        _sent.Enqueue(new CapturedMail(job.MailRequestId, job.RecipientEmail, job.Subject, provider));
-        return _results.TryDequeue(out var result)
-            ? result
-            : MailDeliveryResult.Success($"stub-{job.MailRequestId:N}");
+            if (delay is not null)
+            {
+                await Task.Delay(delay.Value, cancellationToken);
+            }
+
+            _sent.Enqueue(new CapturedMail(job.MailRequestId, job.RecipientEmail, job.Subject, provider));
+            return _results.TryDequeue(out var result)
+                ? result
+                : MailDeliveryResult.Success($"stub-{job.MailRequestId:N}");
+        }
+        finally
+        {
+            _activity.Pulse();
+        }
     }
 }
 
