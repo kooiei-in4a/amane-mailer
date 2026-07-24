@@ -76,7 +76,11 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 - No breaking public HTTP contract change. Existing POST acceptance behavior is
   unchanged.
-- No manual database migration is required for this release.
+- **DB migration 010** adds nullable `admin_audit_events.tenant_id` (and index)
+  so scoped Admin audit list/get can survive independent mail-request retention
+  (#282). Existing SQLite databases apply this automatically via `db migrate` /
+  normal startup; no manual SQL is required. Auth / session / db_ops audit rows
+  remain `tenant_id` NULL (service-wide).
 - Operators enabling metrics outside Development must set
   `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`), or disable
   metrics with `Mailer:Metrics:Enabled=false`.
