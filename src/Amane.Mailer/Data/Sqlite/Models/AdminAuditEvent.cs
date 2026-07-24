@@ -20,6 +20,12 @@ public sealed record AdminAuditEvent
 
     public string? TargetId { get; init; }
 
+    /// <summary>
+    /// Tenant scope for mail_request-targeted events. Null for auth/session/db_ops
+    /// events and for legacy rows that could not be backfilled after request retention.
+    /// </summary>
+    public Guid? TenantId { get; init; }
+
     public string? FieldName { get; init; }
 
     public required string Result { get; init; }

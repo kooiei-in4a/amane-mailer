@@ -118,10 +118,18 @@ public sealed class AdminAuditLogPageTests(MailerAdminFixture fixture)
         await SeedMailRequestRowAsync(hiddenMailRequestId, OtherTenantId, ct);
 
         await repository.WriteAsync(
-            NewMailRequestAuditEvent(visibleMailRequestId, occurredAt, "visible-audit"),
+            NewMailRequestAuditEvent(
+                visibleMailRequestId,
+                MailerWebApplicationFixtureBase.TenantId,
+                occurredAt,
+                "visible-audit"),
             ct);
         await repository.WriteAsync(
-            NewMailRequestAuditEvent(hiddenMailRequestId, occurredAt.AddMinutes(1), "hidden-audit"),
+            NewMailRequestAuditEvent(
+                hiddenMailRequestId,
+                OtherTenantId,
+                occurredAt.AddMinutes(1),
+                "hidden-audit"),
             ct);
 
         using var client = CreateClient(fixture.Factory);
@@ -227,6 +235,7 @@ public sealed class AdminAuditLogPageTests(MailerAdminFixture fixture)
         await repository.WriteAsync(
             NewMailRequestAuditEvent(
                 hiddenMailRequestId,
+                OtherTenantId,
                 new DateTimeOffset(2026, 7, 3, 14, 0, 0, TimeSpan.Zero),
                 "hidden-detail"),
             ct);
@@ -251,6 +260,7 @@ public sealed class AdminAuditLogPageTests(MailerAdminFixture fixture)
         await repository.WriteAsync(
             NewMailRequestAuditEvent(
                 mailRequestId,
+                MailerWebApplicationFixtureBase.TenantId,
                 new DateTimeOffset(2026, 7, 3, 15, 0, 0, TimeSpan.Zero),
                 "detail-user"),
             ct);
@@ -271,6 +281,7 @@ public sealed class AdminAuditLogPageTests(MailerAdminFixture fixture)
 
     private static AdminAuditEvent NewMailRequestAuditEvent(
         Guid mailRequestId,
+        Guid tenantId,
         DateTimeOffset occurredAt,
         string actor) =>
         new()
@@ -280,6 +291,7 @@ public sealed class AdminAuditLogPageTests(MailerAdminFixture fixture)
             OccurredAt = occurredAt,
             TargetType = AdminAuditLog.TargetTypes.MailRequest,
             TargetId = mailRequestId.ToString("D"),
+            TenantId = tenantId,
             Result = AdminAuditLog.Results.Success,
         };
 

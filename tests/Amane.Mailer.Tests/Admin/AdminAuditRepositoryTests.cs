@@ -124,10 +124,10 @@ public sealed class AdminAuditRepositoryTests
 
         var occurredAt = new DateTimeOffset(2026, 6, 27, 12, 0, 0, TimeSpan.Zero);
         await repository.WriteAsync(
-            NewMailRequestAuditEvent(visibleMailRequestId, occurredAt, "scoped-visible"),
+            NewMailRequestAuditEvent(visibleMailRequestId, visibleTenantId, occurredAt, "scoped-visible"),
             ct);
         await repository.WriteAsync(
-            NewMailRequestAuditEvent(hiddenMailRequestId, occurredAt.AddMinutes(1), "scoped-hidden"),
+            NewMailRequestAuditEvent(hiddenMailRequestId, hiddenTenantId, occurredAt.AddMinutes(1), "scoped-hidden"),
             ct);
         await repository.WriteAsync(
             NewAuthAuditEvent(AdminAuditLog.EventTypes.Logout, "scoped-auth", occurredAt.AddMinutes(2)),
@@ -142,6 +142,80 @@ public sealed class AdminAuditRepositoryTests
         Assert.Contains(page.Items, row => row.Actor == "scoped-visible");
         Assert.Contains(page.Items, row => row.Actor == "scoped-auth");
         Assert.DoesNotContain(page.Items, row => row.Actor == "scoped-hidden");
+    }
+
+    [Fact]
+    public async Task Scoped_admin_can_list_and_get_mail_request_audit_after_mail_request_deleted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await AuditTestDatabase.CreateAsync(ct);
+        var repository = new AdminAuditRepository(db.Factory);
+
+        var visibleTenantId = Guid.Parse("00000000-0000-0000-0000-000000000101");
+        var hiddenTenantId = Guid.Parse("00000000-0000-0000-0000-000000000202");
+        var visibleMailRequestId = Guid.NewGuid();
+        var hiddenMailRequestId = Guid.NewGuid();
+        await SeedMailRequestAsync(db.ConnectionString, visibleMailRequestId, visibleTenantId, ct);
+        await SeedMailRequestAsync(db.ConnectionString, hiddenMailRequestId, hiddenTenantId, ct);
+
+        var occurredAt = new DateTimeOffset(2026, 6, 27, 14, 0, 0, TimeSpan.Zero);
+        await repository.WriteAsync(
+            NewMailRequestAuditEvent(visibleMailRequestId, visibleTenantId, occurredAt, "retained-visible"),
+            ct);
+        await repository.WriteAsync(
+            NewMailRequestAuditEvent(hiddenMailRequestId, hiddenTenantId, occurredAt.AddMinutes(1), "retained-hidden"),
+            ct);
+
+        await DeleteMailRequestAsync(db.ConnectionString, visibleMailRequestId, ct);
+        await DeleteMailRequestAsync(db.ConnectionString, hiddenMailRequestId, ct);
+
+        var scopedTenants = new HashSet<Guid> { visibleTenantId };
+        var page = await repository.ListForAdminAsync(
+            new AdminAuditListQuery { AllowedTenantIds = scopedTenants, PageSize = 50 },
+            ct);
+
+        var visible = Assert.Single(page.Items);
+        Assert.Equal("retained-visible", visible.Actor);
+        Assert.DoesNotContain(page.Items, row => row.Actor == "retained-hidden");
+
+        var detail = await repository.GetForAdminAsync(visible.Id, scopedTenants, ct);
+        Assert.NotNull(detail);
+        Assert.Equal("retained-visible", detail.Actor);
+
+        var allRows = await repository.ListRecentAsync(50, ct);
+        var hidden = Assert.Single(allRows, row => row.Actor == "retained-hidden");
+        Assert.Null(await repository.GetForAdminAsync(hidden.Id, scopedTenants, ct));
+    }
+
+    [Fact]
+    public async Task Write_resolves_tenant_id_from_mail_request_when_omitted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await AuditTestDatabase.CreateAsync(ct);
+        var repository = new AdminAuditRepository(db.Factory);
+
+        var tenantId = Guid.Parse("00000000-0000-0000-0000-000000000303");
+        var mailRequestId = Guid.NewGuid();
+        await SeedMailRequestAsync(db.ConnectionString, mailRequestId, tenantId, ct);
+
+        await repository.WriteAsync(
+            NewMailRequestAuditEvent(
+                mailRequestId,
+                tenantId: null,
+                new DateTimeOffset(2026, 6, 27, 15, 0, 0, TimeSpan.Zero),
+                "resolved-from-row"),
+            ct);
+
+        await DeleteMailRequestAsync(db.ConnectionString, mailRequestId, ct);
+
+        var page = await repository.ListForAdminAsync(
+            new AdminAuditListQuery { AllowedTenantIds = new HashSet<Guid> { tenantId }, PageSize = 50 },
+            ct);
+
+        Assert.Equal("resolved-from-row", Assert.Single(page.Items).Actor);
+        Assert.Equal(
+            tenantId.ToString("D"),
+            await ReadStoredTenantIdAsync(db.ConnectionString, "resolved-from-row", ct));
     }
 
     [Fact]
@@ -173,6 +247,7 @@ public sealed class AdminAuditRepositoryTests
 
     private static AdminAuditEvent NewMailRequestAuditEvent(
         Guid mailRequestId,
+        Guid? tenantId,
         DateTimeOffset occurredAt,
         string actor) =>
         new()
@@ -182,6 +257,7 @@ public sealed class AdminAuditRepositoryTests
             OccurredAt = occurredAt,
             TargetType = AdminAuditLog.TargetTypes.MailRequest,
             TargetId = mailRequestId.ToString("D"),
+            TenantId = tenantId,
             Result = AdminAuditLog.Results.Success,
         };
 
@@ -232,6 +308,38 @@ public sealed class AdminAuditRepositoryTests
         command.Parameters.AddWithValue("@CreatedAt", SqliteTime.ToStorageUtc(now));
         command.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now));
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task DeleteMailRequestAsync(
+        string connectionString,
+        Guid id,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM mail_requests WHERE id = @Id;";
+        command.Parameters.AddWithValue("@Id", id.ToString("D"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task<string?> ReadStoredTenantIdAsync(
+        string connectionString,
+        string actor,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT tenant_id
+            FROM admin_audit_events
+            WHERE actor = @Actor
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@Actor", actor);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result as string;
     }
 
     private static AdminAuditEvent NewEvent(string actor, DateTimeOffset occurredAt) =>

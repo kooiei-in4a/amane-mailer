@@ -29,6 +29,7 @@ public sealed class MailerAdminAuditMigrationTests
             var applied = await runner.ApplyPendingAsync(ct);
 
             Assert.Contains("004_admin_audit_events.sql", applied);
+            Assert.Contains("010_admin_audit_events_tenant_id.sql", applied);
 
             await using var connection = new SqliteConnection($"Data Source={databasePath}");
             await connection.OpenAsync(ct);
@@ -40,7 +41,7 @@ public sealed class MailerAdminAuditMigrationTests
             [
                 "id", "event_type", "actor", "occurred_at",
                 "source_ip", "user_agent_summary",
-                "target_type", "target_id", "field_name",
+                "target_type", "target_id", "tenant_id", "field_name",
                 "result", "error_code",
             ];
             foreach (var column in expectedColumns)
@@ -61,6 +62,7 @@ public sealed class MailerAdminAuditMigrationTests
 
             var indexes = await GetIndexNamesAsync(connection, ct);
             Assert.Contains("idx_admin_audit_events_occurred_at", indexes);
+            Assert.Contains("idx_admin_audit_events_tenant_id", indexes);
         }
         finally
         {
