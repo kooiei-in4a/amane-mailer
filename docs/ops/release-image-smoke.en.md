@@ -2,8 +2,8 @@
 
 # Clean-state smoke for the published release image
 
-After v0.9.1 is published, this runbook pulls the GHCR runtime image (default
-`ghcr.io/kooiei-in4a/amane-mailer:v0.9.1`) from a clean state, starts Mailer +
+After v0.9.2 is published, this runbook pulls the GHCR runtime image (default
+`ghcr.io/kooiei-in4a/amane-mailer:v0.9.2`) from a clean state, starts Mailer +
 Mailpit, and smokes the release runtime path.
 
 Unlike `infra/docker/docker-compose.local.yml` (which builds from source), this smoke
@@ -18,7 +18,7 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 - On Windows: PowerShell 5.1+ and Docker Desktop (same Docker CLI context as PowerShell).
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
-- For the v0.9.1 release, the default smoke tag `v0.9.1` is expected to be a
+- For the v0.9.2 release, the default smoke tag `v0.9.2` is expected to be a
   **multi-arch** GHCR runtime image after publish
   (`linux/amd64` and `linux/arm64`). For smoke runs, confirm the platform in the
   release notes or Docker manifest, then set `MAILER_IMAGE_PLATFORM=linux/amd64` or
@@ -72,7 +72,7 @@ If startup itself fails, the script prints `docker compose ps` and recent logs.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | Image repository |
-| `MAILER_IMAGE_TAG` | `v0.9.1` | Tag under test |
+| `MAILER_IMAGE_TAG` | `v0.9.2` | Tag under test |
 | `MAILER_IMAGE_PLATFORM` | `linux/amd64` | Mailer runtime image platform to smoke. For multi-arch releases, run once per release-noted platform such as `linux/amd64` and `linux/arm64`. |
 | `MAILER_PULL_POLICY` | `always` | Set `missing` to reuse a local image |
 | `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image. The default `latest` is intentional; override it when a tag / digest pin is needed. |
@@ -98,8 +98,9 @@ intentional `latest` usage and how to pin it when needed.
 
 ## Recorded smoke results
 
-Value-free smoke results for `v0.9.1` (digest, date, environment, per-check pass/fail)
-are recorded in [docs/releases/v0.9.1.md](../releases/v0.9.1.md) after publish.
+Value-free smoke results for `v0.9.2` (digest, date, environment, per-check pass/fail)
+are recorded in [docs/releases/v0.9.2.md](../releases/v0.9.2.md) after publish.
+Previous `v0.9.1` results remain in [docs/releases/v0.9.1.md](../releases/v0.9.1.md).
 Previous `v0.9.0` results remain in [docs/releases/v0.9.0.md](../releases/v0.9.0.md).
 Previous `v0.4.0` results remain in [docs/releases/v0.4.0.md](../releases/v0.4.0.md).
 Previous `v0.3.0` results remain in [docs/releases/v0.3.0.md](../releases/v0.3.0.md).
@@ -109,7 +110,12 @@ Older `v0.2.0` results remain in [docs/releases/v0.2.0.md](../releases/v0.2.0.md
 
 - `scripts/release-smoke.sh` / `scripts/release-smoke.ps1`: a release smoke that validates the **target release image's**
   HTTP / idempotency / Mailpit delivery from a clean state. The bash script uses host-side
-  `curl`; the PowerShell script uses `Invoke-WebRequest`.
+  `curl`; the PowerShell script uses `Invoke-WebRequest`. Admin UI, HTTPS webhook tenant
+  startup, and `db backup` CLI are out of scope.
+- `scripts/native-aot-path-smoke.sh`: black-box checks against the **linux-x64 Native AOT
+  binary** published by CI `Native AOT publish smoke` — Admin login, HTTPS webhook tenant
+  `/readyz`, and `db backup` (issue #286). It does not cover the release image or Mailpit
+  delivery. ACS live stays manual because it depends on secrets.
 - `infra/deploy/drills/mail-05a-*`: no-send / ACS deploy drills against a running compose
   stack on a deploy host. They use the SQLite Mailer CLI (`healthcheck`, `db stats`,
   `db request-state`) and a temporary curl compose client, and go deeper into worker

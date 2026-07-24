@@ -9,8 +9,15 @@ public sealed record MailerAdminDbOpsOptions
 
     public string BackupDirectory { get; init; } = string.Empty;
 
-    public static MailerAdminDbOpsOptions Load(IConfiguration configuration, string mailerConnectionString)
+    public static MailerAdminDbOpsOptions Load(
+        IConfiguration configuration,
+        string mailerConnectionString,
+        bool adminEnabled = true)
     {
+        // DbOps is Admin-only. When Admin is off, ignore DbOps env typos so mail delivery still starts.
+        if (!adminEnabled)
+            return new() { Enabled = false };
+
         var enabled = ReadBoolean(
             configuration,
             "AMANE_ADMIN_DB_OPS_ENABLED",
@@ -126,13 +133,22 @@ public sealed record MailerAdminDbOpsOptions
     private static bool? ReadBoolean(IConfiguration configuration, string primaryKey, string fallbackKey)
     {
         var value = configuration[primaryKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
+        var key = primaryKey;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = configuration[fallbackKey];
+            key = fallbackKey;
+        }
 
-        value = configuration[fallbackKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
 
-        return null;
+        if (!bool.TryParse(value, out var parsed))
+        {
+            throw new InvalidOperationException(
+                $"{key} must be 'true' or 'false'.");
+        }
+
+        return parsed;
     }
 }

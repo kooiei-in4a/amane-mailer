@@ -95,13 +95,14 @@ dotnet add package Amane.Mailer.Contracts
 | `MailRequestStatusResponse` | `Amane.Mailer.Contracts.MailRequests` | GET / cancel / reschedule status response DTO |
 | `MailRequestRescheduleRequest` | `Amane.Mailer.Contracts.MailRequests` | Reschedule request body |
 | `MailRequestScheduleLimits` | `Amane.Mailer.Contracts.MailRequests` | Max schedule horizon (`MaxScheduledAhead`) |
-| `MailDeliveryEventPayload` | `Amane.Mailer.Contracts.MailRequests` | Outbound delivery-result webhook JSON body |
+| `MailDeliveryEventPayload` | `Amane.Mailer.Contracts.MailRequests` | Outbound delivery-result webhook JSON body (first-wins: one event per mail-request generation) |
 | `MailDeliveryEventType` | `Amane.Mailer.Contracts.MailRequests` | Webhook `event_type` / terminal status constants |
 | `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient in `to` array |
 | `MailPayloadHasher` | `Amane.Mailer.Contracts.Security` | `payload_hash` computation helper |
 | `MailRequestAcceptanceStatus` | `Amane.Mailer.Contracts.MailRequests` | Response `status` constants |
 | `MailRequestStatus` | `Amane.Mailer.Contracts.MailRequests` | Worker delivery status constants |
-| `MailerErrorCodes` | `Amane.Mailer.Contracts.MailRequests` | Error code constants |
+| `MailerErrorCodes` | `Amane.Mailer.Contracts.MailRequests` | HTTP acceptance error code constants |
+| `MailDeliveryErrorCodes` | `Amane.Mailer.Contracts.MailRequests` | Delivery attempt / `last_error_code` constants |
 
 ## Minimal Example
 

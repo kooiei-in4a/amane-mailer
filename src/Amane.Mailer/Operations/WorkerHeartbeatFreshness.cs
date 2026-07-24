@@ -10,6 +10,17 @@ public static class WorkerHeartbeatFreshness
     public static bool AreFresh(
         IReadOnlyList<WorkerHeartbeat> heartbeats,
         TimeSpan maxStaleness,
+        DateTimeOffset? now = null) =>
+        GetFailureReason(heartbeats, maxStaleness, now) is null;
+
+    /// <summary>
+    /// Returns a primary readiness failure reason for missing or stale heartbeats,
+    /// or null when both worker and sweep heartbeats are present and fresh.
+    /// Priority: missing before stale; worker before sweep within each class.
+    /// </summary>
+    public static string? GetFailureReason(
+        IReadOnlyList<WorkerHeartbeat> heartbeats,
+        TimeSpan maxStaleness,
         DateTimeOffset? now = null)
     {
         var utcNow = now ?? DateTimeOffset.UtcNow;
@@ -20,14 +31,14 @@ public static class WorkerHeartbeatFreshness
             string.Equals(h.Name, SweepName, StringComparison.Ordinal));
 
         if (workerHeartbeat is null || sweepHeartbeat is null)
-            return false;
+            return MailerReadinessReasons.HeartbeatMissing;
 
-        if (utcNow - workerHeartbeat.LastHeartbeatAt > maxStaleness)
-            return false;
+        if (utcNow - workerHeartbeat.LastHeartbeatAt > maxStaleness
+            || utcNow - sweepHeartbeat.LastHeartbeatAt > maxStaleness)
+        {
+            return MailerReadinessReasons.HeartbeatStale;
+        }
 
-        if (utcNow - sweepHeartbeat.LastHeartbeatAt > maxStaleness)
-            return false;
-
-        return true;
+        return null;
     }
 }

@@ -11,6 +11,19 @@ public sealed record MailerWebhookOptions
     public const int FinalizeTimeoutSeconds = 10;
     public const int HostShutdownSlackSeconds = MailerWorkerOptions.HostShutdownSlackSeconds;
 
+    public const int MinMaxAttempts = 1;
+    public const int MaxMaxAttempts = 50;
+    public const int MinInitialDelaySeconds = 1;
+    public const int MaxInitialDelaySeconds = 86400;
+    public const int MinMaxDelaySeconds = 1;
+    public const int MaxMaxDelaySeconds = 86400;
+    public const int MinBatchClaimSize = 1;
+    public const int MaxBatchClaimSize = 100;
+    public const int MinDeliveryTimeoutSeconds = 1;
+    public const int MaxDeliveryTimeoutSeconds = 600;
+    public const int MinLeaseDurationSeconds = 1;
+    public const int MaxLeaseDurationSeconds = 86400;
+
     public int MaxAttempts { get; init; } = DefaultMaxAttempts;
 
     public int InitialDelaySeconds { get; init; } = DefaultInitialDelaySeconds;
@@ -37,51 +50,87 @@ public sealed record MailerWebhookOptions
     public static MailerWebhookOptions Load(IConfiguration configuration) =>
         new()
         {
-            MaxAttempts = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Webhook:MaxAttempts", DefaultMaxAttempts)),
-            InitialDelaySeconds = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Webhook:InitialDelaySeconds", DefaultInitialDelaySeconds)),
-            MaxDelaySeconds = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Webhook:MaxDelaySeconds", DefaultMaxDelaySeconds)),
-            BatchClaimSize = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Webhook:BatchClaimSize", DefaultBatchClaimSize)),
-            DeliveryTimeoutSeconds = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Webhook:DeliveryTimeoutSeconds", DefaultDeliveryTimeoutSeconds)),
-            LeaseDurationSeconds = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Webhook:LeaseDurationSeconds", DefaultLeaseDurationSeconds)),
+            MaxAttempts = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Webhook:MaxAttempts",
+                DefaultMaxAttempts,
+                MinMaxAttempts,
+                MaxMaxAttempts),
+            InitialDelaySeconds = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Webhook:InitialDelaySeconds",
+                DefaultInitialDelaySeconds,
+                MinInitialDelaySeconds,
+                MaxInitialDelaySeconds),
+            MaxDelaySeconds = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Webhook:MaxDelaySeconds",
+                DefaultMaxDelaySeconds,
+                MinMaxDelaySeconds,
+                MaxMaxDelaySeconds),
+            BatchClaimSize = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Webhook:BatchClaimSize",
+                DefaultBatchClaimSize,
+                MinBatchClaimSize,
+                MaxBatchClaimSize),
+            DeliveryTimeoutSeconds = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Webhook:DeliveryTimeoutSeconds",
+                DefaultDeliveryTimeoutSeconds,
+                MinDeliveryTimeoutSeconds,
+                MaxDeliveryTimeoutSeconds),
+            LeaseDurationSeconds = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Webhook:LeaseDurationSeconds",
+                DefaultLeaseDurationSeconds,
+                MinLeaseDurationSeconds,
+                MaxLeaseDurationSeconds),
         };
 
     public void Validate()
     {
-        if (MaxAttempts < 1)
+        if (MaxAttempts < MinMaxAttempts || MaxAttempts > MaxMaxAttempts)
         {
-            throw new InvalidOperationException("Mailer:Webhook:MaxAttempts must be at least 1.");
+            throw new InvalidOperationException(
+                $"Mailer:Webhook:MaxAttempts must be an integer between {MinMaxAttempts} and {MaxMaxAttempts} (inclusive).");
         }
 
-        if (InitialDelaySeconds < 1)
+        if (InitialDelaySeconds < MinInitialDelaySeconds || InitialDelaySeconds > MaxInitialDelaySeconds)
         {
-            throw new InvalidOperationException("Mailer:Webhook:InitialDelaySeconds must be at least 1.");
+            throw new InvalidOperationException(
+                $"Mailer:Webhook:InitialDelaySeconds must be an integer between {MinInitialDelaySeconds} and {MaxInitialDelaySeconds} (inclusive).");
         }
 
-        if (MaxDelaySeconds < 1)
+        if (MaxDelaySeconds < MinMaxDelaySeconds || MaxDelaySeconds > MaxMaxDelaySeconds)
         {
-            throw new InvalidOperationException("Mailer:Webhook:MaxDelaySeconds must be at least 1.");
+            throw new InvalidOperationException(
+                $"Mailer:Webhook:MaxDelaySeconds must be an integer between {MinMaxDelaySeconds} and {MaxMaxDelaySeconds} (inclusive).");
         }
 
-        if (BatchClaimSize < 1)
+        if (InitialDelaySeconds > MaxDelaySeconds)
         {
-            throw new InvalidOperationException("Mailer:Webhook:BatchClaimSize must be at least 1.");
+            throw new InvalidOperationException(
+                $"Mailer:Webhook:InitialDelaySeconds ({InitialDelaySeconds}) must be less than or equal to "
+                + $"Mailer:Webhook:MaxDelaySeconds ({MaxDelaySeconds}).");
         }
 
-        if (DeliveryTimeoutSeconds < 1)
+        if (BatchClaimSize < MinBatchClaimSize || BatchClaimSize > MaxBatchClaimSize)
         {
-            throw new InvalidOperationException("Mailer:Webhook:DeliveryTimeoutSeconds must be at least 1.");
+            throw new InvalidOperationException(
+                $"Mailer:Webhook:BatchClaimSize must be an integer between {MinBatchClaimSize} and {MaxBatchClaimSize} (inclusive).");
+        }
+
+        if (DeliveryTimeoutSeconds < MinDeliveryTimeoutSeconds || DeliveryTimeoutSeconds > MaxDeliveryTimeoutSeconds)
+        {
+            throw new InvalidOperationException(
+                $"Mailer:Webhook:DeliveryTimeoutSeconds must be an integer between {MinDeliveryTimeoutSeconds} and {MaxDeliveryTimeoutSeconds} (inclusive).");
+        }
+
+        if (LeaseDurationSeconds < MinLeaseDurationSeconds || LeaseDurationSeconds > MaxLeaseDurationSeconds)
+        {
+            throw new InvalidOperationException(
+                $"Mailer:Webhook:LeaseDurationSeconds must be an integer between {MinLeaseDurationSeconds} and {MaxLeaseDurationSeconds} (inclusive).");
         }
 
         if (LeaseDurationSeconds <= DeliveryTimeoutSeconds + FinalizeTimeoutSeconds)

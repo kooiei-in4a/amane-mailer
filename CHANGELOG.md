@@ -13,6 +13,79 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-07-24
+
+### Added
+
+- Record a fixed primary `/readyz` failure reason via transition-only logs and
+  Prometheus gauges `mail_ready` / `mail_readiness_failure` without changing the
+  public HTTP contract (`200`/`503` + `{"ready":...}` only) (#330).
+
+### Changed
+
+- Reject Worker / Webhook / Sweep / Retention / Healthcheck operational
+  misconfiguration at startup instead of silently clamping with `Math.Max` /
+  `Math.Clamp` (#329). Unset keys keep existing defaults; empty string,
+  non-integer, zero/negative, and over-max values fail fast with the setting
+  key and allowed range (no secrets). Cross-field lease and healthcheck
+  checks are unchanged when Worker is enabled. Admin audit retention days,
+  sweep interval (hours/seconds), and batch size use the same strict range
+  parsing, including empty-string rejection.
+- Require `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`) at
+  startup when metrics stay enabled outside Development (#283). Development /
+  local keep optional bearer under internal-network isolation; disable metrics
+  with `Mailer:Metrics:Enabled=false` when scrape is unused.
+- Include structured `RequestId` (internal id) and `TenantId` on Worker and
+  ExpiredProcessingReaper request logs so the same `mail_request_id` can be
+  distinguished across tenants without logging mail-payload PII (#285).
+- Enforce Admin PBKDF2 password-hash parameter bounds (iterations
+  600,000–10,000,000; salt 16–64 bytes; hash 32–64 bytes) at startup and
+  `admin user create`, rejecting legacy weaker hashes (#281). Regenerate with
+  `admin hash-password` if an older hash is rejected.
+- Parse Admin boolean and positive-integer environment variables strictly so
+  typos fail at options `Load` / startup instead of silently falling back to
+  defaults (#280). `AMANE_ADMIN_ENABLED` is always strict; other Admin UI
+  settings are enforced only when Admin is enabled so mail delivery is not
+  aborted by unused Admin typos. Audit retention numerics remain always-strict
+  because the worker sweep reads them. Unset variables keep existing defaults.
+- Map provider delivery failures to a stable `error_code` taxonomy
+  (`MailDeliveryErrorCodes` / `ProviderErrorClassifier`) instead of library
+  exception type names (#279). Unknown exceptions become `PROVIDER_UNKNOWN`
+  with `retryable: false`, so the worker marks the request `Failed` on that
+  attempt without further retries. Existing attempt rows are left unchanged.
+- Align public release image defaults and smoke guidance on `v0.9.2`.
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `0.9.2`.
+
+### Documentation
+
+- Document `/readyz` internal readiness gauges, fixed failure reasons, and
+  `MailNotReady` alert example (#330).
+- Document Worker / Webhook / Sweep / Retention / Healthcheck strict numeric
+  ranges and startup fail-fast troubleshooting (#329).
+- Document Production metrics bearer startup enforcement and Development /
+  local optional-bearer + internal-network policy (#283).
+- Document Admin boolean (`true`/`false`) and positive-integer allowed values
+  in the local Mailer Docker runbooks (#280).
+- Clarify delivery-result webhook first-wins: only the first terminal state is
+  notified; Admin manual retry that later reaches `delivered` does not enqueue a
+  second webhook (#273).
+- Add v0.9.2 release evidence draft.
+
+### Breaking / Migration
+
+- No breaking public HTTP contract change. Existing POST acceptance behavior is
+  unchanged.
+- No manual database migration is required for this release.
+- Operators enabling metrics outside Development must set
+  `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`), or disable
+  metrics with `Mailer:Metrics:Enabled=false`.
+- Operators with Admin enabled must ensure Admin boolean / positive-integer env
+  values and PBKDF2 password-hash parameters are within the documented bounds;
+  legacy weaker hashes are rejected at startup / `admin user create`.
+- Worker / Webhook / Sweep / Retention / Healthcheck numeric misconfiguration
+  now fails fast at startup instead of silent clamping.
+
 ## [0.9.1] - 2026-07-22
 
 ### Fixed

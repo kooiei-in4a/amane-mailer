@@ -1,4 +1,5 @@
 using Amane.Mailer.Configuration;
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
@@ -187,6 +188,13 @@ public sealed class MailRequestWorker : BackgroundService
         var sendTasks = batch.Select(row => DispatchClaimedAsync(row, stoppingToken));
         await Task.WhenAll(sendTasks);
 
+        // Do not start another claim wave after shutdown began; semaphore waiters
+        // already cancelled in DispatchClaimedAsync leave Processing for lease reclaim.
+        if (stoppingToken.IsCancellationRequested)
+        {
+            return;
+        }
+
         if (batch.Count == _workerOptions.BatchClaimSize)
         {
             await WriteHeartbeatAsync(stoppingToken);
@@ -213,7 +221,19 @@ public sealed class MailRequestWorker : BackgroundService
 
     private async Task DispatchClaimedAsync(MailRequestRow row, CancellationToken stoppingToken)
     {
-        await _sendConcurrency.WaitAsync(CancellationToken.None);
+        try
+        {
+            // Honor stoppingToken so later waves waiting on the semaphore do not
+            // start new sends after shutdown begins (#271). In-flight sends still
+            // use SendTimeout (not linked to stopping) and are drained in finally.
+            await _sendConcurrency.WaitAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Claimed but never started: leave Processing for lease reclaim.
+            return;
+        }
+
         using var inflight = _inflightTracker.Enter();
         try
         {
@@ -241,7 +261,8 @@ public sealed class MailRequestWorker : BackgroundService
         }
 
         // A prior provider success may exist when finalize lost the lease race (#238).
-        // Converge to Delivered without resending. First attempts cannot have prior evidence.
+        // Converge to Delivered without resending. Evidence superseded by Admin manual retry
+        // (#268) is ignored so a new dispatch cycle still performs real sends.
         if (row.AttemptCount > 1)
         {
             var priorSuccess = await _repository.FindSuccessfulDeliveryAttemptAsync(row.Id, stoppingToken);
@@ -273,7 +294,7 @@ public sealed class MailRequestWorker : BackgroundService
         catch (OperationCanceledException)
         {
             result = MailDeliveryResult.Failure(
-                "SEND_TIMEOUT",
+                MailDeliveryErrorCodes.SendTimeout,
                 $"Mail delivery exceeded {_workerOptions.SendTimeoutSeconds} seconds.",
                 retryable: true);
         }
@@ -298,16 +319,20 @@ public sealed class MailRequestWorker : BackgroundService
         {
             _runtimeMetrics.RecordFinalizeSkipped();
             _logger.LogWarning(
-                "Skipped delivered converge for mail request {MailRequestId} with prior provider message id {ProviderMessageId} because the lock token expired or was superseded.",
+                "Skipped delivered converge for mail request {MailRequestId} with prior provider message id {ProviderMessageId} because the lock token expired or was superseded. RequestId={RequestId}; TenantId={TenantId}",
                 row.MailRequestId,
-                priorSuccess.ProviderMessageId);
+                priorSuccess.ProviderMessageId,
+                row.Id,
+                row.TenantId);
             return;
         }
 
         await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
         _logger.LogInformation(
-            "Converged mail request {MailRequestId} to Delivered from prior provider success without resending. PriorAttempt={PriorAttemptNumber}; Provider={Provider}; ProviderMessageId={ProviderMessageId}",
+            "Converged mail request {MailRequestId} to Delivered from prior provider success without resending. RequestId={RequestId}; TenantId={TenantId}; PriorAttempt={PriorAttemptNumber}; Provider={Provider}; ProviderMessageId={ProviderMessageId}",
             row.MailRequestId,
+            row.Id,
+            row.TenantId,
             priorSuccess.AttemptNumber,
             priorSuccess.Provider,
             priorSuccess.ProviderMessageId);
@@ -382,9 +407,11 @@ public sealed class MailRequestWorker : BackgroundService
         if (!finalized)
         {
             _logger.LogWarning(
-                "Skipped finalize for mail request {MailRequestId} with provider message id {ProviderMessageId} because the lock token expired or was superseded.",
+                "Skipped finalize for mail request {MailRequestId} with provider message id {ProviderMessageId} because the lock token expired or was superseded. RequestId={RequestId}; TenantId={TenantId}",
                 row.MailRequestId,
-                result.ProviderMessageId);
+                result.ProviderMessageId,
+                row.Id,
+                row.TenantId);
             return;
         }
 
@@ -398,20 +425,24 @@ public sealed class MailRequestWorker : BackgroundService
         if (outcome == MailRequestFinalizeOutcome.DeadLettered)
         {
             _logger.LogError(
-                "Mail request {MailRequestId} was dead-lettered after attempt {AttemptNumber} via provider {Provider}. ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
+                "Mail request {MailRequestId} was dead-lettered after attempt {AttemptNumber} via provider {Provider}. RequestId={RequestId}; TenantId={TenantId}; ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
                 row.MailRequestId,
                 row.AttemptCount,
                 providerName,
+                row.Id,
+                row.TenantId,
                 result.ErrorCode,
                 sanitizedError);
         }
         else if (outcome == MailRequestFinalizeOutcome.Failed)
         {
             _logger.LogWarning(
-                "Mail request {MailRequestId} failed terminally after attempt {AttemptNumber} via provider {Provider}. ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
+                "Mail request {MailRequestId} failed terminally after attempt {AttemptNumber} via provider {Provider}. RequestId={RequestId}; TenantId={TenantId}; ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
                 row.MailRequestId,
                 row.AttemptCount,
                 providerName,
+                row.Id,
+                row.TenantId,
                 result.ErrorCode,
                 sanitizedError);
         }
@@ -452,18 +483,22 @@ public sealed class MailRequestWorker : BackgroundService
         if (!finalized)
         {
             _logger.LogWarning(
-                "Skipped terminal failure finalize for mail request {MailRequestId} because the lock token expired or was superseded.",
-                row.MailRequestId);
+                "Skipped terminal failure finalize for mail request {MailRequestId} because the lock token expired or was superseded. RequestId={RequestId}; TenantId={TenantId}",
+                row.MailRequestId,
+                row.Id,
+                row.TenantId);
             return;
         }
 
         await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
 
         _logger.LogWarning(
-            "Mail request {MailRequestId} failed terminally after attempt {AttemptNumber} via provider {Provider}. ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
+            "Mail request {MailRequestId} failed terminally after attempt {AttemptNumber} via provider {Provider}. RequestId={RequestId}; TenantId={TenantId}; ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
             row.MailRequestId,
             row.AttemptCount,
             provider,
+            row.Id,
+            row.TenantId,
             errorCode,
             errorMessage);
     }

@@ -80,6 +80,11 @@ dotnet publish src/Amane.Mailer/Amane.Mailer.csproj `
   -c Release -r linux-x64 --self-contained --no-restore `
   -o artifacts/publish/aot-linux-x64 `
   /p:PublishAot=true /p:IlcTreatWarningsAsErrors=true
+
+# Low-frequency AOT path smoke (Admin / webhook HTTPS tenant / db backup; #286).
+# Requires a runnable linux-x64 binary (CI ubuntu or Linux host).
+$env:MAILER_BIN = (Resolve-Path artifacts/publish/aot-linux-x64/Amane.Mailer).Path
+bash scripts/native-aot-path-smoke.sh
 ```
 
 On Linux/macOS, replace backticks with line continuations as needed. CI also runs `artifacts/publish/aot-linux-x64/Amane.Mailer --help` after publish.

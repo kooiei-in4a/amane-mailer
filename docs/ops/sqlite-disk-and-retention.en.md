@@ -42,9 +42,10 @@ In order:
 
 1. **Free or expand volume capacity**
 2. **Review and tighten retention if needed**
-   - mail request retention: `Mailer:Retention:*` / related env
-   - admin audit retention: `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (default 180 days)
+   - mail request retention: `Mailer:Retention:*` / related env (purges terminal `mail_requests` and matching `delivery_events` for the same `(tenant_id, source_service, mail_request_id)` in one transaction, including pending undelivered webhook rows regardless of status). `Days` / `BatchSize` and related numerics use strict range validation (#329); misconfiguration fails startup
+   - admin audit retention: `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (default 180 days, strict range)
    - explicit purge: `db admin-audit purge --older-than-days <days>`
+   - Note: this joint purge applies only to future retention runs. Orphan `delivery_events` left behind before the fix (no matching `mail_requests` row) are not auto-cleaned; delete them manually during a maintenance window if needed
 3. **Shrink WAL** during a maintenance window
    - Re-check size after process-stop checkpoint (`MailerWalCheckpointShutdownService`)
    - Preferred ops command: `db checkpoint` (runs `PRAGMA wal_checkpoint(TRUNCATE)` internally)
@@ -92,6 +93,14 @@ Notes:
   with `STORAGE_FULL` logs/HTTP codes and volume free space.
 - Consumer SDKs auto-retry `retryable: true`. `STORAGE_FULL` is `retryable: false`,
   so accepts stay failing until disk pressure is cleared.
+
+## Large-DB retention / metrics measurement (#288)
+
+Elapsed times and EXPLAIN for metrics aggregate, retention batches, and Admin
+queries on a seeded large DB are in
+[large-db-query-measurement.en.md](large-db-query-measurement.en.md).
+A candidate `completed_at`-ordered retention index is documented there
+(measurement only in #288).
 
 ## Security
 

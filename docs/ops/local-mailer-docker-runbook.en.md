@@ -92,6 +92,23 @@ docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps ma
 
 The Mailer container must reference the same SQLite database via `ConnectionStrings__Mailer`. Re-running scoped admin creation for the same username updates tenant scopes and revokes all active sessions for that admin immediately (ADR 0013 D-04).
 
+## Admin boolean / numeric environment values
+
+Admin UI boolean and positive-integer environment variables use **strict parse**. Admin UI values are enforced **only when `AMANE_ADMIN_ENABLED=true`** (same gate as `Validate()`). When Admin is disabled, typos in mask / login-limit settings do not abort mail delivery startup.
+
+| Kind | Allowed values | Unset | Invalid |
+|------|----------------|-------|---------|
+| `AMANE_ADMIN_ENABLED` / `MAILER_ADMIN_ENABLED` | `true` / `false` (`bool.TryParse` compatible) | `false` | **Always fails startup** |
+| Other Admin UI booleans (mask / hash-network / db-ops, etc.) | `true` / `false` | Existing defaults | **Fails startup only when Admin is enabled** |
+| Admin UI positive integers (login failure limit, etc.) | Integer ≥ `1` | Existing defaults | **Fails startup only when Admin is enabled** |
+| Audit retention numerics (`MAILER_ADMIN_AUDIT_RETENTION_*`) | Integer in range (Days 1–3650, SweepHours 1–168, SweepSeconds 1–604800, BatchSize 1–1000) | Existing defaults (e.g. 180 days) | **Always fails startup** (used by the worker audit sweep; independent of Admin UI on/off) |
+
+### Worker / Webhook / Sweep / Retention / Healthcheck numerics
+
+`Mailer__Worker__*` / `Mailer__Webhook__*` / `Mailer__Sweep__*` / `Mailer__Retention__*` / `Mailer__Healthcheck__*` use **strict validation** (#329). Unset keeps defaults. Empty string, malformed, zero/negative, and over-max values fail startup (no clamp). Allowed ranges: [service spec §5.2](../service-spec.en.md#52-worker--sweep--retention-environment-variables). On failure, check the log for the key and range (secrets are not included).
+
+Typos such as `tru`, `yes`, or `abc` are not silently defaulted within the scopes above.
+
 ## Admin audit retention
 
 `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (fallback: `AMANE_ADMIN_AUDIT_RETENTION_DAYS`)
@@ -380,7 +397,7 @@ $textBody = "Hello from local Docker Mailer via ACS."
 
 After submission, confirm `Local Mailer ACS smoke` shows `Delivered` on `/admin/mail-requests`.
 If ACS rejects the send, status becomes `Failed` or `DeadLettered` after retries, and the detail view shows the provider error on the attempt.
-The displayed and stored error message is a classified, sanitized summary (connection strings, tokens, URL query strings, and email addresses are masked, while the triage `error_code` is kept). Raw provider responses are not stored. See "Provider Error Sanitization" in [SECURITY.md](../../SECURITY.md) for details.
+The displayed and stored error message is a classified, sanitized summary (connection strings, tokens, URL query strings, and email addresses are masked, while the stable triage `error_code` from `MailDeliveryErrorCodes` is kept). Raw provider responses and exception type names are not used as `error_code`. See "Provider Error Sanitization" in [SECURITY.md](../../SECURITY.md) for details.
 
 ## 11. Verify Dead Letter
 

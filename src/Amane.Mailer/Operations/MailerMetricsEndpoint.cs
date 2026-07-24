@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Amane.Mailer.Configuration;
+using Amane.Mailer.Webhooks;
 
 namespace Amane.Mailer.Operations;
 
@@ -10,6 +11,7 @@ public static class MailerMetricsEndpoint
         HttpContext context,
         MailerMetricsOptions options,
         MailerDbStatsReader statsReader,
+        DeliveryEventRepository deliveryEventRepository,
         MailerRuntimeMetrics runtimeMetrics,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
@@ -35,7 +37,12 @@ public static class MailerMetricsEndpoint
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
 
-        var body = PrometheusMetricsFormatter.Format(stats, runtimeMetrics.CaptureSnapshot());
+        var webhookCounts = await deliveryEventRepository.CountOperationalAsync(cancellationToken);
+        var body = PrometheusMetricsFormatter.Format(
+            stats,
+            runtimeMetrics.CaptureSnapshot(),
+            webhookCounts.PendingCount,
+            webhookCounts.DeadLetteredCount);
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(body, "text/plain; version=0.0.4; charset=utf-8");
     }

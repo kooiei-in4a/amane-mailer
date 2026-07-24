@@ -108,16 +108,19 @@ jobs:
       - name: Restore
         run: dotnet restore Amane.Mailer.slnx --locked-mode
 
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+
+      - name: Audit NuGet vulnerabilities
+        run: node scripts/nuget-vulnerability-audit.mjs --skip-restore
+
       - name: Build
         run: dotnet build Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-restore
 
       - name: Test
         run: dotnet test Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-build --verbosity normal
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: "22"
 
       - name: Validate OpenAPI and contract drift
         run: |

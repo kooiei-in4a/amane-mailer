@@ -67,6 +67,152 @@ public sealed class MailRequestRetentionTests(MailerRetentionFixture fixture)
         Assert.NotNull(recentState);
     }
 
+    [Fact]
+    public async Task DeleteExpiredCompletedAsync_removes_matching_delivery_events()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var expiredRequest = MailRequestTestData.CreateRequest();
+
+        await SeedDeliveredRequestAsync(expiredRequest, DateTimeOffset.UtcNow.AddDays(-120), ct);
+        await SeedDeliveryEventAsync(expiredRequest, ct);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var deleted = await repository.DeleteExpiredCompletedAsync(
+            DateTimeOffset.UtcNow.AddDays(-90),
+            batchSize: 100,
+            ct);
+
+        Assert.Equal(1, deleted);
+        Assert.Null(await repository.FindDispatchStateByMailRequestIdAsync(expiredRequest.MailRequestId, ct));
+        Assert.False(await DeliveryEventExistsAsync(expiredRequest.MailRequestId, ct));
+    }
+
+    [Fact]
+    public async Task DeleteExpiredCompletedAsync_batch_boundary_keeps_request_and_event_aligned()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var completedAt = DateTimeOffset.UtcNow.AddDays(-120);
+        var first = MailRequestTestData.CreateRequest();
+        var second = MailRequestTestData.CreateRequest();
+
+        await SeedDeliveredRequestAsync(first, completedAt, ct);
+        await SeedDeliveredRequestAsync(second, completedAt, ct);
+        await SeedDeliveryEventAsync(first, ct);
+        await SeedDeliveryEventAsync(second, ct);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var deleted = await repository.DeleteExpiredCompletedAsync(
+            DateTimeOffset.UtcNow.AddDays(-90),
+            batchSize: 1,
+            ct);
+
+        Assert.Equal(1, deleted);
+
+        var firstState = await repository.FindDispatchStateByMailRequestIdAsync(first.MailRequestId, ct);
+        var secondState = await repository.FindDispatchStateByMailRequestIdAsync(second.MailRequestId, ct);
+        var firstEventExists = await DeliveryEventExistsAsync(first.MailRequestId, ct);
+        var secondEventExists = await DeliveryEventExistsAsync(second.MailRequestId, ct);
+
+        Assert.True(
+            (firstState is null && !firstEventExists && secondState is not null && secondEventExists)
+            || (secondState is null && !secondEventExists && firstState is not null && firstEventExists),
+            "A batchSize=1 purge with tied completed_at must delete the selected request and its delivery_event together, leaving the other pair intact.");
+
+        var remainingDeleted = await repository.DeleteExpiredCompletedAsync(
+            DateTimeOffset.UtcNow.AddDays(-90),
+            batchSize: 1,
+            ct);
+
+        Assert.Equal(1, remainingDeleted);
+        Assert.Null(await repository.FindDispatchStateByMailRequestIdAsync(first.MailRequestId, ct));
+        Assert.Null(await repository.FindDispatchStateByMailRequestIdAsync(second.MailRequestId, ct));
+        Assert.False(await DeliveryEventExistsAsync(first.MailRequestId, ct));
+        Assert.False(await DeliveryEventExistsAsync(second.MailRequestId, ct));
+    }
+
+    [Fact]
+    public async Task DeleteExpiredCompletedAsync_purges_multiple_requests_and_events_in_one_batch()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var completedAt = DateTimeOffset.UtcNow.AddDays(-120);
+        var requests = new[]
+        {
+            MailRequestTestData.CreateRequest(),
+            MailRequestTestData.CreateRequest(),
+            MailRequestTestData.CreateRequest(),
+        };
+
+        foreach (var request in requests)
+        {
+            await SeedDeliveredRequestAsync(request, completedAt, ct);
+            await SeedDeliveryEventAsync(request, ct);
+        }
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var deleted = await repository.DeleteExpiredCompletedAsync(
+            DateTimeOffset.UtcNow.AddDays(-90),
+            batchSize: 100,
+            ct);
+
+        Assert.Equal(3, deleted);
+        foreach (var request in requests)
+        {
+            Assert.Null(await repository.FindDispatchStateByMailRequestIdAsync(request.MailRequestId, ct));
+            Assert.False(await DeliveryEventExistsAsync(request.MailRequestId, ct));
+        }
+    }
+
+    private async Task SeedDeliveryEventAsync(
+        MailRequestCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var now = SqliteTime.ToStorageUtc(DateTimeOffset.UtcNow);
+        command.CommandText = """
+            INSERT INTO delivery_events (
+                id, tenant_id, source_service, mail_request_id, event_type, payload_json,
+                status, attempt_count, max_attempts, next_attempt_at,
+                created_at, updated_at)
+            VALUES (
+                @Id, @TenantId, @SourceService, @MailRequestId, @EventType, @PayloadJson,
+                @PendingStatus, 0, 3, NULL,
+                @Now, @Now);
+            """;
+        command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@TenantId", request.TenantId.ToString("D"));
+        command.Parameters.AddWithValue("@SourceService", request.SourceService);
+        command.Parameters.AddWithValue("@MailRequestId", request.MailRequestId.ToString("D"));
+        command.Parameters.AddWithValue("@EventType", MailDeliveryEventType.Delivered);
+        command.Parameters.AddWithValue("@PayloadJson", """{"event_id":"00000000-0000-0000-0000-000000000001"}""");
+        command.Parameters.AddWithValue("@PendingStatus", 0);
+        command.Parameters.AddWithValue("@Now", now);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task<bool> DeliveryEventExistsAsync(
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM delivery_events
+                WHERE mail_request_id = @MailRequestId
+            );
+            """;
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is long value && value == 1L;
+    }
+
     private async Task SeedDeliveredRequestAsync(
         MailRequestCreateRequest request,
         DateTimeOffset completedAt,

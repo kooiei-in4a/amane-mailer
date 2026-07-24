@@ -2,13 +2,17 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.Channels;
 using Amane.Mailer.Api;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Queue;
 using Amane.Mailer.Tests.Fixtures;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Amane.Mailer.Tests;
 
@@ -152,6 +156,32 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
+    public async Task Cancel_already_cancelled_request_is_idempotent()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(4));
+
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+
+        using var firstCancel = await client.PostAsync(CancelUrl(request.MailRequestId), content: null, ct);
+        Assert.Equal(HttpStatusCode.OK, firstCancel.StatusCode);
+        Assert.Equal(
+            MailRequestStatus.Cancelled,
+            await MailRequestTestData.ReadStatusAsync(firstCancel, ct));
+
+        using var secondCancel = await client.PostAsync(CancelUrl(request.MailRequestId), content: null, ct);
+        Assert.Equal(HttpStatusCode.OK, secondCancel.StatusCode);
+        Assert.Equal(
+            MailRequestStatus.Cancelled,
+            await MailRequestTestData.ReadStatusAsync(secondCancel, ct));
+    }
+
+    [Fact]
     public async Task Cancel_delivered_request_returns_invalid_state()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -237,6 +267,12 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
             ct);
 
         Assert.Equal(HttpStatusCode.OK, reschedule.StatusCode);
+        var body = await reschedule.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(body);
+        Assert.Equal(MailRequestStatus.Queued, doc.RootElement.GetProperty("status").GetString());
+        Assert.True(
+            !doc.RootElement.TryGetProperty("scheduled_at", out var scheduledAt)
+            || scheduledAt.ValueKind == JsonValueKind.Null);
 
         await using var scope = fixture.Factory.Services.CreateAsyncScope();
         var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
@@ -248,6 +284,148 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         Assert.NotNull(stored);
         Assert.Null(stored.ScheduledAt);
         Assert.True(MailRequestEndpoints.IsDispatchableQueued(stored, DateTimeOffset.UtcNow));
+    }
+
+    [Fact]
+    public async Task Reschedule_success_does_not_depend_on_post_commit_status_reread()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var factory = fixture.Factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<MailRequestRepository>();
+                services.AddSingleton<MailRequestRepository>(sp =>
+                    new FailingStatusRereadMailRequestRepository(
+                        sp.GetRequiredService<MailRequestClaimStore>(),
+                        sp.GetRequiredService<MailRequestAcceptStore>(),
+                        sp.GetRequiredService<MailRequestConsumerMutations>(),
+                        sp.GetRequiredService<MailRequestAdminQueries>(),
+                        sp.GetRequiredService<WorkerHeartbeatStore>()));
+            });
+        });
+
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer",
+                MailerWebApplicationFixtureBase.Token);
+
+        var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(2));
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+
+        // GET status uses the overridden re-read and must fail closed.
+        using var get = await client.GetAsync(StatusUrl(request.MailRequestId), ct);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, get.StatusCode);
+
+        var newSchedule = DateTimeOffset.UtcNow.AddHours(6);
+        using var reschedule = await client.PostAsync(
+            RescheduleUrl(request.MailRequestId),
+            JsonContent.Create(
+                new MailRequestRescheduleRequest { ScheduledAt = newSchedule },
+                options: JsonOptions),
+            ct);
+
+        Assert.Equal(HttpStatusCode.OK, reschedule.StatusCode);
+        var body = await reschedule.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(body);
+        Assert.Equal(MailRequestStatus.Queued, doc.RootElement.GetProperty("status").GetString());
+        Assert.Equal(request.MailRequestId, doc.RootElement.GetProperty("mail_request_id").GetGuid());
+        Assert.True(doc.RootElement.TryGetProperty("scheduled_at", out var scheduledAt));
+        Assert.False(string.IsNullOrWhiteSpace(scheduledAt.GetString()));
+        var returnedSchedule = DateTimeOffset.Parse(scheduledAt.GetString()!);
+        Assert.True(Math.Abs((returnedSchedule - newSchedule.ToUniversalTime()).TotalSeconds) < 2);
+    }
+
+    [Fact]
+    public async Task Reschedule_to_immediate_signals_work_available()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var capturingQueue = new CapturingMailRequestQueue();
+        using var factory = fixture.Factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IMailRequestQueue>();
+                services.RemoveAll<MailRequestQueue>();
+                services.AddSingleton<IMailRequestQueue>(capturingQueue);
+            });
+        });
+
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer",
+                MailerWebApplicationFixtureBase.Token);
+
+        var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(5));
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+        capturingQueue.Reset();
+
+        using var reschedule = await client.PostAsync(
+            RescheduleUrl(request.MailRequestId),
+            new StringContent("""{"scheduled_at":null}""", System.Text.Encoding.UTF8, "application/json"),
+            ct);
+
+        Assert.Equal(HttpStatusCode.OK, reschedule.StatusCode);
+        Assert.Equal(1, capturingQueue.SignalCount);
+    }
+
+    [Fact]
+    public async Task Reschedule_to_future_does_not_signal_work_available()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var capturingQueue = new CapturingMailRequestQueue();
+        using var factory = fixture.Factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IMailRequestQueue>();
+                services.RemoveAll<MailRequestQueue>();
+                services.AddSingleton<IMailRequestQueue>(capturingQueue);
+            });
+        });
+
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer",
+                MailerWebApplicationFixtureBase.Token);
+
+        var request = MailRequestTestData.CreateRequest();
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+        capturingQueue.Reset();
+
+        using var reschedule = await client.PostAsync(
+            RescheduleUrl(request.MailRequestId),
+            JsonContent.Create(
+                new MailRequestRescheduleRequest { ScheduledAt = DateTimeOffset.UtcNow.AddHours(4) },
+                options: JsonOptions),
+            ct);
+
+        Assert.Equal(HttpStatusCode.OK, reschedule.StatusCode);
+        Assert.Equal(0, capturingQueue.SignalCount);
     }
 
     [Fact]
@@ -275,6 +453,53 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         Assert.Equal(HttpStatusCode.UnprocessableEntity, reschedule.StatusCode);
         Assert.Equal(
             MailerErrorCodes.InvalidState,
+            await MailRequestTestData.ReadCodeAsync(reschedule, ct));
+    }
+
+    [Fact]
+    public async Task Reschedule_processing_request_returns_invalid_state()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest();
+
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+
+        await SetStatusAsync(request.MailRequestId, MailRequestState.Processing, ct);
+
+        using var reschedule = await client.PostAsync(
+            RescheduleUrl(request.MailRequestId),
+            JsonContent.Create(
+                new MailRequestRescheduleRequest { ScheduledAt = DateTimeOffset.UtcNow.AddHours(3) },
+                options: JsonOptions),
+            ct);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, reschedule.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidState,
+            await MailRequestTestData.ReadCodeAsync(reschedule, ct));
+    }
+
+    [Fact]
+    public async Task Reschedule_nonexistent_request_returns_not_found()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+
+        using var reschedule = await client.PostAsync(
+            RescheduleUrl(Guid.NewGuid()),
+            JsonContent.Create(
+                new MailRequestRescheduleRequest { ScheduledAt = DateTimeOffset.UtcNow.AddHours(1) },
+                options: JsonOptions),
+            ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, reschedule.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.NotFound,
             await MailRequestTestData.ReadCodeAsync(reschedule, ct));
     }
 
@@ -334,6 +559,26 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    private async Task SetStatusAsync(
+        Guid mailRequestId,
+        MailRequestState status,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE mail_requests
+            SET status = @Status,
+                updated_at = @Now
+            WHERE mail_request_id = @MailRequestId;
+            """;
+        command.Parameters.AddWithValue("@Status", (int)status);
+        command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(DateTimeOffset.UtcNow));
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private static string StatusUrl(Guid mailRequestId) =>
         $"/internal/mail-requests/{mailRequestId:D}" +
         $"?tenant_id={MailerWebApplicationFixtureBase.TenantId:D}" +
@@ -360,5 +605,41 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
                 "Bearer",
                 MailerWebApplicationFixtureBase.Token);
         return client;
+    }
+
+    private sealed class FailingStatusRereadMailRequestRepository(
+        MailRequestClaimStore claimStore,
+        MailRequestAcceptStore acceptStore,
+        MailRequestConsumerMutations consumerMutations,
+        MailRequestAdminQueries adminQueries,
+        WorkerHeartbeatStore heartbeatStore)
+        : MailRequestRepository(claimStore, acceptStore, consumerMutations, adminQueries, heartbeatStore)
+    {
+        public override Task<MailRequestStatusRow?> GetStatusByIdempotencyKeyAsync(
+            Guid tenantId,
+            string sourceService,
+            Guid mailRequestId,
+            CancellationToken cancellationToken = default) =>
+            throw new SqliteException(
+                "database is locked",
+                SqliteDatabaseExceptionClassifier.SqliteBusy);
+    }
+
+    private sealed class CapturingMailRequestQueue : IMailRequestQueue
+    {
+        private int _signalCount;
+        private readonly Channel<WorkAvailableSignal> _channel = Channel.CreateUnbounded<WorkAvailableSignal>();
+
+        public int SignalCount => _signalCount;
+
+        public ChannelReader<WorkAvailableSignal> Reader => _channel.Reader;
+
+        public void Reset() => Interlocked.Exchange(ref _signalCount, 0);
+
+        public bool TrySignalWorkAvailable()
+        {
+            Interlocked.Increment(ref _signalCount);
+            return _channel.Writer.TryWrite(default);
+        }
     }
 }

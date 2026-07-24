@@ -92,6 +92,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     {
         var options = LoadAdminOptions(new Dictionary<string, string?>
         {
+            ["AMANE_ADMIN_ENABLED"] = "true",
             [key] = "0.0.0.0",
         });
 
@@ -103,6 +104,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     {
         var options = LoadAdminOptions(new Dictionary<string, string?>
         {
+            ["AMANE_ADMIN_ENABLED"] = "true",
             ["MAILER_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "192.0.2.10",
         });
 
@@ -114,6 +116,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     {
         var options = LoadAdminOptions(new Dictionary<string, string?>
         {
+            ["AMANE_ADMIN_ENABLED"] = "true",
             ["MAILER_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "192.0.2.10",
             ["AMANE_ADMIN_BIND"] = "0.0.0.0",
         });
@@ -126,6 +129,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     {
         var options = LoadAdminOptions(new Dictionary<string, string?>
         {
+            ["AMANE_ADMIN_ENABLED"] = "true",
             ["AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "192.0.2.10",
             ["AMANE_ADMIN_BIND"] = "0.0.0.0",
             ["MAILER_ADMIN_BIND"] = "127.0.0.1",
@@ -148,6 +152,159 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         var exception = Assert.Throws<InvalidOperationException>(options.Validate);
 
         Assert.Contains("AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Unset_admin_boolean_and_numeric_env_vars_keep_defaults()
+    {
+        var options = LoadAdminOptions(new Dictionary<string, string?>());
+
+        Assert.False(options.Enabled);
+        Assert.False(options.HashNetworkIdentifiers);
+        Assert.True(options.MaskRecipients);
+        Assert.True(options.MaskSubjects);
+        Assert.Equal(5, options.LoginFailureLimit);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.LoginCooldown);
+        Assert.Equal(TimeSpan.FromMinutes(30), options.SessionIdleTimeout);
+        Assert.Equal(TimeSpan.FromHours(12), options.SessionAbsoluteLifetime);
+        Assert.Equal(3, options.MaxConcurrentSessions);
+    }
+
+    [Theory]
+    [InlineData("AMANE_ADMIN_ENABLED", "true", true)]
+    [InlineData("AMANE_ADMIN_ENABLED", "false", false)]
+    [InlineData("MAILER_ADMIN_ENABLED", "True", true)]
+    [InlineData("AMANE_ADMIN_MASK_RECIPIENTS", "false", false)]
+    [InlineData("AMANE_ADMIN_MASK_SUBJECTS", "false", false)]
+    [InlineData("AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS", "true", true)]
+    public void Valid_admin_boolean_env_vars_are_parsed(string key, string value, bool expected)
+    {
+        var settings = new Dictionary<string, string?>
+        {
+            [key] = value,
+        };
+        if (key is not ("AMANE_ADMIN_ENABLED" or "MAILER_ADMIN_ENABLED"))
+            settings["AMANE_ADMIN_ENABLED"] = "true";
+
+        var options = LoadAdminOptions(settings);
+
+        var actual = key switch
+        {
+            "AMANE_ADMIN_ENABLED" or "MAILER_ADMIN_ENABLED" => options.Enabled,
+            "AMANE_ADMIN_MASK_RECIPIENTS" => options.MaskRecipients,
+            "AMANE_ADMIN_MASK_SUBJECTS" => options.MaskSubjects,
+            "AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS" => options.HashNetworkIdentifiers,
+            _ => throw new InvalidOperationException($"Unexpected key: {key}"),
+        };
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData("AMANE_ADMIN_ENABLED", "yes")]
+    [InlineData("AMANE_ADMIN_ENABLED", "1")]
+    [InlineData("MAILER_ADMIN_ENABLED", "tru")]
+    public void Invalid_admin_enabled_boolean_env_vars_fail_load(string key, string value)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LoadAdminOptions(new Dictionary<string, string?>
+            {
+                [key] = value,
+            }));
+
+        Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("true", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("false", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("AMANE_ADMIN_MASK_RECIPIENTS", "no")]
+    [InlineData("AMANE_ADMIN_MASK_SUBJECTS", "off")]
+    [InlineData("AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS", "enabled")]
+    public void Invalid_admin_boolean_env_vars_fail_load_when_admin_enabled(string key, string value)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LoadAdminOptions(new Dictionary<string, string?>
+            {
+                ["AMANE_ADMIN_ENABLED"] = "true",
+                [key] = value,
+            }));
+
+        Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("true", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("false", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Invalid_admin_ui_env_vars_are_ignored_when_admin_disabled()
+    {
+        var options = LoadAdminOptions(new Dictionary<string, string?>
+        {
+            ["AMANE_ADMIN_ENABLED"] = "false",
+            ["AMANE_ADMIN_MASK_RECIPIENTS"] = "yes",
+            ["AMANE_ADMIN_LOGIN_FAILURE_LIMIT"] = "abc",
+            ["AMANE_ADMIN_DB_OPS_ENABLED"] = "nope",
+        });
+
+        Assert.False(options.Enabled);
+        Assert.True(options.MaskRecipients);
+        Assert.Equal(5, options.LoginFailureLimit);
+    }
+
+    [Theory]
+    [InlineData("AMANE_ADMIN_LOGIN_FAILURE_LIMIT", "7", 7)]
+    [InlineData("MAILER_ADMIN_LOGIN_FAILURE_LIMIT", "9", 9)]
+    [InlineData("AMANE_ADMIN_MAX_CONCURRENT_SESSIONS", "4", 4)]
+    public void Valid_admin_positive_int_env_vars_are_parsed(string key, string value, int expected)
+    {
+        var options = LoadAdminOptions(new Dictionary<string, string?>
+        {
+            ["AMANE_ADMIN_ENABLED"] = "true",
+            [key] = value,
+        });
+
+        var actual = key.Contains("LOGIN_FAILURE", StringComparison.Ordinal)
+            ? options.LoginFailureLimit
+            : options.MaxConcurrentSessions;
+
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData("AMANE_ADMIN_LOGIN_FAILURE_LIMIT", "0")]
+    [InlineData("AMANE_ADMIN_LOGIN_FAILURE_LIMIT", "-1")]
+    [InlineData("AMANE_ADMIN_LOGIN_FAILURE_LIMIT", "abc")]
+    [InlineData("AMANE_ADMIN_LOGIN_COOLDOWN_SECONDS", "0")]
+    [InlineData("AMANE_ADMIN_SESSION_IDLE_MINUTES", "nope")]
+    [InlineData("AMANE_ADMIN_SESSION_ABSOLUTE_HOURS", "-3")]
+    [InlineData("AMANE_ADMIN_MAX_CONCURRENT_SESSIONS", "xyz")]
+    public void Invalid_admin_positive_numeric_env_vars_fail_load_when_admin_enabled(string key, string value)
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LoadAdminOptions(new Dictionary<string, string?>
+            {
+                ["AMANE_ADMIN_ENABLED"] = "true",
+                [key] = value,
+            }));
+
+        Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("positive integer", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Disabled_admin_with_invalid_ui_env_still_starts_mailer_host()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var fixture = new MailerAdminDisabledInvalidUiEnvFixture();
+        await fixture.InitializeAsync();
+        using var client = CreateClient(fixture.Factory);
+
+        using var health = await client.GetAsync("/healthz", ct);
+        using var admin = await client.GetAsync("/admin", ct);
+
+        Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, admin.StatusCode);
+        Assert.False(fixture.Factory.Services.GetRequiredService<MailerAdminOptions>().Enabled);
     }
 
     [Fact]

@@ -44,11 +44,11 @@ The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contra
 |---|---|---|---|
 | `POST` | `/internal/mail-requests` | Accept send request (optional `scheduled_at`) | Tenant Bearer |
 | `GET` | `/internal/mail-requests/{mail_request_id}` | Query delivery status (`tenant_id` / `source_service` as query params) | Tenant Bearer |
-| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | Pre-send cancel (`queued` only) | Tenant Bearer |
+| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | Pre-send cancel (`queued`; already `cancelled` is idempotent) | Tenant Bearer |
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | Change schedule (`queued` and `attempt_count=0`) | Tenant Bearer |
 | `GET` | `/healthz` | Liveness check | None |
-| `GET` | `/readyz` | Readiness (DB schema + Worker/Sweep running + heartbeat freshness) | None |
-| `GET` | `/metrics` | Prometheus metrics (ops; see [metrics-and-alerts.en.md](ops/metrics-and-alerts.en.md)) | None by default (optional bearer) |
+| `GET` | `/readyz` | Readiness (current migration schema + Worker/Sweep running + heartbeat freshness; provider / ACS config checks are startup-only and not included) | None |
+| `GET` | `/metrics` | Prometheus metrics (ops; see [metrics-and-alerts.en.md](ops/metrics-and-alerts.en.md)) | Development: optional bearer (internal NW assumed). Non-Development: bearer required when Enabled (startup-enforced) |
 
 ### Contract Sync and Drift Review
 
@@ -90,7 +90,7 @@ API times are **UTC**. `scheduled_at` is the first-dispatch schedule and is inde
 | Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
 
-The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`). `last_error_code` is a sanitized error code only.
+The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`). `last_error_code` is from the stable delivery taxonomy (`MailDeliveryErrorCodes` / `ProviderErrorClassifier`) only — not library exception type names. See Provider Error Sanitization in [SECURITY.md](../SECURITY.md).
 
 ### Pre-send cancel (POST cancel)
 
@@ -99,13 +99,18 @@ The response JSON is a PII-free minimal set (`mail_request_id`, `status`, `attem
 | Situation | HTTP | code / status |
 |---|---|---|
 | Cancel a `queued` request | 200 | `status: cancelled` (status JSON) |
+| Already `cancelled` (same-key re-cancel) | 200 | `status: cancelled` (idempotent) |
 | Invalid query | 400 | `INVALID_REQUEST` |
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Missing / other tenant | 404 | `NOT_FOUND` |
-| Not `queued` | 422 | `INVALID_STATE` |
+| Neither `queued` nor `cancelled` | 422 | `INVALID_STATE` |
 | Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
+
+After a successful cancel DB update (`Cancelled` commit), transient webhook enqueue or status
+re-read failures must not return an HTTP failure that implies the request was not cancelled.
+Enqueue is best-effort; gaps may be filled by reconcile.
 
 ### Reschedule (POST reschedule)
 
@@ -125,6 +130,11 @@ Body: `{ "scheduled_at": "<UTC date-time>|null" }` (null clears the schedule gat
 | Disallowed state | 422 | `INVALID_STATE` |
 | Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
+
+After a successful reschedule DB update (`scheduled_at` commit), transient status
+re-read failures must not return an HTTP failure that implies the request was not
+rescheduled. The success response uses the committed snapshot obtained inside the
+update transaction.
 
 ### Metadata secret policy (docs-first)
 
@@ -157,16 +167,36 @@ Mailer delivery semantics are **at-least-once** (a single accepted request may r
 | HTTP acceptance | at-most-once persistence | One row per `(tenant_id, source_service, mail_request_id)`. Re-POST returns `already_accepted` |
 | Actual email delivery (overall) | **not exactly-once** / at-least-once | Duplicates are possible due to automatic retries, manual retry, and provider behavior |
 | ACS (`provider=acs`) | **Mitigation only** via deterministic operation id (UUIDv5) | Derived from `tenant_id` + `source_service:mail_request_id` (`AcsOperationIdFactory`). This repository does not verify or guarantee ACS server-side deduplication |
-| Mailpit (`provider=mailpit`) | **No idempotency** (best-effort) | Each retry may perform a new SMTP send (development / verification use) |
+| Mailpit (`provider=mailpit`) | **No idempotency** (best-effort) | Each retry may perform a new SMTP send (development / verification use). Disconnect failure after SMTP DATA acceptance alone does not schedule a retry (#275) |
 | Worker automatic retry | at-least-once | Retryable failures return to `Queued` and are delivered again |
 | Finalize race after lease expiry (#238) | **Resend suppression** | Successful provider sends are recorded in `mail_attempts`; reclaim skips the actual send and converges to `Delivered`. Finalize skips are observable via `mail_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)) |
-| Admin manual retry | **Intentional redelivery** | Moves `DeadLettered` / `Failed` back to `Queued` (resets `attempt_count` to 0). May resend even when a provider send already succeeded but the row had not converged to `Delivered` ([ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) maintains at-least-once) |
-| Delivery result webhook | Deduplication by `event_id` | **Separate contract from actual email delivery**. Consumers must treat duplicate POSTs with the same `event_id` as idempotent ([webhook-verification.md](consumer/webhook-verification.md)) |
+| Wall-clock lease correction (#276) | **Absolute-time comparison** | Mail / webhook leases compare `lock_expires_at` from `TimeProvider.GetUtcNow()` to `@Now`. There is no monotonic clock. A large forward wall-clock jump can cause early reclaim / strict finalize fencing failure; a large backward jump can delay Processing / Delivering recovery (details in the next subsection) |
+| Admin manual retry | **Intentional redelivery** | Moves `DeadLettered` / `Failed` back to `Queued` (resets `attempt_count` to 0). Prior-cycle Delivered evidence is not used for prior-success convergence (#268). May resend even when a provider send already succeeded but the row had not converged to `Delivered` ([ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) maintains at-least-once) |
+| Delivery result webhook | **first-wins** (at most one event per mail-request generation) + `event_id` dedup for re-POSTs | **Separate contract from actual email delivery**. Only the first enqueued terminal state is notified. Admin manual retry that reaches a later terminal (e.g. `failed` → retry → `delivered`) does **not** send another webhook. Consumers must treat duplicate POSTs with the same `event_id` as idempotent ([webhook-verification.md](consumer/webhook-verification.md)) |
+
+### Worker / Webhook lease and wall clock (#276)
+
+Mail (`mail_requests`) and webhook (`delivery_events`) leases are **UTC absolute times** stored as `lock_expires_at` in SQLite. Worker / Sweep / reaper / finalize compare that value to `@Now` from the DI `TimeProvider` (default `TimeProvider.System`). There is no Stopwatch-based monotonic / relative lease.
+
+| Correction | reclaim / reaper (`lock_expires_at <= @Now`) | strict finalize (`lock_expires_at > @Now`) |
+|---|---|---|
+| Large wall-clock **forward** jump | Lease may be treated as expired early; reclaim / reaper can run | Fencing may fail |
+| Large wall-clock **backward** jump | Reclaim can lag real time; Processing / Delivering may linger | Can still succeed (lease still looks valid) |
+
+Ordinary NTP slew is rarely enough to matter. Host step corrections and manual clock changes are the main risk.
+
+**Current mitigations:**
+
+- mail: #238 can still record Delivered evidence when strict fencing fails after a successful provider send, skip the actual send on reclaim, and converge to `Delivered`. This does not remove clock skew itself.
+- webhook: There is no equivalent prior-success converge path. Early reclaim can re-POST HTTP delivery (consumers must rely on `event_id` idempotency). Webhook finalize fencing failures are observable via `mail_webhook_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)).
+
+**Operations:** Prefer slew over large steps for OS / container time sync. A spike in `mail_finalize_skipped_total` can indicate mail fencing failures (including clock jumps). For webhook, watch `mail_webhook_finalize_skipped_total`; see the [metrics runbook](ops/metrics-and-alerts.en.md). A monotonic lease redesign remains a separate ADR candidate and is not the short-term direction of this spec.
 
 **Consumer recommendations:**
 
 - If duplicate notifications are unacceptable for business logic, deduplicate on the consumer side using `mail_request_id` or a custom correlation id.
 - Observing `delivered` via `GET /internal/mail-requests/{mail_request_id}` does not rule out multiple messages already sent (especially with Mailpit or manual retry).
+- After Admin manual retry, status GET and the webhook terminal may diverge (webhook is first-wins). Treat status GET as authoritative for the current mail-request state.
 
 ### Versioning Policy
 
@@ -252,7 +282,7 @@ DDL: `src/Amane.Mailer/Data/Migrations/002_worker_heartbeats.sql`
 | `name` | TEXT PK | Service name (`worker` / `sweep`) |
 | `last_heartbeat_at` | TEXT | Last heartbeat time (UTC ISO8601) |
 
-Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthcheck` and `GET /readyz` (when Worker is enabled) validate the presence and freshness of both rows. Freshness threshold is `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` (default 300 seconds). Docker HEALTHCHECK uses the CLI `healthcheck`.
+Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthcheck` and `GET /readyz` verify that the schema required by the current binary is ready (applied migration versions + checksums), and when Worker is enabled also validate the presence and freshness of both heartbeat rows. Freshness threshold is `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` (default 300 seconds). Docker HEALTHCHECK uses the CLI `healthcheck`. The `GET /readyz` HTTP response remains `{"ready":true|false}` only (200 / 503) and does not include failure details. Internally, a fixed primary reason is recorded via transition-only logs and `/metrics` gauges `mail_ready` / `mail_readiness_failure` (#330).
 
 ### 3.4 State Transitions (`mail_requests.status`)
 
@@ -296,18 +326,35 @@ reaches a terminal state (`delivered` / `failed` / `dead_lettered` /
 `cancelled`). `WebhookDeliveryWorker` delivers an HMAC-signed HTTPS POST to the
 Consumer.
 
+- **first-wins:** At most one event per `(tenant_id, source_service, mail_request_id)`
+  generation (`ON CONFLICT DO NOTHING`). Only the first enqueued terminal state remains.
+  If Admin manual retry later reaches a different terminal (e.g. `failed` → `Queued` →
+  `delivered`), Mailer does not insert a second event and does not update the existing
+  one. Re-notifying the latest terminal is out of scope for this contract and would need
+  a separate issue / ADR.
+- Reconciliation only fills **missing** outbox rows for terminal requests; it never
+  overwrites an existing event.
 - Read the secret from the environment variable named by `webhook.secret_env`
   (never store plaintext secrets in tenant JSON).
 - Payload excludes PII (recipient, subject, body, and related fields).
-- Consumer deduplication contract uses `event_id` (stable across webhook retries
-  for the same mail request event).
+- Consumer deduplication contract uses `event_id` (stable across webhook retries for the
+  same mail-request generation). After request retention, reusing the same `mail_request_id`
+  idempotency key issues a new `event_id`.
 - Failed deliveries use exponential backoff; exceeding the retry limit records a
   webhook Dead Letter.
+- Lease fencing failures (`FinalizeAsync` returns false) are observable via
+  `mail_webhook_finalize_skipped_total` and structured Warning logs. The delivery
+  contract remains at-least-once, so consumers must keep deduplicating by `event_id`
+  after a skip that may lead to a re-POST ([metrics runbook](ops/metrics-and-alerts.en.md)).
 - During shutdown, `stoppingToken` stops new claims. In-flight deliveries wait up
   to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` (same drain pattern as
   `MailRequestWorker`).
-- SSRF controls: HTTPS required, private/metadata IP blocked, optional
-  `allowed_host_suffixes`.
+- SSRF controls: HTTPS required. Blocks IPv4 private / loopback / link-local /
+  CGNAT / multicast / reserved, IPv4-mapped, IPv6 loopback / link-local /
+  site-local / ULA / multicast / unspecified, deprecated IPv4-compatible IPv6
+  (`::/96`, e.g. `::10.0.0.1`), and private (or otherwise blocked) IPv4
+  embeddings under the NAT64 well-known prefix (`64:ff9b::/96`) and 6to4
+  (`2002::/16`). Optional `allowed_host_suffixes`.
 - Verification steps: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
 - OpenAPI schema: `MailDeliveryEventPayload`
 - Admin / ops visibility: `/admin/webhook-dead-letters`, `db stats` webhook counts
@@ -320,10 +367,10 @@ Early branching on `argv` before Web host startup. Container `ENTRYPOINT` is `./
 
 | Subcommand | Purpose | Exit code |
 |---|---|---|
-| `healthcheck` | SQLite schema + Worker/Sweep heartbeat freshness check (Docker `HEALTHCHECK`) | 0=healthy / 1=unhealthy |
+| `healthcheck` | Current SQLite schema (applied migration version + checksum) + Worker/Sweep heartbeat freshness check (Docker `HEALTHCHECK`) | 0=healthy / 1=unhealthy |
 | `db migrate` | Apply pending SQL migrations | 0=success |
 | `db checkpoint` | Clean up `-wal` via `PRAGMA wal_checkpoint(TRUNCATE)` | 0=success |
-| `db backup <absolute-path>` | Online SQLite backup (Backup API) | 0=success / 2=usage error |
+| `db backup <absolute-path>` | Online SQLite backup (Backup API). Writes to a same-directory temp file, verifies it, then atomically replaces the destination. A mid-flight failure leaves any previous good backup intact. Prefer a timestamped path for retention | 0=success / 2=usage error |
 | `db stats [--tenant-id <uuid>]` | Output `mail_requests` status counts, ready backlog, oldest queued age, stale processing, and dead-letter counts from SQLite as `key=value` | 0=success / 1=schema unavailable / 2=usage error |
 | `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | Output one request's state, attempt count, and provider message id presence as `key=value` (does not expose secrets / recipient) | 0=success / 1=schema unavailable / 2=usage error |
 
@@ -345,7 +392,7 @@ migrations instead of relying on a numbered migration for that metadata change.
 ```bash
 docker compose --profile ops run --rm mailer-migrate          # db migrate
 docker compose exec mailer ./Amane.Mailer db checkpoint
-docker compose exec mailer ./Amane.Mailer db backup /app/data/backups/mailer.db  # plaintext; use backup-mailer.sh in production
+docker compose exec mailer ./Amane.Mailer db backup "/app/data/backups/mailer-$(date -u +%Y%m%dT%H%M%SZ).db"  # plaintext; use backup-mailer.sh in production. Fixed-path overwrite keeps the previous good backup on mid-flight failure, but prefer a timestamped path for retention
 docker compose exec mailer ./Amane.Mailer db stats --tenant-id <tenant-uuid>
 docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-uuid> --source-service <source-service> --mail-request-id <request-uuid>
 ```
@@ -392,23 +439,35 @@ values, body, and metadata are not output.
 | **`ACS_CONNECTION_STRING_FILE`** | **ACS connection string file** | **Canonical for Staging/Production deploy (`infra/deploy/compose.yml`). Points at the `acs_connection_string` file written by `admin provider register-acs`. When `MAILER_REQUIRE_ACS_SECRET_FILE=true`, there is no fallback to the bare env var** |
 | `ACS_CONNECTION_STRING` | ACS connection string (environment variable) | For local Mailpit compose and the local ACS drill (`mail-05a-acs-drill.sh` compose override). Not referenced by Staging/Production `compose.yml` |
 | `MAIL_SERVICE_TOKEN_*` | Tenant Bearer tokens | Specified by `token_env` in `tenants.json` |
-| `MAILER_PROVIDER` | Global provider override (optional) | `acs` / `mailpit` |
+| `MAILER_PROVIDER` | Global provider override (optional) | `acs` / `mailpit`. Unknown values **fail closed at startup** (not re-checked by `/readyz`) |
 | `MAILER_TENANTS_PATH` | Location of tenants.json | e.g. `/app/config/mailer/tenants.json` |
 
 ### 5.2 Worker / Sweep / Retention (Environment Variables)
 
-| Variable | Default | Description |
-|---|---|---|
-| `Mailer__Worker__Enabled` | `true` | Enable Worker HostedServices |
-| `Mailer__Worker__BatchClaimSize` | `4` | Claim limit per drain |
-| `Mailer__Worker__MaxSendConcurrency` | `4` | Parallel send count |
-| `Mailer__Worker__SendTimeoutSeconds` | `90` | Per-message send timeout |
-| `Mailer__Worker__LeaseDurationSeconds` | `120` | Processing lease TTL |
-| `Mailer__Sweep__IntervalSeconds` | `30` | Stale sweep interval |
-| `Mailer__Retention__Days` | `90` | Terminal record retention days |
-| `Mailer__Retention__SweepIntervalHours` | `24` | Retention purge cycle |
-| `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | Heartbeat stale threshold (seconds). Must be `>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` and `> WorkerHeartbeatIntervalSeconds` and `> Sweep:IntervalSeconds` |
-| `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | Worker heartbeat update interval when idle (seconds). Sweep update interval follows `Mailer__Sweep__IntervalSeconds` |
+Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty string, malformed numbers, zero/negative, and values above the max **fail startup** (no implicit clamp). Error messages include the setting key and allowed range; they never include secrets or connection strings. The same numeric rules apply in Development / Testing / Production. With Worker disabled, per-key `Load` range checks still apply (cross-field lease / healthcheck `Validate` remains Worker-enabled only).
+
+| Variable | Default | Allowed range | Description |
+|---|---|---|---|
+| `Mailer__Worker__Enabled` | `true` | `true` / `false` | Enable Worker HostedServices |
+| `Mailer__Worker__BatchClaimSize` | `4` | 1–100 | Claim limit per drain |
+| `Mailer__Worker__MaxSendConcurrency` | `4` | 1–64 | Parallel send count |
+| `Mailer__Worker__SendTimeoutSeconds` | `90` | 1–600 | Per-message send timeout. Raise `MAILER_STOP_GRACE_PERIOD` when increasing |
+| `Mailer__Worker__LeaseDurationSeconds` | `120` | 1–86400 | Processing lease TTL. Must be `> ceil(BatchClaimSize / MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
+| `Mailer__Webhook__MaxAttempts` | `10` | 1–50 | Webhook delivery max attempts |
+| `Mailer__Webhook__InitialDelaySeconds` | `10` | 1–86400 | Webhook retry initial delay (`<= MaxDelaySeconds`) |
+| `Mailer__Webhook__MaxDelaySeconds` | `300` | 1–86400 | Webhook retry max delay |
+| `Mailer__Webhook__BatchClaimSize` | `8` | 1–100 | Webhook claim batch size |
+| `Mailer__Webhook__DeliveryTimeoutSeconds` | `30` | 1–600 | Webhook HTTP timeout |
+| `Mailer__Webhook__LeaseDurationSeconds` | `60` | 1–86400 | Webhook lease TTL. Must be `> DeliveryTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
+| `Mailer__Sweep__IntervalSeconds` | `30` | 1–3600 | Stale sweep interval |
+| `Mailer__Retention__Days` | `90` | 1–3650 | Terminal record retention days (purges `mail_requests` and matching `delivery_events` for the same idempotency key in one transaction) |
+| `Mailer__Retention__SweepIntervalHours` | `24` | 1–168 | Retention purge cycle in hours when `SweepIntervalSeconds` is unset |
+| `Mailer__Retention__SweepIntervalSeconds` | (unset) | 1–604800 when set | Optional; when set, overrides Hours (mainly for tests) |
+| `Mailer__Retention__BatchSize` | `100` | 1–250 | Retention delete batch size (SQLite bind limit) |
+| `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | 1–86400 | Heartbeat stale threshold (seconds). When Worker enabled: `>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` and `> WorkerHeartbeatIntervalSeconds` and `> Sweep:IntervalSeconds` |
+| `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | 1–3600 | Worker heartbeat update interval when idle (seconds). Sweep update interval follows `Mailer__Sweep__IntervalSeconds` |
+
+On startup failure, check the process log exception for the key name and allowed range. The configured value and connection strings are not included in the message.
 
 ### 5.3 Structure & Policy (JSON / `tenants.json`)
 
@@ -430,6 +489,7 @@ Schema: [config/mailer/tenants.schema.json](../config/mailer/tenants.schema.json
 
 - Even with `provider=acs`, tenants with `live_sending=false` **do not send** — they fail with `LIVE_SENDING_DISABLED`.
 - develop / staging should use `false` in principle; production only `true`.
+- When any tenant has effective provider `acs` (including `MAILER_PROVIDER` override) and `live_sending=true`, a missing ACS connection string (`ACS_CONNECTION_STRING_FILE` / `ACS_CONNECTION_STRING`) causes **startup fail-closed**. Configurations with only `live_sending=false` do not require an ACS secret at startup (same policy as offline `scripts/validate-tenant-config.mjs`). Provider / ACS validation is startup-only and is not part of `/readyz`.
 
 ---
 
@@ -467,7 +527,7 @@ See the [backup operations runbook](ops/backup-operations.en.md) for procedures.
 Operational sequence on SIGTERM:
 
 1. Generic Host fires `ApplicationStopping`; Kestrel stops accepting new HTTP requests
-2. `MailRequestWorker` waits up to `SendTimeoutSeconds + FinalizeTimeoutSeconds` for in-flight sends. `WebhookDeliveryWorker` stops new claims and waits up to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` for in-flight webhook deliveries. If the drain window expires with work still active, a warning is logged
+2. `MailRequestWorker` stops new claims and does not start later semaphore-waiting send waves after `stoppingToken` cancels (including when `BatchClaimSize > MaxSendConcurrency`; unstarted Processing rows rely on lease reclaim). Only already-started in-flight sends wait up to `SendTimeoutSeconds + FinalizeTimeoutSeconds`. `WebhookDeliveryWorker` stops new claims and waits up to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` for in-flight webhook deliveries. If the drain window expires with work still active, a warning is logged
 3. After all HostedServices (Worker / Sweep / Retention, etc.) complete `StopAsync`, `MailerWalCheckpointShutdownService.StoppedAsync` runs `PRAGMA wal_checkpoint(TRUNCATE)`
 4. Generic Host fires `ApplicationStopped`
 
@@ -482,7 +542,7 @@ Compose defaults to `stop_grace_period=120s`; app-side `HostOptions.ShutdownTime
 ## 8. Data Ownership
 
 `/app/data/mailer.db` is the **source of truth for send requests** (recipient · subject · body = PII, send attempt history, ACS operation id).
-Backups are taken via the **`db backup` CLI** from the same container. Retention automatically purges terminal records.
+Backups are taken via the **`db backup` CLI** from the same container. Retention automatically purges terminal `mail_requests` and their matching `delivery_events`.
 
 ---
 
@@ -512,3 +572,10 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-22 | Added Worker/Sweep heartbeat freshness check to `/readyz` (#241). Shares the same threshold as CLI healthcheck |
 | 2026-07-22 | Added the "Delivery uniqueness (actual send guarantees)" section (#239). Consistent with #238 finalize evidence / reclaim convergence |
 | 2026-07-22 | Documented `WebhookDeliveryWorker` shutdown drain (stop new claims + wait for in-flight) (#245) |
+| 2026-07-23 | `/readyz` / CLI `healthcheck` require current migration version + checksum (#267) |
+| 2026-07-23 | Consumer cancel is idempotent for already-cancelled; post-commit HTTP failures avoided (#269) |
+| 2026-07-23 | Documented startup validation for effective provider / ACS live-sending; not part of `/readyz` (#272). Mailpit treats post-accept disconnect failure as success, not retry (#275) |
+| 2026-07-23 | `MailRequestWorker` shutdown: later semaphore-waiting send waves do not start (#271) |
+| 2026-07-24 | Documented delivery-result webhook first-wins (first terminal only; no re-notify after Admin manual retry) (#273) |
+| 2026-07-24 | Documented that Worker / Webhook leases use wall-clock absolute time and described clock-jump effects (#276) |
+| 2026-07-24 | Made webhook finalize fencing failures observable via `mail_webhook_finalize_skipped_total` (#328) |

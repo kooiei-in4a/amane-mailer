@@ -148,40 +148,39 @@ var app = builder.Build();
 
 _ = app.Services.GetRequiredService<MailerTenantRegistry>();
 _ = app.Services.GetRequiredService<MailerOptions>();
+_ = app.Services.GetRequiredService<MailerMetricsOptions>();
+// Fail fast on operational numeric misconfiguration (same Load rules with Worker disabled;
+// cross-field Validate for lease/healthcheck remains Worker-enabled only).
+_ = app.Services.GetRequiredService<MailerWorkerOptions>();
+_ = app.Services.GetRequiredService<MailerWebhookOptions>();
+_ = app.Services.GetRequiredService<MailerSweepOptions>();
+_ = app.Services.GetRequiredService<MailerRetentionOptions>();
+_ = app.Services.GetRequiredService<MailerAdminAuditRetentionOptions>();
+_ = app.Services.GetRequiredService<MailerHealthcheckOptions>();
 
 app.MapGet("/healthz", () => MailerJsonResults.Health(true));
 
 app.MapGet("/readyz", async (
-    SqliteConnectionFactory connections,
+    SqlMigrationRunner migrationRunner,
     WorkerServiceStatus serviceStatus,
     MailRequestRepository repository,
     MailerHealthcheckOptions healthcheckOptions,
+    MailerReadinessEvaluator readinessEvaluator,
     IConfiguration configuration,
     CancellationToken cancellationToken) =>
 {
-    try
-    {
-        var canConnect = await connections.CanConnectToMigratedSchemaAsync(cancellationToken);
-        if (!canConnect)
-            return MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
+    var workerEnabled = configuration.GetValue("Mailer:Worker:Enabled", true);
+    var result = await readinessEvaluator.EvaluateAsync(
+        migrationRunner,
+        serviceStatus,
+        repository,
+        healthcheckOptions,
+        workerEnabled,
+        cancellationToken);
 
-        var workerEnabled = configuration.GetValue("Mailer:Worker:Enabled", true);
-        if (workerEnabled)
-        {
-            if (!serviceStatus.IsWorkerRunning || !serviceStatus.IsSweepRunning)
-                return MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
-
-            var heartbeats = await repository.GetHeartbeatsAsync(cancellationToken);
-            if (!WorkerHeartbeatFreshness.AreFresh(heartbeats, healthcheckOptions.MaxHeartbeatStaleness))
-                return MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
-        }
-
-        return MailerJsonResults.Ready(true);
-    }
-    catch
-    {
-        return MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
-    }
+    return result.IsReady
+        ? MailerJsonResults.Ready(true)
+        : MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
 });
 
 app.MapGet("/metrics", MailerMetricsEndpoint.HandleAsync);

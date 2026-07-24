@@ -1,3 +1,5 @@
+using Amane.Mailer.Data.Sqlite.Models;
+
 namespace Amane.Mailer.Data.Sqlite;
 
 public enum ManualMailRequestMutationStatus
@@ -12,4 +14,5 @@ public sealed record ManualMailRequestMutationResult(ManualMailRequestMutationSt
 
 public sealed record ConsumerMailRequestMutationResult(
     ManualMailRequestMutationStatus Status,
-    Guid? InternalRequestId = null);
+    Guid? InternalRequestId = null,
+    MailRequestStatusRow? StatusSnapshot = null);

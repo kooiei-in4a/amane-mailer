@@ -58,12 +58,36 @@ Reject requests when:
 ## Idempotency contract
 
 Mailer enqueues at most one delivery-result event per
-`(tenant_id, source_service, mail_request_id)`. Retries reuse the same `event_id` and body.
-Consumers must treat duplicate POSTs with the same `event_id` as success.
+`(tenant_id, source_service, mail_request_id)` **while the corresponding mail request row
+exists** (**first-wins**). The first terminal state that reaches the outbox
+(`failed`, `dead_lettered`, `cancelled`, or `delivered`) is the only event for that
+idempotency key. Later terminal transitions on the same row do **not** insert or replace
+the event. Webhook HTTP retries reuse the same `event_id` and body. Consumers must treat
+duplicate POSTs with the same `event_id` as success.
+
+### Admin manual retry
+
+Admin manual retry may move `Failed` / `DeadLettered` back to `Queued` and later reach a
+different terminal state (for example `delivered`). Mailer does **not** enqueue a second
+delivery-result webhook for that later state. `GET /internal/mail-requests/{mail_request_id}`
+can therefore show `delivered` while the Consumer still holds only the earlier webhook
+(for example `failed`). Status GET is authoritative for the current mail-request state;
+the webhook is a one-shot first-terminal notification, not a live mirror of status.
+
+Per-delivery-cycle webhook re-notification (latest terminal always pushed) is **out of
+scope** for the current Consumer contract; that would need a separate design / ADR.
+
+When request retention purges a terminal `mail_requests` row, Mailer deletes the matching
+`delivery_events` row in the same transaction. After that purge, a Consumer may reuse the same
+`mail_request_id` idempotency key for a new request; Mailer will enqueue a new delivery-result
+event with a new `event_id`. Consumer deduplication by `event_id` still applies across
+webhook retries for the same logical delivery, but not across separate mail-request
+generations after retention.
 
 A periodic reconciliation sweep also scans terminal `mail_requests` that are missing a
 corresponding `delivery_events` row and enqueues them, covering crash/retry gaps between
-mail finalize and webhook enqueue.
+mail finalize and webhook enqueue. Reconciliation never overwrites an existing event
+(first-wins); it only inserts when the outbox row is absent.
 
 ## Example verification (pseudocode)
 
@@ -80,5 +104,15 @@ assert not already_processed(header("X-Mailer-Event-Id"))
 
 - Admin UI: `/admin/webhook-dead-letters`
 - CLI: `db stats` outputs `webhook_events_pending` and `webhook_events_dead_lettered`
+- Metrics: `mail_webhook_finalize_skipped_total` counts webhook `FinalizeAsync` failures
+  caused by strict lease fencing (expired `lock_expires_at` or superseded lock token).
+  This covers normal delivery outcomes and terminal failure paths such as missing
+  webhook configuration/secret or invalid stored payload. It does **not** change the
+  at-least-once POST contract: after a skip, Mailer may reclaim and re-POST the same
+  `event_id`, so consumers must keep deduplicating by `event_id`. When the counter
+  rises, inspect structured Warning logs (`EventId`, `TenantId`, `MailRequestId`,
+  `AttemptNumber`, `FinalizeOutcome`, `FinalizeSkipReason`) and the webhook backlog
+  gauges. See [metrics-and-alerts.en.md](../ops/metrics-and-alerts.en.md).
 
-Webhook URLs and secrets are never written to audit logs or Admin HTML.
+Webhook URLs and secrets are never written to audit logs, Admin HTML, metrics labels,
+or finalize-skip Warning logs. Payload bodies and recipient PII are also excluded.

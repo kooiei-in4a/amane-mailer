@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Amane Mailer Service API
-  version: "0.9.1"
+  version: "0.9.2"
   description: >-
     汎用メール送信マイクロサービス。送信依頼を受け付けて永続化し、
     バックグラウンド Worker が ACS (Azure Communication Services) または Mailpit
@@ -17,6 +17,8 @@ info:
     - 配送結果 Webhook: テナント設定で HTTPS エンドポイントを登録すると、
       `delivered` / `failed` / `dead_lettered` / `cancelled` 時に
       `MailDeliveryEventPayload` を HMAC 署名付き POST で Push する。
+      同一 mail request 世代では **first-wins**（最初の終端状態のみ enqueue。
+      Admin 手動再送後の別終端は webhook 再送しない）。
       検証手順は docs/consumer/webhook-verification.md を参照。
   contact:
     name: Amane Mailer
@@ -123,7 +125,9 @@ paths:
       summary: 送信前のメール依頼をキャンセルする
       description: >-
         `queued` かつ未 claim（送信前）の依頼のみキャンセルできる。
-        成功時は `cancelled` ステータスを返す。active `processing` / `delivered` 等は 422 INVALID_STATE。
+        成功時は `cancelled` ステータスを返す。既に `cancelled` の同一キーへの再 cancel は冪等に 200 を返す。
+        active `processing` / `delivered` 等は 422 INVALID_STATE。
+        webhook enqueue は best-effort（失敗しても cancel HTTP 成功を崩さない。欠落は reconcile で補完し得る）。
         他 tenant の ID は存在有無を漏らさず 404。
       operationId: cancelMailRequest
       security:
@@ -409,13 +413,14 @@ paths:
   /readyz:
     get:
       tags: [health]
-      summary: 受付可否（readiness、DB schema + Worker/Sweep 稼働・heartbeat 鮮度）
+      summary: 受付可否（readiness、現行 migration schema + Worker/Sweep 稼働・heartbeat 鮮度）
       operationId: readyz
       security: []
       responses:
         '200':
           description: >-
-            受付可能（DB schema OK。Worker 有効時は Worker/Sweep 両サービス稼働中かつ
+            受付可能（現行バイナリが必要とする migration が applied かつ checksum 一致。
+            Worker 有効時は Worker/Sweep 両サービス稼働中かつ
             heartbeat が Mailer:Healthcheck:MaxHeartbeatStalenessSeconds 以内）
           content:
             application/json:
@@ -425,7 +430,8 @@ paths:
                   ready: { type: boolean, const: true }
         '503':
           description: >-
-            DB 未接続・schema 未適用、Worker/Sweep BackgroundService が停止中、
+            DB 未接続・現行 schema 未適用 / migration checksum 不一致、
+            Worker/Sweep BackgroundService が停止中、
             または worker/sweep heartbeat が閾値を超えて古い
           content:
             application/json:
@@ -611,7 +617,7 @@ components:
           description: 配送成功時刻（UTC）。status が delivered の場合のみ。
         last_error_code:
           type: [string, "null"]
-          description: 直近試行の sanitized error code（raw provider message は含めない）。
+          description: 直近試行の stable delivery error code（`MailDeliveryErrorCodes`。例: ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN。raw provider message / exception 型名は含めない）。
 
     MailRequestRescheduleRequest:
       type: object
@@ -629,7 +635,9 @@ components:
       additionalProperties: false
       description: >-
         配送結果 Webhook の JSON 本文。recipient / subject / body 等の PII は含まない。
-        同一 mail request に対して 1 イベントのみ enqueue される。Consumer は event_id で重複排除する。
+        同一 mail request 世代に対して高々 1 イベントのみ enqueue される（first-wins:
+        最初の終端状態が残り、Admin 手動再送後の別終端では再 enqueue / 更新しない）。
+        Consumer は event_id で重複排除する。最新状態は status GET を正とする。
       required:
         - event_id
         - event_type
@@ -668,7 +676,7 @@ components:
           minimum: 0
         last_error_code:
           type: [string, "null"]
-          description: 最新 attempt の error_code（PII を含まない分類コード）。
+          description: 最新 attempt の stable delivery error code（`MailDeliveryErrorCodes`。PII / exception 型名を含まない分類コード）。
 
     Error:
       type: object

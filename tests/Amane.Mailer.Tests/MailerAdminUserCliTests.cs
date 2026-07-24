@@ -41,6 +41,47 @@ public sealed class MailerAdminUserCliTests
     }
 
     [Fact]
+    public async Task Admin_user_create_command_rejects_legacy_weak_password_hash()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = CreateTempRoot();
+        var configuration = BuildConfiguration(root);
+        var weakHash = string.Join(
+            ':',
+            "pbkdf2",
+            "sha256",
+            "100000",
+            Convert.ToBase64String(new byte[16]),
+            Convert.ToBase64String(new byte[32]));
+        var error = new StringWriter();
+
+        try
+        {
+            await MigrateAsync(configuration, ct);
+
+            var exitCode = await MailerCliHost.RunAdminUserCreateAsync(
+                configuration,
+                [
+                    "admin", "user", "create",
+                    "--username", "weak-hash-admin",
+                    "--password-hash", weakHash,
+                    "--tenant-id", TenantA.ToString("D"),
+                ],
+                new StringWriter(),
+                error,
+                ct);
+
+            Assert.Equal(AdminUserCreateCommand.UsageErrorExitCode, exitCode);
+            Assert.Contains("--password-hash", error.ToString(), StringComparison.Ordinal);
+            Assert.Contains("legacy weaker hashes are rejected", error.ToString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [Fact]
     public async Task Admin_user_create_command_creates_scoped_user()
     {
         var ct = TestContext.Current.CancellationToken;

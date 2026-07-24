@@ -5,6 +5,8 @@ namespace Amane.Mailer.Contracts.MailRequests;
 /// <summary>
 /// PII-free delivery result event pushed to tenant-configured webhooks.
 /// Shared with the future mail request status query API (#216).
+/// At most one event is enqueued per mail-request generation (first-wins);
+/// Admin manual retry that reaches a later terminal does not emit a second webhook.
 /// </summary>
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record MailDeliveryEventPayload

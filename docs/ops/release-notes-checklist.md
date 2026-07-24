@@ -42,8 +42,8 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 - upgrade / migration 前に SQLite DB と tenant config の backup を取得し、
   production では restore 手順も確認する。
 - GHCR image publish 時は `publish-image.yml` の release-critical validation
-  （restore / build / test、OpenAPI validation、contract drift、version 整合性）が
-  image push 前に通過していることを確認する。
+  （restore / NuGet vulnerability audit / build / test、OpenAPI validation、
+  contract drift、version 整合性）が image push 前に通過していることを確認する。
 - ACS live sending は explicit config が必要。`MAILER_PROVIDER=acs`、
   Staging/Production では `admin provider register-acs` で登録した
   `ACS_CONNECTION_STRING_FILE`（local/drill のみ bare `ACS_CONNECTION_STRING`）、

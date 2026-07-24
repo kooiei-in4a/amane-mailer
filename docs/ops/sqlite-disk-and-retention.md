@@ -41,9 +41,10 @@ HTTP 上は `STORAGE_FULL`（503, `retryable: false`）として busy/locked 由
 
 1. **volume の空き容量を確保する**（不要ファイル削除、volume 拡張）
 2. **retention を確認・必要なら短縮する**
-   - mail request retention: `Mailer:Retention:*` / 関連 env
-   - admin audit retention: `MAILER_ADMIN_AUDIT_RETENTION_DAYS`（既定 180 日）
+   - mail request retention: `Mailer:Retention:*` / 関連 env（終端 `mail_requests` と同一 `(tenant_id, source_service, mail_request_id)` の `delivery_events` を同時パージ。webhook 未配送 pending を含む status に関わらず削除する）。`Days` / `BatchSize` 等は strict 範囲検証（#329）。誤設定は起動失敗
+   - admin audit retention: `MAILER_ADMIN_AUDIT_RETENTION_DAYS`（既定 180 日、strict 範囲）
    - 明示 purge: `db admin-audit purge --older-than-days <days>`
+   - 注意: この同時パージは今後の retention 実行にのみ効く。fix 適用前に既に孤立した `delivery_events`（対応する `mail_requests` が無い行）は自動では消えない。必要ならメンテウィンドウで手動削除する
 3. **WAL を縮退させる**（運用ウィンドウで）
    - プロセス停止時の checkpoint（`MailerWalCheckpointShutdownService`）後にサイズを再確認
    - 運用向け既定コマンド: `db checkpoint`（内部で `PRAGMA wal_checkpoint(TRUNCATE)`）
@@ -88,6 +89,12 @@ groups:
 
 - `mail_queue_oldest_age_seconds` だけでは原因を断定できない。必ず `STORAGE_FULL` ログ / HTTP code と volume 空き容量を突き合わせる。
 - Consumer SDK は `retryable: true` を自動再試行する。`STORAGE_FULL` は `retryable: false` のため、disk 復旧までは受付失敗が継続する想定。
+
+## Large DB 上の retention / metrics 計測（#288）
+
+seeded large DB での metrics aggregate・retention batch・Admin query の経過時間と
+EXPLAIN は [large-db-query-measurement.md](large-db-query-measurement.md) を参照。
+retention の `completed_at` 順向け index 候補もそこに記載（#288 では計測のみ）。
 
 ## セキュリティ
 

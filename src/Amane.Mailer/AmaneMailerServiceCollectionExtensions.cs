@@ -22,7 +22,12 @@ public static class AmaneMailerServiceCollectionExtensions
             MailerTenantRegistry.Load(provider.GetRequiredService<IConfiguration>()));
 
         services.AddSingleton(provider =>
-            MailerOptions.Load(provider.GetRequiredService<IConfiguration>()));
+        {
+            var options = MailerOptions.Load(provider.GetRequiredService<IConfiguration>());
+            var tenants = provider.GetRequiredService<MailerTenantRegistry>();
+            options.ValidateEffectiveProviders(tenants.ListTenants());
+            return options;
+        });
 
         services.AddSingleton(provider =>
         {
@@ -93,9 +98,14 @@ public static class AmaneMailerServiceCollectionExtensions
         });
 
         services.AddSingleton(provider =>
-            MailerMetricsOptions.Load(provider.GetRequiredService<IConfiguration>()));
+        {
+            var options = MailerMetricsOptions.Load(provider.GetRequiredService<IConfiguration>());
+            options.Validate(provider.GetRequiredService<IHostEnvironment>().EnvironmentName);
+            return options;
+        });
 
         services.AddSingleton<MailerRuntimeMetrics>();
+        services.AddSingleton<MailerReadinessEvaluator>();
 
         services.AddSingleton<SqliteConnectionFactory>();
         services.AddSingleton<MailerDbStatsReader>();
