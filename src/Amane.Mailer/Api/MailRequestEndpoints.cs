@@ -270,12 +270,9 @@ public static class MailRequestEndpoints
             }
         }
 
-        return await GetStatusResultAsync(
-            repository,
-            tenantId,
-            sourceService,
-            parsedMailRequestId,
-            cancellationToken);
+        // Prefer the committed snapshot over a post-commit re-read so non-transient re-read
+        // faults cannot turn a successful reschedule into HTTP 5xx (#327).
+        return StatusOk(result.StatusSnapshot!);
     }
 
     private static async Task<IResult> CreateMailRequestAsync(
