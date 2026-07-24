@@ -5,7 +5,11 @@ using Microsoft.Extensions.Configuration;
 
 namespace Amane.Mailer.Tests;
 
-public sealed class SqliteConnectionFactoryOwnershipTests
+/// <summary>
+/// Regression suite for #344 / #355 — SqliteConnection ownership stays with the
+/// factory until a successful open/PRAGMA return; failures dispose the connection.
+/// </summary>
+public sealed class SqliteConnectionOwnershipTests
 {
     [Fact]
     public async Task OpenConnectionAsync_open_failure_disposes_connection_and_preserves_exception()
