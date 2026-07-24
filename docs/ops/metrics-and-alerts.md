@@ -11,21 +11,24 @@ Amane Mailer の `/metrics` エンドポイントは、キュー滞留・配送�
 | Path | `GET /metrics` |
 | Content-Type | `text/plain; version=0.0.4; charset=utf-8` |
 | 既定 | 有効（`Mailer:Metrics:Enabled=true`） |
-| 認証 | 既定はなし（内部ネットワーク分離を前提）。`Mailer:Metrics:BearerToken` 設定時は `Authorization: Bearer <token>` 必須 |
-| 無効化 | `Mailer:Metrics:Enabled=false` → **404** |
+| 認証 | **Production / Staging 等（非 Development）:** `Mailer:Metrics:Enabled=true` のとき `Mailer:Metrics:BearerToken`（または `MAILER_METRICS_BEARER_TOKEN`）が **起動時必須**。未設定は startup fail-closed。リクエスト時は `Authorization: Bearer <token>` 必須。<br>**Development / local:** bearer は任意。未設定なら anonymous 可（**内部ネットワーク分離前提**）。設定時は同様に Bearer 必須 |
+| 無効化 | `Mailer:Metrics:Enabled=false` → **404**（非 Development でも bearer 不要） |
 | DB 未 migrate | **503** |
 
 ### 設定例
 
 ```bash
-# 任意: scrape 用 bearer
+# Development / local: 任意（内部 NW 前提で anonymous scrape 可）
+# export MAILER_METRICS_BEARER_TOKEN="replace-with-scrape-token"
+
+# Production / Staging: Enabled=true なら必須（未設定は起動失敗）
 export MAILER_METRICS_BEARER_TOKEN="replace-with-scrape-token"
 
-# 無効化する場合
+# scrape しない場合は無効化（非 Development でも bearer 不要）
 export Mailer__Metrics__Enabled=false
 ```
 
-Compose / systemd では Mailer HTTP ポートを **内部ネットワークのみ** に publish し、Prometheus は同ネットワークまたは VPN から scrape してください。`/healthz`・`/readyz` と同様、インターネット直接公開は想定していません。
+Compose / systemd では Mailer HTTP ポートを **内部ネットワークのみ** に publish し、Prometheus は同ネットワークまたは VPN から scrape してください。`/healthz`・`/readyz` と同様、インターネット直接公開は想定していません。Staging/Production の `infra/deploy/compose.yml` は `MAILER_METRICS_BEARER_TOKEN` を渡します。トークン未設定のまま metrics を有効にするとプロセスは起動しません。
 
 ## 公開メトリクス
 
@@ -141,18 +144,28 @@ SQLite disk 枯渇（HTTP `STORAGE_FULL`）の早期シグナルにもなりま�
 
 ## セキュリティ注意
 
-- `/metrics` を公開インターネットに直接露出しない。
+- `/metrics` を公開インターネットに直接露出しない。内部ネットワーク境界は Development でも必須前提。
+- 非 Development ではアプリが scrape bearer を起動時に強制する。ネットワーク分離の代替にはならない。
 - レスポンスに recipient / subject / mail_request_id / tenant_id は含めない。
 - bearer token は scrape 設定と同じ secret 管理境界でローテートする。
 - Admin UI（`/admin/ops`）とは別経路。Admin は session 認証 + tenant scope、metrics は ops 向け service-wide。
 
 ## ローカル確認
 
+`ASPNETCORE_ENVIRONMENT=Development`（例: `dotnet run`）では bearer 未設定でも可:
+
 ```bash
 curl -fsS http://127.0.0.1:5280/metrics | head
 ```
 
-bearer 設定時:
+local Docker compose（`ASPNETCORE_ENVIRONMENT=Production`）は既定で
+`MAILER_METRICS_BEARER_TOKEN=local-metrics-scrape-token` を渡します:
+
+```bash
+curl -fsS -H "Authorization: Bearer local-metrics-scrape-token" http://127.0.0.1:5280/metrics | head
+```
+
+任意の bearer 設定時:
 
 ```bash
 curl -fsS -H "Authorization: Bearer replace-with-scrape-token" http://127.0.0.1:5280/metrics | head

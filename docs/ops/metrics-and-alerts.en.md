@@ -16,23 +16,28 @@ aggregation. Counters and histograms are held in-memory for the process lifetime
 | Path | `GET /metrics` |
 | Content-Type | `text/plain; version=0.0.4; charset=utf-8` |
 | Default | Enabled (`Mailer:Metrics:Enabled=true`) |
-| Auth | None by default (assumes internal-network isolation). When `Mailer:Metrics:BearerToken` is set, `Authorization: Bearer <token>` is required |
-| Disable | `Mailer:Metrics:Enabled=false` → **404** |
+| Auth | **Production / Staging (non-Development):** when `Mailer:Metrics:Enabled=true`, `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`) is **required at startup** (fail-closed if missing). Requests need `Authorization: Bearer <token>`.<br>**Development / local:** bearer is optional. When unset, anonymous scrape is allowed (**internal-network isolation assumed**). When set, Bearer is required |
+| Disable | `Mailer:Metrics:Enabled=false` → **404** (no bearer required even outside Development) |
 | DB not migrated | **503** |
 
 ### Configuration examples
 
 ```bash
-# Optional: scrape bearer
+# Development / local: optional (anonymous scrape OK on an internal network)
+# export MAILER_METRICS_BEARER_TOKEN="replace-with-scrape-token"
+
+# Production / Staging: required when Enabled=true (startup fails if unset)
 export MAILER_METRICS_BEARER_TOKEN="replace-with-scrape-token"
 
-# To disable
+# Disable when scrape is unused (no bearer needed outside Development)
 export Mailer__Metrics__Enabled=false
 ```
 
 Publish the Mailer HTTP port on an **internal network only** (Compose / systemd).
 Scrape from the same network or VPN. Like `/healthz` and `/readyz`, direct
-internet exposure is not intended.
+internet exposure is not intended. Staging/Production `infra/deploy/compose.yml`
+passes `MAILER_METRICS_BEARER_TOKEN`. Leaving it empty while metrics stay enabled
+prevents the process from starting.
 
 ## Published metrics
 
@@ -166,7 +171,10 @@ threshold example, see
 
 ## Security notes
 
-- Do not expose `/metrics` directly to the public internet.
+- Do not expose `/metrics` directly to the public internet. Internal-network
+  isolation remains required even in Development.
+- Outside Development the app enforces a scrape bearer at startup. That does not
+  replace network isolation.
 - Responses must not include recipient / subject / mail_request_id / tenant_id.
 - Rotate bearer tokens in the same secret boundary as scrape config.
 - Separate path from Admin UI (`/admin/ops`). Admin uses session auth + tenant
@@ -174,11 +182,21 @@ threshold example, see
 
 ## Local check
 
+With `ASPNETCORE_ENVIRONMENT=Development` (for example `dotnet run`), bearer may
+be unset:
+
 ```bash
 curl -fsS http://127.0.0.1:5280/metrics | head
 ```
 
-With bearer:
+Local Docker compose uses `ASPNETCORE_ENVIRONMENT=Production` and defaults
+`MAILER_METRICS_BEARER_TOKEN=local-metrics-scrape-token`:
+
+```bash
+curl -fsS -H "Authorization: Bearer local-metrics-scrape-token" http://127.0.0.1:5280/metrics | head
+```
+
+With a custom bearer:
 
 ```bash
 curl -fsS -H "Authorization: Bearer replace-with-scrape-token" http://127.0.0.1:5280/metrics | head

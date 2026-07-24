@@ -15,6 +15,10 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ### Changed
 
+- Require `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`) at
+  startup when metrics stay enabled outside Development (#283). Development /
+  local keep optional bearer under internal-network isolation; disable metrics
+  with `Mailer:Metrics:Enabled=false` when scrape is unused.
 - Include structured `RequestId` (internal id) and `TenantId` on Worker and
   ExpiredProcessingReaper request logs so the same `mail_request_id` can be
   distinguished across tenants without logging mail-payload PII (#285).
@@ -36,6 +40,8 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ### Documentation
 
+- Document Production metrics bearer startup enforcement and Development /
+  local optional-bearer + internal-network policy (#283).
 - Document Admin boolean (`true`/`false`) and positive-integer allowed values
   in the local Mailer Docker runbooks (#280).
 - Clarify delivery-result webhook first-wins: only the first terminal state is

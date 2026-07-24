@@ -48,7 +48,7 @@ The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contra
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | Change schedule (`queued` and `attempt_count=0`) | Tenant Bearer |
 | `GET` | `/healthz` | Liveness check | None |
 | `GET` | `/readyz` | Readiness (current migration schema + Worker/Sweep running + heartbeat freshness; provider / ACS config checks are startup-only and not included) | None |
-| `GET` | `/metrics` | Prometheus metrics (ops; see [metrics-and-alerts.en.md](ops/metrics-and-alerts.en.md)) | None by default (optional bearer) |
+| `GET` | `/metrics` | Prometheus metrics (ops; see [metrics-and-alerts.en.md](ops/metrics-and-alerts.en.md)) | Development: optional bearer (internal NW assumed). Non-Development: bearer required when Enabled (startup-enforced) |
 
 ### Contract Sync and Drift Review
 

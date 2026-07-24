@@ -48,7 +48,7 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | 予約時刻変更（`queued` かつ `attempt_count=0`） | テナント Bearer |
 | `GET` | `/healthz` | 生存確認（liveness） | なし |
 | `GET` | `/readyz` | 受付可否（現行 migration schema + Worker/Sweep 稼働・heartbeat 鮮度。provider / ACS 設定検証は含まない＝startup-only） | なし |
-| `GET` | `/metrics` | Prometheus メトリクス（ops。詳細は [metrics-and-alerts.md](ops/metrics-and-alerts.md)） | 既定なし（optional bearer） |
+| `GET` | `/metrics` | Prometheus メトリクス（ops。詳細は [metrics-and-alerts.md](ops/metrics-and-alerts.md)） | Development: optional bearer（内部 NW 前提）。非 Development: Enabled 時 bearer 必須（startup 強制） |
 
 ### 契約同期と drift review
 
