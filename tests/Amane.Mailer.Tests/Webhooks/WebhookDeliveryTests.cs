@@ -277,18 +277,20 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
         CancellationToken cancellationToken,
         int maxAttempts = 100)
     {
-        for (var attempt = 0; attempt < maxAttempts; attempt++)
+        // maxAttempts retained for call-site compatibility; timeout derives from prior 100ms * attempts budget.
+        var timeout = TimeSpan.FromMilliseconds(Math.Max(100, maxAttempts) * 100L);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (await ReadMailStatusAsync(mailRequestId, cancellationToken) == expectedStatus)
-            {
-                return;
-            }
-
-            await Task.Delay(100, cancellationToken);
+            await ConditionWait.UntilAsync(
+                async ct => await ReadMailStatusAsync(mailRequestId, ct) == expectedStatus,
+                timeout,
+                cancellationToken,
+                wake: fixture.DeliveryProvider.Activity);
         }
-
-        throw new TimeoutException($"Mail request {mailRequestId:D} did not reach {expectedStatus} in time.");
+        catch (TimeoutException)
+        {
+            throw new TimeoutException($"Mail request {mailRequestId:D} did not reach {expectedStatus} in time.");
+        }
     }
 
     private async Task DeleteDeliveryEventForRequestAsync(Guid mailRequestId, CancellationToken cancellationToken)
@@ -422,46 +424,41 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
 
     private async Task WaitUntilMailDeliveredAsync(Guid mailRequestId, CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt < 100; attempt++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var state = await ReadMailStatusAsync(mailRequestId, cancellationToken);
-            if (state == MailRequestState.Delivered)
-            {
-                return;
-            }
-
-            await Task.Delay(100, cancellationToken);
-        }
-
-        throw new TimeoutException($"Mail request {mailRequestId:D} was not delivered in time.");
+        await WaitUntilMailStatusAsync(mailRequestId, MailRequestState.Delivered, cancellationToken);
     }
 
     private async Task WaitUntilWebhookDeadLetteredAsync(Guid mailRequestId, CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt < 200; attempt++)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await using var connection = new SqliteConnection(fixture.ConnectionString);
-            await connection.OpenAsync(cancellationToken);
-            await using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT status
-                FROM delivery_events
-                WHERE mail_request_id = @MailRequestId
-                LIMIT 1;
-                """;
-            command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
-            var scalar = await command.ExecuteScalarAsync(cancellationToken);
-            if (scalar is long status && status == (long)DeliveryEventState.DeadLettered)
-            {
-                return;
-            }
-
-            await Task.Delay(100, cancellationToken);
+            await ConditionWait.UntilAsync(
+                async ct => await ReadWebhookDeliveryStatusAsync(mailRequestId, ct) == DeliveryEventState.DeadLettered,
+                TimeSpan.FromSeconds(20),
+                cancellationToken,
+                wake: fixture.WebhookHandler.Activity);
         }
+        catch (TimeoutException)
+        {
+            throw new TimeoutException($"Webhook for mail request {mailRequestId:D} was not dead-lettered in time.");
+        }
+    }
 
-        throw new TimeoutException($"Webhook for mail request {mailRequestId:D} was not dead-lettered in time.");
+    private async Task<DeliveryEventState?> ReadWebhookDeliveryStatusAsync(
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT status
+            FROM delivery_events
+            WHERE mail_request_id = @MailRequestId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        var scalar = await command.ExecuteScalarAsync(cancellationToken);
+        return scalar is long status ? (DeliveryEventState)status : null;
     }
 
     private async Task<MailRequestState> ReadMailStatusAsync(
@@ -733,6 +730,7 @@ internal sealed class AdminLocalAddressStartupFilter(IPAddress localAddress) : I
 
 public sealed class RecordingWebhookHandler
 {
+    private readonly AsyncPulse _activity = new();
     private TaskCompletionSource<RecordedWebhookDelivery> _deliveryTcs =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -740,11 +738,17 @@ public sealed class RecordingWebhookHandler
 
     public int FailuresBeforeSuccess { get; set; }
 
+    /// <summary>
+    /// Pulsed on every webhook HTTP attempt (success or failure).
+    /// </summary>
+    internal AsyncPulse Activity => _activity;
+
     public void Reset()
     {
         AttemptCount = 0;
         FailuresBeforeSuccess = 0;
         _deliveryTcs = new TaskCompletionSource<RecordedWebhookDelivery>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _activity.Pulse();
     }
 
     public Task<RecordedWebhookDelivery> WaitForSuccessfulDeliveryAsync(
@@ -756,9 +760,20 @@ public sealed class RecordingWebhookHandler
         return _deliveryTcs.Task.WaitAsync(linked.Token);
     }
 
+    public Task WaitUntilAttemptCountAsync(
+        int minCount,
+        TimeSpan timeout,
+        CancellationToken cancellationToken) =>
+        ConditionWait.UntilAsync(
+            _ => Task.FromResult(AttemptCount >= minCount),
+            timeout,
+            cancellationToken,
+            wake: _activity);
+
     public HttpResponseMessage Handle(HttpRequestMessage request)
     {
         AttemptCount++;
+        _activity.Pulse();
         var body = request.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty;
 
         var payload = JsonSerializer.Deserialize(body, MailerContractsJsonContext.Default.MailDeliveryEventPayload)

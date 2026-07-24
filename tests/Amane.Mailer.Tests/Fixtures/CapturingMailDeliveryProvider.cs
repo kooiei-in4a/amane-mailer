@@ -10,12 +10,24 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
     private readonly ConcurrentQueue<CapturedMail> _sent = new();
     private readonly ConcurrentQueue<MailDeliveryResult> _results = new();
     private readonly object _holdGate = new();
+    private readonly AsyncPulse _activity = new();
+    private int _sendStartedCount;
+    private int _sendCompletedCount;
     private TaskCompletionSource? _holdCompletion;
     private bool _ignoreHoldCancellation;
     private bool _holdConsumed;
     private TimeSpan? _sendDelay;
 
     public IReadOnlyCollection<CapturedMail> Sent => _sent.ToArray();
+
+    /// <summary>
+    /// Pulsed when a send starts or completes. Used as a wake hint for DB status waits.
+    /// </summary>
+    internal AsyncPulse Activity => _activity;
+
+    public int SendStartedCount => Volatile.Read(ref _sendStartedCount);
+
+    public int SendCompletedCount => Volatile.Read(ref _sendCompletedCount);
 
     public void Reset()
     {
@@ -33,7 +45,11 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
             _ignoreHoldCancellation = false;
             _holdConsumed = false;
             _sendDelay = null;
+            Volatile.Write(ref _sendStartedCount, 0);
+            Volatile.Write(ref _sendCompletedCount, 0);
         }
+
+        _activity.Pulse();
     }
 
     public void HoldNextSend()
@@ -65,6 +81,8 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
             _ignoreHoldCancellation = false;
             _holdConsumed = false;
         }
+
+        _activity.Pulse();
     }
 
     public void SetSendDelay(TimeSpan delay)
@@ -79,6 +97,26 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
     {
         _results.Enqueue(result);
     }
+
+    public Task WaitUntilSendStartedAsync(
+        int minCount,
+        TimeSpan timeout,
+        CancellationToken cancellationToken) =>
+        ConditionWait.UntilAsync(
+            _ => Task.FromResult(SendStartedCount >= minCount),
+            timeout,
+            cancellationToken,
+            wake: _activity);
+
+    public Task WaitUntilSendCompletedAsync(
+        int minCount,
+        TimeSpan timeout,
+        CancellationToken cancellationToken) =>
+        ConditionWait.UntilAsync(
+            _ => Task.FromResult(SendCompletedCount >= minCount),
+            timeout,
+            cancellationToken,
+            wake: _activity);
 
     public async Task<MailDeliveryResult> SendAsync(
         MailSendJob job,
@@ -101,27 +139,38 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
             delay = _sendDelay;
         }
 
-        if (hold is not null)
-        {
-            if (ignoreHoldCancellation)
-            {
-                await hold.Task;
-            }
-            else
-            {
-                await hold.Task.WaitAsync(cancellationToken);
-            }
-        }
+        Interlocked.Increment(ref _sendStartedCount);
+        _activity.Pulse();
 
-        if (delay is not null)
+        try
         {
-            await Task.Delay(delay.Value, cancellationToken);
-        }
+            if (hold is not null)
+            {
+                if (ignoreHoldCancellation)
+                {
+                    await hold.Task;
+                }
+                else
+                {
+                    await hold.Task.WaitAsync(cancellationToken);
+                }
+            }
 
-        _sent.Enqueue(new CapturedMail(job.MailRequestId, job.RecipientEmail, job.Subject, provider));
-        return _results.TryDequeue(out var result)
-            ? result
-            : MailDeliveryResult.Success($"stub-{job.MailRequestId:N}");
+            if (delay is not null)
+            {
+                await Task.Delay(delay.Value, cancellationToken);
+            }
+
+            _sent.Enqueue(new CapturedMail(job.MailRequestId, job.RecipientEmail, job.Subject, provider));
+            return _results.TryDequeue(out var result)
+                ? result
+                : MailDeliveryResult.Success($"stub-{job.MailRequestId:N}");
+        }
+        finally
+        {
+            Interlocked.Increment(ref _sendCompletedCount);
+            _activity.Pulse();
+        }
     }
 }
 
