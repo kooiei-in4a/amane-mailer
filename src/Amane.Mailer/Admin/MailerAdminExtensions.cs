@@ -101,14 +101,29 @@ public static class MailerAdminExtensions
         return services;
     }
 
+    /// <summary>
+    /// Synchronizes Admin credentials and tenant-scope readiness before Admin routes are mapped.
+    /// No-ops when Admin is disabled. Must be awaited before <see cref="MapAdminIfEnabled"/>.
+    /// </summary>
+    public static async Task EnsureAdminReadyAsync(
+        this WebApplication app,
+        CancellationToken cancellationToken = default)
+    {
+        var options = app.Services.GetRequiredService<MailerAdminOptions>();
+        if (!options.Enabled)
+            return;
+
+        var credentialSync = app.Services.GetRequiredService<AdminCredentialSync>();
+        await credentialSync.EnsureSyncedAsync(cancellationToken);
+    }
+
     public static WebApplication MapAdminIfEnabled(this WebApplication app)
     {
         var options = app.Services.GetRequiredService<MailerAdminOptions>();
         if (!options.Enabled)
             return app;
 
-        var credentialSync = app.Services.GetRequiredService<AdminCredentialSync>();
-        credentialSync.EnsureSyncedAsync(CancellationToken.None).GetAwaiter().GetResult();
+        // Credential sync / tenant-scope readiness run in EnsureAdminReadyAsync before this mapping (#350).
 
         app.UseAuthentication();
         app.UseAuthorization();

@@ -186,9 +186,10 @@ app.MapGet("/readyz", async (
 app.MapGet("/metrics", MailerMetricsEndpoint.HandleAsync);
 
 app.MapMailRequestEndpoints();
+await app.EnsureAdminReadyAsync(app.Lifetime.ApplicationStopping);
 app.MapAdminIfEnabled();
 
-app.Run();
+await app.RunAsync();
 
 return 0;
 
