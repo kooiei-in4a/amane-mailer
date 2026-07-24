@@ -328,10 +328,10 @@ public sealed class MailerAdminTenantScopeTests(MailerAdminFixture fixture)
                     ["MAIL_SERVICE_TOKEN_2"] = "second-test-token",
                 });
 
-            var exception = Assert.Throws<InvalidOperationException>(() =>
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             {
                 using var client = CreateClient(factory);
-                using var response = client.GetAsync("/admin/login", ct).GetAwaiter().GetResult();
+                using var response = await client.GetAsync("/admin/login", ct);
             });
 
             Assert.Contains("multiple tenants", exception.ToString(), StringComparison.Ordinal);
