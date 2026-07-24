@@ -71,6 +71,7 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         Assert.Contains("mail_queue_oldest_age_seconds", body, StringComparison.Ordinal);
         Assert.Contains("mail_retries_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_finalize_skipped_total", body, StringComparison.Ordinal);
+        Assert.Contains("mail_webhook_finalize_skipped_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_dead_letters_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_webhook_events_pending", body, StringComparison.Ordinal);
         Assert.Contains("mail_webhook_events_dead_lettered", body, StringComparison.Ordinal);
