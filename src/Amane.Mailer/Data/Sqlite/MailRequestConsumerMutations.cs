@@ -367,8 +367,20 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
                 var affected = await update.ExecuteNonQueryAsync(cancellationToken);
                 if (affected > 0)
                 {
+                    var snapshot = await MailRequestRepositorySql.ReadStatusByIdempotencyKeyAsync(
+                        connection,
+                        tenantId,
+                        sourceService,
+                        mailRequestId,
+                        cancellationToken);
+                    if (snapshot is null)
+                    {
+                        throw new InvalidOperationException(
+                            "Rescheduled mail request row was not readable after update.");
+                    }
+
                     await transaction.CommitAsync(cancellationToken);
-                    return new(ManualMailRequestMutationStatus.Succeeded);
+                    return new(ManualMailRequestMutationStatus.Succeeded, StatusSnapshot: snapshot);
                 }
             }
 

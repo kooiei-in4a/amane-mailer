@@ -130,6 +130,10 @@ Cancel の DB 更新（`Cancelled` commit）が成功したあと、webhook enqu
 | 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
 
+Reschedule の DB 更新（`scheduled_at` commit）が成功したあと、status 再取得の一時失敗で
+「未再スケジュール」を示す HTTP 失敗を返さない。成功応答は更新 transaction 内で取得した
+commit 済み snapshot に基づく。
+
 ### metadata の秘密情報ポリシー（docs-first）
 
 `metadata` は **キー名のみ**を検査し、**値の内容は検査しない**（docs-first ポリシー）。
