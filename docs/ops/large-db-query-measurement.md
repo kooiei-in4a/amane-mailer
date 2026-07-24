@@ -112,7 +112,9 @@ CREATE INDEX IF NOT EXISTS idx_mail_requests_retention_completed
 ```
 
 本 issue（#288）では計測と文書化まで。index 追加は別変更（migration + EXPLAIN 更新 +
-retention 回帰）として扱う。Metrics の full scan は仕様上の全件 gauge なので、
+retention 回帰）として扱う。ギャップを追跡可能にするには、maintainer が tracking
+GitHub issue を立てるか、上記 migration を直接 land すること（#288 AC の
+「follow-up issue または修正」経路）。Metrics の full scan は仕様上の全件 gauge なので、
 行数増大時は scrape 間隔・DB サイズ監視で緩和し、必要なら別設計（増分カウンタ等）を検討する。
 
 ## 再現手順チェックリスト

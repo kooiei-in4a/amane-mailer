@@ -115,7 +115,9 @@ CREATE INDEX IF NOT EXISTS idx_mail_requests_retention_completed
 ```
 
 Issue #288 stops at measurement and documentation. Adding the index is a separate
-change (migration + EXPLAIN updates + retention regression). Metrics full scan is
+change (migration + EXPLAIN updates + retention regression). To keep the gap
+trackable, a maintainer should open a tracking GitHub issue or land that
+migration directly (#288 AC “follow-up issue or fix”). Metrics full scan is
 inherent to whole-table gauges; mitigate with scrape interval and DB size
 monitoring, or a future incremental-counter design if needed.
 
