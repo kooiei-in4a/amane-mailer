@@ -91,10 +91,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
+dump_failure_diagnostics() {
+  # CI runners discard WORK_DIR on EXIT; print tails so failures remain in job logs.
+  if [ -z "${WORK_DIR:-}" ] || [ ! -d "$WORK_DIR" ]; then
+    return
+  fi
+  local file
+  for file in mailer.log migrate.err migrate-webhook.err backup.err hash.err login-post.out; do
+    if [ -f "$WORK_DIR/$file" ] && [ -s "$WORK_DIR/$file" ]; then
+      log ""
+      log "[diagnostics] $file (tail)"
+      tail -n 80 "$WORK_DIR/$file" || true
+    fi
+  done
+}
+
 finish() {
   log ""
   log "Native AOT path smoke: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"
   if [ "$FAIL_COUNT" -gt 0 ]; then
+    dump_failure_diagnostics
     exit 1
   fi
 }
@@ -280,6 +296,7 @@ main() {
   local server_log="$WORK_DIR/mailer.log"
   local password="aot-path-smoke-password"
   local base_url="http://127.0.0.1:${HTTP_PORT}"
+  local hash=""
 
   mkdir -p "$WORK_DIR/backups"
   write_tenants_json "$tenants_plain" 0
@@ -293,12 +310,12 @@ main() {
 
   # --- cli:admin-hash-password ---
   if run_cli_hash_password "$password" "$hash_out" "$hash_err"; then
-    local hash
     hash="$(tr -d '\r\n' <"$hash_out")"
     if [[ "$hash" == pbkdf2:sha256:* ]]; then
       pass "cli:admin-hash-password"
     else
       fail "cli:admin-hash-password" "stdout was not a pbkdf2:sha256 hash"
+      hash=""
     fi
   else
     fail "cli:admin-hash-password" "exit code $? (see $hash_err)"
