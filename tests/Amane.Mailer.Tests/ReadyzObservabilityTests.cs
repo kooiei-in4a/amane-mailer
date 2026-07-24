@@ -228,6 +228,319 @@ public sealed class ReadyzObservabilityTests
     }
 
     [Fact]
+    public async Task Readyz_records_schema_not_ready_on_checksum_mismatch()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await ReadyzObservabilityHarness.CreateWithChecksumMismatchAsync(ct);
+
+        using var response = await harness.Client.GetAsync("/readyz", ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        AssertReadyBody(body, ready: false);
+        AssertPrimaryReason(harness, MailerReadinessReasons.SchemaNotReady);
+    }
+
+    [Fact]
+    public async Task Readyz_records_database_error_when_schema_probe_hits_missing_database()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await ReadyzObservabilityHarness.CreateWithMissingDatabaseAsync(ct);
+
+        using var response = await harness.Client.GetAsync("/readyz", ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        AssertReadyBody(body, ready: false);
+        AssertPrimaryReason(harness, MailerReadinessReasons.DatabaseError);
+        Assert.DoesNotContain("SQLite Error", body, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("unable to open", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task IsCurrentSchemaReady_propagates_sqlite_exception_for_missing_database()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "amane-mailer-readyz-missing-db",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var databasePath = Path.Combine(root, "missing.db");
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                })
+                .Build();
+            var runner = new SqlMigrationRunner(new SqliteConnectionFactory(configuration));
+
+            var exception = await Assert.ThrowsAsync<SqliteException>(
+                () => runner.IsCurrentSchemaReadyAsync(ct));
+            Assert.DoesNotContain("schema_not_ready", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+                MailerWebApplicationFixtureBase.DeleteDirectoryWithRetry(root);
+        }
+    }
+
+    [Fact]
+    public async Task IsCurrentSchemaReady_propagates_io_exception_when_migration_file_locked()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "amane-mailer-readyz-io",
+            Guid.NewGuid().ToString("N"));
+        var migrationDirectory = Path.Combine(root, "migrations");
+        Directory.CreateDirectory(migrationDirectory);
+        var lockedPath = Path.Combine(migrationDirectory, "001_locked.sql");
+        await File.WriteAllTextAsync(lockedPath, "-- locked for readiness probe\n", ct);
+
+        await using var locked = new FileStream(
+            lockedPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        try
+        {
+            var databasePath = Path.Combine(root, "mailer.db");
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                })
+                .Build();
+            var runner = new SqlMigrationRunner(
+                new SqliteConnectionFactory(configuration),
+                migrationDirectory);
+
+            await Assert.ThrowsAsync<IOException>(() => runner.IsCurrentSchemaReadyAsync(ct));
+        }
+        finally
+        {
+            await locked.DisposeAsync();
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+                MailerWebApplicationFixtureBase.DeleteDirectoryWithRetry(root);
+        }
+    }
+
+    [Fact]
+    public async Task EvaluateCore_maps_migration_io_exception_to_unexpected_error()
+    {
+        var metrics = new MailerRuntimeMetrics();
+        var logCapture = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logCapture));
+        var evaluator = new MailerReadinessEvaluator(
+            metrics,
+            loggerFactory.CreateLogger<MailerReadinessEvaluator>());
+
+        var result = await evaluator.EvaluateCoreAsync(
+            isSchemaReadyAsync: _ => throw new IOException("disk read failed path=/secret/migrations"),
+            isWorkerRunning: static () => true,
+            isSweepRunning: static () => true,
+            getHeartbeatsAsync: static _ => Task.FromResult<IReadOnlyList<WorkerHeartbeat>>([]),
+            maxHeartbeatStaleness: TimeSpan.FromSeconds(300),
+            workerEnabled: true,
+            cancellationToken: CancellationToken.None);
+
+        Assert.False(result.IsReady);
+        Assert.Equal(MailerReadinessReasons.UnexpectedError, result.FailureReason);
+        AssertPrimaryReason(metrics, MailerReadinessReasons.UnexpectedError);
+
+        var joined = logCapture.JoinedOutput();
+        Assert.DoesNotContain("disk read failed", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("/secret/migrations", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EvaluateCore_maps_wrapped_sqlite_exception_to_database_error()
+    {
+        var metrics = new MailerRuntimeMetrics();
+        var logCapture = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logCapture));
+        var evaluator = new MailerReadinessEvaluator(
+            metrics,
+            loggerFactory.CreateLogger<MailerReadinessEvaluator>());
+
+        var result = await evaluator.EvaluateCoreAsync(
+            isSchemaReadyAsync: _ => throw new InvalidOperationException(
+                "probe wrap secret=s3cret",
+                new SqliteException("locked", 6)),
+            isWorkerRunning: static () => true,
+            isSweepRunning: static () => true,
+            getHeartbeatsAsync: static _ => Task.FromResult<IReadOnlyList<WorkerHeartbeat>>([]),
+            maxHeartbeatStaleness: TimeSpan.FromSeconds(300),
+            workerEnabled: true,
+            cancellationToken: CancellationToken.None);
+
+        Assert.False(result.IsReady);
+        Assert.Equal(MailerReadinessReasons.DatabaseError, result.FailureReason);
+        AssertPrimaryReason(metrics, MailerReadinessReasons.DatabaseError);
+
+        var joined = logCapture.JoinedOutput();
+        Assert.DoesNotContain("s3cret", joined, StringComparison.Ordinal);
+        Assert.DoesNotContain("locked", joined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EvaluateCore_recovers_from_schema_not_ready_to_ready()
+    {
+        var metrics = new MailerRuntimeMetrics();
+        var logCapture = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logCapture));
+        var evaluator = new MailerReadinessEvaluator(
+            metrics,
+            loggerFactory.CreateLogger<MailerReadinessEvaluator>());
+
+        var schemaReady = false;
+        var notReady = await evaluator.EvaluateCoreAsync(
+            isSchemaReadyAsync: _ => Task.FromResult(schemaReady),
+            isWorkerRunning: static () => true,
+            isSweepRunning: static () => true,
+            getHeartbeatsAsync: static _ => Task.FromResult<IReadOnlyList<WorkerHeartbeat>>(
+            [
+                new WorkerHeartbeat("worker", DateTimeOffset.UtcNow),
+                new WorkerHeartbeat("sweep", DateTimeOffset.UtcNow),
+            ]),
+            maxHeartbeatStaleness: TimeSpan.FromSeconds(300),
+            workerEnabled: true,
+            cancellationToken: CancellationToken.None);
+
+        Assert.False(notReady.IsReady);
+        Assert.Equal(MailerReadinessReasons.SchemaNotReady, notReady.FailureReason);
+        AssertPrimaryReason(metrics, MailerReadinessReasons.SchemaNotReady);
+
+        logCapture.Clear();
+        schemaReady = true;
+        var ready = await evaluator.EvaluateCoreAsync(
+            isSchemaReadyAsync: _ => Task.FromResult(schemaReady),
+            isWorkerRunning: static () => true,
+            isSweepRunning: static () => true,
+            getHeartbeatsAsync: static _ => Task.FromResult<IReadOnlyList<WorkerHeartbeat>>(
+            [
+                new WorkerHeartbeat("worker", DateTimeOffset.UtcNow),
+                new WorkerHeartbeat("sweep", DateTimeOffset.UtcNow),
+            ]),
+            maxHeartbeatStaleness: TimeSpan.FromSeconds(300),
+            workerEnabled: true,
+            cancellationToken: CancellationToken.None);
+
+        Assert.True(ready.IsReady);
+        AssertReadyMetrics(metrics);
+        Assert.Contains(
+            logCapture.Snapshot(),
+            static entry =>
+                entry.Level == LogLevel.Information &&
+                entry.FormattedMessage.Contains("Mailer readiness recovered", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task EvaluateCore_recovers_from_database_error_to_ready()
+    {
+        var metrics = new MailerRuntimeMetrics();
+        var logCapture = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logCapture));
+        var evaluator = new MailerReadinessEvaluator(
+            metrics,
+            loggerFactory.CreateLogger<MailerReadinessEvaluator>());
+
+        var fail = true;
+        var notReady = await evaluator.EvaluateCoreAsync(
+            isSchemaReadyAsync: _ => fail
+                ? throw new SqliteException("db busy", 5)
+                : Task.FromResult(true),
+            isWorkerRunning: static () => true,
+            isSweepRunning: static () => true,
+            getHeartbeatsAsync: static _ => Task.FromResult<IReadOnlyList<WorkerHeartbeat>>(
+            [
+                new WorkerHeartbeat("worker", DateTimeOffset.UtcNow),
+                new WorkerHeartbeat("sweep", DateTimeOffset.UtcNow),
+            ]),
+            maxHeartbeatStaleness: TimeSpan.FromSeconds(300),
+            workerEnabled: true,
+            cancellationToken: CancellationToken.None);
+
+        Assert.False(notReady.IsReady);
+        Assert.Equal(MailerReadinessReasons.DatabaseError, notReady.FailureReason);
+        AssertPrimaryReason(metrics, MailerReadinessReasons.DatabaseError);
+
+        logCapture.Clear();
+        fail = false;
+        var ready = await evaluator.EvaluateCoreAsync(
+            isSchemaReadyAsync: _ => fail
+                ? throw new SqliteException("db busy", 5)
+                : Task.FromResult(true),
+            isWorkerRunning: static () => true,
+            isSweepRunning: static () => true,
+            getHeartbeatsAsync: static _ => Task.FromResult<IReadOnlyList<WorkerHeartbeat>>(
+            [
+                new WorkerHeartbeat("worker", DateTimeOffset.UtcNow),
+                new WorkerHeartbeat("sweep", DateTimeOffset.UtcNow),
+            ]),
+            maxHeartbeatStaleness: TimeSpan.FromSeconds(300),
+            workerEnabled: true,
+            cancellationToken: CancellationToken.None);
+
+        Assert.True(ready.IsReady);
+        AssertReadyMetrics(metrics);
+        Assert.Contains(
+            logCapture.Snapshot(),
+            static entry =>
+                entry.Level == LogLevel.Information &&
+                entry.FormattedMessage.Contains("Mailer readiness recovered", StringComparison.Ordinal));
+        Assert.DoesNotContain("db busy", logCapture.JoinedOutput(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task IsCurrentSchemaReady_propagates_operation_canceled()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "amane-mailer-readyz-cancel",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var migrationDirectory = Path.Combine(root, "migrations");
+            Directory.CreateDirectory(migrationDirectory);
+            await File.WriteAllTextAsync(
+                Path.Combine(migrationDirectory, "001_stub.sql"),
+                "-- stub\n",
+                CancellationToken.None);
+
+            var databasePath = Path.Combine(root, "mailer.db");
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                })
+                .Build();
+            var factory = new SqliteConnectionFactory(configuration);
+            await new SqlMigrationRunner(factory).ApplyPendingAsync(CancellationToken.None);
+            var runner = new SqlMigrationRunner(factory, migrationDirectory);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => runner.IsCurrentSchemaReadyAsync(cts.Token));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+                MailerWebApplicationFixtureBase.DeleteDirectoryWithRetry(root);
+        }
+    }
+
+    [Fact]
     public async Task EvaluateCore_cancelled_probe_does_not_overwrite_readiness_observation()
     {
         var metrics = new MailerRuntimeMetrics();
@@ -405,9 +718,12 @@ public sealed class ReadyzObservabilityTests
         }
     }
 
-    private static void AssertReadyMetrics(ReadyzObservabilityHarness harness)
+    private static void AssertReadyMetrics(ReadyzObservabilityHarness harness) =>
+        AssertReadyMetrics(harness.RuntimeMetrics);
+
+    private static void AssertReadyMetrics(MailerRuntimeMetrics metrics)
     {
-        var snapshot = harness.RuntimeMetrics.CaptureSnapshot();
+        var snapshot = metrics.CaptureSnapshot();
         Assert.True(snapshot.Ready);
         Assert.Null(snapshot.ReadinessFailureReason);
 
@@ -455,6 +771,7 @@ public sealed class ReadyzObservabilityTests
 
         private ReadyzObservabilityHarness(
             string root,
+            string databasePath,
             WebApplicationFactory<global::Program> factory,
             HttpClient client,
             MailRequestRepository repository,
@@ -463,6 +780,7 @@ public sealed class ReadyzObservabilityTests
             CapturingLoggerProvider logCapture)
         {
             _root = root;
+            DatabasePath = databasePath;
             _factory = factory;
             Client = client;
             Repository = repository;
@@ -472,6 +790,8 @@ public sealed class ReadyzObservabilityTests
         }
 
         public HttpClient Client { get; }
+
+        public string DatabasePath { get; }
 
         public MailRequestRepository Repository { get; }
 
@@ -498,6 +818,69 @@ public sealed class ReadyzObservabilityTests
                 workerEnabled: false,
                 migrateFully: false,
                 throughMigrationFileName: throughMigrationFileName);
+
+        public static async Task<ReadyzObservabilityHarness> CreateWithChecksumMismatchAsync(
+            CancellationToken cancellationToken)
+        {
+            var harness = await CreateCoreAsync(
+                cancellationToken,
+                workerEnabled: false,
+                migrateFully: true,
+                throughMigrationFileName: null);
+            await CorruptAppliedChecksumAsync(harness.DatabasePath, cancellationToken);
+            return harness;
+        }
+
+        public static async Task<ReadyzObservabilityHarness> CreateWithMissingDatabaseAsync(
+            CancellationToken cancellationToken)
+        {
+            var harness = await CreateCoreAsync(
+                cancellationToken,
+                workerEnabled: false,
+                migrateFully: true,
+                throughMigrationFileName: null);
+            SqliteConnection.ClearAllPools();
+            File.Delete(harness.DatabasePath);
+            TryDeleteFile(harness.DatabasePath + "-wal");
+            TryDeleteFile(harness.DatabasePath + "-shm");
+            return harness;
+        }
+
+        private static async Task CorruptAppliedChecksumAsync(
+            string databasePath,
+            CancellationToken cancellationToken)
+        {
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                })
+                .Build();
+            await using var connection = await new SqliteConnectionFactory(configuration)
+                .OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE schema_migrations
+                SET checksum = '0000000000000000000000000000000000000000000000000000000000000000'
+                WHERE version = (
+                    SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1);
+                """;
+            var updated = await command.ExecuteNonQueryAsync(cancellationToken);
+            Assert.True(updated >= 1);
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup beside the primary DB delete.
+            }
+        }
 
         private static async Task<ReadyzObservabilityHarness> CreateCoreAsync(
             CancellationToken cancellationToken,
@@ -566,6 +949,7 @@ public sealed class ReadyzObservabilityTests
             });
             return new ReadyzObservabilityHarness(
                 root,
+                databasePath,
                 factory,
                 client,
                 factory.Services.GetRequiredService<MailRequestRepository>(),
