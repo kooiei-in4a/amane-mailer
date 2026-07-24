@@ -131,6 +131,11 @@ Body: `{ "scheduled_at": "<UTC date-time>|null" }` (null clears the schedule gat
 | Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
 
+After a successful reschedule DB update (`scheduled_at` commit), transient status
+re-read failures must not return an HTTP failure that implies the request was not
+rescheduled. The success response uses the committed snapshot obtained inside the
+update transaction.
+
 ### Metadata secret policy (docs-first)
 
 `metadata` validation inspects **key names only**; **values are not scanned** (docs-first policy).
