@@ -57,36 +57,6 @@ internal static class ConditionWait
         return lastValue!;
     }
 
-    public static async Task<T> UntilValueAsync<T>(
-        Func<CancellationToken, Task<T?>> probe,
-        Func<T, bool> isSatisfied,
-        TimeSpan timeout,
-        CancellationToken cancellationToken,
-        AsyncPulse? wake = null,
-        TimeSpan? fallbackDelay = null)
-        where T : struct
-    {
-        ArgumentNullException.ThrowIfNull(probe);
-        ArgumentNullException.ThrowIfNull(isSatisfied);
-
-        T? lastValue = null;
-        await UntilCoreAsync(
-            async ct =>
-            {
-                lastValue = await probe(ct).ConfigureAwait(false);
-                return lastValue is T value && isSatisfied(value);
-            },
-            timeout,
-            cancellationToken,
-            wake,
-            fallbackDelay,
-            () => lastValue is null
-                ? $"Condition was not met within {timeout.TotalSeconds:0.###}s (no value observed)."
-                : $"Condition was not met within {timeout.TotalSeconds:0.###}s. Last value: {lastValue}.").ConfigureAwait(false);
-
-        return lastValue!.Value;
-    }
-
     private static async Task UntilCoreAsync(
         Func<CancellationToken, Task<bool>> isSatisfied,
         TimeSpan timeout,

@@ -278,7 +278,7 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
         int maxAttempts = 100)
     {
         // maxAttempts retained for call-site compatibility; timeout derives from prior 100ms * attempts budget.
-        var timeout = TimeSpan.FromMilliseconds(Math.Max(100, maxAttempts) * 100L);
+        var timeout = TimeSpan.FromMilliseconds(maxAttempts * 100L);
         try
         {
             await ConditionWait.UntilAsync(
@@ -759,16 +759,6 @@ public sealed class RecordingWebhookHandler
         linked.CancelAfter(timeout);
         return _deliveryTcs.Task.WaitAsync(linked.Token);
     }
-
-    public Task WaitUntilAttemptCountAsync(
-        int minCount,
-        TimeSpan timeout,
-        CancellationToken cancellationToken) =>
-        ConditionWait.UntilAsync(
-            _ => Task.FromResult(AttemptCount >= minCount),
-            timeout,
-            cancellationToken,
-            wake: _activity);
 
     public HttpResponseMessage Handle(HttpRequestMessage request)
     {

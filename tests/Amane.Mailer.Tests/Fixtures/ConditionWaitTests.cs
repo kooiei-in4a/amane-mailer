@@ -8,17 +8,15 @@ public sealed class ConditionWaitTests
         var ct = TestContext.Current.CancellationToken;
         var probes = 0;
 
-        var value = await ConditionWait.UntilValueAsync(
+        await ConditionWait.UntilAsync(
             _ =>
             {
                 probes++;
-                return Task.FromResult<int?>(7);
+                return Task.FromResult(true);
             },
-            static v => v == 7,
             TimeSpan.FromSeconds(1),
             ct);
 
-        Assert.Equal(7, value);
         Assert.Equal(1, probes);
     }
 
@@ -29,9 +27,8 @@ public sealed class ConditionWaitTests
         var pulse = new AsyncPulse();
         var ready = 0;
 
-        var waitTask = ConditionWait.UntilValueAsync(
-            _ => Task.FromResult(Volatile.Read(ref ready) == 1 ? (int?)1 : null),
-            static v => v == 1,
+        var waitTask = ConditionWait.UntilAsync(
+            _ => Task.FromResult(Volatile.Read(ref ready) == 1),
             TimeSpan.FromSeconds(5),
             ct,
             wake: pulse,
@@ -42,10 +39,9 @@ public sealed class ConditionWaitTests
         pulse.Pulse();
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
-        var value = await waitTask;
+        await waitTask;
         sw.Stop();
 
-        Assert.Equal(1, value);
         Assert.True(
             sw.Elapsed < TimeSpan.FromMilliseconds(500),
             $"Expected pulse wake; elapsed {sw.Elapsed.TotalMilliseconds:0}ms.");
@@ -57,14 +53,27 @@ public sealed class ConditionWaitTests
         var ct = TestContext.Current.CancellationToken;
 
         var ex = await Assert.ThrowsAsync<TimeoutException>(() =>
-            ConditionWait.UntilValueAsync(
-                _ => Task.FromResult<int?>(0),
-                static v => v == 1,
+            ConditionWait.UntilAsync(
+                _ => Task.FromResult(false),
                 TimeSpan.FromMilliseconds(80),
                 ct,
                 fallbackDelay: TimeSpan.FromMilliseconds(20)));
 
         Assert.Contains("Condition was not met", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UntilAsync_class_probe_returns_matched_value()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        var value = await ConditionWait.UntilAsync(
+            _ => Task.FromResult<string?>("ok"),
+            static v => v == "ok",
+            TimeSpan.FromSeconds(1),
+            ct);
+
+        Assert.Equal("ok", value);
     }
 
     [Fact]

@@ -11,8 +11,6 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
     private readonly ConcurrentQueue<MailDeliveryResult> _results = new();
     private readonly object _holdGate = new();
     private readonly AsyncPulse _activity = new();
-    private int _sendStartedCount;
-    private int _sendCompletedCount;
     private TaskCompletionSource? _holdCompletion;
     private bool _ignoreHoldCancellation;
     private bool _holdConsumed;
@@ -24,10 +22,6 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
     /// Pulsed when a send starts or completes. Used as a wake hint for DB status waits.
     /// </summary>
     internal AsyncPulse Activity => _activity;
-
-    public int SendStartedCount => Volatile.Read(ref _sendStartedCount);
-
-    public int SendCompletedCount => Volatile.Read(ref _sendCompletedCount);
 
     public void Reset()
     {
@@ -45,8 +39,6 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
             _ignoreHoldCancellation = false;
             _holdConsumed = false;
             _sendDelay = null;
-            Volatile.Write(ref _sendStartedCount, 0);
-            Volatile.Write(ref _sendCompletedCount, 0);
         }
 
         _activity.Pulse();
@@ -98,26 +90,6 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
         _results.Enqueue(result);
     }
 
-    public Task WaitUntilSendStartedAsync(
-        int minCount,
-        TimeSpan timeout,
-        CancellationToken cancellationToken) =>
-        ConditionWait.UntilAsync(
-            _ => Task.FromResult(SendStartedCount >= minCount),
-            timeout,
-            cancellationToken,
-            wake: _activity);
-
-    public Task WaitUntilSendCompletedAsync(
-        int minCount,
-        TimeSpan timeout,
-        CancellationToken cancellationToken) =>
-        ConditionWait.UntilAsync(
-            _ => Task.FromResult(SendCompletedCount >= minCount),
-            timeout,
-            cancellationToken,
-            wake: _activity);
-
     public async Task<MailDeliveryResult> SendAsync(
         MailSendJob job,
         MailerTenant tenant,
@@ -139,7 +111,6 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
             delay = _sendDelay;
         }
 
-        Interlocked.Increment(ref _sendStartedCount);
         _activity.Pulse();
 
         try
@@ -168,7 +139,6 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
         }
         finally
         {
-            Interlocked.Increment(ref _sendCompletedCount);
             _activity.Pulse();
         }
     }
