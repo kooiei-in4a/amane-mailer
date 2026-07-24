@@ -7,6 +7,15 @@ public sealed record MailerAdminAuditRetentionOptions
     public const int DefaultSweepIntervalHours = 24;
     public const int DefaultBatchSize = 100;
 
+    public const int MinRetentionDays = 1;
+    public const int MaxRetentionDays = 3650;
+    public const int MinSweepIntervalHours = 1;
+    public const int MaxSweepIntervalHours = 168;
+    public const int MinSweepIntervalSeconds = 1;
+    public const int MaxSweepIntervalSeconds = 604800;
+    public const int MinBatchSize = 1;
+    public const int MaxBatchSize = 1000;
+
     public int RetentionDays { get; init; } = DefaultRetentionDays;
 
     public int SweepIntervalHours { get; init; } = DefaultSweepIntervalHours;
@@ -19,40 +28,42 @@ public sealed record MailerAdminAuditRetentionOptions
 
     public TimeSpan SweepInterval =>
         SweepIntervalSeconds is int seconds
-            ? TimeSpan.FromSeconds(Math.Max(1, seconds))
+            ? TimeSpan.FromSeconds(seconds)
             : TimeSpan.FromHours(SweepIntervalHours);
 
     public static MailerAdminAuditRetentionOptions Load(IConfiguration configuration) =>
         new()
         {
             RetentionDays = ReadRetentionDays(configuration),
-            SweepIntervalHours = Math.Max(
-                1,
-                ReadPositiveInt(
-                    configuration,
-                    DefaultSweepIntervalHours,
-                    "AMANE_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_HOURS",
-                    "MAILER_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_HOURS")),
+            SweepIntervalHours = ReadPositiveInt(
+                configuration,
+                DefaultSweepIntervalHours,
+                MinSweepIntervalHours,
+                MaxSweepIntervalHours,
+                "AMANE_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_HOURS",
+                "MAILER_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_HOURS"),
             SweepIntervalSeconds = ReadOptionalPositiveInt(
                 configuration,
+                MinSweepIntervalSeconds,
+                MaxSweepIntervalSeconds,
                 "AMANE_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_SECONDS",
                 "MAILER_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_SECONDS"),
-            BatchSize = Math.Max(
-                1,
-                ReadPositiveInt(
-                    configuration,
-                    DefaultBatchSize,
-                    "AMANE_ADMIN_AUDIT_RETENTION_BATCH_SIZE",
-                    "MAILER_ADMIN_AUDIT_RETENTION_BATCH_SIZE")),
+            BatchSize = ReadPositiveInt(
+                configuration,
+                DefaultBatchSize,
+                MinBatchSize,
+                MaxBatchSize,
+                "AMANE_ADMIN_AUDIT_RETENTION_BATCH_SIZE",
+                "MAILER_ADMIN_AUDIT_RETENTION_BATCH_SIZE"),
             IsLocalDevelopment = IsLocalDevelopmentEnvironment(configuration),
         };
 
     public void Validate()
     {
-        if (RetentionDays < 1)
+        if (RetentionDays < MinRetentionDays || RetentionDays > MaxRetentionDays)
         {
             throw new InvalidOperationException(
-                "MAILER_ADMIN_AUDIT_RETENTION_DAYS must be greater than zero.");
+                $"MAILER_ADMIN_AUDIT_RETENTION_DAYS must be an integer between {MinRetentionDays} and {MaxRetentionDays} (inclusive).");
         }
 
         if (!IsLocalDevelopment && RetentionDays < MinRetentionDaysNonLocal)
@@ -78,75 +89,74 @@ public sealed record MailerAdminAuditRetentionOptions
 
     private static int ReadRetentionDays(IConfiguration configuration)
     {
-        var value = configuration["MAILER_ADMIN_AUDIT_RETENTION_DAYS"];
-        var key = "MAILER_ADMIN_AUDIT_RETENTION_DAYS";
-        if (string.IsNullOrWhiteSpace(value))
+        // Prefer MAILER_* when present (including empty → fail). Only absent (null) falls through.
+        var mailerValue = configuration["MAILER_ADMIN_AUDIT_RETENTION_DAYS"];
+        if (mailerValue is not null)
         {
-            value = configuration["AMANE_ADMIN_AUDIT_RETENTION_DAYS"];
-            key = "AMANE_ADMIN_AUDIT_RETENTION_DAYS";
+            return ConfigurationIntReader.ParseInRange(
+                mailerValue,
+                "MAILER_ADMIN_AUDIT_RETENTION_DAYS",
+                MinRetentionDays,
+                MaxRetentionDays);
         }
 
-        if (string.IsNullOrWhiteSpace(value))
-            return DefaultRetentionDays;
-
-        if (!int.TryParse(value, out var parsed) || parsed <= 0)
+        var amaneValue = configuration["AMANE_ADMIN_AUDIT_RETENTION_DAYS"];
+        if (amaneValue is not null)
         {
-            throw new InvalidOperationException(
-                $"{key} must be a positive integer.");
+            return ConfigurationIntReader.ParseInRange(
+                amaneValue,
+                "AMANE_ADMIN_AUDIT_RETENTION_DAYS",
+                MinRetentionDays,
+                MaxRetentionDays);
         }
 
-        return parsed;
+        return DefaultRetentionDays;
     }
 
     private static int ReadPositiveInt(
         IConfiguration configuration,
         int defaultValue,
+        int minInclusive,
+        int maxInclusive,
         string primaryKey,
         string fallbackKey)
     {
-        var value = configuration[primaryKey];
-        var key = primaryKey;
-        if (string.IsNullOrWhiteSpace(value))
+        // Absent key (null) may fall through; empty/whitespace on a present key fails fast (#329).
+        var primaryValue = configuration[primaryKey];
+        if (primaryValue is not null)
         {
-            value = configuration[fallbackKey];
-            key = fallbackKey;
+            return ConfigurationIntReader.ParseInRange(primaryValue, primaryKey, minInclusive, maxInclusive);
         }
 
-        if (string.IsNullOrWhiteSpace(value))
-            return defaultValue;
-
-        if (!int.TryParse(value, out var parsed) || parsed <= 0)
+        var fallbackValue = configuration[fallbackKey];
+        if (fallbackValue is not null)
         {
-            throw new InvalidOperationException(
-                $"{key} must be a positive integer.");
+            return ConfigurationIntReader.ParseInRange(fallbackValue, fallbackKey, minInclusive, maxInclusive);
         }
 
-        return parsed;
+        return defaultValue;
     }
 
     private static int? ReadOptionalPositiveInt(
         IConfiguration configuration,
+        int minInclusive,
+        int maxInclusive,
         string primaryKey,
         string fallbackKey)
     {
-        var value = configuration[primaryKey];
-        var key = primaryKey;
-        if (string.IsNullOrWhiteSpace(value))
+        var primaryValue = configuration[primaryKey];
+        if (primaryValue is not null)
         {
-            value = configuration[fallbackKey];
-            key = fallbackKey;
+            return ConfigurationIntReader.ParseInRange(primaryValue, primaryKey, minInclusive, maxInclusive);
         }
 
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        if (!int.TryParse(value, out var parsed) || parsed <= 0)
+        var fallbackValue = configuration[fallbackKey];
+        if (fallbackValue is not null)
         {
-            throw new InvalidOperationException(
-                $"{key} must be a positive integer.");
+            return ConfigurationIntReader.ParseInRange(fallbackValue, fallbackKey, minInclusive, maxInclusive);
         }
 
-        return parsed;
+        return null;
     }
 
     internal static bool IsLocalDevelopmentEnvironment(IConfiguration configuration) =>

@@ -90,6 +90,11 @@ public sealed class AdminAuditRetentionTests : IClassFixture<AdminAuditRetention
     [InlineData("AMANE_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_HOURS", "-1")]
     [InlineData("AMANE_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_SECONDS", "0")]
     [InlineData("AMANE_ADMIN_AUDIT_RETENTION_BATCH_SIZE", "nope")]
+    [InlineData("MAILER_ADMIN_AUDIT_RETENTION_DAYS", "")]
+    [InlineData("MAILER_ADMIN_AUDIT_RETENTION_DAYS", "  ")]
+    [InlineData("AMANE_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_HOURS", "")]
+    [InlineData("MAILER_ADMIN_AUDIT_RETENTION_BATCH_SIZE", "")]
+    [InlineData("AMANE_ADMIN_AUDIT_RETENTION_SWEEP_INTERVAL_SECONDS", "")]
     public void Invalid_retention_numeric_env_vars_fail_load(string key, string value)
     {
         var configuration = new ConfigurationBuilder()
@@ -103,7 +108,24 @@ public sealed class AdminAuditRetentionTests : IClassFixture<AdminAuditRetention
             MailerAdminAuditRetentionOptions.Load(configuration));
 
         Assert.Contains(key, exception.Message, StringComparison.Ordinal);
-        Assert.Contains("positive integer", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("between", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Empty_MAILER_retention_days_does_not_fall_through_to_AMANE_default_alias()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MAILER_ADMIN_AUDIT_RETENTION_DAYS"] = "",
+                ["AMANE_ADMIN_AUDIT_RETENTION_DAYS"] = "90",
+            })
+            .Build();
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            MailerAdminAuditRetentionOptions.Load(configuration));
+
+        Assert.Contains("MAILER_ADMIN_AUDIT_RETENTION_DAYS", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

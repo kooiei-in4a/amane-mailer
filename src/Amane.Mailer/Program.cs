@@ -149,6 +149,14 @@ var app = builder.Build();
 _ = app.Services.GetRequiredService<MailerTenantRegistry>();
 _ = app.Services.GetRequiredService<MailerOptions>();
 _ = app.Services.GetRequiredService<MailerMetricsOptions>();
+// Fail fast on operational numeric misconfiguration (same Load rules with Worker disabled;
+// cross-field Validate for lease/healthcheck remains Worker-enabled only).
+_ = app.Services.GetRequiredService<MailerWorkerOptions>();
+_ = app.Services.GetRequiredService<MailerWebhookOptions>();
+_ = app.Services.GetRequiredService<MailerSweepOptions>();
+_ = app.Services.GetRequiredService<MailerRetentionOptions>();
+_ = app.Services.GetRequiredService<MailerAdminAuditRetentionOptions>();
+_ = app.Services.GetRequiredService<MailerHealthcheckOptions>();
 
 app.MapGet("/healthz", () => MailerJsonResults.Health(true));
 
