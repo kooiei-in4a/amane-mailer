@@ -423,18 +423,30 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 
 ### 5.2 Worker / Sweep / Retention（環境変数）
 
-| 変数 | 既定 | 説明 |
-|---|---|---|
-| `Mailer__Worker__Enabled` | `true` | Worker 系 HostedService の有効化 |
-| `Mailer__Worker__BatchClaimSize` | `4` | 1 ドレインあたりの claim 上限 |
-| `Mailer__Worker__MaxSendConcurrency` | `4` | 並列送信数 |
-| `Mailer__Worker__SendTimeoutSeconds` | `90` | 1 通あたり送信タイムアウト |
-| `Mailer__Worker__LeaseDurationSeconds` | `120` | Processing リース TTL |
-| `Mailer__Sweep__IntervalSeconds` | `30` | 滞留スイープ間隔 |
-| `Mailer__Retention__Days` | `90` | 終端レコード保持日数（`mail_requests` と同一冪等キーの `delivery_events` を同時パージ） |
-| `Mailer__Retention__SweepIntervalHours` | `24` | Retention パージ周期 |
-| `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | heartbeat stale 判定閾値（秒）。`>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` かつ `> WorkerHeartbeatIntervalSeconds` かつ `> Sweep:IntervalSeconds` |
-| `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | Worker idle 時の heartbeat 更新間隔（秒）。Sweep の更新間隔は `Mailer__Sweep__IntervalSeconds` に従う |
+数値は **strict validation**（#329）。キー未設定は既定値。空文字・形式不正・0／負数・上限超過は **起動失敗**（黙示的な clamp はしない）。エラーメッセージには設定キーと許容範囲を含み、secret／接続情報は含めない。Development／Testing／Production で同一の数値規則。Worker 無効時も `Load` の範囲検証は同じ（lease／healthcheck の組合せ `Validate` のみ Worker 有効時）。
+
+| 変数 | 既定 | 許容範囲 | 説明 |
+|---|---|---|---|
+| `Mailer__Worker__Enabled` | `true` | `true` / `false` | Worker 系 HostedService の有効化 |
+| `Mailer__Worker__BatchClaimSize` | `4` | 1–100 | 1 ドレインあたりの claim 上限 |
+| `Mailer__Worker__MaxSendConcurrency` | `4` | 1–64 | 並列送信数 |
+| `Mailer__Worker__SendTimeoutSeconds` | `90` | 1–600 | 1 通あたり送信タイムアウト。増やす場合は `MAILER_STOP_GRACE_PERIOD` も見直す |
+| `Mailer__Worker__LeaseDurationSeconds` | `120` | 1–86400 | Processing リース TTL。`> ceil(BatchClaimSize / MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
+| `Mailer__Webhook__MaxAttempts` | `10` | 1–50 | Webhook 配送の最大試行回数 |
+| `Mailer__Webhook__InitialDelaySeconds` | `10` | 1–86400 | Webhook 再試行の初期遅延（`<= MaxDelaySeconds`） |
+| `Mailer__Webhook__MaxDelaySeconds` | `300` | 1–86400 | Webhook 再試行の最大遅延 |
+| `Mailer__Webhook__BatchClaimSize` | `8` | 1–100 | Webhook claim 上限 |
+| `Mailer__Webhook__DeliveryTimeoutSeconds` | `30` | 1–600 | Webhook HTTP タイムアウト |
+| `Mailer__Webhook__LeaseDurationSeconds` | `60` | 1–86400 | Webhook リース TTL。`> DeliveryTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
+| `Mailer__Sweep__IntervalSeconds` | `30` | 1–3600 | 滞留スイープ間隔 |
+| `Mailer__Retention__Days` | `90` | 1–3650 | 終端レコード保持日数（`mail_requests` と同一冪等キーの `delivery_events` を同時パージ） |
+| `Mailer__Retention__SweepIntervalHours` | `24` | 1–168 | Retention パージ周期（時間）。`SweepIntervalSeconds` 未設定時に使用 |
+| `Mailer__Retention__SweepIntervalSeconds` | （未設定） | 1–604800（設定時） | 任意。設定時は Hours より優先（主にテスト用） |
+| `Mailer__Retention__BatchSize` | `100` | 1–250 | Retention 削除バッチ（SQLite bind 制約） |
+| `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | 1–86400 | heartbeat stale 判定閾値（秒）。Worker 有効時: `>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` かつ `> WorkerHeartbeatIntervalSeconds` かつ `> Sweep:IntervalSeconds` |
+| `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | 1–3600 | Worker idle 時の heartbeat 更新間隔（秒）。Sweep の更新間隔は `Mailer__Sweep__IntervalSeconds` に従う |
+
+起動失敗時はプロセスログの例外メッセージでキー名と許容範囲を確認する。値そのものや接続文字列はメッセージに出ない。
 
 ### 5.3 構造・ポリシー（JSON / `tenants.json`）
 

@@ -102,7 +102,11 @@ Admin UI の boolean / 正の数値 env は **strict parse** です。ただし 
 | `AMANE_ADMIN_ENABLED` / `MAILER_ADMIN_ENABLED` | `true` / `false`（`bool.TryParse` 互換） | `false` | **常に起動失敗** |
 | その他 Admin UI boolean（mask / hash-network / db-ops 等） | `true` / `false` | 既存 default | **Admin 有効時のみ起動失敗** |
 | Admin UI 正の整数（login failure limit 等） | `1` 以上の整数 | 既存 default | **Admin 有効時のみ起動失敗** |
-| audit retention 数値（`MAILER_ADMIN_AUDIT_RETENTION_*`） | `1` 以上の整数 | 既存 default（例: 180 日） | **常に起動失敗**（worker の audit sweep が参照するため。Admin UI の on/off とは独立） |
+| audit retention 数値（`MAILER_ADMIN_AUDIT_RETENTION_*`） | 範囲内の整数（Days 1–3650、SweepHours 1–168、SweepSeconds 1–604800、BatchSize 1–1000） | 既存 default（例: 180 日） | **常に起動失敗**（worker の audit sweep が参照するため。Admin UI の on/off とは独立） |
+
+### Worker / Webhook / Sweep / Retention / Healthcheck 数値
+
+`Mailer__Worker__*` / `Mailer__Webhook__*` / `Mailer__Sweep__*` / `Mailer__Retention__*` / `Mailer__Healthcheck__*` は **strict validation**（#329）。未設定は既定値。空文字・形式不正・0／負数・上限超過は起動失敗（clamp しない）。許容範囲は [サービス仕様 5.2](../service-spec.md#52-worker--sweep--retention環境変数) を参照。起動失敗時はログのキー名と range を確認する（secret は出ない）。
 
 typo（例: `tru`、`yes`、`abc`）は silent default にせず、上記の適用範囲で startup 検出します。
 

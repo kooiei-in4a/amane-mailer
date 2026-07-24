@@ -3,6 +3,8 @@ namespace Amane.Mailer.Configuration;
 public sealed record MailerSweepOptions
 {
     public const int DefaultIntervalSeconds = 30;
+    public const int MinIntervalSeconds = 1;
+    public const int MaxIntervalSeconds = 3600;
 
     public int IntervalSeconds { get; init; } = DefaultIntervalSeconds;
 
@@ -11,8 +13,11 @@ public sealed record MailerSweepOptions
     public static MailerSweepOptions Load(IConfiguration configuration) =>
         new()
         {
-            IntervalSeconds = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Sweep:IntervalSeconds", DefaultIntervalSeconds)),
+            IntervalSeconds = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Sweep:IntervalSeconds",
+                DefaultIntervalSeconds,
+                MinIntervalSeconds,
+                MaxIntervalSeconds),
         };
 }

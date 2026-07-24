@@ -101,7 +101,11 @@ Admin UI boolean and positive-integer environment variables use **strict parse**
 | `AMANE_ADMIN_ENABLED` / `MAILER_ADMIN_ENABLED` | `true` / `false` (`bool.TryParse` compatible) | `false` | **Always fails startup** |
 | Other Admin UI booleans (mask / hash-network / db-ops, etc.) | `true` / `false` | Existing defaults | **Fails startup only when Admin is enabled** |
 | Admin UI positive integers (login failure limit, etc.) | Integer ≥ `1` | Existing defaults | **Fails startup only when Admin is enabled** |
-| Audit retention numerics (`MAILER_ADMIN_AUDIT_RETENTION_*`) | Integer ≥ `1` | Existing defaults (e.g. 180 days) | **Always fails startup** (used by the worker audit sweep; independent of Admin UI on/off) |
+| Audit retention numerics (`MAILER_ADMIN_AUDIT_RETENTION_*`) | Integer in range (Days 1–3650, SweepHours 1–168, SweepSeconds 1–604800, BatchSize 1–1000) | Existing defaults (e.g. 180 days) | **Always fails startup** (used by the worker audit sweep; independent of Admin UI on/off) |
+
+### Worker / Webhook / Sweep / Retention / Healthcheck numerics
+
+`Mailer__Worker__*` / `Mailer__Webhook__*` / `Mailer__Sweep__*` / `Mailer__Retention__*` / `Mailer__Healthcheck__*` use **strict validation** (#329). Unset keeps defaults. Empty string, malformed, zero/negative, and over-max values fail startup (no clamp). Allowed ranges: [service spec §5.2](../service-spec.en.md#52-worker--sweep--retention-environment-variables). On failure, check the log for the key and range (secrets are not included).
 
 Typos such as `tru`, `yes`, or `abc` are not silently defaulted within the scopes above.
 

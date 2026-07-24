@@ -435,18 +435,30 @@ values, body, and metadata are not output.
 
 ### 5.2 Worker / Sweep / Retention (Environment Variables)
 
-| Variable | Default | Description |
-|---|---|---|
-| `Mailer__Worker__Enabled` | `true` | Enable Worker HostedServices |
-| `Mailer__Worker__BatchClaimSize` | `4` | Claim limit per drain |
-| `Mailer__Worker__MaxSendConcurrency` | `4` | Parallel send count |
-| `Mailer__Worker__SendTimeoutSeconds` | `90` | Per-message send timeout |
-| `Mailer__Worker__LeaseDurationSeconds` | `120` | Processing lease TTL |
-| `Mailer__Sweep__IntervalSeconds` | `30` | Stale sweep interval |
-| `Mailer__Retention__Days` | `90` | Terminal record retention days (purges `mail_requests` and matching `delivery_events` for the same idempotency key in one transaction) |
-| `Mailer__Retention__SweepIntervalHours` | `24` | Retention purge cycle |
-| `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | Heartbeat stale threshold (seconds). Must be `>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` and `> WorkerHeartbeatIntervalSeconds` and `> Sweep:IntervalSeconds` |
-| `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | Worker heartbeat update interval when idle (seconds). Sweep update interval follows `Mailer__Sweep__IntervalSeconds` |
+Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty string, malformed numbers, zero/negative, and values above the max **fail startup** (no implicit clamp). Error messages include the setting key and allowed range; they never include secrets or connection strings. The same numeric rules apply in Development / Testing / Production. With Worker disabled, per-key `Load` range checks still apply (cross-field lease / healthcheck `Validate` remains Worker-enabled only).
+
+| Variable | Default | Allowed range | Description |
+|---|---|---|---|
+| `Mailer__Worker__Enabled` | `true` | `true` / `false` | Enable Worker HostedServices |
+| `Mailer__Worker__BatchClaimSize` | `4` | 1–100 | Claim limit per drain |
+| `Mailer__Worker__MaxSendConcurrency` | `4` | 1–64 | Parallel send count |
+| `Mailer__Worker__SendTimeoutSeconds` | `90` | 1–600 | Per-message send timeout. Raise `MAILER_STOP_GRACE_PERIOD` when increasing |
+| `Mailer__Worker__LeaseDurationSeconds` | `120` | 1–86400 | Processing lease TTL. Must be `> ceil(BatchClaimSize / MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
+| `Mailer__Webhook__MaxAttempts` | `10` | 1–50 | Webhook delivery max attempts |
+| `Mailer__Webhook__InitialDelaySeconds` | `10` | 1–86400 | Webhook retry initial delay (`<= MaxDelaySeconds`) |
+| `Mailer__Webhook__MaxDelaySeconds` | `300` | 1–86400 | Webhook retry max delay |
+| `Mailer__Webhook__BatchClaimSize` | `8` | 1–100 | Webhook claim batch size |
+| `Mailer__Webhook__DeliveryTimeoutSeconds` | `30` | 1–600 | Webhook HTTP timeout |
+| `Mailer__Webhook__LeaseDurationSeconds` | `60` | 1–86400 | Webhook lease TTL. Must be `> DeliveryTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
+| `Mailer__Sweep__IntervalSeconds` | `30` | 1–3600 | Stale sweep interval |
+| `Mailer__Retention__Days` | `90` | 1–3650 | Terminal record retention days (purges `mail_requests` and matching `delivery_events` for the same idempotency key in one transaction) |
+| `Mailer__Retention__SweepIntervalHours` | `24` | 1–168 | Retention purge cycle in hours when `SweepIntervalSeconds` is unset |
+| `Mailer__Retention__SweepIntervalSeconds` | (unset) | 1–604800 when set | Optional; when set, overrides Hours (mainly for tests) |
+| `Mailer__Retention__BatchSize` | `100` | 1–250 | Retention delete batch size (SQLite bind limit) |
+| `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | 1–86400 | Heartbeat stale threshold (seconds). When Worker enabled: `>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` and `> WorkerHeartbeatIntervalSeconds` and `> Sweep:IntervalSeconds` |
+| `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | 1–3600 | Worker heartbeat update interval when idle (seconds). Sweep update interval follows `Mailer__Sweep__IntervalSeconds` |
+
+On startup failure, check the process log exception for the key name and allowed range. The configured value and connection strings are not included in the message.
 
 ### 5.3 Structure & Policy (JSON / `tenants.json`)
 

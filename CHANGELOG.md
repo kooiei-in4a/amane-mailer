@@ -15,6 +15,13 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ### Changed
 
+- Reject Worker / Webhook / Sweep / Retention / Healthcheck operational
+  misconfiguration at startup instead of silently clamping with `Math.Max` /
+  `Math.Clamp` (#329). Unset keys keep existing defaults; empty string,
+  non-integer, zero/negative, and over-max values fail fast with the setting
+  key and allowed range (no secrets). Cross-field lease and healthcheck
+  checks are unchanged when Worker is enabled. Admin audit retention sweep
+  hours / batch size follow the same strict range parsing.
 - Require `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`) at
   startup when metrics stay enabled outside Development (#283). Development /
   local keep optional bearer under internal-network isolation; disable metrics
@@ -40,6 +47,8 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ### Documentation
 
+- Document Worker / Webhook / Sweep / Retention / Healthcheck strict numeric
+  ranges and startup fail-fast troubleshooting (#329).
 - Document Production metrics bearer startup enforcement and Development /
   local optional-bearer + internal-network policy (#283).
 - Document Admin boolean (`true`/`false`) and positive-integer allowed values

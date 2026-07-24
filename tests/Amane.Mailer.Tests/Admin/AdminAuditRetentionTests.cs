@@ -103,7 +103,7 @@ public sealed class AdminAuditRetentionTests : IClassFixture<AdminAuditRetention
             MailerAdminAuditRetentionOptions.Load(configuration));
 
         Assert.Contains(key, exception.Message, StringComparison.Ordinal);
-        Assert.Contains("positive integer", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("between", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
