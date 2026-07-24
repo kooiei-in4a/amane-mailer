@@ -282,7 +282,7 @@ DDL: `src/Amane.Mailer/Data/Migrations/002_worker_heartbeats.sql`
 | `name` | TEXT PK | Service name (`worker` / `sweep`) |
 | `last_heartbeat_at` | TEXT | Last heartbeat time (UTC ISO8601) |
 
-Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthcheck` and `GET /readyz` verify that the schema required by the current binary is ready (applied migration versions + checksums), and when Worker is enabled also validate the presence and freshness of both heartbeat rows. Freshness threshold is `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` (default 300 seconds). Docker HEALTHCHECK uses the CLI `healthcheck`.
+Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthcheck` and `GET /readyz` verify that the schema required by the current binary is ready (applied migration versions + checksums), and when Worker is enabled also validate the presence and freshness of both heartbeat rows. Freshness threshold is `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` (default 300 seconds). Docker HEALTHCHECK uses the CLI `healthcheck`. The `GET /readyz` HTTP response remains `{"ready":true|false}` only (200 / 503) and does not include failure details. Internally, a fixed primary reason is recorded via transition-only logs and `/metrics` gauges `mail_ready` / `mail_readiness_failure` (#330).
 
 ### 3.4 State Transitions (`mail_requests.status`)
 

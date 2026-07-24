@@ -9,6 +9,9 @@ public sealed class MailerRuntimeMetrics
     private long _retriesTotal;
     private long _finalizeSkippedTotal;
     private long _webhookFinalizeSkippedTotal;
+    private int _ready;
+    private bool _readinessObserved;
+    private string? _readinessFailureReason;
     private readonly object _gate = new();
     private readonly Dictionary<(string Result, string Provider), long> _deliveries = new();
     private readonly Dictionary<string, DeliveryDurationHistogram> _durations = new(StringComparer.Ordinal);
@@ -21,6 +24,20 @@ public sealed class MailerRuntimeMetrics
 
     public void RecordWebhookFinalizeSkipped() =>
         Interlocked.Increment(ref _webhookFinalizeSkippedTotal);
+
+    /// <summary>
+    /// Updates readiness gauges. <paramref name="failureReason"/> must be a fixed
+    /// <see cref="MailerReadinessReasons"/> value (or null when ready).
+    /// </summary>
+    public void SetReadiness(bool ready, string? failureReason)
+    {
+        lock (_gate)
+        {
+            _readinessObserved = true;
+            _ready = ready ? 1 : 0;
+            _readinessFailureReason = ready ? null : failureReason;
+        }
+    }
 
     public void RecordAttemptCompleted(MailAttemptInsert attempt)
     {
@@ -57,6 +74,9 @@ public sealed class MailerRuntimeMetrics
                 Interlocked.Read(ref _retriesTotal),
                 Interlocked.Read(ref _finalizeSkippedTotal),
                 Interlocked.Read(ref _webhookFinalizeSkippedTotal),
+                _readinessObserved,
+                _ready == 1,
+                _readinessFailureReason,
                 _deliveries
                     .Select(entry => (entry.Key.Result, entry.Key.Provider, entry.Value))
                     .ToArray(),
@@ -76,8 +96,21 @@ public sealed class MailerRuntimeMetrics
 
         lock (_gate)
         {
+            _readinessObserved = false;
+            _ready = 0;
+            _readinessFailureReason = null;
             _deliveries.Clear();
             _durations.Clear();
+        }
+    }
+
+    internal void ClearReadinessForTests()
+    {
+        lock (_gate)
+        {
+            _readinessObserved = false;
+            _ready = 0;
+            _readinessFailureReason = null;
         }
     }
 
@@ -119,6 +152,9 @@ public sealed record MailerRuntimeMetricsSnapshot(
     long RetriesTotal,
     long FinalizeSkippedTotal,
     long WebhookFinalizeSkippedTotal,
+    bool ReadinessObserved,
+    bool Ready,
+    string? ReadinessFailureReason,
     (string Result, string Provider, long Count)[] Deliveries,
     IReadOnlyDictionary<string, DeliveryDurationSnapshot> Durations);
 

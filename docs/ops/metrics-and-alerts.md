@@ -48,6 +48,8 @@ Compose / systemd では Mailer HTTP ポートを **内部ネットワークの�
 | `mail_webhook_events_pending` | gauge | なし | Webhook outbox の pending / delivering 件数（CLI `webhook_events_pending` と同集計） |
 | `mail_webhook_events_dead_lettered` | gauge | なし | Webhook outbox の dead_lettered 件数（CLI `webhook_events_dead_lettered` と同集計） |
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | `worker` / `sweep` の heartbeat 経過秒。行未存在時は series なし |
+| `mail_ready` | gauge | なし | 直近の `/readyz` 評価結果（1=ready、0=not ready）。未評価時は series なし |
+| `mail_readiness_failure` | gauge | `reason` | 直近 `/readyz` の primary failure reason。固定値のみ（`schema_not_ready` / `worker_not_running` / `sweep_not_running` / `heartbeat_missing` / `heartbeat_stale` / `database_error` / `unexpected_error`）。active な reason のみ 1、他は 0。ready 時はすべて 0。未評価時は series なし |
 
 **禁止ラベル（含めない）:** `recipient_email`, `subject`, `mail_request_id`, `tenant_id`, `source_service`
 
@@ -79,6 +81,14 @@ scrape_configs:
 groups:
   - name: amane-mailer
     rules:
+      - alert: MailNotReady
+        expr: mail_ready == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Mailer /readyz is not ready; see mail_readiness_failure for primary reason
+
       - alert: MailQueueOldestAgeHigh
         expr: mail_queue_oldest_age_seconds > 300
         for: 5m
