@@ -59,6 +59,8 @@ the optional-bearer path).
 | `mail_webhook_events_pending` | gauge | none | Webhook outbox pending / delivering count (same aggregation as CLI `webhook_events_pending`) |
 | `mail_webhook_events_dead_lettered` | gauge | none | Webhook outbox dead_lettered count (same aggregation as CLI `webhook_events_dead_lettered`) |
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | Heartbeat age for `worker` / `sweep`. No series when the row is missing |
+| `mail_ready` | gauge | none | Last `/readyz` evaluation (1 ready, 0 not ready). No series until the first evaluation |
+| `mail_readiness_failure` | gauge | `reason` | Primary failure reason from the last `/readyz`. Fixed values only (`schema_not_ready` / `worker_not_running` / `sweep_not_running` / `heartbeat_missing` / `heartbeat_stale` / `database_error` / `unexpected_error`). Only the active reason is 1; others are 0. All 0 when ready. No series until the first evaluation |
 
 **Forbidden labels (must not include):** `recipient_email`, `subject`,
 `mail_request_id`, `tenant_id`, `source_service`
@@ -96,6 +98,14 @@ scrape_configs:
 groups:
   - name: amane-mailer
     rules:
+      - alert: MailNotReady
+        expr: mail_ready == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Mailer /readyz is not ready; see mail_readiness_failure for primary reason
+
       - alert: MailQueueOldestAgeHigh
         expr: mail_queue_oldest_age_seconds > 300
         for: 5m

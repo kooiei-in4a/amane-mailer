@@ -92,6 +92,24 @@ public static class PrometheusMetricsFormatter
                 ("component", "sweep"));
         }
 
+        if (runtime.ReadinessObserved)
+        {
+            AppendHelpType(builder, "mail_ready", "gauge",
+                "Process readiness from the last /readyz evaluation (1 ready, 0 not ready).");
+            AppendGauge(builder, "mail_ready", runtime.Ready ? 1 : 0);
+
+            AppendHelpType(builder, "mail_readiness_failure", "gauge",
+                "Primary readiness failure reason from the last /readyz evaluation (1 active, 0 inactive).");
+            foreach (var reason in MailerReadinessReasons.All)
+            {
+                var active = !runtime.Ready
+                    && string.Equals(runtime.ReadinessFailureReason, reason, StringComparison.Ordinal)
+                    ? 1
+                    : 0;
+                AppendGauge(builder, "mail_readiness_failure", active, ("reason", reason));
+            }
+        }
+
         return builder.ToString();
     }
 

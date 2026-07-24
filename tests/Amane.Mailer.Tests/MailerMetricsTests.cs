@@ -60,6 +60,11 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
             ct);
 
         using var client = CreateClient(fixture.Factory);
+        using var readyResponse = await client.GetAsync("/readyz", ct);
+        Assert.True(
+            readyResponse.StatusCode is HttpStatusCode.OK or HttpStatusCode.ServiceUnavailable,
+            $"Unexpected /readyz status: {readyResponse.StatusCode}");
+
         using var response = await client.GetAsync("/metrics", ct);
         var body = await response.Content.ReadAsStringAsync(ct);
 
@@ -76,6 +81,8 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         Assert.Contains("mail_webhook_events_pending", body, StringComparison.Ordinal);
         Assert.Contains("mail_webhook_events_dead_lettered", body, StringComparison.Ordinal);
         Assert.Contains("mail_worker_heartbeat_age_seconds", body, StringComparison.Ordinal);
+        Assert.Contains("mail_ready", body, StringComparison.Ordinal);
+        Assert.Contains("mail_readiness_failure", body, StringComparison.Ordinal);
     }
 
     [Fact]

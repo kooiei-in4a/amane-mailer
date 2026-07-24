@@ -280,7 +280,7 @@ DDL: `src/Amane.Mailer/Data/Migrations/002_worker_heartbeats.sql`
 | `name` | TEXT PK | サービス名（`worker` / `sweep`） |
 | `last_heartbeat_at` | TEXT | 最終 heartbeat 時刻（UTC ISO8601） |
 
-Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する。CLI `healthcheck` と `GET /readyz` は、現行バイナリが必要とする applied migration（version + checksum）を含む schema 準備状況を検証し、Worker 有効時は両 heartbeat 行の存在と鮮度も検証する。鮮度閾値は `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds`（既定 300 秒）。Docker HEALTHCHECK は CLI `healthcheck` を使用する。
+Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する。CLI `healthcheck` と `GET /readyz` は、現行バイナリが必要とする applied migration（version + checksum）を含む schema 準備状況を検証し、Worker 有効時は両 heartbeat 行の存在と鮮度も検証する。鮮度閾値は `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds`（既定 300 秒）。Docker HEALTHCHECK は CLI `healthcheck` を使用する。`GET /readyz` の HTTP 応答は `{"ready":true|false}` のみ（200 / 503）で、失敗理由は response に含めない。内部では固定の primary reason を状態遷移ログと `/metrics` の `mail_ready` / `mail_readiness_failure` に記録する（#330）。
 
 ### 3.4 状態遷移（`mail_requests.status`）
 
