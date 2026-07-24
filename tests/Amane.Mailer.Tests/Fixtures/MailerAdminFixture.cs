@@ -11,7 +11,7 @@ public sealed class MailerAdminFixture() : MailerWebApplicationFixtureBase(worke
     public const string Username = "admin";
     public const string Password = "correct horse battery staple";
 
-    private static readonly string PasswordHash = AdminPasswordHasher.Hash(Password);
+    public static readonly string PasswordHash = AdminPasswordHasher.Hash(Password);
 
     protected override IReadOnlyDictionary<string, string?> ExtraConfiguration =>
         new Dictionary<string, string?>

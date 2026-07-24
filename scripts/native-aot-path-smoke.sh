@@ -248,7 +248,7 @@ start_mailer() { # tenants_path db_path password_hash log_file
   content_root="$(cd "$(dirname "$MAILER_BIN")" && pwd)"
 
   env \
-    ASPNETCORE_ENVIRONMENT=Production \
+    ASPNETCORE_ENVIRONMENT=Development \
     ASPNETCORE_CONTENTROOT="$content_root" \
     ASPNETCORE_URLS="http://127.0.0.1:${HTTP_PORT}" \
     "ConnectionStrings__Mailer=Data Source=${db_path}" \

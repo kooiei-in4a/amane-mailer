@@ -42,7 +42,9 @@ services:
     mem_limit: ${MAILER_MEM_LIMIT}
     cpus: ${MAILER_CPUS}
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
+      # Default Production. Local Admin HTTP rehearsal may override to Development with
+      # AMANE_ADMIN_ALLOW_HTTP=true (#341); deploy hosts must keep Production + ALLOW_HTTP=false.
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       ASPNETCORE_URLS: http://+:${MAILER_HTTP_PORT:-8080}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: ${ASPNETCORE_FORWARDEDHEADERS_ENABLED:-false}
       ConnectionStrings__Mailer: ${MAILER_CONNECTION_STRING:-Data Source=/app/data/mailer.db}
@@ -79,6 +81,8 @@ services:
       AMANE_ADMIN_BIND: ${AMANE_ADMIN_BIND:-}
       MAILER_ADMIN_BIND: ${MAILER_ADMIN_BIND:-}
       AMANE_ADMIN_ALLOW_HTTP: ${AMANE_ADMIN_ALLOW_HTTP:-false}
+      # ALLOW_HTTP=true is Development-only. With ASPNETCORE_ENVIRONMENT=Production
+      # (this compose default), true causes Mailer startup failure when Admin is enabled.
       AMANE_ADMIN_PII_LIST_MODE: ${AMANE_ADMIN_PII_LIST_MODE:-masked}
     volumes:
       - ${MAILER_DATA_PATH:-./data}:/app/data
