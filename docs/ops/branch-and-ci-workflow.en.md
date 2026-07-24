@@ -45,7 +45,10 @@ Job names are unchanged so branch protection required status checks stay aligned
 Release-gate CI includes:
 
 - `Restore, build, and test`
-- `Native AOT publish smoke`
+- `Native AOT publish smoke` (publish + `--help`, plus a linux-x64 AOT black-box
+  smoke for low-frequency paths such as Admin, HTTPS webhook tenant startup, and
+  `db backup` via `scripts/native-aot-path-smoke.sh`. ACS live and full webhook
+  delivery remain out of scope)
 - `Docker build smoke (linux/amd64)` and aggregate `Docker build smoke`
 - `Local compose fresh data dir`
 - `OpenAPI validation`

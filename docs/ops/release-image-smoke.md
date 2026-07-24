@@ -106,6 +106,11 @@ Mailpit は release artifact に含まれない smoke helper です。`latest` �
 - `scripts/release-smoke.sh` / `scripts/release-smoke.ps1`: **対象 release image** の HTTP /
   冪等性 / Mailpit delivery を clean state から一括検証する release smoke。host 側の
   HTTP クライアント（bash 版は curl、PowerShell 版は `Invoke-WebRequest`）のみで完結します。
+  Admin UI・webhook HTTPS tenant 起動・`db backup` CLI は対象外です。
+- `scripts/native-aot-path-smoke.sh`: CI の `Native AOT publish smoke` が publish した
+  **linux-x64 Native AOT binary** に対し、Admin login・HTTPS webhook tenant の `/readyz`・
+  `db backup` など低頻度 path を black-box 検証します（issue #286）。release image や
+  Mailpit 配送は対象外です。ACS live は secret 依存のため手動のままです。
 - `infra/deploy/drills/mail-05a-*`: deploy host 上の稼働中 compose stack に対する
   no-send / ACS deploy drill。SQLite Mailer CLI（`healthcheck`、`db stats`、`db request-state`）と
   一時的な curl compose client を使い、worker 無効化や DB 状態確認まで踏み込みます。
