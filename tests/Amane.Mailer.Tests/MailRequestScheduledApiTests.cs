@@ -429,7 +429,8 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
-    public async Task Reschedule_after_attempt_returns_invalid_state()    {
+    public async Task Reschedule_after_attempt_returns_invalid_state()
+    {
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
         var request = MailRequestTestData.CreateRequest();
