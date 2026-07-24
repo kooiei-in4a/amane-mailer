@@ -64,7 +64,7 @@ When intentionally changing the contract, update the DTOs / constants / payload 
 |---|---|---|
 | First acceptance | 202 | `status: accepted` |
 | Retry of same request | 202 | `status: already_accepted` |
-| Invalid JSON / empty body / unknown property / duplicate property | 400 | `INVALID_REQUEST` |
+| Invalid JSON / empty body / unknown property / duplicate property / invalid UTF-8 | 400 | `INVALID_REQUEST` |
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Same ID, different content | 409 | `IDEMPOTENCY_CONFLICT` |
@@ -121,7 +121,7 @@ Body: `{ "scheduled_at": "<UTC date-time>|null" }` (null clears the schedule gat
 | Situation | HTTP | code / status |
 |---|---|---|
 | Updated while `queued` and `attempt_count=0` | 200 | Updated status JSON |
-| Invalid query | 400 | `INVALID_REQUEST` |
+| Invalid query / invalid JSON body / invalid UTF-8 | 400 | `INVALID_REQUEST` |
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Missing / other tenant | 404 | `NOT_FOUND` |

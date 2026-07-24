@@ -64,7 +64,7 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 |---|---|---|
 | 初回受付 | 202 | `status: accepted` |
 | 同一依頼の再送 | 202 | `status: already_accepted` |
-| ボディ不正 JSON / 空 / 未知 property / 重複 property | 400 | `INVALID_REQUEST` |
+| ボディ不正 JSON / 空 / 未知 property / 重複 property / 無効 UTF-8 | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 同一ID・内容差異 | 409 | `IDEMPOTENCY_CONFLICT` |
@@ -120,7 +120,7 @@ Cancel の DB 更新（`Cancelled` commit）が成功したあと、webhook enqu
 | 状況 | HTTP | code / status |
 |---|---|---|
 | `queued` かつ `attempt_count=0` で更新成功 | 200 | 更新後ステータス JSON |
-| クエリ不正 | 400 | `INVALID_REQUEST` |
+| クエリ不正 / ボディ不正 JSON / 無効 UTF-8 | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 存在しない / 他 tenant | 404 | `NOT_FOUND` |
