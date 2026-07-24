@@ -71,6 +71,8 @@ services:
       MAILPIT_SMTP_PORT: "1025"
       MAILPIT_SMTP_USE_SSL: "false"
       ACS_CONNECTION_STRING: ""
+      # Release smoke uses Production environment; metrics bearer is required (#283).
+      MAILER_METRICS_BEARER_TOKEN: ${MAILER_METRICS_BEARER_TOKEN:-local-metrics-scrape-token}
     volumes:
       - mailer-data:/app/data
     ports:

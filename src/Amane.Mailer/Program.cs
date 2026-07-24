@@ -148,6 +148,7 @@ var app = builder.Build();
 
 _ = app.Services.GetRequiredService<MailerTenantRegistry>();
 _ = app.Services.GetRequiredService<MailerOptions>();
+_ = app.Services.GetRequiredService<MailerMetricsOptions>();
 
 app.MapGet("/healthz", () => MailerJsonResults.Health(true));
 

@@ -65,6 +65,10 @@ services:
       MAILER_REQUIRE_ACS_SECRET_FILE: "true"
       Mailer__Retention__Days: ${MAILER_RETENTION_DAYS:-90}
       Mailer__Retention__SweepIntervalHours: ${MAILER_RETENTION_SWEEP_INTERVAL_HOURS:-24}
+      # Required when Mailer:Metrics:Enabled=true under Production (#283). Leave unset only if
+      # metrics are disabled via Mailer__Metrics__Enabled=false.
+      MAILER_METRICS_BEARER_TOKEN: ${MAILER_METRICS_BEARER_TOKEN:-}
+      Mailer__Metrics__Enabled: ${MAILER_METRICS_ENABLED:-true}
       AMANE_ADMIN_ENABLED: ${AMANE_ADMIN_ENABLED:-false}
       AMANE_ADMIN_USERNAME: ${AMANE_ADMIN_USERNAME:-admin}
       AMANE_ADMIN_PASSWORD_HASH: ${AMANE_ADMIN_PASSWORD_HASH:-}

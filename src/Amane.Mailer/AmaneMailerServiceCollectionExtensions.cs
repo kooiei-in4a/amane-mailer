@@ -98,7 +98,11 @@ public static class AmaneMailerServiceCollectionExtensions
         });
 
         services.AddSingleton(provider =>
-            MailerMetricsOptions.Load(provider.GetRequiredService<IConfiguration>()));
+        {
+            var options = MailerMetricsOptions.Load(provider.GetRequiredService<IConfiguration>());
+            options.Validate(provider.GetRequiredService<IHostEnvironment>().EnvironmentName);
+            return options;
+        });
 
         services.AddSingleton<MailerRuntimeMetrics>();
 

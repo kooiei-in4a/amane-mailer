@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Text;
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
@@ -13,6 +14,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace Amane.Mailer.Tests;
 
@@ -234,6 +236,55 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         {
             ["Mailer:Metrics:BearerToken"] = MetricsBearerToken,
         });
+
+        using var client = CreateClient(factory);
+        using var unauthorized = await client.GetAsync("/metrics", ct);
+        Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+
+        using var authorized = await SendMetricsAsync(client, MetricsBearerToken, ct);
+        Assert.Equal(HttpStatusCode.OK, authorized.StatusCode);
+    }
+
+    [Fact]
+    public async Task Metrics_startup_fails_in_production_without_bearer_when_enabled()
+    {
+        await using var factory = CreateFactory(
+            new Dictionary<string, string?>(),
+            environmentName: Environments.Production);
+
+        // Program.cs eagerly resolves MailerMetricsOptions after Build(), matching
+        // MailerTenantRegistry / MailerOptions, so host construction must fail closed.
+        var ex = Assert.Throws<InvalidOperationException>(() => CreateClient(factory));
+        Assert.Contains("BearerToken", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Metrics_startup_allows_production_when_metrics_disabled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var factory = CreateFactory(
+            new Dictionary<string, string?>
+            {
+                ["Mailer:Metrics:Enabled"] = "false",
+            },
+            environmentName: Environments.Production);
+
+        using var client = CreateClient(factory);
+        using var response = await client.GetAsync("/metrics", ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Metrics_startup_allows_production_with_bearer_configured()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var factory = CreateFactory(
+            new Dictionary<string, string?>
+            {
+                ["MAILER_METRICS_BEARER_TOKEN"] = MetricsBearerToken,
+            },
+            environmentName: Environments.Production);
 
         using var client = CreateClient(factory);
         using var unauthorized = await client.GetAsync("/metrics", ct);
@@ -587,7 +638,9 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         Assert.Contains("mail_deliveries_total{result=\"delivered\",provider=\"mailpit\"} 1", body, StringComparison.Ordinal);
     }
 
-    private WebApplicationFactory<global::Program> CreateFactory(IReadOnlyDictionary<string, string?> extraConfiguration)
+    private WebApplicationFactory<global::Program> CreateFactory(
+        IReadOnlyDictionary<string, string?> extraConfiguration,
+        string environmentName = "Testing")
     {
         var settings = new Dictionary<string, string?>
         {
@@ -604,7 +657,7 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
 
         return new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
         {
-            builder.UseEnvironment("Testing");
+            builder.UseEnvironment(environmentName);
             builder.ConfigureAppConfiguration((_, configuration) =>
             {
                 configuration.AddInMemoryCollection(settings);
