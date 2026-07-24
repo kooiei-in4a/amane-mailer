@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
@@ -426,6 +427,55 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
 
         Assert.Equal(HttpStatusCode.OK, reschedule.StatusCode);
         Assert.Equal(0, capturingQueue.SignalCount);
+    }
+
+    [Fact]
+    public async Task Reschedule_with_invalid_utf8_returns_400()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest(
+            scheduledAt: DateTimeOffset.UtcNow.AddHours(2));
+
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+
+        // Invalid byte outside the JSON string value: {"scheduled_at":null} with 0xFF after '{'.
+        var valid = Encoding.UTF8.GetBytes("""{"scheduled_at":null}""");
+        var mutated = new byte[valid.Length + 1];
+        mutated[0] = valid[0];
+        mutated[1] = 0xFF;
+        Buffer.BlockCopy(valid, 1, mutated, 2, valid.Length - 1);
+        using var content = new ByteArrayContent(mutated);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+        using var reschedule = await client.PostAsync(RescheduleUrl(request.MailRequestId), content, ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, reschedule.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(reschedule, ct));
+        Assert.Equal(
+            "Request body is not valid UTF-8.",
+            await MailRequestTestData.ReadMessageAsync(reschedule, ct));
+        var responseText = await reschedule.Content.ReadAsStringAsync(ct);
+        Assert.DoesNotContain('\uFFFD', responseText);
+        Assert.DoesNotContain("0xFF", responseText, StringComparison.OrdinalIgnoreCase);
+
+        // Original scheduled request remains unchanged (not cancelled / not cleared).
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var stored = await repository.FindByIdempotencyKeyAsync(
+            MailerWebApplicationFixtureBase.TenantId,
+            MailerWebApplicationFixtureBase.SourceService,
+            request.MailRequestId,
+            ct);
+        Assert.NotNull(stored);
+        Assert.Equal(MailRequestState.Queued, stored.Status);
+        Assert.NotNull(stored.ScheduledAt);
     }
 
     [Fact]

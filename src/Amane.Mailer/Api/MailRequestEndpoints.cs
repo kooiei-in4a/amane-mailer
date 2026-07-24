@@ -17,6 +17,11 @@ public static class MailRequestEndpoints
 {
     private const int MaxRequestBodyBytes = 256_000;
 
+    // Reject invalid UTF-8 instead of substituting U+FFFD (#343).
+    private static readonly Encoding StrictUtf8 = new UTF8Encoding(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+
     public static IEndpointRouteBuilder MapMailRequestEndpoints(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapPost("/internal/mail-requests", CreateMailRequestAsync);
@@ -189,6 +194,13 @@ public static class MailRequestEndpoints
                 MailerErrorCodes.RequestTooLarge,
                 StatusCodes.Status413PayloadTooLarge);
         }
+        catch (RequestBodyInvalidUtf8Exception)
+        {
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                "Request body is not valid UTF-8.",
+                StatusCodes.Status400BadRequest);
+        }
 
         MailRequestRescheduleRequest? request;
         try
@@ -302,6 +314,13 @@ public static class MailRequestEndpoints
             return MailerJsonResults.Error(
                 MailerErrorCodes.RequestTooLarge,
                 StatusCodes.Status413PayloadTooLarge);
+        }
+        catch (RequestBodyInvalidUtf8Exception)
+        {
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                "Request body is not valid UTF-8.",
+                StatusCodes.Status400BadRequest);
         }
 
         MailRequestCreateRequest? request;
@@ -657,7 +676,14 @@ public static class MailRequestEndpoints
             await buffer.WriteAsync(chunk.AsMemory(0, bytesRead), cancellationToken);
         }
 
-        return Encoding.UTF8.GetString(buffer.ToArray());
+        try
+        {
+            return StrictUtf8.GetString(buffer.ToArray());
+        }
+        catch (DecoderFallbackException)
+        {
+            throw new RequestBodyInvalidUtf8Exception();
+        }
     }
 
     private static string? ReadBearerToken(HttpRequest request)
@@ -853,4 +879,6 @@ public static class MailRequestEndpoints
         };
 
     private sealed class RequestBodyTooLargeException : Exception;
+
+    private sealed class RequestBodyInvalidUtf8Exception : Exception;
 }

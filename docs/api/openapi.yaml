@@ -42,6 +42,7 @@ paths:
       description: >-
         送信依頼を Mailer DB に永続化し 202 を返す（ACS 送信完了ではない）。
         実際の送信は Worker が非同期に行う。リクエストボディ上限は 256,000 バイト。
+        ボディは strict UTF-8 として解釈し、無効な byte sequence は置換せず 400 で拒否する。
         202 は受付の成功のみを表し、実メール配送の exactly-once は保証しない
         （at-least-once。詳細は docs/service-spec.md の「配送一意性（実送信の保証）」節）。
       operationId: createMailRequest
@@ -61,13 +62,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/MailRequestCreateResponse'
         '400':
-          description: ボディが不正な JSON、または空
+          description: ボディが不正な JSON / 空 / 無効 UTF-8、または未知・重複 property
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 invalid:
                   value: { code: INVALID_REQUEST, message: "Request body is not valid JSON." }
+                invalidUtf8:
+                  value: { code: INVALID_REQUEST, message: "Request body is not valid UTF-8." }
         '401':
           description: テナント/トークン不一致
           content:
@@ -209,6 +212,7 @@ paths:
       description: >-
         `queued` かつ `attempt_count = 0`（未送信）の依頼の `scheduled_at` を更新する。
         `null` を送るとスケジュールゲートを解除し即時配送対象になる。
+        ボディは strict UTF-8 として解釈し、無効な byte sequence は置換せず 400 で拒否する。
         API 時刻は UTC。過去時刻は 422 SCHEDULED_AT_IN_PAST、最大予約期間（30 日）超過は 422 SCHEDULED_AT_TOO_FAR。
         `next_attempt_at`（再試行）とは独立。
       operationId: rescheduleMailRequest
@@ -247,10 +251,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/MailRequestStatusResponse'
         '400':
-          description: ボディまたはクエリが不正
+          description: ボディまたはクエリが不正（不正 JSON / 無効 UTF-8 を含む）
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                invalidUtf8:
+                  value: { code: INVALID_REQUEST, message: "Request body is not valid UTF-8." }
         '401':
           description: テナント/トークン不一致
           content:
