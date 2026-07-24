@@ -8,6 +8,8 @@ using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace Amane.Mailer.Admin;
 
@@ -21,8 +23,14 @@ public static class MailerAdminExtensions
     {
         services.AddSingleton(provider =>
         {
-            var options = MailerAdminOptions.Load(provider.GetRequiredService<IConfiguration>());
+            var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
+            var options = MailerAdminOptions.Load(resolvedConfiguration);
             options.Validate();
+            var environment = provider.GetRequiredService<IHostEnvironment>();
+            AdminCookieTransportPolicy.Validate(
+                AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration),
+                environment.EnvironmentName,
+                options.Enabled);
             return options;
         });
         services.AddSingleton<AdminLoginThrottle>();
@@ -46,23 +54,14 @@ public static class MailerAdminExtensions
         });
         services.AddSingleton<AdminDbOpsService>();
 
-        // AMANE_ADMIN_ALLOW_HTTP=true drops HTTPS-only constraints for local dev behind no TLS proxy.
-        // Production always keeps SecurePolicy.Always and __Host- cookie prefixes.
-        var allowHttp = string.Equals(
-            configuration["AMANE_ADMIN_ALLOW_HTTP"] ?? configuration["MAILER_ADMIN_ALLOW_HTTP"],
-            "true",
-            StringComparison.OrdinalIgnoreCase);
-        var securePolicy = allowHttp ? CookieSecurePolicy.SameAsRequest : CookieSecurePolicy.Always;
-        var authCookieName = allowHttp ? "amane-admin-auth" : "__Host-amane-admin-auth";
-        var csrfCookieName = allowHttp ? "amane-admin-csrf" : "__Host-amane-admin-csrf";
-
+        // Cookie transport is resolved from IHostEnvironment at options configure time so
+        // WebApplicationFactory UseEnvironment and Production/Staging fail-closed agree.
+        // Non-Development always keeps SecurePolicy.Always and __Host- cookie prefixes.
         services
             .AddAuthentication(AdminAuthenticationConstants.Scheme)
             .AddCookie(AdminAuthenticationConstants.Scheme, cookie =>
             {
-                cookie.Cookie.Name = authCookieName;
                 cookie.Cookie.HttpOnly = true;
-                cookie.Cookie.SecurePolicy = securePolicy;
                 cookie.Cookie.SameSite = SameSiteMode.Strict;
                 cookie.LoginPath = "/admin/login";
                 cookie.AccessDeniedPath = "/admin/login";
@@ -72,16 +71,32 @@ public static class MailerAdminExtensions
                 cookie.Events.OnRedirectToAccessDenied = context => HandleApiRedirectAsync(context, StatusCodes.Status403Forbidden);
                 cookie.Events.OnValidatePrincipal = ValidateAdminCookieAsync;
             });
+        services.AddOptions<CookieAuthenticationOptions>(AdminAuthenticationConstants.Scheme)
+            .Configure<IHostEnvironment, IConfiguration>((cookie, environment, resolvedConfiguration) =>
+            {
+                var transport = AdminCookieTransportPolicy.Resolve(
+                    AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration),
+                    environment.EnvironmentName);
+                cookie.Cookie.Name = transport.AuthCookieName;
+                cookie.Cookie.SecurePolicy = transport.SecurePolicy;
+            });
         services.AddAuthorization();
         services.AddAntiforgery(antiforgery =>
         {
-            antiforgery.Cookie.Name = csrfCookieName;
             antiforgery.Cookie.HttpOnly = true;
-            antiforgery.Cookie.SecurePolicy = securePolicy;
             antiforgery.Cookie.SameSite = SameSiteMode.Strict;
             antiforgery.FormFieldName = "__RequestVerificationToken";
             antiforgery.HeaderName = "X-CSRF-TOKEN";
         });
+        services.AddOptions<AntiforgeryOptions>()
+            .Configure<IHostEnvironment, IConfiguration>((antiforgery, environment, resolvedConfiguration) =>
+            {
+                var transport = AdminCookieTransportPolicy.Resolve(
+                    AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration),
+                    environment.EnvironmentName);
+                antiforgery.Cookie.Name = transport.CsrfCookieName;
+                antiforgery.Cookie.SecurePolicy = transport.SecurePolicy;
+            });
 
         return services;
     }

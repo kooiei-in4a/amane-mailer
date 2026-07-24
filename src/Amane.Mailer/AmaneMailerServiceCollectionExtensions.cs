@@ -141,10 +141,13 @@ public static class AmaneMailerServiceCollectionExtensions
 
         services.AddScoped<DbMigrateCommand>();
 
+        // WebhookDeliveryClient is always registered; keep IHttpClientFactory + named client
+        // available even when Mailer:Worker:Enabled=false so Development ValidateOnBuild
+        // (and worker-disabled hosts) can construct the graph (#341 AOT path smoke).
+        services.AddWebhookHttpClient();
+
         if (configuration.GetValue("Mailer:Worker:Enabled", true))
         {
-            var webhookOptions = MailerWebhookOptions.Load(configuration);
-            services.AddWebhookHttpClient(webhookOptions);
             services.AddHostedService<MailRequestSweepService>();
             services.AddHostedService<WebhookDeliverySweepService>();
             services.AddHostedService<RetentionService>();

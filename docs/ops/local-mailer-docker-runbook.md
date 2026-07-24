@@ -252,16 +252,20 @@ Docker の port publish 経由で管理画面へ入るため、`AMANE_ADMIN_ALLO
 実際の host 側公開範囲は compose の `ports`（この runbook では `127.0.0.1:5280:8080`）で制限します。
 旧 `AMANE_ADMIN_BIND` / `MAILER_ADMIN_BIND` は deprecated alias として残っています。
 `AMANE_ADMIN_ALLOW_HTTP=true` と `AMANE_ADMIN_PII_LIST_MODE=visible` はローカル確認専用です。
+`AMANE_ADMIN_ALLOW_HTTP=true` は **Development 専用**です。Admin 有効時に Production／Staging で
+`true` を指定すると Mailer は startup failure になります。ローカル Docker HTTP 確認では
+`ASPNETCORE_ENVIRONMENT=Development` も合わせて設定してください。
 本番・develop deploy host では HTTP 許可や PII 表示を有効にしないでください。
 手順 5 以降の切替手順は、同じ PowerShell セッションで実行する前提です。
 別セッションで再開する場合は、手順 4 で `$hash` を作り直してから管理画面 env も再設定してください。
 
 ```powershell
+$env:ASPNETCORE_ENVIRONMENT = "Development"  # required with ALLOW_HTTP=true (#341)
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
 $env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
-$env:AMANE_ADMIN_ALLOW_HTTP = "true"       # local Docker HTTP only
+$env:AMANE_ADMIN_ALLOW_HTTP = "true"       # Development-only local Docker HTTP
 $env:AMANE_ADMIN_PII_LIST_MODE = "visible" # local UI verification only
 
 $env:MAILER_TENANTS_PATH = "/app/config/mailer/tenants.example.json"
@@ -485,6 +489,7 @@ dead_lettered_total=1
 ```powershell
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
+$env:ASPNETCORE_ENVIRONMENT = "Development"  # required with ALLOW_HTTP=true (#341)
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
 $env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"
