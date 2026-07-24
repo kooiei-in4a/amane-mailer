@@ -164,8 +164,27 @@ Mailer の配送セマンティクスは **at-least-once**（同一依頼から�
 | Mailpit (`provider=mailpit`) | **冪等性なし**（best-effort） | 再送のたびに SMTP 送信が発生しうる（開発/検証向け）。ただし SMTP DATA 受理後の disconnect 失敗だけを理由に再送スケジュールしない（#275） |
 | Worker 自動リトライ | at-least-once | retryable 失敗は `Queued` に戻り再配送 |
 | lease 失効後の finalize 競合（#238） | **再送抑止** | provider 送信成功の証跡を `mail_attempts` に残し、reclaim 時は実送信をスキップして `Delivered` へ収束。finalize skip は `mail_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)） |
+| wall-clock lease 補正（#276） | **絶対時刻比較** | mail / webhook lease は `TimeProvider.GetUtcNow()` 由来の `lock_expires_at` と `@Now` の比較。monotonic clock は使わない。大きな wall-clock 前進は early reclaim / strict finalize fencing 失敗、大きな後退は Processing / Delivering の回復遅延を起こし得る（詳細は次節） |
 | Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す（`attempt_count` を 0 リセット）。旧サイクルの Delivered 証跡は prior-success 収束に使わない（#268）。provider 送信が成功済みでも row が `Delivered` へ収束していなければ再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
 | 配送結果 Webhook | **first-wins**（同一 mail request 世代で高々 1 event）+ `event_id` による再 POST 冪等 | **実メール送信とは別契約**。最初に enqueue された終端状態のみ通知。Admin 手動再送後の別終端（例: `failed` → 再送 → `delivered`）は webhook を再送しない。Consumer は同一 `event_id` の再 POST を冪等に処理する（[webhook-verification.md](consumer/webhook-verification.md)） |
+
+### Worker / Webhook lease と wall clock（#276）
+
+mail (`mail_requests`) と webhook (`delivery_events`) の lease は SQLite に保存する **UTC 絶対時刻** `lock_expires_at` である。Worker / Sweep / reaper / finalize は DI の `TimeProvider`（既定 `TimeProvider.System`）から得た `now` を `@Now` として比較する。Stopwatch 等の monotonic / relative lease は採用していない。
+
+| 補正 | reclaim / reaper（`lock_expires_at <= @Now`） | strict finalize（`lock_expires_at > @Now`） |
+|---|---|---|
+| wall clock が大きく**前進** | lease が早期失効扱いになり reclaim / reaper が起き得る | fencing が失敗し得る |
+| wall clock が大きく**後退** | 実時間より reclaim が遅延し、Processing / Delivering が長く残り得る | 通常どおり成功し得る（lease が「まだ有効」に見える） |
+
+通常の NTP slew（緩やかな補正）では稀。ホストの step 補正や手動時刻変更が主なリスク。
+
+**緩和（現行）:**
+
+- mail: #238 により、provider 送信成功後に strict fencing が失敗しても Delivered 証跡を残し、reclaim 時は実送信をスキップして `Delivered` へ収束できる。完全な skew 解消ではない。
+- webhook: mail と同等の prior-success 収束パスはない。early reclaim 後は HTTP 再 POST が起き得る（Consumer 側は `event_id` 冪等が前提）。
+
+**運用:** OS / コンテナの時刻同期は slew を優先し、大きな step を避ける。`mail_finalize_skipped_total` の急増は fencing 失敗（clock jump を含む）の観測材料になる（[metrics runbook](ops/metrics-and-alerts.md)）。monotonic lease への再設計は別 ADR 候補であり、本仕様の短期方針ではない。
 
 **Consumer 向け推奨:**
 
@@ -525,3 +544,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-23 | effective provider / ACS live-sending の startup 検証を明記。`/readyz` は含めない（#272）。Mailpit は SMTP 受理後の disconnect 失敗を再送対象にしない（#275） |
 | 2026-07-23 | `MailRequestWorker` shutdown: Semaphore 待ち後続 wave は送信開始しない（#271） |
 | 2026-07-24 | 配送結果 Webhook の first-wins（最初の終端のみ通知。Admin 手動再送後の再通知なし）を明記（#273） |
+| 2026-07-24 | Worker / Webhook lease が wall-clock 絶対時刻である前提と clock jump 影響を明記（#276） |
