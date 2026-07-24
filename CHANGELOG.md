@@ -13,6 +13,8 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-07-24
+
 ### Added
 
 - Record a fixed primary `/readyz` failure reason via transition-only logs and
@@ -51,6 +53,9 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
   exception type names (#279). Unknown exceptions become `PROVIDER_UNKNOWN`
   with `retryable: false`, so the worker marks the request `Failed` on that
   attempt without further retries. Existing attempt rows are left unchanged.
+- Align public release image defaults and smoke guidance on `v0.9.2`.
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `0.9.2`.
 
 ### Documentation
 
@@ -65,6 +70,21 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 - Clarify delivery-result webhook first-wins: only the first terminal state is
   notified; Admin manual retry that later reaches `delivered` does not enqueue a
   second webhook (#273).
+- Add v0.9.2 release evidence draft.
+
+### Breaking / Migration
+
+- No breaking public HTTP contract change. Existing POST acceptance behavior is
+  unchanged.
+- No manual database migration is required for this release.
+- Operators enabling metrics outside Development must set
+  `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`), or disable
+  metrics with `Mailer:Metrics:Enabled=false`.
+- Operators with Admin enabled must ensure Admin boolean / positive-integer env
+  values and PBKDF2 password-hash parameters are within the documented bounds;
+  legacy weaker hashes are rejected at startup / `admin user create`.
+- Worker / Webhook / Sweep / Retention / Healthcheck numeric misconfiguration
+  now fails fast at startup instead of silent clamping.
 
 ## [0.9.1] - 2026-07-22
 
