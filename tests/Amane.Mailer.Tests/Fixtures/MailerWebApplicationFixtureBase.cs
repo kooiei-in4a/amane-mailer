@@ -84,10 +84,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
         // Hosted workers may release SQLite handles slightly after DisposeAsync returns.
         // Clear pools and give the finalizer a chance before deleting the temp DB directory
         // so faster event-driven tests do not race the Windows file lock (#287 review).
-        SqliteConnection.ClearAllPools();
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        SqliteConnection.ClearAllPools();
+        PrepareForDirectoryDeleteRetry();
 
         if (_databasePath is not null)
         {
@@ -111,18 +108,23 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
             }
             catch (IOException) when (attempt < maxAttempts - 1)
             {
-                SqliteConnection.ClearAllPools();
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                SqliteConnection.ClearAllPools();
+                PrepareForDirectoryDeleteRetry();
                 Thread.Sleep(50 * (attempt + 1));
             }
             catch (UnauthorizedAccessException) when (attempt < maxAttempts - 1)
             {
-                SqliteConnection.ClearAllPools();
+                PrepareForDirectoryDeleteRetry();
                 Thread.Sleep(50 * (attempt + 1));
             }
         }
+    }
+
+    private static void PrepareForDirectoryDeleteRetry()
+    {
+        SqliteConnection.ClearAllPools();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        SqliteConnection.ClearAllPools();
     }
 
     protected virtual void ConfigureMailerServices(IServiceCollection services)
