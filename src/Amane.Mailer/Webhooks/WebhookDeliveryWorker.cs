@@ -2,6 +2,7 @@ using System.Text.Json;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.Json;
 using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Worker;
 
 namespace Amane.Mailer.Webhooks;
@@ -12,9 +13,14 @@ public sealed class WebhookDeliveryWorker(
     MailerTenantRegistry tenantRegistry,
     MailerWebhookOptions webhookOptions,
     IWebhookDeliveryQueue queue,
+    MailerRuntimeMetrics runtimeMetrics,
     TimeProvider timeProvider,
     ILogger<WebhookDeliveryWorker> logger) : BackgroundService
 {
+    internal const string FinalizeSkipReasonDeliveryResult = "delivery_result";
+    internal const string FinalizeSkipReasonWebhookNotConfigured = "webhook_not_configured";
+    internal const string FinalizeSkipReasonPayloadInvalid = "payload_invalid";
+
     private readonly InflightTracker _inflightTracker = new();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -62,7 +68,7 @@ public sealed class WebhookDeliveryWorker(
         }
     }
 
-    private async Task DeliverClaimedEventAsync(
+    internal async Task DeliverClaimedEventAsync(
         Models.DeliveryEventRow row,
         CancellationToken stoppingToken)
     {
@@ -74,6 +80,7 @@ public sealed class WebhookDeliveryWorker(
                 row,
                 "WEBHOOK_NOT_CONFIGURED",
                 retryable: false,
+                FinalizeSkipReasonWebhookNotConfigured,
                 stoppingToken);
             return;
         }
@@ -87,6 +94,7 @@ public sealed class WebhookDeliveryWorker(
                 row,
                 "WEBHOOK_PAYLOAD_INVALID",
                 retryable: false,
+                FinalizeSkipReasonPayloadInvalid,
                 stoppingToken);
             return;
         }
@@ -134,11 +142,8 @@ public sealed class WebhookDeliveryWorker(
             result.ErrorCode,
             finalizeTimeout.Token);
 
-        if (!finalized)
+        if (!ObserveFinalizeResult(row, outcome, FinalizeSkipReasonDeliveryResult, finalized))
         {
-            logger.LogWarning(
-                "Skipped webhook finalize for event {EventId} because the lock token expired or was superseded.",
-                row.Id);
             return;
         }
 
@@ -161,6 +166,7 @@ public sealed class WebhookDeliveryWorker(
         Models.DeliveryEventRow row,
         string errorCode,
         bool retryable,
+        string finalizeSkipReason,
         CancellationToken stoppingToken)
     {
         var completedAt = timeProvider.GetUtcNow();
@@ -172,7 +178,7 @@ public sealed class WebhookDeliveryWorker(
             : null;
 
         using var finalizeTimeout = new CancellationTokenSource(webhookOptions.FinalizeTimeout);
-        await repository.FinalizeAsync(
+        var finalized = await repository.FinalizeAsync(
             row.Id,
             row.LockToken,
             completedAt,
@@ -180,5 +186,30 @@ public sealed class WebhookDeliveryWorker(
             nextAttemptAt,
             errorCode,
             finalizeTimeout.Token);
+
+        _ = ObserveFinalizeResult(row, outcome, finalizeSkipReason, finalized);
+    }
+
+    private bool ObserveFinalizeResult(
+        Models.DeliveryEventRow row,
+        DeliveryEventFinalizeOutcome outcome,
+        string finalizeSkipReason,
+        bool finalized)
+    {
+        if (finalized)
+        {
+            return true;
+        }
+
+        runtimeMetrics.RecordWebhookFinalizeSkipped();
+        logger.LogWarning(
+            "Skipped webhook finalize for event {EventId} because the lock token expired or was superseded. TenantId={TenantId}; MailRequestId={MailRequestId}; AttemptNumber={AttemptNumber}; FinalizeOutcome={FinalizeOutcome}; FinalizeSkipReason={FinalizeSkipReason}",
+            row.Id,
+            row.TenantId,
+            row.MailRequestId,
+            row.AttemptCount,
+            outcome.ToString(),
+            finalizeSkipReason);
+        return false;
     }
 }

@@ -104,5 +104,15 @@ assert not already_processed(header("X-Mailer-Event-Id"))
 
 - Admin UI: `/admin/webhook-dead-letters`
 - CLI: `db stats` outputs `webhook_events_pending` and `webhook_events_dead_lettered`
+- Metrics: `mail_webhook_finalize_skipped_total` counts webhook `FinalizeAsync` failures
+  caused by strict lease fencing (expired `lock_expires_at` or superseded lock token).
+  This covers normal delivery outcomes and terminal failure paths such as missing
+  webhook configuration/secret or invalid stored payload. It does **not** change the
+  at-least-once POST contract: after a skip, Mailer may reclaim and re-POST the same
+  `event_id`, so consumers must keep deduplicating by `event_id`. When the counter
+  rises, inspect structured Warning logs (`EventId`, `TenantId`, `MailRequestId`,
+  `AttemptNumber`, `FinalizeOutcome`, `FinalizeSkipReason`) and the webhook backlog
+  gauges. See [metrics-and-alerts.en.md](../ops/metrics-and-alerts.en.md).
 
-Webhook URLs and secrets are never written to audit logs or Admin HTML.
+Webhook URLs and secrets are never written to audit logs, Admin HTML, metrics labels,
+or finalize-skip Warning logs. Payload bodies and recipient PII are also excluded.

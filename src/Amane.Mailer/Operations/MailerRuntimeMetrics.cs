@@ -8,6 +8,7 @@ public sealed class MailerRuntimeMetrics
     private long _acceptedTotal;
     private long _retriesTotal;
     private long _finalizeSkippedTotal;
+    private long _webhookFinalizeSkippedTotal;
     private readonly object _gate = new();
     private readonly Dictionary<(string Result, string Provider), long> _deliveries = new();
     private readonly Dictionary<string, DeliveryDurationHistogram> _durations = new(StringComparer.Ordinal);
@@ -17,6 +18,9 @@ public sealed class MailerRuntimeMetrics
 
     public void RecordFinalizeSkipped() =>
         Interlocked.Increment(ref _finalizeSkippedTotal);
+
+    public void RecordWebhookFinalizeSkipped() =>
+        Interlocked.Increment(ref _webhookFinalizeSkippedTotal);
 
     public void RecordAttemptCompleted(MailAttemptInsert attempt)
     {
@@ -52,6 +56,7 @@ public sealed class MailerRuntimeMetrics
                 Interlocked.Read(ref _acceptedTotal),
                 Interlocked.Read(ref _retriesTotal),
                 Interlocked.Read(ref _finalizeSkippedTotal),
+                Interlocked.Read(ref _webhookFinalizeSkippedTotal),
                 _deliveries
                     .Select(entry => (entry.Key.Result, entry.Key.Provider, entry.Value))
                     .ToArray(),
@@ -67,6 +72,7 @@ public sealed class MailerRuntimeMetrics
         Interlocked.Exchange(ref _acceptedTotal, 0);
         Interlocked.Exchange(ref _retriesTotal, 0);
         Interlocked.Exchange(ref _finalizeSkippedTotal, 0);
+        Interlocked.Exchange(ref _webhookFinalizeSkippedTotal, 0);
 
         lock (_gate)
         {
@@ -112,6 +118,7 @@ public sealed record MailerRuntimeMetricsSnapshot(
     long AcceptedTotal,
     long RetriesTotal,
     long FinalizeSkippedTotal,
+    long WebhookFinalizeSkippedTotal,
     (string Result, string Provider, long Count)[] Deliveries,
     IReadOnlyDictionary<string, DeliveryDurationSnapshot> Durations);
 

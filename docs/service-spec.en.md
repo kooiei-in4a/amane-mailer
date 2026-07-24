@@ -188,9 +188,9 @@ Ordinary NTP slew is rarely enough to matter. Host step corrections and manual c
 **Current mitigations:**
 
 - mail: #238 can still record Delivered evidence when strict fencing fails after a successful provider send, skip the actual send on reclaim, and converge to `Delivered`. This does not remove clock skew itself.
-- webhook: There is no equivalent prior-success converge path. Early reclaim can re-POST HTTP delivery (consumers must rely on `event_id` idempotency).
+- webhook: There is no equivalent prior-success converge path. Early reclaim can re-POST HTTP delivery (consumers must rely on `event_id` idempotency). Webhook finalize fencing failures are observable via `mail_webhook_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)).
 
-**Operations:** Prefer slew over large steps for OS / container time sync. A spike in `mail_finalize_skipped_total` can indicate fencing failures (including clock jumps); see the [metrics runbook](ops/metrics-and-alerts.en.md). A monotonic lease redesign remains a separate ADR candidate and is not the short-term direction of this spec.
+**Operations:** Prefer slew over large steps for OS / container time sync. A spike in `mail_finalize_skipped_total` can indicate mail fencing failures (including clock jumps). For webhook, watch `mail_webhook_finalize_skipped_total`; see the [metrics runbook](ops/metrics-and-alerts.en.md). A monotonic lease redesign remains a separate ADR candidate and is not the short-term direction of this spec.
 
 **Consumer recommendations:**
 
@@ -342,6 +342,10 @@ Consumer.
   idempotency key issues a new `event_id`.
 - Failed deliveries use exponential backoff; exceeding the retry limit records a
   webhook Dead Letter.
+- Lease fencing failures (`FinalizeAsync` returns false) are observable via
+  `mail_webhook_finalize_skipped_total` and structured Warning logs. The delivery
+  contract remains at-least-once, so consumers must keep deduplicating by `event_id`
+  after a skip that may lead to a re-POST ([metrics runbook](ops/metrics-and-alerts.en.md)).
 - During shutdown, `stoppingToken` stops new claims. In-flight deliveries wait up
   to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` (same drain pattern as
   `MailRequestWorker`).
@@ -574,3 +578,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-23 | `MailRequestWorker` shutdown: later semaphore-waiting send waves do not start (#271) |
 | 2026-07-24 | Documented delivery-result webhook first-wins (first terminal only; no re-notify after Admin manual retry) (#273) |
 | 2026-07-24 | Documented that Worker / Webhook leases use wall-clock absolute time and described clock-jump effects (#276) |
+| 2026-07-24 | Made webhook finalize fencing failures observable via `mail_webhook_finalize_skipped_total` (#328) |

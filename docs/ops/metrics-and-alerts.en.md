@@ -53,7 +53,8 @@ the optional-bearer path).
 | `mail_queue_ready_count` | gauge | none | Immediately deliverable queued count (all tenants) |
 | `mail_queue_oldest_age_seconds` | gauge | none | Age of oldest `updated_at` in the ready backlog |
 | `mail_retries_total` | counter | none | Retry attempts since process start (`attempt_number > 1` completed attempts) |
-| `mail_finalize_skipped_total` | counter | none | Delivered finalize attempts where strict lease fencing (`lock_expires_at`) failed. Includes delayed completion under the same lock and superseded/terminal races |
+| `mail_finalize_skipped_total` | counter | none | Delivered finalize attempts where strict lease fencing (`lock_expires_at`) failed. Includes delayed completion under the same lock and superseded/terminal races (**mail-request only**; webhook uses a separate counter) |
+| `mail_webhook_finalize_skipped_total` | counter | none | Webhook `delivery_events` finalize attempts where strict lease fencing (`lock_expires_at` / lock token) failed. Includes normal delivery outcomes and terminal failure paths such as missing webhook config/secret or invalid payload |
 | `mail_dead_letters_total` | gauge | none | Current dead_lettered request count |
 | `mail_webhook_events_pending` | gauge | none | Webhook outbox pending / delivering count (same aggregation as CLI `webhook_events_pending`) |
 | `mail_webhook_events_dead_lettered` | gauge | none | Webhook outbox dead_lettered count (same aggregation as CLI `webhook_events_dead_lettered`) |
@@ -135,6 +136,14 @@ groups:
         annotations:
           summary: Delivered finalize hit strict lease fencing failure (delayed complete or superseded/terminal race)
 
+      - alert: MailWebhookFinalizeSkipped
+        expr: increase(mail_webhook_finalize_skipped_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Webhook delivery-event finalize hit strict lease fencing failure (may re-POST; consumers must dedupe by event_id)
+
       - alert: MailWebhookBacklogHigh
         expr: mail_webhook_events_pending > 100
         for: 10m
@@ -155,10 +164,17 @@ groups:
 Because `mail_deliveries_total` is an in-process counter, `rate()` can be briefly
 unstable right after a Mailer restart. Prefer queue / heartbeat / webhook backlog
 alerts as primary signals and treat delivery rate as secondary. Use
-`mail_finalize_skipped_total` to detect strict lease fencing failures; when it
-increases, check for delivery evidence, Delivered convergence, and DeadLetter races.
-Webhook backlog gauges help detect cases where mail delivery succeeds but
-consumer notifications stall. Admin manual retry is an audited explicit action that
+`mail_finalize_skipped_total` for **mail-request** strict lease fencing failures;
+when it increases, check for delivery evidence, Delivered convergence, and
+DeadLetter races. Use `mail_webhook_finalize_skipped_total` for **webhook outbox**
+finalize fencing failures. Webhook delivery remains at-least-once, so a skip can
+be followed by another POST with the same `event_id`. When the counter rises,
+inspect Warning logs for `EventId` / `TenantId` / `MailRequestId` /
+`FinalizeOutcome` / `FinalizeSkipReason` and the webhook backlog, and confirm
+consumers still deduplicate by `event_id`. Metrics and logs must not include raw
+lock tokens, webhook URLs/secrets, payload bodies, or recipient PII. Webhook
+backlog gauges help detect cases where mail delivery succeeds but consumer
+notifications stall. Admin manual retry is an audited explicit action that
 resets `attempt_count` and marks prior-cycle Delivered attempt evidence as
 ineligible for worker prior-success convergence (#268). Requeueing a DeadLetter
 that already has delivered attempt evidence therefore performs a real resend in
@@ -174,7 +190,7 @@ clock. See the “Worker / Webhook lease と wall clock（#276）” section in
 
 | Correction | Effect | Observation / mitigation |
 |---|---|---|
-| Large forward step | Early reclaim / reaper; strict finalize fencing can fail | Candidate cause of rising `mail_finalize_skipped_total`. Mail may suppress resend and converge via #238. Webhook has no equivalent prior-success path and may re-POST |
+| Large forward step | Early reclaim / reaper; strict finalize fencing can fail | Candidate cause of rising `mail_finalize_skipped_total` / `mail_webhook_finalize_skipped_total`. Mail may suppress resend and converge via #238. Webhook has no equivalent prior-success path and may re-POST |
 | Large backward step | Delayed reclaim while Processing / Delivering | When interpreting `expired_processing_count`, webhook backlog, or heartbeat age, also consider host clock anomalies |
 
 Ordinary NTP slew is rarely enough to matter. Prefer slew over large steps on

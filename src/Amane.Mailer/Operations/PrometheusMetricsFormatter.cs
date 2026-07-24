@@ -56,6 +56,10 @@ public static class PrometheusMetricsFormatter
             "Total delivered finalize attempts where strict lease fencing failed (includes delayed completion under the same lock and superseded/terminal races).");
         AppendCounter(builder, "mail_finalize_skipped_total", runtime.FinalizeSkippedTotal);
 
+        AppendHelpType(builder, "mail_webhook_finalize_skipped_total", "counter",
+            "Total webhook delivery-event finalize attempts where strict lease fencing failed (lock expiry or superseded lock token), including terminal failure paths.");
+        AppendCounter(builder, "mail_webhook_finalize_skipped_total", runtime.WebhookFinalizeSkippedTotal);
+
         AppendHelpType(builder, "mail_dead_letters_total", "gauge",
             "Current number of dead-lettered mail requests.");
         AppendGauge(builder, "mail_dead_letters_total", stats.DeadLetteredCount);
