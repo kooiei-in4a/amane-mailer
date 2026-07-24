@@ -219,6 +219,44 @@ public sealed class AdminAuditRepositoryTests
     }
 
     [Fact]
+    public async Task Scoped_admin_excludes_mail_request_audit_with_null_tenant_id_while_break_glass_sees_it()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await AuditTestDatabase.CreateAsync(ct);
+        var repository = new AdminAuditRepository(db.Factory);
+
+        var scopedTenantId = Guid.Parse("00000000-0000-0000-0000-000000000404");
+        var orphanMailRequestId = Guid.NewGuid();
+        await InsertMailRequestAuditWithNullTenantIdAsync(
+            db.ConnectionString,
+            orphanMailRequestId,
+            actor: "legacy-null-tenant",
+            occurredAt: new DateTimeOffset(2026, 6, 27, 16, 0, 0, TimeSpan.Zero),
+            ct);
+        await repository.WriteAsync(
+            NewAuthAuditEvent(
+                AdminAuditLog.EventTypes.Logout,
+                "scoped-auth-null-tenant",
+                new DateTimeOffset(2026, 6, 27, 16, 1, 0, TimeSpan.Zero)),
+            ct);
+
+        var scopedPage = await repository.ListForAdminAsync(
+            new AdminAuditListQuery
+            {
+                AllowedTenantIds = new HashSet<Guid> { scopedTenantId },
+                PageSize = 50,
+            },
+            ct);
+        Assert.DoesNotContain(scopedPage.Items, row => row.Actor == "legacy-null-tenant");
+        Assert.Contains(scopedPage.Items, row => row.Actor == "scoped-auth-null-tenant");
+
+        var breakGlassPage = await repository.ListForAdminAsync(
+            new AdminAuditListQuery { AllowedTenantIds = null, PageSize = 50 },
+            ct);
+        Assert.Contains(breakGlassPage.Items, row => row.Actor == "legacy-null-tenant");
+    }
+
+    [Fact]
     public async Task List_for_admin_applies_event_type_and_actor_filters()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -320,6 +358,37 @@ public sealed class AdminAuditRepositoryTests
         await using var command = connection.CreateCommand();
         command.CommandText = "DELETE FROM mail_requests WHERE id = @Id;";
         command.Parameters.AddWithValue("@Id", id.ToString("D"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task InsertMailRequestAuditWithNullTenantIdAsync(
+        string connectionString,
+        Guid mailRequestId,
+        string actor,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO admin_audit_events (
+                event_type, actor, occurred_at,
+                source_ip, user_agent_summary,
+                target_type, target_id, tenant_id, field_name,
+                result, error_code)
+            VALUES (
+                @EventType, @Actor, @OccurredAt,
+                NULL, NULL,
+                @TargetType, @TargetId, NULL, NULL,
+                @Result, NULL);
+            """;
+        command.Parameters.AddWithValue("@EventType", AdminAuditLog.EventTypes.ManualCancelRequested);
+        command.Parameters.AddWithValue("@Actor", actor);
+        command.Parameters.AddWithValue("@OccurredAt", SqliteTime.ToStorageUtc(occurredAt));
+        command.Parameters.AddWithValue("@TargetType", AdminAuditLog.TargetTypes.MailRequest);
+        command.Parameters.AddWithValue("@TargetId", mailRequestId.ToString("D"));
+        command.Parameters.AddWithValue("@Result", AdminAuditLog.Results.Success);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
