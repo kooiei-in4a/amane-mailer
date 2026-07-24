@@ -89,18 +89,28 @@ public sealed record MailerAdminAuditRetentionOptions
 
     private static int ReadRetentionDays(IConfiguration configuration)
     {
-        var value = configuration["MAILER_ADMIN_AUDIT_RETENTION_DAYS"];
-        var key = "MAILER_ADMIN_AUDIT_RETENTION_DAYS";
-        if (string.IsNullOrWhiteSpace(value))
+        // Prefer MAILER_* when present (including empty → fail). Only absent (null) falls through.
+        var mailerValue = configuration["MAILER_ADMIN_AUDIT_RETENTION_DAYS"];
+        if (mailerValue is not null)
         {
-            value = configuration["AMANE_ADMIN_AUDIT_RETENTION_DAYS"];
-            key = "AMANE_ADMIN_AUDIT_RETENTION_DAYS";
+            return ConfigurationIntReader.ParseInRange(
+                mailerValue,
+                "MAILER_ADMIN_AUDIT_RETENTION_DAYS",
+                MinRetentionDays,
+                MaxRetentionDays);
         }
 
-        if (string.IsNullOrWhiteSpace(value))
-            return DefaultRetentionDays;
+        var amaneValue = configuration["AMANE_ADMIN_AUDIT_RETENTION_DAYS"];
+        if (amaneValue is not null)
+        {
+            return ConfigurationIntReader.ParseInRange(
+                amaneValue,
+                "AMANE_ADMIN_AUDIT_RETENTION_DAYS",
+                MinRetentionDays,
+                MaxRetentionDays);
+        }
 
-        return ConfigurationIntReader.ParseInRange(value, key, MinRetentionDays, MaxRetentionDays);
+        return DefaultRetentionDays;
     }
 
     private static int ReadPositiveInt(
@@ -111,18 +121,20 @@ public sealed record MailerAdminAuditRetentionOptions
         string primaryKey,
         string fallbackKey)
     {
-        var value = configuration[primaryKey];
-        var key = primaryKey;
-        if (string.IsNullOrWhiteSpace(value))
+        // Absent key (null) may fall through; empty/whitespace on a present key fails fast (#329).
+        var primaryValue = configuration[primaryKey];
+        if (primaryValue is not null)
         {
-            value = configuration[fallbackKey];
-            key = fallbackKey;
+            return ConfigurationIntReader.ParseInRange(primaryValue, primaryKey, minInclusive, maxInclusive);
         }
 
-        if (string.IsNullOrWhiteSpace(value))
-            return defaultValue;
+        var fallbackValue = configuration[fallbackKey];
+        if (fallbackValue is not null)
+        {
+            return ConfigurationIntReader.ParseInRange(fallbackValue, fallbackKey, minInclusive, maxInclusive);
+        }
 
-        return ConfigurationIntReader.ParseInRange(value, key, minInclusive, maxInclusive);
+        return defaultValue;
     }
 
     private static int? ReadOptionalPositiveInt(
@@ -132,18 +144,19 @@ public sealed record MailerAdminAuditRetentionOptions
         string primaryKey,
         string fallbackKey)
     {
-        var value = configuration[primaryKey];
-        var key = primaryKey;
-        if (string.IsNullOrWhiteSpace(value))
+        var primaryValue = configuration[primaryKey];
+        if (primaryValue is not null)
         {
-            value = configuration[fallbackKey];
-            key = fallbackKey;
+            return ConfigurationIntReader.ParseInRange(primaryValue, primaryKey, minInclusive, maxInclusive);
         }
 
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
+        var fallbackValue = configuration[fallbackKey];
+        if (fallbackValue is not null)
+        {
+            return ConfigurationIntReader.ParseInRange(fallbackValue, fallbackKey, minInclusive, maxInclusive);
+        }
 
-        return ConfigurationIntReader.ParseInRange(value, key, minInclusive, maxInclusive);
+        return null;
     }
 
     internal static bool IsLocalDevelopmentEnvironment(IConfiguration configuration) =>

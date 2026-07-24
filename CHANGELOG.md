@@ -20,8 +20,9 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
   `Math.Clamp` (#329). Unset keys keep existing defaults; empty string,
   non-integer, zero/negative, and over-max values fail fast with the setting
   key and allowed range (no secrets). Cross-field lease and healthcheck
-  checks are unchanged when Worker is enabled. Admin audit retention sweep
-  hours / batch size follow the same strict range parsing.
+  checks are unchanged when Worker is enabled. Admin audit retention days,
+  sweep interval (hours/seconds), and batch size use the same strict range
+  parsing, including empty-string rejection.
 - Require `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`) at
   startup when metrics stay enabled outside Development (#283). Development /
   local keep optional bearer under internal-network isolation; disable metrics
