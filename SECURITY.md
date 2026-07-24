@@ -7,7 +7,8 @@ minor version receives security fixes.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.9.1   | Yes (latest release) |
+| 0.9.2   | Yes (latest release) |
+| 0.9.1   | No                 |
 | 0.9.0   | No                 |
 | 0.4.x   | No                 |
 | 0.3.x   | No                 |
