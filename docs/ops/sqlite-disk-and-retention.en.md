@@ -94,6 +94,14 @@ Notes:
 - Consumer SDKs auto-retry `retryable: true`. `STORAGE_FULL` is `retryable: false`,
   so accepts stay failing until disk pressure is cleared.
 
+## Large-DB retention / metrics measurement (#288)
+
+Elapsed times and EXPLAIN for metrics aggregate, retention batches, and Admin
+queries on a seeded large DB are in
+[large-db-query-measurement.en.md](large-db-query-measurement.en.md).
+A candidate `completed_at`-ordered retention index is documented there
+(measurement only in #288).
+
 ## Security
 
 - Do not emit recipient / subject / body / metadata values / connection strings /
