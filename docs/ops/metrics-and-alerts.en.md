@@ -39,6 +39,10 @@ internet exposure is not intended. Staging/Production `infra/deploy/compose.yml`
 passes `MAILER_METRICS_BEARER_TOKEN`. Leaving it empty while metrics stay enabled
 prevents the process from starting.
 
+`ASPNETCORE_ENVIRONMENT=Testing` is reserved for automated test hosts such as
+WebApplicationFactory. Do not use it as a real deploy environment name (it keeps
+the optional-bearer path).
+
 ## Published metrics
 
 | Metric | Type | Labels | Meaning |

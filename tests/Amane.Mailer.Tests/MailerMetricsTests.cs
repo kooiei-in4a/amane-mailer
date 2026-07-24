@@ -252,9 +252,9 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
             new Dictionary<string, string?>(),
             environmentName: Environments.Production);
 
-        using var client = CreateClient(factory);
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => factory.Services.GetRequiredService<MailerMetricsOptions>());
+        // Program.cs eagerly resolves MailerMetricsOptions after Build(), matching
+        // MailerTenantRegistry / MailerOptions, so host construction must fail closed.
+        var ex = Assert.Throws<InvalidOperationException>(() => CreateClient(factory));
         Assert.Contains("BearerToken", ex.Message, StringComparison.Ordinal);
     }
 

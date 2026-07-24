@@ -30,6 +30,8 @@ export Mailer__Metrics__Enabled=false
 
 Compose / systemd では Mailer HTTP ポートを **内部ネットワークのみ** に publish し、Prometheus は同ネットワークまたは VPN から scrape してください。`/healthz`・`/readyz` と同様、インターネット直接公開は想定していません。Staging/Production の `infra/deploy/compose.yml` は `MAILER_METRICS_BEARER_TOKEN` を渡します。トークン未設定のまま metrics を有効にするとプロセスは起動しません。
 
+`ASPNETCORE_ENVIRONMENT=Testing` は WebApplicationFactory など自動テストホスト専用です。実運用の環境名には使わないでください（optional bearer パスに入るため）。
+
 ## 公開メトリクス
 
 | メトリクス | 型 | ラベル | 意味 |
