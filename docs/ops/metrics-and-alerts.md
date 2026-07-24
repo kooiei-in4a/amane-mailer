@@ -155,6 +155,12 @@ SQLite disk 枯渇（HTTP `STORAGE_FULL`）の早期シグナルにもなりま�
 診断・対処・追加の critical 閾値例は
 [sqlite-disk-and-retention.md](sqlite-disk-and-retention.md) を参照してください。
 
+## Large DB 上の metrics / retention コスト（#288）
+
+`MailerDbStatsReader` の gauge は `mail_requests` 全件 aggregate です。large DB での
+経過時間・EXPLAIN・スクレイプ間隔の目安は
+[large-db-query-measurement.md](large-db-query-measurement.md) を参照してください。
+
 ## セキュリティ注意
 
 - `/metrics` を公開インターネットに直接露出しない。内部ネットワーク境界は Development でも必須前提。

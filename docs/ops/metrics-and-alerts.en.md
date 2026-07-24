@@ -188,6 +188,12 @@ outage, and can also be an early signal of SQLite disk exhaustion
 threshold example, see
 [sqlite-disk-and-retention.en.md](sqlite-disk-and-retention.en.md).
 
+## Large-DB metrics / retention cost (#288)
+
+`MailerDbStatsReader` gauges are full-table aggregates over `mail_requests`. For
+elapsed times, EXPLAIN notes, and scrape-interval guidance on large DBs, see
+[large-db-query-measurement.en.md](large-db-query-measurement.en.md).
+
 ## Security notes
 
 - Do not expose `/metrics` directly to the public internet. Internal-network

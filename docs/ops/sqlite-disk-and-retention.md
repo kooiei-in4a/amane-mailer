@@ -90,6 +90,12 @@ groups:
 - `mail_queue_oldest_age_seconds` だけでは原因を断定できない。必ず `STORAGE_FULL` ログ / HTTP code と volume 空き容量を突き合わせる。
 - Consumer SDK は `retryable: true` を自動再試行する。`STORAGE_FULL` は `retryable: false` のため、disk 復旧までは受付失敗が継続する想定。
 
+## Large DB 上の retention / metrics 計測（#288）
+
+seeded large DB での metrics aggregate・retention batch・Admin query の経過時間と
+EXPLAIN は [large-db-query-measurement.md](large-db-query-measurement.md) を参照。
+retention の `completed_at` 順向け index 候補もそこに記載（#288 では計測のみ）。
+
 ## セキュリティ
 
 - ログ・Admin・メトリクスに recipient / subject / body / metadata 値 / connection string / token を出さない。
