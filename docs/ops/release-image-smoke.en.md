@@ -109,7 +109,12 @@ Older `v0.2.0` results remain in [docs/releases/v0.2.0.md](../releases/v0.2.0.md
 
 - `scripts/release-smoke.sh` / `scripts/release-smoke.ps1`: a release smoke that validates the **target release image's**
   HTTP / idempotency / Mailpit delivery from a clean state. The bash script uses host-side
-  `curl`; the PowerShell script uses `Invoke-WebRequest`.
+  `curl`; the PowerShell script uses `Invoke-WebRequest`. Admin UI, HTTPS webhook tenant
+  startup, and `db backup` CLI are out of scope.
+- `scripts/native-aot-path-smoke.sh`: black-box checks against the **linux-x64 Native AOT
+  binary** published by CI `Native AOT publish smoke` — Admin login, HTTPS webhook tenant
+  `/readyz`, and `db backup` (issue #286). It does not cover the release image or Mailpit
+  delivery. ACS live stays manual because it depends on secrets.
 - `infra/deploy/drills/mail-05a-*`: no-send / ACS deploy drills against a running compose
   stack on a deploy host. They use the SQLite Mailer CLI (`healthcheck`, `db stats`,
   `db request-state`) and a temporary curl compose client, and go deeper into worker
