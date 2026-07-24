@@ -13,6 +13,12 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+### Added
+
+- Record a fixed primary `/readyz` failure reason via transition-only logs and
+  Prometheus gauges `mail_ready` / `mail_readiness_failure` without changing the
+  public HTTP contract (`200`/`503` + `{"ready":...}` only) (#330).
+
 ### Changed
 
 - Reject Worker / Webhook / Sweep / Retention / Healthcheck operational
@@ -48,6 +54,8 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ### Documentation
 
+- Document `/readyz` internal readiness gauges, fixed failure reasons, and
+  `MailNotReady` alert example (#330).
 - Document Worker / Webhook / Sweep / Retention / Healthcheck strict numeric
   ranges and startup fail-fast troubleshooting (#329).
 - Document Production metrics bearer startup enforcement and Development /

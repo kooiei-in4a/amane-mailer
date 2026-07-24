@@ -86,6 +86,13 @@ public sealed class MailerReadinessEvaluator
 
             return Observe(MailerReadinessResult.Ready());
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Probe cancellation is not an application readiness failure. Keep the
+            // previous observation (logs/gauges) and still report not-ready to the
+            // caller so the HTTP path stays 503-compatible with prior catch-all behavior.
+            return MailerReadinessResult.NotReady(MailerReadinessReasons.UnexpectedError);
+        }
         catch (Exception exception)
         {
             return Observe(MailerReadinessResult.NotReady(ClassifyException(exception)));

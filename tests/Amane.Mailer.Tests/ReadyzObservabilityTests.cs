@@ -228,6 +228,42 @@ public sealed class ReadyzObservabilityTests
     }
 
     [Fact]
+    public async Task EvaluateCore_cancelled_probe_does_not_overwrite_readiness_observation()
+    {
+        var metrics = new MailerRuntimeMetrics();
+        var logCapture = new CapturingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logCapture));
+        var evaluator = new MailerReadinessEvaluator(
+            metrics,
+            loggerFactory.CreateLogger<MailerReadinessEvaluator>());
+
+        evaluator.Observe(MailerReadinessResult.Ready());
+        Assert.True(metrics.CaptureSnapshot().Ready);
+        logCapture.Clear();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var cancelled = await evaluator.EvaluateCoreAsync(
+            isSchemaReadyAsync: _ => throw new OperationCanceledException(cts.Token),
+            isWorkerRunning: static () => true,
+            isSweepRunning: static () => true,
+            getHeartbeatsAsync: static _ => Task.FromResult<IReadOnlyList<WorkerHeartbeat>>([]),
+            maxHeartbeatStaleness: TimeSpan.FromSeconds(300),
+            workerEnabled: true,
+            cancellationToken: cts.Token);
+
+        Assert.False(cancelled.IsReady);
+        var snapshot = metrics.CaptureSnapshot();
+        Assert.True(snapshot.ReadinessObserved);
+        Assert.True(snapshot.Ready);
+        Assert.Null(snapshot.ReadinessFailureReason);
+        Assert.DoesNotContain(
+            logCapture.Snapshot(),
+            static entry => entry.FormattedMessage.Contains("Mailer readiness not ready", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task EvaluateCore_maps_database_and_unexpected_exceptions()
     {
         var metrics = new MailerRuntimeMetrics();
