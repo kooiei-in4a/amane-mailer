@@ -244,6 +244,82 @@ public sealed class MailerAdminSessionThrottleAuditTests(MailerAdminFixture fixt
         Assert.Equal(activeSession, logoutEvent.TargetId);
     }
 
+    [Fact]
+    public async Task Absolute_expired_session_is_rejected_on_next_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        var sessionId = await GetSingleActiveSessionAsync(fixture.ConnectionString, ct);
+        await ExpireSessionAsync(
+            fixture.ConnectionString,
+            sessionId,
+            absoluteExpiresAt: DateTimeOffset.UtcNow.AddMinutes(-1),
+            idleExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
+            ct);
+
+        using var response = await client.GetAsync("/admin/mail-requests", ct);
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Contains("/admin/login", response.Headers.Location?.OriginalString, StringComparison.Ordinal);
+
+        var session = await fixture.Factory.Services
+            .GetRequiredService<AdminSessionRepository>()
+            .GetSessionAsync(sessionId, ct);
+        Assert.NotNull(session?.RevokedAt);
+        Assert.Equal(AdminSessionRevokeReasons.AbsoluteExpired, session.RevokeReason);
+    }
+
+    [Fact]
+    public async Task Idle_expired_session_is_rejected_on_next_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        var sessionId = await GetSingleActiveSessionAsync(fixture.ConnectionString, ct);
+        await ExpireSessionAsync(
+            fixture.ConnectionString,
+            sessionId,
+            absoluteExpiresAt: DateTimeOffset.UtcNow.AddHours(1),
+            idleExpiresAt: DateTimeOffset.UtcNow.AddMinutes(-1),
+            ct);
+
+        using var response = await client.GetAsync("/admin/mail-requests", ct);
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Contains("/admin/login", response.Headers.Location?.OriginalString, StringComparison.Ordinal);
+
+        var session = await fixture.Factory.Services
+            .GetRequiredService<AdminSessionRepository>()
+            .GetSessionAsync(sessionId, ct);
+        Assert.NotNull(session?.RevokedAt);
+        Assert.Equal(AdminSessionRevokeReasons.IdleExpired, session.RevokeReason);
+    }
+
+    private static async Task ExpireSessionAsync(
+        string connectionString,
+        string sessionId,
+        DateTimeOffset absoluteExpiresAt,
+        DateTimeOffset idleExpiresAt,
+        CancellationToken ct)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE admin_sessions
+            SET absolute_expires_at = @AbsoluteExpiresAt,
+                idle_expires_at = @IdleExpiresAt
+            WHERE session_id = @SessionId;
+            """;
+        command.Parameters.AddWithValue("@SessionId", sessionId);
+        command.Parameters.AddWithValue("@AbsoluteExpiresAt", SqliteTime.ToStorageUtc(absoluteExpiresAt));
+        command.Parameters.AddWithValue("@IdleExpiresAt", SqliteTime.ToStorageUtc(idleExpiresAt));
+        await command.ExecuteNonQueryAsync(ct);
+    }
+
     private static async Task<string> GetSingleActiveSessionAsync(string connectionString, CancellationToken ct)
     {
         await using var connection = new SqliteConnection(connectionString);
