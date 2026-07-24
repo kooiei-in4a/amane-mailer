@@ -165,8 +165,27 @@ Mailer delivery semantics are **at-least-once** (a single accepted request may r
 | Mailpit (`provider=mailpit`) | **No idempotency** (best-effort) | Each retry may perform a new SMTP send (development / verification use). Disconnect failure after SMTP DATA acceptance alone does not schedule a retry (#275) |
 | Worker automatic retry | at-least-once | Retryable failures return to `Queued` and are delivered again |
 | Finalize race after lease expiry (#238) | **Resend suppression** | Successful provider sends are recorded in `mail_attempts`; reclaim skips the actual send and converges to `Delivered`. Finalize skips are observable via `mail_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)) |
+| Wall-clock lease correction (#276) | **Absolute-time comparison** | Mail / webhook leases compare `lock_expires_at` from `TimeProvider.GetUtcNow()` to `@Now`. There is no monotonic clock. A large forward wall-clock jump can cause early reclaim / strict finalize fencing failure; a large backward jump can delay Processing / Delivering recovery (details in the next subsection) |
 | Admin manual retry | **Intentional redelivery** | Moves `DeadLettered` / `Failed` back to `Queued` (resets `attempt_count` to 0). Prior-cycle Delivered evidence is not used for prior-success convergence (#268). May resend even when a provider send already succeeded but the row had not converged to `Delivered` ([ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) maintains at-least-once) |
 | Delivery result webhook | **first-wins** (at most one event per mail-request generation) + `event_id` dedup for re-POSTs | **Separate contract from actual email delivery**. Only the first enqueued terminal state is notified. Admin manual retry that reaches a later terminal (e.g. `failed` → retry → `delivered`) does **not** send another webhook. Consumers must treat duplicate POSTs with the same `event_id` as idempotent ([webhook-verification.md](consumer/webhook-verification.md)) |
+
+### Worker / Webhook lease and wall clock (#276)
+
+Mail (`mail_requests`) and webhook (`delivery_events`) leases are **UTC absolute times** stored as `lock_expires_at` in SQLite. Worker / Sweep / reaper / finalize compare that value to `@Now` from the DI `TimeProvider` (default `TimeProvider.System`). There is no Stopwatch-based monotonic / relative lease.
+
+| Correction | reclaim / reaper (`lock_expires_at <= @Now`) | strict finalize (`lock_expires_at > @Now`) |
+|---|---|---|
+| Large wall-clock **forward** jump | Lease may be treated as expired early; reclaim / reaper can run | Fencing may fail |
+| Large wall-clock **backward** jump | Reclaim can lag real time; Processing / Delivering may linger | Can still succeed (lease still looks valid) |
+
+Ordinary NTP slew is rarely enough to matter. Host step corrections and manual clock changes are the main risk.
+
+**Current mitigations:**
+
+- mail: #238 can still record Delivered evidence when strict fencing fails after a successful provider send, skip the actual send on reclaim, and converge to `Delivered`. This does not remove clock skew itself.
+- webhook: There is no equivalent prior-success converge path. Early reclaim can re-POST HTTP delivery (consumers must rely on `event_id` idempotency).
+
+**Operations:** Prefer slew over large steps for OS / container time sync. A spike in `mail_finalize_skipped_total` can indicate fencing failures (including clock jumps); see the [metrics runbook](ops/metrics-and-alerts.en.md). A monotonic lease redesign remains a separate ADR candidate and is not the short-term direction of this spec.
 
 **Consumer recommendations:**
 
@@ -537,3 +556,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-23 | Documented startup validation for effective provider / ACS live-sending; not part of `/readyz` (#272). Mailpit treats post-accept disconnect failure as success, not retry (#275) |
 | 2026-07-23 | `MailRequestWorker` shutdown: later semaphore-waiting send waves do not start (#271) |
 | 2026-07-24 | Documented delivery-result webhook first-wins (first terminal only; no re-notify after Admin manual retry) (#273) |
+| 2026-07-24 | Documented that Worker / Webhook leases use wall-clock absolute time and described clock-jump effects (#276) |

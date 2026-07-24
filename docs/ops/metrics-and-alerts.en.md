@@ -165,6 +165,21 @@ that already has delivered attempt evidence therefore performs a real resend in
 the new dispatch cycle. Same-cycle #238 prior-success convergence is unchanged.
 Check Admin attempt history for `provider_message_id` before retrying.
 
+## Worker lease and wall-clock jumps (#276)
+
+Mail and webhook leases are judged with **wall-clock absolute times**
+(`lock_expires_at` from `TimeProvider.GetUtcNow()`). There is no monotonic
+clock. See the “Worker / Webhook lease と wall clock（#276）” section in
+[service-spec](../service-spec.md) for the full premise.
+
+| Correction | Effect | Observation / mitigation |
+|---|---|---|
+| Large forward step | Early reclaim / reaper; strict finalize fencing can fail | Candidate cause of rising `mail_finalize_skipped_total`. Mail may suppress resend and converge via #238. Webhook has no equivalent prior-success path and may re-POST |
+| Large backward step | Delayed reclaim while Processing / Delivering | When interpreting `expired_processing_count`, webhook backlog, or heartbeat age, also consider host clock anomalies |
+
+Ordinary NTP slew is rarely enough to matter. Prefer slew over large steps on
+hosts. A monotonic lease redesign remains a separate ADR candidate.
+
 ## Disk exhaustion, WAL, and retention
 
 A rising `mail_queue_oldest_age_seconds` can indicate Worker stall or provider

@@ -137,6 +137,17 @@ groups:
 
 `mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat / webhook backlog アラートを primary、delivery rate は補助として運用してください。`mail_finalize_skipped_total` は strict lease fencing 失敗の検知用で、増加時は証跡の有無・Delivered 収束・DeadLetter との競合を確認してください。Webhook backlog はメール配送が正常でも通知だけ止まる障害の早期検知用です。Admin 手動リトライは監査付きの明示操作として `attempt_count` をリセットし、旧サイクルの Delivered 証跡を prior-success 収束の対象外にします（#268）。そのため delivered 証跡付きの DeadLetter を再投入すると新サイクルでは実再送されます。同一サイクル内の #238 prior-success 収束は維持されます。再送前に Admin attempt 履歴の `provider_message_id` を確認してください。
 
+## Worker lease と wall-clock jump（#276）
+
+mail / webhook の lease は `TimeProvider.GetUtcNow()` 由来の **wall-clock 絶対時刻**（`lock_expires_at`）で判定します。monotonic clock は使いません。詳細は [service-spec](../service-spec.md) の「Worker / Webhook lease と wall clock（#276）」を参照してください。
+
+| 補正 | 影響 | 観測・緩和 |
+|---|---|---|
+| 大きな前進（step） | early reclaim / reaper。strict finalize fencing 失敗 | `mail_finalize_skipped_total` 増加の候補。mail は #238 で再送抑止・Delivered 収束し得る。webhook は同等の prior-success 収束がなく再 POST し得る |
+| 大きな後退 | Processing / Delivering の reclaim 遅延 | `expired_processing_count` / webhook backlog / heartbeat age の解釈時に時刻異常も疑う |
+
+通常の NTP slew では稀です。ホスト時刻は slew を優先し、大きな step を避けてください。monotonic lease への再設計は別 ADR 候補です。
+
 ## disk 枯渇・WAL・retention
 
 `mail_queue_oldest_age_seconds` の上昇は Worker 停滞や provider 障害に加え、
