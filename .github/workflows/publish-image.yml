@@ -126,6 +126,7 @@ jobs:
         run: |
           node scripts/validate-openapi.mjs docs/api/openapi.yaml
           node scripts/check-contract-drift.mjs
+          node scripts/check-mail-request-field-inventory.mjs
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
