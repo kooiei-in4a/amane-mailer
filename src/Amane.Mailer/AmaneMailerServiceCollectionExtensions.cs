@@ -73,7 +73,9 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddStartupValidatedSingleton(provider =>
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
-            var options = MailerWebhookOptions.Load(resolvedConfiguration);
+            var logger = provider.GetRequiredService<ILoggerFactory>()
+                .CreateLogger(typeof(MailerWebhookOptions));
+            var options = MailerWebhookOptions.Load(resolvedConfiguration, logger);
             if (MailerWorkerOptions.IsEnabled(resolvedConfiguration))
             {
                 options.Validate();

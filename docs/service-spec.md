@@ -446,7 +446,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `Mailer__Webhook__MaxAttempts` | `10` | 1–50 | Webhook 配送の最大試行回数 |
 | `Mailer__Webhook__InitialDelaySeconds` | `10` | 1–86400 | Webhook 再試行の初期遅延（`<= MaxDelaySeconds`） |
 | `Mailer__Webhook__MaxDelaySeconds` | `300` | 1–86400 | Webhook 再試行の最大遅延 |
-| `Mailer__Webhook__BatchClaimSize` | `8` | 1–100 | Webhook claim 上限 |
+| `Mailer__Webhook__ReconcileBatchSize` | `8` | 1–100 | 欠落 terminal event の reconcile 検索件数（配送 claim／並列度ではない）。旧 `Mailer__Webhook__BatchClaimSize` は deprecated alias（新キー優先、Warning） |
 | `Mailer__Webhook__DeliveryTimeoutSeconds` | `30` | 1–600 | Webhook HTTP タイムアウト |
 | `Mailer__Webhook__LeaseDurationSeconds` | `60` | 1–86400 | Webhook リース TTL。`> DeliveryTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
 | `Mailer__Sweep__IntervalSeconds` | `30` | 1–3600 | 滞留スイープ間隔 |
@@ -583,3 +583,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-25 | 起動時設定検証を `MailerStartupValidator` / `AddStartupValidatedSingleton` に集約（#351） |
 | 2026-07-25 | 長時間 CLI の Ctrl+C 協調 cancel と終了コード 130 を明記（#347） |
 | 2026-07-25 | ADR 0019: SQLite／単一プロセス維持と PostgreSQL／Worker 分離の着手 trigger・非目標を記録（#363）。#385 と同日マージで 0018 が衝突したため後着を 0019 に振り直し |
+| 2026-07-25 | `Mailer__Webhook__ReconcileBatchSize` へ改名。旧 `BatchClaimSize` は deprecated alias（#353） |

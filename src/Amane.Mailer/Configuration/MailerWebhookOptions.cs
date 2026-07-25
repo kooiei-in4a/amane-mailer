@@ -1,11 +1,16 @@
+using Microsoft.Extensions.Logging;
+
 namespace Amane.Mailer.Configuration;
 
 public sealed record MailerWebhookOptions
 {
+    public const string ReconcileBatchSizeKey = "Mailer:Webhook:ReconcileBatchSize";
+    public const string LegacyBatchClaimSizeKey = "Mailer:Webhook:BatchClaimSize";
+
     public const int DefaultMaxAttempts = 10;
     public const int DefaultInitialDelaySeconds = 10;
     public const int DefaultMaxDelaySeconds = 300;
-    public const int DefaultBatchClaimSize = 8;
+    public const int DefaultReconcileBatchSize = 8;
     public const int DefaultDeliveryTimeoutSeconds = 30;
     public const int DefaultLeaseDurationSeconds = 60;
     public const int FinalizeTimeoutSeconds = 10;
@@ -17,8 +22,8 @@ public sealed record MailerWebhookOptions
     public const int MaxInitialDelaySeconds = 86400;
     public const int MinMaxDelaySeconds = 1;
     public const int MaxMaxDelaySeconds = 86400;
-    public const int MinBatchClaimSize = 1;
-    public const int MaxBatchClaimSize = 100;
+    public const int MinReconcileBatchSize = 1;
+    public const int MaxReconcileBatchSize = 100;
     public const int MinDeliveryTimeoutSeconds = 1;
     public const int MaxDeliveryTimeoutSeconds = 600;
     public const int MinLeaseDurationSeconds = 1;
@@ -30,7 +35,11 @@ public sealed record MailerWebhookOptions
 
     public int MaxDelaySeconds { get; init; } = DefaultMaxDelaySeconds;
 
-    public int BatchClaimSize { get; init; } = DefaultBatchClaimSize;
+    /// <summary>
+    /// Max rows searched per reconcile sweep for terminal mail requests missing delivery events.
+    /// Does not control webhook delivery claim batching or concurrency (delivery remains one-at-a-time).
+    /// </summary>
+    public int ReconcileBatchSize { get; init; } = DefaultReconcileBatchSize;
 
     public int DeliveryTimeoutSeconds { get; init; } = DefaultDeliveryTimeoutSeconds;
 
@@ -48,7 +57,15 @@ public sealed record MailerWebhookOptions
         ShutdownDrainTimeout + TimeSpan.FromSeconds(HostShutdownSlackSeconds);
 
     public static MailerWebhookOptions Load(IConfiguration configuration) =>
-        new()
+        Load(configuration, logger: null);
+
+    public static MailerWebhookOptions Load(IConfiguration configuration, ILogger? logger)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+
+        LogLegacyReconcileBatchSizeDeprecationIfNeeded(configuration, logger);
+
+        return new()
         {
             MaxAttempts = ConfigurationIntReader.Read(
                 configuration,
@@ -68,12 +85,13 @@ public sealed record MailerWebhookOptions
                 DefaultMaxDelaySeconds,
                 MinMaxDelaySeconds,
                 MaxMaxDelaySeconds),
-            BatchClaimSize = ConfigurationIntReader.Read(
+            ReconcileBatchSize = ConfigurationIntReader.Read(
                 configuration,
-                "Mailer:Webhook:BatchClaimSize",
-                DefaultBatchClaimSize,
-                MinBatchClaimSize,
-                MaxBatchClaimSize),
+                DefaultReconcileBatchSize,
+                MinReconcileBatchSize,
+                MaxReconcileBatchSize,
+                ReconcileBatchSizeKey,
+                LegacyBatchClaimSizeKey),
             DeliveryTimeoutSeconds = ConfigurationIntReader.Read(
                 configuration,
                 "Mailer:Webhook:DeliveryTimeoutSeconds",
@@ -87,6 +105,7 @@ public sealed record MailerWebhookOptions
                 MinLeaseDurationSeconds,
                 MaxLeaseDurationSeconds),
         };
+    }
 
     public void Validate()
     {
@@ -115,10 +134,10 @@ public sealed record MailerWebhookOptions
                 + $"Mailer:Webhook:MaxDelaySeconds ({MaxDelaySeconds}).");
         }
 
-        if (BatchClaimSize < MinBatchClaimSize || BatchClaimSize > MaxBatchClaimSize)
+        if (ReconcileBatchSize < MinReconcileBatchSize || ReconcileBatchSize > MaxReconcileBatchSize)
         {
             throw new InvalidOperationException(
-                $"Mailer:Webhook:BatchClaimSize must be an integer between {MinBatchClaimSize} and {MaxBatchClaimSize} (inclusive).");
+                $"{ReconcileBatchSizeKey} must be an integer between {MinReconcileBatchSize} and {MaxReconcileBatchSize} (inclusive).");
         }
 
         if (DeliveryTimeoutSeconds < MinDeliveryTimeoutSeconds || DeliveryTimeoutSeconds > MaxDeliveryTimeoutSeconds)
@@ -148,5 +167,29 @@ public sealed record MailerWebhookOptions
             MaxDelaySeconds,
             InitialDelaySeconds * Math.Pow(2, Math.Max(0, attemptCount - 1)));
         return completedAt.AddSeconds(delaySeconds);
+    }
+
+    private static void LogLegacyReconcileBatchSizeDeprecationIfNeeded(
+        IConfiguration configuration,
+        ILogger? logger)
+    {
+        if (logger is null || configuration[LegacyBatchClaimSizeKey] is null)
+        {
+            return;
+        }
+
+        if (configuration[ReconcileBatchSizeKey] is not null)
+        {
+            logger.LogWarning(
+                "{LegacyKey} is deprecated and ignored because {PrimaryKey} is set. Remove the legacy key.",
+                LegacyBatchClaimSizeKey,
+                ReconcileBatchSizeKey);
+            return;
+        }
+
+        logger.LogWarning(
+            "{LegacyKey} is deprecated. Prefer {PrimaryKey} (reconcile search batch size; not delivery claim concurrency).",
+            LegacyBatchClaimSizeKey,
+            ReconcileBatchSizeKey);
     }
 }
