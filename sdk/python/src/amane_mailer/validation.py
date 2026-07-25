@@ -12,7 +12,7 @@ UUID_PATTERN = re.compile(
 )
 SOURCE_SERVICE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}$")
 FORBIDDEN_METADATA_KEY_PATTERN = re.compile(r"token|password|secret|url", re.IGNORECASE)
-SCHEDULED_AT_OFFSET_PATTERN = re.compile(r"(Z|[+-]\d{2}:\d{2})$", re.IGNORECASE)
+SCHEDULED_AT_OFFSET_PATTERN = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
 
 
 class MailRequestValidationError(ValueError):

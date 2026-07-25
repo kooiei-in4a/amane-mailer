@@ -62,6 +62,9 @@ test('MailRequestBuilder rejects timezone-less and invalid scheduled_at', () => 
     '2026-08-01 09:00:00',
     'not-a-date',
     '2026-13-45T09:00:00Z',
+    '2026-02-30T09:00:00Z',
+    '2026-04-31T09:00:00Z',
+    '2026-08-01T09:00:00z',
   ]) {
     assert.throws(() => {
       MailRequestBuilder.create()
