@@ -376,7 +376,7 @@ Early branching on `argv` before Web host startup. Container `ENTRYPOINT` is `./
 | `db admin-audit purge --older-than-days <days>` | Batch-delete Admin audit events older than the requested retention | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
 | `admin user create ...` | Create a scoped or break-glass Admin user | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
 
-Long-running CLI commands cancel cooperatively on `Ctrl+C` (`Console.CancelKeyPress`). The first `Ctrl+C` does not force-kill the process; it cancels the shared `CancellationToken` so existing transaction rollback and backup temp cleanup can run. The cancellation exit code is the constant `130` (conventional `128 + SIGINT`) and does not collide with usage error (`2`) or schema unavailable (`1`). Cancellation is not logged as ERROR (short stderr only).
+Long-running CLI commands cancel cooperatively on `Ctrl+C` (`Console.CancelKeyPress`). Every `Ctrl+C` keeps the process alive (`e.Cancel = true`), cancels the shared `CancellationToken`, and relies on existing transaction rollback and backup temp cleanup. Later presses stay on the same cooperative path; there is no fallback to `Environment.Exit` or default OS immediate termination. During a synchronous non-interruptible stretch such as `BackupDatabase`, stop may be deferred until the next checkpoint; operators who need an immediate kill must use SIGKILL or close the terminal. The cancellation exit code is the constant `130` (conventional `128 + SIGINT`) and does not collide with usage error (`2`) or schema unavailable (`1`). Cancellation is not logged as ERROR (short stderr only).
 
 ### Migration Checksum Policy
 

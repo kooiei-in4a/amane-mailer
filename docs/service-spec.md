@@ -360,7 +360,7 @@ Web ホスト起動前に `argv` で早期分岐。コンテナ `ENTRYPOINT` は
 | `db admin-audit purge --older-than-days <days>` | 保持期間を過ぎた Admin 監査イベントを batch 削除 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
 | `admin user create ...` | scoped / break-glass Admin ユーザー作成 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
 
-長時間 CLI は `Ctrl+C`（`Console.CancelKeyPress`）で協調 cancel する。最初の `Ctrl+C` はプロセス強制終了せず `CancellationToken` を cancel し、既存の transaction rollback と backup temp cleanup を利用する。cancel 時の終了コードは定数 `130`（`128 + SIGINT` 慣習）で、usage error（2）や schema unavailable（1）とは衝突しない。cancel は ERROR ログにしない（短い stderr のみ）。
+長時間 CLI は `Ctrl+C`（`Console.CancelKeyPress`）で協調 cancel する。各 `Ctrl+C` はプロセス強制終了せず（`e.Cancel = true`）共有 `CancellationToken` を cancel し、既存の transaction rollback と backup temp cleanup を利用する。2 回目以降も同じ協調経路のみで、`Environment.Exit` や OS 既定の即時終了へフォールバックしない。`BackupDatabase` のような同期・非割込区間では次の checkpoint まで停止が遅延しうる。その間に強制終了が必要なら SIGKILL / 端末切断を使う。cancel 時の終了コードは定数 `130`（`128 + SIGINT` 慣習）で、usage error（2）や schema unavailable（1）とは衝突しない。cancel は ERROR ログにしない（短い stderr のみ）。
 
 ### マイグレーション checksum policy
 
