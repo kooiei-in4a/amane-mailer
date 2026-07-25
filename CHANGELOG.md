@@ -2,9 +2,11 @@
 
 All notable changes to Amane Mailer will be documented in this file.
 
-This project follows semantic versioning while the public API is stabilizing.
-During the 0.x series, breaking changes may still occur, but they will be
-called out in release notes and migration guidance.
+This project follows [semantic versioning](https://semver.org/). During the 0.x
+series, breaking changes could still occur and were called out in release notes
+and migration guidance. Starting with **1.0.0**, semantic versioning
+backward-compatibility guarantees apply to the public HTTP contract and the
+`Amane.Mailer.Contracts` package.
 
 Service release versions, Docker image tags (`vX.Y.Z` + immutable `sha-<git-sha>`),
 NuGet package versions (`Amane.Mailer.Contracts`), and OpenAPI `info.version` are
@@ -12,6 +14,79 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 `docs/service-spec.md` for details.
 
 ## [Unreleased]
+
+## [1.0.0] - 2026-07-25
+
+First stable release. Declares the public HTTP contract and Contracts package
+stable under semver. This release packages the post-v0.9.2 hardening and
+stabilization work already on `develop` (no additional feature wait).
+
+### Added
+
+- Centralize Mailer startup options validation through a shared catalog and
+  host validator (#351).
+- CI field-inventory gate for `MailRequestCreateRequest` drift across Contracts /
+  OpenAPI / SDKs (#352).
+- CI formatter and staged analyzer quality gates (#359).
+- Python and TypeScript SDK builders gain `scheduled_at` support aligned with
+  calendar / `Z` validation (#346).
+- ADR 0016–0019: stronger internal typing scope, webhook first-wins delivery
+  cycle, sequential webhook concurrency deferral, and SQLite single-process
+  boundaries (#360, #362, #361, #363).
+
+### Changed
+
+- Reject invalid UTF-8 request bodies with `400 INVALID_REQUEST` instead of
+  replacement characters (#343). Documented in OpenAPI for create / reschedule.
+- Unify strict boolean and port parsing for configuration (#358).
+- Validate Mailpit SMTP host/port at startup when Mailpit is in use (#356).
+- Rename webhook reconcile search size to `Mailer:Webhook:ReconcileBatchSize`
+  (#353). Legacy `Mailer:Webhook:BatchClaimSize` remains a deprecated alias
+  (new key wins; warning logged).
+- Require tenant scope on Admin mail attempt listing (#357).
+- Reject Admin `ALLOW_HTTP` outside Development (#341).
+- Await Admin credential sync before Admin route mapping (#350).
+- Split Admin extensions and Mail request endpoints into focused modules
+  (#349, #348).
+- Replace Worker `InflightTracker` polling with an async signal (#354).
+- Propagate Ctrl+C cancellation to long-running CLI commands (#347).
+- Judge webhook delivery success from response headers without buffering the
+  body (#370).
+- Classify schema probe failures separately from `schema_not_ready` (#342).
+- Dispose SQLite connections on open / PRAGMA init failure (#344).
+- Align public release image defaults and smoke guidance on `v1.0.0`.
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `1.0.0`.
+
+### Fixed
+
+- Register webhook `HttpClient` when the worker is disabled but Admin needs it
+  (#341).
+
+### Documentation
+
+- Document webhook first-wins and deferred delivery-cycle extension (#362).
+- Document deferred webhook delivery concurrency pending HOL measurement (#361).
+- Document SQLite / single-process start gates for any future PG / Worker split
+  (#363).
+- Add v1.0.0 release evidence draft.
+
+### Breaking / Migration
+
+- **Public HTTP**: Invalid UTF-8 bodies are rejected with `400` (`INVALID_REQUEST`).
+  Well-formed UTF-8 JSON clients are unaffected. No new endpoints; no DTO field
+  removals in `Amane.Mailer.Contracts`.
+- **Operators**: Prefer `Mailer__Webhook__ReconcileBatchSize`. Legacy
+  `Mailer__Webhook__BatchClaimSize` still works as a deprecated alias.
+- **Operators**: Strict boolean / port / Mailpit SMTP misconfiguration fails
+  startup instead of silent fallback when those settings are in use.
+- **Admin**: `ALLOW_HTTP` is rejected outside Development. Mail attempt listing
+  requires tenant scope.
+- **Database**: No new SQL migration in this release. Databases already on
+  migration 010 (from v0.9.2) need no manual SQL.
+- **Follow-ups (1.0.x, not blockers)**: webhook max-attempt DeadLetter
+  convergence (#388), per-event webhook failure isolation (#389), Admin cancel
+  webhook enqueue isolation (#390).
 
 ## [0.9.2] - 2026-07-24
 
