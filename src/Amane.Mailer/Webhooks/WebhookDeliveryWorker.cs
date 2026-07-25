@@ -57,7 +57,10 @@ public sealed class WebhookDeliveryWorker(
         }
         finally
         {
-            await _inflightTracker.WaitForZeroAsync(webhookOptions.ShutdownDrainTimeout, CancellationToken.None);
+            await _inflightTracker.WaitForZeroAsync(
+                webhookOptions.ShutdownDrainTimeout,
+                timeProvider,
+                CancellationToken.None);
 
             if (_inflightTracker.InflightCount > 0)
             {

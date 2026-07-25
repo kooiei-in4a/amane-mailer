@@ -70,7 +70,10 @@ public sealed class MailRequestWorker : BackgroundService
         finally
         {
             _serviceStatus.SetWorkerRunning(false);
-            await _inflightTracker.WaitForZeroAsync(_workerOptions.ShutdownDrainTimeout, CancellationToken.None);
+            await _inflightTracker.WaitForZeroAsync(
+                _workerOptions.ShutdownDrainTimeout,
+                _timeProvider,
+                CancellationToken.None);
 
             if (_inflightTracker.InflightCount > 0)
             {
