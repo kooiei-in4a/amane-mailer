@@ -367,14 +367,33 @@ public sealed class WebhookDeliveryWorker(
         string stage,
         Models.DeliveryEventRow? row)
     {
-        // PII-free structured fields only. Do not interpolate exception.Message (may contain
-        // payload fragments / provider text). SQLITE_FULL split via shared helper.
-        SqliteDatabaseExceptionLogging.LogError(
-            logger,
-            exception,
-            "Webhook delivery worker failed due to SQLite storage full (SQLITE_FULL). Stage={Stage}; EventId={EventId}; TenantId={TenantId}; MailRequestId={MailRequestId}; AttemptNumber={AttemptNumber}",
-            "Webhook delivery worker failed while processing an event. Stage={Stage}; EventId={EventId}; TenantId={TenantId}; MailRequestId={MailRequestId}; AttemptNumber={AttemptNumber}",
+        // Structured fields are PII-free by construction (identifiers + fixed stage names).
+        // The exception object is handed to the logger only for SQLite faults, whose text is
+        // DB-level. Logging providers render exceptions via ToString(), so passing an arbitrary
+        // exception would leak the webhook URL, payload fragments, or provider text into logs
+        // regardless of the message template (#389). Unclassified failures therefore record the
+        // exception type name only — stage plus type is enough to route an investigation.
+        var exceptionType = exception.GetType().FullName ?? exception.GetType().Name;
+        if (SqliteDatabaseExceptionClassifier.IsDatabaseException(exception))
+        {
+            SqliteDatabaseExceptionLogging.LogError(
+                logger,
+                exception,
+                "Webhook delivery worker failed due to SQLite storage full (SQLITE_FULL). Stage={Stage}; ExceptionType={ExceptionType}; EventId={EventId}; TenantId={TenantId}; MailRequestId={MailRequestId}; AttemptNumber={AttemptNumber}",
+                "Webhook delivery worker failed on a database operation. Stage={Stage}; ExceptionType={ExceptionType}; EventId={EventId}; TenantId={TenantId}; MailRequestId={MailRequestId}; AttemptNumber={AttemptNumber}",
+                stage,
+                exceptionType,
+                row?.Id,
+                row?.TenantId,
+                row?.MailRequestId,
+                row?.AttemptCount);
+            return;
+        }
+
+        logger.LogError(
+            "Webhook delivery worker failed while processing an event. Stage={Stage}; ExceptionType={ExceptionType}; EventId={EventId}; TenantId={TenantId}; MailRequestId={MailRequestId}; AttemptNumber={AttemptNumber}",
             stage,
+            exceptionType,
             row?.Id,
             row?.TenantId,
             row?.MailRequestId,

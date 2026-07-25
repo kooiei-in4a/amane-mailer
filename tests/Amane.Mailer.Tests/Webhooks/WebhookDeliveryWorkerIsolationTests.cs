@@ -388,7 +388,13 @@ public sealed class WebhookDeliveryWorkerIsolationTests
     {
         var ct = TestContext.Current.CancellationToken;
         await using var harness = await Harness.CreateAsync(ct);
-        var lookup = new FlakyTenantLookup(harness.TenantRegistry) { FailuresRemaining = 1 };
+        var lookup = new FlakyTenantLookup(harness.TenantRegistry)
+        {
+            FailuresRemaining = 1,
+            // The injected exception carries every forbidden value in its own message, so the
+            // assertions below fail if the exception object ever reaches the logger.
+            ThrowMessage = $"{PayloadCanary} {WebhookUrl} {WebhookSecret} sha256=deadbeef {RecipientCanary}",
+        };
         harness.Worker.TenantConfigLookupOverride = lookup;
 
         // First event carries payload/URL/secret canaries in durable state; resolve_config throws
@@ -407,7 +413,9 @@ public sealed class WebhookDeliveryWorkerIsolationTests
             TimeSpan.FromSeconds(15),
             ct);
 
-        var joined = harness.LogCapture.JoinedOutput();
+        // Includes exception text: providers render exceptions via ToString(), so a canary check
+        // that only looked at the message template would not cover what reaches a log sink.
+        var joined = harness.LogCapture.JoinedOutputWithExceptions();
         Assert.DoesNotContain(PayloadCanary, joined, StringComparison.Ordinal);
         Assert.DoesNotContain(WebhookUrl, joined, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(WebhookSecret, joined, StringComparison.OrdinalIgnoreCase);
@@ -425,6 +433,10 @@ public sealed class WebhookDeliveryWorkerIsolationTests
         Assert.True(error.State.ContainsKey("TenantId"));
         Assert.True(error.State.ContainsKey("MailRequestId"));
         Assert.True(error.State.ContainsKey("AttemptNumber"));
+        // Unclassified (non-SQLite) failures record the type name and must not hand the exception
+        // object to the logger, whose text may embed the webhook URL or payload fragments.
+        Assert.Equal(typeof(InvalidOperationException).FullName, error.State["ExceptionType"]);
+        Assert.Null(error.Exception);
         Assert.Equal(DeliveryEventState.Delivered, await harness.ReadStatusAsync(validId, ct));
     }
 

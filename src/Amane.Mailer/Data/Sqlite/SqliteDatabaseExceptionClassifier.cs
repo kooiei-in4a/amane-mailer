@@ -14,6 +14,15 @@ public static class SqliteDatabaseExceptionClassifier
     public const int SqliteFull = 13;
     public const int SqliteCantOpen = 14;
 
+    /// <summary>
+    /// True when the chain contains a <see cref="SqliteException"/>. Callers use this to decide
+    /// whether an exception's own text is safe to log: SQLite messages are DB-level and PII-free,
+    /// whereas arbitrary exceptions may embed URLs, payload fragments, or provider text (#389).
+    /// </summary>
+    public static bool IsDatabaseException(Exception exception) =>
+        exception is SqliteException
+        || (exception.InnerException is not null && IsDatabaseException(exception.InnerException));
+
     public static bool IsStorageFull(Exception exception)
     {
         if (exception is SqliteException sqlite)
