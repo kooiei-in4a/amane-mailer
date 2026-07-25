@@ -17,7 +17,7 @@
 |------|------|
 | Claim | `DeliveryEventRepository.TryClaimOneAsync` が `ORDER BY created_at ASC LIMIT 1` |
 | Worker | `WebhookDeliveryWorker` は 1 件 claim → HTTP 配送 → finalize を **await 完了してから**次へ |
-| 並列度 | 配送経路に concurrency 設定なし（`Mailer:Webhook:BatchClaimSize` は reconcile 検索件数。配送 claim batch ではない） |
+| 並列度 | 配送経路に concurrency 設定なし（`Mailer:Webhook:ReconcileBatchSize` は reconcile 検索件数。配送 claim batch ではない。旧 `BatchClaimSize` は deprecated alias） |
 | Lease | `LeaseDurationSeconds > DeliveryTimeoutSeconds + FinalizeTimeoutSeconds(10)`（**単一** in-flight 前提） |
 | Shutdown | 新規 claim 停止 + 最大 1 件分の `DeliveryTimeout + FinalizeTimeout` drain |
 | 比較対象 | `MailRequestWorker` は `BatchClaimSize` + `MaxSendConcurrency` の制限付き並列 |

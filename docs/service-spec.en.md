@@ -465,7 +465,7 @@ Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty
 | `Mailer__Webhook__MaxAttempts` | `10` | 1–50 | Webhook delivery max attempts |
 | `Mailer__Webhook__InitialDelaySeconds` | `10` | 1–86400 | Webhook retry initial delay (`<= MaxDelaySeconds`) |
 | `Mailer__Webhook__MaxDelaySeconds` | `300` | 1–86400 | Webhook retry max delay |
-| `Mailer__Webhook__BatchClaimSize` | `8` | 1–100 | Webhook claim batch size |
+| `Mailer__Webhook__ReconcileBatchSize` | `8` | 1–100 | Reconcile search batch size for missing terminal delivery events (not delivery claim / concurrency). Legacy `Mailer__Webhook__BatchClaimSize` remains a deprecated alias (new key wins; warning logged) |
 | `Mailer__Webhook__DeliveryTimeoutSeconds` | `30` | 1–600 | Webhook HTTP timeout |
 | `Mailer__Webhook__LeaseDurationSeconds` | `60` | 1–86400 | Webhook lease TTL. Must be `> DeliveryTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
 | `Mailer__Sweep__IntervalSeconds` | `30` | 1–3600 | Stale sweep interval |
@@ -602,3 +602,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-25 | Centralized startup configuration validation in `MailerStartupValidator` / `AddStartupValidatedSingleton` (#351) |
 | 2026-07-25 | Document cooperative Ctrl+C cancellation and exit code 130 for long-running CLI commands (#347) |
 | 2026-07-25 | ADR 0018: record SQLite / single-process retention and PostgreSQL / Worker-split start triggers and non-goals (#363) |
+| 2026-07-25 | Renamed to `Mailer__Webhook__ReconcileBatchSize`; legacy `BatchClaimSize` remains a deprecated alias (#353) |

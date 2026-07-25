@@ -110,7 +110,7 @@ Admin UI の boolean / 正の数値 env は **strict parse** です。ただし 
 
 ### Worker / Webhook / Sweep / Retention / Healthcheck 数値
 
-`Mailer__Worker__*` / `Mailer__Webhook__*` / `Mailer__Sweep__*` / `Mailer__Retention__*` / `Mailer__Healthcheck__*` は **strict validation**（#329）。未設定は既定値。空文字・形式不正・0／負数・上限超過は起動失敗（clamp しない）。許容範囲は [サービス仕様 5.2](../service-spec.md#52-worker--sweep--retention環境変数) を参照。起動失敗時はログのキー名と range を確認する（secret は出ない）。
+`Mailer__Worker__*` / `Mailer__Webhook__*` / `Mailer__Sweep__*` / `Mailer__Retention__*` / `Mailer__Healthcheck__*` は **strict validation**（#329）。未設定は既定値。空文字・形式不正・0／負数・上限超過は起動失敗（clamp しない）。許容範囲は [サービス仕様 5.2](../service-spec.md#52-worker--sweep--retention環境変数) を参照。起動失敗時はログのキー名と range を確認する（secret は出ない）。Webhook の reconcile 件数は `Mailer__Webhook__ReconcileBatchSize`（#353）。旧 `Mailer__Webhook__BatchClaimSize` は deprecated alias（新キー優先 + Warning）。配送は引き続き 1 件ずつ claim する。
 
 typo（例: `tru`、`yes`、`abc`）は silent default にせず、上記の適用範囲で startup 検出します。
 

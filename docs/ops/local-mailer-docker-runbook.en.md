@@ -109,7 +109,7 @@ Admin UI boolean and positive-integer environment variables use **strict parse**
 
 ### Worker / Webhook / Sweep / Retention / Healthcheck numerics
 
-`Mailer__Worker__*` / `Mailer__Webhook__*` / `Mailer__Sweep__*` / `Mailer__Retention__*` / `Mailer__Healthcheck__*` use **strict validation** (#329). Unset keeps defaults. Empty string, malformed, zero/negative, and over-max values fail startup (no clamp). Allowed ranges: [service spec §5.2](../service-spec.en.md#52-worker--sweep--retention-environment-variables). On failure, check the log for the key and range (secrets are not included).
+`Mailer__Worker__*` / `Mailer__Webhook__*` / `Mailer__Sweep__*` / `Mailer__Retention__*` / `Mailer__Healthcheck__*` use **strict validation** (#329). Unset keeps defaults. Empty string, malformed, zero/negative, and over-max values fail startup (no clamp). Allowed ranges: [service spec §5.2](../service-spec.en.md#52-worker--sweep--retention-environment-variables). On failure, check the log for the key and range (secrets are not included). Webhook reconcile search size is `Mailer__Webhook__ReconcileBatchSize` (#353). Legacy `Mailer__Webhook__BatchClaimSize` remains a deprecated alias (new key wins + warning). Delivery still claims one event at a time.
 
 Typos such as `tru`, `yes`, or `abc` are not silently defaulted within the scopes above.
 
