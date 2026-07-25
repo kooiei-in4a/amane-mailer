@@ -192,6 +192,35 @@ public sealed class MailerAdminTenantScopeTests(MailerAdminFixture fixture)
     }
 
     [Fact]
+    public async Task Scoped_admin_detail_still_renders_visible_tenant_attempts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var username = "attempts-admin-" + Guid.NewGuid().ToString("N");
+        await CreateScopedUserAsync(username, [MailerWebApplicationFixtureBase.TenantId], ct);
+
+        var visibleId = await SeedMailRequestAsync(
+            MailerWebApplicationFixtureBase.TenantId,
+            MailRequestState.Failed,
+            "attempt-visible@example.com",
+            "Attempt Visible",
+            htmlBody: null,
+            completedAt: new DateTimeOffset(2026, 6, 29, 2, 0, 0, TimeSpan.Zero),
+            ct);
+        await SeedMailAttemptAsync(visibleId, "mailpit-scope-visible", ct);
+
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, username, TenantAdminPassword(username), ct);
+
+        using var response = await client.GetAsync($"/admin/mail-requests/{visibleId:D}", ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("試行履歴", html, StringComparison.Ordinal);
+        Assert.Contains("mailpit-scope-visible", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("試行履歴がありません", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Tenant_scope_change_revokes_existing_sessions()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -415,6 +444,34 @@ public sealed class MailerAdminTenantScopeTests(MailerAdminFixture fixture)
             : DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
         return id;
+    }
+
+    private async Task SeedMailAttemptAsync(
+        Guid requestId,
+        string provider,
+        CancellationToken cancellationToken)
+    {
+        var now = new DateTimeOffset(2026, 6, 29, 0, 5, 0, TimeSpan.Zero);
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO mail_attempts (
+                request_id, attempt_number, provider, status,
+                provider_message_id, error_code, error_message,
+                retryable, lock_token, started_at, completed_at)
+            VALUES (
+                @RequestId, 1, @Provider, @Status,
+                NULL, 'provider_error', 'sanitized',
+                0, @LockToken, @StartedAt, @CompletedAt);
+            """;
+        command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+        command.Parameters.AddWithValue("@Provider", provider);
+        command.Parameters.AddWithValue("@Status", (int)MailRequestState.Failed);
+        command.Parameters.AddWithValue("@LockToken", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(now));
+        command.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(now.AddSeconds(5)));
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task InsertAdminUserWithoutScopeAsync(

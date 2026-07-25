@@ -203,21 +203,24 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
 
     public async Task<IReadOnlyList<AdminMailAttemptRow>> ListAttemptsForAdminAsync(
         Guid requestId,
+        IReadOnlySet<Guid>? allowedTenantIds,
         CancellationToken cancellationToken = default)
     {
-        const string sql = """
-            SELECT
-                attempt_number, provider, status,
-                provider_message_id, error_code, error_message,
-                started_at, completed_at
-            FROM mail_attempts
-            WHERE request_id = @RequestId
-            ORDER BY started_at ASC, id ASC;
-            """;
-
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = sql;
+        var where = new StringBuilder("WHERE ma.request_id = @RequestId");
+        MailRequestRepositorySql.AppendTenantScopeFilter(where, command, allowedTenantIds, tenantColumn: "mr.tenant_id");
+
+        command.CommandText = $$"""
+            SELECT
+                ma.attempt_number, ma.provider, ma.status,
+                ma.provider_message_id, ma.error_code, ma.error_message,
+                ma.started_at, ma.completed_at
+            FROM mail_attempts ma
+            INNER JOIN mail_requests mr ON mr.id = ma.request_id
+            {{where}}
+            ORDER BY ma.started_at ASC, ma.id ASC;
+            """;
         command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
 
         var rows = new List<AdminMailAttemptRow>();
