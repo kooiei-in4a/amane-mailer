@@ -48,10 +48,10 @@ public static class AdminMailRequestBodyPage
 
         var body = field switch
         {
-            "html_body"     => detail.HtmlBody,
-            "text_body"     => detail.TextBody,
+            "html_body" => detail.HtmlBody,
+            "text_body" => detail.TextBody,
             "metadata_json" => detail.MetadataJson,
-            _               => null,
+            _ => null,
         };
 
         if (body is null)

@@ -63,6 +63,7 @@ Run the smallest useful check first, then broaden before finishing.
 ```powershell
 # Default local loop (matches README; CI uses normal test verbosity)
 dotnet restore Amane.Mailer.slnx --locked-mode
+dotnet format whitespace Amane.Mailer.slnx --verify-no-changes
 dotnet build Amane.Mailer.slnx -c Release --no-restore
 dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 

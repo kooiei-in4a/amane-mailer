@@ -119,7 +119,7 @@ public sealed class SqlMigrationRunner
                 continue;
             }
 
-            await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+            var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
             try
             {
                 await using (var script = connection.CreateCommand())
@@ -147,6 +147,10 @@ public sealed class SqlMigrationRunner
             {
                 await transaction.RollbackAsync(cancellationToken);
                 throw;
+            }
+            finally
+            {
+                await transaction.DisposeAsync();
             }
         }
 
