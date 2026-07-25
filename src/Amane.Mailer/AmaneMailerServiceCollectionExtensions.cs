@@ -16,12 +16,13 @@ public static class AmaneMailerServiceCollectionExtensions
         IConfiguration configuration)
     {
         services.AddSingleton(TimeProvider.System);
+        services.AddMailerStartupValidator();
         services.AddMailerAdmin(configuration);
 
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
             MailerTenantRegistry.Load(provider.GetRequiredService<IConfiguration>()));
 
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
         {
             var options = MailerOptions.Load(provider.GetRequiredService<IConfiguration>());
             var tenants = provider.GetRequiredService<MailerTenantRegistry>();
@@ -29,7 +30,7 @@ public static class AmaneMailerServiceCollectionExtensions
             return options;
         });
 
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerWorkerOptions.Load(resolvedConfiguration);
@@ -51,13 +52,13 @@ public static class AmaneMailerServiceCollectionExtensions
                     : webhookHostTimeout;
             });
 
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
             MailerSweepOptions.Load(provider.GetRequiredService<IConfiguration>()));
 
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
             MailerRetentionOptions.Load(provider.GetRequiredService<IConfiguration>()));
 
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerAdminAuditRetentionOptions.Load(resolvedConfiguration);
@@ -69,7 +70,7 @@ public static class AmaneMailerServiceCollectionExtensions
             return options;
         });
 
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerWebhookOptions.Load(resolvedConfiguration);
@@ -83,7 +84,7 @@ public static class AmaneMailerServiceCollectionExtensions
 
         services.AddSingleton<WorkerServiceStatus>();
 
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerHealthcheckOptions.Load(resolvedConfiguration);
@@ -97,7 +98,7 @@ public static class AmaneMailerServiceCollectionExtensions
             return options;
         });
 
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
         {
             var options = MailerMetricsOptions.Load(provider.GetRequiredService<IConfiguration>());
             options.Validate(provider.GetRequiredService<IHostEnvironment>().EnvironmentName);
