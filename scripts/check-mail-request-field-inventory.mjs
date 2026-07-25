@@ -327,9 +327,7 @@ function parsePythonBuilderInventory(relativePath, errors) {
     );
   }
 
-  const omitMatch = source.match(
-    /for\s+key\s+in\s*\(\s*((?:["'][a-z][a-z0-9_]*["']\s*,?\s*)+)\s*\)/,
-  );
+  const omitMatch = source.match(/for\s+key\s+in\s*\(([^)]*)\)/);
   const omitNullFields = omitMatch
     ? [...omitMatch[1].matchAll(/["']([a-z][a-z0-9_]*)["']/g)].map((item) => item[1])
     : [];
@@ -376,9 +374,7 @@ function parseTypeScriptBuilderInventory(relativePath, errors) {
     );
   }
 
-  const omitMatch = source.match(
-    /for\s*\(\s*const\s+key\s+of\s*\[\s*((?:['"][a-z][a-z0-9_]*['"]\s*,?\s*)+)\s*\]/,
-  );
+  const omitMatch = source.match(/for\s*\(\s*const\s+key\s+of\s*\[([^\]]*)\]/);
   const omitNullFields = omitMatch
     ? [...omitMatch[1].matchAll(/['"]([a-z][a-z0-9_]*)['"]/g)].map((item) => item[1])
     : [];
