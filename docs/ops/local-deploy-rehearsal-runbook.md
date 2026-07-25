@@ -158,12 +158,15 @@ Admin UI を確認する場合は、`local-rehearsal.ps1` を起動する PowerS
 `AMANE_ADMIN_*` を設定します。Docker の port publish 経由で管理画面へ入るため、
 ローカル rehearsal では `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=0.0.0.0` と
 `AMANE_ADMIN_ALLOW_HTTP=true` を明示します。
+`AMANE_ADMIN_ALLOW_HTTP=true` は **Development 専用**です。Admin 有効時に
+Production／Staging で `true` を指定すると startup failure になるため、ローカル HTTP 確認では
+`ASPNETCORE_ENVIRONMENT=Development` も設定してください。
 `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` は `/admin` request の `Connection.LocalIpAddress`
 allowlist であり、socket bind ではありません。実際の host 側公開範囲は
 `compose.local-rehearsal.yml` の `ports`（`127.0.0.1:5281`）で制限します。
 旧 `AMANE_ADMIN_BIND` / `MAILER_ADMIN_BIND` は deprecated alias として残っています。
 これはローカル HTTP 確認専用です。deploy host では HTTPS リバースプロキシ前提で
-`AMANE_ADMIN_ALLOW_HTTP=false` を維持してください。
+`AMANE_ADMIN_ALLOW_HTTP=false` と `ASPNETCORE_ENVIRONMENT=Production` を維持してください。
 
 Admin UI は **内部ネットワーク向け・experimental** な運用補助ツールです。現時点の制約:
 login throttle は SQLite 正本（再起動後も lock 維持）、
@@ -195,6 +198,7 @@ $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
 $env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
+$env:ASPNETCORE_ENVIRONMENT = "Development"  # required with ALLOW_HTTP=true (#341)
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"
 $env:AMANE_ADMIN_PII_LIST_MODE = "masked"
 

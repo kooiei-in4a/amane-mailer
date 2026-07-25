@@ -8,6 +8,9 @@ namespace Amane.Mailer.Configuration;
 /// </summary>
 internal static class ConfigurationIntReader
 {
+    public const int MinPort = 1;
+    public const int MaxPort = 65535;
+
     public static int Read(
         IConfiguration configuration,
         string key,
@@ -17,12 +20,7 @@ internal static class ConfigurationIntReader
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        if (minInclusive > maxInclusive)
-        {
-            throw new ArgumentException(
-                $"minInclusive ({minInclusive}) must be <= maxInclusive ({maxInclusive}).",
-                nameof(minInclusive));
-        }
+        EnsureRangeOrdered(minInclusive, maxInclusive);
 
         var raw = configuration[key];
         if (raw is null)
@@ -33,6 +31,30 @@ internal static class ConfigurationIntReader
         return ParseInRange(raw, key, minInclusive, maxInclusive);
     }
 
+    public static int Read(
+        IConfiguration configuration,
+        int defaultValue,
+        int minInclusive,
+        int maxInclusive,
+        string primaryKey,
+        string fallbackKey)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        EnsureRangeOrdered(minInclusive, maxInclusive);
+
+        if (ConfigurationKeyPresence.TryGetPresent(
+                configuration,
+                out var key,
+                out var raw,
+                primaryKey,
+                fallbackKey))
+        {
+            return ParseInRange(raw, key, minInclusive, maxInclusive);
+        }
+
+        return defaultValue;
+    }
+
     public static int? ReadOptional(
         IConfiguration configuration,
         string key,
@@ -41,12 +63,7 @@ internal static class ConfigurationIntReader
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        if (minInclusive > maxInclusive)
-        {
-            throw new ArgumentException(
-                $"minInclusive ({minInclusive}) must be <= maxInclusive ({maxInclusive}).",
-                nameof(minInclusive));
-        }
+        EnsureRangeOrdered(minInclusive, maxInclusive);
 
         var raw = configuration[key];
         if (raw is null)
@@ -56,6 +73,42 @@ internal static class ConfigurationIntReader
 
         return ParseInRange(raw, key, minInclusive, maxInclusive);
     }
+
+    public static int? ReadOptional(
+        IConfiguration configuration,
+        int minInclusive,
+        int maxInclusive,
+        string primaryKey,
+        string fallbackKey)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        EnsureRangeOrdered(minInclusive, maxInclusive);
+
+        if (ConfigurationKeyPresence.TryGetPresent(
+                configuration,
+                out var key,
+                out var raw,
+                primaryKey,
+                fallbackKey))
+        {
+            return ParseInRange(raw, key, minInclusive, maxInclusive);
+        }
+
+        return null;
+    }
+
+    public static int ReadPort(
+        IConfiguration configuration,
+        string key,
+        int defaultValue) =>
+        Read(configuration, key, defaultValue, MinPort, MaxPort);
+
+    public static int ReadPort(
+        IConfiguration configuration,
+        int defaultValue,
+        string primaryKey,
+        string fallbackKey) =>
+        Read(configuration, defaultValue, MinPort, MaxPort, primaryKey, fallbackKey);
 
     public static int ParseInRange(string raw, string key, int minInclusive, int maxInclusive)
     {
@@ -74,6 +127,16 @@ internal static class ConfigurationIntReader
         }
 
         return parsed;
+    }
+
+    private static void EnsureRangeOrdered(int minInclusive, int maxInclusive)
+    {
+        if (minInclusive > maxInclusive)
+        {
+            throw new ArgumentException(
+                $"minInclusive ({minInclusive}) must be <= maxInclusive ({maxInclusive}).",
+                nameof(minInclusive));
+        }
     }
 
     private static string FormatRangeMessage(string key, int minInclusive, int maxInclusive) =>

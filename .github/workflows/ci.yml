@@ -48,6 +48,9 @@ jobs:
       - name: Restore
         run: dotnet restore Amane.Mailer.slnx --locked-mode
 
+      - name: Verify C# whitespace formatter
+        run: dotnet format whitespace Amane.Mailer.slnx --verify-no-changes --verbosity diagnostic
+
       - name: Build
         run: dotnet build Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-restore
 
@@ -223,6 +226,11 @@ jobs:
 
       - name: Check Contracts/runtime/OpenAPI drift
         run: node scripts/check-contract-drift.mjs
+
+      - name: Check mail request field inventory (Contracts/OpenAPI/SDK)
+        run: |
+          node scripts/check-mail-request-field-inventory.mjs
+          node scripts/check-mail-request-field-inventory.mjs --self-test
 
       - name: Check implementation status manifest
         run: |

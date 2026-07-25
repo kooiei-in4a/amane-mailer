@@ -36,6 +36,9 @@ public sealed record MailerWorkerOptions
 
     public TimeSpan HostShutdownTimeout => ShutdownDrainTimeout + TimeSpan.FromSeconds(HostShutdownSlackSeconds);
 
+    public static bool IsEnabled(IConfiguration configuration) =>
+        ConfigurationBooleanReader.Read(configuration, "Mailer:Worker:Enabled", true);
+
     public static MailerWorkerOptions Load(IConfiguration configuration) =>
         new()
         {

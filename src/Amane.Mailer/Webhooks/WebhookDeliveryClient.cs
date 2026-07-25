@@ -53,7 +53,11 @@ public sealed class WebhookDeliveryClient(
         try
         {
             var client = httpClientFactory.CreateClient(WebhookHttpClientRegistration.ClientName);
-            using var response = await client.SendAsync(request, cancellationToken);
+            // Status code alone decides delivery outcome; do not buffer or parse the response body.
+            using var response = await client.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 return WebhookDeliveryResult.Success();

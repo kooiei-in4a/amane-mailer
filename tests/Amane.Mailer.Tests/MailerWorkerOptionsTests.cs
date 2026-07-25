@@ -127,4 +127,47 @@ public sealed class MailerWorkerOptionsTests
             TimeSpan.FromSeconds(90 + MailerWorkerOptions.FinalizeTimeoutSeconds),
             options.ShutdownDrainTimeout);
     }
+
+    [Fact]
+    public void IsEnabled_unset_defaults_to_true()
+    {
+        Assert.True(MailerWorkerOptions.IsEnabled(new ConfigurationBuilder().Build()));
+    }
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("True", true)]
+    [InlineData("FALSE", false)]
+    [InlineData("false", false)]
+    public void IsEnabled_accepts_case_insensitive_booleans(string value, bool expected)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = value,
+            })
+            .Build();
+
+        Assert.Equal(expected, MailerWorkerOptions.IsEnabled(configuration));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("yes")]
+    [InlineData("0")]
+    public void IsEnabled_rejects_empty_or_malformed(string value)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = value,
+            })
+            .Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => MailerWorkerOptions.IsEnabled(configuration));
+        Assert.Contains("Mailer:Worker:Enabled", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("true", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("false", ex.Message, StringComparison.Ordinal);
+    }
 }

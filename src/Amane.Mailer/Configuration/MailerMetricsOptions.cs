@@ -21,7 +21,7 @@ public sealed record MailerMetricsOptions
 
         return new MailerMetricsOptions
         {
-            Enabled = configuration.GetValue("Mailer:Metrics:Enabled", true),
+            Enabled = ConfigurationBooleanReader.Read(configuration, "Mailer:Metrics:Enabled", true),
             BearerToken = bearerToken,
         };
     }

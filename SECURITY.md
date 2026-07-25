@@ -2,12 +2,14 @@
 
 ## Supported Versions
 
-Amane Mailer is pre-1.0 software. Only the latest patch release of the current
-minor version receives security fixes.
+Starting with 1.0.0, Amane Mailer follows semantic versioning for the public HTTP
+contract and `Amane.Mailer.Contracts` package. Only the latest patch release of
+the current minor version receives security fixes.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.9.2   | Yes (latest release) |
+| 1.0.0   | Yes (latest release) |
+| 0.9.2   | No                 |
 | 0.9.1   | No                 |
 | 0.9.0   | No                 |
 | 0.4.x   | No                 |

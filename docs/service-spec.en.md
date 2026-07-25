@@ -5,8 +5,8 @@
 - **Role:** General-purpose mail delivery microservice
 - **HTTP contract source of truth:** `src/Amane.Mailer.Contracts/` (ADR 0012 D-01)
 - **Public HTTP reference:** [openapi.yaml](api/openapi.yaml) (public schema synchronized with Contracts / runtime)
-- **Related:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md) (Mailer microservice extraction)
-- **Runtime:** Native AOT single binary (`Amane.Mailer`) + chiseled container. PostgreSQL is not used.
+- **Related:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md) (Mailer microservice extraction), [ADR 0019](adr/0019-sqlite-single-process-boundaries.md) (SQLite / single-process retention and PostgreSQL / Worker-split start gates)
+- **Runtime:** Native AOT single binary (`Amane.Mailer`) + chiseled container. PostgreSQL is not used (start gates: ADR 0019).
 
 ---
 
@@ -33,6 +33,7 @@ App ──HTTP(Bearer)──▶ POST /internal/mail-requests
 - Connects to App via **HTTP API only**. No cross-references between App DB and Mailer DB.
 - Only this service knows about ACS.
 - Database is **SQLite (WAL mode)**. Persistence uses a host-side `./data` → container `/app/data` volume mount.
+- PostgreSQL and separate Worker processes are deferred until measurable start triggers fire ([ADR 0019](adr/0019-sqlite-single-process-boundaries.md)).
 
 ---
 
@@ -54,9 +55,9 @@ The code-level source of truth for the HTTP contract is `src/Amane.Mailer.Contra
 
 When changing the contract, review drift across `src/Amane.Mailer.Contracts/`, the runtime implementation, [openapi.yaml](api/openapi.yaml), and related tests in the same change. The review covers Request/Response DTO property names, required / nullable fields, `MailerErrorCodes`, `MailRequestAcceptanceStatus`, `MailRequestStatus`, payload hash fields, and JSON unknown / duplicate property behavior.
 
-CI validates OpenAPI structure with `scripts/validate-openapi.mjs` and runs Contracts / runtime / OpenAPI drift-specific assertions with `scripts/check-contract-drift.mjs`. The drift check treats Contracts DTOs / constants as the source of truth and verifies OpenAPI schemas / enums, payload hash fields, runtime source-generated JSON usage, and runtime/test coverage hooks for JSON unknown / duplicate property behavior.
+CI validates OpenAPI structure with `scripts/validate-openapi.mjs` and runs Contracts / runtime / OpenAPI drift-specific assertions with `scripts/check-contract-drift.mjs`. In addition, `scripts/check-mail-request-field-inventory.mjs` compares the `MailRequestCreateRequest` JSON field set across Contracts, OpenAPI, payload_hash classification, and Python / TypeScript SDK builders and validation. The drift check treats Contracts DTOs / constants as the source of truth and verifies OpenAPI schemas / enums, payload hash fields, runtime source-generated JSON usage, and runtime/test coverage hooks for JSON unknown / duplicate property behavior.
 
-When intentionally changing the contract, update the DTOs / constants / payload hash contract in `src/Amane.Mailer.Contracts/` first, then synchronize runtime behavior, [openapi.yaml](api/openapi.yaml), and related tests in the same change. There is no separate generated snapshot to refresh today; the drift check derives expected DTO / constant shape from source. Recompute the OpenAPI example `payload_hash` when it changes, and update `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` when canonicalization fixtures change. Validate locally with `node scripts/validate-openapi.mjs docs/api/openapi.yaml` and `node scripts/check-contract-drift.mjs`. See the "Versioning Policy" section for Contracts package / API versioning policy.
+When intentionally changing the contract, update the DTOs / constants / payload hash contract in `src/Amane.Mailer.Contracts/` first, then synchronize runtime behavior, [openapi.yaml](api/openapi.yaml), related tests, and the Python / TypeScript SDK builder, validation, and payload_hash field inventories in the same change. There is no separate generated snapshot to refresh today; the drift check derives expected DTO / constant shape from source. Recompute the OpenAPI example `payload_hash` when it changes, and update `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` when canonicalization fixtures change. Validate locally with `node scripts/validate-openapi.mjs docs/api/openapi.yaml`, `node scripts/check-contract-drift.mjs`, and `node scripts/check-mail-request-field-inventory.mjs`. See the "Versioning Policy" section for Contracts package / API versioning policy.
 
 ### Acceptance Responses
 
@@ -64,7 +65,7 @@ When intentionally changing the contract, update the DTOs / constants / payload 
 |---|---|---|
 | First acceptance | 202 | `status: accepted` |
 | Retry of same request | 202 | `status: already_accepted` |
-| Invalid JSON / empty body / unknown property / duplicate property | 400 | `INVALID_REQUEST` |
+| Invalid JSON / empty body / unknown property / duplicate property / invalid UTF-8 | 400 | `INVALID_REQUEST` |
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Same ID, different content | 409 | `IDEMPOTENCY_CONFLICT` |
@@ -121,7 +122,7 @@ Body: `{ "scheduled_at": "<UTC date-time>|null" }` (null clears the schedule gat
 | Situation | HTTP | code / status |
 |---|---|---|
 | Updated while `queued` and `attempt_count=0` | 200 | Updated status JSON |
-| Invalid query | 400 | `INVALID_REQUEST` |
+| Invalid query / invalid JSON body / invalid UTF-8 | 400 | `INVALID_REQUEST` |
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Missing / other tenant | 404 | `NOT_FOUND` |
@@ -330,8 +331,8 @@ Consumer.
   generation (`ON CONFLICT DO NOTHING`). Only the first enqueued terminal state remains.
   If Admin manual retry later reaches a different terminal (e.g. `failed` → `Queued` →
   `delivered`), Mailer does not insert a second event and does not update the existing
-  one. Re-notifying the latest terminal is out of scope for this contract and would need
-  a separate issue / ADR.
+  one. Per-delivery-cycle re-notification is deferred by
+  [ADR 0017](adr/0017-webhook-first-wins-delivery-cycle.md) (with re-evaluation triggers).
 - Reconciliation only fills **missing** outbox rows for terminal requests; it never
   overwrites an existing event.
 - Read the secret from the environment variable named by `webhook.secret_env`
@@ -346,6 +347,10 @@ Consumer.
   `mail_webhook_finalize_skipped_total` and structured Warning logs. The delivery
   contract remains at-least-once, so consumers must keep deduplicating by `event_id`
   after a skip that may lead to a re-POST ([metrics runbook](ops/metrics-and-alerts.en.md)).
+- Delivery is **sequential** (one claim → HTTP → finalize; global FIFO). Bounded
+  concurrency is deferred by
+  [ADR 0018](adr/0018-webhook-delivery-sequential-concurrency.md) (HOL measurement
+  and re-evaluation triggers).
 - During shutdown, `stoppingToken` stops new claims. In-flight deliveries wait up
   to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` (same drain pattern as
   `MailRequestWorker`).
@@ -367,12 +372,16 @@ Early branching on `argv` before Web host startup. Container `ENTRYPOINT` is `./
 
 | Subcommand | Purpose | Exit code |
 |---|---|---|
-| `healthcheck` | Current SQLite schema (applied migration version + checksum) + Worker/Sweep heartbeat freshness check (Docker `HEALTHCHECK`) | 0=healthy / 1=unhealthy |
-| `db migrate` | Apply pending SQL migrations | 0=success |
-| `db checkpoint` | Clean up `-wal` via `PRAGMA wal_checkpoint(TRUNCATE)` | 0=success |
-| `db backup <absolute-path>` | Online SQLite backup (Backup API). Writes to a same-directory temp file, verifies it, then atomically replaces the destination. A mid-flight failure leaves any previous good backup intact. Prefer a timestamped path for retention | 0=success / 2=usage error |
-| `db stats [--tenant-id <uuid>]` | Output `mail_requests` status counts, ready backlog, oldest queued age, stale processing, and dead-letter counts from SQLite as `key=value` | 0=success / 1=schema unavailable / 2=usage error |
-| `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | Output one request's state, attempt count, and provider message id presence as `key=value` (does not expose secrets / recipient) | 0=success / 1=schema unavailable / 2=usage error |
+| `healthcheck` | Current SQLite schema (applied migration version + checksum) + Worker/Sweep heartbeat freshness check (Docker `HEALTHCHECK`) | 0=healthy / 1=unhealthy / 130=cancelled |
+| `db migrate` | Apply pending SQL migrations | 0=success / 130=cancelled |
+| `db checkpoint` | Clean up `-wal` via `PRAGMA wal_checkpoint(TRUNCATE)` | 0=success / 130=cancelled |
+| `db backup <absolute-path>` | Online SQLite backup (Backup API). Writes to a same-directory temp file, verifies it, then atomically replaces the destination. A mid-flight failure leaves any previous good backup intact. Prefer a timestamped path for retention | 0=success / 2=usage error / 130=cancelled |
+| `db stats [--tenant-id <uuid>]` | Output `mail_requests` status counts, ready backlog, oldest queued age, stale processing, and dead-letter counts from SQLite as `key=value` | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | Output one request's state, attempt count, and provider message id presence as `key=value` (does not expose secrets / recipient) | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db admin-audit purge --older-than-days <days>` | Batch-delete Admin audit events older than the requested retention | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `admin user create ...` | Create a scoped or break-glass Admin user | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
+
+Long-running CLI commands cancel cooperatively on `Ctrl+C` (`Console.CancelKeyPress`). Every `Ctrl+C` keeps the process alive (`e.Cancel = true`), cancels the shared `CancellationToken`, and relies on existing transaction rollback and backup temp cleanup. Later presses stay on the same cooperative path; there is no fallback to `Environment.Exit` or default OS immediate termination. During a synchronous non-interruptible stretch such as `BackupDatabase`, stop may be deferred until the next checkpoint; operators who need an immediate kill must use SIGKILL or close the terminal. The cancellation exit code is the constant `130` (conventional `128 + SIGINT`) and does not collide with usage error (`2`) or schema unavailable (`1`). Cancellation is not logged as ERROR (short stderr only).
 
 ### Migration Checksum Policy
 
@@ -444,7 +453,7 @@ values, body, and metadata are not output.
 
 ### 5.2 Worker / Sweep / Retention (Environment Variables)
 
-Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty string, malformed numbers, zero/negative, and values above the max **fail startup** (no implicit clamp). Error messages include the setting key and allowed range; they never include secrets or connection strings. The same numeric rules apply in Development / Testing / Production. With Worker disabled, per-key `Load` range checks still apply (cross-field lease / healthcheck `Validate` remains Worker-enabled only).
+Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty string, malformed numbers, zero/negative, and values above the max **fail startup** (no implicit clamp). Error messages include the setting key and allowed range; they never include secrets or connection strings. The same numeric rules apply in Development / Testing / Production. With Worker disabled, per-key `Load` range checks still apply (cross-field lease / healthcheck `Validate` remains Worker-enabled only). `Mailer__Worker__Enabled` uses **strict boolean** parsing (#358) — unset keeps `true`; empty / whitespace / typos fail startup.
 
 | Variable | Default | Allowed range | Description |
 |---|---|---|---|
@@ -456,7 +465,7 @@ Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty
 | `Mailer__Webhook__MaxAttempts` | `10` | 1–50 | Webhook delivery max attempts |
 | `Mailer__Webhook__InitialDelaySeconds` | `10` | 1–86400 | Webhook retry initial delay (`<= MaxDelaySeconds`) |
 | `Mailer__Webhook__MaxDelaySeconds` | `300` | 1–86400 | Webhook retry max delay |
-| `Mailer__Webhook__BatchClaimSize` | `8` | 1–100 | Webhook claim batch size |
+| `Mailer__Webhook__ReconcileBatchSize` | `8` | 1–100 | Reconcile search batch size for missing terminal delivery events (not delivery claim / concurrency). Legacy `Mailer__Webhook__BatchClaimSize` remains a deprecated alias (new key wins; warning logged) |
 | `Mailer__Webhook__DeliveryTimeoutSeconds` | `30` | 1–600 | Webhook HTTP timeout |
 | `Mailer__Webhook__LeaseDurationSeconds` | `60` | 1–86400 | Webhook lease TTL. Must be `> DeliveryTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
 | `Mailer__Sweep__IntervalSeconds` | `30` | 1–3600 | Stale sweep interval |
@@ -468,6 +477,13 @@ Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty
 | `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | 1–3600 | Worker heartbeat update interval when idle (seconds). Sweep update interval follows `Mailer__Sweep__IntervalSeconds` |
 
 On startup failure, check the process log exception for the key name and allowed range. The configured value and connection strings are not included in the message.
+
+Startup configuration validation is centralized in `MailerStartupValidator` (#351). Do not enumerate options types with `GetRequiredService` in `Program.cs`. To add a new startup-required setting:
+
+1. Implement `Load` / `Validate` on the options type (preserve existing gates such as skipping cross-field checks when Worker is disabled, and ignoring unused Admin settings when Admin is disabled).
+2. Register with `AddStartupValidatedSingleton` instead of plain `AddSingleton` so registration and the validation inventory stay in sync.
+3. Add the type to `MailerStartupValidationInventoryTests.ExpectedStartupValidatedTypes`.
+4. Add a focused host-startup failure test for the new invariant.
 
 ### 5.3 Structure & Policy (JSON / `tenants.json`)
 
@@ -490,6 +506,7 @@ Schema: [config/mailer/tenants.schema.json](../config/mailer/tenants.schema.json
 - Even with `provider=acs`, tenants with `live_sending=false` **do not send** — they fail with `LIVE_SENDING_DISABLED`.
 - develop / staging should use `false` in principle; production only `true`.
 - When any tenant has effective provider `acs` (including `MAILER_PROVIDER` override) and `live_sending=true`, a missing ACS connection string (`ACS_CONNECTION_STRING_FILE` / `ACS_CONNECTION_STRING`) causes **startup fail-closed**. Configurations with only `live_sending=false` do not require an ACS secret at startup (same policy as offline `scripts/validate-tenant-config.mjs`). Provider / ACS validation is startup-only and is not part of `/readyz`.
+- When any tenant has effective provider `mailpit`, Mailpit SMTP host (`Mailer__Mailpit__SmtpHost` / `MAILPIT_SMTP_HOST`) must be non-blank and port (`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`) must be a strict integer in **1–65535**, or startup **fail-closed** (#356). Defaults when unset: host=`mailpit`, port=`1025`, `UseSsl=false`. ACS-only configurations (every tenant effective provider `acs`) do not treat unused Mailpit host/port typos as startup blockers (unused settings do not stop delivery). `UseSsl` remains always validated at Load per #358. Error messages include the setting key and allowed form only; they never echo the host value or secrets. Startup does not probe SMTP connectivity.
 
 ---
 
@@ -577,5 +594,12 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-23 | Documented startup validation for effective provider / ACS live-sending; not part of `/readyz` (#272). Mailpit treats post-accept disconnect failure as success, not retry (#275) |
 | 2026-07-23 | `MailRequestWorker` shutdown: later semaphore-waiting send waves do not start (#271) |
 | 2026-07-24 | Documented delivery-result webhook first-wins (first terminal only; no re-notify after Admin manual retry) (#273) |
+| 2026-07-25 | ADR 0017: deferred delivery-cycle extension; keep first-wins with re-evaluation triggers (#362) |
+| 2026-07-25 | ADR 0018: deferred webhook delivery concurrency; keep sequential with HOL measurement and re-evaluation triggers (#361) |
 | 2026-07-24 | Documented that Worker / Webhook leases use wall-clock absolute time and described clock-jump effects (#276) |
 | 2026-07-24 | Made webhook finalize fencing failures observable via `mail_webhook_finalize_skipped_total` (#328) |
+| 2026-07-25 | Mailpit SMTP host/port validated at startup only when effective provider is `mailpit` (#356). ACS-only ignores unused typos |
+| 2026-07-25 | Centralized startup configuration validation in `MailerStartupValidator` / `AddStartupValidatedSingleton` (#351) |
+| 2026-07-25 | Document cooperative Ctrl+C cancellation and exit code 130 for long-running CLI commands (#347) |
+| 2026-07-25 | ADR 0019: record SQLite / single-process retention and PostgreSQL / Worker-split start triggers and non-goals (#363). Renumbered from colliding 0018 after same-day #385 merge |
+| 2026-07-25 | Renamed to `Mailer__Webhook__ReconcileBatchSize`; legacy `BatchClaimSize` remains a deprecated alias (#353) |

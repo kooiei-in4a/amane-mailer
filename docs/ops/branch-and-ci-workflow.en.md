@@ -37,10 +37,14 @@ Job names are unchanged so branch protection required status checks stay aligned
 
 | Trigger | Jobs run |
 |---------|----------|
-| Push to `feature/**` / `fix/**` | `Restore, build, and test` only |
+| Push to `feature/**` / `fix/**` | `Restore, build, and test` only (includes whitespace formatter verify) |
 | Push to `develop`, or PR targeting `develop` | Above + `OpenAPI validation`; PRs also run `Native AOT publish smoke` |
 | PR targeting `main` | Release-gate CI (Native AOT, amd64 Docker, compose smoke, OpenAPI) |
 | Push to `main`, `workflow_dispatch` | Final CI (above + arm64 Docker) |
+
+`Restore, build, and test` runs `dotnet format whitespace ... --verify-no-changes`
+after restore, then the Release build (including staged analyzer severities for
+`src/**`) and tests. See [Code quality gates](code-quality-gates.en.md).
 
 Release-gate CI includes:
 

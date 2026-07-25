@@ -5,8 +5,8 @@
 - **位置づけ:** 汎用メール送信マイクロサービス
 - **HTTP 契約の正本:** `src/Amane.Mailer.Contracts/`（ADR 0012 D-01）
 - **公開 HTTP reference:** [openapi.yaml](api/openapi.yaml)（Contracts / runtime に同期される公開 schema）
-- **関連:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md)（Mailer マイクロサービス化）
-- **ランタイム:** Native AOT 単一バイナリ（`Amane.Mailer`）＋ chiseled コンテナ。PostgreSQL は使用しない。
+- **関連:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md)（Mailer マイクロサービス化）、[ADR 0019](adr/0019-sqlite-single-process-boundaries.md)（SQLite／単一プロセス維持と PostgreSQL／Worker 分離の着手境界）
+- **ランタイム:** Native AOT 単一バイナリ（`Amane.Mailer`）＋ chiseled コンテナ。PostgreSQL は使用しない（着手条件は ADR 0019）。
 
 ---
 
@@ -33,6 +33,7 @@ App ──HTTP(Bearer)──▶ POST /internal/mail-requests
 - App とは **HTTP API のみ**で接続。App DB / Mailer DB の相互参照はしない。
 - ACS を知るのは本サービスだけ。
 - データベースは **SQLite（WAL モード）**。永続化はホスト側 `./data` → コンテナ `/app/data` のボリュームマウント。
+- PostgreSQL や Worker 別 process 化は、測定可能な着手 trigger 成立まで行わない（[ADR 0019](adr/0019-sqlite-single-process-boundaries.md)）。
 
 ---
 
@@ -54,9 +55,9 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 
 契約変更時は、同一変更内で `src/Amane.Mailer.Contracts/`、runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テストの drift を確認する。対象は Request/Response DTO の property 名・required / nullable、`MailerErrorCodes`、`MailRequestAcceptanceStatus`、`MailRequestStatus`、payload hash 対象、JSON unknown / duplicate property 挙動を含む。
 
-CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scripts/check-contract-drift.mjs` で Contracts / runtime / OpenAPI の drift-specific assertion を実行する。drift check は Contracts DTO / constants を正本として、OpenAPI schema / enum、payload hash 対象、runtime の source-generated JSON 利用、JSON unknown / duplicate property の runtime/test coverage hook を検証する。
+CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scripts/check-contract-drift.mjs` で Contracts / runtime / OpenAPI の drift-specific assertion を実行する。加えて `scripts/check-mail-request-field-inventory.mjs` が `MailRequestCreateRequest` の JSON field 集合を Contracts・OpenAPI・payload_hash 分類・Python / TypeScript SDK builder・validation 間で照合する。drift check は Contracts DTO / constants を正本として、OpenAPI schema / enum、payload hash 対象、runtime の source-generated JSON 利用、JSON unknown / duplicate property の runtime/test coverage hook を検証する。
 
-契約を意図的に変更する場合は、まず `src/Amane.Mailer.Contracts/` の DTO / constants / payload hash contract を更新し、同じ変更で runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テストを同期する。現時点では再生成が必要な別 snapshot はなく、drift check は DTO / constants の期待値を source から導出する。OpenAPI example の `payload_hash` が変わる場合は再計算し、canonicalization fixture が変わる場合は `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` も更新する。ローカル確認は `node scripts/validate-openapi.mjs docs/api/openapi.yaml` と `node scripts/check-contract-drift.mjs` を実行する。Contracts package / API versioning policy については「バージョニングポリシー」節を参照。
+契約を意図的に変更する場合は、まず `src/Amane.Mailer.Contracts/` の DTO / constants / payload hash contract を更新し、同じ変更で runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テスト、および Python / TypeScript SDK の builder・validation・payload_hash field inventory を同期する。現時点では再生成が必要な別 snapshot はなく、drift check は DTO / constants の期待値を source から導出する。OpenAPI example の `payload_hash` が変わる場合は再計算し、canonicalization fixture が変わる場合は `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` も更新する。ローカル確認は `node scripts/validate-openapi.mjs docs/api/openapi.yaml`、`node scripts/check-contract-drift.mjs`、`node scripts/check-mail-request-field-inventory.mjs` を実行する。Contracts package / API versioning policy については「バージョニングポリシー」節を参照。
 
 ### 受付レスポンス
 
@@ -64,7 +65,7 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 |---|---|---|
 | 初回受付 | 202 | `status: accepted` |
 | 同一依頼の再送 | 202 | `status: already_accepted` |
-| ボディ不正 JSON / 空 / 未知 property / 重複 property | 400 | `INVALID_REQUEST` |
+| ボディ不正 JSON / 空 / 未知 property / 重複 property / 無効 UTF-8 | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 同一ID・内容差異 | 409 | `IDEMPOTENCY_CONFLICT` |
@@ -120,7 +121,7 @@ Cancel の DB 更新（`Cancelled` commit）が成功したあと、webhook enqu
 | 状況 | HTTP | code / status |
 |---|---|---|
 | `queued` かつ `attempt_count=0` で更新成功 | 200 | 更新後ステータス JSON |
-| クエリ不正 | 400 | `INVALID_REQUEST` |
+| クエリ不正 / ボディ不正 JSON / 無効 UTF-8 | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 存在しない / 他 tenant | 404 | `NOT_FOUND` |
@@ -326,13 +327,14 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 - **first-wins:** 同一 `(tenant_id, source_service, mail_request_id)` 世代では高々 1 event
   （`ON CONFLICT DO NOTHING`）。最初に enqueue された終端状態のみが残る。Admin 手動再送で
   別の終端（例: `failed` → `Queued` → `delivered`）へ進んでも、2 つ目の event は作らず、
-  既存 event も更新しない。最新終端の再通知が必要なら別 issue / ADR で設計する（本契約の非目標）。
+  既存 event も更新しない。delivery cycle 単位の再通知は [ADR 0017](adr/0017-webhook-first-wins-delivery-cycle.md) で見送り（再評価 trigger 付き）。
 - reconcile は **欠落**（outbox 行が無い terminal request）のみ補完する。既存 event の上書きはしない。
 - secret は `webhook.secret_env` が指す環境変数から読み込む（tenant JSON 平文禁止）。
 - payload に PII（recipient, subject, body 等）は含めない。
 - Consumer 重複排除契約は `event_id`（同一 mail request 世代の webhook 再送で不変）。request retention 後に同一 `mail_request_id` を再利用した場合は新しい `event_id` が発行される。
 - 配信失敗時は指数バックオフで再送し、上限超過で webhook Dead Letter として記録する。
 - lease fencing 失敗（`FinalizeAsync` が false）は `mail_webhook_finalize_skipped_total` と構造化 Warning で観測する。契約は at-least-once のままなので、skip 後の再 POST に備え Consumer は `event_id` で重複排除する（[metrics runbook](ops/metrics-and-alerts.md)）。
+- 配送は 1 件ずつ claim → HTTP → finalize の**逐次**（グローバル FIFO）。制限付き並列化は [ADR 0018](adr/0018-webhook-delivery-sequential-concurrency.md) で見送り（HOL 計測と再評価 trigger 付き）。
 - shutdown 中は `stoppingToken` により新規 claim を行わない。インフライト配信は最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する（`MailRequestWorker` と同型の drain）。
 - SSRF 対策: HTTPS 必須。IPv4 private / loopback / link-local / CGNAT / multicast / reserved、
   IPv4-mapped、IPv6 loopback / link-local / site-local / ULA / multicast / unspecified、
@@ -351,12 +353,16 @@ Web ホスト起動前に `argv` で早期分岐。コンテナ `ENTRYPOINT` は
 
 | サブコマンド | 用途 | 終了コード |
 |---|---|---|
-| `healthcheck` | 現行 SQLite schema（applied migration version + checksum）+ Worker/Sweep heartbeat 鮮度確認（Docker `HEALTHCHECK`） | 0=healthy / 1=unhealthy |
-| `db migrate` | 未適用 SQL マイグレーションを適用 | 0=成功 |
-| `db checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` で `-wal` をクリーンアップ | 0=成功 |
-| `db backup <absolute-path>` | オンライン SQLite バックアップ（Backup API）。同ディレクトリの temp へ書いて検証後に destination を atomic replace する。途中失敗時も既存の正常 backup は残る。世代管理のため timestamp 付き path を推奨 | 0=成功 / 2=usage error |
-| `db stats [--tenant-id <uuid>]` | SQLite `mail_requests` の status 別件数、ready backlog、oldest queued age、stale processing、dead-letter 件数を `key=value` で出力 | 0=成功 / 1=schema unavailable / 2=usage error |
-| `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | 1 request の状態、attempt 件数、provider message id の有無を `key=value` で出力（secret / recipient は出さない） | 0=成功 / 1=schema unavailable / 2=usage error |
+| `healthcheck` | 現行 SQLite schema（applied migration version + checksum）+ Worker/Sweep heartbeat 鮮度確認（Docker `HEALTHCHECK`） | 0=healthy / 1=unhealthy / 130=cancelled |
+| `db migrate` | 未適用 SQL マイグレーションを適用 | 0=成功 / 130=cancelled |
+| `db checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` で `-wal` をクリーンアップ | 0=成功 / 130=cancelled |
+| `db backup <absolute-path>` | オンライン SQLite バックアップ（Backup API）。同ディレクトリの temp へ書いて検証後に destination を atomic replace する。途中失敗時も既存の正常 backup は残る。世代管理のため timestamp 付き path を推奨 | 0=成功 / 2=usage error / 130=cancelled |
+| `db stats [--tenant-id <uuid>]` | SQLite `mail_requests` の status 別件数、ready backlog、oldest queued age、stale processing、dead-letter 件数を `key=value` で出力 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | 1 request の状態、attempt 件数、provider message id の有無を `key=value` で出力（secret / recipient は出さない） | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db admin-audit purge --older-than-days <days>` | 保持期間を過ぎた Admin 監査イベントを batch 削除 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `admin user create ...` | scoped / break-glass Admin ユーザー作成 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+
+長時間 CLI は `Ctrl+C`（`Console.CancelKeyPress`）で協調 cancel する。各 `Ctrl+C` はプロセス強制終了せず（`e.Cancel = true`）共有 `CancellationToken` を cancel し、既存の transaction rollback と backup temp cleanup を利用する。2 回目以降も同じ協調経路のみで、`Environment.Exit` や OS 既定の即時終了へフォールバックしない。`BackupDatabase` のような同期・非割込区間では次の checkpoint まで停止が遅延しうる。その間に強制終了が必要なら SIGKILL / 端末切断を使う。cancel 時の終了コードは定数 `130`（`128 + SIGINT` 慣習）で、usage error（2）や schema unavailable（1）とは衝突しない。cancel は ERROR ログにしない（短い stderr のみ）。
 
 ### マイグレーション checksum policy
 
@@ -428,7 +434,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 
 ### 5.2 Worker / Sweep / Retention（環境変数）
 
-数値は **strict validation**（#329）。キー未設定は既定値。空文字・形式不正・0／負数・上限超過は **起動失敗**（黙示的な clamp はしない）。エラーメッセージには設定キーと許容範囲を含み、secret／接続情報は含めない。Development／Testing／Production で同一の数値規則。Worker 無効時も `Load` の範囲検証は同じ（lease／healthcheck の組合せ `Validate` のみ Worker 有効時）。
+数値は **strict validation**（#329）。キー未設定は既定値。空文字・形式不正・0／負数・上限超過は **起動失敗**（黙示的な clamp はしない）。エラーメッセージには設定キーと許容範囲を含み、secret／接続情報は含めない。Development／Testing／Production で同一の数値規則。Worker 無効時も `Load` の範囲検証は同じ（lease／healthcheck の組合せ `Validate` のみ Worker 有効時）。`Mailer__Worker__Enabled` は **strict boolean**（#358）— 未設定は `true`、empty／whitespace／typo は起動失敗。
 
 | 変数 | 既定 | 許容範囲 | 説明 |
 |---|---|---|---|
@@ -440,7 +446,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `Mailer__Webhook__MaxAttempts` | `10` | 1–50 | Webhook 配送の最大試行回数 |
 | `Mailer__Webhook__InitialDelaySeconds` | `10` | 1–86400 | Webhook 再試行の初期遅延（`<= MaxDelaySeconds`） |
 | `Mailer__Webhook__MaxDelaySeconds` | `300` | 1–86400 | Webhook 再試行の最大遅延 |
-| `Mailer__Webhook__BatchClaimSize` | `8` | 1–100 | Webhook claim 上限 |
+| `Mailer__Webhook__ReconcileBatchSize` | `8` | 1–100 | 欠落 terminal event の reconcile 検索件数（配送 claim／並列度ではない）。旧 `Mailer__Webhook__BatchClaimSize` は deprecated alias（新キー優先、Warning） |
 | `Mailer__Webhook__DeliveryTimeoutSeconds` | `30` | 1–600 | Webhook HTTP タイムアウト |
 | `Mailer__Webhook__LeaseDurationSeconds` | `60` | 1–86400 | Webhook リース TTL。`> DeliveryTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
 | `Mailer__Sweep__IntervalSeconds` | `30` | 1–3600 | 滞留スイープ間隔 |
@@ -452,6 +458,13 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | 1–3600 | Worker idle 時の heartbeat 更新間隔（秒）。Sweep の更新間隔は `Mailer__Sweep__IntervalSeconds` に従う |
 
 起動失敗時はプロセスログの例外メッセージでキー名と許容範囲を確認する。値そのものや接続文字列はメッセージに出ない。
+
+起動時の設定検証は `MailerStartupValidator` に集約する（#351）。`Program.cs` で options 型を個別に `GetRequiredService` しない。新しい起動時必須設定を追加する手順:
+
+1. options 型に `Load` / `Validate` を実装する（Worker disabled 時の cross-field 省略、Admin disabled 時の未使用設定無視など既存ゲートを維持）。
+2. DI 登録は `AddSingleton` ではなく `AddStartupValidatedSingleton` を使う（登録と検証 inventory が同時に更新される）。
+3. `MailerStartupValidationInventoryTests.ExpectedStartupValidatedTypes` に型を追加する。
+4. 不正値が host startup で失敗することを示す focused test を追加する。
 
 ### 5.3 構造・ポリシー（JSON / `tenants.json`）
 
@@ -474,6 +487,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 - `provider=acs` でも `live_sending=false` のテナントは `LIVE_SENDING_DISABLED` で**送らない**。
 - develop / staging は原則 `false`、production のみ `true`。
 - effective provider（`MAILER_PROVIDER` override 含む）が `acs` かつ `live_sending=true` のテナントがある場合、ACS 接続文字列（`ACS_CONNECTION_STRING_FILE` / `ACS_CONNECTION_STRING`）が無いと **startup fail-closed**。`live_sending=false` のみの構成では ACS secret は起動時必須ではない（offline `scripts/validate-tenant-config.mjs` と同じ）。provider / ACS のこの検証は startup-only で、`/readyz` には含めない。
+- effective provider が `mailpit` のテナントがある場合、Mailpit SMTP host（`Mailer__Mailpit__SmtpHost` / `MAILPIT_SMTP_HOST`）は非空白、port（`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`）は **1–65535** の strict integer でなければ **startup fail-closed**（#356）。未設定時の既定は host=`mailpit`、port=`1025`、`UseSsl=false`。ACS のみ（effective provider が全テナントで `acs`）の構成では、未使用の Mailpit host／port typo は起動を止めない（未使用設定は配送を止めない方針）。`UseSsl` の strict boolean は #358 どおり常に Load 時検証。エラーメッセージには設定キーと許容条件のみを含め、host 値や secret は出さない。SMTP 疎通確認は startup では行わない。
 
 ---
 
@@ -561,5 +575,12 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-23 | effective provider / ACS live-sending の startup 検証を明記。`/readyz` は含めない（#272）。Mailpit は SMTP 受理後の disconnect 失敗を再送対象にしない（#275） |
 | 2026-07-23 | `MailRequestWorker` shutdown: Semaphore 待ち後続 wave は送信開始しない（#271） |
 | 2026-07-24 | 配送結果 Webhook の first-wins（最初の終端のみ通知。Admin 手動再送後の再通知なし）を明記（#273） |
+| 2026-07-25 | ADR 0017: delivery cycle 拡張を見送り、first-wins 維持と再評価 trigger を記録（#362） |
+| 2026-07-25 | ADR 0018: Webhook 配送並列化を見送り、逐次維持・HOL 計測・再評価 trigger を記録（#361） |
 | 2026-07-24 | Worker / Webhook lease が wall-clock 絶対時刻である前提と clock jump 影響を明記（#276） |
 | 2026-07-24 | Webhook finalize fencing 失敗を `mail_webhook_finalize_skipped_total` で観測可能にした（#328） |
+| 2026-07-25 | Mailpit SMTP host／port を effective provider=`mailpit` 時のみ startup 検証（#356）。ACS-only では未使用 typo を起動 blocker にしない |
+| 2026-07-25 | 起動時設定検証を `MailerStartupValidator` / `AddStartupValidatedSingleton` に集約（#351） |
+| 2026-07-25 | 長時間 CLI の Ctrl+C 協調 cancel と終了コード 130 を明記（#347） |
+| 2026-07-25 | ADR 0019: SQLite／単一プロセス維持と PostgreSQL／Worker 分離の着手 trigger・非目標を記録（#363）。#385 と同日マージで 0018 が衝突したため後着を 0019 に振り直し |
+| 2026-07-25 | `Mailer__Webhook__ReconcileBatchSize` へ改名。旧 `BatchClaimSize` は deprecated alias（#353） |

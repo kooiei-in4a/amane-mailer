@@ -121,6 +121,32 @@ public sealed class OpsConfigStrictValidationIntegrationTests
         Assert.Contains("Mailer:Webhook:MaxAttempts", ex.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void AddAmaneMailerServices_registers_http_client_factory_when_worker_disabled()
+    {
+        // Native AOT path smoke: Development + Worker:Enabled=false (#341).
+        // WebhookDeliveryClient stays registered; IHttpClientFactory must too.
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = "false",
+                ["ConnectionStrings:Mailer"] = "Data Source=:memory:",
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(configuration);
+        services.AddSingleton<IHostEnvironment>(new IntegrationHostEnvironment
+        {
+            EnvironmentName = Environments.Development,
+        });
+        services.AddLogging();
+        services.AddAmaneMailerServices(configuration);
+
+        using var provider = services.BuildServiceProvider();
+        Assert.NotNull(provider.GetService<System.Net.Http.IHttpClientFactory>());
+    }
+
     private sealed class IntegrationHostEnvironment : IHostEnvironment
     {
         public string EnvironmentName { get; set; } = "Testing";

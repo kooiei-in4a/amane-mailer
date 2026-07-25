@@ -10,7 +10,8 @@ internal static class MailRequestRepositorySql
     internal static void AppendTenantScopeFilter(
         StringBuilder where,
         SqliteCommand command,
-        IReadOnlySet<Guid>? allowedTenantIds)
+        IReadOnlySet<Guid>? allowedTenantIds,
+        string tenantColumn = "tenant_id")
     {
         if (allowedTenantIds is null)
             return;
@@ -32,7 +33,9 @@ internal static class MailRequestRepositorySql
             index++;
         }
 
-        where.Append("  AND tenant_id IN (");
+        where.Append("  AND ");
+        where.Append(tenantColumn);
+        where.Append(" IN (");
         where.Append(string.Join(", ", parameterNames));
         where.Append(')');
     }

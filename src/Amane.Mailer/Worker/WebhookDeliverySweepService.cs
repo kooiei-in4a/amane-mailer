@@ -21,7 +21,7 @@ public sealed class WebhookDeliverySweepService(
             try
             {
                 await deliveryEventEnqueuer.ReconcileMissingTerminalEventsAsync(
-                    webhookOptions.BatchClaimSize,
+                    webhookOptions.ReconcileBatchSize,
                     stoppingToken);
 
                 var now = timeProvider.GetUtcNow();

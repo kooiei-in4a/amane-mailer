@@ -11,6 +11,11 @@ public sealed class DbAdminAuditPurgeCommand(
     public const int UnavailableExitCode = 1;
     public const int UsageErrorExitCode = 2;
 
+    /// <summary>
+    /// Test-only gate invoked after a non-empty purge batch commits, before the next batch.
+    /// </summary>
+    internal Func<int, CancellationToken, Task>? AfterBatchDeletedForTests { get; set; }
+
     public static bool IsDbAdminAuditPurgeCommand(IReadOnlyList<string> args) =>
         args.Count >= 3
         && string.Equals(args[0], "db", StringComparison.Ordinal)
@@ -59,8 +64,10 @@ public sealed class DbAdminAuditPurgeCommand(
         var cutoff = timeProvider.GetUtcNow().AddDays(-olderThanDays);
         var totalDeleted = 0;
 
-        while (!cancellationToken.IsCancellationRequested)
+        while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var deleted = await repository.DeleteOlderThanAsync(
                 cutoff,
                 retentionOptions.BatchSize,
@@ -72,6 +79,11 @@ public sealed class DbAdminAuditPurgeCommand(
             }
 
             totalDeleted += deleted;
+
+            if (AfterBatchDeletedForTests is { } afterBatch)
+            {
+                await afterBatch(deleted, cancellationToken);
+            }
         }
 
         await output.WriteLineAsync(

@@ -70,7 +70,10 @@ public sealed class MailRequestWorker : BackgroundService
         finally
         {
             _serviceStatus.SetWorkerRunning(false);
-            await _inflightTracker.WaitForZeroAsync(_workerOptions.ShutdownDrainTimeout, CancellationToken.None);
+            await _inflightTracker.WaitForZeroAsync(
+                _workerOptions.ShutdownDrainTimeout,
+                _timeProvider,
+                CancellationToken.None);
 
             if (_inflightTracker.InflightCount > 0)
             {
@@ -158,7 +161,7 @@ public sealed class MailRequestWorker : BackgroundService
 
     private async Task DrainAsync(CancellationToken stoppingToken)
     {
-        drain:
+    drain:
         var batch = new List<MailRequestRow>(_workerOptions.BatchClaimSize);
         var now = _timeProvider.GetUtcNow();
         await _expiredProcessingReaper.DeadLetterExpiredProcessingAtMaxAttemptsAsync(now, stoppingToken);
@@ -512,5 +515,11 @@ public sealed class MailRequestWorker : BackgroundService
             tenant.Retry.MaxDelaySeconds,
             tenant.Retry.InitialDelaySeconds * Math.Pow(2, Math.Max(0, attemptCount - 1)));
         return completedAt.AddSeconds(delaySeconds);
+    }
+
+    public override void Dispose()
+    {
+        _sendConcurrency.Dispose();
+        base.Dispose();
     }
 }

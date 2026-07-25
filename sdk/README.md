@@ -46,6 +46,25 @@ const response = await client.sendMail(
 console.log(response.status); // 'accepted' | 'already_accepted'
 ```
 
+Scheduled send uses OpenAPI `date-time` with timezone `Z` or an explicit offset.
+Omit `scheduled_at` (or set it to `null`) for immediate delivery. The field is
+excluded from `payload_hash`.
+
+```javascript
+const response = await client.sendMail(
+  MailRequestBuilder.create()
+    .tenantId('00000000-0000-0000-0000-000000000101')
+    .sourceService('example-service')
+    .generateMailRequestId()
+    .purpose('FormResponseNotification')
+    .to({ email: 'admin@example.com' })
+    .subject('New response')
+    .textBody('A new response arrived.')
+    .scheduledAt('2026-08-01T09:00:00Z') // or '2026-08-01T18:00:00+09:00'
+    .build(),
+);
+```
+
 See [typescript/README.md](typescript/README.md) for error handling, retries, and local Mailer integration.
 
 ### Python (3.12+)
@@ -76,6 +95,25 @@ response = client.send_mail(
 )
 
 print(response.status)  # accepted | already_accepted
+```
+
+Scheduled send uses the same OpenAPI `date-time` rules (`Z` or an explicit offset).
+Omit `scheduled_at` (or set it to `None`) for immediate delivery. The field is
+excluded from `payload_hash`.
+
+```python
+response = client.send_mail(
+    MailRequestBuilder()
+    .tenant_id("00000000-0000-0000-0000-000000000101")
+    .source_service("example-service")
+    .generate_mail_request_id()
+    .purpose("FormResponseNotification")
+    .to(email="admin@example.com")
+    .subject("New response")
+    .text_body("A new response arrived.")
+    .scheduled_at("2026-08-01T09:00:00Z")  # or "2026-08-01T18:00:00+09:00"
+    .build()
+)
 ```
 
 See [python/README.md](python/README.md) for error handling, retries, and local Mailer integration.

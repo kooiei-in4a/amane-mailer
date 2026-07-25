@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any
 
 UUID_PATTERN = re.compile(
@@ -11,6 +12,26 @@ UUID_PATTERN = re.compile(
 )
 SOURCE_SERVICE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}$")
 FORBIDDEN_METADATA_KEY_PATTERN = re.compile(r"token|password|secret|url", re.IGNORECASE)
+SCHEDULED_AT_OFFSET_PATTERN = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
+
+# JSON field inventory for MailRequestCreateRequest. Parsed by
+# scripts/check-mail-request-field-inventory.mjs — keep in sync with Contracts.
+MAIL_REQUEST_JSON_FIELDS = frozenset(
+    {
+        "tenant_id",
+        "source_service",
+        "mail_request_id",
+        "purpose",
+        "to",
+        "subject",
+        "html_body",
+        "text_body",
+        "reply_to",
+        "metadata",
+        "scheduled_at",
+        "payload_hash",
+    }
+)
 
 
 class MailRequestValidationError(ValueError):
@@ -50,6 +71,25 @@ def _assert_metadata(metadata: dict[str, str] | None) -> None:
             raise MailRequestValidationError("metadata values must be strings.")
 
 
+def _assert_scheduled_at(value: Any) -> None:
+    if value is None:
+        return
+    if not isinstance(value, str):
+        raise MailRequestValidationError(
+            "scheduled_at must be an ISO-8601 date-time string or null.",
+        )
+    if not SCHEDULED_AT_OFFSET_PATTERN.search(value):
+        raise MailRequestValidationError(
+            "scheduled_at must include a timezone offset or Z.",
+        )
+    try:
+        datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise MailRequestValidationError(
+            "scheduled_at must be a valid ISO-8601 date-time with timezone offset or Z.",
+        ) from exc
+
+
 def validate_mail_request_draft(draft: dict[str, Any]) -> None:
     _assert_uuid(draft["tenant_id"], "tenant_id")
     _assert_uuid(draft["mail_request_id"], "mail_request_id")
@@ -78,3 +118,5 @@ def validate_mail_request_draft(draft: dict[str, Any]) -> None:
         raise MailRequestValidationError("At least one of html_body or text_body is required.")
 
     _assert_metadata(draft.get("metadata"))
+    if "scheduled_at" in draft:
+        _assert_scheduled_at(draft["scheduled_at"])

@@ -74,8 +74,10 @@ can therefore show `delivered` while the Consumer still holds only the earlier w
 (for example `failed`). Status GET is authoritative for the current mail-request state;
 the webhook is a one-shot first-terminal notification, not a live mirror of status.
 
-Per-delivery-cycle webhook re-notification (latest terminal always pushed) is **out of
-scope** for the current Consumer contract; that would need a separate design / ADR.
+Per-delivery-cycle webhook re-notification (latest terminal always pushed) remains
+**out of scope**. [ADR 0017](../adr/0017-webhook-first-wins-delivery-cycle.md) keeps
+first-wins and records re-evaluation triggers (Consumer demand, #307 bounce identity,
+cancelled-resume, or an explicit breaking-contract schedule).
 
 When request retention purges a terminal `mail_requests` row, Mailer deletes the matching
 `delivery_events` row in the same transaction. After that purge, a Consumer may reuse the same

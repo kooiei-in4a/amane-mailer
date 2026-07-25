@@ -60,6 +60,89 @@ class ClientTests(unittest.TestCase):
             "7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9",
         )
 
+    def test_builder_omits_scheduled_at_when_unset(self) -> None:
+        request = build_sample_request()
+        self.assertNotIn("scheduled_at", request)
+
+    def test_builder_accepts_scheduled_at_with_z_and_offsets(self) -> None:
+        for value in (
+            "2026-08-01T09:00:00Z",
+            "2026-08-01T18:00:00+09:00",
+            "2026-08-01T00:00:00-05:00",
+        ):
+            with self.subTest(value=value):
+                request = (
+                    MailRequestBuilder()
+                    .tenant_id("00000000-0000-0000-0000-000000000101")
+                    .source_service("example-service")
+                    .mail_request_id("00000000-0000-0000-0000-000000000201")
+                    .purpose("FormResponseNotification")
+                    .to(email="admin@example.com")
+                    .subject("New response")
+                    .text_body("A new response arrived.")
+                    .scheduled_at(value)
+                    .build()
+                )
+                self.assertEqual(request["scheduled_at"], value)
+
+    def test_builder_rejects_timezone_less_and_invalid_scheduled_at(self) -> None:
+        for value in (
+            "2026-08-01T09:00:00",
+            "2026-08-01 09:00:00",
+            "not-a-date",
+            "2026-13-45T09:00:00Z",
+            "2026-02-30T09:00:00Z",
+            "2026-04-31T09:00:00Z",
+            "2026-08-01T09:00:00z",
+        ):
+            with self.subTest(value=value):
+                with self.assertRaises(MailRequestValidationError):
+                    (
+                        MailRequestBuilder()
+                        .tenant_id("00000000-0000-0000-0000-000000000101")
+                        .source_service("example-service")
+                        .mail_request_id("00000000-0000-0000-0000-000000000201")
+                        .purpose("FormResponseNotification")
+                        .to(email="admin@example.com")
+                        .subject("New response")
+                        .text_body("A new response arrived.")
+                        .scheduled_at(value)
+                        .build()
+                    )
+
+    def test_builder_allows_explicit_null_scheduled_at(self) -> None:
+        request = (
+            MailRequestBuilder()
+            .tenant_id("00000000-0000-0000-0000-000000000101")
+            .source_service("example-service")
+            .mail_request_id("00000000-0000-0000-0000-000000000201")
+            .purpose("FormResponseNotification")
+            .to(email="admin@example.com")
+            .subject("New response")
+            .text_body("A new response arrived.")
+            .scheduled_at(None)
+            .build()
+        )
+        self.assertIn("scheduled_at", request)
+        self.assertIsNone(request["scheduled_at"])
+
+    def test_scheduled_at_does_not_affect_payload_hash(self) -> None:
+        base = build_sample_request()
+        scheduled = (
+            MailRequestBuilder()
+            .tenant_id("00000000-0000-0000-0000-000000000101")
+            .source_service("example-service")
+            .mail_request_id("00000000-0000-0000-0000-000000000201")
+            .purpose("FormResponseNotification")
+            .to(email="admin@example.com")
+            .subject("New response")
+            .text_body("A new response arrived.")
+            .scheduled_at("2026-08-01T09:00:00Z")
+            .build()
+        )
+        self.assertEqual(base["payload_hash"], scheduled["payload_hash"])
+        self.assertNotEqual(base.get("scheduled_at"), scheduled["scheduled_at"])
+
     def test_builder_rejects_invalid_source_service(self) -> None:
         with self.assertRaises(MailRequestValidationError):
             (
@@ -83,6 +166,58 @@ class ClientTests(unittest.TestCase):
                 re.IGNORECASE,
             ),
         )
+
+    def test_client_posts_builder_scheduled_at_field(self) -> None:
+        captured: dict[str, Any] = {}
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length)
+                captured["request"] = json.loads(body.decode("utf-8"))
+                payload = json.dumps(
+                    {
+                        "mail_request_id": "00000000-0000-0000-0000-000000000201",
+                        "status": "accepted",
+                    }
+                ).encode("utf-8")
+                self.send_response(202)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), CaptureHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            client = MailerClient(
+                base_url=f"http://127.0.0.1:{server.server_port}",
+                bearer_token="token",
+            )
+            request = (
+                MailRequestBuilder()
+                .tenant_id("00000000-0000-0000-0000-000000000101")
+                .source_service("example-service")
+                .mail_request_id("00000000-0000-0000-0000-000000000201")
+                .purpose("FormResponseNotification")
+                .to(email="admin@example.com")
+                .subject("New response")
+                .text_body("A new response arrived.")
+                .scheduled_at("2026-08-01T09:00:00Z")
+                .build()
+            )
+            response = client.send_mail(request)
+            self.assertEqual(response.status, MailRequestAcceptanceStatus.ACCEPTED)
+            self.assertEqual(captured["request"]["scheduled_at"], "2026-08-01T09:00:00Z")
+            self.assertEqual(captured["request"]["payload_hash"], request["payload_hash"])
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
 
     def test_client_handles_accepted_and_already_accepted(self) -> None:
         MockHandler.responses = [

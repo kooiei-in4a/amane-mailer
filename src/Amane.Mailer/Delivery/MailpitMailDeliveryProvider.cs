@@ -43,7 +43,7 @@ public sealed class MailpitMailDeliveryProvider
     {
         try
         {
-            var message = OutboundMimeMessageFactory.Create(job, tenant);
+            using var message = OutboundMimeMessageFactory.Create(job, tenant);
             await using var client = _clientFactory();
             var socketOptions = _options.MailpitUseSsl
                 ? SecureSocketOptions.StartTlsWhenAvailable

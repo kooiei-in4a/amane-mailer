@@ -5,9 +5,10 @@ namespace Amane.Mailer.Admin;
 public sealed class AdminDbOpsService(
     SqliteConnectionFactory connections,
     MailerAdminDbOpsOptions options,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider) : IDisposable
 {
     private readonly SemaphoreSlim _operationLock = new(1, 1);
+    private bool _disposed;
 
     public bool IsEnabled => options.Enabled;
 
@@ -96,6 +97,15 @@ public sealed class AdminDbOpsService(
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
         return string.Equals(left, right, comparison);
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        _operationLock.Dispose();
     }
 }
 

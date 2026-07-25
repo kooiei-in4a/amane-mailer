@@ -4,8 +4,9 @@ using Amane.Mailer.Operations;
 
 namespace Amane.Mailer.Data.Sqlite;
 
-// Unsealed + virtual find/insert/status: test seams for STORAGE_FULL (#244) and
-// post-commit status re-read independence (#327). Prefer keeping other members
+// Unsealed + virtual find/insert/status/cancel/reschedule: test seams for
+// STORAGE_FULL (#244), post-commit status re-read independence (#327), and
+// mail-request handler unit tests (#348). Prefer keeping other members
 // non-virtual; do not treat this as a public extension point.
 public class MailRequestRepository
 {
@@ -71,8 +72,9 @@ public class MailRequestRepository
 
     public Task<IReadOnlyList<AdminMailAttemptRow>> ListAttemptsForAdminAsync(
         Guid requestId,
+        IReadOnlySet<Guid>? allowedTenantIds,
         CancellationToken cancellationToken = default) =>
-        _adminQueries.ListAttemptsForAdminAsync(requestId, cancellationToken);
+        _adminQueries.ListAttemptsForAdminAsync(requestId, allowedTenantIds, cancellationToken);
 
     public virtual Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
         Guid tenantId,
@@ -182,7 +184,7 @@ public class MailRequestRepository
             auditTemplate,
             cancellationToken);
 
-    public Task<ConsumerMailRequestMutationResult> TryConsumerCancelAsync(
+    public virtual Task<ConsumerMailRequestMutationResult> TryConsumerCancelAsync(
         Guid tenantId,
         string sourceService,
         Guid mailRequestId,
@@ -190,7 +192,7 @@ public class MailRequestRepository
         CancellationToken cancellationToken = default) =>
         _consumerMutations.TryConsumerCancelAsync(tenantId, sourceService, mailRequestId, now, cancellationToken);
 
-    public Task<ConsumerMailRequestMutationResult> TryRescheduleAsync(
+    public virtual Task<ConsumerMailRequestMutationResult> TryRescheduleAsync(
         Guid tenantId,
         string sourceService,
         Guid mailRequestId,

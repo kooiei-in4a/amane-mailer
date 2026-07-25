@@ -14,9 +14,19 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
     public async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken = default)
     {
         var connection = new SqliteConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken);
-        await ApplyPragmasAsync(connection, cancellationToken);
-        return connection;
+        try
+        {
+            ConnectionCreatedForTests?.Invoke(connection);
+            await connection.OpenAsync(cancellationToken);
+            await ApplyPragmasAsync(connection, cancellationToken);
+            return connection;
+        }
+        catch
+        {
+            // Ownership stays with the factory until a successful return.
+            await DisposeOwnedConnectionAsync(connection);
+            throw;
+        }
     }
 
     public async Task<bool> CanConnectAsync(CancellationToken cancellationToken = default)
@@ -50,8 +60,18 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
         CancellationToken cancellationToken = default)
     {
         var connection = CreateSchemaProbeConnection();
-        await connection.OpenAsync(cancellationToken);
-        return connection;
+        try
+        {
+            ConnectionCreatedForTests?.Invoke(connection);
+            await connection.OpenAsync(cancellationToken);
+            return connection;
+        }
+        catch
+        {
+            // Ownership stays with the factory until a successful return.
+            await DisposeOwnedConnectionAsync(connection);
+            throw;
+        }
     }
 
     public async Task RunWalCheckpointTruncateAsync(CancellationToken cancellationToken = default)
@@ -145,6 +165,24 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
     /// Instance-scoped so parallel tests cannot observe another fixture's injected fault.
     /// </summary>
     internal Func<CancellationToken, Task>? BeforeAtomicReplaceForTests { get; set; }
+
+    /// <summary>
+    /// Test-only hook invoked immediately after a connection instance is created and before open.
+    /// Instance-scoped so parallel tests cannot observe another fixture's capture.
+    /// </summary>
+    internal Action<SqliteConnection>? ConnectionCreatedForTests { get; set; }
+
+    /// <summary>
+    /// Test-only hook invoked after each successful PRAGMA in <see cref="ApplyPragmasAsync"/>.
+    /// Instance-scoped so parallel tests cannot observe another fixture's injected fault.
+    /// </summary>
+    internal Func<string, CancellationToken, Task>? AfterPragmaAppliedForTests { get; set; }
+
+    /// <summary>
+    /// Test-only hook invoked after the factory disposes a connection it still owns
+    /// (open/PRAGMA failure path). Instance-scoped for parallel test isolation.
+    /// </summary>
+    internal Action<SqliteConnection>? ConnectionDisposedForTests { get; set; }
 
     private static async Task VerifyBackupFileAsync(string absolutePath, CancellationToken cancellationToken)
     {
@@ -267,7 +305,7 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
         && !string.IsNullOrWhiteSpace(builder.DataSource)
         && !string.Equals(builder.DataSource, ":memory:", StringComparison.OrdinalIgnoreCase);
 
-    private static async Task ApplyPragmasAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    private async Task ApplyPragmasAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
         string[] pragmas =
         [
@@ -282,6 +320,31 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
             await using var command = connection.CreateCommand();
             command.CommandText = pragma;
             await command.ExecuteNonQueryAsync(cancellationToken);
+            if (AfterPragmaAppliedForTests is { } afterPragma)
+            {
+                await afterPragma(pragma, cancellationToken);
+            }
+        }
+    }
+
+    private async Task DisposeOwnedConnectionAsync(SqliteConnection connection)
+    {
+        try
+        {
+            await connection.DisposeAsync();
+        }
+        catch
+        {
+            // Prefer the original open/PRAGMA exception; do not replace it.
+        }
+
+        try
+        {
+            ConnectionDisposedForTests?.Invoke(connection);
+        }
+        catch
+        {
+            // Test hook must not replace the original open/PRAGMA exception.
         }
     }
 }
