@@ -22,6 +22,12 @@ public sealed class SqlMigrationRunner
     }
 
     /// <summary>
+    /// Test-only gate invoked after a migration script and schema_migrations insert run,
+    /// and before COMMIT. Used to cancel mid-transaction without relying on wall-clock sleep.
+    /// </summary>
+    internal Func<CancellationToken, Task>? BeforeMigrationCommitForTests { get; set; }
+
+    /// <summary>
     /// Returns true when the database has every bundled migration applied with matching
     /// checksums and the objects required by the current binary (including
     /// <c>delivery_events</c> and <c>mail_requests.scheduled_at</c>).
@@ -140,6 +146,11 @@ public sealed class SqlMigrationRunner
                     record.Parameters.AddWithValue("@AppliedAt", SqliteTime.ToStorageUtc(SqliteTime.UtcNow));
                     record.Parameters.AddWithValue("@Checksum", migration.Checksum);
                     await record.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                if (BeforeMigrationCommitForTests is { } beforeCommit)
+                {
+                    await beforeCommit(cancellationToken);
                 }
 
                 await transaction.CommitAsync(cancellationToken);

@@ -36,19 +36,25 @@ if (ShouldShowHelp(commandArgs))
 if (MailerCliHost.IsHealthCheckCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
-    return await MailerCliHost.RunHealthCheckAsync(cliConfiguration, CancellationToken.None);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunHealthCheckAsync(cliConfiguration, ct),
+        Console.Error);
 }
 
 if (DbMigrateCommand.IsDbMigrateCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
-    return await MailerCliHost.RunDbMigrateAsync(cliConfiguration, Console.Out, Console.Error, CancellationToken.None);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunDbMigrateAsync(cliConfiguration, Console.Out, Console.Error, ct),
+        Console.Error);
 }
 
 if (DbCheckpointCommand.IsDbCheckpointCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
-    return await MailerCliHost.RunDbCheckpointAsync(cliConfiguration, Console.Out, Console.Error, CancellationToken.None);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunDbCheckpointAsync(cliConfiguration, Console.Out, Console.Error, ct),
+        Console.Error);
 }
 
 if (DbBackupCommand.IsDbBackupCommand(commandArgs))
@@ -60,45 +66,54 @@ if (DbBackupCommand.IsDbBackupCommand(commandArgs))
     }
 
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
-    return await MailerCliHost.RunDbBackupAsync(
-        cliConfiguration,
-        commandArgs[2],
-        Console.Out,
-        Console.Error,
-        CancellationToken.None);
+    var destinationPath = commandArgs[2];
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunDbBackupAsync(
+            cliConfiguration,
+            destinationPath,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
 }
 
 if (DbStatsCommand.IsDbStatsCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
-    return await MailerCliHost.RunDbStatsAsync(
-        cliConfiguration,
-        commandArgs,
-        Console.Out,
-        Console.Error,
-        CancellationToken.None);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunDbStatsAsync(
+            cliConfiguration,
+            commandArgs,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
 }
 
 if (DbRequestStateCommand.IsDbRequestStateCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
-    return await MailerCliHost.RunDbRequestStateAsync(
-        cliConfiguration,
-        commandArgs,
-        Console.Out,
-        Console.Error,
-        CancellationToken.None);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunDbRequestStateAsync(
+            cliConfiguration,
+            commandArgs,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
 }
 
 if (DbAdminAuditPurgeCommand.IsDbAdminAuditPurgeCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
-    return await MailerCliHost.RunDbAdminAuditPurgeAsync(
-        cliConfiguration,
-        commandArgs,
-        Console.Out,
-        Console.Error,
-        CancellationToken.None);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunDbAdminAuditPurgeAsync(
+            cliConfiguration,
+            commandArgs,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
 }
 
 if (AdminHashPasswordCommand.IsAdminHashPasswordCommand(commandArgs))
@@ -114,12 +129,14 @@ var adminUserCommandArgs = MailerCliHost.FilterConfigurationArgs(commandArgs);
 if (AdminUserCreateCommand.IsAdminUserCreateCommand(adminUserCommandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
-    return await MailerCliHost.RunAdminUserCreateAsync(
-        cliConfiguration,
-        commandArgs,
-        Console.Out,
-        Console.Error,
-        CancellationToken.None);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunAdminUserCreateAsync(
+            cliConfiguration,
+            commandArgs,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
 }
 
 if (AdminProviderRegisterAcsCommand.IsRegisterAcsCommand(commandArgs))

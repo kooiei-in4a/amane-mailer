@@ -29,6 +29,38 @@ public static class MailerCliHost
             || key.StartsWith("Mailer:", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Attaches Ctrl+C cancellation for a CLI command and maps cooperative cancellation
+    /// to <see cref="MailerCliCancellation.ExitCode"/> without treating it as a hard error.
+    /// </summary>
+    public static async Task<int> RunCancellableCliAsync(
+        Func<CancellationToken, Task<int>> execute,
+        TextWriter error)
+    {
+        using var cancellation = MailerCliCancellation.Attach();
+        return await MapCancellationAsync(execute, error, cancellation.Token);
+    }
+
+    /// <summary>
+    /// Maps <see cref="OperationCanceledException"/> for the caller's token to the shared
+    /// cancellation exit code. Does not replace unrelated exceptions.
+    /// </summary>
+    internal static async Task<int> MapCancellationAsync(
+        Func<CancellationToken, Task<int>> execute,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await execute(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await error.WriteLineAsync("Cancelled.");
+            return MailerCliCancellation.ExitCode;
+        }
+    }
+
     public static Task<int> RunAdminHashPasswordAsync(
         IReadOnlyList<string> commandArgs,
         TextReader input,
@@ -78,6 +110,10 @@ public static class MailerCliHost
                 return 1;
 
             return DbMigrateCommand.SuccessExitCode;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch
         {
