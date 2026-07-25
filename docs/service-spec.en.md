@@ -5,8 +5,8 @@
 - **Role:** General-purpose mail delivery microservice
 - **HTTP contract source of truth:** `src/Amane.Mailer.Contracts/` (ADR 0012 D-01)
 - **Public HTTP reference:** [openapi.yaml](api/openapi.yaml) (public schema synchronized with Contracts / runtime)
-- **Related:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md) (Mailer microservice extraction), [ADR 0018](adr/0018-sqlite-single-process-boundaries.md) (SQLite / single-process retention and PostgreSQL / Worker-split start gates)
-- **Runtime:** Native AOT single binary (`Amane.Mailer`) + chiseled container. PostgreSQL is not used (start gates: ADR 0018).
+- **Related:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md) (Mailer microservice extraction), [ADR 0019](adr/0019-sqlite-single-process-boundaries.md) (SQLite / single-process retention and PostgreSQL / Worker-split start gates)
+- **Runtime:** Native AOT single binary (`Amane.Mailer`) + chiseled container. PostgreSQL is not used (start gates: ADR 0019).
 
 ---
 
@@ -33,7 +33,7 @@ App ──HTTP(Bearer)──▶ POST /internal/mail-requests
 - Connects to App via **HTTP API only**. No cross-references between App DB and Mailer DB.
 - Only this service knows about ACS.
 - Database is **SQLite (WAL mode)**. Persistence uses a host-side `./data` → container `/app/data` volume mount.
-- PostgreSQL and separate Worker processes are deferred until measurable start triggers fire ([ADR 0018](adr/0018-sqlite-single-process-boundaries.md)).
+- PostgreSQL and separate Worker processes are deferred until measurable start triggers fire ([ADR 0019](adr/0019-sqlite-single-process-boundaries.md)).
 
 ---
 
@@ -601,5 +601,5 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-25 | Mailpit SMTP host/port validated at startup only when effective provider is `mailpit` (#356). ACS-only ignores unused typos |
 | 2026-07-25 | Centralized startup configuration validation in `MailerStartupValidator` / `AddStartupValidatedSingleton` (#351) |
 | 2026-07-25 | Document cooperative Ctrl+C cancellation and exit code 130 for long-running CLI commands (#347) |
-| 2026-07-25 | ADR 0018: record SQLite / single-process retention and PostgreSQL / Worker-split start triggers and non-goals (#363) |
+| 2026-07-25 | ADR 0019: record SQLite / single-process retention and PostgreSQL / Worker-split start triggers and non-goals (#363). Renumbered from colliding 0018 after same-day #385 merge |
 | 2026-07-25 | Renamed to `Mailer__Webhook__ReconcileBatchSize`; legacy `BatchClaimSize` remains a deprecated alias (#353) |

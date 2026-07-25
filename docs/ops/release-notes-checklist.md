@@ -35,7 +35,7 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
   更新前に停止した場合、同じメールが再送される可能性がある。
 - SQLite deployment は single-node / single-replica 前提。単一 SQLite file を
   共有する複数 Worker の水平化は現在の運用対象外
-  （着手条件と非目標は [ADR 0018](../adr/0018-sqlite-single-process-boundaries.md)）。
+  （着手条件と非目標は [ADR 0019](../adr/0019-sqlite-single-process-boundaries.md)）。
 - Docker image の対応 platform を Docker manifest と同じ表記で明記する。single-platform release では
   `linux/amd64 only` のように制約を明記し、multi-arch release では platform ごとの digest / smoke 結果を記録する。
 - Admin UI は disabled by default、内部ネットワーク向け、experimental。現時点の
