@@ -2,35 +2,114 @@ namespace Amane.Mailer.Worker;
 
 public sealed class InflightTracker
 {
+    private readonly object _gate = new();
     private int _inflightCount;
+    private TaskCompletionSource _zeroSignal = CreateCompletedSignal();
 
-    public int InflightCount => Volatile.Read(ref _inflightCount);
+    public int InflightCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _inflightCount;
+            }
+        }
+    }
 
     public InflightScope Enter()
     {
-        Interlocked.Increment(ref _inflightCount);
+        lock (_gate)
+        {
+            if (_inflightCount++ == 0)
+            {
+                // 0 → 1: arm a fresh incomplete signal for waiters.
+                _zeroSignal = CreatePendingSignal();
+            }
+        }
+
         return new InflightScope(this);
     }
 
-    public async Task WaitForZeroAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    public async Task WaitForZeroAsync(
+        TimeSpan timeout,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow + timeout;
+        ArgumentNullException.ThrowIfNull(timeProvider);
 
-        while (Volatile.Read(ref _inflightCount) > 0)
+        Task zeroTask;
+        lock (_gate)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (DateTimeOffset.UtcNow >= deadline)
+            if (_inflightCount == 0)
             {
                 return;
             }
 
-            await Task.Delay(50, cancellationToken);
+            zeroTask = _zeroSignal.Task;
+        }
+
+        try
+        {
+            await zeroTask.WaitAsync(timeout, timeProvider, cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            // Match prior polling behavior: return when the drain budget elapses.
         }
     }
 
-    public readonly struct InflightScope(InflightTracker tracker) : IDisposable
+    private void Leave()
     {
-        public void Dispose() => Interlocked.Decrement(ref tracker._inflightCount);
+        TaskCompletionSource? toComplete = null;
+        lock (_gate)
+        {
+            if (_inflightCount <= 0)
+            {
+                return;
+            }
+
+            if (--_inflightCount == 0)
+            {
+                // 1 → 0: release all current waiters.
+                toComplete = _zeroSignal;
+            }
+        }
+
+        toComplete?.TrySetResult();
+    }
+
+    private static TaskCompletionSource CreatePendingSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static TaskCompletionSource CreateCompletedSignal()
+    {
+        var signal = CreatePendingSignal();
+        signal.SetResult();
+        return signal;
+    }
+
+    public struct InflightScope : IDisposable
+    {
+        private InflightTracker? _tracker;
+        private int _disposed;
+
+        internal InflightScope(InflightTracker tracker)
+        {
+            _tracker = tracker;
+            _disposed = 0;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            var tracker = _tracker;
+            _tracker = null;
+            tracker?.Leave();
+        }
     }
 }
