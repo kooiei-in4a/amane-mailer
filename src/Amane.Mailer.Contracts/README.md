@@ -28,19 +28,22 @@ the published NuGet package.
 `docs/api/openapi.yaml` is the Consumer-facing HTTP reference / public schema.
 It is kept synchronized with this package and the runtime implementation, but it
 is not the source of truth. CI validates OpenAPI structure with
-`scripts/validate-openapi.mjs` and runs drift assertions with
-`scripts/check-contract-drift.mjs`.
+`scripts/validate-openapi.mjs`, runs drift assertions with
+`scripts/check-contract-drift.mjs`, and compares `MailRequestCreateRequest`
+field inventories across Contracts / OpenAPI / SDKs with
+`scripts/check-mail-request-field-inventory.mjs`.
 
 When changing the contract, review drift across this package, runtime behavior,
-OpenAPI, and tests for DTO JSON property names, required / nullable fields,
+OpenAPI, SDKs, and tests for DTO JSON property names, required / nullable fields,
 `MailerErrorCodes`, `MailRequestAcceptanceStatus`, `MailRequestStatus`, payload
 hash fields, and JSON unknown / duplicate property behavior. The drift check
 derives DTO / constant expectations from Contracts, compares them to OpenAPI,
 and verifies the runtime/test coverage hooks for strict JSON and payload hashing.
 If the contract intentionally changes, update the Contracts type/constant first,
-then update `docs/api/openapi.yaml`, runtime behavior, examples, and related
-tests in the same change. There is no separate generated snapshot to refresh
-today; the drift check derives expected DTO / constant shape from source.
+then update `docs/api/openapi.yaml`, runtime behavior, examples, Python /
+TypeScript SDK field inventories, and related tests in the same change. There is
+no separate generated snapshot to refresh today; the drift check derives expected
+DTO / constant shape from source.
 Recompute any affected OpenAPI payload hash example and update
 `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json`
 when canonicalization fixtures change. Validate with:
@@ -48,6 +51,7 @@ when canonicalization fixtures change. Validate with:
 ```bash
 node scripts/validate-openapi.mjs docs/api/openapi.yaml
 node scripts/check-contract-drift.mjs
+node scripts/check-mail-request-field-inventory.mjs
 ```
 
 ## Metadata policy

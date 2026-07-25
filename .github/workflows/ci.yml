@@ -227,6 +227,11 @@ jobs:
       - name: Check Contracts/runtime/OpenAPI drift
         run: node scripts/check-contract-drift.mjs
 
+      - name: Check mail request field inventory (Contracts/OpenAPI/SDK)
+        run: |
+          node scripts/check-mail-request-field-inventory.mjs
+          node scripts/check-mail-request-field-inventory.mjs --self-test
+
       - name: Check implementation status manifest
         run: |
           node scripts/check-implementation-status.mjs

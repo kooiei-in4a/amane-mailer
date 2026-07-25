@@ -4,6 +4,23 @@ const FORBIDDEN_METADATA_KEY_PATTERN = /token|password|secret|url/i;
 const SCHEDULED_AT_OFFSET_PATTERN = /(Z|[+-]\d{2}:\d{2})$/;
 const SCHEDULED_AT_DATE_PREFIX_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T/;
 
+// JSON field inventory for MailRequestCreateRequest. Parsed by
+// scripts/check-mail-request-field-inventory.mjs — keep in sync with Contracts.
+export const MAIL_REQUEST_JSON_FIELDS = new Set([
+  'tenant_id',
+  'source_service',
+  'mail_request_id',
+  'purpose',
+  'to',
+  'subject',
+  'html_body',
+  'text_body',
+  'reply_to',
+  'metadata',
+  'scheduled_at',
+  'payload_hash',
+]);
+
 export class MailRequestValidationError extends Error {
   constructor(message) {
     super(message);
