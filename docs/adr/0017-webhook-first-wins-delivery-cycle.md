@@ -42,6 +42,7 @@
 |--------------|---------------------|------|
 | `failed` → manual retry → `delivered` | 最初の `failed` のみ通知 | status GET |
 | `dead_lettered` → manual retry → `delivered` / `failed` | 最初の `dead_lettered` のみ | status GET |
+| `failed` / `dead_lettered` → manual cancel → `cancelled`（2つ目の terminal） | 最初の終端のみ通知。`cancelled` は enqueue されない（現行 ADR 0015 で発生しうる） | status GET |
 | `cancelled` 後の再開（将来） | 現状再開不可（ADR 0015）。再開を許可するなら identity 再設計が必要 | — |
 | delivery 後の bounce 等の別事実（#307） | 現行 UNIQUE では `delivered` 後に `bounced` を追加できない | #307 で identity を別途設計 |
 | retention 後の同一 `mail_request_id` 再利用 | 新世代として新しい `event_id` を発行（現行どおり） | Consumer は `event_id` で世代を区別 |
