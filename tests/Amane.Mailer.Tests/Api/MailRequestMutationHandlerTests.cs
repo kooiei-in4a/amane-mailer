@@ -27,7 +27,6 @@ public sealed class MailRequestMutationHandlerTests
             repository,
             deliveryEventEnqueuer: null!,
             TimeProvider.System,
-            NullLoggerFactory.Instance,
             CancellationToken.None);
 
         var (statusCode, body) = MailRequestHttpResultAssertions.Inspect(result);
@@ -50,7 +49,6 @@ public sealed class MailRequestMutationHandlerTests
             repository,
             deliveryEventEnqueuer: null!,
             TimeProvider.System,
-            NullLoggerFactory.Instance,
             CancellationToken.None);
 
         var (statusCode, body) = MailRequestHttpResultAssertions.Inspect(result);
@@ -87,7 +85,6 @@ public sealed class MailRequestMutationHandlerTests
             repository,
             deliveryEventEnqueuer: null!,
             TimeProvider.System,
-            NullLoggerFactory.Instance,
             CancellationToken.None);
 
         var (statusCode, _) = MailRequestHttpResultAssertions.Inspect(result);
@@ -113,7 +110,6 @@ public sealed class MailRequestMutationHandlerTests
             repository,
             deliveryEventEnqueuer: null!,
             TimeProvider.System,
-            NullLoggerFactory.Instance,
             CancellationToken.None);
 
         var (statusCode, body) = MailRequestHttpResultAssertions.Inspect(result);
