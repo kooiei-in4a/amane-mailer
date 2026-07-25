@@ -474,6 +474,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 - `provider=acs` でも `live_sending=false` のテナントは `LIVE_SENDING_DISABLED` で**送らない**。
 - develop / staging は原則 `false`、production のみ `true`。
 - effective provider（`MAILER_PROVIDER` override 含む）が `acs` かつ `live_sending=true` のテナントがある場合、ACS 接続文字列（`ACS_CONNECTION_STRING_FILE` / `ACS_CONNECTION_STRING`）が無いと **startup fail-closed**。`live_sending=false` のみの構成では ACS secret は起動時必須ではない（offline `scripts/validate-tenant-config.mjs` と同じ）。provider / ACS のこの検証は startup-only で、`/readyz` には含めない。
+- effective provider が `mailpit` のテナントがある場合、Mailpit SMTP host（`Mailer__Mailpit__SmtpHost` / `MAILPIT_SMTP_HOST`）は非空白、port（`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`）は **1–65535** の strict integer でなければ **startup fail-closed**（#356）。未設定時の既定は host=`mailpit`、port=`1025`、`UseSsl=false`。ACS のみ（effective provider が全テナントで `acs`）の構成では、未使用の Mailpit host／port typo は起動を止めない（未使用設定は配送を止めない方針）。`UseSsl` の strict boolean は #358 どおり常に Load 時検証。エラーメッセージには設定キーと許容条件のみを含め、host 値や secret は出さない。SMTP 疎通確認は startup では行わない。
 
 ---
 
@@ -563,3 +564,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-24 | 配送結果 Webhook の first-wins（最初の終端のみ通知。Admin 手動再送後の再通知なし）を明記（#273） |
 | 2026-07-24 | Worker / Webhook lease が wall-clock 絶対時刻である前提と clock jump 影響を明記（#276） |
 | 2026-07-24 | Webhook finalize fencing 失敗を `mail_webhook_finalize_skipped_total` で観測可能にした（#328） |
+| 2026-07-25 | Mailpit SMTP host／port を effective provider=`mailpit` 時のみ startup 検証（#356）。ACS-only では未使用 typo を起動 blocker にしない |

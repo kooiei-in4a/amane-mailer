@@ -490,6 +490,7 @@ Schema: [config/mailer/tenants.schema.json](../config/mailer/tenants.schema.json
 - Even with `provider=acs`, tenants with `live_sending=false` **do not send** — they fail with `LIVE_SENDING_DISABLED`.
 - develop / staging should use `false` in principle; production only `true`.
 - When any tenant has effective provider `acs` (including `MAILER_PROVIDER` override) and `live_sending=true`, a missing ACS connection string (`ACS_CONNECTION_STRING_FILE` / `ACS_CONNECTION_STRING`) causes **startup fail-closed**. Configurations with only `live_sending=false` do not require an ACS secret at startup (same policy as offline `scripts/validate-tenant-config.mjs`). Provider / ACS validation is startup-only and is not part of `/readyz`.
+- When any tenant has effective provider `mailpit`, Mailpit SMTP host (`Mailer__Mailpit__SmtpHost` / `MAILPIT_SMTP_HOST`) must be non-blank and port (`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`) must be a strict integer in **1–65535**, or startup **fail-closed** (#356). Defaults when unset: host=`mailpit`, port=`1025`, `UseSsl=false`. ACS-only configurations (every tenant effective provider `acs`) do not treat unused Mailpit host/port typos as startup blockers (unused settings do not stop delivery). `UseSsl` remains always validated at Load per #358. Error messages include the setting key and allowed form only; they never echo the host value or secrets. Startup does not probe SMTP connectivity.
 
 ---
 
@@ -579,3 +580,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-24 | Documented delivery-result webhook first-wins (first terminal only; no re-notify after Admin manual retry) (#273) |
 | 2026-07-24 | Documented that Worker / Webhook leases use wall-clock absolute time and described clock-jump effects (#276) |
 | 2026-07-24 | Made webhook finalize fencing failures observable via `mail_webhook_finalize_skipped_total` (#328) |
+| 2026-07-25 | Mailpit SMTP host/port validated at startup only when effective provider is `mailpit` (#356). ACS-only ignores unused typos |
