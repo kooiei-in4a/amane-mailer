@@ -8,7 +8,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Amane.Mailer.Tests;
 
-public sealed class WebhookDeliveryClientTests
+/// <summary>
+/// Regression suite for #345 / #355 — outbound webhook judges delivery from
+/// response headers without buffering body. Canonical tests from #370, housed
+/// here so the SecurityIoBoundaries inventory stays complete without duplicates.
+/// </summary>
+public sealed class WebhookStreamingResponseTests
 {
     private static readonly byte[] LargeBodyMarker = Encoding.UTF8.GetBytes("WEBHOOK_BODY_SHOULD_NOT_BE_BUFFERED");
 
