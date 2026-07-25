@@ -57,7 +57,7 @@ public static class AdminOpsPage
             access.AllowedTenantIdsForQuery,
             cancellationToken);
 
-        var workerEnabled = configuration.GetValue("Mailer:Worker:Enabled", true);
+        var workerEnabled = MailerWorkerOptions.IsEnabled(configuration);
         var readiness = BuildReadiness(storageInfo, serviceStatus, workerEnabled);
         var csrfToken = dbOpsOptions.Enabled && canRunServiceWideDbOps
             ? HtmlEncoder.Default.Encode(antiforgery.GetAndStoreTokens(context).RequestToken ?? string.Empty)

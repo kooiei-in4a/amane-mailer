@@ -250,6 +250,33 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         Assert.Equal(5, options.LoginFailureLimit);
     }
 
+    [Fact]
+    public void Empty_primary_admin_boolean_fails_without_falling_back()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            LoadAdminOptions(new Dictionary<string, string?>
+            {
+                ["AMANE_ADMIN_ENABLED"] = "",
+                ["MAILER_ADMIN_ENABLED"] = "true",
+            }));
+
+        Assert.Contains("AMANE_ADMIN_ENABLED", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("MAILER_ADMIN_ENABLED", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Primary_admin_boolean_is_preferred_over_fallback()
+    {
+        var options = LoadAdminOptions(new Dictionary<string, string?>
+        {
+            ["AMANE_ADMIN_ENABLED"] = "true",
+            ["AMANE_ADMIN_MASK_RECIPIENTS"] = "false",
+            ["MAILER_ADMIN_MASK_RECIPIENTS"] = "true",
+        });
+
+        Assert.False(options.MaskRecipients);
+    }
+
     [Theory]
     [InlineData("AMANE_ADMIN_LOGIN_FAILURE_LIMIT", "7", 7)]
     [InlineData("MAILER_ADMIN_LOGIN_FAILURE_LIMIT", "9", 9)]

@@ -33,7 +33,7 @@ public static class AmaneMailerServiceCollectionExtensions
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerWorkerOptions.Load(resolvedConfiguration);
-            if (resolvedConfiguration.GetValue("Mailer:Worker:Enabled", true))
+            if (MailerWorkerOptions.IsEnabled(resolvedConfiguration))
             {
                 options.Validate();
             }
@@ -61,7 +61,7 @@ public static class AmaneMailerServiceCollectionExtensions
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerAdminAuditRetentionOptions.Load(resolvedConfiguration);
-            if (resolvedConfiguration.GetValue("Mailer:Worker:Enabled", true))
+            if (MailerWorkerOptions.IsEnabled(resolvedConfiguration))
             {
                 options.Validate();
             }
@@ -73,7 +73,7 @@ public static class AmaneMailerServiceCollectionExtensions
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerWebhookOptions.Load(resolvedConfiguration);
-            if (resolvedConfiguration.GetValue("Mailer:Worker:Enabled", true))
+            if (MailerWorkerOptions.IsEnabled(resolvedConfiguration))
             {
                 options.Validate();
             }
@@ -87,7 +87,7 @@ public static class AmaneMailerServiceCollectionExtensions
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerHealthcheckOptions.Load(resolvedConfiguration);
-            if (resolvedConfiguration.GetValue("Mailer:Worker:Enabled", true))
+            if (MailerWorkerOptions.IsEnabled(resolvedConfiguration))
             {
                 var workerOptions = provider.GetRequiredService<MailerWorkerOptions>();
                 var sweepOptions = provider.GetRequiredService<MailerSweepOptions>();
@@ -146,7 +146,7 @@ public static class AmaneMailerServiceCollectionExtensions
         // (and worker-disabled hosts) can construct the graph (#341 AOT path smoke).
         services.AddWebhookHttpClient();
 
-        if (configuration.GetValue("Mailer:Worker:Enabled", true))
+        if (MailerWorkerOptions.IsEnabled(configuration))
         {
             services.AddHostedService<MailRequestSweepService>();
             services.AddHostedService<WebhookDeliverySweepService>();

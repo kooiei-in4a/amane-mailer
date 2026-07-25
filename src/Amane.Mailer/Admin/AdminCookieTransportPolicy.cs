@@ -1,3 +1,4 @@
+using Amane.Mailer.Configuration;
 using Microsoft.Extensions.Hosting;
 
 namespace Amane.Mailer.Admin;
@@ -13,11 +14,21 @@ internal static class AdminCookieTransportPolicy
     internal const string HttpAuthCookieName = "amane-admin-auth";
     internal const string HttpCsrfCookieName = "amane-admin-csrf";
 
-    internal static bool IsAllowHttpRequested(IConfiguration configuration) =>
-        string.Equals(
-            configuration["AMANE_ADMIN_ALLOW_HTTP"] ?? configuration["MAILER_ADMIN_ALLOW_HTTP"],
-            "true",
-            StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// When Admin is disabled, ignore ALLOW_HTTP (including typos) so mail delivery still starts.
+    /// When Admin is enabled, parse strictly: unset keeps false; empty / malformed fail fast.
+    /// </summary>
+    internal static bool IsAllowHttpRequested(IConfiguration configuration, bool adminEnabled)
+    {
+        if (!adminEnabled)
+            return false;
+
+        return ConfigurationBooleanReader.Read(
+            configuration,
+            defaultValue: false,
+            "AMANE_ADMIN_ALLOW_HTTP",
+            "MAILER_ADMIN_ALLOW_HTTP");
+    }
 
     /// <summary>
     /// HTTP cookie relaxation is Development-only. Testing/Production/Staging and any

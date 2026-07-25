@@ -444,7 +444,7 @@ values, body, and metadata are not output.
 
 ### 5.2 Worker / Sweep / Retention (Environment Variables)
 
-Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty string, malformed numbers, zero/negative, and values above the max **fail startup** (no implicit clamp). Error messages include the setting key and allowed range; they never include secrets or connection strings. The same numeric rules apply in Development / Testing / Production. With Worker disabled, per-key `Load` range checks still apply (cross-field lease / healthcheck `Validate` remains Worker-enabled only).
+Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty string, malformed numbers, zero/negative, and values above the max **fail startup** (no implicit clamp). Error messages include the setting key and allowed range; they never include secrets or connection strings. The same numeric rules apply in Development / Testing / Production. With Worker disabled, per-key `Load` range checks still apply (cross-field lease / healthcheck `Validate` remains Worker-enabled only). `Mailer__Worker__Enabled` uses **strict boolean** parsing (#358) — unset keeps `true`; empty / whitespace / typos fail startup.
 
 | Variable | Default | Allowed range | Description |
 |---|---|---|---|

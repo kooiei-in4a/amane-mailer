@@ -1,4 +1,5 @@
 using System.Net;
+using Amane.Mailer.Configuration;
 
 namespace Amane.Mailer.Admin;
 
@@ -39,7 +40,11 @@ public sealed record MailerAdminOptions
     {
         // ENABLED is always strict-parsed. Other Admin UI settings are only load-bearing when
         // Admin is on (mirrors Validate early-return), so typos must not abort mail delivery.
-        var enabled = ReadBoolean(configuration, "AMANE_ADMIN_ENABLED", "MAILER_ADMIN_ENABLED") ?? false;
+        var enabled = ConfigurationBooleanReader.Read(
+            configuration,
+            defaultValue: false,
+            "AMANE_ADMIN_ENABLED",
+            "MAILER_ADMIN_ENABLED");
         if (!enabled)
             return new() { Enabled = false };
 
@@ -48,10 +53,11 @@ public sealed record MailerAdminOptions
             "visible",
             StringComparison.OrdinalIgnoreCase);
         var defaultMaskPii = !listPiiVisible;
-        var hashNetworkIdentifiers = ReadBoolean(
+        var hashNetworkIdentifiers = ConfigurationBooleanReader.Read(
             configuration,
+            defaultValue: false,
             "AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS",
-            "MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS") ?? false;
+            "MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS");
 
         return new()
         {
@@ -98,9 +104,15 @@ public sealed record MailerAdminOptions
                     "MAILER_ADMIN_AUDIT_IDENTIFIER_HASH_KEY",
                     string.Empty))
                 : null,
-            MaskRecipients = ReadBoolean(configuration, "AMANE_ADMIN_MASK_RECIPIENTS", "MAILER_ADMIN_MASK_RECIPIENTS")
+            MaskRecipients = ConfigurationBooleanReader.ReadOptional(
+                    configuration,
+                    "AMANE_ADMIN_MASK_RECIPIENTS",
+                    "MAILER_ADMIN_MASK_RECIPIENTS")
                 ?? defaultMaskPii,
-            MaskSubjects = ReadBoolean(configuration, "AMANE_ADMIN_MASK_SUBJECTS", "MAILER_ADMIN_MASK_SUBJECTS")
+            MaskSubjects = ConfigurationBooleanReader.ReadOptional(
+                    configuration,
+                    "AMANE_ADMIN_MASK_SUBJECTS",
+                    "MAILER_ADMIN_MASK_SUBJECTS")
                 ?? defaultMaskPii,
         };
     }
@@ -193,28 +205,6 @@ public sealed record MailerAdminOptions
         }
 
         return defaultValue;
-    }
-
-    private static bool? ReadBoolean(IConfiguration configuration, string primaryKey, string fallbackKey)
-    {
-        var value = configuration[primaryKey];
-        var key = primaryKey;
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            value = configuration[fallbackKey];
-            key = fallbackKey;
-        }
-
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        if (!bool.TryParse(value, out var parsed))
-        {
-            throw new InvalidOperationException(
-                $"{key} must be 'true' or 'false'.");
-        }
-
-        return parsed;
     }
 
     private static int ReadPositiveInt(

@@ -99,9 +99,13 @@ Admin UI boolean and positive-integer environment variables use **strict parse**
 | Kind | Allowed values | Unset | Invalid |
 |------|----------------|-------|---------|
 | `AMANE_ADMIN_ENABLED` / `MAILER_ADMIN_ENABLED` | `true` / `false` (`bool.TryParse` compatible) | `false` | **Always fails startup** |
-| Other Admin UI booleans (mask / hash-network / db-ops, etc.) | `true` / `false` | Existing defaults | **Fails startup only when Admin is enabled** |
+| Other Admin UI booleans (mask / hash-network / db-ops / `ALLOW_HTTP`, etc.) | `true` / `false` | Existing defaults | **Fails startup only when Admin is enabled** (when Admin is disabled, `ALLOW_HTTP` typos are ignored) |
 | Admin UI positive integers (login failure limit, etc.) | Integer ≥ `1` | Existing defaults | **Fails startup only when Admin is enabled** |
 | Audit retention numerics (`MAILER_ADMIN_AUDIT_RETENTION_*`) | Integer in range (Days 1–3650, SweepHours 1–168, SweepSeconds 1–604800, BatchSize 1–1000) | Existing defaults (e.g. 180 days) | **Always fails startup** (used by the worker audit sweep; independent of Admin UI on/off) |
+
+### Worker / Metrics / Mailpit boolean and port (#358)
+
+`Mailer__Worker__Enabled` / `Mailer__Metrics__Enabled` / `Mailer__Mailpit__UseSsl` (and `MAILPIT_SMTP_USE_SSL`) use the same **strict boolean** rule (unset keeps the default; empty / whitespace / typos fail startup). Mailpit SMTP port (`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`) must be **1–65535** (same integer rule as #329). When a primary key is present (including empty), it takes precedence over the fallback and is not treated as unset.
 
 ### Worker / Webhook / Sweep / Retention / Healthcheck numerics
 
