@@ -260,8 +260,8 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
             new Dictionary<string, string?>(),
             environmentName: Environments.Production);
 
-        // Program.cs eagerly resolves MailerMetricsOptions after Build(), matching
-        // MailerTenantRegistry / MailerOptions, so host construction must fail closed.
+        // MailerStartupValidator eagerly resolves MailerMetricsOptions after Build(),
+        // so host construction must fail closed (#351).
         var ex = Assert.Throws<InvalidOperationException>(() => CreateClient(factory));
         Assert.Contains("BearerToken", ex.Message, StringComparison.Ordinal);
     }

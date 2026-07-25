@@ -146,17 +146,9 @@ builder.Services.AddAmaneMailerServices(builder.Configuration);
 
 var app = builder.Build();
 
-_ = app.Services.GetRequiredService<MailerTenantRegistry>();
-_ = app.Services.GetRequiredService<MailerOptions>();
-_ = app.Services.GetRequiredService<MailerMetricsOptions>();
-// Fail fast on operational numeric misconfiguration (same Load rules with Worker disabled;
-// cross-field Validate for lease/healthcheck remains Worker-enabled only).
-_ = app.Services.GetRequiredService<MailerWorkerOptions>();
-_ = app.Services.GetRequiredService<MailerWebhookOptions>();
-_ = app.Services.GetRequiredService<MailerSweepOptions>();
-_ = app.Services.GetRequiredService<MailerRetentionOptions>();
-_ = app.Services.GetRequiredService<MailerAdminAuditRetentionOptions>();
-_ = app.Services.GetRequiredService<MailerHealthcheckOptions>();
+// Single startup path: resolve every AddStartupValidatedSingleton registration so Load/Validate
+// fail-fast (Worker/Admin enabled gates stay inside each options type).
+app.Services.GetRequiredService<MailerStartupValidator>().Validate();
 
 app.MapGet("/healthz", () => MailerJsonResults.Health(true));
 
