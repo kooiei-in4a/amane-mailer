@@ -25,7 +25,7 @@
 | `MailDeliveryErrorCodes` | Contracts `const string`（DB/HTTP TEXT） | Contracts + producer + tests。OpenAPI は closed enum ではない | 定数参照は typo 抑制。exception→code 漏れは classifier の fall-through。**drift 対象外** |
 | `MailerErrorCodes` | Contracts `const string` | Contracts + OpenAPI Error.code + handlers + tests | **drift set-equality**（強い） |
 | Readiness reason | runtime `const string` + `All[]` | evaluator + `All` + metrics gauges + tests | `All` 未登録は metrics 欠落。HTTP `/readyz` は reason を返さない |
-| Webhook pipeline state | `DeliveryEventState` / `FinalizeOutcome` enum | enum + DB CHECK + repository | 既に強い。finalize map は throw |
+| Webhook pipeline state | `DeliveryEventState` / `DeliveryEventFinalizeOutcome` enum | enum + DB CHECK + repository | 既に強い。finalize map は throw |
 | Webhook `event_type` | `MailDeliveryEventType` `const string` | Contracts + enqueue map + OpenAPI | OpenAPI との **drift 未接続** |
 | Webhook transport error | ad-hoc string literals（`WEBHOOK_*`） | validator / client / worker | **constants なし**。typo はテスト依存 |
 
@@ -72,7 +72,7 @@
 |------|------|----------------|
 | Tenant / platform JSON → runtime | `string` → `MailProvider` | `MailerTenant` / `MailerOptions` の validate 近傍に `Parse`。失敗は既存と同様 startup fail |
 | Runtime → delivery router | `MailProvider` → provider 実装 | `MailDeliveryProviderRouter` の enum switch（discard は throw または既存 `UNKNOWN_PROVIDER` 方針を子 Issue で固定） |
-| Runtime → HTTP status | `MailRequestState` → `MailRequestStatus.*` | **唯一** `MailRequestHttpErrorMapper.ToDeliveryStatus`。Admin / `db request-state` はこれを呼ぶ（Title Case UI は別ヘルパで表示整形のみ） |
+| Runtime → HTTP status | `MailRequestState` → `MailRequestStatus.*` | 現行は `MailRequestEndpoints.ToDeliveryStatus`（private static）。子 Issue B で共有ヘルパへ抽出し、Admin / `db request-state` もそれを呼ぶ（Title Case UI は別ヘルパで表示整形のみ） |
 | Runtime → webhook `event_type` | terminal `MailRequestState` → `MailDeliveryEventType.*` | **唯一** `DeliveryEventRepository.MapTerminalStatusToEventType` |
 | Delivery / webhook error → DB/HTTP | 内部定数 → `string` | repository insert / response DTO 代入時のみ。公開名は変更しない |
 | Readiness → metrics/logs | `MailerReadinessReasons.*` | 現状維持。`All[]` が catalog |
@@ -167,8 +167,10 @@
 - [ADR 0015: 手動再送・手動キャンセル状態遷移](0015-manual-retry-cancel-state-transitions.md)
 - `src/Amane.Mailer/Data/Sqlite/MailRequestState.cs`
 - `src/Amane.Mailer.Contracts/MailRequests/MailRequestStatus.cs`
+- `src/Amane.Mailer/Api/MailRequestEndpoints.cs`（`ToDeliveryStatus`）
 - `src/Amane.Mailer.Contracts/MailRequests/MailDeliveryErrorCodes.cs`
 - `src/Amane.Mailer.Contracts/MailRequests/MailerErrorCodes.cs`
 - `src/Amane.Mailer/Operations/MailerReadinessReasons.cs`
+- `src/Amane.Mailer/Webhooks/DeliveryEventState.cs`（`DeliveryEventState` / `DeliveryEventFinalizeOutcome`）
 - `src/Amane.Mailer.Contracts/MailRequests/MailDeliveryEventType.cs`
 - `scripts/check-contract-drift.mjs`
