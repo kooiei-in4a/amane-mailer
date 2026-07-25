@@ -103,9 +103,9 @@ Admin UI boolean and positive-integer environment variables use **strict parse**
 | Admin UI positive integers (login failure limit, etc.) | Integer ≥ `1` | Existing defaults | **Fails startup only when Admin is enabled** |
 | Audit retention numerics (`MAILER_ADMIN_AUDIT_RETENTION_*`) | Integer in range (Days 1–3650, SweepHours 1–168, SweepSeconds 1–604800, BatchSize 1–1000) | Existing defaults (e.g. 180 days) | **Always fails startup** (used by the worker audit sweep; independent of Admin UI on/off) |
 
-### Worker / Metrics / Mailpit boolean and port (#358)
+### Worker / Metrics / Mailpit boolean, host, and port (#358 / #356)
 
-`Mailer__Worker__Enabled` / `Mailer__Metrics__Enabled` / `Mailer__Mailpit__UseSsl` (and `MAILPIT_SMTP_USE_SSL`) use the same **strict boolean** rule (unset keeps the default; empty / whitespace / typos fail startup). Mailpit SMTP port (`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`) must be **1–65535** (same integer rule as #329). When a primary key is present (including empty), it takes precedence over the fallback and is not treated as unset.
+`Mailer__Worker__Enabled` / `Mailer__Metrics__Enabled` / `Mailer__Mailpit__UseSsl` (and `MAILPIT_SMTP_USE_SSL`) use the same **strict boolean** rule (unset keeps the default; empty / whitespace / typos fail startup). Mailpit SMTP host (`Mailer__Mailpit__SmtpHost` / `MAILPIT_SMTP_HOST`) and port (`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`, **1–65535**) are validated at startup only when any tenant uses effective provider `mailpit` (#356). ACS-only configurations ignore unused host/port typos. `UseSsl` remains always validated at Load per #358. When a primary key is present (including empty), it takes precedence over the fallback and is not treated as unset.
 
 ### Worker / Webhook / Sweep / Retention / Healthcheck numerics
 
