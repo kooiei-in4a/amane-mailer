@@ -47,18 +47,18 @@ formatter と段階導入した .NET analyzer を CI とローカルで揃えま
 
 CI と同じ formatter 検証:
 
-``powershell
+```powershell
 dotnet format whitespace Amane.Mailer.slnx --verify-no-changes
-``
+```
 
 staged analyzer は `Directory.Build.props`（`EnableNETAnalyzers` +
 `EnforceCodeStyleInBuild`）と `.editorconfig` の severity により、通常の
 Release build に含まれます。
 
-``powershell
+```powershell
 dotnet restore Amane.Mailer.slnx --locked-mode
 dotnet build Amane.Mailer.slnx -c Release --no-restore
-``
+```
 
 ## CI
 

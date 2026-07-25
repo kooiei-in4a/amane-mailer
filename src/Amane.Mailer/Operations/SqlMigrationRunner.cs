@@ -119,6 +119,8 @@ public sealed class SqlMigrationRunner
                 continue;
             }
 
+            // CA2000: prefer explicit try/finally DisposeAsync over `await using var` here.
+            // The analyzer false-positives the using-declaration form in this loop+continue path.
             var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
             try
             {

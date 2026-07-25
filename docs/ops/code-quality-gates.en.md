@@ -48,18 +48,18 @@ Scope:
 
 Same formatter check as CI:
 
-``powershell
+```powershell
 dotnet format whitespace Amane.Mailer.slnx --verify-no-changes
-``
+```
 
 Staged analyzers participate in the normal Release build via
 `Directory.Build.props` (`EnableNETAnalyzers` + `EnforceCodeStyleInBuild`) and
 `.editorconfig` severities:
 
-``powershell
+```powershell
 dotnet restore Amane.Mailer.slnx --locked-mode
 dotnet build Amane.Mailer.slnx -c Release --no-restore
-``
+```
 
 ## CI
 
