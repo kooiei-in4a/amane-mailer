@@ -89,6 +89,11 @@ public sealed class InflightTracker
         return signal;
     }
 
+    /// <summary>
+    /// One in-flight lease. Idempotent only for the same local/variable used with
+    /// <c>using</c>; do not copy, store in a field, or pass by value — copies have
+    /// independent dispose state and a second Dispose would over-decrement.
+    /// </summary>
     public struct InflightScope : IDisposable
     {
         private InflightTracker? _tracker;
