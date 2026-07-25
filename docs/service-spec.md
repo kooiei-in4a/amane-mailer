@@ -326,7 +326,7 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 - **first-wins:** 同一 `(tenant_id, source_service, mail_request_id)` 世代では高々 1 event
   （`ON CONFLICT DO NOTHING`）。最初に enqueue された終端状態のみが残る。Admin 手動再送で
   別の終端（例: `failed` → `Queued` → `delivered`）へ進んでも、2 つ目の event は作らず、
-  既存 event も更新しない。最新終端の再通知が必要なら別 issue / ADR で設計する（本契約の非目標）。
+  既存 event も更新しない。delivery cycle 単位の再通知は [ADR 0017](adr/0017-webhook-first-wins-delivery-cycle.md) で見送り（再評価 trigger 付き）。
 - reconcile は **欠落**（outbox 行が無い terminal request）のみ補完する。既存 event の上書きはしない。
 - secret は `webhook.secret_env` が指す環境変数から読み込む（tenant JSON 平文禁止）。
 - payload に PII（recipient, subject, body 等）は含めない。
@@ -562,6 +562,7 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-23 | effective provider / ACS live-sending の startup 検証を明記。`/readyz` は含めない（#272）。Mailpit は SMTP 受理後の disconnect 失敗を再送対象にしない（#275） |
 | 2026-07-23 | `MailRequestWorker` shutdown: Semaphore 待ち後続 wave は送信開始しない（#271） |
 | 2026-07-24 | 配送結果 Webhook の first-wins（最初の終端のみ通知。Admin 手動再送後の再通知なし）を明記（#273） |
+| 2026-07-25 | ADR 0017: delivery cycle 拡張を見送り、first-wins 維持と再評価 trigger を記録（#362） |
 | 2026-07-24 | Worker / Webhook lease が wall-clock 絶対時刻である前提と clock jump 影響を明記（#276） |
 | 2026-07-24 | Webhook finalize fencing 失敗を `mail_webhook_finalize_skipped_total` で観測可能にした（#328） |
 | 2026-07-25 | Mailpit SMTP host／port を effective provider=`mailpit` 時のみ startup 検証（#356）。ACS-only では未使用 typo を起動 blocker にしない |
