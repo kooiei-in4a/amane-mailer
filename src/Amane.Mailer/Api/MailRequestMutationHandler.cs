@@ -18,7 +18,6 @@ public static class MailRequestMutationHandler
         MailRequestRepository repository,
         DeliveryEventEnqueuer deliveryEventEnqueuer,
         TimeProvider timeProvider,
-        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
