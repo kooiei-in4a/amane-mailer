@@ -89,7 +89,7 @@ public static class MailRequestMutationHandler
         CancellationToken cancellationToken)
     {
         var now = timeProvider.GetUtcNow();
-        var scheduleError = MailRequestCreateHandler.ValidateScheduledAt(request.ScheduledAt, now);
+        var scheduleError = MailRequestScheduleValidator.ValidateScheduledAt(request.ScheduledAt, now);
         if (scheduleError is not null)
         {
             return scheduleError;

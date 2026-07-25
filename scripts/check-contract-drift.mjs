@@ -530,14 +530,30 @@ assertContains(
 
 const runtimeContractSources = [
   read('src/Amane.Mailer/Api/MailRequestEndpoints.cs'),
+  read('src/Amane.Mailer/Api/MailRequestRequestReader.cs'),
+  read('src/Amane.Mailer/Api/TenantRequestAuthorizer.cs'),
+  read('src/Amane.Mailer/Api/MailRequestCreateHandler.cs'),
+  read('src/Amane.Mailer/Api/MailRequestMutationHandler.cs'),
+  read('src/Amane.Mailer/Api/MailRequestHttpErrorMapper.cs'),
+  read('src/Amane.Mailer/Api/MailRequestScheduleValidator.cs'),
   read('src/Amane.Mailer/Json/MailerJsonResults.cs'),
 ].join('\n');
 
 assertMatches(
   runtimeContractSources,
-  /JsonSerializer\.Deserialize\s*\(\s*requestBody\s*,\s*MailerJsonContext\.Default\.MailRequestCreateRequest\s*\)/s,
+  /JsonSerializer\.Deserialize\s*\(\s*requestBody\s*,\s*typeInfo\s*\)/s,
   'Runtime request deserialization',
-  'JsonSerializer.Deserialize(... MailerJsonContext.Default.MailRequestCreateRequest)',
+  'JsonSerializer.Deserialize(requestBody, typeInfo)',
+);
+assertContains(
+  runtimeContractSources,
+  'MailerJsonContext.Default.MailRequestCreateRequest',
+  'Runtime create-request JSON type info',
+);
+assertContains(
+  runtimeContractSources,
+  'MailerJsonContext.Default.MailRequestRescheduleRequest',
+  'Runtime reschedule-request JSON type info',
 );
 assertMatches(
   runtimeContractSources,

@@ -271,7 +271,7 @@ public static class MailRequestCreateHandler
                 MailerErrorCodes.InvalidMetadata);
         }
 
-        var scheduleError = ValidateScheduledAt(request.ScheduledAt, now);
+        var scheduleError = MailRequestScheduleValidator.ValidateScheduledAt(request.ScheduledAt, now);
         if (scheduleError is not null)
         {
             return scheduleError;
@@ -295,31 +295,6 @@ public static class MailRequestCreateHandler
             return MailRequestHttpErrorMapper.Error(
                 StatusCodes.Status422UnprocessableEntity,
                 MailerErrorCodes.InvalidPayloadHash);
-        }
-
-        return null;
-    }
-
-    internal static IResult? ValidateScheduledAt(DateTimeOffset? scheduledAt, DateTimeOffset now)
-    {
-        if (scheduledAt is null)
-        {
-            return null;
-        }
-
-        var scheduledAtUtc = scheduledAt.Value.ToUniversalTime();
-        if (scheduledAtUtc < now)
-        {
-            return MailRequestHttpErrorMapper.Error(
-                StatusCodes.Status422UnprocessableEntity,
-                MailerErrorCodes.ScheduledAtInPast);
-        }
-
-        if (scheduledAtUtc > now.Add(MailRequestScheduleLimits.MaxScheduledAhead))
-        {
-            return MailRequestHttpErrorMapper.Error(
-                StatusCodes.Status422UnprocessableEntity,
-                MailerErrorCodes.ScheduledAtTooFar);
         }
 
         return null;
