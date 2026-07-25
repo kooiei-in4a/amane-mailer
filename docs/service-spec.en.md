@@ -330,8 +330,8 @@ Consumer.
   generation (`ON CONFLICT DO NOTHING`). Only the first enqueued terminal state remains.
   If Admin manual retry later reaches a different terminal (e.g. `failed` → `Queued` →
   `delivered`), Mailer does not insert a second event and does not update the existing
-  one. Re-notifying the latest terminal is out of scope for this contract and would need
-  a separate issue / ADR.
+  one. Per-delivery-cycle re-notification is deferred by
+  [ADR 0017](adr/0017-webhook-first-wins-delivery-cycle.md) (with re-evaluation triggers).
 - Reconciliation only fills **missing** outbox rows for terminal requests; it never
   overwrites an existing event.
 - Read the secret from the environment variable named by `webhook.secret_env`
@@ -578,6 +578,7 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-23 | Documented startup validation for effective provider / ACS live-sending; not part of `/readyz` (#272). Mailpit treats post-accept disconnect failure as success, not retry (#275) |
 | 2026-07-23 | `MailRequestWorker` shutdown: later semaphore-waiting send waves do not start (#271) |
 | 2026-07-24 | Documented delivery-result webhook first-wins (first terminal only; no re-notify after Admin manual retry) (#273) |
+| 2026-07-25 | ADR 0017: deferred delivery-cycle extension; keep first-wins with re-evaluation triggers (#362) |
 | 2026-07-24 | Documented that Worker / Webhook leases use wall-clock absolute time and described clock-jump effects (#276) |
 | 2026-07-24 | Made webhook finalize fencing failures observable via `mail_webhook_finalize_skipped_total` (#328) |
 | 2026-07-25 | Mailpit SMTP host/port validated at startup only when effective provider is `mailpit` (#356). ACS-only ignores unused typos |
