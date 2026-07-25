@@ -56,20 +56,11 @@ public static class MailRequestMutationHandler
         }
 
         // Cancel is already committed. Webhook enqueue is best-effort; reconcile covers gaps (#269).
+        // The shared post-commit helper also keeps the request token out of the enqueue so a client
+        // disconnect cannot skip it, matching admin cancel (#390).
         if (result.InternalRequestId is Guid internalId)
         {
-            try
-            {
-                await deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(internalId, cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                var logger = loggerFactory.CreateLogger("MailRequestEndpoints");
-                logger.LogWarning(
-                    ex,
-                    "Failed to enqueue cancel delivery event for mail request {MailRequestId}.",
-                    mailRequestId);
-            }
+            await deliveryEventEnqueuer.TryEnqueueAfterCommitAsync(internalId);
         }
 
         // Prefer the committed snapshot over a post-commit re-read so non-transient re-read
