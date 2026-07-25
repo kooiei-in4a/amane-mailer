@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.Extensions.Hosting;
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 
 namespace Amane.Mailer.Admin;
@@ -16,7 +17,7 @@ internal static class AdminServiceRegistration
         IServiceCollection services,
         IConfiguration configuration)
     {
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerAdminOptions.Load(resolvedConfiguration);
@@ -35,7 +36,7 @@ internal static class AdminServiceRegistration
         services.AddSingleton<AdminUserRepository>();
         services.AddSingleton<AdminLoginThrottleRepository>();
         services.AddSingleton<AdminDeadLetterCountCache>();
-        services.AddSingleton(provider =>
+        services.AddStartupValidatedSingleton(provider =>
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var connections = provider.GetRequiredService<SqliteConnectionFactory>();

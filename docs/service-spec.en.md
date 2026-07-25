@@ -469,6 +469,13 @@ Numeric values use **strict validation** (#329). Unset keys keep defaults. Empty
 
 On startup failure, check the process log exception for the key name and allowed range. The configured value and connection strings are not included in the message.
 
+Startup configuration validation is centralized in `MailerStartupValidator` (#351). Do not enumerate options types with `GetRequiredService` in `Program.cs`. To add a new startup-required setting:
+
+1. Implement `Load` / `Validate` on the options type (preserve existing gates such as skipping cross-field checks when Worker is disabled, and ignoring unused Admin settings when Admin is disabled).
+2. Register with `AddStartupValidatedSingleton` instead of plain `AddSingleton` so registration and the validation inventory stay in sync.
+3. Add the type to `MailerStartupValidationInventoryTests.ExpectedStartupValidatedTypes`.
+4. Add a focused host-startup failure test for the new invariant.
+
 ### 5.3 Structure & Policy (JSON / `tenants.json`)
 
 Schema: [config/mailer/tenants.schema.json](../config/mailer/tenants.schema.json). Per tenant:
@@ -582,3 +589,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-24 | Documented that Worker / Webhook leases use wall-clock absolute time and described clock-jump effects (#276) |
 | 2026-07-24 | Made webhook finalize fencing failures observable via `mail_webhook_finalize_skipped_total` (#328) |
 | 2026-07-25 | Mailpit SMTP host/port validated at startup only when effective provider is `mailpit` (#356). ACS-only ignores unused typos |
+| 2026-07-25 | Centralized startup configuration validation in `MailerStartupValidator` / `AddStartupValidatedSingleton` (#351) |

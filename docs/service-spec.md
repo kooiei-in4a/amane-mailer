@@ -453,6 +453,13 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 
 起動失敗時はプロセスログの例外メッセージでキー名と許容範囲を確認する。値そのものや接続文字列はメッセージに出ない。
 
+起動時の設定検証は `MailerStartupValidator` に集約する（#351）。`Program.cs` で options 型を個別に `GetRequiredService` しない。新しい起動時必須設定を追加する手順:
+
+1. options 型に `Load` / `Validate` を実装する（Worker disabled 時の cross-field 省略、Admin disabled 時の未使用設定無視など既存ゲートを維持）。
+2. DI 登録は `AddSingleton` ではなく `AddStartupValidatedSingleton` を使う（登録と検証 inventory が同時に更新される）。
+3. `MailerStartupValidationInventoryTests.ExpectedStartupValidatedTypes` に型を追加する。
+4. 不正値が host startup で失敗することを示す focused test を追加する。
+
 ### 5.3 構造・ポリシー（JSON / `tenants.json`）
 
 スキーマは [config/mailer/tenants.schema.json](../config/mailer/tenants.schema.json)。テナント1件あたり：
@@ -566,3 +573,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-24 | Worker / Webhook lease が wall-clock 絶対時刻である前提と clock jump 影響を明記（#276） |
 | 2026-07-24 | Webhook finalize fencing 失敗を `mail_webhook_finalize_skipped_total` で観測可能にした（#328） |
 | 2026-07-25 | Mailpit SMTP host／port を effective provider=`mailpit` 時のみ startup 検証（#356）。ACS-only では未使用 typo を起動 blocker にしない |
+| 2026-07-25 | 起動時設定検証を `MailerStartupValidator` / `AddStartupValidatedSingleton` に集約（#351） |
