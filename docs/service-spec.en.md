@@ -367,12 +367,16 @@ Early branching on `argv` before Web host startup. Container `ENTRYPOINT` is `./
 
 | Subcommand | Purpose | Exit code |
 |---|---|---|
-| `healthcheck` | Current SQLite schema (applied migration version + checksum) + Worker/Sweep heartbeat freshness check (Docker `HEALTHCHECK`) | 0=healthy / 1=unhealthy |
-| `db migrate` | Apply pending SQL migrations | 0=success |
-| `db checkpoint` | Clean up `-wal` via `PRAGMA wal_checkpoint(TRUNCATE)` | 0=success |
-| `db backup <absolute-path>` | Online SQLite backup (Backup API). Writes to a same-directory temp file, verifies it, then atomically replaces the destination. A mid-flight failure leaves any previous good backup intact. Prefer a timestamped path for retention | 0=success / 2=usage error |
-| `db stats [--tenant-id <uuid>]` | Output `mail_requests` status counts, ready backlog, oldest queued age, stale processing, and dead-letter counts from SQLite as `key=value` | 0=success / 1=schema unavailable / 2=usage error |
-| `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | Output one request's state, attempt count, and provider message id presence as `key=value` (does not expose secrets / recipient) | 0=success / 1=schema unavailable / 2=usage error |
+| `healthcheck` | Current SQLite schema (applied migration version + checksum) + Worker/Sweep heartbeat freshness check (Docker `HEALTHCHECK`) | 0=healthy / 1=unhealthy / 130=cancelled |
+| `db migrate` | Apply pending SQL migrations | 0=success / 130=cancelled |
+| `db checkpoint` | Clean up `-wal` via `PRAGMA wal_checkpoint(TRUNCATE)` | 0=success / 130=cancelled |
+| `db backup <absolute-path>` | Online SQLite backup (Backup API). Writes to a same-directory temp file, verifies it, then atomically replaces the destination. A mid-flight failure leaves any previous good backup intact. Prefer a timestamped path for retention | 0=success / 2=usage error / 130=cancelled |
+| `db stats [--tenant-id <uuid>]` | Output `mail_requests` status counts, ready backlog, oldest queued age, stale processing, and dead-letter counts from SQLite as `key=value` | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | Output one request's state, attempt count, and provider message id presence as `key=value` (does not expose secrets / recipient) | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db admin-audit purge --older-than-days <days>` | Batch-delete Admin audit events older than the requested retention | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `admin user create ...` | Create a scoped or break-glass Admin user | 0=success / 1=schema unavailable / 2=usage error / 130=cancelled |
+
+Long-running CLI commands cancel cooperatively on `Ctrl+C` (`Console.CancelKeyPress`). Every `Ctrl+C` keeps the process alive (`e.Cancel = true`), cancels the shared `CancellationToken`, and relies on existing transaction rollback and backup temp cleanup. Later presses stay on the same cooperative path; there is no fallback to `Environment.Exit` or default OS immediate termination. During a synchronous non-interruptible stretch such as `BackupDatabase`, stop may be deferred until the next checkpoint; operators who need an immediate kill must use SIGKILL or close the terminal. The cancellation exit code is the constant `130` (conventional `128 + SIGINT`) and does not collide with usage error (`2`) or schema unavailable (`1`). Cancellation is not logged as ERROR (short stderr only).
 
 ### Migration Checksum Policy
 
@@ -590,3 +594,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-24 | Made webhook finalize fencing failures observable via `mail_webhook_finalize_skipped_total` (#328) |
 | 2026-07-25 | Mailpit SMTP host/port validated at startup only when effective provider is `mailpit` (#356). ACS-only ignores unused typos |
 | 2026-07-25 | Centralized startup configuration validation in `MailerStartupValidator` / `AddStartupValidatedSingleton` (#351) |
+| 2026-07-25 | Document cooperative Ctrl+C cancellation and exit code 130 for long-running CLI commands (#347) |
