@@ -60,13 +60,37 @@ public sealed class WebhookDeliveryWorker(
             // matching MailRequestWorker, and is drained in finally below.
             while (!stoppingToken.IsCancellationRequested)
             {
+                // Wake bound follows InitialDelaySeconds so scheduled retries are polled without
+                // busy-spinning, and fixtures with 1s delays stay within their existing timeouts.
+                // Prefer this over querying the earliest next_attempt_at each idle cycle (#402).
+                bool hasWork;
                 try
                 {
-                    await queue.Reader.WaitToReadAsync(stoppingToken);
+                    using var wakeTimeout = new CancellationTokenSource(ComputeIdleWakeTimeout());
+                    using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                        stoppingToken,
+                        wakeTimeout.Token);
+                    hasWork = await queue.Reader.WaitToReadAsync(linked.Token);
                 }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                {
+                    // Idle wake timeout — poll for due RetryScheduled rows even without a signal.
+                    hasWork = true;
+                }
+                catch (OperationCanceledException)
                 {
                     break;
+                }
+
+                if (!hasWork)
+                {
+                    break;
+                }
+
+                // Capacity-1 DropWrite channel retains an unread item after TrySignalWorkAvailable.
+                // Drain like MailRequestWorker so WaitToReadAsync can block again (#402).
+                while (queue.Reader.TryRead(out _))
+                {
                 }
 
                 while (!stoppingToken.IsCancellationRequested)
@@ -94,6 +118,9 @@ public sealed class WebhookDeliveryWorker(
                         }
 
                         await DelayIsolatedFailureBackoffAsync(stoppingToken);
+                        // Return to the idle wait (wake timeout / Sweep signal) instead of
+                        // re-entering claim at 1 Hz for a persistent DB outage (#402 / #389 AC7).
+                        break;
                     }
                 }
             }
@@ -113,6 +140,13 @@ public sealed class WebhookDeliveryWorker(
             }
         }
     }
+
+    /// <summary>
+    /// Upper bound for idle <see cref="ChannelReader{T}.WaitToReadAsync"/> when no signal arrives.
+    /// Derived from existing retry configuration — not a new public knob (#402).
+    /// </summary>
+    internal TimeSpan ComputeIdleWakeTimeout() =>
+        TimeSpan.FromSeconds(Math.Max(1, webhookOptions.InitialDelaySeconds));
 
     /// <summary>
     /// Claims at most one event and processes it. Returns <see langword="false"/> when the

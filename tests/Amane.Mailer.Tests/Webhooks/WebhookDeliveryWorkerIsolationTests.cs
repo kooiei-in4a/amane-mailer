@@ -290,6 +290,28 @@ public sealed class WebhookDeliveryWorkerIsolationTests
     }
 
     [Fact]
+    public async Task Idle_worker_does_not_busy_spin_claim_attempts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await Harness.CreateAsync(ct);
+        var counting = new CountingNullWorkStore();
+        harness.Worker.WorkStoreOverride = counting;
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        await harness.Worker.StartAsync(cts.Token);
+        harness.Queue.TrySignalWorkAvailable();
+        await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+        await cts.CancelAsync();
+        await harness.Worker.StopAsync(CancellationToken.None);
+
+        // Pre-fix (#402): ~11.8M claim attempts in 500ms with an unread channel item.
+        // With drain + InitialDelaySeconds wake (1s in this harness), expect a single poll.
+        Assert.True(
+            counting.ClaimAttempts is >= 1 and <= 5,
+            $"claim attempts in 500ms with empty queue = {counting.ClaimAttempts}");
+    }
+
+    [Fact]
     public async Task Persistent_claim_failure_does_not_tight_loop()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -309,7 +331,8 @@ public sealed class WebhookDeliveryWorkerIsolationTests
             .Count(entry =>
                 entry.Level == LogLevel.Error &&
                 entry.State.GetValueOrDefault("Stage") == WebhookDeliveryWorker.FailureStageClaim);
-        // Without backoff this window would produce dozens of claim attempts.
+        // Backoff + return-to-wait (#402) caps claim-error logs; without either this window
+        // would produce dozens of attempts.
         Assert.InRange(claimErrors, 1, 4);
     }
 
@@ -837,6 +860,33 @@ public sealed class WebhookDeliveryWorkerIsolationTests
                 Directory.Delete(_root, recursive: true);
             }
         }
+    }
+
+
+    private sealed class CountingNullWorkStore : IWebhookDeliveryWorkStore
+    {
+        private int _claimAttempts;
+
+        public int ClaimAttempts => Volatile.Read(ref _claimAttempts);
+
+        public Task<DeliveryEventRow?> TryClaimOneAsync(
+            DateTimeOffset now,
+            TimeSpan leaseDuration,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _claimAttempts);
+            return Task.FromResult<DeliveryEventRow?>(null);
+        }
+
+        public Task<bool> FinalizeAsync(
+            Guid id,
+            Guid lockToken,
+            DateTimeOffset now,
+            DeliveryEventFinalizeOutcome outcome,
+            DateTimeOffset? nextAttemptAt,
+            string? lastErrorCode,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
     }
 
     private sealed class FlakyWorkStore(IWebhookDeliveryWorkStore inner) : IWebhookDeliveryWorkStore
