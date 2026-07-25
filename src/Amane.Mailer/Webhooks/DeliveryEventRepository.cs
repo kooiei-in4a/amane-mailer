@@ -10,7 +10,7 @@ using Microsoft.Data.Sqlite;
 
 namespace Amane.Mailer.Webhooks;
 
-public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
+public sealed class DeliveryEventRepository(SqliteConnectionFactory connections) : IWebhookDeliveryWorkStore
 {
     internal const string LeaseExpiredMaxAttemptsErrorCode = "WEBHOOK_LEASE_EXPIRED_MAX_ATTEMPTS";
 
