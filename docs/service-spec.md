@@ -5,8 +5,8 @@
 - **位置づけ:** 汎用メール送信マイクロサービス
 - **HTTP 契約の正本:** `src/Amane.Mailer.Contracts/`（ADR 0012 D-01）
 - **公開 HTTP reference:** [openapi.yaml](api/openapi.yaml)（Contracts / runtime に同期される公開 schema）
-- **関連:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md)（Mailer マイクロサービス化）
-- **ランタイム:** Native AOT 単一バイナリ（`Amane.Mailer`）＋ chiseled コンテナ。PostgreSQL は使用しない。
+- **関連:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md)（Mailer マイクロサービス化）、[ADR 0018](adr/0018-sqlite-single-process-boundaries.md)（SQLite／単一プロセス維持と PostgreSQL／Worker 分離の着手境界）
+- **ランタイム:** Native AOT 単一バイナリ（`Amane.Mailer`）＋ chiseled コンテナ。PostgreSQL は使用しない（着手条件は ADR 0018）。
 
 ---
 
@@ -33,6 +33,7 @@ App ──HTTP(Bearer)──▶ POST /internal/mail-requests
 - App とは **HTTP API のみ**で接続。App DB / Mailer DB の相互参照はしない。
 - ACS を知るのは本サービスだけ。
 - データベースは **SQLite（WAL モード）**。永続化はホスト側 `./data` → コンテナ `/app/data` のボリュームマウント。
+- PostgreSQL や Worker 別 process 化は、測定可能な着手 trigger 成立まで行わない（[ADR 0018](adr/0018-sqlite-single-process-boundaries.md)）。
 
 ---
 
@@ -581,3 +582,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-25 | Mailpit SMTP host／port を effective provider=`mailpit` 時のみ startup 検証（#356）。ACS-only では未使用 typo を起動 blocker にしない |
 | 2026-07-25 | 起動時設定検証を `MailerStartupValidator` / `AddStartupValidatedSingleton` に集約（#351） |
 | 2026-07-25 | 長時間 CLI の Ctrl+C 協調 cancel と終了コード 130 を明記（#347） |
+| 2026-07-25 | ADR 0018: SQLite／単一プロセス維持と PostgreSQL／Worker 分離の着手 trigger・非目標を記録（#363） |
