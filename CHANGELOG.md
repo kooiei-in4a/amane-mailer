@@ -15,6 +15,44 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-26
+
+Patch release. Fixes four webhook-delivery defects that could stall notifications,
+burn CPU, or make a committed admin operation look like a failure. No HTTP contract
+change: `docs/api/openapi.yaml` schemas and `Amane.Mailer.Contracts` types are
+unchanged, so upgrading requires no consumer action.
+
+### Fixed
+
+- Converge webhook delivery events whose lease expires on the final attempt into
+  `DeadLettered` (#388). Such rows were unreachable — both the claim path and the
+  pending-work query require `attempt_count < max_attempts` for the expired branch —
+  so they stayed `Delivering` forever, never re-delivered and permanently counted in
+  `mail_webhook_events_pending`.
+- Isolate `WebhookDeliveryWorker` failures per event (#389). A malformed
+  `payload_json` or an unclassified claim / deliver / finalize exception could fault
+  the whole `BackgroundService` and stop all subsequent webhook delivery. Invalid
+  JSON now converges to `WEBHOOK_PAYLOAD_INVALID` as a terminal failure.
+- Stop the webhook worker's idle hot-spin and wake explicitly for scheduled retries
+  (#402). The capacity-1 work signal was never drained, so once signalled the claim
+  loop span on SQLite write transactions. The wait is now bounded by the configured
+  initial retry delay, which also keeps a persistent database fault from repeating
+  at 1 Hz.
+- Keep a committed admin cancel from failing on its post-commit webhook enqueue
+  (#390). After the cancel and its success audit had committed, an enqueue fault or
+  a client disconnect still propagated out of the handler, so users saw `500` while
+  the row was already `Cancelled`. Consumer and admin cancel now share one
+  post-commit helper that takes no caller token; missing events are recreated by the
+  existing reconciliation.
+
+### Security
+
+- Keep unclassified exception text out of webhook worker logs (#389). Logging
+  providers render exceptions via `ToString()`, so a deliver-stage exception could
+  carry the webhook URL or payload fragments into logs. The exception object now
+  reaches the logger only for SQLite faults; everything else records the exception
+  type name. The same rule applies to the new post-commit enqueue warning (#390).
+
 ## [1.0.0] - 2026-07-25
 
 First stable release. Declares the public HTTP contract and Contracts package

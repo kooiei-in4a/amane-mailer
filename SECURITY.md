@@ -8,7 +8,8 @@ the current minor version receives security fixes.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.0.0   | Yes (latest release) |
+| 1.0.1   | Yes (latest release) |
+| 1.0.0   | No                 |
 | 0.9.2   | No                 |
 | 0.9.1   | No                 |
 | 0.9.0   | No                 |
