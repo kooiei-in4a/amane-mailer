@@ -97,10 +97,20 @@ export class MailRequestBuilder {
     return this;
   }
 
+  scheduledAt(value) {
+    this.#fields.scheduled_at = value;
+    if (value === null) {
+      this.#explicitNulls.add('scheduled_at');
+    } else {
+      this.#explicitNulls.delete('scheduled_at');
+    }
+    return this;
+  }
+
   build() {
     const draft = { ...this.#fields };
 
-    for (const key of ['html_body', 'text_body', 'reply_to', 'metadata']) {
+    for (const key of ['html_body', 'text_body', 'reply_to', 'metadata', 'scheduled_at']) {
       if (draft[key] === undefined) {
         delete draft[key];
       } else if (draft[key] === null && !this.#explicitNulls.has(key)) {
