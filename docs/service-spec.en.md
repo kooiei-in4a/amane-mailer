@@ -346,6 +346,10 @@ Consumer.
   `mail_webhook_finalize_skipped_total` and structured Warning logs. The delivery
   contract remains at-least-once, so consumers must keep deduplicating by `event_id`
   after a skip that may lead to a re-POST ([metrics runbook](ops/metrics-and-alerts.en.md)).
+- Delivery is **sequential** (one claim → HTTP → finalize; global FIFO). Bounded
+  concurrency is deferred by
+  [ADR 0018](adr/0018-webhook-delivery-sequential-concurrency.md) (HOL measurement
+  and re-evaluation triggers).
 - During shutdown, `stoppingToken` stops new claims. In-flight deliveries wait up
   to `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` (same drain pattern as
   `MailRequestWorker`).
@@ -590,6 +594,7 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-23 | `MailRequestWorker` shutdown: later semaphore-waiting send waves do not start (#271) |
 | 2026-07-24 | Documented delivery-result webhook first-wins (first terminal only; no re-notify after Admin manual retry) (#273) |
 | 2026-07-25 | ADR 0017: deferred delivery-cycle extension; keep first-wins with re-evaluation triggers (#362) |
+| 2026-07-25 | ADR 0018: deferred webhook delivery concurrency; keep sequential with HOL measurement and re-evaluation triggers (#361) |
 | 2026-07-24 | Documented that Worker / Webhook leases use wall-clock absolute time and described clock-jump effects (#276) |
 | 2026-07-24 | Made webhook finalize fencing failures observable via `mail_webhook_finalize_skipped_total` (#328) |
 | 2026-07-25 | Mailpit SMTP host/port validated at startup only when effective provider is `mailpit` (#356). ACS-only ignores unused typos |

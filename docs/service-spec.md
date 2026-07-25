@@ -333,6 +333,7 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 - Consumer 重複排除契約は `event_id`（同一 mail request 世代の webhook 再送で不変）。request retention 後に同一 `mail_request_id` を再利用した場合は新しい `event_id` が発行される。
 - 配信失敗時は指数バックオフで再送し、上限超過で webhook Dead Letter として記録する。
 - lease fencing 失敗（`FinalizeAsync` が false）は `mail_webhook_finalize_skipped_total` と構造化 Warning で観測する。契約は at-least-once のままなので、skip 後の再 POST に備え Consumer は `event_id` で重複排除する（[metrics runbook](ops/metrics-and-alerts.md)）。
+- 配送は 1 件ずつ claim → HTTP → finalize の**逐次**（グローバル FIFO）。制限付き並列化は [ADR 0018](adr/0018-webhook-delivery-sequential-concurrency.md) で見送り（HOL 計測と再評価 trigger 付き）。
 - shutdown 中は `stoppingToken` により新規 claim を行わない。インフライト配信は最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する（`MailRequestWorker` と同型の drain）。
 - SSRF 対策: HTTPS 必須。IPv4 private / loopback / link-local / CGNAT / multicast / reserved、
   IPv4-mapped、IPv6 loopback / link-local / site-local / ULA / multicast / unspecified、
@@ -574,6 +575,7 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-23 | `MailRequestWorker` shutdown: Semaphore 待ち後続 wave は送信開始しない（#271） |
 | 2026-07-24 | 配送結果 Webhook の first-wins（最初の終端のみ通知。Admin 手動再送後の再通知なし）を明記（#273） |
 | 2026-07-25 | ADR 0017: delivery cycle 拡張を見送り、first-wins 維持と再評価 trigger を記録（#362） |
+| 2026-07-25 | ADR 0018: Webhook 配送並列化を見送り、逐次維持・HOL 計測・再評価 trigger を記録（#361） |
 | 2026-07-24 | Worker / Webhook lease が wall-clock 絶対時刻である前提と clock jump 影響を明記（#276） |
 | 2026-07-24 | Webhook finalize fencing 失敗を `mail_webhook_finalize_skipped_total` で観測可能にした（#328） |
 | 2026-07-25 | Mailpit SMTP host／port を effective provider=`mailpit` 時のみ startup 検証（#356）。ACS-only では未使用 typo を起動 blocker にしない |
