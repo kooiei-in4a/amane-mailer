@@ -428,7 +428,7 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 
 ### 5.2 Worker / Sweep / Retention（環境変数）
 
-数値は **strict validation**（#329）。キー未設定は既定値。空文字・形式不正・0／負数・上限超過は **起動失敗**（黙示的な clamp はしない）。エラーメッセージには設定キーと許容範囲を含み、secret／接続情報は含めない。Development／Testing／Production で同一の数値規則。Worker 無効時も `Load` の範囲検証は同じ（lease／healthcheck の組合せ `Validate` のみ Worker 有効時）。
+数値は **strict validation**（#329）。キー未設定は既定値。空文字・形式不正・0／負数・上限超過は **起動失敗**（黙示的な clamp はしない）。エラーメッセージには設定キーと許容範囲を含み、secret／接続情報は含めない。Development／Testing／Production で同一の数値規則。Worker 無効時も `Load` の範囲検証は同じ（lease／healthcheck の組合せ `Validate` のみ Worker 有効時）。`Mailer__Worker__Enabled` は **strict boolean**（#358）— 未設定は `true`、empty／whitespace／typo は起動失敗。
 
 | 変数 | 既定 | 許容範囲 | 説明 |
 |---|---|---|---|

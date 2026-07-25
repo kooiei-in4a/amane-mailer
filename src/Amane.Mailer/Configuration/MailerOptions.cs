@@ -22,12 +22,16 @@ public sealed record MailerOptions
             MailpitSmtpHost = configuration["Mailer:Mailpit:SmtpHost"]
                 ?? configuration["MAILPIT_SMTP_HOST"]
                 ?? "mailpit",
-            MailpitSmtpPort = configuration.GetValue(
+            MailpitSmtpPort = ConfigurationIntReader.ReadPort(
+                configuration,
+                defaultValue: 1025,
                 "Mailer:Mailpit:SmtpPort",
-                configuration.GetValue("MAILPIT_SMTP_PORT", 1025)),
-            MailpitUseSsl = configuration.GetValue(
+                "MAILPIT_SMTP_PORT"),
+            MailpitUseSsl = ConfigurationBooleanReader.Read(
+                configuration,
+                defaultValue: false,
                 "Mailer:Mailpit:UseSsl",
-                configuration.GetValue("MAILPIT_SMTP_USE_SSL", false)),
+                "MAILPIT_SMTP_USE_SSL"),
             AcsConnectionString = ResolveAcsConnectionString(configuration),
         };
     }

@@ -29,16 +29,13 @@ public sealed class SecurityBoundaryPolicyTests
             .AddInMemoryCollection(new Dictionary<string, string?> { [key] = value })
             .Build();
 
-        Assert.True(AdminCookieTransportPolicy.IsAllowHttpRequested(configuration));
+        Assert.True(AdminCookieTransportPolicy.IsAllowHttpRequested(configuration, adminEnabled: true));
     }
 
     [Theory]
     [InlineData(null)]
     [InlineData("false")]
-    [InlineData("ture")]
-    [InlineData("1")]
-    [InlineData("yes")]
-    public void IsAllowHttpRequested_false_for_unset_false_or_typo(string? value)
+    public void IsAllowHttpRequested_false_for_unset_or_false(string? value)
     {
         var settings = new Dictionary<string, string?>();
         if (value is not null)
@@ -48,7 +45,46 @@ public sealed class SecurityBoundaryPolicyTests
             .AddInMemoryCollection(settings)
             .Build();
 
-        Assert.False(AdminCookieTransportPolicy.IsAllowHttpRequested(configuration));
+        Assert.False(AdminCookieTransportPolicy.IsAllowHttpRequested(configuration, adminEnabled: true));
+    }
+
+    [Theory]
+    [InlineData("ture")]
+    [InlineData("1")]
+    [InlineData("yes")]
+    [InlineData("")]
+    [InlineData(" ")]
+    public void IsAllowHttpRequested_rejects_malformed_when_admin_enabled(string value)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AMANE_ADMIN_ALLOW_HTTP"] = value,
+            })
+            .Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            AdminCookieTransportPolicy.IsAllowHttpRequested(configuration, adminEnabled: true));
+
+        Assert.Contains("AMANE_ADMIN_ALLOW_HTTP", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("true", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("false", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("ture")]
+    [InlineData("yes")]
+    [InlineData("")]
+    public void IsAllowHttpRequested_ignores_malformed_when_admin_disabled(string value)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AMANE_ADMIN_ALLOW_HTTP"] = value,
+            })
+            .Build();
+
+        Assert.False(AdminCookieTransportPolicy.IsAllowHttpRequested(configuration, adminEnabled: false));
     }
 
     [Fact]
@@ -62,7 +98,7 @@ public sealed class SecurityBoundaryPolicyTests
             })
             .Build();
 
-        Assert.False(AdminCookieTransportPolicy.IsAllowHttpRequested(configuration));
+        Assert.False(AdminCookieTransportPolicy.IsAllowHttpRequested(configuration, adminEnabled: true));
     }
 
     [Theory]

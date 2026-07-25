@@ -169,7 +169,7 @@ app.MapGet("/readyz", async (
     IConfiguration configuration,
     CancellationToken cancellationToken) =>
 {
-    var workerEnabled = configuration.GetValue("Mailer:Worker:Enabled", true);
+    var workerEnabled = MailerWorkerOptions.IsEnabled(configuration);
     var result = await readinessEvaluator.EvaluateAsync(
         migrationRunner,
         serviceStatus,

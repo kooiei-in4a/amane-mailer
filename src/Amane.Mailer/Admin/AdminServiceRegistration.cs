@@ -23,7 +23,7 @@ internal static class AdminServiceRegistration
             options.Validate();
             var environment = provider.GetRequiredService<IHostEnvironment>();
             AdminCookieTransportPolicy.Validate(
-                AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration),
+                AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration, options.Enabled),
                 environment.EnvironmentName,
                 options.Enabled);
             return options;
@@ -69,10 +69,10 @@ internal static class AdminServiceRegistration
                 cookie.Events.OnValidatePrincipal = AdminCookieValidator.ValidateAsync;
             });
         services.AddOptions<CookieAuthenticationOptions>(AdminAuthenticationConstants.Scheme)
-            .Configure<IHostEnvironment, IConfiguration>((cookie, environment, resolvedConfiguration) =>
+            .Configure<IHostEnvironment, IConfiguration, MailerAdminOptions>((cookie, environment, resolvedConfiguration, adminOptions) =>
             {
                 var transport = AdminCookieTransportPolicy.Resolve(
-                    AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration),
+                    AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration, adminOptions.Enabled),
                     environment.EnvironmentName);
                 cookie.Cookie.Name = transport.AuthCookieName;
                 cookie.Cookie.SecurePolicy = transport.SecurePolicy;
@@ -86,10 +86,10 @@ internal static class AdminServiceRegistration
             antiforgery.HeaderName = "X-CSRF-TOKEN";
         });
         services.AddOptions<AntiforgeryOptions>()
-            .Configure<IHostEnvironment, IConfiguration>((antiforgery, environment, resolvedConfiguration) =>
+            .Configure<IHostEnvironment, IConfiguration, MailerAdminOptions>((antiforgery, environment, resolvedConfiguration, adminOptions) =>
             {
                 var transport = AdminCookieTransportPolicy.Resolve(
-                    AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration),
+                    AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration, adminOptions.Enabled),
                     environment.EnvironmentName);
                 antiforgery.Cookie.Name = transport.CsrfCookieName;
                 antiforgery.Cookie.SecurePolicy = transport.SecurePolicy;

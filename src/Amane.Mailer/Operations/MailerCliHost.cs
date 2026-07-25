@@ -67,7 +67,7 @@ public static class MailerCliHost
             if (!ok)
                 return 1;
 
-            var workerEnabled = configuration.GetValue("Mailer:Worker:Enabled", true);
+            var workerEnabled = MailerWorkerOptions.IsEnabled(configuration);
             if (!workerEnabled)
                 return DbMigrateCommand.SuccessExitCode;
 

@@ -50,6 +50,49 @@ public sealed class MailerMetricsOptionsTests
         Assert.Null(options.BearerToken);
     }
 
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("True", true)]
+    [InlineData("FALSE", false)]
+    public void Load_accepts_case_insensitive_enabled(string value, bool expected)
+    {
+        var options = MailerMetricsOptions.Load(new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Mailer:Metrics:Enabled"] = value,
+            })
+            .Build());
+
+        Assert.Equal(expected, options.Enabled);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("yes")]
+    [InlineData("1")]
+    public void Load_rejects_empty_or_malformed_enabled(string value)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Mailer:Metrics:Enabled"] = value,
+            })
+            .Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => MailerMetricsOptions.Load(configuration));
+        Assert.Contains("Mailer:Metrics:Enabled", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("true", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("false", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Load_unset_enabled_defaults_to_true()
+    {
+        var options = MailerMetricsOptions.Load(new ConfigurationBuilder().Build());
+        Assert.True(options.Enabled);
+    }
+
     [Fact]
     public void Validate_accepts_configured_bearer_in_production()
     {

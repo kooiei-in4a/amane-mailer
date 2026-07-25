@@ -100,9 +100,13 @@ Admin UI の boolean / 正の数値 env は **strict parse** です。ただし 
 | 種別 | 許容値 | 未設定 | 不正値 |
 |------|--------|--------|--------|
 | `AMANE_ADMIN_ENABLED` / `MAILER_ADMIN_ENABLED` | `true` / `false`（`bool.TryParse` 互換） | `false` | **常に起動失敗** |
-| その他 Admin UI boolean（mask / hash-network / db-ops 等） | `true` / `false` | 既存 default | **Admin 有効時のみ起動失敗** |
+| その他 Admin UI boolean（mask / hash-network / db-ops / `ALLOW_HTTP` 等） | `true` / `false` | 既存 default | **Admin 有効時のみ起動失敗**（Admin 無効時は `ALLOW_HTTP` の typo も無視） |
 | Admin UI 正の整数（login failure limit 等） | `1` 以上の整数 | 既存 default | **Admin 有効時のみ起動失敗** |
 | audit retention 数値（`MAILER_ADMIN_AUDIT_RETENTION_*`） | 範囲内の整数（Days 1–3650、SweepHours 1–168、SweepSeconds 1–604800、BatchSize 1–1000） | 既存 default（例: 180 日） | **常に起動失敗**（worker の audit sweep が参照するため。Admin UI の on/off とは独立） |
+
+### Worker / Metrics / Mailpit boolean・port（#358）
+
+`Mailer__Worker__Enabled` / `Mailer__Metrics__Enabled` / `Mailer__Mailpit__UseSsl`（および `MAILPIT_SMTP_USE_SSL`）も同じ **strict boolean** 規則（未設定は既定、empty／whitespace／typo は起動失敗）。Mailpit SMTP port（`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`）は **1–65535**（#329 の整数規則と同じ）。primary key が存在する（値がある／空含む）場合は fallback より優先し、empty を未設定扱いしない。
 
 ### Worker / Webhook / Sweep / Retention / Healthcheck 数値
 
