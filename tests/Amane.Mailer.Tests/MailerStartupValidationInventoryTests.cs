@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Text.RegularExpressions;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Configuration;
 using Microsoft.Extensions.Configuration;
@@ -30,29 +32,50 @@ public sealed class MailerStartupValidationInventoryTests
         typeof(MailerMetricsOptions),
     ];
 
+    // Matches AddSingleton(x => ...) / AddSingleton<T>(x => ...) factory forms regardless of
+    // parameter name, then looks ahead for a .Load( call in the same factory body.
+    private static readonly Regex PlainSingletonLoadFactoryPattern = new(
+        @"\.AddSingleton(?:\s*<[^>]+>)?\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*=>[\s\S]{0,1200}?\.Load\s*\(",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
     [Fact]
     public void Catalog_matches_expected_startup_validated_types()
     {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Mailer:Worker:Enabled"] = "false",
-                ["ConnectionStrings:Mailer"] = "Data Source=:memory:",
-            })
-            .Build();
-
-        var services = new ServiceCollection();
-        services.AddSingleton<IConfiguration>(configuration);
-        services.AddSingleton<IHostEnvironment>(new InventoryHostEnvironment());
-        services.AddLogging();
-        services.AddAmaneMailerServices(configuration);
-
-        using var provider = services.BuildServiceProvider();
-        var catalog = provider.GetRequiredService<MailerStartupValidationCatalog>();
+        var catalog = BuildCatalog();
 
         Assert.Equal(
             SortTypes(ExpectedStartupValidatedTypes),
             SortTypes(catalog.ServiceTypes.ToArray()));
+    }
+
+    [Fact]
+    public void Catalog_includes_every_assembly_Load_entry_point_with_IConfiguration()
+    {
+        // Structural guard: a new *Options / registry type with Load(IConfiguration...) that is
+        // registered via plain AddSingleton never enters ExpectedStartupValidatedTypes either.
+        // Comparing assembly Load entry points to the live catalog catches that omission class.
+        var loadEntryPoints = typeof(MailerOptions).Assembly
+            .GetTypes()
+            .Where(static type => type is { IsClass: true, IsAbstract: false })
+            .Where(static type => type.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .Any(static method =>
+                    method.Name == "Load"
+                    && method.GetParameters()
+                        .Any(static parameter => parameter.ParameterType == typeof(IConfiguration))))
+            .ToArray();
+
+        var catalog = BuildCatalog();
+        var missing = loadEntryPoints
+            .Where(type => !catalog.ServiceTypes.Contains(type))
+            .Select(static type => type.FullName)
+            .OrderBy(static name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.True(
+            missing.Length == 0,
+            "Startup catalog is missing Load(IConfiguration...) entry points: "
+            + string.Join(", ", missing)
+            + ". Register with AddStartupValidatedSingleton and extend ExpectedStartupValidatedTypes.");
     }
 
     [Fact]
@@ -74,22 +97,55 @@ public sealed class MailerStartupValidationInventoryTests
     }
 
     [Fact]
-    public void Service_registration_uses_startup_validated_singleton_for_options_factories()
+    public void Service_registration_does_not_use_plain_AddSingleton_Load_factories()
     {
-        // Guards against registering a Load-validated options type with plain AddSingleton
-        // while forgetting AddStartupValidatedSingleton (catalog drift).
-        var registrationPaths = new[]
-        {
-            Path.Combine(FindRepositoryRoot(), "src", "Amane.Mailer", "AmaneMailerServiceCollectionExtensions.cs"),
-            Path.Combine(FindRepositoryRoot(), "src", "Amane.Mailer", "Admin", "AdminServiceRegistration.cs"),
-        };
+        var root = Path.Combine(FindRepositoryRoot(), "src", "Amane.Mailer");
+        var registrationPaths = Directory
+            .EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+            .Where(static path =>
+            {
+                var name = Path.GetFileName(path);
+                return name.Contains("ServiceCollection", StringComparison.Ordinal)
+                    || name.Contains("ServiceRegistration", StringComparison.Ordinal)
+                    || string.Equals(name, "Program.cs", StringComparison.Ordinal);
+            })
+            .ToArray();
+
+        Assert.NotEmpty(registrationPaths);
 
         foreach (var path in registrationPaths)
         {
             var source = File.ReadAllText(path);
-            Assert.Contains("AddStartupValidatedSingleton", source, StringComparison.Ordinal);
-            Assert.DoesNotContain("services.AddSingleton(provider =>", source, StringComparison.Ordinal);
+            Assert.False(
+                PlainSingletonLoadFactoryPattern.IsMatch(source),
+                $"{path} still registers a Load factory with plain AddSingleton; use AddStartupValidatedSingleton.");
+
+            if (path.EndsWith("AmaneMailerServiceCollectionExtensions.cs", StringComparison.Ordinal)
+                || path.EndsWith("AdminServiceRegistration.cs", StringComparison.Ordinal))
+            {
+                Assert.Contains("AddStartupValidatedSingleton", source, StringComparison.Ordinal);
+            }
         }
+    }
+
+    private static MailerStartupValidationCatalog BuildCatalog()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = "false",
+                ["ConnectionStrings:Mailer"] = "Data Source=:memory:",
+            })
+            .Build();
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IConfiguration>(configuration);
+        services.AddSingleton<IHostEnvironment>(new InventoryHostEnvironment());
+        services.AddLogging();
+        services.AddAmaneMailerServices(configuration);
+
+        using var provider = services.BuildServiceProvider();
+        return provider.GetRequiredService<MailerStartupValidationCatalog>();
     }
 
     private static string[] SortTypes(IEnumerable<Type> types) =>
