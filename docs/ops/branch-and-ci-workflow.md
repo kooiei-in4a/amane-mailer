@@ -37,10 +37,15 @@ job 名は branch protection の required status checks と一致させるため
 
 | トリガー | 実行 job |
 |----------|----------|
-| `feature/**` / `fix/**` への push | `Restore, build, and test` のみ |
+| `feature/**` / `fix/**` への push | `Restore, build, and test` のみ（whitespace formatter verify を含む） |
 | `develop` への push、または `develop` 向け PR | 上記 + `OpenAPI validation`（PR では `Native AOT publish smoke` も実行） |
 | `main` 向け PR | release gate CI（Native AOT、amd64 Docker、compose smoke、OpenAPI） |
 | `main` への push、`workflow_dispatch` | 最終 CI（上記 + arm64 Docker） |
+
+`Restore, build, and test` は restore 後に
+`dotnet format whitespace ... --verify-no-changes` を実行し、続けて Release build
+（`src/**` 向け段階 analyzer severity 含む）と test を行います。詳細は
+[Code quality gates](code-quality-gates.md) を参照してください。
 
 release gate CI に含まれる job:
 

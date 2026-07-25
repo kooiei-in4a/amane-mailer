@@ -23,21 +23,24 @@ internal static class WebhookConnectCallback
             throw new HttpRequestException("Webhook delivery is missing a pinned connect address.");
         }
 
-        var socket = new Socket(connectAddress.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
-        {
-            NoDelay = true,
-        };
-
+        // Ownership transfers to NetworkStream on success; keep a local so CA2000
+        // can see dispose on every failure path and null-out after transfer.
+        Socket? socket = null;
         try
         {
+            socket = new Socket(connectAddress.AddressFamily, SocketType.Stream, ProtocolType.Tcp)
+            {
+                NoDelay = true,
+            };
             await socket.ConnectAsync(new IPEndPoint(connectAddress, dnsEndPoint.Port), cancellationToken)
                 .ConfigureAwait(false);
-            return new NetworkStream(socket, ownsSocket: true);
+            var stream = new NetworkStream(socket, ownsSocket: true);
+            socket = null;
+            return stream;
         }
-        catch
+        finally
         {
-            socket.Dispose();
-            throw;
+            socket?.Dispose();
         }
     }
 }

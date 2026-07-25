@@ -27,9 +27,14 @@ Amane Mailer は汎用メール送信マイクロサービスです。送信依�
 
 ```powershell
 dotnet restore Amane.Mailer.slnx --locked-mode
+dotnet format whitespace Amane.Mailer.slnx --verify-no-changes
 dotnet build Amane.Mailer.slnx -c Release --no-restore
 dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 ```
+
+formatter / 段階 analyzer の詳細は
+[Code quality gates](docs/ops/code-quality-gates.md)
+[(en)](docs/ops/code-quality-gates.en.md) を参照してください。
 
 ## Mailpit で起動する
 

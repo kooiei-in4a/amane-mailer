@@ -119,7 +119,9 @@ public sealed class SqlMigrationRunner
                 continue;
             }
 
-            await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+            // CA2000: prefer explicit try/finally DisposeAsync over `await using var` here.
+            // The analyzer false-positives the using-declaration form in this loop+continue path.
+            var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
             try
             {
                 await using (var script = connection.CreateCommand())
@@ -147,6 +149,10 @@ public sealed class SqlMigrationRunner
             {
                 await transaction.RollbackAsync(cancellationToken);
                 throw;
+            }
+            finally
+            {
+                await transaction.DisposeAsync();
             }
         }
 

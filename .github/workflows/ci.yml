@@ -48,6 +48,9 @@ jobs:
       - name: Restore
         run: dotnet restore Amane.Mailer.slnx --locked-mode
 
+      - name: Verify C# whitespace formatter
+        run: dotnet format whitespace Amane.Mailer.slnx --verify-no-changes --verbosity diagnostic
+
       - name: Build
         run: dotnet build Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-restore
 

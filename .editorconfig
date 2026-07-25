@@ -1,0 +1,52 @@
+# Amane Mailer code style and staged analyzer gates (#359).
+# Existing repository style is the source of truth; only missing gates are added.
+root = true
+
+[*]
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cs,csproj,props,targets,slnx,json,yml,yaml,md,mjs,sql,css,html,sh}]
+end_of_line = lf
+
+[*.cs]
+indent_style = space
+indent_size = 4
+tab_width = 4
+
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+csharp_style_namespace_declarations = file_scoped:suggestion
+csharp_preferred_modifier_order = public,private,protected,internal,file,static,extern,new,virtual,abstract,sealed,override,readonly,unsafe,required,volatile,async:suggestion
+csharp_using_directive_placement = outside_namespace:suggestion
+
+# --- Generated / analyzer-excluded surfaces ---
+# SDK/source-generated outputs live under obj/ and *.g.cs. Do not fail CI on them.
+[**/obj/**]
+generated_code = true
+
+[**/*.g.cs]
+generated_code = true
+
+# --- Staged analyzer policy (#359 Phase 1) ---
+# Default for the whole repo: keep noisy or deferred rules quiet.
+[*.cs]
+dotnet_diagnostic.CA2007.severity = none
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA1001.severity = none
+dotnet_diagnostic.CA2213.severity = none
+dotnet_diagnostic.CA2016.severity = none
+dotnet_diagnostic.IDE0051.severity = none
+dotnet_diagnostic.CA1823.severity = none
+
+# Production / Contracts: elevate disposable ownership, cancellation forwarding,
+# and unused private members to build errors. Tests stay deferred (high CA2000 noise).
+[src/**/*.cs]
+dotnet_diagnostic.CA2000.severity = error
+dotnet_diagnostic.CA1001.severity = error
+dotnet_diagnostic.CA2213.severity = error
+dotnet_diagnostic.CA2016.severity = error
+dotnet_diagnostic.CS4014.severity = error
+dotnet_diagnostic.IDE0051.severity = error
+dotnet_diagnostic.CA1823.severity = error
