@@ -72,8 +72,9 @@ public class MailRequestRepository
 
     public Task<IReadOnlyList<AdminMailAttemptRow>> ListAttemptsForAdminAsync(
         Guid requestId,
+        IReadOnlySet<Guid>? allowedTenantIds,
         CancellationToken cancellationToken = default) =>
-        _adminQueries.ListAttemptsForAdminAsync(requestId, cancellationToken);
+        _adminQueries.ListAttemptsForAdminAsync(requestId, allowedTenantIds, cancellationToken);
 
     public virtual Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
         Guid tenantId,

@@ -36,7 +36,10 @@ public static class AdminMailRequestDetailPage
         if (detail is null)
             return Results.NotFound();
 
-        var attempts = await repository.ListAttemptsForAdminAsync(requestId, cancellationToken);
+        var attempts = await repository.ListAttemptsForAdminAsync(
+            requestId,
+            access.AllowedTenantIdsForQuery,
+            cancellationToken);
         var deadLetterCount = await deadLetterCountCache.GetCountAsync(
             repository,
             access.AllowedTenantIdsForQuery,
