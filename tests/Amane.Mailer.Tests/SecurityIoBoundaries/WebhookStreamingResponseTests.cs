@@ -1,5 +1,6 @@
 using System.Net;
-using System.Net.Http.Headers;
+using System.Net.Http;
+using System.Text;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Webhooks;
@@ -7,175 +8,22 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Amane.Mailer.Tests;
 
-/// <summary>
-/// Regression suite for #345 / #355 — outbound webhook judges delivery from
-/// response headers without buffering body.
-/// </summary>
-public sealed class WebhookStreamingResponseTests
+public sealed class WebhookDeliveryClientTests
 {
-    private static readonly string MinimalPayloadJson =
-        """{"event_id":"018f7c2a-0000-7000-8000-000000000001"}""";
+    private static readonly byte[] LargeBodyMarker = Encoding.UTF8.GetBytes("WEBHOOK_BODY_SHOULD_NOT_BE_BUFFERED");
 
     [Fact]
-    public async Task DeliverAsync_204_no_content_returns_success_without_body()
+    public async Task DeliverAsync_returns_timeout_instead_of_throwing_when_delivery_exceeds_limit()
     {
-        var handler = StreamingWebhookHandler.WithStatus(HttpStatusCode.NoContent);
-        var client = CreateClient(handler);
-
-        var result = await client.DeliverAsync(
-            CreateTenant(),
-            "secret",
-            CreatePayload(),
-            MinimalPayloadJson,
-            TestContext.Current.CancellationToken);
-
-        Assert.True(result.Succeeded);
-        Assert.Null(result.ErrorCode);
-        Assert.False(result.Retryable);
-        Assert.True(handler.ResponseDisposed);
-        Assert.Equal(0, handler.BodyBytesRead);
-    }
-
-    [Fact]
-    public async Task DeliverAsync_200_with_held_body_returns_success_before_body_completes()
-    {
-        var bodyRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = StreamingWebhookHandler.WithHeldBody(HttpStatusCode.OK, bodyRelease.Task, payloadSize: 64 * 1024);
-        var client = CreateClient(handler);
-
-        var deliverTask = client.DeliverAsync(
-            CreateTenant(),
-            "secret",
-            CreatePayload(),
-            MinimalPayloadJson,
-            TestContext.Current.CancellationToken);
-
-        var result = await deliverTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-
-        Assert.True(result.Succeeded);
-        Assert.False(bodyRelease.Task.IsCompleted);
-        Assert.Equal(0, handler.BodyBytesRead);
-
-        bodyRelease.TrySetResult();
-        Assert.True(handler.ResponseDisposed);
-    }
-
-    [Fact]
-    public async Task DeliverAsync_200_with_never_ending_body_returns_success_after_headers_before_body_finishes()
-    {
-        var bodyRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = StreamingWebhookHandler.WithHeldBody(HttpStatusCode.OK, bodyRelease.Task, payloadSize: 1);
-        var client = CreateClient(handler);
-
-        var deliverTask = client.DeliverAsync(
-            CreateTenant(),
-            "secret",
-            CreatePayload(),
-            MinimalPayloadJson,
-            TestContext.Current.CancellationToken);
-
-        var result = await deliverTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-
-        Assert.True(result.Succeeded);
-        Assert.False(bodyRelease.Task.IsCompleted);
-
-        bodyRelease.TrySetResult();
-        Assert.True(handler.ResponseDisposed);
-    }
-
-    [Fact]
-    public async Task DeliverAsync_429_with_held_body_returns_retryable_webhook_http_429_before_body_completes()
-    {
-        var bodyRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = StreamingWebhookHandler.WithHeldBody(
-            HttpStatusCode.TooManyRequests,
-            bodyRelease.Task,
-            payloadSize: 8 * 1024);
-        var client = CreateClient(handler);
-
-        var result = await client.DeliverAsync(
-            CreateTenant(),
-            "secret",
-            CreatePayload(),
-            MinimalPayloadJson,
-            TestContext.Current.CancellationToken)
-            .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-
-        Assert.False(result.Succeeded);
-        Assert.Equal("WEBHOOK_HTTP_429", result.ErrorCode);
-        Assert.True(result.Retryable);
-        Assert.False(bodyRelease.Task.IsCompleted);
-
-        bodyRelease.TrySetResult();
-        Assert.True(handler.ResponseDisposed);
-    }
-
-    [Fact]
-    public async Task DeliverAsync_500_with_held_body_returns_retryable_webhook_http_500_before_body_completes()
-    {
-        var bodyRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = StreamingWebhookHandler.WithHeldBody(
-            HttpStatusCode.InternalServerError,
-            bodyRelease.Task,
-            payloadSize: 8 * 1024);
-        var client = CreateClient(handler);
-
-        var result = await client.DeliverAsync(
-            CreateTenant(),
-            "secret",
-            CreatePayload(),
-            MinimalPayloadJson,
-            TestContext.Current.CancellationToken)
-            .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-
-        Assert.False(result.Succeeded);
-        Assert.Equal("WEBHOOK_HTTP_500", result.ErrorCode);
-        Assert.True(result.Retryable);
-        Assert.False(bodyRelease.Task.IsCompleted);
-
-        bodyRelease.TrySetResult();
-        Assert.True(handler.ResponseDisposed);
-    }
-
-    [Fact]
-    public async Task DeliverAsync_400_with_held_body_returns_terminal_webhook_http_400_before_body_completes()
-    {
-        var bodyRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = StreamingWebhookHandler.WithHeldBody(
-            HttpStatusCode.BadRequest,
-            bodyRelease.Task,
-            payloadSize: 8 * 1024);
-        var client = CreateClient(handler);
-
-        var result = await client.DeliverAsync(
-            CreateTenant(),
-            "secret",
-            CreatePayload(),
-            MinimalPayloadJson,
-            TestContext.Current.CancellationToken)
-            .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-
-        Assert.False(result.Succeeded);
-        Assert.Equal("WEBHOOK_HTTP_400", result.ErrorCode);
-        Assert.False(result.Retryable);
-        Assert.False(bodyRelease.Task.IsCompleted);
-
-        bodyRelease.TrySetResult();
-        Assert.True(handler.ResponseDisposed);
-    }
-
-    [Fact]
-    public async Task DeliverAsync_cancelled_before_headers_returns_retryable_webhook_timeout()
-    {
-        var handler = new SlowHeadersWebhookHandler(TimeSpan.FromSeconds(5));
-        var client = CreateClient(handler);
+        var factory = new SingleHandlerClientFactory(new SlowHeadersWebhookMessageHandler(TimeSpan.FromSeconds(5)));
+        var client = CreateClient(factory);
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
         var result = await client.DeliverAsync(
             CreateTenant(),
             "secret",
             CreatePayload(),
-            MinimalPayloadJson,
+            """{"event_id":"018f7c2a-0000-7000-8000-000000000001"}""",
             timeout.Token);
 
         Assert.False(result.Succeeded);
@@ -184,17 +32,116 @@ public sealed class WebhookStreamingResponseTests
     }
 
     [Fact]
-    public async Task DeliverAsync_transport_error_returns_retryable_webhook_transport_error()
+    public async Task DeliverAsync_succeeds_on_204_no_content()
     {
-        var handler = new ThrowingWebhookHandler(new HttpRequestException("connection reset"));
-        var client = CreateClient(handler);
+        var factory = new SingleHandlerClientFactory(
+            new StatusCodeWebhookMessageHandler(HttpStatusCode.NoContent));
+        var client = CreateClient(factory);
 
-        var result = await client.DeliverAsync(
-            CreateTenant(),
-            "secret",
-            CreatePayload(),
-            MinimalPayloadJson,
-            TestContext.Current.CancellationToken);
+        var result = await DeliverAsync(client);
+
+        Assert.True(result.Succeeded);
+        Assert.Null(result.ErrorCode);
+        Assert.False(result.Retryable);
+    }
+
+    [Fact]
+    public async Task DeliverAsync_succeeds_on_200_without_buffering_large_body()
+    {
+        var content = new TrackingStreamContent(CreateLargeBodyStream(length: 8 * 1024 * 1024));
+        var factory = new SingleHandlerClientFactory(
+            new StatusCodeWebhookMessageHandler(HttpStatusCode.OK, content));
+        var client = CreateClient(factory);
+
+        var result = await DeliverAsync(client);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, content.BytesRead);
+        Assert.True(content.WasDisposed);
+    }
+
+    [Fact]
+    public async Task DeliverAsync_succeeds_on_200_without_waiting_for_never_ending_body()
+    {
+        var bodyGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bodyReadAttempted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var content = new TrackingStreamContent(new GateStream(bodyReadAttempted, bodyGate.Task));
+        var factory = new SingleHandlerClientFactory(
+            new StatusCodeWebhookMessageHandler(HttpStatusCode.OK, content));
+        var client = CreateClient(factory);
+
+        var deliverTask = DeliverAsync(client);
+        var completed = await Task.WhenAny(
+            deliverTask,
+            Task.Delay(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken));
+
+        Assert.Same(deliverTask, completed);
+        var result = await deliverTask;
+        Assert.True(result.Succeeded);
+        Assert.False(bodyReadAttempted.Task.IsCompleted);
+        Assert.True(content.WasDisposed);
+
+        bodyGate.SetResult();
+    }
+
+    [Fact]
+    public async Task DeliverAsync_treats_429_with_body_as_retryable_failure()
+    {
+        var content = new TrackingStreamContent(CreateLargeBodyStream(length: 1024 * 1024));
+        var factory = new SingleHandlerClientFactory(
+            new StatusCodeWebhookMessageHandler(HttpStatusCode.TooManyRequests, content));
+        var client = CreateClient(factory);
+
+        var result = await DeliverAsync(client);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("WEBHOOK_HTTP_429", result.ErrorCode);
+        Assert.True(result.Retryable);
+        Assert.Equal(0, content.BytesRead);
+        Assert.True(content.WasDisposed);
+    }
+
+    [Fact]
+    public async Task DeliverAsync_treats_500_with_body_as_retryable_failure()
+    {
+        var content = new TrackingStreamContent(CreateLargeBodyStream(length: 1024 * 1024));
+        var factory = new SingleHandlerClientFactory(
+            new StatusCodeWebhookMessageHandler(HttpStatusCode.InternalServerError, content));
+        var client = CreateClient(factory);
+
+        var result = await DeliverAsync(client);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("WEBHOOK_HTTP_500", result.ErrorCode);
+        Assert.True(result.Retryable);
+        Assert.Equal(0, content.BytesRead);
+        Assert.True(content.WasDisposed);
+    }
+
+    [Fact]
+    public async Task DeliverAsync_treats_400_with_body_as_terminal_failure()
+    {
+        var content = new TrackingStreamContent(CreateLargeBodyStream(length: 1024 * 1024));
+        var factory = new SingleHandlerClientFactory(
+            new StatusCodeWebhookMessageHandler(HttpStatusCode.BadRequest, content));
+        var client = CreateClient(factory);
+
+        var result = await DeliverAsync(client);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("WEBHOOK_HTTP_400", result.ErrorCode);
+        Assert.False(result.Retryable);
+        Assert.Equal(0, content.BytesRead);
+        Assert.True(content.WasDisposed);
+    }
+
+    [Fact]
+    public async Task DeliverAsync_returns_transport_error_on_HttpRequestException()
+    {
+        var factory = new SingleHandlerClientFactory(new ThrowingWebhookMessageHandler());
+        var client = CreateClient(factory);
+
+        var result = await DeliverAsync(client);
 
         Assert.False(result.Succeeded);
         Assert.Equal("WEBHOOK_TRANSPORT_ERROR", result.ErrorCode);
@@ -202,34 +149,48 @@ public sealed class WebhookStreamingResponseTests
     }
 
     [Fact]
-    public async Task DeliverAsync_success_disposes_response_after_headers_read_judgment()
+    public async Task DeliverAsync_returns_timeout_and_does_not_create_body_when_canceled_before_headers()
     {
-        var bodyRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var handler = StreamingWebhookHandler.WithHeldBody(HttpStatusCode.OK, bodyRelease.Task, payloadSize: 1024);
-        var client = CreateClient(handler);
+        var headersGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var content = new TrackingStreamContent(CreateLargeBodyStream(length: 64 * 1024));
+        var factory = new SingleHandlerClientFactory(
+            new GatedHeadersWebhookMessageHandler(headersGate.Task, HttpStatusCode.OK, content));
+        var client = CreateClient(factory);
 
-        var result = await client.DeliverAsync(
+        using var cts = new CancellationTokenSource();
+        var deliverTask = client.DeliverAsync(
             CreateTenant(),
             "secret",
             CreatePayload(),
-            MinimalPayloadJson,
-            TestContext.Current.CancellationToken)
-            .WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            """{"event_id":"018f7c2a-0000-7000-8000-000000000001"}""",
+            cts.Token);
 
-        Assert.True(result.Succeeded);
-        Assert.True(handler.ResponseDisposed);
-        Assert.True(handler.ContentDisposed);
+        cts.Cancel();
+        headersGate.SetResult();
 
-        bodyRelease.TrySetResult();
+        var result = await deliverTask;
+        Assert.False(result.Succeeded);
+        Assert.Equal("WEBHOOK_TIMEOUT", result.ErrorCode);
+        Assert.True(result.Retryable);
+        Assert.False(content.WasCreated);
+        Assert.Equal(0, content.BytesRead);
     }
 
-    private static WebhookDeliveryClient CreateClient(HttpMessageHandler handler) =>
+    private static WebhookDeliveryClient CreateClient(IHttpClientFactory factory) =>
         new(
-            new SingleHandlerClientFactory(handler),
+            factory,
             new WebhookSignatureService(),
             new WebhookUrlValidator(),
             TimeProvider.System,
             NullLogger<WebhookDeliveryClient>.Instance);
+
+    private static Task<WebhookDeliveryResult> DeliverAsync(WebhookDeliveryClient client) =>
+        client.DeliverAsync(
+            CreateTenant(),
+            "secret",
+            CreatePayload(),
+            """{"event_id":"018f7c2a-0000-7000-8000-000000000001"}""",
+            CancellationToken.None);
 
     private static MailerTenant CreateTenant() =>
         new()
@@ -265,73 +226,19 @@ public sealed class WebhookStreamingResponseTests
             AttemptCount = 1,
         };
 
-    /// <summary>
-    /// Real <see cref="HttpMessageHandler"/> that returns headers immediately while body
-    /// reads block on a TCS — proving <see cref="HttpCompletionOption.ResponseHeadersRead"/>.
-    /// </summary>
-    private sealed class StreamingWebhookHandler : HttpMessageHandler
+    private static Stream CreateLargeBodyStream(int length)
     {
-        private readonly HttpStatusCode _statusCode;
-        private readonly Task? _bodyRelease;
-        private readonly int _payloadSize;
-        private int _bodyBytesRead;
-
-        private StreamingWebhookHandler(HttpStatusCode statusCode, Task? bodyRelease, int payloadSize)
+        var buffer = new byte[length];
+        for (var offset = 0; offset < length; offset += LargeBodyMarker.Length)
         {
-            _statusCode = statusCode;
-            _bodyRelease = bodyRelease;
-            _payloadSize = payloadSize;
+            var copyLength = Math.Min(LargeBodyMarker.Length, length - offset);
+            Buffer.BlockCopy(LargeBodyMarker, 0, buffer, offset, copyLength);
         }
 
-        public bool ResponseDisposed { get; private set; }
-
-        public bool ContentDisposed { get; private set; }
-
-        public int BodyBytesRead => Volatile.Read(ref _bodyBytesRead);
-
-        public static StreamingWebhookHandler WithStatus(HttpStatusCode statusCode) =>
-            new(statusCode, bodyRelease: null, payloadSize: 0);
-
-        public static StreamingWebhookHandler WithHeldBody(
-            HttpStatusCode statusCode,
-            Task bodyRelease,
-            int payloadSize) =>
-            new(statusCode, bodyRelease, payloadSize);
-
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
-        {
-            var response = new TrackingHttpResponseMessage(_statusCode, disposed =>
-            {
-                if (disposed)
-                {
-                    ResponseDisposed = true;
-                }
-            });
-
-            if (_bodyRelease is not null && _payloadSize > 0)
-            {
-                var stream = new HoldUntilReleasedStream(
-                    _bodyRelease,
-                    _payloadSize,
-                    bytesRead => Interlocked.Add(ref _bodyBytesRead, bytesRead),
-                    () => ContentDisposed = true);
-                response.Content = new StreamContent(stream)
-                {
-                    Headers =
-                    {
-                        ContentType = new MediaTypeHeaderValue("application/octet-stream"),
-                        ContentLength = _payloadSize,
-                    },
-                };
-            }
-
-            return Task.FromResult<HttpResponseMessage>(response);
-        }
+        return new MemoryStream(buffer, writable: false);
     }
 
-    private sealed class SlowHeadersWebhookHandler(TimeSpan delay) : HttpMessageHandler
+    private sealed class SlowHeadersWebhookMessageHandler(TimeSpan delay) : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -342,100 +249,53 @@ public sealed class WebhookStreamingResponseTests
         }
     }
 
-    private sealed class ThrowingWebhookHandler(Exception exception) : HttpMessageHandler
+    private sealed class GatedHeadersWebhookMessageHandler(
+        Task headersReady,
+        HttpStatusCode statusCode,
+        TrackingStreamContent content) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            await headersReady.WaitAsync(cancellationToken);
+            content.MarkCreated();
+            return new HttpResponseMessage(statusCode)
+            {
+                Content = content,
+            };
+        }
+    }
+
+    private sealed class StatusCodeWebhookMessageHandler(
+        HttpStatusCode statusCode,
+        HttpContent? content = null) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (content is TrackingStreamContent tracking)
+            {
+                tracking.MarkCreated();
+            }
+
+            var response = new HttpResponseMessage(statusCode);
+            if (content is not null)
+            {
+                response.Content = content;
+            }
+
+            return Task.FromResult(response);
+        }
+    }
+
+    private sealed class ThrowingWebhookMessageHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken) =>
-            Task.FromException<HttpResponseMessage>(exception);
-    }
-
-    private sealed class TrackingHttpResponseMessage(
-        HttpStatusCode statusCode,
-        Action<bool> onDisposed) : HttpResponseMessage(statusCode)
-    {
-        protected override void Dispose(bool disposing)
-        {
-            onDisposed(disposing);
-            base.Dispose(disposing);
-        }
-    }
-
-    /// <summary>
-    /// Stream whose first <see cref="ReadAsync(Memory{byte}, CancellationToken)"/> waits on
-    /// <paramref name="release"/> — hangs under ResponseContentRead, not under HeadersRead.
-    /// </summary>
-    private sealed class HoldUntilReleasedStream(
-        Task release,
-        int payloadSize,
-        Action<int> onBytesRead,
-        Action onDisposed) : Stream
-    {
-        private int _position;
-        private bool _disposed;
-
-        public override bool CanRead => true;
-
-        public override bool CanSeek => false;
-
-        public override bool CanWrite => false;
-
-        public override long Length => payloadSize;
-
-        public override long Position
-        {
-            get => _position;
-            set => throw new NotSupportedException();
-        }
-
-        public override async ValueTask<int> ReadAsync(
-            Memory<byte> buffer,
-            CancellationToken cancellationToken = default)
-        {
-            await release.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-            if (_position >= payloadSize)
-            {
-                return 0;
-            }
-
-            var remaining = payloadSize - _position;
-            var toCopy = Math.Min(remaining, buffer.Length);
-            buffer.Span[..toCopy].Fill(0x41);
-            _position += toCopy;
-            onBytesRead(toCopy);
-            return toCopy;
-        }
-
-        public override int Read(byte[] buffer, int offset, int count) =>
-            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
-
-        public override void Flush()
-        {
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) =>
-            throw new NotSupportedException();
-
-        public override void SetLength(long value) =>
-            throw new NotSupportedException();
-
-        public override void Write(byte[] buffer, int offset, int count) =>
-            throw new NotSupportedException();
-
-        protected override void Dispose(bool disposing)
-        {
-            if (!_disposed)
-            {
-                _disposed = true;
-                if (disposing)
-                {
-                    onDisposed();
-                }
-            }
-
-            base.Dispose(disposing);
-        }
+            throw new HttpRequestException("simulated transport failure");
     }
 
     private sealed class SingleHandlerClientFactory(HttpMessageHandler handler) : IHttpClientFactory
@@ -445,5 +305,164 @@ public sealed class WebhookStreamingResponseTests
             {
                 Timeout = Timeout.InfiniteTimeSpan,
             };
+    }
+
+    private sealed class TrackingStreamContent : HttpContent
+    {
+        private readonly Stream _stream;
+
+        public TrackingStreamContent(Stream stream)
+        {
+            _stream = stream;
+        }
+
+        public long BytesRead { get; private set; }
+
+        public bool WasDisposed { get; private set; }
+
+        public bool WasCreated { get; private set; }
+
+        public void MarkCreated() => WasCreated = true;
+
+        protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            var buffer = new byte[8192];
+            while (true)
+            {
+                var read = await _stream.ReadAsync(buffer.AsMemory(0, buffer.Length));
+                if (read == 0)
+                {
+                    break;
+                }
+
+                BytesRead += read;
+                await stream.WriteAsync(buffer.AsMemory(0, read));
+            }
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new CountingStream(_stream, bytes => BytesRead += bytes));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            if (_stream.CanSeek)
+            {
+                length = _stream.Length;
+                return true;
+            }
+
+            length = 0;
+            return false;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                WasDisposed = true;
+                _stream.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class CountingStream(Stream inner, Action<long> onRead) : Stream
+    {
+        public override bool CanRead => inner.CanRead;
+        public override bool CanSeek => inner.CanSeek;
+        public override bool CanWrite => false;
+        public override long Length => inner.Length;
+        public override long Position
+        {
+            get => inner.Position;
+            set => inner.Position = value;
+        }
+
+        public override void Flush() => inner.Flush();
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = inner.Read(buffer, offset, count);
+            if (read > 0)
+            {
+                onRead(read);
+            }
+
+            return read;
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            var read = await inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken);
+            if (read > 0)
+            {
+                onRead(read);
+            }
+
+            return read;
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var read = await inner.ReadAsync(buffer, cancellationToken);
+            if (read > 0)
+            {
+                onRead(read);
+            }
+
+            return read;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+    }
+
+    private sealed class GateStream(
+        TaskCompletionSource bodyReadAttempted,
+        Task bodyGate) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count), CancellationToken.None).AsTask().GetAwaiter().GetResult();
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            bodyReadAttempted.TrySetResult();
+            await bodyGate.WaitAsync(cancellationToken);
+            return 0;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }
