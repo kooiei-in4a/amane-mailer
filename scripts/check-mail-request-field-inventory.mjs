@@ -517,6 +517,10 @@ function exceptionCovers(exceptions, field, layer) {
   return exceptions.some((entry) => entry.field === field && entry.layer === layer);
 }
 
+function withoutExceptedFields(fields, exceptions, layer) {
+  return fields.filter((field) => !exceptionCovers(exceptions, field, layer));
+}
+
 function checkInventory(paths = defaultPaths) {
   const errors = [];
   const exceptions = loadExceptions(paths.exceptions, errors);
@@ -609,29 +613,30 @@ function checkInventory(paths = defaultPaths) {
     }
   }
 
+  // Exceptions apply to field presence and to nullable/omit-null inventory for that layer.
   assertSameSet(
     errors,
     'Python builder nullable fields vs Contracts nullable fields',
-    pythonBuilder.nullableFields,
-    contractNullable,
+    withoutExceptedFields(pythonBuilder.nullableFields, exceptions, 'python-builder'),
+    withoutExceptedFields(contractNullable, exceptions, 'python-builder'),
   );
   assertSameSet(
     errors,
     'Python builder omit-null fields vs Contracts nullable fields',
-    pythonBuilder.omitNullFields,
-    contractNullable,
+    withoutExceptedFields(pythonBuilder.omitNullFields, exceptions, 'python-builder'),
+    withoutExceptedFields(contractNullable, exceptions, 'python-builder'),
   );
   assertSameSet(
     errors,
     'TypeScript builder nullable (explicitNulls) fields vs Contracts nullable fields',
-    tsBuilder.nullableFields,
-    contractNullable,
+    withoutExceptedFields(tsBuilder.nullableFields, exceptions, 'typescript-builder'),
+    withoutExceptedFields(contractNullable, exceptions, 'typescript-builder'),
   );
   assertSameSet(
     errors,
     'TypeScript builder omit-null fields vs Contracts nullable fields',
-    tsBuilder.omitNullFields,
-    contractNullable,
+    withoutExceptedFields(tsBuilder.omitNullFields, exceptions, 'typescript-builder'),
+    withoutExceptedFields(contractNullable, exceptions, 'typescript-builder'),
   );
 
   assertSameSet(
@@ -1077,6 +1082,38 @@ function runSelfTest() {
 
 `)
             .replace(', "scheduled_at"', '');
+        }),
+      },
+      {
+        name: 'exception-allows-nullable-gap',
+        expectPass: true,
+        files: mutateBaseline(baselineFixtureFiles(), (files) => {
+          files['builder.py'] = files['builder.py']
+            .replace(/def scheduled_at[\s\S]*?return self\n\n/, '')
+            .replace(', "scheduled_at"', '');
+          files['validation.py'] = files['validation.py'].replace(/\n\s*"scheduled_at",/, '');
+          const expiresOn = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+          files['exceptions.json'] = JSON.stringify({
+            version: 1,
+            exceptions: [
+              {
+                field: 'scheduled_at',
+                layer: 'python-builder',
+                reason: 'temporary SDK lag fixture for self-test',
+                trackingIssue: 352,
+                expiresOn,
+              },
+              {
+                field: 'scheduled_at',
+                layer: 'python-validation',
+                reason: 'temporary SDK lag fixture for self-test',
+                trackingIssue: 352,
+                expiresOn,
+              },
+            ],
+          }, null, 2);
         }),
       },
     ];
