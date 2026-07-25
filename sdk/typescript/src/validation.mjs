@@ -1,6 +1,7 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SOURCE_SERVICE_PATTERN = /^[a-z0-9][a-z0-9_-]{1,62}$/;
 const FORBIDDEN_METADATA_KEY_PATTERN = /token|password|secret|url/i;
+const SCHEDULED_AT_OFFSET_PATTERN = /(Z|[+-]\d{2}:\d{2})$/i;
 
 export class MailRequestValidationError extends Error {
   constructor(message) {
@@ -52,6 +53,27 @@ export function assertMetadata(metadata) {
   }
 }
 
+export function assertScheduledAt(value) {
+  if (value === null || value === undefined) {
+    return;
+  }
+  if (typeof value !== 'string') {
+    throw new MailRequestValidationError(
+      'scheduled_at must be an ISO-8601 date-time string or null.',
+    );
+  }
+  if (!SCHEDULED_AT_OFFSET_PATTERN.test(value)) {
+    throw new MailRequestValidationError(
+      'scheduled_at must include a timezone offset or Z.',
+    );
+  }
+  if (Number.isNaN(Date.parse(value))) {
+    throw new MailRequestValidationError(
+      'scheduled_at must be a valid ISO-8601 date-time with timezone offset or Z.',
+    );
+  }
+}
+
 export function validateMailRequestDraft(draft) {
   assertUuid(draft.tenant_id, 'tenant_id');
   assertUuid(draft.mail_request_id, 'mail_request_id');
@@ -80,4 +102,7 @@ export function validateMailRequestDraft(draft) {
   }
 
   assertMetadata(draft.metadata);
+  if (Object.prototype.hasOwnProperty.call(draft, 'scheduled_at')) {
+    assertScheduledAt(draft.scheduled_at);
+  }
 }

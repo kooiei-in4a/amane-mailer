@@ -77,10 +77,18 @@ class MailRequestBuilder:
             self._explicit_nulls.discard("metadata")
         return self
 
+    def scheduled_at(self, value: str | None) -> MailRequestBuilder:
+        self._fields["scheduled_at"] = value
+        if value is None:
+            self._explicit_nulls.add("scheduled_at")
+        else:
+            self._explicit_nulls.discard("scheduled_at")
+        return self
+
     def build(self) -> dict[str, Any]:
         draft = deepcopy(self._fields)
 
-        for key in ("html_body", "text_body", "reply_to", "metadata"):
+        for key in ("html_body", "text_body", "reply_to", "metadata", "scheduled_at"):
             if key not in draft:
                 continue
             if draft[key] is None and key not in self._explicit_nulls:

@@ -31,6 +31,86 @@ test('MailRequestBuilder computes payload_hash and validates input', () => {
   assert.equal(request.payload_hash, '7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9');
 });
 
+test('MailRequestBuilder omits scheduled_at when unset', () => {
+  const request = buildSampleRequest();
+  assert.equal(Object.hasOwn(request, 'scheduled_at'), false);
+});
+
+test('MailRequestBuilder accepts scheduled_at with Z and offsets', () => {
+  for (const value of [
+    '2026-08-01T09:00:00Z',
+    '2026-08-01T18:00:00+09:00',
+    '2026-08-01T00:00:00-05:00',
+  ]) {
+    const request = MailRequestBuilder.create()
+      .tenantId('00000000-0000-0000-0000-000000000101')
+      .sourceService('example-service')
+      .mailRequestId('00000000-0000-0000-0000-000000000201')
+      .purpose('FormResponseNotification')
+      .to({ email: 'admin@example.com' })
+      .subject('New response')
+      .textBody('A new response arrived.')
+      .scheduledAt(value)
+      .build();
+    assert.equal(request.scheduled_at, value);
+  }
+});
+
+test('MailRequestBuilder rejects timezone-less and invalid scheduled_at', () => {
+  for (const value of [
+    '2026-08-01T09:00:00',
+    '2026-08-01 09:00:00',
+    'not-a-date',
+    '2026-13-45T09:00:00Z',
+  ]) {
+    assert.throws(() => {
+      MailRequestBuilder.create()
+        .tenantId('00000000-0000-0000-0000-000000000101')
+        .sourceService('example-service')
+        .mailRequestId('00000000-0000-0000-0000-000000000201')
+        .purpose('FormResponseNotification')
+        .to({ email: 'admin@example.com' })
+        .subject('New response')
+        .textBody('A new response arrived.')
+        .scheduledAt(value)
+        .build();
+    }, MailRequestValidationError);
+  }
+});
+
+test('MailRequestBuilder allows explicit null scheduled_at', () => {
+  const request = MailRequestBuilder.create()
+    .tenantId('00000000-0000-0000-0000-000000000101')
+    .sourceService('example-service')
+    .mailRequestId('00000000-0000-0000-0000-000000000201')
+    .purpose('FormResponseNotification')
+    .to({ email: 'admin@example.com' })
+    .subject('New response')
+    .textBody('A new response arrived.')
+    .scheduledAt(null)
+    .build();
+
+  assert.equal(Object.hasOwn(request, 'scheduled_at'), true);
+  assert.equal(request.scheduled_at, null);
+});
+
+test('scheduled_at does not affect payload_hash', () => {
+  const base = buildSampleRequest();
+  const scheduled = MailRequestBuilder.create()
+    .tenantId('00000000-0000-0000-0000-000000000101')
+    .sourceService('example-service')
+    .mailRequestId('00000000-0000-0000-0000-000000000201')
+    .purpose('FormResponseNotification')
+    .to({ email: 'admin@example.com' })
+    .subject('New response')
+    .textBody('A new response arrived.')
+    .scheduledAt('2026-08-01T09:00:00Z')
+    .build();
+
+  assert.equal(base.payload_hash, scheduled.payload_hash);
+  assert.notEqual(base.scheduled_at, scheduled.scheduled_at);
+});
+
 test('MailRequestBuilder rejects invalid source_service', () => {
   assert.throws(() => {
     MailRequestBuilder.create()
@@ -68,6 +148,41 @@ async function withMockServer(handler, run) {
     });
   }
 }
+
+test('MailerClient posts builder scheduled_at field', async () => {
+  /** @type {Record<string, unknown> | null} */
+  let captured = null;
+
+  await withMockServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      captured = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        mail_request_id: '00000000-0000-0000-0000-000000000201',
+        status: 'accepted',
+      }));
+    });
+  }, async (baseUrl) => {
+    const client = new MailerClient({ baseUrl, bearerToken: 'token' });
+    const request = MailRequestBuilder.create()
+      .tenantId('00000000-0000-0000-0000-000000000101')
+      .sourceService('example-service')
+      .mailRequestId('00000000-0000-0000-0000-000000000201')
+      .purpose('FormResponseNotification')
+      .to({ email: 'admin@example.com' })
+      .subject('New response')
+      .textBody('A new response arrived.')
+      .scheduledAt('2026-08-01T09:00:00Z')
+      .build();
+
+    const response = await client.sendMail(request);
+    assert.equal(response.status, MailRequestAcceptanceStatus.Accepted);
+    assert.equal(captured?.scheduled_at, '2026-08-01T09:00:00Z');
+    assert.equal(captured?.payload_hash, request.payload_hash);
+  });
+});
 
 test('MailerClient handles accepted and already_accepted', async () => {
   let callCount = 0;
