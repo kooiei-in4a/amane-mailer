@@ -39,7 +39,7 @@ after publishing a release, verify and record the following items.
 - SQLite deployment assumes single-node / single-replica operation. Horizontally
   scaling multiple Workers over one shared SQLite file is currently out of
   operational scope (start gates and non-goals:
-  [ADR 0018](../adr/0018-sqlite-single-process-boundaries.md)).
+  [ADR 0019](../adr/0019-sqlite-single-process-boundaries.md)).
 - State the Docker image platforms using the same notation as the Docker
   manifest. For a single-platform release, state a constraint such as
   `linux/amd64 only`; for a multi-arch release, record per-platform digests and

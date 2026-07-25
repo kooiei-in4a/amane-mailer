@@ -1,8 +1,9 @@
-# ADR 0018: SQLite／単一プロセス前提の維持と PostgreSQL／Worker 分離の着手境界
+# ADR 0019: SQLite／単一プロセス前提の維持と PostgreSQL／Worker 分離の着手境界
 
 - **Status:** Accepted
 - **Date:** 2026-07-25
 - **Tracks:** [#363](https://github.com/kooiei-in4a/amane-mailer/issues/363)
+- **Renumbered:** 旧ファイル名 `0018-sqlite-single-process-boundaries.md`。#385（Webhook 逐次維持 ADR）と同番号で develop に並んだため、後着の本 ADR を 0019 に振り直した。
 - **Implementation follow-up:** なし（本 ADR は着手条件と非目標の明文化のみ。trigger 成立時に **別 ADR／tracking Issue** を起こす）
 - **Preserves:** [ADR 0012 D-07](0012-mail-via-mailer-microservice.md)（Worker 1 レプリカ）、[ADR 0013 D-11](0013-admin-threat-model-and-pii-policy.md)（Admin 単一プロセス）、[ADR 0014](0014-admin-session-tenant-throttle-audit-design.md)（session／throttle の SQLite 正本）
 - **Aligns with:** [service-spec](../service-spec.md)（SQLite + Native AOT 単一コンテナ）、[release-notes-checklist](../ops/release-notes-checklist.md)（single-node / single-replica）
