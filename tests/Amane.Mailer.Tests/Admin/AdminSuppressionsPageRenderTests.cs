@@ -78,7 +78,7 @@ public sealed class AdminSuppressionsPageRenderTests
     }
 
     [Fact]
-    public void Page_is_view_only_and_does_not_advertise_unimplemented_cli()
+    public void Page_is_view_only_and_points_to_remove_cli()
     {
         var html = AdminSuppressionsPage.RenderHtml(
             new AdminSuppressionListPage([], null),
@@ -89,9 +89,10 @@ public sealed class AdminSuppressionsPageRenderTests
             options: new MailerAdminOptions { ListPiiVisible = false });
 
         Assert.Contains("閲覧のみ", html, StringComparison.Ordinal);
-        Assert.Contains("#400 で実装予定", html, StringComparison.Ordinal);
+        Assert.Contains("db suppressions remove", html, StringComparison.Ordinal);
+        Assert.Contains("bounce ingestion runbook", html, StringComparison.Ordinal);
         Assert.Contains("すべて", html, StringComparison.Ordinal);
-        Assert.DoesNotContain("db suppressions remove", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("実装予定", html, StringComparison.Ordinal);
         Assert.DoesNotContain("解除する", html, StringComparison.Ordinal);
         Assert.DoesNotContain("method=\"post\"", html, StringComparison.Ordinal);
     }

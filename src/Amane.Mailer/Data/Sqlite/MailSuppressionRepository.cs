@@ -78,22 +78,77 @@ public sealed class MailSuppressionRepository(SqliteConnectionFactory connection
         string recipientEmail,
         CancellationToken cancellationToken = default)
     {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        return await TryDeleteReturningIdAsync(tenantId, recipientEmail, connection, cancellationToken) is not null;
+    }
+
+    /// <summary>
+    /// Deletes a matching row on an open connection and returns its id, or null when absent.
+    /// Callers that need an audit trail should wrap this with the audit insert in one transaction.
+    /// </summary>
+    public async Task<Guid?> TryDeleteReturningIdAsync(
+        Guid tenantId,
+        string recipientEmail,
+        SqliteConnection connection,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
         var normalized = RecipientEmailNormalizer.Normalize(recipientEmail);
 
-        const string sql = """
-            DELETE FROM mail_suppressions
-            WHERE tenant_id = @TenantId
-              AND recipient_email = @RecipientEmail;
-            """;
+        await using (var select = connection.CreateCommand())
+        {
+            select.CommandText = """
+                SELECT id
+                FROM mail_suppressions
+                WHERE tenant_id = @TenantId
+                  AND recipient_email = @RecipientEmail
+                LIMIT 1;
+                """;
+            select.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+            select.Parameters.AddWithValue("@RecipientEmail", normalized);
 
+            var idValue = await select.ExecuteScalarAsync(cancellationToken);
+            if (idValue is not string idText || !Guid.TryParse(idText, out var suppressionId))
+            {
+                return null;
+            }
+
+            await using var delete = connection.CreateCommand();
+            delete.CommandText = """
+                DELETE FROM mail_suppressions
+                WHERE id = @Id
+                  AND tenant_id = @TenantId;
+                """;
+            delete.Parameters.AddWithValue("@Id", suppressionId.ToString("D"));
+            delete.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+
+            var affected = await delete.ExecuteNonQueryAsync(cancellationToken);
+            return affected > 0 ? suppressionId : null;
+        }
+    }
+
+    public async Task<long> CountAsync(
+        Guid? tenantId = null,
+        CancellationToken cancellationToken = default)
+    {
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
-        command.Parameters.AddWithValue("@RecipientEmail", normalized);
+        if (tenantId is null)
+        {
+            command.CommandText = "SELECT COUNT(*) FROM mail_suppressions;";
+        }
+        else
+        {
+            command.CommandText = """
+                SELECT COUNT(*)
+                FROM mail_suppressions
+                WHERE tenant_id = @TenantId;
+                """;
+            command.Parameters.AddWithValue("@TenantId", tenantId.Value.ToString("D"));
+        }
 
-        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
-        return affected > 0;
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is long count ? count : Convert.ToInt64(result);
     }
 
     public async Task<int> DeleteExpiredAsync(

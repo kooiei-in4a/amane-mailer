@@ -197,6 +197,22 @@ public static class MailerCliHost
             cancellationToken);
     }
 
+    public static async Task<int> RunDbSuppressionsRemoveAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var factory = new SqliteConnectionFactory(configuration);
+        var command = new DbSuppressionsRemoveCommand(factory, TimeProvider.System);
+        return await command.ExecuteAsync(
+            FilterConfigurationArgs(commandArgs),
+            output,
+            error,
+            cancellationToken);
+    }
+
     public static Task<int> RunAdminProviderRegisterAcsAsync(IConfiguration configuration, TextWriter error)
     {
         if (!TryResolveAcsAdminDirectories(configuration, error, out var acsDirectory, out var senderDirectory))
