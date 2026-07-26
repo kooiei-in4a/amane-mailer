@@ -126,7 +126,7 @@ F-1 のとおり両者は書式・casing まで一致する。**正規化関数�
 
 バウンスは送信処理の結果ではなく、送信後に非同期で判明する別の事実である（F-4）。状態機械に混ぜると、Worker・Admin・GET status API・webhook payload のすべてに波及し、既存の契約を壊す。
 
-バウンスの事実は `bounce_events` に保持し、リクエストとは `mail_request_id` で関連付ける。**FK は張らない**（リクエストが retention で purge された後もバウンスの事実は残す）。リクエスト詳細画面からの表示は、参照先が存在しない状態を許容する設計にすること（#306）。
+バウンスの事実は `bounce_events` に保持し、リクエストとは `mail_request_id` で関連付ける。**FK は張らない。** 理由は retention 判定の独立性（`mail_requests` の完了判定に依存しない削除経路にできる）と、将来 `bounce_events` の保持方針を変える際に `mail_requests` のスキーマ変更を要さないことにある。**保持期間自体は `mail_requests` と揃え、同一 `DeleteExpiredCompletedAsync` トランザクションで purge する。** 耐久的な送信ブロック状態は `mail_suppressions` が担う（既定で非 purge）。リクエスト詳細画面からの表示は、参照先が存在しない状態を許容する設計にすること（#306。同一トランザクション purge でも読み取り側との競合はあり得る）。
 
 ### D-06. 抑制リストはテナント別に分離し、ハードバウンスのみ即時登録する
 

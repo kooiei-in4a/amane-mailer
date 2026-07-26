@@ -44,9 +44,11 @@ CREATE INDEX IF NOT EXISTS idx_provider_event_inbox_deadletter_completed
     ON provider_event_inbox (status, completed_at DESC)
     WHERE status = 3;
 
--- Domain bounce history. No FK to mail_requests (ADR 0020 D-05): #306 must
--- tolerate a missing request detail target. Retention aligns with mail_requests
--- (same RetentionDays; purged in the same DeleteExpiredCompletedAsync batch).
+-- Domain bounce history. No FK to mail_requests (ADR 0020 D-05): keeps
+-- retention/path evolution independent of mail_requests schema, and lets #306
+-- tolerate a missing request detail under concurrent readers. Retention days
+-- still align with mail_requests (same DeleteExpiredCompletedAsync transaction).
+-- Durable send-block state lives in mail_suppressions (default non-purge).
 CREATE TABLE bounce_events (
     id                      TEXT NOT NULL PRIMARY KEY,
     tenant_id               TEXT NOT NULL,
