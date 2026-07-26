@@ -394,6 +394,7 @@ public sealed class BounceIngestionWorkerTests
         Assert.Contains("mail_bounce_unmatched_total 1", body, StringComparison.Ordinal);
         Assert.Contains("mail_bounce_recipient_mismatch_total 1", body, StringComparison.Ordinal);
         Assert.Contains("mail_suppressed_sends_total 0", body, StringComparison.Ordinal);
+        Assert.Contains("mail_provider_queue_poll_failed_total 0", body, StringComparison.Ordinal);
         Assert.Contains("mail_provider_events_pending 2", body, StringComparison.Ordinal);
         Assert.DoesNotContain("tenant_id=", body, StringComparison.Ordinal);
         Assert.DoesNotContain("recipient=", body, StringComparison.Ordinal);

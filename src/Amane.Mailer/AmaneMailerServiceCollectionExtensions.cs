@@ -178,6 +178,12 @@ public static class AmaneMailerServiceCollectionExtensions
                 services.AddHostedService<BounceIngestionSweepService>();
                 services.AddHostedService<BounceIngestionWorker>();
             }
+
+            if (MailerBounceIngestionOptions.IsQueuePollingConfigured(configuration))
+            {
+                services.AddSingleton<IAcsEventQueueClient, AzureAcsEventQueueClient>();
+                services.AddHostedService<AcsQueuePollingService>();
+            }
         }
 
         return services;

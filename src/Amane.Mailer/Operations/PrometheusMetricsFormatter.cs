@@ -90,6 +90,10 @@ public static class PrometheusMetricsFormatter
             "Total mail sends blocked by the suppression list before provider delivery since process start.");
         AppendCounter(builder, "mail_suppressed_sends_total", runtime.SuppressedSendsTotal);
 
+        AppendHelpType(builder, "mail_provider_queue_poll_failed_total", "counter",
+            "Total ACS Storage Queue poll or delete failures since process start.");
+        AppendCounter(builder, "mail_provider_queue_poll_failed_total", runtime.ProviderQueuePollFailedTotal);
+
         AppendHelpType(builder, "mail_provider_events_pending", "gauge",
             "Provider event inbox rows pending or processing (same aggregation as CLI provider_events_pending).");
         AppendGauge(builder, "mail_provider_events_pending", providerEventsPending);

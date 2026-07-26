@@ -13,6 +13,7 @@ public sealed class MailerRuntimeMetrics
     private long _bounceUnmatchedTotal;
     private long _bounceRecipientMismatchTotal;
     private long _suppressedSendsTotal;
+    private long _providerQueuePollFailedTotal;
     private int _ready;
     private bool _readinessObserved;
     private string? _readinessFailureReason;
@@ -40,6 +41,9 @@ public sealed class MailerRuntimeMetrics
 
     public void RecordSuppressedSend() =>
         Interlocked.Increment(ref _suppressedSendsTotal);
+
+    public void RecordProviderQueuePollFailed() =>
+        Interlocked.Increment(ref _providerQueuePollFailedTotal);
 
     /// <summary>
     /// Updates readiness gauges. <paramref name="failureReason"/> must be a fixed
@@ -94,6 +98,7 @@ public sealed class MailerRuntimeMetrics
                 Interlocked.Read(ref _bounceUnmatchedTotal),
                 Interlocked.Read(ref _bounceRecipientMismatchTotal),
                 Interlocked.Read(ref _suppressedSendsTotal),
+                Interlocked.Read(ref _providerQueuePollFailedTotal),
                 _readinessObserved,
                 _ready == 1,
                 _readinessFailureReason,
@@ -117,6 +122,7 @@ public sealed class MailerRuntimeMetrics
         Interlocked.Exchange(ref _bounceUnmatchedTotal, 0);
         Interlocked.Exchange(ref _bounceRecipientMismatchTotal, 0);
         Interlocked.Exchange(ref _suppressedSendsTotal, 0);
+        Interlocked.Exchange(ref _providerQueuePollFailedTotal, 0);
 
         lock (_gate)
         {
@@ -180,6 +186,7 @@ public sealed record MailerRuntimeMetricsSnapshot(
     long BounceUnmatchedTotal,
     long BounceRecipientMismatchTotal,
     long SuppressedSendsTotal,
+    long ProviderQueuePollFailedTotal,
     bool ReadinessObserved,
     bool Ready,
     string? ReadinessFailureReason,
