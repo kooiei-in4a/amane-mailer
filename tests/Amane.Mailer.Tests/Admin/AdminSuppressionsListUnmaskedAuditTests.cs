@@ -104,6 +104,46 @@ public sealed class AdminSuppressionsListUnmaskedAuditTests
         Assert.Empty(rows);
     }
 
+    [Fact]
+    public async Task Unmasked_suppressions_list_fails_closed_when_audit_cannot_be_persisted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var brokenFixture = new MailerAdminUnmaskedListFixture();
+        await brokenFixture.InitializeAsync();
+
+        const string recipient = "fail-closed-suppression@example.com";
+        await SeedSuppressionAsync(
+            brokenFixture.ConnectionString,
+            MailerWebApplicationFixtureBase.TenantId,
+            recipient,
+            ct);
+
+        using var client = CreateClient(brokenFixture.Factory);
+        await LoginAsync(
+            client,
+            MailerAdminUnmaskedListFixture.Username,
+            MailerAdminUnmaskedListFixture.Password,
+            ct);
+
+        // Remove the audit store so the fail-closed unmasked-list write cannot land.
+        await using (var connection = new SqliteConnection(brokenFixture.ConnectionString))
+        {
+            await connection.OpenAsync(ct);
+            await using var drop = connection.CreateCommand();
+            drop.CommandText = "DROP TABLE admin_audit_events;";
+            await drop.ExecuteNonQueryAsync(ct);
+        }
+
+        using var response = await client.GetAsync("/admin/suppressions", ct);
+        var content = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.DoesNotContain(recipient, content, StringComparison.Ordinal);
+        Assert.DoesNotContain("f***@e***.com", content, StringComparison.Ordinal);
+        Assert.DoesNotContain("抑制リスト", content, StringComparison.Ordinal);
+        Assert.DoesNotContain("<table", content, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static void ClearAdminCaches(MailerWebApplicationFixtureBase fixture)
     {
         fixture.Factory.Services.GetRequiredService<AdminLoginThrottle>().Clear();
