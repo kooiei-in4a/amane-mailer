@@ -9,12 +9,12 @@ namespace Amane.Mailer.Data.Sqlite;
 /// <c>delivery_events</c>, including expired-lease terminalization at max_attempts (#388)
 /// and claim predicates that avoid idle hot-spin (#402).
 /// </summary>
-public sealed class ProviderEventInboxRepository(SqliteConnectionFactory connections)
+public class ProviderEventInboxRepository(SqliteConnectionFactory connections)
 {
     internal const string LeaseExpiredMaxAttemptsErrorCode = "PROVIDER_EVENT_LEASE_EXPIRED_MAX_ATTEMPTS";
     internal const string UnparseableEventErrorCode = "PROVIDER_EVENT_UNPARSEABLE";
 
-    public async Task<bool> TryInsertAsync(
+    public virtual async Task<bool> TryInsertAsync(
         ProviderEventInboxInsert row,
         CancellationToken cancellationToken = default)
     {

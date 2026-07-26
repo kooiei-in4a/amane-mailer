@@ -7,6 +7,16 @@ services:
       - "127.0.0.1:1025:1025"
       - "127.0.0.1:${MAILPIT_HTTP_PORT:-8025}:8025"
 
+  # Optional Azure Storage emulator for bounce queue Pull transport (#305 / ADR 0020).
+  # Not started by default dependencies of mailer; use:
+  #   docker compose -f infra/docker/docker-compose.local.yml up -d azurite
+  azurite:
+    image: ${AZURITE_IMAGE:-mcr.microsoft.com/azure-storage/azurite:3.35.0}
+    command: ["azurite", "--blobHost", "0.0.0.0", "--queueHost", "0.0.0.0", "--tableHost", "0.0.0.0", "--loose", "--skipApiVersionCheck"]
+    ports:
+      - "127.0.0.1:${AZURITE_QUEUE_PORT:-10001}:10001"
+    restart: unless-stopped
+
   # The runtime image is chiseled and runs as a non-root user. On Linux/macOS a
   # fresh bind mount path is auto-created root-owned (mode 755), so SQLite cannot
   # be created until the directory is world-writable. Windows Docker Desktop

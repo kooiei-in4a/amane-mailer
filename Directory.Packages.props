@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="Azure.Communication.Email" Version="1.1.0" />
+    <PackageVersion Include="Azure.Storage.Queues" Version="12.27.1" />
     <PackageVersion Include="MailKitLite" Version="4.17.0" />
     <PackageVersion Include="MimeKitLite" Version="4.17.0" />
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.10" />
