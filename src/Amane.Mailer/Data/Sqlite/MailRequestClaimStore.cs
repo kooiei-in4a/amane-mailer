@@ -549,9 +549,10 @@ public sealed class MailRequestClaimStore(
         int batchSize,
         CancellationToken cancellationToken = default)
     {
-        // Select the expired batch once, then delete matching delivery_events and
-        // mail_requests from that fixed set. Two independent ORDER BY ... LIMIT
-        // queries can diverge on completed_at ties; a single selection avoids orphans.
+        // Select the expired batch once, then delete matching delivery_events,
+        // bounce_events, and mail_requests from that fixed set. Two independent
+        // ORDER BY ... LIMIT queries can diverge on completed_at ties; a single
+        // selection avoids orphans.
         const string selectBatchSql = """
             SELECT id, tenant_id, source_service, mail_request_id
             FROM mail_requests
@@ -620,6 +621,29 @@ public sealed class MailRequestClaimStore(
                     WHERE (tenant_id, source_service, mail_request_id) IN ({eventTuples});
                     """;
                 _ = await deleteEvents.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var deleteBounces = connection.CreateCommand())
+            {
+                var bounceTuples = new StringBuilder();
+                for (var i = 0; i < batch.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        bounceTuples.Append(", ");
+                    }
+
+                    bounceTuples.Append($"(@BounceTenantId{i}, @BounceSourceService{i}, @BounceMailRequestId{i})");
+                    deleteBounces.Parameters.AddWithValue($"@BounceTenantId{i}", batch[i].TenantId);
+                    deleteBounces.Parameters.AddWithValue($"@BounceSourceService{i}", batch[i].SourceService);
+                    deleteBounces.Parameters.AddWithValue($"@BounceMailRequestId{i}", batch[i].MailRequestId);
+                }
+
+                deleteBounces.CommandText = $"""
+                    DELETE FROM bounce_events
+                    WHERE (tenant_id, source_service, mail_request_id) IN ({bounceTuples});
+                    """;
+                _ = await deleteBounces.ExecuteNonQueryAsync(cancellationToken);
             }
 
             int deleted;
