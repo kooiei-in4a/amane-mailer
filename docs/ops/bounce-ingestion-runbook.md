@@ -91,7 +91,7 @@ Amane.Mailer db suppressions remove \
 | Code | 意味 |
 |------|------|
 | 0 | 1 件削除した |
-| 1 | schema unavailable（`mail_suppressions` 未マイグレーション等） |
+| 1 | schema unavailable（`mail_suppressions` 未マイグレーション等）または削除・監査トランザクション失敗（rollback） |
 | 2 | usage error（必須引数不足・不正 UUID 等） |
 | 3 | 指定テナントに該当エントリなし（沈黙の成功にしない） |
 | 130 | Ctrl+C による協調 cancel |

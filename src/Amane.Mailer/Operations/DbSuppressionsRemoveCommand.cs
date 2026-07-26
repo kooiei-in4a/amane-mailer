@@ -77,69 +77,95 @@ public sealed class DbSuppressionsRemoveCommand(
         var suppressions = new MailSuppressionRepository(connections);
         var auditRepository = new AdminAuditRepository(connections);
 
-        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
-        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
-        try
+        Guid? deletedId;
+        await using (var connection = await connections.OpenConnectionAsync(cancellationToken))
+        await using (var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken))
         {
-            var deletedId = await suppressions.TryDeleteReturningIdAsync(
-                tenantId,
-                normalized,
-                connection,
-                cancellationToken);
-
-            if (deletedId is null)
+            try
             {
-                await auditRepository.WriteAsync(
-                    AdminAuditLog.SanitizeForOutput(new AdminAuditEvent
-                    {
-                        EventType = AdminAuditLog.EventTypes.MailSuppressionsRemoveFailed,
-                        Actor = CliActor,
-                        OccurredAt = occurredAt,
-                        TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
-                        TargetId = tenantId.ToString("D"),
-                        TenantId = tenantId,
-                        Result = AdminAuditLog.Results.Failure,
-                        ErrorCode = AdminAuditLog.ErrorCodes.NotFound,
-                    }),
+                deletedId = await suppressions.TryDeleteReturningIdAsync(
+                    tenantId,
+                    normalized,
                     connection,
                     cancellationToken);
 
+                if (deletedId is null)
+                {
+                    await auditRepository.WriteAsync(
+                        AdminAuditLog.SanitizeForOutput(new AdminAuditEvent
+                        {
+                            EventType = AdminAuditLog.EventTypes.MailSuppressionsRemoveFailed,
+                            Actor = CliActor,
+                            OccurredAt = occurredAt,
+                            TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
+                            TargetId = tenantId.ToString("D"),
+                            TenantId = tenantId,
+                            Result = AdminAuditLog.Results.Failure,
+                            ErrorCode = AdminAuditLog.ErrorCodes.NotFound,
+                        }),
+                        connection,
+                        cancellationToken);
+                }
+                else
+                {
+                    await auditRepository.WriteAsync(
+                        AdminAuditLog.SanitizeForOutput(new AdminAuditEvent
+                        {
+                            EventType = AdminAuditLog.EventTypes.MailSuppressionsRemoved,
+                            Actor = CliActor,
+                            OccurredAt = occurredAt,
+                            TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
+                            TargetId = deletedId.Value.ToString("D"),
+                            TenantId = tenantId,
+                            Result = AdminAuditLog.Results.Success,
+                        }),
+                        connection,
+                        cancellationToken);
+                }
+
                 await transaction.CommitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                throw;
+            }
+            catch (Exception)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                await error.WriteLineAsync(
+                    "Mail suppression remove failed; no changes were committed.");
+                return UnavailableExitCode;
+            }
+        }
+
+        // Commit already succeeded. Result I/O must not claim the change was rolled back.
+        try
+        {
+            if (deletedId is null)
+            {
                 await error.WriteLineAsync(
                     $"No mail suppression found for tenant {tenantId:D}.");
                 return NotFoundExitCode;
             }
 
-            await auditRepository.WriteAsync(
-                AdminAuditLog.SanitizeForOutput(new AdminAuditEvent
-                {
-                    EventType = AdminAuditLog.EventTypes.MailSuppressionsRemoved,
-                    Actor = CliActor,
-                    OccurredAt = occurredAt,
-                    TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
-                    TargetId = deletedId.Value.ToString("D"),
-                    TenantId = tenantId,
-                    Result = AdminAuditLog.Results.Success,
-                }),
-                connection,
-                cancellationToken);
-
-            await transaction.CommitAsync(cancellationToken);
             await output.WriteLineAsync(
                 $"Removed 1 mail suppression for tenant {tenantId:D}.");
             return SuccessExitCode;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            throw;
-        }
         catch (Exception)
         {
-            await transaction.RollbackAsync(cancellationToken);
-            await error.WriteLineAsync(
-                "Mail suppression remove failed; no changes were committed.");
-            return UnavailableExitCode;
+            try
+            {
+                await error.WriteLineAsync(
+                    "Mail suppression change was committed, but writing the result failed.");
+            }
+            catch (Exception)
+            {
+                // Secondary write failure: keep the committed outcome exit code.
+            }
+
+            return deletedId is null ? NotFoundExitCode : SuccessExitCode;
         }
     }
 

@@ -99,7 +99,7 @@ Exit codes:
 | Code | Meaning |
 |------|---------|
 | 0 | Removed one row |
-| 1 | Schema unavailable (`mail_suppressions` not migrated, etc.) |
+| 1 | Schema unavailable (`mail_suppressions` not migrated, etc.) or delete/audit transaction failure (rolled back) |
 | 2 | Usage error (missing args, invalid UUID, etc.) |
 | 3 | No matching entry for the tenant (never silent success) |
 | 130 | Cooperative cancel via Ctrl+C |

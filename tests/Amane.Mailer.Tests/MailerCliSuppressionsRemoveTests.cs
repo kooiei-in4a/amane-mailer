@@ -189,6 +189,63 @@ public sealed class MailerCliSuppressionsRemoveTests
     }
 
     [Fact]
+    public async Task rolls_back_delete_when_audit_insert_fails()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await TestDatabase.CreateAsync(ct);
+        await SeedSuppressionAsync(db.Factory, Guid.NewGuid(), TenantA, Recipient, ct);
+
+        await using (var connection = await db.Factory.OpenConnectionAsync(ct))
+        await using (var drop = connection.CreateCommand())
+        {
+            drop.CommandText = "DROP TABLE admin_audit_events;";
+            await drop.ExecuteNonQueryAsync(ct);
+        }
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var command = new DbSuppressionsRemoveCommand(db.Factory, TimeProvider.System);
+
+        var exitCode = await command.ExecuteAsync(
+            ["db", "suppressions", "remove", "--tenant-id", TenantA.ToString("D"), "--recipient", Recipient],
+            output,
+            error,
+            ct);
+
+        Assert.Equal(DbSuppressionsRemoveCommand.UnavailableExitCode, exitCode);
+        Assert.Empty(output.ToString());
+        Assert.Contains("no changes were committed", error.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Recipient, error.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantA, Recipient, ct));
+    }
+
+    [Fact]
+    public async Task reports_committed_when_result_output_fails_after_successful_remove()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await TestDatabase.CreateAsync(ct);
+        await SeedSuppressionAsync(db.Factory, Guid.NewGuid(), TenantA, Recipient, ct);
+
+        var output = new ThrowingTextWriter();
+        var error = new StringWriter();
+        var command = new DbSuppressionsRemoveCommand(db.Factory, TimeProvider.System);
+
+        var exitCode = await command.ExecuteAsync(
+            ["db", "suppressions", "remove", "--tenant-id", TenantA.ToString("D"), "--recipient", Recipient],
+            output,
+            error,
+            ct);
+
+        Assert.Equal(DbSuppressionsRemoveCommand.SuccessExitCode, exitCode);
+        Assert.False(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantA, Recipient, ct));
+        Assert.Contains("was committed", error.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("no changes were committed", error.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Recipient, error.ToString(), StringComparison.OrdinalIgnoreCase);
+
+        var audit = await new AdminAuditRepository(db.Factory).ListRecentAsync(10, ct);
+        Assert.Contains(audit, row => row.EventType == AdminAuditLog.EventTypes.MailSuppressionsRemoved);
+    }
+    [Fact]
     public async Task db_stats_includes_mail_suppressions_count()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -256,6 +313,15 @@ public sealed class MailerCliSuppressionsRemoveTests
             .Where(parts => parts.Length == 2)
             .ToDictionary(parts => parts[0], parts => parts[1], StringComparer.Ordinal);
 
+
+    private sealed class ThrowingTextWriter : StringWriter
+    {
+        public override void WriteLine(string? value) =>
+            throw new IOException("simulated broken pipe");
+
+        public override Task WriteLineAsync(string? value) =>
+            throw new IOException("simulated broken pipe");
+    }
     private sealed class TestDatabase : IAsyncDisposable
     {
         private readonly string _root;
