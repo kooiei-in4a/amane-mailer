@@ -162,6 +162,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         Assert.False(options.HashNetworkIdentifiers);
         Assert.True(options.MaskRecipients);
         Assert.True(options.MaskSubjects);
+        Assert.False(options.ListPiiVisible);
         Assert.Equal(5, options.LoginFailureLimit);
         Assert.Equal(TimeSpan.FromSeconds(30), options.LoginCooldown);
         Assert.Equal(TimeSpan.FromMinutes(30), options.SessionIdleTimeout);

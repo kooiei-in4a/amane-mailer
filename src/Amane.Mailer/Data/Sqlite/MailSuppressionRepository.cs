@@ -1,3 +1,4 @@
+using System.Text;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite.Models;
 using Microsoft.Data.Sqlite;
@@ -121,5 +122,74 @@ public sealed class MailSuppressionRepository(SqliteConnectionFactory connection
         command.Parameters.AddWithValue("@BatchSize", effectiveBatchSize);
 
         return await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<AdminSuppressionListPage> ListForAdminAsync(
+        AdminSuppressionListQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+
+        var pageSize = Math.Clamp(query.PageSize, 1, 100);
+        var limit = pageSize + 1;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var where = new StringBuilder("WHERE 1 = 1");
+
+        if (query.TenantId is not null)
+        {
+            where.AppendLine();
+            where.Append("  AND tenant_id = @TenantId");
+            command.Parameters.AddWithValue("@TenantId", query.TenantId.Value.ToString("D"));
+        }
+
+        MailRequestRepositorySql.AppendTenantScopeFilter(where, command, query.AllowedTenantIds);
+
+        if (!string.IsNullOrWhiteSpace(query.CursorCreatedAt) && query.CursorId is not null)
+        {
+            where.AppendLine();
+            where.Append("""
+                  AND (
+                    created_at < @CursorCreatedAt
+                    OR (created_at = @CursorCreatedAt AND id < @CursorId)
+                  )
+                """);
+            command.Parameters.AddWithValue("@CursorCreatedAt", query.CursorCreatedAt);
+            command.Parameters.AddWithValue("@CursorId", query.CursorId.Value.ToString("D"));
+        }
+
+        command.CommandText = $"""
+            SELECT
+                id, tenant_id, recipient_email, reason, source_bounce_event_id, created_at
+            FROM mail_suppressions
+            {where}
+            ORDER BY created_at DESC, id DESC
+            LIMIT @Limit;
+            """;
+        command.Parameters.AddWithValue("@Limit", limit);
+
+        var rows = new List<AdminSuppressionListRow>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new AdminSuppressionListRow(
+                Id: Guid.Parse(reader.GetString(0)),
+                TenantId: Guid.Parse(reader.GetString(1)),
+                RecipientEmail: reader.GetString(2),
+                Reason: reader.GetString(3),
+                SourceBounceEventId: reader.IsDBNull(4) ? null : Guid.Parse(reader.GetString(4)),
+                CreatedAt: SqliteTime.FromStorage(reader.GetString(5))));
+        }
+
+        string? nextCursor = null;
+        if (rows.Count > pageSize)
+        {
+            rows.RemoveAt(rows.Count - 1);
+            var last = rows[^1];
+            nextCursor = AdminSuppressionCursor.Encode(last.CreatedAt, last.Id);
+        }
+
+        return new AdminSuppressionListPage(rows, nextCursor);
     }
 }

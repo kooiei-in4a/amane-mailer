@@ -13,6 +13,7 @@ internal static class AdminEndpointMapping
         app.MapGet("/admin/mail-requests", AdminMailRequestsPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/dead-letters", AdminDeadLettersPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/webhook-dead-letters", AdminWebhookDeadLettersPage.RenderAsync).RequireAuthorization();
+        app.MapGet("/admin/suppressions", AdminSuppressionsPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/audit-log", AdminAuditLogPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/audit-log/{id:long}", AdminAuditLogDetailPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/ops", AdminOpsPage.RenderAsync).RequireAuthorization();

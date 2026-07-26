@@ -13,6 +13,7 @@ public static class AdminMailRequestDetailPage
         string id,
         HttpContext context,
         MailRequestRepository repository,
+        BounceEventRepository bounceEventRepository,
         AdminUserRepository userRepository,
         AdminDeadLetterCountCache deadLetterCountCache,
         MailerAdminOptions options,
@@ -40,6 +41,12 @@ public static class AdminMailRequestDetailPage
             requestId,
             access.AllowedTenantIdsForQuery,
             cancellationToken);
+        var bounceEvents = await bounceEventRepository.ListForMailRequestAsync(
+            detail.TenantId,
+            detail.SourceService,
+            detail.MailRequestId,
+            access.AllowedTenantIdsForQuery,
+            cancellationToken);
         var deadLetterCount = await deadLetterCountCache.GetCountAsync(
             repository,
             access.AllowedTenantIdsForQuery,
@@ -51,6 +58,7 @@ public static class AdminMailRequestDetailPage
             RenderHtml(
                 detail,
                 attempts,
+                bounceEvents,
                 options,
                 deadLetterCount,
                 csrfToken,
@@ -61,6 +69,16 @@ public static class AdminMailRequestDetailPage
     internal static string RenderHtml(
         AdminMailRequestDetail detail,
         IReadOnlyList<AdminMailAttemptRow> attempts,
+        MailerAdminOptions options,
+        int deadLetterCount = 0,
+        string csrfToken = "",
+        DateTimeOffset? now = null) =>
+        RenderHtml(detail, attempts, [], options, deadLetterCount, csrfToken, now);
+
+    internal static string RenderHtml(
+        AdminMailRequestDetail detail,
+        IReadOnlyList<AdminMailAttemptRow> attempts,
+        IReadOnlyList<AdminBounceEventRow> bounceEvents,
         MailerAdminOptions options,
         int deadLetterCount = 0,
         string csrfToken = "",
@@ -83,6 +101,7 @@ public static class AdminMailRequestDetailPage
         AppendDetailSection(html, detail, options);
         AppendMutationActions(html, detail, csrfToken, now ?? DateTimeOffset.UtcNow);
         AppendAttemptsSection(html, attempts);
+        AppendBounceEventsSection(html, bounceEvents);
 
         AdminLayout.AppendDocumentEnd(html);
 
@@ -291,6 +310,60 @@ public static class AdminMailRequestDetailPage
         AppendCell(html, attempt.ErrorMessage ?? string.Empty);
         AppendCell(html, FormatLocalTime(attempt.StartedAt));
         AppendCell(html, FormatLocalTime(attempt.CompletedAt));
+        html.AppendLine("                  </tr>");
+    }
+
+    private static void AppendBounceEventsSection(
+        StringBuilder html,
+        IReadOnlyList<AdminBounceEventRow> bounceEvents)
+    {
+        html.AppendLine("""
+              <section class="detail-section" aria-label="バウンス履歴">
+                <h2 class="section-heading">バウンス履歴</h2>
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th>delivery_status</th>
+                      <th>プロバイダ</th>
+                      <th>provider_message_id</th>
+                      <th>provider_event_id</th>
+                      <th>status_message</th>
+                      <th>occurred_at</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+            """);
+
+        if (bounceEvents.Count == 0)
+        {
+            html.AppendLine("""
+                      <tr>
+                        <td class="empty-row" colspan="6">バウンス履歴はありません</td>
+                      </tr>
+                """);
+        }
+        else
+        {
+            foreach (var bounce in bounceEvents)
+                AppendBounceEventRow(html, bounce);
+        }
+
+        html.AppendLine("""
+                  </tbody>
+                </table>
+              </section>
+            """);
+    }
+
+    private static void AppendBounceEventRow(StringBuilder html, AdminBounceEventRow bounce)
+    {
+        html.AppendLine("                  <tr>");
+        AppendCell(html, bounce.DeliveryStatus);
+        AppendCell(html, bounce.Provider);
+        AppendCell(html, bounce.ProviderMessageId);
+        AppendCell(html, bounce.ProviderEventId);
+        AppendCell(html, bounce.StatusMessage ?? string.Empty);
+        AppendCell(html, FormatLocalTime(bounce.OccurredAt));
         html.AppendLine("                  </tr>");
     }
 
