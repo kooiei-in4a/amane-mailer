@@ -27,7 +27,11 @@ public sealed class RetentionService(
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Retention sweep failed.");
+                    SqliteDatabaseExceptionLogging.LogError(
+                        logger,
+                        ex,
+                        "Retention sweep failed due to SQLite storage full (SQLITE_FULL).",
+                        "Retention sweep failed.");
                 }
             }
         }

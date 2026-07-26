@@ -52,7 +52,7 @@ services:
       mailpit:
         condition: service_started
     environment:
-      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__Mailer: "Data Source=/app/data/mailer.db"
       MAILER_TENANTS_PATH: ${MAILER_TENANTS_PATH:-/app/config/mailer/tenants.example.json}
@@ -62,6 +62,11 @@ services:
       MAILPIT_SMTP_PORT: ${MAILPIT_SMTP_PORT:-1025}
       MAILPIT_SMTP_USE_SSL: ${MAILPIT_SMTP_USE_SSL:-false}
       ACS_CONNECTION_STRING: ${ACS_CONNECTION_STRING:-}
+      # Default local compose uses ASPNETCORE_ENVIRONMENT=Production, so metrics bearer is
+      # required when enabled (#283). Override via MAILER_METRICS_BEARER_TOKEN.
+      # For Admin HTTP cookies (AMANE_ADMIN_ALLOW_HTTP=true), set
+      # ASPNETCORE_ENVIRONMENT=Development — Production + ALLOW_HTTP=true fails startup (#341).
+      MAILER_METRICS_BEARER_TOKEN: ${MAILER_METRICS_BEARER_TOKEN:-local-metrics-scrape-token}
       AMANE_ADMIN_ENABLED: ${AMANE_ADMIN_ENABLED:-false}
       AMANE_ADMIN_USERNAME: ${AMANE_ADMIN_USERNAME:-admin}
       AMANE_ADMIN_PASSWORD_HASH: ${AMANE_ADMIN_PASSWORD_HASH:-}

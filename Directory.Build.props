@@ -2,5 +2,9 @@
   <PropertyGroup>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <DisableImplicitLibraryPacksFolder>true</DisableImplicitLibraryPacksFolder>
+    <!-- #359: keep SDK analyzers on; code-style rules participate in build when severity=error. -->
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- Do not switch AnalysisMode to All here; staged rules live in .editorconfig. -->
   </PropertyGroup>
 </Project>

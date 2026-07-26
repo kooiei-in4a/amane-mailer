@@ -38,7 +38,8 @@ after publishing a release, verify and record the following items.
   again.
 - SQLite deployment assumes single-node / single-replica operation. Horizontally
   scaling multiple Workers over one shared SQLite file is currently out of
-  operational scope.
+  operational scope (start gates and non-goals:
+  [ADR 0019](../adr/0019-sqlite-single-process-boundaries.md)).
 - State the Docker image platforms using the same notation as the Docker
   manifest. For a single-platform release, state a constraint such as
   `linux/amd64 only`; for a multi-arch release, record per-platform digests and
@@ -49,8 +50,8 @@ after publishing a release, verify and record the following items.
 - Take a backup of the SQLite DB and tenant config before upgrade / migration,
   and verify the restore procedure for production.
 - For GHCR image publish, confirm `publish-image.yml` release-critical validation
-  (restore / build / test, OpenAPI validation, contract drift, version alignment)
-  passed before image push.
+  (restore / NuGet vulnerability audit / build / test, OpenAPI validation,
+  contract drift, version alignment) passed before image push.
 - ACS live sending requires explicit configuration. Send live mail only when
   `MAILER_PROVIDER=acs`, a Staging/Production file secret registered via
   `admin provider register-acs` (`ACS_CONNECTION_STRING_FILE`; bare

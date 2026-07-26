@@ -1,4 +1,5 @@
 using System.Net;
+using Amane.Mailer.Configuration;
 
 namespace Amane.Mailer.Admin;
 
@@ -37,20 +38,30 @@ public sealed record MailerAdminOptions
 
     public static MailerAdminOptions Load(IConfiguration configuration)
     {
-        var enabled = ReadBoolean(configuration, "AMANE_ADMIN_ENABLED", "MAILER_ADMIN_ENABLED") ?? false;
+        // ENABLED is always strict-parsed. Other Admin UI settings are only load-bearing when
+        // Admin is on (mirrors Validate early-return), so typos must not abort mail delivery.
+        var enabled = ConfigurationBooleanReader.Read(
+            configuration,
+            defaultValue: false,
+            "AMANE_ADMIN_ENABLED",
+            "MAILER_ADMIN_ENABLED");
+        if (!enabled)
+            return new() { Enabled = false };
+
         var listPiiVisible = string.Equals(
             ReadString(configuration, "AMANE_ADMIN_PII_LIST_MODE", "MAILER_ADMIN_PII_LIST_MODE", string.Empty),
             "visible",
             StringComparison.OrdinalIgnoreCase);
         var defaultMaskPii = !listPiiVisible;
-        var hashNetworkIdentifiers = ReadBoolean(
+        var hashNetworkIdentifiers = ConfigurationBooleanReader.Read(
             configuration,
+            defaultValue: false,
             "AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS",
-            "MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS") ?? false;
+            "MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS");
 
         return new()
         {
-            Enabled = enabled,
+            Enabled = true,
             Username = ReadString(configuration, "AMANE_ADMIN_USERNAME", "MAILER_ADMIN_USERNAME", "admin"),
             PasswordHash = ReadString(configuration, "AMANE_ADMIN_PASSWORD_HASH", "MAILER_ADMIN_PASSWORD_HASH", string.Empty),
             AllowedLocalAddress = ReadString(
@@ -93,9 +104,15 @@ public sealed record MailerAdminOptions
                     "MAILER_ADMIN_AUDIT_IDENTIFIER_HASH_KEY",
                     string.Empty))
                 : null,
-            MaskRecipients = ReadBoolean(configuration, "AMANE_ADMIN_MASK_RECIPIENTS", "MAILER_ADMIN_MASK_RECIPIENTS")
+            MaskRecipients = ConfigurationBooleanReader.ReadOptional(
+                    configuration,
+                    "AMANE_ADMIN_MASK_RECIPIENTS",
+                    "MAILER_ADMIN_MASK_RECIPIENTS")
                 ?? defaultMaskPii,
-            MaskSubjects = ReadBoolean(configuration, "AMANE_ADMIN_MASK_SUBJECTS", "MAILER_ADMIN_MASK_SUBJECTS")
+            MaskSubjects = ConfigurationBooleanReader.ReadOptional(
+                    configuration,
+                    "AMANE_ADMIN_MASK_SUBJECTS",
+                    "MAILER_ADMIN_MASK_SUBJECTS")
                 ?? defaultMaskPii,
         };
     }
@@ -112,7 +129,14 @@ public sealed record MailerAdminOptions
             throw new InvalidOperationException("AMANE_ADMIN_PASSWORD_HASH must be set when AMANE_ADMIN_ENABLED=true.");
 
         if (!AdminPasswordHasher.IsSupportedHash(PasswordHash))
-            throw new InvalidOperationException("AMANE_ADMIN_PASSWORD_HASH must use the pbkdf2:sha256 format.");
+        {
+            throw new InvalidOperationException(
+                "AMANE_ADMIN_PASSWORD_HASH must use pbkdf2:sha256 with iterations "
+                + $"{AdminPasswordHasher.MinIterations}-{AdminPasswordHasher.MaxIterations}, "
+                + $"salt {AdminPasswordHasher.MinSaltSize}-{AdminPasswordHasher.MaxSaltSize} bytes, "
+                + $"and hash {AdminPasswordHasher.MinHashSize}-{AdminPasswordHasher.MaxHashSize} bytes. "
+                + "Generate a compliant hash with 'admin hash-password'. Legacy weaker hashes are rejected.");
+        }
 
         if (!IPAddress.TryParse(AllowedLocalAddress, out _))
             throw new InvalidOperationException(
@@ -183,74 +207,57 @@ public sealed record MailerAdminOptions
         return defaultValue;
     }
 
-    private static bool? ReadBoolean(IConfiguration configuration, string primaryKey, string fallbackKey)
-    {
-        var value = configuration[primaryKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
-
-        value = configuration[fallbackKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
-
-        return null;
-    }
-
     private static int ReadPositiveInt(
+        IConfiguration configuration,
+        int defaultValue,
+        string primaryKey,
+        string fallbackKey) =>
+        ReadPositiveDurationValue(configuration, defaultValue, primaryKey, fallbackKey);
+
+    private static TimeSpan ReadPositiveSeconds(
+        IConfiguration configuration,
+        int defaultSeconds,
+        string primaryKey,
+        string fallbackKey) =>
+        TimeSpan.FromSeconds(ReadPositiveDurationValue(configuration, defaultSeconds, primaryKey, fallbackKey));
+
+    private static TimeSpan ReadPositiveMinutes(
+        IConfiguration configuration,
+        int defaultMinutes,
+        string primaryKey,
+        string fallbackKey) =>
+        TimeSpan.FromMinutes(ReadPositiveDurationValue(configuration, defaultMinutes, primaryKey, fallbackKey));
+
+    private static TimeSpan ReadPositiveHours(
+        IConfiguration configuration,
+        int defaultHours,
+        string primaryKey,
+        string fallbackKey) =>
+        TimeSpan.FromHours(ReadPositiveDurationValue(configuration, defaultHours, primaryKey, fallbackKey));
+
+    private static int ReadPositiveDurationValue(
         IConfiguration configuration,
         int defaultValue,
         string primaryKey,
         string fallbackKey)
     {
         var value = configuration[primaryKey];
+        var key = primaryKey;
         if (string.IsNullOrWhiteSpace(value))
+        {
             value = configuration[fallbackKey];
+            key = fallbackKey;
+        }
 
-        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : defaultValue;
-    }
-
-    private static TimeSpan ReadPositiveSeconds(
-        IConfiguration configuration,
-        int defaultSeconds,
-        string primaryKey,
-        string fallbackKey)
-    {
-        var value = configuration[primaryKey];
         if (string.IsNullOrWhiteSpace(value))
-            value = configuration[fallbackKey];
+            return defaultValue;
 
-        return int.TryParse(value, out var parsed) && parsed > 0
-            ? TimeSpan.FromSeconds(parsed)
-            : TimeSpan.FromSeconds(defaultSeconds);
-    }
+        if (!int.TryParse(value, out var parsed) || parsed <= 0)
+        {
+            throw new InvalidOperationException(
+                $"{key} must be a positive integer.");
+        }
 
-    private static TimeSpan ReadPositiveMinutes(
-        IConfiguration configuration,
-        int defaultMinutes,
-        string primaryKey,
-        string fallbackKey)
-    {
-        var value = configuration[primaryKey];
-        if (string.IsNullOrWhiteSpace(value))
-            value = configuration[fallbackKey];
-
-        return int.TryParse(value, out var parsed) && parsed > 0
-            ? TimeSpan.FromMinutes(parsed)
-            : TimeSpan.FromMinutes(defaultMinutes);
-    }
-
-    private static TimeSpan ReadPositiveHours(
-        IConfiguration configuration,
-        int defaultHours,
-        string primaryKey,
-        string fallbackKey)
-    {
-        var value = configuration[primaryKey];
-        if (string.IsNullOrWhiteSpace(value))
-            value = configuration[fallbackKey];
-
-        return int.TryParse(value, out var parsed) && parsed > 0
-            ? TimeSpan.FromHours(parsed)
-            : TimeSpan.FromHours(defaultHours);
+        return parsed;
     }
 }

@@ -93,6 +93,27 @@ docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps ma
 
 Mailer コンテナは `ConnectionStrings__Mailer` で同一 SQLite DB を参照する必要があります。scoped 管理者の再作成（同一 username）は tenant scope を更新し、対象管理者の全 session を即時失効します（ADR 0013 D-04）。
 
+## Admin boolean / numeric environment values
+
+Admin UI の boolean / 正の数値 env は **strict parse** です。ただし **Admin UI 用の値は `AMANE_ADMIN_ENABLED=true` のときだけ** 検証します（`Validate()` と同様）。Admin が無効のとき、mask / login limit などの typo は配送本体の起動を止めません。
+
+| 種別 | 許容値 | 未設定 | 不正値 |
+|------|--------|--------|--------|
+| `AMANE_ADMIN_ENABLED` / `MAILER_ADMIN_ENABLED` | `true` / `false`（`bool.TryParse` 互換） | `false` | **常に起動失敗** |
+| その他 Admin UI boolean（mask / hash-network / db-ops / `ALLOW_HTTP` 等） | `true` / `false` | 既存 default | **Admin 有効時のみ起動失敗**（Admin 無効時は `ALLOW_HTTP` の typo も無視） |
+| Admin UI 正の整数（login failure limit 等） | `1` 以上の整数 | 既存 default | **Admin 有効時のみ起動失敗** |
+| audit retention 数値（`MAILER_ADMIN_AUDIT_RETENTION_*`） | 範囲内の整数（Days 1–3650、SweepHours 1–168、SweepSeconds 1–604800、BatchSize 1–1000） | 既存 default（例: 180 日） | **常に起動失敗**（worker の audit sweep が参照するため。Admin UI の on/off とは独立） |
+
+### Worker / Metrics / Mailpit boolean・host／port（#358 / #356）
+
+`Mailer__Worker__Enabled` / `Mailer__Metrics__Enabled` / `Mailer__Mailpit__UseSsl`（および `MAILPIT_SMTP_USE_SSL`）も同じ **strict boolean** 規則（未設定は既定、empty／whitespace／typo は起動失敗）。Mailpit SMTP host（`Mailer__Mailpit__SmtpHost` / `MAILPIT_SMTP_HOST`）と port（`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`、**1–65535**）は、effective provider が `mailpit` のテナントがあるときのみ startup 検証する（#356）。ACS のみの構成では未使用の host／port typo は起動を止めない。`UseSsl` は #358 どおり常に Load 時検証。primary key が存在する（値がある／空含む）場合は fallback より優先し、empty を未設定扱いしない。
+
+### Worker / Webhook / Sweep / Retention / Healthcheck 数値
+
+`Mailer__Worker__*` / `Mailer__Webhook__*` / `Mailer__Sweep__*` / `Mailer__Retention__*` / `Mailer__Healthcheck__*` は **strict validation**（#329）。未設定は既定値。空文字・形式不正・0／負数・上限超過は起動失敗（clamp しない）。許容範囲は [サービス仕様 5.2](../service-spec.md#52-worker--sweep--retention環境変数) を参照。起動失敗時はログのキー名と range を確認する（secret は出ない）。Webhook の reconcile 件数は `Mailer__Webhook__ReconcileBatchSize`（#353）。旧 `Mailer__Webhook__BatchClaimSize` は deprecated alias（新キー優先 + Warning）。配送は引き続き 1 件ずつ claim する。
+
+typo（例: `tru`、`yes`、`abc`）は silent default にせず、上記の適用範囲で startup 検出します。
+
 ## Admin audit identifier hash key rotation
 
 `AMANE_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`（または `MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true`）の環境では、
@@ -235,16 +256,20 @@ Docker の port publish 経由で管理画面へ入るため、`AMANE_ADMIN_ALLO
 実際の host 側公開範囲は compose の `ports`（この runbook では `127.0.0.1:5280:8080`）で制限します。
 旧 `AMANE_ADMIN_BIND` / `MAILER_ADMIN_BIND` は deprecated alias として残っています。
 `AMANE_ADMIN_ALLOW_HTTP=true` と `AMANE_ADMIN_PII_LIST_MODE=visible` はローカル確認専用です。
+`AMANE_ADMIN_ALLOW_HTTP=true` は **Development 専用**です。Admin 有効時に Production／Staging で
+`true` を指定すると Mailer は startup failure になります。ローカル Docker HTTP 確認では
+`ASPNETCORE_ENVIRONMENT=Development` も合わせて設定してください。
 本番・develop deploy host では HTTP 許可や PII 表示を有効にしないでください。
 手順 5 以降の切替手順は、同じ PowerShell セッションで実行する前提です。
 別セッションで再開する場合は、手順 4 で `$hash` を作り直してから管理画面 env も再設定してください。
 
 ```powershell
+$env:ASPNETCORE_ENVIRONMENT = "Development"  # required with ALLOW_HTTP=true (#341)
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
 $env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
-$env:AMANE_ADMIN_ALLOW_HTTP = "true"       # local Docker HTTP only
+$env:AMANE_ADMIN_ALLOW_HTTP = "true"       # Development-only local Docker HTTP
 $env:AMANE_ADMIN_PII_LIST_MODE = "visible" # local UI verification only
 
 $env:MAILER_TENANTS_PATH = "/app/config/mailer/tenants.example.json"
@@ -400,7 +425,7 @@ $textBody = "Hello from local Docker Mailer via ACS."
 
 投入後、管理画面 `/admin/mail-requests` で `Local Mailer ACS smoke` が `Delivered` になることを確認します。
 ACS 側で拒否された場合は `Failed` または retry 後の `DeadLettered` になり、詳細画面の attempt に provider error が表示されます。
-表示・保存される error message は分類・サニタイズ済みのサマリです（connection string・token・URL query・メールアドレス等はマスクされ、原因分類用の `error_code` は残ります）。raw provider response は保存しません。詳細は [SECURITY.md](../../SECURITY.md) の "Provider Error Sanitization" を参照してください。
+表示・保存される error message は分類・サニタイズ済みのサマリです（connection string・token・URL query・メールアドレス等はマスクされ、原因分類用の stable `error_code`（`MailDeliveryErrorCodes`）は残ります）。raw provider response や exception 型名は `error_code` に使いません。詳細は [SECURITY.md](../../SECURITY.md) の "Provider Error Sanitization" を参照してください。
 
 ## 11. Dead Letter を確認する
 
@@ -468,6 +493,7 @@ dead_lettered_total=1
 ```powershell
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
+$env:ASPNETCORE_ENVIRONMENT = "Development"  # required with ALLOW_HTTP=true (#341)
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
 $env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"

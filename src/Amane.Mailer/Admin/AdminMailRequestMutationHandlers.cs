@@ -92,7 +92,12 @@ public static class AdminMailRequestMutationHandlers
 
         if (result.Status == ManualMailRequestMutationStatus.Succeeded)
         {
-            await deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(requestId, cancellationToken);
+            // Cancel and its success audit are committed in the transaction above. Webhook enqueue
+            // is post-commit best-effort: it must not turn the committed mutation into a failure,
+            // and it must not observe the request token, so a client disconnect cannot skip it.
+            // Reconciliation recreates a missing event. Matches the consumer cancel path
+            // (#390, mirroring #269).
+            await deliveryEventEnqueuer.TryEnqueueAfterCommitAsync(requestId);
         }
 
         return await CompleteMutationAsync(

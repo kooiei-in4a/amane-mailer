@@ -92,6 +92,27 @@ docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps ma
 
 The Mailer container must reference the same SQLite database via `ConnectionStrings__Mailer`. Re-running scoped admin creation for the same username updates tenant scopes and revokes all active sessions for that admin immediately (ADR 0013 D-04).
 
+## Admin boolean / numeric environment values
+
+Admin UI boolean and positive-integer environment variables use **strict parse**. Admin UI values are enforced **only when `AMANE_ADMIN_ENABLED=true`** (same gate as `Validate()`). When Admin is disabled, typos in mask / login-limit settings do not abort mail delivery startup.
+
+| Kind | Allowed values | Unset | Invalid |
+|------|----------------|-------|---------|
+| `AMANE_ADMIN_ENABLED` / `MAILER_ADMIN_ENABLED` | `true` / `false` (`bool.TryParse` compatible) | `false` | **Always fails startup** |
+| Other Admin UI booleans (mask / hash-network / db-ops / `ALLOW_HTTP`, etc.) | `true` / `false` | Existing defaults | **Fails startup only when Admin is enabled** (when Admin is disabled, `ALLOW_HTTP` typos are ignored) |
+| Admin UI positive integers (login failure limit, etc.) | Integer ≥ `1` | Existing defaults | **Fails startup only when Admin is enabled** |
+| Audit retention numerics (`MAILER_ADMIN_AUDIT_RETENTION_*`) | Integer in range (Days 1–3650, SweepHours 1–168, SweepSeconds 1–604800, BatchSize 1–1000) | Existing defaults (e.g. 180 days) | **Always fails startup** (used by the worker audit sweep; independent of Admin UI on/off) |
+
+### Worker / Metrics / Mailpit boolean, host, and port (#358 / #356)
+
+`Mailer__Worker__Enabled` / `Mailer__Metrics__Enabled` / `Mailer__Mailpit__UseSsl` (and `MAILPIT_SMTP_USE_SSL`) use the same **strict boolean** rule (unset keeps the default; empty / whitespace / typos fail startup). Mailpit SMTP host (`Mailer__Mailpit__SmtpHost` / `MAILPIT_SMTP_HOST`) and port (`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`, **1–65535**) are validated at startup only when any tenant uses effective provider `mailpit` (#356). ACS-only configurations ignore unused host/port typos. `UseSsl` remains always validated at Load per #358. When a primary key is present (including empty), it takes precedence over the fallback and is not treated as unset.
+
+### Worker / Webhook / Sweep / Retention / Healthcheck numerics
+
+`Mailer__Worker__*` / `Mailer__Webhook__*` / `Mailer__Sweep__*` / `Mailer__Retention__*` / `Mailer__Healthcheck__*` use **strict validation** (#329). Unset keeps defaults. Empty string, malformed, zero/negative, and over-max values fail startup (no clamp). Allowed ranges: [service spec §5.2](../service-spec.en.md#52-worker--sweep--retention-environment-variables). On failure, check the log for the key and range (secrets are not included). Webhook reconcile search size is `Mailer__Webhook__ReconcileBatchSize` (#353). Legacy `Mailer__Webhook__BatchClaimSize` remains a deprecated alias (new key wins + warning). Delivery still claims one event at a time.
+
+Typos such as `tru`, `yes`, or `abc` are not silently defaulted within the scopes above.
+
 ## Admin audit retention
 
 `MAILER_ADMIN_AUDIT_RETENTION_DAYS` (fallback: `AMANE_ADMIN_AUDIT_RETENTION_DAYS`)
@@ -215,16 +236,20 @@ This is a `/admin` request `Connection.LocalIpAddress` allowlist, not a socket b
 The actual host exposure is still limited by compose `ports` (`127.0.0.1:5280:8080` in this runbook).
 The old `AMANE_ADMIN_BIND` / `MAILER_ADMIN_BIND` names remain as deprecated aliases.
 `AMANE_ADMIN_ALLOW_HTTP=true` and `AMANE_ADMIN_PII_LIST_MODE=visible` are for local verification only.
+`AMANE_ADMIN_ALLOW_HTTP=true` is **Development-only**. When Admin is enabled, Production/Staging with
+`true` causes Mailer startup failure. For local Docker HTTP verification, also set
+`ASPNETCORE_ENVIRONMENT=Development`.
 Do not enable HTTP or PII display on production or develop deploy hosts.
 Switching steps from section 5 onward assume the same PowerShell session.
 If you resume in a new session, regenerate `$hash` in section 4 and reconfigure the admin env vars.
 
 ```powershell
+$env:ASPNETCORE_ENVIRONMENT = "Development"  # required with ALLOW_HTTP=true (#341)
 $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
 $env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
-$env:AMANE_ADMIN_ALLOW_HTTP = "true"       # local Docker HTTP only
+$env:AMANE_ADMIN_ALLOW_HTTP = "true"       # Development-only local Docker HTTP
 $env:AMANE_ADMIN_PII_LIST_MODE = "visible" # local UI verification only
 
 $env:MAILER_TENANTS_PATH = "/app/config/mailer/tenants.example.json"
@@ -380,7 +405,7 @@ $textBody = "Hello from local Docker Mailer via ACS."
 
 After submission, confirm `Local Mailer ACS smoke` shows `Delivered` on `/admin/mail-requests`.
 If ACS rejects the send, status becomes `Failed` or `DeadLettered` after retries, and the detail view shows the provider error on the attempt.
-The displayed and stored error message is a classified, sanitized summary (connection strings, tokens, URL query strings, and email addresses are masked, while the triage `error_code` is kept). Raw provider responses are not stored. See "Provider Error Sanitization" in [SECURITY.md](../../SECURITY.md) for details.
+The displayed and stored error message is a classified, sanitized summary (connection strings, tokens, URL query strings, and email addresses are masked, while the stable triage `error_code` from `MailDeliveryErrorCodes` is kept). Raw provider responses and exception type names are not used as `error_code`. See "Provider Error Sanitization" in [SECURITY.md](../../SECURITY.md) for details.
 
 ## 11. Verify Dead Letter
 
@@ -450,6 +475,7 @@ $env:AMANE_ADMIN_ENABLED = "true"
 $env:AMANE_ADMIN_USERNAME = "admin"
 $env:AMANE_ADMIN_PASSWORD_HASH = $hash
 $env:AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS = "0.0.0.0"
+$env:ASPNETCORE_ENVIRONMENT = "Development"  # required with ALLOW_HTTP=true (#341)
 $env:AMANE_ADMIN_ALLOW_HTTP = "true"
 $env:AMANE_ADMIN_PII_LIST_MODE = "visible"
 

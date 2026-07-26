@@ -21,6 +21,85 @@ public sealed class SqlMigrationRunner
         _migrationDirectory = migrationDirectory;
     }
 
+    /// <summary>
+    /// Test-only gate invoked after a migration script and schema_migrations insert run,
+    /// and before COMMIT. Used to cancel mid-transaction without relying on wall-clock sleep.
+    /// </summary>
+    internal Func<CancellationToken, Task>? BeforeMigrationCommitForTests { get; set; }
+
+    /// <summary>
+    /// Returns true when the database has every bundled migration applied with matching
+    /// checksums and the objects required by the current binary (including
+    /// <c>delivery_events</c> and <c>mail_requests.scheduled_at</c>).
+    /// </summary>
+    /// <remarks>
+    /// Returns <c>false</c> only for intentional schema mismatch (missing directory/files,
+    /// missing required objects, applied version/checksum drift). Probe execution failures
+    /// such as <see cref="SqliteException"/>, I/O errors, and cancellation propagate so
+    /// <see cref="MailerReadinessEvaluator"/> can classify them (#342).
+    /// </remarks>
+    public async Task<bool> IsCurrentSchemaReadyAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(_migrationDirectory))
+        {
+            return false;
+        }
+
+        var migrations = await LoadMigrationsAsync(_migrationDirectory, cancellationToken);
+        if (migrations.Count == 0)
+        {
+            return false;
+        }
+
+        await using var connection = await _connections.OpenSchemaProbeConnectionAsync(cancellationToken);
+        if (!await HasRequiredRuntimeSchemaObjectsAsync(connection, cancellationToken))
+        {
+            return false;
+        }
+
+        if (!await HasChecksumColumnAsync(connection, cancellationToken))
+        {
+            return false;
+        }
+
+        var migrationsByVersion = migrations.ToDictionary(
+            migration => migration.Version,
+            StringComparer.Ordinal);
+        var appliedMigrations = await GetAppliedMigrationsAsync(connection, cancellationToken);
+
+        if (appliedMigrations.Count != migrationsByVersion.Count)
+        {
+            return false;
+        }
+
+        foreach (var appliedMigration in appliedMigrations.Values)
+        {
+            if (!migrationsByVersion.TryGetValue(appliedMigration.Version, out var migrationFile))
+            {
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(appliedMigration.Checksum)
+                || !string.Equals(
+                    migrationFile.Checksum,
+                    appliedMigration.Checksum,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        foreach (var migration in migrations)
+        {
+            if (!appliedMigrations.ContainsKey(migration.Version))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public async Task<IReadOnlyList<string>> ApplyPendingAsync(CancellationToken cancellationToken = default)
     {
         if (!Directory.Exists(_migrationDirectory))
@@ -46,7 +125,9 @@ public sealed class SqlMigrationRunner
                 continue;
             }
 
-            await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+            // CA2000: prefer explicit try/finally DisposeAsync over `await using var` here.
+            // The analyzer false-positives the using-declaration form in this loop+continue path.
+            var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
             try
             {
                 await using (var script = connection.CreateCommand())
@@ -67,6 +148,11 @@ public sealed class SqlMigrationRunner
                     await record.ExecuteNonQueryAsync(cancellationToken);
                 }
 
+                if (BeforeMigrationCommitForTests is { } beforeCommit)
+                {
+                    await beforeCommit(cancellationToken);
+                }
+
                 await transaction.CommitAsync(cancellationToken);
                 applied.Add(migration.Version);
             }
@@ -74,6 +160,10 @@ public sealed class SqlMigrationRunner
             {
                 await transaction.RollbackAsync(cancellationToken);
                 throw;
+            }
+            finally
+            {
+                await transaction.DisposeAsync();
             }
         }
 
@@ -158,6 +248,44 @@ public sealed class SqlMigrationRunner
             backfill.Parameters.AddWithValue("@Checksum", migration.Checksum);
             await backfill.ExecuteNonQueryAsync(cancellationToken);
         }
+    }
+
+    private static async Task<bool> HasRequiredRuntimeSchemaObjectsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using (var tables = connection.CreateCommand())
+        {
+            tables.CommandText = """
+                SELECT COUNT(*)
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name IN (
+                    'schema_migrations',
+                    'mail_requests',
+                    'mail_attempts',
+                    'worker_heartbeats',
+                    'delivery_events');
+                """;
+            var tableCount = await tables.ExecuteScalarAsync(cancellationToken);
+            if (tableCount is not long count || count != 5L)
+            {
+                return false;
+            }
+        }
+
+        await using var columns = connection.CreateCommand();
+        columns.CommandText = "PRAGMA table_info(mail_requests);";
+        await using var reader = await columns.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(reader.GetString(1), "scheduled_at", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task<bool> HasChecksumColumnAsync(

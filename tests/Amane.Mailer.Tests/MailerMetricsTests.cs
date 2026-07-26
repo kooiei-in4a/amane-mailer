@@ -1,16 +1,20 @@
 using System.Globalization;
 using System.Net;
 using System.Text;
+using Amane.Mailer.Configuration;
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
+using Amane.Mailer.Webhooks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 
 namespace Amane.Mailer.Tests;
 
@@ -56,6 +60,11 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
             ct);
 
         using var client = CreateClient(fixture.Factory);
+        using var readyResponse = await client.GetAsync("/readyz", ct);
+        Assert.True(
+            readyResponse.StatusCode is HttpStatusCode.OK or HttpStatusCode.ServiceUnavailable,
+            $"Unexpected /readyz status: {readyResponse.StatusCode}");
+
         using var response = await client.GetAsync("/metrics", ct);
         var body = await response.Content.ReadAsStringAsync(ct);
 
@@ -67,8 +76,67 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         Assert.Contains("mail_queue_oldest_age_seconds", body, StringComparison.Ordinal);
         Assert.Contains("mail_retries_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_finalize_skipped_total", body, StringComparison.Ordinal);
+        Assert.Contains("mail_webhook_finalize_skipped_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_dead_letters_total", body, StringComparison.Ordinal);
+        Assert.Contains("mail_webhook_events_pending", body, StringComparison.Ordinal);
+        Assert.Contains("mail_webhook_events_dead_lettered", body, StringComparison.Ordinal);
         Assert.Contains("mail_worker_heartbeat_age_seconds", body, StringComparison.Ordinal);
+        Assert.Contains("mail_ready", body, StringComparison.Ordinal);
+        Assert.Contains("mail_readiness_failure", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Metrics_webhook_values_match_db_stats()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SeedDeliveryEventAsync(
+            MailerWebApplicationFixtureBase.TenantId,
+            DeliveryEventState.Pending,
+            ct);
+        await SeedDeliveryEventAsync(
+            MailerWebApplicationFixtureBase.TenantId,
+            DeliveryEventState.Delivering,
+            ct);
+        await SeedDeliveryEventAsync(
+            OtherTenantId,
+            DeliveryEventState.DeadLettered,
+            ct);
+        await SeedDeliveryEventAsync(
+            OtherTenantId,
+            DeliveryEventState.Delivered,
+            ct);
+
+        var factory = new SqliteConnectionFactory(
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Mailer"] = fixture.ConnectionString,
+                })
+                .Build());
+        var command = new DbStatsCommand(factory, () => FixedNow);
+        var cliOutput = new StringWriter();
+        var cliError = new StringWriter();
+        var exitCode = await command.ExecuteAsync(["db", "stats"], cliOutput, cliError, ct);
+
+        Assert.Equal(DbStatsCommand.SuccessExitCode, exitCode);
+        var cliStats = ParseStats(cliOutput.ToString());
+
+        using var client = CreateClient(fixture.Factory);
+        using var response = await client.GetAsync("/metrics", ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("# TYPE mail_webhook_events_pending gauge", body, StringComparison.Ordinal);
+        Assert.Contains("# TYPE mail_webhook_events_dead_lettered gauge", body, StringComparison.Ordinal);
+        Assert.Contains(
+            "mail_webhook_events_pending " + cliStats["webhook_events_pending"],
+            body,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "mail_webhook_events_dead_lettered " + cliStats["webhook_events_dead_lettered"],
+            body,
+            StringComparison.Ordinal);
+        Assert.Contains("mail_queue_ready_count", body, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -176,6 +244,55 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         {
             ["Mailer:Metrics:BearerToken"] = MetricsBearerToken,
         });
+
+        using var client = CreateClient(factory);
+        using var unauthorized = await client.GetAsync("/metrics", ct);
+        Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+
+        using var authorized = await SendMetricsAsync(client, MetricsBearerToken, ct);
+        Assert.Equal(HttpStatusCode.OK, authorized.StatusCode);
+    }
+
+    [Fact]
+    public async Task Metrics_startup_fails_in_production_without_bearer_when_enabled()
+    {
+        await using var factory = CreateFactory(
+            new Dictionary<string, string?>(),
+            environmentName: Environments.Production);
+
+        // MailerStartupValidator eagerly resolves MailerMetricsOptions after Build(),
+        // so host construction must fail closed (#351).
+        var ex = Assert.Throws<InvalidOperationException>(() => CreateClient(factory));
+        Assert.Contains("BearerToken", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Metrics_startup_allows_production_when_metrics_disabled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var factory = CreateFactory(
+            new Dictionary<string, string?>
+            {
+                ["Mailer:Metrics:Enabled"] = "false",
+            },
+            environmentName: Environments.Production);
+
+        using var client = CreateClient(factory);
+        using var response = await client.GetAsync("/metrics", ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Metrics_startup_allows_production_with_bearer_configured()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var factory = CreateFactory(
+            new Dictionary<string, string?>
+            {
+                ["MAILER_METRICS_BEARER_TOKEN"] = MetricsBearerToken,
+            },
+            environmentName: Environments.Production);
 
         using var client = CreateClient(factory);
         using var unauthorized = await client.GetAsync("/metrics", ct);
@@ -529,7 +646,9 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         Assert.Contains("mail_deliveries_total{result=\"delivered\",provider=\"mailpit\"} 1", body, StringComparison.Ordinal);
     }
 
-    private WebApplicationFactory<global::Program> CreateFactory(IReadOnlyDictionary<string, string?> extraConfiguration)
+    private WebApplicationFactory<global::Program> CreateFactory(
+        IReadOnlyDictionary<string, string?> extraConfiguration,
+        string environmentName = "Testing")
     {
         var settings = new Dictionary<string, string?>
         {
@@ -546,7 +665,7 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
 
         return new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
         {
-            builder.UseEnvironment("Testing");
+            builder.UseEnvironment(environmentName);
             builder.ConfigureAppConfiguration((_, configuration) =>
             {
                 configuration.AddInMemoryCollection(settings);
@@ -647,6 +766,35 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         command.Parameters.AddWithValue("@LockToken", Guid.NewGuid().ToString("D"));
         command.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(FixedNow.AddMinutes(-1)));
         command.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(FixedNow));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task SeedDeliveryEventAsync(
+        Guid tenantId,
+        DeliveryEventState status,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO delivery_events (
+                id, tenant_id, source_service, mail_request_id, event_type, payload_json,
+                status, attempt_count, max_attempts, next_attempt_at,
+                created_at, updated_at)
+            VALUES (
+                @Id, @TenantId, @SourceService, @MailRequestId, @EventType, @PayloadJson,
+                @Status, 0, 3, NULL,
+                @Now, @Now);
+            """;
+        command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+        command.Parameters.AddWithValue("@SourceService", MailerWebApplicationFixtureBase.SourceService);
+        command.Parameters.AddWithValue("@MailRequestId", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@EventType", MailDeliveryEventType.Delivered);
+        command.Parameters.AddWithValue("@PayloadJson", """{"event_id":"00000000-0000-0000-0000-000000000099"}""");
+        command.Parameters.AddWithValue("@Status", (int)status);
+        command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(FixedNow));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 

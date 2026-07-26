@@ -11,9 +11,24 @@ Thank you for your interest in contributing.
 
 ```powershell
 dotnet restore Amane.Mailer.slnx --locked-mode
+dotnet format whitespace Amane.Mailer.slnx --verify-no-changes
 dotnet build Amane.Mailer.slnx -c Release --no-restore
 dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 ```
+
+Formatter and staged analyzer gates are documented in
+[Code quality gates](docs/ops/code-quality-gates.en.md). Analyzer severities for
+`src/**` participate in the Release build (see `.editorconfig`).
+
+When changing NuGet dependencies or lockfiles, also run the vulnerability audit
+(same command as schedule / publish CI):
+
+```powershell
+node scripts/nuget-vulnerability-audit.mjs --skip-restore
+```
+
+See [NuGet vulnerability audit](docs/ops/nuget-vulnerability-audit.en.md) for
+failure remediation and allowlist policy.
 
 4. Open a pull request to `develop` describing your change and the motivation
    behind it.
@@ -37,7 +52,7 @@ CI runs lighter checks on feature branches and full checks before release:
 
 | Trigger | Checks |
 |---------|--------|
-| Push to `feature/**` / `fix/**` | Restore, build, test |
+| Push to `feature/**` / `fix/**` | Restore, whitespace formatter verify, build, test |
 | Push to `develop` or PR to `develop` | Above + OpenAPI validation |
 | PR to `main` | Release-gate CI (Native AOT, amd64 Docker, compose smoke, OpenAPI) |
 | Push to `main` | Final CI (above + arm64 Docker) |

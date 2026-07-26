@@ -14,34 +14,8 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
 {
     public async Task WriteAsync(AdminAuditEvent auditEvent, CancellationToken cancellationToken = default)
     {
-        const string sql = """
-            INSERT INTO admin_audit_events (
-                event_type, actor, occurred_at,
-                source_ip, user_agent_summary,
-                target_type, target_id, field_name,
-                result, error_code)
-            VALUES (
-                @EventType, @Actor, @OccurredAt,
-                @SourceIp, @UserAgentSummary,
-                @TargetType, @TargetId, @FieldName,
-                @Result, @ErrorCode);
-            """;
-
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.Parameters.AddWithValue("@EventType", auditEvent.EventType);
-        command.Parameters.AddWithValue("@Actor", auditEvent.Actor);
-        command.Parameters.AddWithValue("@OccurredAt", SqliteTime.ToStorageUtc(auditEvent.OccurredAt));
-        command.Parameters.AddWithValue("@SourceIp", (object?)auditEvent.SourceIp ?? DBNull.Value);
-        command.Parameters.AddWithValue("@UserAgentSummary", (object?)auditEvent.UserAgentSummary ?? DBNull.Value);
-        command.Parameters.AddWithValue("@TargetType", (object?)auditEvent.TargetType ?? DBNull.Value);
-        command.Parameters.AddWithValue("@TargetId", (object?)auditEvent.TargetId ?? DBNull.Value);
-        command.Parameters.AddWithValue("@FieldName", (object?)auditEvent.FieldName ?? DBNull.Value);
-        command.Parameters.AddWithValue("@Result", auditEvent.Result);
-        command.Parameters.AddWithValue("@ErrorCode", (object?)auditEvent.ErrorCode ?? DBNull.Value);
-
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        await WriteAsync(auditEvent, connection, cancellationToken);
     }
 
     public async Task WriteAsync(
@@ -49,17 +23,19 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
         SqliteConnection connection,
         CancellationToken cancellationToken = default)
     {
+        var tenantId = await ResolveTenantIdAsync(auditEvent, connection, cancellationToken);
+
         await using var command = connection.CreateCommand();
         command.CommandText = """
             INSERT INTO admin_audit_events (
                 event_type, actor, occurred_at,
                 source_ip, user_agent_summary,
-                target_type, target_id, field_name,
+                target_type, target_id, tenant_id, field_name,
                 result, error_code)
             VALUES (
                 @EventType, @Actor, @OccurredAt,
                 @SourceIp, @UserAgentSummary,
-                @TargetType, @TargetId, @FieldName,
+                @TargetType, @TargetId, @TenantId, @FieldName,
                 @Result, @ErrorCode);
             """;
         command.Parameters.AddWithValue("@EventType", auditEvent.EventType);
@@ -69,6 +45,9 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
         command.Parameters.AddWithValue("@UserAgentSummary", (object?)auditEvent.UserAgentSummary ?? DBNull.Value);
         command.Parameters.AddWithValue("@TargetType", (object?)auditEvent.TargetType ?? DBNull.Value);
         command.Parameters.AddWithValue("@TargetId", (object?)auditEvent.TargetId ?? DBNull.Value);
+        command.Parameters.AddWithValue(
+            "@TenantId",
+            tenantId is null ? DBNull.Value : tenantId.Value.ToString("D"));
         command.Parameters.AddWithValue("@FieldName", (object?)auditEvent.FieldName ?? DBNull.Value);
         command.Parameters.AddWithValue("@Result", auditEvent.Result);
         command.Parameters.AddWithValue("@ErrorCode", (object?)auditEvent.ErrorCode ?? DBNull.Value);
@@ -207,7 +186,7 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
 
     /// <summary>
     /// Scoped admins see auth/session events service-wide (no mail tenant PII) and
-    /// mail_request events only when the target row is in an allowed tenant.
+    /// mail_request events only when the persisted tenant_id is in an allowed tenant.
     /// Break-glass passes <paramref name="allowedTenantIds"/> as null (no filter).
     /// </summary>
     private static void AppendAuditTenantScopeFilter(
@@ -235,11 +214,45 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
             index++;
         }
 
-        where.Append("  AND (ae.target_type IS NULL OR ae.target_type <> @MailRequestTargetType OR EXISTS (");
-        where.Append("SELECT 1 FROM mail_requests mr WHERE mr.id = ae.target_id AND mr.tenant_id IN (");
+        where.Append("  AND (ae.target_type IS NULL OR ae.target_type <> @MailRequestTargetType OR ae.tenant_id IN (");
         where.Append(string.Join(", ", parameterNames));
-        where.Append(")))");
+        where.Append("))");
         command.Parameters.AddWithValue("@MailRequestTargetType", AdminAuditLog.TargetTypes.MailRequest);
+    }
+
+    /// <summary>
+    /// Prefer the caller-supplied tenant id. When missing for a mail_request target,
+    /// resolve from the live mail_requests row so writes during Admin operations stay
+    /// scoped after later request retention deletes the join target.
+    /// </summary>
+    private static async Task<Guid?> ResolveTenantIdAsync(
+        AdminAuditEvent auditEvent,
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (auditEvent.TenantId is not null)
+            return auditEvent.TenantId;
+
+        if (!string.Equals(auditEvent.TargetType, AdminAuditLog.TargetTypes.MailRequest, StringComparison.Ordinal))
+            return null;
+
+        if (!Guid.TryParse(auditEvent.TargetId, out var mailRequestId))
+            return null;
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT tenant_id
+            FROM mail_requests
+            WHERE id = @Id
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@Id", mailRequestId.ToString("D"));
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        if (result is string tenantIdText && Guid.TryParse(tenantIdText, out var tenantId))
+            return tenantId;
+
+        return null;
     }
 
     private static AdminAuditEventRow ReadAuditEventRow(SqliteDataReader reader) =>

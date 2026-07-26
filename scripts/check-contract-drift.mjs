@@ -468,12 +468,29 @@ for (const status of deliveryStatuses) {
 }
 
 const runtimeJsonContext = read('src/Amane.Mailer/Json/MailerJsonContext.cs');
+// Keep in sync with tests/Amane.Mailer.Tests/Json/MailerJsonContextInventoryTests.cs
 for (const typeName of [
+  'MailerErrorResponse',
+  'MailerValidationErrorResponse',
+  'MailerServiceUnavailableResponse',
+  'HealthStatusResponse',
+  'ReadyStatusResponse',
+  'MailerTenantsFile',
+  'MailerTenant',
+  'MailerAddress',
+  'MailerRetryOptions',
+  'MailerWebhookConfig',
+  'List<MailerTenant>',
+  'MailDeliveryEventPayload',
+  'PlatformSenderFile',
+  'PlatformSenderAddress',
   'MailRequestCreateRequest',
   'MailRequestCreateResponse',
   'MailRequestStatusResponse',
+  'MailRequestRescheduleRequest',
   'MailRecipientDto',
-  'MailDeliveryEventPayload',
+  'MailRecipientDto[]',
+  'Dictionary<string, string>',
 ]) {
   assertContains(
     runtimeJsonContext,
@@ -488,12 +505,16 @@ assertContains(
 );
 
 const contractsJsonContext = read('src/Amane.Mailer.Contracts/Json/MailerContractsJsonContext.cs');
+// Keep in sync with tests/Amane.Mailer.Contracts.Tests/MailerContractsJsonContextInventoryTests.cs
 for (const typeName of [
   'MailRequestCreateRequest',
   'MailRequestCreateResponse',
   'MailRequestStatusResponse',
-  'MailRecipientDto',
+  'MailRequestRescheduleRequest',
   'MailDeliveryEventPayload',
+  'MailRecipientDto',
+  'MailRecipientDto[]',
+  'Dictionary<string, string>',
 ]) {
   assertContains(
     contractsJsonContext,
@@ -509,14 +530,30 @@ assertContains(
 
 const runtimeContractSources = [
   read('src/Amane.Mailer/Api/MailRequestEndpoints.cs'),
+  read('src/Amane.Mailer/Api/MailRequestRequestReader.cs'),
+  read('src/Amane.Mailer/Api/TenantRequestAuthorizer.cs'),
+  read('src/Amane.Mailer/Api/MailRequestCreateHandler.cs'),
+  read('src/Amane.Mailer/Api/MailRequestMutationHandler.cs'),
+  read('src/Amane.Mailer/Api/MailRequestHttpErrorMapper.cs'),
+  read('src/Amane.Mailer/Api/MailRequestScheduleValidator.cs'),
   read('src/Amane.Mailer/Json/MailerJsonResults.cs'),
 ].join('\n');
 
 assertMatches(
   runtimeContractSources,
-  /JsonSerializer\.Deserialize\s*\(\s*requestBody\s*,\s*MailerJsonContext\.Default\.MailRequestCreateRequest\s*\)/s,
+  /JsonSerializer\.Deserialize\s*\(\s*requestBody\s*,\s*typeInfo\s*\)/s,
   'Runtime request deserialization',
-  'JsonSerializer.Deserialize(... MailerJsonContext.Default.MailRequestCreateRequest)',
+  'JsonSerializer.Deserialize(requestBody, typeInfo)',
+);
+assertContains(
+  runtimeContractSources,
+  'MailerJsonContext.Default.MailRequestCreateRequest',
+  'Runtime create-request JSON type info',
+);
+assertContains(
+  runtimeContractSources,
+  'MailerJsonContext.Default.MailRequestRescheduleRequest',
+  'Runtime reschedule-request JSON type info',
 );
 assertMatches(
   runtimeContractSources,

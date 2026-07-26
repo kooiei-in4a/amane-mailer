@@ -9,6 +9,15 @@ public sealed record MailerWorkerOptions
     public const int FinalizeTimeoutSeconds = 10;
     public const int HostShutdownSlackSeconds = 15;
 
+    public const int MinBatchClaimSize = 1;
+    public const int MaxBatchClaimSize = 100;
+    public const int MinMaxSendConcurrency = 1;
+    public const int MaxMaxSendConcurrency = 64;
+    public const int MinSendTimeoutSeconds = 1;
+    public const int MaxSendTimeoutSeconds = 600;
+    public const int MinLeaseDurationSeconds = 1;
+    public const int MaxLeaseDurationSeconds = 86400;
+
     public int BatchClaimSize { get; init; } = DefaultBatchClaimSize;
 
     public int MaxSendConcurrency { get; init; } = DefaultMaxSendConcurrency;
@@ -27,38 +36,62 @@ public sealed record MailerWorkerOptions
 
     public TimeSpan HostShutdownTimeout => ShutdownDrainTimeout + TimeSpan.FromSeconds(HostShutdownSlackSeconds);
 
+    public static bool IsEnabled(IConfiguration configuration) =>
+        ConfigurationBooleanReader.Read(configuration, "Mailer:Worker:Enabled", true);
+
     public static MailerWorkerOptions Load(IConfiguration configuration) =>
         new()
         {
-            BatchClaimSize = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Worker:BatchClaimSize", DefaultBatchClaimSize)),
-            MaxSendConcurrency = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Worker:MaxSendConcurrency", DefaultMaxSendConcurrency)),
-            SendTimeoutSeconds = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Worker:SendTimeoutSeconds", DefaultSendTimeoutSeconds)),
-            LeaseDurationSeconds = Math.Max(
-                1,
-                configuration.GetValue("Mailer:Worker:LeaseDurationSeconds", DefaultLeaseDurationSeconds)),
+            BatchClaimSize = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Worker:BatchClaimSize",
+                DefaultBatchClaimSize,
+                MinBatchClaimSize,
+                MaxBatchClaimSize),
+            MaxSendConcurrency = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Worker:MaxSendConcurrency",
+                DefaultMaxSendConcurrency,
+                MinMaxSendConcurrency,
+                MaxMaxSendConcurrency),
+            SendTimeoutSeconds = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Worker:SendTimeoutSeconds",
+                DefaultSendTimeoutSeconds,
+                MinSendTimeoutSeconds,
+                MaxSendTimeoutSeconds),
+            LeaseDurationSeconds = ConfigurationIntReader.Read(
+                configuration,
+                "Mailer:Worker:LeaseDurationSeconds",
+                DefaultLeaseDurationSeconds,
+                MinLeaseDurationSeconds,
+                MaxLeaseDurationSeconds),
         };
 
     public void Validate()
     {
-        if (BatchClaimSize < 1)
+        if (BatchClaimSize < MinBatchClaimSize || BatchClaimSize > MaxBatchClaimSize)
         {
-            throw new InvalidOperationException("Mailer:Worker:BatchClaimSize must be at least 1.");
+            throw new InvalidOperationException(
+                $"Mailer:Worker:BatchClaimSize must be an integer between {MinBatchClaimSize} and {MaxBatchClaimSize} (inclusive).");
         }
 
-        if (MaxSendConcurrency < 1)
+        if (MaxSendConcurrency < MinMaxSendConcurrency || MaxSendConcurrency > MaxMaxSendConcurrency)
         {
-            throw new InvalidOperationException("Mailer:Worker:MaxSendConcurrency must be at least 1.");
+            throw new InvalidOperationException(
+                $"Mailer:Worker:MaxSendConcurrency must be an integer between {MinMaxSendConcurrency} and {MaxMaxSendConcurrency} (inclusive).");
         }
 
-        if (SendTimeoutSeconds < 1)
+        if (SendTimeoutSeconds < MinSendTimeoutSeconds || SendTimeoutSeconds > MaxSendTimeoutSeconds)
         {
-            throw new InvalidOperationException("Mailer:Worker:SendTimeoutSeconds must be at least 1.");
+            throw new InvalidOperationException(
+                $"Mailer:Worker:SendTimeoutSeconds must be an integer between {MinSendTimeoutSeconds} and {MaxSendTimeoutSeconds} (inclusive).");
+        }
+
+        if (LeaseDurationSeconds < MinLeaseDurationSeconds || LeaseDurationSeconds > MaxLeaseDurationSeconds)
+        {
+            throw new InvalidOperationException(
+                $"Mailer:Worker:LeaseDurationSeconds must be an integer between {MinLeaseDurationSeconds} and {MaxLeaseDurationSeconds} (inclusive).");
         }
 
         var sendWaves = (BatchClaimSize + MaxSendConcurrency - 1) / MaxSendConcurrency;

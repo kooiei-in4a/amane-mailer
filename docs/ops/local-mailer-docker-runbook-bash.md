@@ -18,7 +18,8 @@ Windows PowerShell 版 runbook の該当節、または deploy / release smoke r
 - Linux / macOS の fresh checkout では Docker の bind mount 作成権限に注意が必要です。通常は compose の
   `data-init` が `data/mailer` を準備するため、追加操作は不要です。
 - Admin UI の環境変数は `export` で設定します。`AMANE_ADMIN_ALLOW_HTTP=true` と
-  `AMANE_ADMIN_PII_LIST_MODE=visible` はローカル確認専用です。
+  `AMANE_ADMIN_PII_LIST_MODE=visible` はローカル確認専用です。`ALLOW_HTTP=true` は
+  Development 専用のため、合わせて `ASPNETCORE_ENVIRONMENT=Development` を設定してください。
 - ACS 実送信 / Dead Letter の追加確認は Windows PowerShell 版、deploy runbook、release smoke runbook を参照します。
 
 ## 前提
@@ -107,6 +108,7 @@ unset admin_password
 compose の `ports`（`127.0.0.1:5280:8080`）で制限されます。
 
 ```bash
+export ASPNETCORE_ENVIRONMENT="Development"  # required with ALLOW_HTTP=true (#341)
 export AMANE_ADMIN_ENABLED="true"
 export AMANE_ADMIN_USERNAME="admin"
 export AMANE_ADMIN_PASSWORD_HASH="$hash"
@@ -128,6 +130,8 @@ docker compose -f "$COMPOSE_FILE" up -d --wait mailer
 ```
 
 `AMANE_ADMIN_ALLOW_HTTP=true` と `AMANE_ADMIN_PII_LIST_MODE=visible` はローカル確認専用です。
+`AMANE_ADMIN_ALLOW_HTTP=true` は Development 専用です。Admin 有効時に Production／Staging で
+`true` を指定すると startup failure になります。
 本番・develop deploy host では HTTP 許可や PII 表示を有効にしないでください。
 Admin UI の公開範囲と PII 方針は [ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md) を参照してください。
 tenant / env preflight の詳細は [Mailer 設定](../../config/mailer/README.md#preflight) を参照してください。

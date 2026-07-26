@@ -33,7 +33,7 @@ services:
     restart: "no"
 
   mailer-migrate:
-    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v0.9.0}
+    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v1.0.1}
     platform: ${MAILER_IMAGE_PLATFORM:-linux/amd64}
     pull_policy: ${MAILER_PULL_POLICY:-always}
     depends_on:
@@ -52,7 +52,7 @@ services:
     restart: "no"
 
   mailer:
-    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v0.9.0}
+    image: ${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}:${MAILER_IMAGE_TAG:-v1.0.1}
     platform: ${MAILER_IMAGE_PLATFORM:-linux/amd64}
     pull_policy: ${MAILER_PULL_POLICY:-always}
     depends_on:
@@ -71,6 +71,8 @@ services:
       MAILPIT_SMTP_PORT: "1025"
       MAILPIT_SMTP_USE_SSL: "false"
       ACS_CONNECTION_STRING: ""
+      # Release smoke uses Production environment; metrics bearer is required (#283).
+      MAILER_METRICS_BEARER_TOKEN: ${MAILER_METRICS_BEARER_TOKEN:-local-metrics-scrape-token}
     volumes:
       - mailer-data:/app/data
     ports:

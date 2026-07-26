@@ -29,9 +29,13 @@ From the repository root:
 
 ```powershell
 dotnet restore Amane.Mailer.slnx --locked-mode
+dotnet format whitespace Amane.Mailer.slnx --verify-no-changes
 dotnet build Amane.Mailer.slnx -c Release --no-restore
 dotnet test Amane.Mailer.slnx -c Release --no-build --verbosity minimal
 ```
+
+See [Code quality gates](docs/ops/code-quality-gates.en.md)
+[(ja)](docs/ops/code-quality-gates.md) for formatter and staged analyzer details.
 
 ## Run With Mailpit
 
@@ -97,7 +101,7 @@ Operational runbooks:
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
 
-After v0.9.0 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v0.9.0`)
+After v1.0.1 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v1.0.1`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
 run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
@@ -105,7 +109,7 @@ run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration.
 
-For the v0.9.0 release, the default smoke tag `v0.9.0` is expected to be a
+For the v1.0.1 release, the default smoke tag `v1.0.1` is expected to be a
 **multi-arch** GHCR runtime image after publish
 (`linux/amd64` and `linux/arm64`). For smoke runs, confirm the platform in the
 release notes or Docker manifest, then set `MAILER_IMAGE_PLATFORM=linux/amd64` or

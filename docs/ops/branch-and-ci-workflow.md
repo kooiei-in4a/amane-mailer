@@ -37,15 +37,22 @@ job 名は branch protection の required status checks と一致させるため
 
 | トリガー | 実行 job |
 |----------|----------|
-| `feature/**` / `fix/**` への push | `Restore, build, and test` のみ |
+| `feature/**` / `fix/**` への push | `Restore, build, and test` のみ（whitespace formatter verify を含む） |
 | `develop` への push、または `develop` 向け PR | 上記 + `OpenAPI validation`（PR では `Native AOT publish smoke` も実行） |
 | `main` 向け PR | release gate CI（Native AOT、amd64 Docker、compose smoke、OpenAPI） |
 | `main` への push、`workflow_dispatch` | 最終 CI（上記 + arm64 Docker） |
 
+`Restore, build, and test` は restore 後に
+`dotnet format whitespace ... --verify-no-changes` を実行し、続けて Release build
+（`src/**` 向け段階 analyzer severity 含む）と test を行います。詳細は
+[Code quality gates](code-quality-gates.md) を参照してください。
+
 release gate CI に含まれる job:
 
 - `Restore, build, and test`
-- `Native AOT publish smoke`
+- `Native AOT publish smoke`（publish + `--help` に加え、linux-x64 AOT binary 上の
+  Admin / webhook HTTPS tenant 起動 / `db backup` など低頻度 path の black-box smoke。
+  スクリプト: `scripts/native-aot-path-smoke.sh`。ACS live と full webhook 配送は対象外）
 - `Docker build smoke (linux/amd64)` および集約 job `Docker build smoke`
 - `Local compose fresh data dir`
 - `OpenAPI validation`
@@ -63,6 +70,15 @@ release PR の待ち時間を短くしつつ、最終的な `main` コミット�
 意図的なトレードオフです。
 
 判定に迷う経路は fail-secure で最終 CI 側に倒します（例: `workflow_dispatch`）。
+
+### NuGet vulnerability audit
+
+NuGet の既知脆弱性（transitive 含む）は別 workflow
+[`.github/workflows/nuget-vulnerability-audit.yml`](../../.github/workflows/nuget-vulnerability-audit.yml)
+で週次 schedule / `workflow_dispatch` し、`publish-image.yml` と
+`publish-contracts.yml` でも push 前に同じスクリプトを実行します。
+手順は [NuGet vulnerability audit](nuget-vulnerability-audit.md) を参照してください。
+Dependabot の代替ではなく併用です。npm / Python は対象外です。
 
 ### concurrency
 

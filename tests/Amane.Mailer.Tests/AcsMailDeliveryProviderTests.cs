@@ -1,4 +1,5 @@
 using Amane.Mailer.Configuration;
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Delivery;
 
 namespace Amane.Mailer.Tests;
@@ -41,6 +42,6 @@ public sealed class AcsMailDeliveryProviderTests
 
         Assert.False(result.Succeeded);
         Assert.False(result.Retryable);
-        Assert.Equal("ACS_NOT_CONFIGURED", result.ErrorCode);
+        Assert.Equal(MailDeliveryErrorCodes.AcsNotConfigured, result.ErrorCode);
     }
 }

@@ -1,5 +1,6 @@
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Webhooks;
+using Amane.Mailer.Webhooks.Models;
 
 namespace Amane.Mailer.Worker;
 
@@ -21,10 +22,12 @@ public sealed class WebhookDeliverySweepService(
             try
             {
                 await deliveryEventEnqueuer.ReconcileMissingTerminalEventsAsync(
-                    webhookOptions.BatchClaimSize,
+                    webhookOptions.ReconcileBatchSize,
                     stoppingToken);
 
                 var now = timeProvider.GetUtcNow();
+                await DeadLetterExpiredDeliveringAtMaxAttemptsAsync(now, stoppingToken);
+
                 if (await repository.HasPendingWorkAsync(now, stoppingToken)
                     && !queue.TrySignalWorkAvailable())
                 {
@@ -49,5 +52,44 @@ public sealed class WebhookDeliverySweepService(
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Drains expired Delivering events at max_attempts into DeadLettered.
+    /// Batch loop mirrors <see cref="ExpiredProcessingReaper"/>; unlike mail, there is no
+    /// post-dead-letter enqueue (webhook DeadLettered is terminal).
+    /// </summary>
+    internal async Task DeadLetterExpiredDeliveringAtMaxAttemptsAsync(
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var deadLettered = await repository.DeadLetterExpiredDeliveringAtMaxAttemptsAsync(
+                now,
+                webhookOptions.ReconcileBatchSize,
+                cancellationToken);
+
+            foreach (var deliveryEvent in deadLettered)
+            {
+                LogExpiredDeliveringDeadLetter(deliveryEvent);
+            }
+
+            if (deadLettered.Count < webhookOptions.ReconcileBatchSize)
+            {
+                return;
+            }
+        }
+    }
+
+    private void LogExpiredDeliveringDeadLetter(ExpiredDeliveringDeadLetteredEvent deliveryEvent)
+    {
+        logger.LogError(
+            "Webhook delivery event {EventId} was dead-lettered after its delivering lease expired at attempt {AttemptCount}. TenantId={TenantId}; MailRequestId={MailRequestId}; ErrorCode={ErrorCode}",
+            deliveryEvent.Id,
+            deliveryEvent.AttemptCount,
+            deliveryEvent.TenantId,
+            deliveryEvent.MailRequestId,
+            deliveryEvent.ErrorCode);
     }
 }

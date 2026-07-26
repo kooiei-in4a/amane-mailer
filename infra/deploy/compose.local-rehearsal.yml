@@ -2,3 +2,8 @@ services:
   mailer:
     ports:
       - "127.0.0.1:5281:${MAILER_HTTP_PORT:-8080}"
+    environment:
+      # Local rehearsal overlay only. Deploy compose.yml keeps Production hardcoded (#341).
+      # Set ASPNETCORE_ENVIRONMENT=Development together with AMANE_ADMIN_ALLOW_HTTP=true
+      # for local Admin HTTP cookie verification.
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}

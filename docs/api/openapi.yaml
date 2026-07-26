@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Amane Mailer Service API
-  version: "0.9.0"
+  version: "1.0.1"
   description: >-
     汎用メール送信マイクロサービス。送信依頼を受け付けて永続化し、
     バックグラウンド Worker が ACS (Azure Communication Services) または Mailpit
@@ -10,10 +10,15 @@ info:
     - 認証: テナント単位の Bearer トークン
     - 冪等性: (tenant_id, source_service, mail_request_id) の一意制約。再送は 202 already_accepted、
       同一IDで内容差異は 409。
+    - 実配送の一意性: HTTP 受付の冪等性とは別契約。実メール配送は exactly-once ではなく
+      at-least-once（ACS は決定論的 operation id による緩和のみ、Mailpit は冪等性なし）。
+      詳細は docs/service-spec.md の「配送一意性（実送信の保証）」節を参照。
     - 本文/宛先/件名は利用側が組み立て、payload に載せて渡す（テンプレートは持たない）。
     - 配送結果 Webhook: テナント設定で HTTPS エンドポイントを登録すると、
       `delivered` / `failed` / `dead_lettered` / `cancelled` 時に
       `MailDeliveryEventPayload` を HMAC 署名付き POST で Push する。
+      同一 mail request 世代では **first-wins**（最初の終端状態のみ enqueue。
+      Admin 手動再送後の別終端は webhook 再送しない）。
       検証手順は docs/consumer/webhook-verification.md を参照。
   contact:
     name: Amane Mailer
@@ -37,6 +42,9 @@ paths:
       description: >-
         送信依頼を Mailer DB に永続化し 202 を返す（ACS 送信完了ではない）。
         実際の送信は Worker が非同期に行う。リクエストボディ上限は 256,000 バイト。
+        ボディは strict UTF-8 として解釈し、無効な byte sequence は置換せず 400 で拒否する。
+        202 は受付の成功のみを表し、実メール配送の exactly-once は保証しない
+        （at-least-once。詳細は docs/service-spec.md の「配送一意性（実送信の保証）」節）。
       operationId: createMailRequest
       security:
         - tenantBearer: []
@@ -54,13 +62,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/MailRequestCreateResponse'
         '400':
-          description: ボディが不正な JSON、または空
+          description: ボディが不正な JSON / 空 / 無効 UTF-8、または未知・重複 property
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 invalid:
                   value: { code: INVALID_REQUEST, message: "Request body is not valid JSON." }
+                invalidUtf8:
+                  value: { code: INVALID_REQUEST, message: "Request body is not valid UTF-8." }
         '401':
           description: テナント/トークン不一致
           content:
@@ -102,12 +112,15 @@ paths:
                 scheduledAtInPast: { value: { code: SCHEDULED_AT_IN_PAST } }
                 scheduledAtTooFar: { value: { code: SCHEDULED_AT_TOO_FAR } }
         '503':
-          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          description: >-
+            DB 障害等。busy/locked 等の一過性障害は `MAILER_TEMPORARILY_UNAVAILABLE`
+            (retryable=true)。SQLITE_FULL（disk 枯渇）は `STORAGE_FULL`（retryable=false）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+                storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
   /internal/mail-requests/{mail_request_id}/cancel:
     post:
@@ -115,7 +128,9 @@ paths:
       summary: 送信前のメール依頼をキャンセルする
       description: >-
         `queued` かつ未 claim（送信前）の依頼のみキャンセルできる。
-        成功時は `cancelled` ステータスを返す。active `processing` / `delivered` 等は 422 INVALID_STATE。
+        成功時は `cancelled` ステータスを返す。既に `cancelled` の同一キーへの再 cancel は冪等に 200 を返す。
+        active `processing` / `delivered` 等は 422 INVALID_STATE。
+        webhook enqueue は best-effort（失敗しても cancel HTTP 成功を崩さない。欠落は reconcile で補完し得る）。
         他 tenant の ID は存在有無を漏らさず 404。
       operationId: cancelMailRequest
       security:
@@ -180,12 +195,15 @@ paths:
               examples:
                 invalidState: { value: { code: INVALID_STATE } }
         '503':
-          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          description: >-
+            DB 障害等。busy/locked 等の一過性障害は `MAILER_TEMPORARILY_UNAVAILABLE`
+            (retryable=true)。SQLITE_FULL（disk 枯渇）は `STORAGE_FULL`（retryable=false）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+                storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
   /internal/mail-requests/{mail_request_id}/reschedule:
     post:
@@ -194,6 +212,7 @@ paths:
       description: >-
         `queued` かつ `attempt_count = 0`（未送信）の依頼の `scheduled_at` を更新する。
         `null` を送るとスケジュールゲートを解除し即時配送対象になる。
+        ボディは strict UTF-8 として解釈し、無効な byte sequence は置換せず 400 で拒否する。
         API 時刻は UTC。過去時刻は 422 SCHEDULED_AT_IN_PAST、最大予約期間（30 日）超過は 422 SCHEDULED_AT_TOO_FAR。
         `next_attempt_at`（再試行）とは独立。
       operationId: rescheduleMailRequest
@@ -232,10 +251,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/MailRequestStatusResponse'
         '400':
-          description: ボディまたはクエリが不正
+          description: ボディまたはクエリが不正（不正 JSON / 無効 UTF-8 を含む）
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                invalidUtf8:
+                  value: { code: INVALID_REQUEST, message: "Request body is not valid UTF-8." }
         '401':
           description: テナント/トークン不一致
           content:
@@ -274,12 +296,15 @@ paths:
               examples:
                 tooLarge: { value: { code: REQUEST_TOO_LARGE } }
         '503':
-          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          description: >-
+            DB 障害等。busy/locked 等の一過性障害は `MAILER_TEMPORARILY_UNAVAILABLE`
+            (retryable=true)。SQLITE_FULL（disk 枯渇）は `STORAGE_FULL`（retryable=false）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+                storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
   /internal/mail-requests/{mail_request_id}:
     get:
@@ -366,12 +391,15 @@ paths:
               examples:
                 notFound: { value: { code: NOT_FOUND } }
         '503':
-          description: 一時的な DB 障害等。呼び出し側はリトライ可（retryable=true）
+          description: >-
+            DB 障害等。busy/locked 等の一過性障害は `MAILER_TEMPORARILY_UNAVAILABLE`
+            (retryable=true)。SQLITE_FULL（disk 枯渇）は `STORAGE_FULL`（retryable=false）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
+                storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
   /healthz:
     get:
@@ -392,13 +420,14 @@ paths:
   /readyz:
     get:
       tags: [health]
-      summary: 受付可否（readiness、DB schema + Worker/Sweep 稼働・heartbeat 鮮度）
+      summary: 受付可否（readiness、現行 migration schema + Worker/Sweep 稼働・heartbeat 鮮度）
       operationId: readyz
       security: []
       responses:
         '200':
           description: >-
-            受付可能（DB schema OK。Worker 有効時は Worker/Sweep 両サービス稼働中かつ
+            受付可能（現行バイナリが必要とする migration が applied かつ checksum 一致。
+            Worker 有効時は Worker/Sweep 両サービス稼働中かつ
             heartbeat が Mailer:Healthcheck:MaxHeartbeatStalenessSeconds 以内）
           content:
             application/json:
@@ -408,7 +437,8 @@ paths:
                   ready: { type: boolean, const: true }
         '503':
           description: >-
-            DB 未接続・schema 未適用、Worker/Sweep BackgroundService が停止中、
+            DB 未接続・現行 schema 未適用 / migration checksum 不一致、
+            Worker/Sweep BackgroundService が停止中、
             または worker/sweep heartbeat が閾値を超えて古い
           content:
             application/json:
@@ -594,7 +624,7 @@ components:
           description: 配送成功時刻（UTC）。status が delivered の場合のみ。
         last_error_code:
           type: [string, "null"]
-          description: 直近試行の sanitized error code（raw provider message は含めない）。
+          description: 直近試行の stable delivery error code（`MailDeliveryErrorCodes`。例: ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN。raw provider message / exception 型名は含めない）。
 
     MailRequestRescheduleRequest:
       type: object
@@ -612,7 +642,9 @@ components:
       additionalProperties: false
       description: >-
         配送結果 Webhook の JSON 本文。recipient / subject / body 等の PII は含まない。
-        同一 mail request に対して 1 イベントのみ enqueue される。Consumer は event_id で重複排除する。
+        同一 mail request 世代に対して高々 1 イベントのみ enqueue される（first-wins:
+        最初の終端状態が残り、Admin 手動再送後の別終端では再 enqueue / 更新しない）。
+        Consumer は event_id で重複排除する。最新状態は status GET を正とする。
       required:
         - event_id
         - event_type
@@ -651,7 +683,7 @@ components:
           minimum: 0
         last_error_code:
           type: [string, "null"]
-          description: 最新 attempt の error_code（PII を含まない分類コード）。
+          description: 最新 attempt の stable delivery error code（`MailDeliveryErrorCodes`。PII / exception 型名を含まない分類コード）。
 
     Error:
       type: object
@@ -669,6 +701,7 @@ components:
             - INVALID_METADATA
             - UNAUTHORIZED_TENANT
             - MAILER_TEMPORARILY_UNAVAILABLE
+            - STORAGE_FULL
             - NOT_FOUND
             - SCHEDULED_AT_IN_PAST
             - SCHEDULED_AT_TOO_FAR
@@ -677,4 +710,6 @@ components:
           type: string
         retryable:
           type: boolean
-          description: true の場合、呼び出し側はバックオフ後にリトライしてよい。
+          description: >-
+            true の場合、呼び出し側はバックオフ後にリトライしてよい。
+            STORAGE_FULL は disk 解放や retention 調整が必要な構造的事象のため false。

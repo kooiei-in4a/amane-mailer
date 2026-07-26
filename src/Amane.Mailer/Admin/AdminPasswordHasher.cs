@@ -4,9 +4,18 @@ namespace Amane.Mailer.Admin;
 
 public static class AdminPasswordHasher
 {
+    // Generation defaults; acceptance bounds follow ADR 0013 (≥ 600,000 iterations)
+    // and cap work-factor / encoded size to limit login DoS and oversized inputs.
     private const int SaltSize = 16;
     private const int HashSize = 32;
     private const int Iterations = 600_000;
+
+    public const int MinIterations = 600_000;
+    public const int MaxIterations = 10_000_000;
+    public const int MinSaltSize = 16;
+    public const int MaxSaltSize = 64;
+    public const int MinHashSize = 32;
+    public const int MaxHashSize = 64;
 
     public static string Hash(string password)
     {
@@ -83,7 +92,8 @@ public static class AdminPasswordHasher
                 System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture,
                 out var iterations)
-            || iterations <= 0)
+            || iterations < MinIterations
+            || iterations > MaxIterations)
         {
             return false;
         }
@@ -92,7 +102,10 @@ public static class AdminPasswordHasher
         {
             var salt = Convert.FromBase64String(parts[3]);
             var hash = Convert.FromBase64String(parts[4]);
-            if (salt.Length < SaltSize || hash.Length < HashSize)
+            if (salt.Length < MinSaltSize
+                || salt.Length > MaxSaltSize
+                || hash.Length < MinHashSize
+                || hash.Length > MaxHashSize)
             {
                 CryptographicOperations.ZeroMemory(salt);
                 CryptographicOperations.ZeroMemory(hash);

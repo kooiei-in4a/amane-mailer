@@ -1,4 +1,5 @@
 using Amane.Mailer.Configuration;
+using Amane.Mailer.Contracts.MailRequests;
 
 namespace Amane.Mailer.Delivery;
 
@@ -16,7 +17,7 @@ public sealed class MailDeliveryProviderRouter(
             && !tenant.LiveSending)
         {
             return Task.FromResult(MailDeliveryResult.Failure(
-                "LIVE_SENDING_DISABLED",
+                MailDeliveryErrorCodes.LiveSendingDisabled,
                 "ACS delivery is disabled for this tenant because live_sending is false.",
                 retryable: false));
         }
@@ -26,7 +27,7 @@ public sealed class MailDeliveryProviderRouter(
             "mailpit" => mailpit.SendAsync(job, tenant, provider, cancellationToken),
             "acs" => acs.SendAsync(job, tenant, provider, cancellationToken),
             _ => Task.FromResult(MailDeliveryResult.Failure(
-                "UNKNOWN_PROVIDER",
+                MailDeliveryErrorCodes.UnknownProvider,
                 $"Unknown mail provider '{provider}'.",
                 retryable: false)),
         };

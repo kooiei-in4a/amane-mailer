@@ -2,6 +2,7 @@ namespace Amane.Mailer.Data.Sqlite.Models;
 
 public sealed record ExpiredProcessingDeadLetteredRequest(
     Guid Id,
+    Guid TenantId,
     Guid MailRequestId,
     int AttemptNumber,
     string ErrorCode,

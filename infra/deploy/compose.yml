@@ -42,6 +42,8 @@ services:
     mem_limit: ${MAILER_MEM_LIMIT}
     cpus: ${MAILER_CPUS}
     environment:
+      # Deploy hosts must stay Production. Do not parameterize this — local Admin HTTP
+      # rehearsal overrides ASPNETCORE_ENVIRONMENT only via compose.local-rehearsal.yml (#341).
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:${MAILER_HTTP_PORT:-8080}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: ${ASPNETCORE_FORWARDEDHEADERS_ENABLED:-false}
@@ -65,6 +67,10 @@ services:
       MAILER_REQUIRE_ACS_SECRET_FILE: "true"
       Mailer__Retention__Days: ${MAILER_RETENTION_DAYS:-90}
       Mailer__Retention__SweepIntervalHours: ${MAILER_RETENTION_SWEEP_INTERVAL_HOURS:-24}
+      # Required when Mailer:Metrics:Enabled=true under Production (#283). Leave unset only if
+      # metrics are disabled via Mailer__Metrics__Enabled=false.
+      MAILER_METRICS_BEARER_TOKEN: ${MAILER_METRICS_BEARER_TOKEN:-}
+      Mailer__Metrics__Enabled: ${MAILER_METRICS_ENABLED:-true}
       AMANE_ADMIN_ENABLED: ${AMANE_ADMIN_ENABLED:-false}
       AMANE_ADMIN_USERNAME: ${AMANE_ADMIN_USERNAME:-admin}
       AMANE_ADMIN_PASSWORD_HASH: ${AMANE_ADMIN_PASSWORD_HASH:-}
@@ -75,6 +81,8 @@ services:
       AMANE_ADMIN_BIND: ${AMANE_ADMIN_BIND:-}
       MAILER_ADMIN_BIND: ${MAILER_ADMIN_BIND:-}
       AMANE_ADMIN_ALLOW_HTTP: ${AMANE_ADMIN_ALLOW_HTTP:-false}
+      # ALLOW_HTTP=true is Development-only. With ASPNETCORE_ENVIRONMENT=Production
+      # (this compose default), true causes Mailer startup failure when Admin is enabled.
       AMANE_ADMIN_PII_LIST_MODE: ${AMANE_ADMIN_PII_LIST_MODE:-masked}
     volumes:
       - ${MAILER_DATA_PATH:-./data}:/app/data

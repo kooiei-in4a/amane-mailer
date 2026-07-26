@@ -63,6 +63,15 @@ internal static class MailRequestTestData
         return doc.RootElement.GetProperty("code").GetString();
     }
 
+    public static async Task<string?> ReadMessageAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.TryGetProperty("message", out var message)
+            ? message.GetString()
+            : null;
+    }
+
     public static async Task<string?> ReadStatusAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         var body = await response.Content.ReadAsStringAsync(cancellationToken);

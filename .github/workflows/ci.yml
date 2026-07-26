@@ -48,6 +48,9 @@ jobs:
       - name: Restore
         run: dotnet restore Amane.Mailer.slnx --locked-mode
 
+      - name: Verify C# whitespace formatter
+        run: dotnet format whitespace Amane.Mailer.slnx --verify-no-changes --verbosity diagnostic
+
       - name: Build
         run: dotnet build Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-restore
 
@@ -121,6 +124,13 @@ jobs:
         run: |
           test -x artifacts/publish/aot-linux-x64/Amane.Mailer
           artifacts/publish/aot-linux-x64/Amane.Mailer --help
+
+      # Low-frequency Native AOT paths (Admin / webhook HTTPS tenant / db backup).
+      # Complements release-smoke (core API + Mailpit on the GHCR image). See #286.
+      - name: Native AOT low-frequency path smoke
+        env:
+          MAILER_BIN: ${{ github.workspace }}/artifacts/publish/aot-linux-x64/Amane.Mailer
+        run: bash scripts/native-aot-path-smoke.sh
 
   docker-build-smoke:
     name: Docker build smoke (${{ matrix.platform }})
@@ -217,10 +227,18 @@ jobs:
       - name: Check Contracts/runtime/OpenAPI drift
         run: node scripts/check-contract-drift.mjs
 
+      - name: Check mail request field inventory (Contracts/OpenAPI/SDK)
+        run: |
+          node scripts/check-mail-request-field-inventory.mjs
+          node scripts/check-mail-request-field-inventory.mjs --self-test
+
       - name: Check implementation status manifest
         run: |
           node scripts/check-implementation-status.mjs
           node scripts/check-implementation-status.mjs --self-test
+
+      - name: Self-test NuGet vulnerability audit script
+        run: node scripts/nuget-vulnerability-audit.mjs --self-test
 
       - name: Check release smoke default tag drift
         run: node scripts/check-release-smoke-tag-drift.mjs

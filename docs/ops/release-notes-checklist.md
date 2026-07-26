@@ -34,7 +34,8 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 - Delivery は at-least-once。provider 送信成功後、Mailer DB の `delivered`
   更新前に停止した場合、同じメールが再送される可能性がある。
 - SQLite deployment は single-node / single-replica 前提。単一 SQLite file を
-  共有する複数 Worker の水平化は現在の運用対象外。
+  共有する複数 Worker の水平化は現在の運用対象外
+  （着手条件と非目標は [ADR 0019](../adr/0019-sqlite-single-process-boundaries.md)）。
 - Docker image の対応 platform を Docker manifest と同じ表記で明記する。single-platform release では
   `linux/amd64 only` のように制約を明記し、multi-arch release では platform ごとの digest / smoke 結果を記録する。
 - Admin UI は disabled by default、内部ネットワーク向け、experimental。現時点の
@@ -42,8 +43,8 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 - upgrade / migration 前に SQLite DB と tenant config の backup を取得し、
   production では restore 手順も確認する。
 - GHCR image publish 時は `publish-image.yml` の release-critical validation
-  （restore / build / test、OpenAPI validation、contract drift、version 整合性）が
-  image push 前に通過していることを確認する。
+  （restore / NuGet vulnerability audit / build / test、OpenAPI validation、
+  contract drift、version 整合性）が image push 前に通過していることを確認する。
 - ACS live sending は explicit config が必要。`MAILER_PROVIDER=acs`、
   Staging/Production では `admin provider register-acs` で登録した
   `ACS_CONNECTION_STRING_FILE`（local/drill のみ bare `ACS_CONNECTION_STRING`）、

@@ -1,3 +1,4 @@
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Microsoft.Data.Sqlite;
 
@@ -9,12 +10,20 @@ public sealed record MailerAdminDbOpsOptions
 
     public string BackupDirectory { get; init; } = string.Empty;
 
-    public static MailerAdminDbOpsOptions Load(IConfiguration configuration, string mailerConnectionString)
+    public static MailerAdminDbOpsOptions Load(
+        IConfiguration configuration,
+        string mailerConnectionString,
+        bool adminEnabled = true)
     {
-        var enabled = ReadBoolean(
+        // DbOps is Admin-only. When Admin is off, ignore DbOps env typos so mail delivery still starts.
+        if (!adminEnabled)
+            return new() { Enabled = false };
+
+        var enabled = ConfigurationBooleanReader.Read(
             configuration,
+            defaultValue: false,
             "AMANE_ADMIN_DB_OPS_ENABLED",
-            "MAILER_ADMIN_DB_OPS_ENABLED") ?? false;
+            "MAILER_ADMIN_DB_OPS_ENABLED");
 
         var backupDirectory = ReadString(
             configuration,
@@ -123,16 +132,4 @@ public sealed record MailerAdminDbOpsOptions
         return string.IsNullOrWhiteSpace(value) ? defaultValue : value;
     }
 
-    private static bool? ReadBoolean(IConfiguration configuration, string primaryKey, string fallbackKey)
-    {
-        var value = configuration[primaryKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
-
-        value = configuration[fallbackKey];
-        if (!string.IsNullOrWhiteSpace(value))
-            return bool.TryParse(value, out var parsed) && parsed;
-
-        return null;
-    }
 }

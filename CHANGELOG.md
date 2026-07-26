@@ -2,9 +2,11 @@
 
 All notable changes to Amane Mailer will be documented in this file.
 
-This project follows semantic versioning while the public API is stabilizing.
-During the 0.x series, breaking changes may still occur, but they will be
-called out in release notes and migration guidance.
+This project follows [semantic versioning](https://semver.org/). During the 0.x
+series, breaking changes could still occur and were called out in release notes
+and migration guidance. Starting with **1.0.0**, semantic versioning
+backward-compatibility guarantees apply to the public HTTP contract and the
+`Amane.Mailer.Contracts` package.
 
 Service release versions, Docker image tags (`vX.Y.Z` + immutable `sha-<git-sha>`),
 NuGet package versions (`Amane.Mailer.Contracts`), and OpenAPI `info.version` are
@@ -12,6 +14,241 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 `docs/service-spec.md` for details.
 
 ## [Unreleased]
+
+## [1.0.1] - 2026-07-26
+
+Patch release. Fixes four webhook-delivery defects that could stall notifications,
+burn CPU, or make a committed admin operation look like a failure. No HTTP contract
+change: `docs/api/openapi.yaml` schemas and `Amane.Mailer.Contracts` types are
+unchanged, so upgrading requires no consumer action.
+
+### Fixed
+
+- Converge webhook delivery events whose lease expires on the final attempt into
+  `DeadLettered` (#388). Such rows were unreachable — both the claim path and the
+  pending-work query require `attempt_count < max_attempts` for the expired branch —
+  so they stayed `Delivering` forever, never re-delivered and permanently counted in
+  `mail_webhook_events_pending`.
+- Isolate `WebhookDeliveryWorker` failures per event (#389). A malformed
+  `payload_json` or an unclassified claim / deliver / finalize exception could fault
+  the whole `BackgroundService` and stop all subsequent webhook delivery. Invalid
+  JSON now converges to `WEBHOOK_PAYLOAD_INVALID` as a terminal failure.
+- Stop the webhook worker's idle hot-spin and wake explicitly for scheduled retries
+  (#402). The capacity-1 work signal was never drained, so once signalled the claim
+  loop span on SQLite write transactions. The wait is now bounded by the configured
+  initial retry delay, which also keeps a persistent database fault from repeating
+  at 1 Hz.
+- Keep a committed admin cancel from failing on its post-commit webhook enqueue
+  (#390). After the cancel and its success audit had committed, an enqueue fault or
+  a client disconnect still propagated out of the handler, so users saw `500` while
+  the row was already `Cancelled`. Consumer and admin cancel now share one
+  post-commit helper that takes no caller token; missing events are recreated by the
+  existing reconciliation.
+
+### Security
+
+- Keep unclassified exception text out of webhook worker logs (#389). Logging
+  providers render exceptions via `ToString()`, so a deliver-stage exception could
+  carry the webhook URL or payload fragments into logs. The exception object now
+  reaches the logger only for SQLite faults; everything else records the exception
+  type name. The same rule applies to the new post-commit enqueue warning (#390).
+
+### Documentation
+
+- Add [ADR 0020](docs/adr/0020-bounce-ingestion-and-suppression.md): bounce ingestion
+  and suppression design for v1.1.0 (#300). Records the transport decision, the
+  correlation key, and the PII handling for provider delivery reports. No runtime
+  behavior in this release depends on it; the feature is registered as `planned` in
+  `docs/implementation-status.json`.
+
+## [1.0.0] - 2026-07-25
+
+First stable release. Declares the public HTTP contract and Contracts package
+stable under semver. This release packages the post-v0.9.2 hardening and
+stabilization work already on `develop` (no additional feature wait).
+
+### Added
+
+- Centralize Mailer startup options validation through a shared catalog and
+  host validator (#351).
+- CI field-inventory gate for `MailRequestCreateRequest` drift across Contracts /
+  OpenAPI / SDKs (#352).
+- CI formatter and staged analyzer quality gates (#359).
+- Python and TypeScript SDK builders gain `scheduled_at` support aligned with
+  calendar / `Z` validation (#346).
+- ADR 0016–0019: stronger internal typing scope, webhook first-wins delivery
+  cycle, sequential webhook concurrency deferral, and SQLite single-process
+  boundaries (#360, #362, #361, #363).
+
+### Changed
+
+- Reject invalid UTF-8 request bodies with `400 INVALID_REQUEST` instead of
+  replacement characters (#343). Documented in OpenAPI for create / reschedule.
+- Unify strict boolean and port parsing for configuration (#358).
+- Validate Mailpit SMTP host/port at startup when Mailpit is in use (#356).
+- Rename webhook reconcile search size to `Mailer:Webhook:ReconcileBatchSize`
+  (#353). Legacy `Mailer:Webhook:BatchClaimSize` remains a deprecated alias
+  (new key wins; warning logged).
+- Require tenant scope on Admin mail attempt listing (#357).
+- Reject Admin `ALLOW_HTTP` outside Development (#341).
+- Await Admin credential sync before Admin route mapping (#350).
+- Split Admin extensions and Mail request endpoints into focused modules
+  (#349, #348).
+- Replace Worker `InflightTracker` polling with an async signal (#354).
+- Propagate Ctrl+C cancellation to long-running CLI commands (#347).
+- Judge webhook delivery success from response headers without buffering the
+  body (#370).
+- Classify schema probe failures separately from `schema_not_ready` (#342).
+- Dispose SQLite connections on open / PRAGMA init failure (#344).
+- Align public release image defaults and smoke guidance on `v1.0.0`.
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `1.0.0`.
+
+### Fixed
+
+- Register webhook `HttpClient` when the worker is disabled but Admin needs it
+  (#341).
+
+### Documentation
+
+- Document webhook first-wins and deferred delivery-cycle extension (#362).
+- Document deferred webhook delivery concurrency pending HOL measurement (#361).
+- Document SQLite / single-process start gates for any future PG / Worker split
+  (#363).
+- Add v1.0.0 release evidence draft.
+
+### Breaking / Migration
+
+- **Public HTTP**: Invalid UTF-8 bodies are rejected with `400` (`INVALID_REQUEST`).
+  Well-formed UTF-8 JSON clients are unaffected. No new endpoints; no DTO field
+  removals in `Amane.Mailer.Contracts`.
+- **Operators**: Prefer `Mailer__Webhook__ReconcileBatchSize`. Legacy
+  `Mailer__Webhook__BatchClaimSize` still works as a deprecated alias.
+- **Operators**: Strict boolean / port / Mailpit SMTP misconfiguration fails
+  startup instead of silent fallback when those settings are in use.
+- **Admin**: `ALLOW_HTTP` is rejected outside Development. Mail attempt listing
+  requires tenant scope.
+- **Database**: No new SQL migration in this release. Databases already on
+  migration 010 (from v0.9.2) need no manual SQL.
+- **Follow-ups (1.0.x, not blockers)**: webhook max-attempt DeadLetter
+  convergence (#388), per-event webhook failure isolation (#389), Admin cancel
+  webhook enqueue isolation (#390).
+
+## [0.9.2] - 2026-07-24
+
+### Added
+
+- Record a fixed primary `/readyz` failure reason via transition-only logs and
+  Prometheus gauges `mail_ready` / `mail_readiness_failure` without changing the
+  public HTTP contract (`200`/`503` + `{"ready":...}` only) (#330).
+
+### Changed
+
+- Reject Worker / Webhook / Sweep / Retention / Healthcheck operational
+  misconfiguration at startup instead of silently clamping with `Math.Max` /
+  `Math.Clamp` (#329). Unset keys keep existing defaults; empty string,
+  non-integer, zero/negative, and over-max values fail fast with the setting
+  key and allowed range (no secrets). Cross-field lease and healthcheck
+  checks are unchanged when Worker is enabled. Admin audit retention days,
+  sweep interval (hours/seconds), and batch size use the same strict range
+  parsing, including empty-string rejection.
+- Require `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`) at
+  startup when metrics stay enabled outside Development (#283). Development /
+  local keep optional bearer under internal-network isolation; disable metrics
+  with `Mailer:Metrics:Enabled=false` when scrape is unused.
+- Include structured `RequestId` (internal id) and `TenantId` on Worker and
+  ExpiredProcessingReaper request logs so the same `mail_request_id` can be
+  distinguished across tenants without logging mail-payload PII (#285).
+- Enforce Admin PBKDF2 password-hash parameter bounds (iterations
+  600,000–10,000,000; salt 16–64 bytes; hash 32–64 bytes) at startup and
+  `admin user create`, rejecting legacy weaker hashes (#281). Regenerate with
+  `admin hash-password` if an older hash is rejected.
+- Parse Admin boolean and positive-integer environment variables strictly so
+  typos fail at options `Load` / startup instead of silently falling back to
+  defaults (#280). `AMANE_ADMIN_ENABLED` is always strict; other Admin UI
+  settings are enforced only when Admin is enabled so mail delivery is not
+  aborted by unused Admin typos. Audit retention numerics remain always-strict
+  because the worker sweep reads them. Unset variables keep existing defaults.
+- Map provider delivery failures to a stable `error_code` taxonomy
+  (`MailDeliveryErrorCodes` / `ProviderErrorClassifier`) instead of library
+  exception type names (#279). Unknown exceptions become `PROVIDER_UNKNOWN`
+  with `retryable: false`, so the worker marks the request `Failed` on that
+  attempt without further retries. Existing attempt rows are left unchanged.
+- Align public release image defaults and smoke guidance on `v0.9.2`.
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `0.9.2`.
+
+### Documentation
+
+- Document `/readyz` internal readiness gauges, fixed failure reasons, and
+  `MailNotReady` alert example (#330).
+- Document Worker / Webhook / Sweep / Retention / Healthcheck strict numeric
+  ranges and startup fail-fast troubleshooting (#329).
+- Document Production metrics bearer startup enforcement and Development /
+  local optional-bearer + internal-network policy (#283).
+- Document Admin boolean (`true`/`false`) and positive-integer allowed values
+  in the local Mailer Docker runbooks (#280).
+- Clarify delivery-result webhook first-wins: only the first terminal state is
+  notified; Admin manual retry that later reaches `delivered` does not enqueue a
+  second webhook (#273).
+- Add v0.9.2 release evidence draft.
+
+### Breaking / Migration
+
+- No breaking public HTTP contract change. Existing POST acceptance behavior is
+  unchanged.
+- **DB migration 010** adds nullable `admin_audit_events.tenant_id` (and index)
+  so scoped Admin audit list/get can survive independent mail-request retention
+  (#282). Existing SQLite databases apply this automatically via `db migrate` /
+  normal startup; no manual SQL is required. Auth / session / db_ops audit rows
+  remain `tenant_id` NULL (service-wide).
+- Operators enabling metrics outside Development must set
+  `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`), or disable
+  metrics with `Mailer:Metrics:Enabled=false`.
+- Operators with Admin enabled must ensure Admin boolean / positive-integer env
+  values and PBKDF2 password-hash parameters are within the documented bounds;
+  legacy weaker hashes are rejected at startup / `admin user create`.
+- Worker / Webhook / Sweep / Retention / Healthcheck numeric misconfiguration
+  now fails fast at startup instead of silent clamping.
+
+## [0.9.1] - 2026-07-22
+
+### Fixed
+
+- Prevent duplicate provider send when finalize loses the processing lease, and
+  persist delivered evidence even if a reaper already terminalized the request
+  (#238).
+- Fail `GET /readyz` when worker or sweep heartbeats are stale so orchestrators
+  do not treat a hung background path as ready (#241).
+- Classify SQLite `SQLITE_FULL` as `STORAGE_FULL` and document disk / retention
+  recovery in the ops runbook (#244).
+- Drain in-flight webhook deliveries on graceful shutdown so stop does not cut
+  off mid-send (#245).
+
+### Changed
+
+- Split `MailRequestRepository` into focused store types for accept, claim,
+  consumer mutations, and admin queries (#242).
+- Align public release image defaults and smoke guidance on `v0.9.1`.
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `0.9.1`.
+
+### Documentation
+
+- Document delivery uniqueness guarantees in the service spec (#239).
+- Introduce `docs/implementation-status.json` as the current-status manifest,
+  with CI format validation (#250, #252).
+- Refresh ADR 0013/0014/0015 implementation status notes (#240).
+- Add regression coverage for manual cancel vs worker claim races (#243).
+- Add v0.9.1 release evidence draft.
+
+### Breaking / Migration
+
+- No breaking public HTTP contract change. Existing POST acceptance behavior is
+  unchanged.
+- No manual database migration is required for this release.
+- Operators should treat `STORAGE_FULL` as a disk / SQLite capacity incident and
+  follow [sqlite-disk-and-retention](docs/ops/sqlite-disk-and-retention.md).
 
 ## [0.9.0] - 2026-07-22
 

@@ -48,10 +48,10 @@ public static class AdminMailRequestBodyPage
 
         var body = field switch
         {
-            "html_body"     => detail.HtmlBody,
-            "text_body"     => detail.TextBody,
+            "html_body" => detail.HtmlBody,
+            "text_body" => detail.TextBody,
             "metadata_json" => detail.MetadataJson,
-            _               => null,
+            _ => null,
         };
 
         if (body is null)
@@ -75,6 +75,7 @@ public static class AdminMailRequestBodyPage
                         UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
                         TargetType = AdminAuditLog.TargetTypes.MailRequest,
                         TargetId = requestId.ToString("D"),
+                        TenantId = detail.TenantId,
                         FieldName = field,
                         Result = AdminAuditLog.Results.Success,
                     }),
@@ -93,6 +94,7 @@ public static class AdminMailRequestBodyPage
                             UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
                             TargetType = AdminAuditLog.TargetTypes.MailRequest,
                             TargetId = requestId.ToString("D"),
+                            TenantId = detail.TenantId,
                             FieldName = field,
                             Result = AdminAuditLog.Results.Success,
                         }),

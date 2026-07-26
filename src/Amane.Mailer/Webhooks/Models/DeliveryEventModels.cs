@@ -25,6 +25,17 @@ public sealed record DeliveryEventRow
     public DateTimeOffset LockExpiresAt { get; init; }
 }
 
+/// <summary>
+/// Result of reclaiming an expired Delivering webhook event that already reached max_attempts.
+/// Used for PII-free logging only; DeadLettered is terminal (do not enqueue further work).
+/// </summary>
+public sealed record ExpiredDeliveringDeadLetteredEvent(
+    Guid Id,
+    Guid TenantId,
+    Guid MailRequestId,
+    int AttemptCount,
+    string ErrorCode);
+
 public sealed record DeliveryEventContext(
     Guid TenantId,
     string SourceService,

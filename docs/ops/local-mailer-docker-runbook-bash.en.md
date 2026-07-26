@@ -19,7 +19,8 @@ deploy / release smoke runbooks.
 - On a Linux / macOS fresh checkout, Docker bind-mount directory ownership matters. Normal compose
   startup runs `data-init`, which prepares `data/mailer`, so no extra setup is usually needed.
 - Admin UI environment variables use `export`. `AMANE_ADMIN_ALLOW_HTTP=true` and
-  `AMANE_ADMIN_PII_LIST_MODE=visible` are for local verification only.
+  `AMANE_ADMIN_PII_LIST_MODE=visible` are for local verification only. `ALLOW_HTTP=true`
+  is Development-only, so also set `ASPNETCORE_ENVIRONMENT=Development`.
 - ACS live sending / Dead Letter checks stay in the Windows PowerShell runbook, deploy runbooks, or release smoke runbooks.
 
 ## Prerequisites
@@ -108,6 +109,7 @@ Even if `.env` contains ACS values, this shell overrides them to Mailpit.
 still limited by compose `ports` (`127.0.0.1:5280:8080`).
 
 ```bash
+export ASPNETCORE_ENVIRONMENT="Development"  # required with ALLOW_HTTP=true (#341)
 export AMANE_ADMIN_ENABLED="true"
 export AMANE_ADMIN_USERNAME="admin"
 export AMANE_ADMIN_PASSWORD_HASH="$hash"
@@ -129,7 +131,9 @@ docker compose -f "$COMPOSE_FILE" up -d --wait mailer
 ```
 
 `AMANE_ADMIN_ALLOW_HTTP=true` and `AMANE_ADMIN_PII_LIST_MODE=visible` are for local
-verification only. Do not enable HTTP or PII display on production or develop deploy hosts.
+verification only. `AMANE_ADMIN_ALLOW_HTTP=true` is Development-only; Production/Staging
+with Admin enabled and `true` fails startup.
+Do not enable HTTP or PII display on production or develop deploy hosts.
 For the Admin UI exposure and PII policy, see [ADR 0013](../adr/0013-admin-threat-model-and-pii-policy.md).
 For tenant / env preflight details, see [Mailer configuration](../../config/mailer/README.en.md#preflight).
 

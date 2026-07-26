@@ -89,10 +89,18 @@ jobs:
             echo "revision=${revision}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+
       - name: Restore
-        run: |
-          dotnet restore "$PACKAGE_PROJECT" --locked-mode
-          dotnet restore "$CONTRACTS_TEST_PROJECT" --locked-mode
+        # Whole-solution restore: NuGet audit covers Amane.Mailer.slnx (intentional),
+        # and also unlocks Contracts build/test --no-restore steps below.
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Audit NuGet vulnerabilities
+        run: node scripts/nuget-vulnerability-audit.mjs --skip-restore
 
       - name: Build
         run: |

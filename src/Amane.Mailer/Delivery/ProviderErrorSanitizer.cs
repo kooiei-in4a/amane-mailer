@@ -12,6 +12,8 @@ namespace Amane.Mailer.Delivery;
 /// stored <see cref="MailDeliveryResult.ErrorCode"/> stays intact so operators
 /// can still classify the failure, while the message is reduced to a safe,
 /// single-line, length-bounded summary. See issue #26.
+/// Exception type names are not used as <c>error_code</c>; see
+/// <see cref="ProviderErrorClassifier"/> and issue #279.
 /// </remarks>
 public static partial class ProviderErrorSanitizer
 {

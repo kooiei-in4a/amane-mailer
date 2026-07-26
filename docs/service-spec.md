@@ -5,8 +5,8 @@
 - **位置づけ:** 汎用メール送信マイクロサービス
 - **HTTP 契約の正本:** `src/Amane.Mailer.Contracts/`（ADR 0012 D-01）
 - **公開 HTTP reference:** [openapi.yaml](api/openapi.yaml)（Contracts / runtime に同期される公開 schema）
-- **関連:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md)（Mailer マイクロサービス化）
-- **ランタイム:** Native AOT 単一バイナリ（`Amane.Mailer`）＋ chiseled コンテナ。PostgreSQL は使用しない。
+- **関連:** [ADR 0012](adr/0012-mail-via-mailer-microservice.md)（Mailer マイクロサービス化）、[ADR 0019](adr/0019-sqlite-single-process-boundaries.md)（SQLite／単一プロセス維持と PostgreSQL／Worker 分離の着手境界）
+- **ランタイム:** Native AOT 単一バイナリ（`Amane.Mailer`）＋ chiseled コンテナ。PostgreSQL は使用しない（着手条件は ADR 0019）。
 
 ---
 
@@ -33,6 +33,7 @@ App ──HTTP(Bearer)──▶ POST /internal/mail-requests
 - App とは **HTTP API のみ**で接続。App DB / Mailer DB の相互参照はしない。
 - ACS を知るのは本サービスだけ。
 - データベースは **SQLite（WAL モード）**。永続化はホスト側 `./data` → コンテナ `/app/data` のボリュームマウント。
+- PostgreSQL や Worker 別 process 化は、測定可能な着手 trigger 成立まで行わない（[ADR 0019](adr/0019-sqlite-single-process-boundaries.md)）。
 
 ---
 
@@ -44,19 +45,19 @@ HTTP 契約のコード上の正本は `src/Amane.Mailer.Contracts/`。Mailer ru
 |---|---|---|---|
 | `POST` | `/internal/mail-requests` | 送信依頼の受付（任意 `scheduled_at`） | テナント Bearer |
 | `GET` | `/internal/mail-requests/{mail_request_id}` | 配送ステータス照会（`tenant_id` / `source_service` は query） | テナント Bearer |
-| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | 送信前キャンセル（`queued` のみ） | テナント Bearer |
+| `POST` | `/internal/mail-requests/{mail_request_id}/cancel` | 送信前キャンセル（`queued`；既 `cancelled` は冪等） | テナント Bearer |
 | `POST` | `/internal/mail-requests/{mail_request_id}/reschedule` | 予約時刻変更（`queued` かつ `attempt_count=0`） | テナント Bearer |
 | `GET` | `/healthz` | 生存確認（liveness） | なし |
-| `GET` | `/readyz` | 受付可否（DB schema + Worker/Sweep 稼働・heartbeat 鮮度） | なし |
-| `GET` | `/metrics` | Prometheus メトリクス（ops。詳細は [metrics-and-alerts.md](ops/metrics-and-alerts.md)） | 既定なし（optional bearer） |
+| `GET` | `/readyz` | 受付可否（現行 migration schema + Worker/Sweep 稼働・heartbeat 鮮度。provider / ACS 設定検証は含まない＝startup-only） | なし |
+| `GET` | `/metrics` | Prometheus メトリクス（ops。詳細は [metrics-and-alerts.md](ops/metrics-and-alerts.md)） | Development: optional bearer（内部 NW 前提）。非 Development: Enabled 時 bearer 必須（startup 強制） |
 
 ### 契約同期と drift review
 
 契約変更時は、同一変更内で `src/Amane.Mailer.Contracts/`、runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テストの drift を確認する。対象は Request/Response DTO の property 名・required / nullable、`MailerErrorCodes`、`MailRequestAcceptanceStatus`、`MailRequestStatus`、payload hash 対象、JSON unknown / duplicate property 挙動を含む。
 
-CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scripts/check-contract-drift.mjs` で Contracts / runtime / OpenAPI の drift-specific assertion を実行する。drift check は Contracts DTO / constants を正本として、OpenAPI schema / enum、payload hash 対象、runtime の source-generated JSON 利用、JSON unknown / duplicate property の runtime/test coverage hook を検証する。
+CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scripts/check-contract-drift.mjs` で Contracts / runtime / OpenAPI の drift-specific assertion を実行する。加えて `scripts/check-mail-request-field-inventory.mjs` が `MailRequestCreateRequest` の JSON field 集合を Contracts・OpenAPI・payload_hash 分類・Python / TypeScript SDK builder・validation 間で照合する。drift check は Contracts DTO / constants を正本として、OpenAPI schema / enum、payload hash 対象、runtime の source-generated JSON 利用、JSON unknown / duplicate property の runtime/test coverage hook を検証する。
 
-契約を意図的に変更する場合は、まず `src/Amane.Mailer.Contracts/` の DTO / constants / payload hash contract を更新し、同じ変更で runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テストを同期する。現時点では再生成が必要な別 snapshot はなく、drift check は DTO / constants の期待値を source から導出する。OpenAPI example の `payload_hash` が変わる場合は再計算し、canonicalization fixture が変わる場合は `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` も更新する。ローカル確認は `node scripts/validate-openapi.mjs docs/api/openapi.yaml` と `node scripts/check-contract-drift.mjs` を実行する。Contracts package / API versioning policy については「バージョニングポリシー」節を参照。
+契約を意図的に変更する場合は、まず `src/Amane.Mailer.Contracts/` の DTO / constants / payload hash contract を更新し、同じ変更で runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テスト、および Python / TypeScript SDK の builder・validation・payload_hash field inventory を同期する。現時点では再生成が必要な別 snapshot はなく、drift check は DTO / constants の期待値を source から導出する。OpenAPI example の `payload_hash` が変わる場合は再計算し、canonicalization fixture が変わる場合は `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` も更新する。ローカル確認は `node scripts/validate-openapi.mjs docs/api/openapi.yaml`、`node scripts/check-contract-drift.mjs`、`node scripts/check-mail-request-field-inventory.mjs` を実行する。Contracts package / API versioning policy については「バージョニングポリシー」節を参照。
 
 ### 受付レスポンス
 
@@ -64,14 +65,15 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 |---|---|---|
 | 初回受付 | 202 | `status: accepted` |
 | 同一依頼の再送 | 202 | `status: already_accepted` |
-| ボディ不正 JSON / 空 / 未知 property / 重複 property | 400 | `INVALID_REQUEST` |
+| ボディ不正 JSON / 空 / 未知 property / 重複 property / 無効 UTF-8 | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 同一ID・内容差異 | 409 | `IDEMPOTENCY_CONFLICT` |
 | ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | 宛先複数 / メタデータ / hash 不一致 | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
 | 過去の `scheduled_at` / 最大予約期間超過 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
-| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
 
 時刻は API 上 **UTC**。`scheduled_at` は初回配送予定で `next_attempt_at`（再試行）とは独立。省略または null は即時。最大予約期間は受付 / 再スケジュール時点から **30 日**（`MailRequestScheduleLimits.MaxScheduledAhead`）。`scheduled_at` は payload_hash 対象外。
 
@@ -86,9 +88,10 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 存在しない、または他 tenant の依頼 | 404 | `NOT_FOUND`（存在有無を漏らさない） |
-| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
 
-返却 JSON は PII を含まない最小セット（`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`）。`last_error_code` は sanitized error code のみ。
+返却 JSON は PII を含まない最小セット（`mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`）。`last_error_code` は delivery attempt の stable taxonomy（`MailDeliveryErrorCodes` / `ProviderErrorClassifier`）のみ。library の exception 型名は使わない。詳細は [SECURITY.md](../SECURITY.md) の Provider Error Sanitization を参照。
 
 ### 送信前キャンセル（POST cancel）
 
@@ -97,12 +100,17 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | 状況 | HTTP | code / status |
 |---|---|---|
 | `queued` の依頼をキャンセル | 200 | `status: cancelled`（ステータス JSON） |
+| 既に `cancelled`（同一キー再 cancel） | 200 | `status: cancelled`（冪等） |
 | クエリ不正 | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 存在しない / 他 tenant | 404 | `NOT_FOUND` |
-| `queued` 以外 | 422 | `INVALID_STATE` |
-| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| `queued` / `cancelled` 以外 | 422 | `INVALID_STATE` |
+| 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
+
+Cancel の DB 更新（`Cancelled` commit）が成功したあと、webhook enqueue や status 再取得の一時失敗で
+「未キャンセル」を示す HTTP 失敗を返さない。enqueue は best-effort で、欠落は reconcile が補完し得る。
 
 ### 再スケジュール（POST reschedule）
 
@@ -113,14 +121,19 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | 状況 | HTTP | code / status |
 |---|---|---|
 | `queued` かつ `attempt_count=0` で更新成功 | 200 | 更新後ステータス JSON |
-| クエリ不正 | 400 | `INVALID_REQUEST` |
+| クエリ不正 / ボディ不正 JSON / 無効 UTF-8 | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 存在しない / 他 tenant | 404 | `NOT_FOUND` |
 | ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | 過去時刻 / 30 日超 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | 許可状態以外 | 422 | `INVALID_STATE` |
-| 一時的 DB 障害 | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
+| SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
+
+Reschedule の DB 更新（`scheduled_at` commit）が成功したあと、status 再取得の一時失敗で
+「未再スケジュール」を示す HTTP 失敗を返さない。成功応答は更新 transaction 内で取得した
+commit 済み snapshot に基づく。
 
 ### metadata の秘密情報ポリシー（docs-first）
 
@@ -141,6 +154,48 @@ OpenAPI・Contracts README・`SECURITY.md` と整合する。値の強制拒否�
 - 一意キーは **`(tenant_id, source_service, mail_request_id)`**。
 - 同一キーの再送は 202 `already_accepted`、内容（`payload_hash`）が違えば 409。
 - `mail_request_id` は利用側生成（UUIDv7 推奨）。
+
+### 配送一意性（実送信の保証）
+
+HTTP 受付の冪等性（上記「冪等性」節）と、**ACS/Mailpit 経由の実メール送信の一意性は別契約**である。Consumer は「同一 `mail_request_id` で必ず 1 通だけ届く（exactly-once）」と期待してはならない。
+
+Mailer の配送セマンティクスは **at-least-once**（同一依頼から複数通の実送信が起こりうる）である。以下は現在の実装に基づく保証の要約である。正本は [ADR 0012 D-07](adr/0012-mail-via-mailer-microservice.md) および本節。
+
+| 対象 | 保証 | 備考 |
+|---|---|---|
+| HTTP 受付 | at-most-once 永続化 | 同一 `(tenant_id, source_service, mail_request_id)` は 1 行。再 POST は `already_accepted` |
+| 実メール配送（全体） | **not exactly-once** / at-least-once | 自動リトライ・手動再送・provider 挙動により重複しうる |
+| ACS (`provider=acs`) | 決定論的 operation id（UUIDv5）による**緩和のみ** | `tenant_id` + `source_service:mail_request_id` から生成（`AcsOperationIdFactory`）。ACS サーバ側の重複排除として機能する保証は本リポジトリでは検証・保証しない |
+| Mailpit (`provider=mailpit`) | **冪等性なし**（best-effort） | 再送のたびに SMTP 送信が発生しうる（開発/検証向け）。ただし SMTP DATA 受理後の disconnect 失敗だけを理由に再送スケジュールしない（#275） |
+| Worker 自動リトライ | at-least-once | retryable 失敗は `Queued` に戻り再配送 |
+| lease 失効後の finalize 競合（#238） | **再送抑止** | provider 送信成功の証跡を `mail_attempts` に残し、reclaim 時は実送信をスキップして `Delivered` へ収束。finalize skip は `mail_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)） |
+| wall-clock lease 補正（#276） | **絶対時刻比較** | mail / webhook lease は `TimeProvider.GetUtcNow()` 由来の `lock_expires_at` と `@Now` の比較。monotonic clock は使わない。大きな wall-clock 前進は early reclaim / strict finalize fencing 失敗、大きな後退は Processing / Delivering の回復遅延を起こし得る（詳細は次節） |
+| Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す（`attempt_count` を 0 リセット）。旧サイクルの Delivered 証跡は prior-success 収束に使わない（#268）。provider 送信が成功済みでも row が `Delivered` へ収束していなければ再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
+| 配送結果 Webhook | **first-wins**（同一 mail request 世代で高々 1 event）+ `event_id` による再 POST 冪等 | **実メール送信とは別契約**。最初に enqueue された終端状態のみ通知。Admin 手動再送後の別終端（例: `failed` → 再送 → `delivered`）は webhook を再送しない。Consumer は同一 `event_id` の再 POST を冪等に処理する（[webhook-verification.md](consumer/webhook-verification.md)） |
+
+### Worker / Webhook lease と wall clock（#276）
+
+mail (`mail_requests`) と webhook (`delivery_events`) の lease は SQLite に保存する **UTC 絶対時刻** `lock_expires_at` である。Worker / Sweep / reaper / finalize は DI の `TimeProvider`（既定 `TimeProvider.System`）から得た `now` を `@Now` として比較する。Stopwatch 等の monotonic / relative lease は採用していない。
+
+| 補正 | reclaim / reaper（`lock_expires_at <= @Now`） | strict finalize（`lock_expires_at > @Now`） |
+|---|---|---|
+| wall clock が大きく**前進** | lease が早期失効扱いになり reclaim / reaper が起き得る | fencing が失敗し得る |
+| wall clock が大きく**後退** | 実時間より reclaim が遅延し、Processing / Delivering が長く残り得る | 通常どおり成功し得る（lease が「まだ有効」に見える） |
+
+通常の NTP slew（緩やかな補正）では稀。ホストの step 補正や手動時刻変更が主なリスク。
+
+**緩和（現行）:**
+
+- mail: #238 により、provider 送信成功後に strict fencing が失敗しても Delivered 証跡を残し、reclaim 時は実送信をスキップして `Delivered` へ収束できる。完全な skew 解消ではない。
+- webhook: mail と同等の prior-success 収束パスはない。early reclaim 後は HTTP 再 POST が起き得る（Consumer 側は `event_id` 冪等が前提）。Webhook finalize fencing 失敗は `mail_webhook_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)）。
+
+**運用:** OS / コンテナの時刻同期は slew を優先し、大きな step を避ける。`mail_finalize_skipped_total` の急増は mail fencing 失敗（clock jump を含む）の観測材料になる。Webhook 側は `mail_webhook_finalize_skipped_total` を見る（[metrics runbook](ops/metrics-and-alerts.md)）。monotonic lease への再設計は別 ADR 候補であり、本仕様の短期方針ではない。
+
+**Consumer 向け推奨:**
+
+- 業務上の重複通知を避ける必要がある場合は、利用側で `mail_request_id` または独自の相関 ID で重複排除する。
+- `GET /internal/mail-requests/{mail_request_id}` で `delivered` を確認しても、既に複数通送信済みの可能性は排除できない（特に Mailpit・手動再送）。
+- Admin 手動再送後は status GET と webhook の終端状態が一致しないことがある（webhook は first-wins）。最新状態は status GET を正とする。
 
 ### バージョニングポリシー
 
@@ -226,7 +281,7 @@ DDL: `src/Amane.Mailer/Data/Migrations/002_worker_heartbeats.sql`
 | `name` | TEXT PK | サービス名（`worker` / `sweep`） |
 | `last_heartbeat_at` | TEXT | 最終 heartbeat 時刻（UTC ISO8601） |
 
-Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する。CLI `healthcheck` と `GET /readyz`（Worker 有効時）が両行の存在と鮮度を検証する。鮮度閾値は `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds`（既定 300 秒）。Docker HEALTHCHECK は CLI `healthcheck` を使用する。
+Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する。CLI `healthcheck` と `GET /readyz` は、現行バイナリが必要とする applied migration（version + checksum）を含む schema 準備状況を検証し、Worker 有効時は両 heartbeat 行の存在と鮮度も検証する。鮮度閾値は `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds`（既定 300 秒）。Docker HEALTHCHECK は CLI `healthcheck` を使用する。`GET /readyz` の HTTP 応答は `{"ready":true|false}` のみ（200 / 503）で、失敗理由は response に含めない。内部では固定の primary reason を状態遷移ログと `/metrics` の `mail_ready` / `mail_readiness_failure` に記録する（#330）。
 
 ### 3.4 状態遷移（`mail_requests.status`）
 
@@ -269,11 +324,23 @@ retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻
 `delivery_events` outbox へ `MailDeliveryEventPayload` を enqueue し、
 `WebhookDeliveryWorker` が HMAC 署名付き HTTPS POST で Consumer へ配信する。
 
+- **first-wins:** 同一 `(tenant_id, source_service, mail_request_id)` 世代では高々 1 event
+  （`ON CONFLICT DO NOTHING`）。最初に enqueue された終端状態のみが残る。Admin 手動再送で
+  別の終端（例: `failed` → `Queued` → `delivered`）へ進んでも、2 つ目の event は作らず、
+  既存 event も更新しない。delivery cycle 単位の再通知は [ADR 0017](adr/0017-webhook-first-wins-delivery-cycle.md) で見送り（再評価 trigger 付き）。
+- reconcile は **欠落**（outbox 行が無い terminal request）のみ補完する。既存 event の上書きはしない。
 - secret は `webhook.secret_env` が指す環境変数から読み込む（tenant JSON 平文禁止）。
 - payload に PII（recipient, subject, body 等）は含めない。
-- Consumer 重複排除契約は `event_id`（同一 mail request で不変）。
+- Consumer 重複排除契約は `event_id`（同一 mail request 世代の webhook 再送で不変）。request retention 後に同一 `mail_request_id` を再利用した場合は新しい `event_id` が発行される。
 - 配信失敗時は指数バックオフで再送し、上限超過で webhook Dead Letter として記録する。
-- SSRF 対策: HTTPS 必須、private/metadata IP ブロック、optional `allowed_host_suffixes`。
+- lease fencing 失敗（`FinalizeAsync` が false）は `mail_webhook_finalize_skipped_total` と構造化 Warning で観測する。契約は at-least-once のままなので、skip 後の再 POST に備え Consumer は `event_id` で重複排除する（[metrics runbook](ops/metrics-and-alerts.md)）。
+- 配送は 1 件ずつ claim → HTTP → finalize の**逐次**（グローバル FIFO）。制限付き並列化は [ADR 0018](adr/0018-webhook-delivery-sequential-concurrency.md) で見送り（HOL 計測と再評価 trigger 付き）。
+- shutdown 中は `stoppingToken` により新規 claim を行わない。インフライト配信は最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する（`MailRequestWorker` と同型の drain）。
+- SSRF 対策: HTTPS 必須。IPv4 private / loopback / link-local / CGNAT / multicast / reserved、
+  IPv4-mapped、IPv6 loopback / link-local / site-local / ULA / multicast / unspecified、
+  廃止済み IPv4-compatible IPv6（`::/96`、例: `::10.0.0.1`）、
+  および NAT64 well-known prefix（`64:ff9b::/96`）・6to4（`2002::/16`）上の
+  private 等ブロック対象 IPv4 埋め込みを拒否。optional `allowed_host_suffixes`。
 - 検証手順: [docs/consumer/webhook-verification.md](consumer/webhook-verification.md)
 - OpenAPI schema: `MailDeliveryEventPayload`
 - Admin / ops 確認: `/admin/webhook-dead-letters`、`db stats` の webhook 件数
@@ -286,12 +353,16 @@ Web ホスト起動前に `argv` で早期分岐。コンテナ `ENTRYPOINT` は
 
 | サブコマンド | 用途 | 終了コード |
 |---|---|---|
-| `healthcheck` | SQLite schema + Worker/Sweep heartbeat 鮮度確認（Docker `HEALTHCHECK`） | 0=healthy / 1=unhealthy |
-| `db migrate` | 未適用 SQL マイグレーションを適用 | 0=成功 |
-| `db checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` で `-wal` をクリーンアップ | 0=成功 |
-| `db backup <absolute-path>` | オンライン SQLite バックアップ（Backup API） | 0=成功 / 2=usage error |
-| `db stats [--tenant-id <uuid>]` | SQLite `mail_requests` の status 別件数、ready backlog、oldest queued age、stale processing、dead-letter 件数を `key=value` で出力 | 0=成功 / 1=schema unavailable / 2=usage error |
-| `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | 1 request の状態、attempt 件数、provider message id の有無を `key=value` で出力（secret / recipient は出さない） | 0=成功 / 1=schema unavailable / 2=usage error |
+| `healthcheck` | 現行 SQLite schema（applied migration version + checksum）+ Worker/Sweep heartbeat 鮮度確認（Docker `HEALTHCHECK`） | 0=healthy / 1=unhealthy / 130=cancelled |
+| `db migrate` | 未適用 SQL マイグレーションを適用 | 0=成功 / 130=cancelled |
+| `db checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` で `-wal` をクリーンアップ | 0=成功 / 130=cancelled |
+| `db backup <absolute-path>` | オンライン SQLite バックアップ（Backup API）。同ディレクトリの temp へ書いて検証後に destination を atomic replace する。途中失敗時も既存の正常 backup は残る。世代管理のため timestamp 付き path を推奨 | 0=成功 / 2=usage error / 130=cancelled |
+| `db stats [--tenant-id <uuid>]` | SQLite `mail_requests` の status 別件数、ready backlog、oldest queued age、stale processing、dead-letter 件数を `key=value` で出力 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | 1 request の状態、attempt 件数、provider message id の有無を `key=value` で出力（secret / recipient は出さない） | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db admin-audit purge --older-than-days <days>` | 保持期間を過ぎた Admin 監査イベントを batch 削除 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `admin user create ...` | scoped / break-glass Admin ユーザー作成 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+
+長時間 CLI は `Ctrl+C`（`Console.CancelKeyPress`）で協調 cancel する。各 `Ctrl+C` はプロセス強制終了せず（`e.Cancel = true`）共有 `CancellationToken` を cancel し、既存の transaction rollback と backup temp cleanup を利用する。2 回目以降も同じ協調経路のみで、`Environment.Exit` や OS 既定の即時終了へフォールバックしない。`BackupDatabase` のような同期・非割込区間では次の checkpoint まで停止が遅延しうる。その間に強制終了が必要なら SIGKILL / 端末切断を使う。cancel 時の終了コードは定数 `130`（`128 + SIGINT` 慣習）で、usage error（2）や schema unavailable（1）とは衝突しない。cancel は ERROR ログにしない（短い stderr のみ）。
 
 ### マイグレーション checksum policy
 
@@ -311,7 +382,7 @@ migration 適用前に追加・backfill する。
 ```bash
 docker compose --profile ops run --rm mailer-migrate          # db migrate
 docker compose exec mailer ./Amane.Mailer db checkpoint
-docker compose exec mailer ./Amane.Mailer db backup /app/data/backups/mailer.db  # 平文。本番運用は backup-mailer.sh を使うこと
+docker compose exec mailer ./Amane.Mailer db backup "/app/data/backups/mailer-$(date -u +%Y%m%dT%H%M%SZ).db"  # 平文。本番運用は backup-mailer.sh を使うこと。固定 path 上書きも途中失敗時は旧 backup を残すが、世代管理には timestamp 付き path を推奨
 docker compose exec mailer ./Amane.Mailer db stats --tenant-id <tenant-uuid>
 docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-uuid> --source-service <source-service> --mail-request-id <request-uuid>
 ```
@@ -358,23 +429,42 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 | **`ACS_CONNECTION_STRING_FILE`** | **ACS 接続文字列ファイル** | **Staging/Production deploy（`infra/deploy/compose.yml`）の正本。`admin provider register-acs` が書く `acs_connection_string` を指す。`MAILER_REQUIRE_ACS_SECRET_FILE=true` のとき bare env へのフォールバックはしない** |
 | `ACS_CONNECTION_STRING` | ACS 接続文字列（環境変数） | local Mailpit compose、および local ACS drill（`mail-05a-acs-drill.sh` の compose override）向け。Staging/Production の `compose.yml` では参照しない |
 | `MAIL_SERVICE_TOKEN_*` | テナント Bearer トークン | `tenants.json` の `token_env` が指定 |
-| `MAILER_PROVIDER` | provider グローバル上書き（任意） | `acs` / `mailpit` |
+| `MAILER_PROVIDER` | provider グローバル上書き（任意） | `acs` / `mailpit`。未知値は **startup fail-closed**（`/readyz` では再検証しない） |
 | `MAILER_TENANTS_PATH` | tenants.json の場所 | 例 `/app/config/mailer/tenants.json` |
 
 ### 5.2 Worker / Sweep / Retention（環境変数）
 
-| 変数 | 既定 | 説明 |
-|---|---|---|
-| `Mailer__Worker__Enabled` | `true` | Worker 系 HostedService の有効化 |
-| `Mailer__Worker__BatchClaimSize` | `4` | 1 ドレインあたりの claim 上限 |
-| `Mailer__Worker__MaxSendConcurrency` | `4` | 並列送信数 |
-| `Mailer__Worker__SendTimeoutSeconds` | `90` | 1 通あたり送信タイムアウト |
-| `Mailer__Worker__LeaseDurationSeconds` | `120` | Processing リース TTL |
-| `Mailer__Sweep__IntervalSeconds` | `30` | 滞留スイープ間隔 |
-| `Mailer__Retention__Days` | `90` | 終端レコード保持日数 |
-| `Mailer__Retention__SweepIntervalHours` | `24` | Retention パージ周期 |
-| `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | heartbeat stale 判定閾値（秒）。`>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` かつ `> WorkerHeartbeatIntervalSeconds` かつ `> Sweep:IntervalSeconds` |
-| `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | Worker idle 時の heartbeat 更新間隔（秒）。Sweep の更新間隔は `Mailer__Sweep__IntervalSeconds` に従う |
+数値は **strict validation**（#329）。キー未設定は既定値。空文字・形式不正・0／負数・上限超過は **起動失敗**（黙示的な clamp はしない）。エラーメッセージには設定キーと許容範囲を含み、secret／接続情報は含めない。Development／Testing／Production で同一の数値規則。Worker 無効時も `Load` の範囲検証は同じ（lease／healthcheck の組合せ `Validate` のみ Worker 有効時）。`Mailer__Worker__Enabled` は **strict boolean**（#358）— 未設定は `true`、empty／whitespace／typo は起動失敗。
+
+| 変数 | 既定 | 許容範囲 | 説明 |
+|---|---|---|---|
+| `Mailer__Worker__Enabled` | `true` | `true` / `false` | Worker 系 HostedService の有効化 |
+| `Mailer__Worker__BatchClaimSize` | `4` | 1–100 | 1 ドレインあたりの claim 上限 |
+| `Mailer__Worker__MaxSendConcurrency` | `4` | 1–64 | 並列送信数 |
+| `Mailer__Worker__SendTimeoutSeconds` | `90` | 1–600 | 1 通あたり送信タイムアウト。増やす場合は `MAILER_STOP_GRACE_PERIOD` も見直す |
+| `Mailer__Worker__LeaseDurationSeconds` | `120` | 1–86400 | Processing リース TTL。`> ceil(BatchClaimSize / MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
+| `Mailer__Webhook__MaxAttempts` | `10` | 1–50 | Webhook 配送の最大試行回数 |
+| `Mailer__Webhook__InitialDelaySeconds` | `10` | 1–86400 | Webhook 再試行の初期遅延（`<= MaxDelaySeconds`） |
+| `Mailer__Webhook__MaxDelaySeconds` | `300` | 1–86400 | Webhook 再試行の最大遅延 |
+| `Mailer__Webhook__ReconcileBatchSize` | `8` | 1–100 | 欠落 terminal event の reconcile 検索件数（配送 claim／並列度ではない）。旧 `Mailer__Webhook__BatchClaimSize` は deprecated alias（新キー優先、Warning） |
+| `Mailer__Webhook__DeliveryTimeoutSeconds` | `30` | 1–600 | Webhook HTTP タイムアウト |
+| `Mailer__Webhook__LeaseDurationSeconds` | `60` | 1–86400 | Webhook リース TTL。`> DeliveryTimeoutSeconds + FinalizeTimeoutSeconds(10)` |
+| `Mailer__Sweep__IntervalSeconds` | `30` | 1–3600 | 滞留スイープ間隔 |
+| `Mailer__Retention__Days` | `90` | 1–3650 | 終端レコード保持日数（`mail_requests` と同一冪等キーの `delivery_events` を同時パージ） |
+| `Mailer__Retention__SweepIntervalHours` | `24` | 1–168 | Retention パージ周期（時間）。`SweepIntervalSeconds` 未設定時に使用 |
+| `Mailer__Retention__SweepIntervalSeconds` | （未設定） | 1–604800（設定時） | 任意。設定時は Hours より優先（主にテスト用） |
+| `Mailer__Retention__BatchSize` | `100` | 1–250 | Retention 削除バッチ（SQLite bind 制約） |
+| `Mailer__Healthcheck__MaxHeartbeatStalenessSeconds` | `300` | 1–86400 | heartbeat stale 判定閾値（秒）。Worker 有効時: `>= ceil(BatchClaimSize/MaxSendConcurrency) * SendTimeoutSeconds + FinalizeTimeoutSeconds + 30` かつ `> WorkerHeartbeatIntervalSeconds` かつ `> Sweep:IntervalSeconds` |
+| `Mailer__Healthcheck__WorkerHeartbeatIntervalSeconds` | `60` | 1–3600 | Worker idle 時の heartbeat 更新間隔（秒）。Sweep の更新間隔は `Mailer__Sweep__IntervalSeconds` に従う |
+
+起動失敗時はプロセスログの例外メッセージでキー名と許容範囲を確認する。値そのものや接続文字列はメッセージに出ない。
+
+起動時の設定検証は `MailerStartupValidator` に集約する（#351）。`Program.cs` で options 型を個別に `GetRequiredService` しない。新しい起動時必須設定を追加する手順:
+
+1. options 型に `Load` / `Validate` を実装する（Worker disabled 時の cross-field 省略、Admin disabled 時の未使用設定無視など既存ゲートを維持）。
+2. DI 登録は `AddSingleton` ではなく `AddStartupValidatedSingleton` を使う（登録と検証 inventory が同時に更新される）。
+3. `MailerStartupValidationInventoryTests.ExpectedStartupValidatedTypes` に型を追加する。
+4. 不正値が host startup で失敗することを示す focused test を追加する。
 
 ### 5.3 構造・ポリシー（JSON / `tenants.json`）
 
@@ -396,6 +486,8 @@ docker compose exec mailer ./Amane.Mailer db request-state --tenant-id <tenant-u
 
 - `provider=acs` でも `live_sending=false` のテナントは `LIVE_SENDING_DISABLED` で**送らない**。
 - develop / staging は原則 `false`、production のみ `true`。
+- effective provider（`MAILER_PROVIDER` override 含む）が `acs` かつ `live_sending=true` のテナントがある場合、ACS 接続文字列（`ACS_CONNECTION_STRING_FILE` / `ACS_CONNECTION_STRING`）が無いと **startup fail-closed**。`live_sending=false` のみの構成では ACS secret は起動時必須ではない（offline `scripts/validate-tenant-config.mjs` と同じ）。provider / ACS のこの検証は startup-only で、`/readyz` には含めない。
+- effective provider が `mailpit` のテナントがある場合、Mailpit SMTP host（`Mailer__Mailpit__SmtpHost` / `MAILPIT_SMTP_HOST`）は非空白、port（`Mailer__Mailpit__SmtpPort` / `MAILPIT_SMTP_PORT`）は **1–65535** の strict integer でなければ **startup fail-closed**（#356）。未設定時の既定は host=`mailpit`、port=`1025`、`UseSsl=false`。ACS のみ（effective provider が全テナントで `acs`）の構成では、未使用の Mailpit host／port typo は起動を止めない（未使用設定は配送を止めない方針）。`UseSsl` の strict boolean は #358 どおり常に Load 時検証。エラーメッセージには設定キーと許容条件のみを含め、host 値や secret は出さない。SMTP 疎通確認は startup では行わない。
 
 ---
 
@@ -433,7 +525,7 @@ docker compose --env-file .env -f compose.yml up -d mailer
 SIGTERM 受信時の運用順序：
 
 1. Generic Host が `ApplicationStopping` を発火し、Kestrel が新規 HTTP 受付を停止する
-2. `MailRequestWorker` がインフライト送信を最大 `SendTimeoutSeconds + 10秒` 待機する
+2. `MailRequestWorker` は新規 claim を止め、既に Semaphore 待ちの後続 wave は `stoppingToken` で送信開始しない（`BatchClaimSize > MaxSendConcurrency` でも同様。未開始の Processing は lease reclaim）。開始済みのインフライト送信のみ最大 `SendTimeoutSeconds + FinalizeTimeoutSeconds` 待機する。`WebhookDeliveryWorker` は新規 claim を止め、インフライト webhook 配信を最大 `DeliveryTimeoutSeconds + FinalizeTimeoutSeconds` 待機する。待機を使い切っても残る場合は warning ログを出す
 3. Worker / Sweep / Retention など全 HostedService の `StopAsync` 完了後、`MailerWalCheckpointShutdownService.StoppedAsync` が `PRAGMA wal_checkpoint(TRUNCATE)` を実行する
 4. Generic Host が `ApplicationStopped` を発火する
 
@@ -441,14 +533,14 @@ WAL TRUNCATE は shutdown cleanup の best-effort であり、配送 durability 
 自体で担保する。checkpoint が失敗した場合は error log、shutdown timeout で中断された場合は
 warning log を出す。
 
-compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions.ShutdownTimeout` は worker 設定から `SendTimeoutSeconds + 25秒` 以上に設定する。`SendTimeoutSeconds` を増やす場合は `MAILER_STOP_GRACE_PERIOD` も併せて増やす。
+compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions.ShutdownTimeout` は mail / webhook 双方の drain 所要時間の大きい方に slack（15 秒）を加えた値とする（既定設定では mail 側が支配的で `SendTimeoutSeconds + 25秒` 以上）。HostedService の `StopAsync` は既定で逐次（`ServicesStopConcurrently=false`）のため、両 worker が同時に最大長のインフライトを抱える最悪ケースでは `max()` を超える加算待ちになり得る。その場合の打ち切り分は lease 失効後の reclaim / 冪等収束（#238）で吸収する前提であり、`max()` は concurrent drain 仮定ではなく「片側の最大 drain + slack」のホスト上限である。`SendTimeoutSeconds` や webhook `DeliveryTimeoutSeconds` を増やす場合は `MAILER_STOP_GRACE_PERIOD` も併せて増やす。
 
 ---
 
 ## 8. データ所有
 
 `/app/data/mailer.db` が **送信依頼の正本**（宛先・件名・本文＝PII、送信試行履歴、ACS operation id）。
-バックアップは **`db backup` CLI** で同一コンテナから取得。Retention が終端レコードを自動パージ。
+バックアップは **`db backup` CLI** で同一コンテナから取得。Retention が終端 `mail_requests` と対応する `delivery_events` を自動パージ。
 
 ---
 
@@ -476,3 +568,19 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-06-27 | `v0.1.1` patch release 準備として Contracts package と OpenAPI `info.version` を `0.1.1` に更新 |
 | 2026-07-03 | ADR 0015 に追随: `Cancelled` 状態、手動再送・手動キャンセル遷移、`Failed` 定義修正 |
 | 2026-07-22 | `/readyz` に Worker/Sweep heartbeat 鮮度チェックを追加（#241）。CLI healthcheck と同じ閾値を共有 |
+| 2026-07-22 | 配送一意性（実送信の保証）節を追加（#239）。#238 の finalize 証跡・reclaim 収束と整合 |
+| 2026-07-22 | `WebhookDeliveryWorker` の shutdown drain（新規 claim 停止 + inflight 待機）を明記（#245） |
+| 2026-07-23 | `/readyz` / CLI `healthcheck` が現行 migration version + checksum を要求（#267） |
+| 2026-07-23 | Consumer cancel の冪等成功と commit 後 HTTP 失敗の回避（#269） |
+| 2026-07-23 | effective provider / ACS live-sending の startup 検証を明記。`/readyz` は含めない（#272）。Mailpit は SMTP 受理後の disconnect 失敗を再送対象にしない（#275） |
+| 2026-07-23 | `MailRequestWorker` shutdown: Semaphore 待ち後続 wave は送信開始しない（#271） |
+| 2026-07-24 | 配送結果 Webhook の first-wins（最初の終端のみ通知。Admin 手動再送後の再通知なし）を明記（#273） |
+| 2026-07-25 | ADR 0017: delivery cycle 拡張を見送り、first-wins 維持と再評価 trigger を記録（#362） |
+| 2026-07-25 | ADR 0018: Webhook 配送並列化を見送り、逐次維持・HOL 計測・再評価 trigger を記録（#361） |
+| 2026-07-24 | Worker / Webhook lease が wall-clock 絶対時刻である前提と clock jump 影響を明記（#276） |
+| 2026-07-24 | Webhook finalize fencing 失敗を `mail_webhook_finalize_skipped_total` で観測可能にした（#328） |
+| 2026-07-25 | Mailpit SMTP host／port を effective provider=`mailpit` 時のみ startup 検証（#356）。ACS-only では未使用 typo を起動 blocker にしない |
+| 2026-07-25 | 起動時設定検証を `MailerStartupValidator` / `AddStartupValidatedSingleton` に集約（#351） |
+| 2026-07-25 | 長時間 CLI の Ctrl+C 協調 cancel と終了コード 130 を明記（#347） |
+| 2026-07-25 | ADR 0019: SQLite／単一プロセス維持と PostgreSQL／Worker 分離の着手 trigger・非目標を記録（#363）。#385 と同日マージで 0018 が衝突したため後着を 0019 に振り直し |
+| 2026-07-25 | `Mailer__Webhook__ReconcileBatchSize` へ改名。旧 `BatchClaimSize` は deprecated alias（#353） |

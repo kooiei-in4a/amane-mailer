@@ -8,7 +8,11 @@ public static class PrometheusMetricsFormatter
 {
     internal static readonly double[] DurationBucketUpperBounds = [0.1, 0.5, 1, 2.5, 5, 10, 30];
 
-    public static string Format(MailerDbStatsResult stats, MailerRuntimeMetricsSnapshot runtime)
+    public static string Format(
+        MailerDbStatsResult stats,
+        MailerRuntimeMetricsSnapshot runtime,
+        long webhookEventsPending = 0,
+        long webhookEventsDeadLettered = 0)
     {
         var builder = new StringBuilder(2048);
 
@@ -52,9 +56,21 @@ public static class PrometheusMetricsFormatter
             "Total delivered finalize attempts where strict lease fencing failed (includes delayed completion under the same lock and superseded/terminal races).");
         AppendCounter(builder, "mail_finalize_skipped_total", runtime.FinalizeSkippedTotal);
 
+        AppendHelpType(builder, "mail_webhook_finalize_skipped_total", "counter",
+            "Total webhook delivery-event finalize attempts where strict lease fencing failed (lock expiry or superseded lock token), including terminal failure paths.");
+        AppendCounter(builder, "mail_webhook_finalize_skipped_total", runtime.WebhookFinalizeSkippedTotal);
+
         AppendHelpType(builder, "mail_dead_letters_total", "gauge",
             "Current number of dead-lettered mail requests.");
         AppendGauge(builder, "mail_dead_letters_total", stats.DeadLetteredCount);
+
+        AppendHelpType(builder, "mail_webhook_events_pending", "gauge",
+            "Delivery-result webhook outbox events pending or in delivery (same aggregation as CLI webhook_events_pending).");
+        AppendGauge(builder, "mail_webhook_events_pending", webhookEventsPending);
+
+        AppendHelpType(builder, "mail_webhook_events_dead_lettered", "gauge",
+            "Delivery-result webhook outbox events currently dead-lettered (same aggregation as CLI webhook_events_dead_lettered).");
+        AppendGauge(builder, "mail_webhook_events_dead_lettered", webhookEventsDeadLettered);
 
         AppendHelpType(builder, "mail_worker_heartbeat_age_seconds", "gauge",
             "Age in seconds since the last worker heartbeat.");
@@ -74,6 +90,24 @@ public static class PrometheusMetricsFormatter
                 "mail_worker_heartbeat_age_seconds",
                 stats.SweepHeartbeatAgeSeconds,
                 ("component", "sweep"));
+        }
+
+        if (runtime.ReadinessObserved)
+        {
+            AppendHelpType(builder, "mail_ready", "gauge",
+                "Process readiness from the last /readyz evaluation (1 ready, 0 not ready).");
+            AppendGauge(builder, "mail_ready", runtime.Ready ? 1 : 0);
+
+            AppendHelpType(builder, "mail_readiness_failure", "gauge",
+                "Primary readiness failure reason from the last /readyz evaluation (1 active, 0 inactive).");
+            foreach (var reason in MailerReadinessReasons.All)
+            {
+                var active = !runtime.Ready
+                    && string.Equals(runtime.ReadinessFailureReason, reason, StringComparison.Ordinal)
+                    ? 1
+                    : 0;
+                AppendGauge(builder, "mail_readiness_failure", active, ("reason", reason));
+            }
         }
 
         return builder.ToString();

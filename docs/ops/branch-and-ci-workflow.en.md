@@ -37,15 +37,22 @@ Job names are unchanged so branch protection required status checks stay aligned
 
 | Trigger | Jobs run |
 |---------|----------|
-| Push to `feature/**` / `fix/**` | `Restore, build, and test` only |
+| Push to `feature/**` / `fix/**` | `Restore, build, and test` only (includes whitespace formatter verify) |
 | Push to `develop`, or PR targeting `develop` | Above + `OpenAPI validation`; PRs also run `Native AOT publish smoke` |
 | PR targeting `main` | Release-gate CI (Native AOT, amd64 Docker, compose smoke, OpenAPI) |
 | Push to `main`, `workflow_dispatch` | Final CI (above + arm64 Docker) |
 
+`Restore, build, and test` runs `dotnet format whitespace ... --verify-no-changes`
+after restore, then the Release build (including staged analyzer severities for
+`src/**`) and tests. See [Code quality gates](code-quality-gates.en.md).
+
 Release-gate CI includes:
 
 - `Restore, build, and test`
-- `Native AOT publish smoke`
+- `Native AOT publish smoke` (publish + `--help`, plus a linux-x64 AOT black-box
+  smoke for low-frequency paths such as Admin, HTTPS webhook tenant startup, and
+  `db backup` via `scripts/native-aot-path-smoke.sh`. ACS live and full webhook
+  delivery remain out of scope)
 - `Docker build smoke (linux/amd64)` and aggregate `Docker build smoke`
 - `Local compose fresh data dir`
 - `OpenAPI validation`
@@ -64,6 +71,16 @@ stay faster while the final `main` commit still receives multi-arch Docker
 coverage.
 
 Ambiguous paths fail secure toward final CI (for example `workflow_dispatch`).
+
+### NuGet vulnerability audit
+
+Known NuGet vulnerabilities (including transitive packages) are checked by a
+separate workflow
+[`.github/workflows/nuget-vulnerability-audit.yml`](../../.github/workflows/nuget-vulnerability-audit.yml)
+on a weekly schedule / `workflow_dispatch`, and again before push in
+`publish-image.yml` and `publish-contracts.yml`. See
+[NuGet vulnerability audit](nuget-vulnerability-audit.en.md). This complements
+Dependabot; it does not replace it. npm / Python are out of scope.
 
 ### concurrency
 

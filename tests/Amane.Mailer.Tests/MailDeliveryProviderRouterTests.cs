@@ -1,4 +1,5 @@
 using Amane.Mailer.Configuration;
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Delivery;
 using Amane.Mailer.Tests.Fixtures;
 
@@ -52,6 +53,6 @@ public sealed class MailDeliveryProviderRouterTests
 
         Assert.False(result.Succeeded);
         Assert.False(result.Retryable);
-        Assert.Equal("LIVE_SENDING_DISABLED", result.ErrorCode);
+        Assert.Equal(MailDeliveryErrorCodes.LiveSendingDisabled, result.ErrorCode);
     }
 }
