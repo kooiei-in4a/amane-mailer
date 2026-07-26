@@ -93,9 +93,9 @@ public sealed class AcsQueuePollingService(
         }
         catch (Exception)
         {
-            // Permanent poison / empty body: drop rather than retry forever.
-            logger.LogWarning("ACS queue message body could not be decoded; deleting message.");
-            await TryDeleteAsync(message, cancellationToken);
+            // Treat decode failure like Unparseable: retain for visibility redelivery (ADR 0020 D-09).
+            runtimeMetrics.RecordProviderQueuePollFailed();
+            logger.LogWarning("ACS queue message body could not be decoded; leaving message for redelivery.");
             return;
         }
 
@@ -106,19 +106,34 @@ public sealed class AcsQueuePollingService(
         }
         catch (Exception)
         {
-            logger.LogWarning("ACS queue message parse threw; deleting message.");
-            await TryDeleteAsync(message, cancellationToken);
+            runtimeMetrics.RecordProviderQueuePollFailed();
+            logger.LogWarning("ACS queue message parse threw; leaving message for redelivery.");
             return;
         }
 
         var now = timeProvider.GetUtcNow();
+        var sawDeliveryReport = false;
+        var sawUnparseable = false;
 
         foreach (var parseResult in parseResults)
         {
+            if (parseResult.Outcome == AcsEventParseOutcome.Ignored)
+            {
+                continue;
+            }
+
+            if (parseResult.Outcome == AcsEventParseOutcome.Unparseable)
+            {
+                sawUnparseable = true;
+                continue;
+            }
+
             if (parseResult.Outcome != AcsEventParseOutcome.DeliveryReport || parseResult.Report is null)
             {
                 continue;
             }
+
+            sawDeliveryReport = true;
 
             try
             {
@@ -151,7 +166,22 @@ public sealed class AcsQueuePollingService(
             }
         }
 
-        // Delete when delivery reports were durably accepted, or the payload had nothing to ingest.
+        if (sawDeliveryReport)
+        {
+            // All delivery reports were durably accepted (else we returned above).
+            await TryDeleteAsync(message, cancellationToken);
+            return;
+        }
+
+        if (sawUnparseable)
+        {
+            // Do not delete: Unparseable is an ingestion failure, not "nothing to ingest" (D-09).
+            runtimeMetrics.RecordProviderQueuePollFailed();
+            logger.LogWarning("ACS queue message was unparseable; leaving message for redelivery.");
+            return;
+        }
+
+        // Only Ignored events (e.g. Delivered / non-delivery-report types): safe to delete.
         await TryDeleteAsync(message, cancellationToken);
     }
 
@@ -178,10 +208,10 @@ public sealed class AcsQueuePollingService(
     {
         if (ex is RequestFailedException requestFailed)
         {
+            // Omit Azure ErrorCode: provider-supplied strings are not allowlisted (#26 / #305 review).
             logger.LogError(
-                "ACS Storage Queue poll failed. Status={Status}; ErrorCode={ErrorCode}; Detail={Detail}",
+                "ACS Storage Queue poll failed. Status={Status}; Detail={Detail}",
                 requestFailed.Status,
-                requestFailed.ErrorCode,
                 ProviderErrorSanitizer.Sanitize(requestFailed.Message));
             return;
         }

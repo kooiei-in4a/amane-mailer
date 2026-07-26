@@ -254,11 +254,14 @@ public sealed record MailerBounceIngestionOptions
             return BounceIngestionMode.Webhook;
         }
 
+        // Never echo the raw value: operators may paste connection strings or secrets by mistake.
         throw new InvalidOperationException(
-            $"{ModeKey} must be one of: unset/empty, 'off', 'queue', 'webhook' (got '{raw}').");
+            $"{ModeKey} must be one of: unset/empty, 'off', 'queue', 'webhook'.");
     }
 
     private static string? ReadModeRaw(IConfiguration configuration) =>
+        // Blank / whitespace env values are treated as "not supplied" and fall through to
+        // Mailer:BounceIngestion:Mode (they do not force Off over a configured appsetting).
         ReadFirstNonEmpty(configuration, ModeEnvironmentKey, ModeKey);
 
     private static string ResolveQueueConnectionString(IConfiguration configuration)

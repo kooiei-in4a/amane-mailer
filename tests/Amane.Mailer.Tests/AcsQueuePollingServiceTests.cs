@@ -1,12 +1,14 @@
 using System.Text;
+using Azure;
 using Amane.Mailer.Bounce;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
+using Amane.Mailer.Tests.Fixtures;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 
 namespace Amane.Mailer.Tests;
 
@@ -30,11 +32,17 @@ public sealed class MailerBounceIngestionModeTests
     [InlineData("none")]
     [InlineData("push")]
     [InlineData("both")]
-    public void ParseMode_rejects_unknown_literals(string raw)
+    [InlineData("DefaultEndpointsProtocol=http;AccountKey=SUPERSECRETKEY;QueueEndpoint=http://127.0.0.1:10001/devstoreaccount1;")]
+    [InlineData("leak@example.com")]
+    public void ParseMode_rejects_unknown_literals_without_echoing_raw_value(string raw)
     {
         var ex = Assert.Throws<InvalidOperationException>(() => MailerBounceIngestionOptions.ParseMode(raw));
         Assert.Contains("must be one of", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(raw, ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("AccountKey", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SUPERSECRETKEY", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("@example.com", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("got '", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -97,6 +105,23 @@ public sealed class MailerBounceIngestionModeTests
         Assert.True(options.IsProcessingEnabled);
         Assert.False(options.IsQueuePollingEnabled);
     }
+
+    [Fact]
+    public void Blank_MAILER_BOUNCE_INGESTION_is_not_supplied_and_falls_through_to_Mode_key()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MAILER_BOUNCE_INGESTION"] = "   ",
+                ["Mailer:BounceIngestion:Mode"] = "queue",
+                ["MAILER_BOUNCE_QUEUE_CONNECTION_STRING"] = "UseDevelopmentStorage=true",
+                ["MAILER_BOUNCE_QUEUE_NAME"] = "acs-bounces",
+            })
+            .Build();
+
+        var options = MailerBounceIngestionOptions.Load(configuration);
+        Assert.Equal(BounceIngestionMode.Queue, options.Mode);
+    }
 }
 
 public sealed class AcsQueueMessageBodyDecoderTests
@@ -134,13 +159,31 @@ public sealed class AcsQueuePollingServiceTests
         }
         """;
 
+    private const string BouncedJsonSecond = """
+        {
+          "id": "eg-queue-2",
+          "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+          "eventTime": "2026-07-26T18:00:00Z",
+          "data": {
+            "messageId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "status": "Bounced",
+            "recipient": "other@example.com"
+          }
+        }
+        """;
+
     [Fact]
-    public async Task Poll_inserts_inbox_row_then_deletes_queue_message()
+    public async Task Poll_inserts_inbox_row_before_deleting_queue_message()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await OpenMigratedAsync(ct);
         var queue = new FakeAcsEventQueueClient();
         queue.Enqueue("msg-1", "pop-1", BouncedJson);
+        queue.OnDelete = async (messageId, _) =>
+        {
+            Assert.Equal("msg-1", messageId);
+            Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
+        };
 
         var metrics = new MailerRuntimeMetrics();
         var service = CreateService(db.Factory, queue, metrics);
@@ -198,13 +241,60 @@ public sealed class AcsQueuePollingServiceTests
             new BounceIngestionQueue(),
             metrics,
             new FixedUtcTimeProvider(FixedNow),
-            NullLogger<AcsQueuePollingService>.Instance);
+            CreateCapturingLogger(out var logCapture));
 
         await service.PollOnceAsync(ct);
 
         Assert.Empty(queue.Deleted);
         Assert.Contains(queue.Received, messageId => messageId == "msg-fail");
         Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+        AssertNoSecretCanaries(logCapture);
+    }
+
+    [Fact]
+    public async Task Poll_multi_event_message_retains_queue_message_when_later_insert_fails()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var batch = $"[{BouncedJson},{BouncedJsonSecond}]";
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-batch", "pop-batch", batch);
+
+        var metrics = new MailerRuntimeMetrics();
+        var inbox = new ThrowOnSecondInsertRepository(db.Factory);
+        var service = new AcsQueuePollingService(
+            queue,
+            inbox,
+            new MailerBounceIngestionOptions { Mode = BounceIngestionMode.Queue, MaxAttempts = 3 },
+            new BounceIngestionQueue(),
+            metrics,
+            new FixedUtcTimeProvider(FixedNow),
+            CreateCapturingLogger(out _));
+
+        await service.PollOnceAsync(ct);
+
+        Assert.Empty(queue.Deleted);
+        Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
+        Assert.Equal(0, await CountInboxAsync(db.Factory, "eg-queue-2", ct));
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+    }
+
+    [Fact]
+    public async Task Poll_retains_unparseable_message_without_delete()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-bad", "pop-bad", "{ not-json");
+
+        var metrics = new MailerRuntimeMetrics();
+        var service = CreateService(db.Factory, queue, metrics);
+        await service.PollOnceAsync(ct);
+
+        Assert.Empty(queue.Deleted);
+        Assert.Single(queue.Pending);
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+        Assert.Equal(0, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
     }
 
     [Fact]
@@ -253,18 +343,45 @@ public sealed class AcsQueuePollingServiceTests
     }
 
     [Fact]
-    public async Task Poll_receive_failure_increments_metric_without_delete()
+    public async Task Poll_receive_failure_increments_metric_and_sanitizes_logs()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await OpenMigratedAsync(ct);
         var queue = new FakeAcsEventQueueClient { ThrowOnReceive = true };
         var metrics = new MailerRuntimeMetrics();
-        var service = CreateService(db.Factory, queue, metrics);
+        var service = new AcsQueuePollingService(
+            queue,
+            new ProviderEventInboxRepository(db.Factory),
+            new MailerBounceIngestionOptions { Mode = BounceIngestionMode.Queue, MaxAttempts = 3 },
+            new BounceIngestionQueue(),
+            metrics,
+            new FixedUtcTimeProvider(FixedNow),
+            CreateCapturingLogger(out var logCapture));
 
         await service.PollOnceAsync(ct);
 
         Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
         Assert.Empty(queue.Deleted);
+        AssertNoSecretCanaries(logCapture);
+        Assert.DoesNotContain("ErrorCode=", logCapture.JoinedOutput(), StringComparison.Ordinal);
+        Assert.DoesNotContain("CanaryAzureError", logCapture.JoinedOutput(), StringComparison.Ordinal);
+    }
+
+    private static ILogger<AcsQueuePollingService> CreateCapturingLogger(out CapturingLoggerProvider capture)
+    {
+        capture = new CapturingLoggerProvider();
+        return new Logger<AcsQueuePollingService>(new LoggerFactory([capture]));
+    }
+
+    private static void AssertNoSecretCanaries(CapturingLoggerProvider logCapture)
+    {
+        var output = logCapture.JoinedOutputWithExceptions();
+        // ProviderErrorSanitizer keeps key names as AccountKey=***; assert secret values are gone.
+        Assert.DoesNotContain("should-not-leak", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("SUPERSECRETKEY", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("canary@example.com", output, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("CanaryAzureError", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("AccountKey=should-not-leak", output, StringComparison.OrdinalIgnoreCase);
     }
 
     private static AcsQueuePollingService CreateService(
@@ -278,7 +395,7 @@ public sealed class AcsQueuePollingServiceTests
             new BounceIngestionQueue(),
             metrics,
             new FixedUtcTimeProvider(FixedNow),
-            NullLogger<AcsQueuePollingService>.Instance);
+            CreateCapturingLogger(out _));
 
     private static async Task<long> CountInboxAsync(
         SqliteConnectionFactory factory,
@@ -340,6 +457,8 @@ public sealed class AcsQueuePollingServiceTests
 
         public bool ThrowOnReceive { get; init; }
 
+        public Func<string, string, Task>? OnDelete { get; set; }
+
         public IReadOnlyCollection<AcsQueueReceivedMessage> Pending
         {
             get
@@ -366,7 +485,11 @@ public sealed class AcsQueuePollingServiceTests
         {
             if (ThrowOnReceive)
             {
-                throw new InvalidOperationException("simulated receive failure AccountKey=should-not-leak");
+                throw new RequestFailedException(
+                    status: 403,
+                    message: "AccountKey=should-not-leak canary@example.com",
+                    errorCode: "CanaryAzureError",
+                    innerException: null);
             }
 
             lock (_gate)
@@ -381,19 +504,22 @@ public sealed class AcsQueuePollingServiceTests
             }
         }
 
-        public Task DeleteMessageAsync(
+        public async Task DeleteMessageAsync(
             string messageId,
             string popReceipt,
             CancellationToken cancellationToken)
         {
+            if (OnDelete is not null)
+            {
+                await OnDelete(messageId, popReceipt);
+            }
+
             lock (_gate)
             {
                 Deleted.Add((messageId, popReceipt));
                 _pending.RemoveAll(message =>
                     message.MessageId == messageId && message.PopReceipt == popReceipt);
             }
-
-            return Task.CompletedTask;
         }
     }
 
@@ -403,6 +529,25 @@ public sealed class AcsQueuePollingServiceTests
         public override Task<bool> TryInsertAsync(
             ProviderEventInboxInsert row,
             CancellationToken cancellationToken = default) =>
-            throw new SqliteException("simulated SQLITE_BUSY", 5);
+            throw new SqliteException("simulated SQLITE_BUSY AccountKey=should-not-leak canary@example.com", 5);
+    }
+
+    private sealed class ThrowOnSecondInsertRepository(SqliteConnectionFactory connections)
+        : ProviderEventInboxRepository(connections)
+    {
+        private int _calls;
+
+        public override async Task<bool> TryInsertAsync(
+            ProviderEventInboxInsert row,
+            CancellationToken cancellationToken = default)
+        {
+            _calls++;
+            if (_calls >= 2)
+            {
+                throw new SqliteException("simulated SQLITE_BUSY on second insert", 5);
+            }
+
+            return await base.TryInsertAsync(row, cancellationToken);
+        }
     }
 }

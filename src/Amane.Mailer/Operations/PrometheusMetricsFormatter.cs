@@ -91,7 +91,7 @@ public static class PrometheusMetricsFormatter
         AppendCounter(builder, "mail_suppressed_sends_total", runtime.SuppressedSendsTotal);
 
         AppendHelpType(builder, "mail_provider_queue_poll_failed_total", "counter",
-            "Total ACS Storage Queue poll or delete failures since process start.");
+            "Total ACS Storage Queue receive, inbox-acceptance, delete, or unparseable-message failures since process start.");
         AppendCounter(builder, "mail_provider_queue_poll_failed_total", runtime.ProviderQueuePollFailedTotal);
 
         AppendHelpType(builder, "mail_provider_events_pending", "gauge",
