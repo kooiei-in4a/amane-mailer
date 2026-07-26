@@ -283,17 +283,12 @@ public sealed class MailRequestWorker : BackgroundService
         // store (#301) and removal CLI (#400). Point lookup on UNIQUE (tenant_id, email).
         if (await _suppressions.ExistsAsync(row.TenantId, row.RecipientEmail, stoppingToken))
         {
-            var finalized = await FinalizeTerminalFailureAsync(
+            await FinalizeTerminalFailureAsync(
                 row,
                 startedAt,
                 provider: "none",
                 errorCode: MailDeliveryErrorCodes.RecipientSuppressed,
                 errorMessage: "Recipient is on the suppression list.");
-            if (finalized)
-            {
-                _runtimeMetrics.RecordSuppressedSend();
-            }
-
             return;
         }
 
@@ -514,7 +509,12 @@ public sealed class MailRequestWorker : BackgroundService
             return false;
         }
 
-        await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
+        // Count suppressed blocks from DB finalize success only — before best-effort webhook
+        // enqueue, which must not gate the metric (#303 review).
+        if (string.Equals(errorCode, MailDeliveryErrorCodes.RecipientSuppressed, StringComparison.Ordinal))
+        {
+            _runtimeMetrics.RecordSuppressedSend();
+        }
 
         _logger.LogWarning(
             "Mail request {MailRequestId} failed terminally after attempt {AttemptNumber} via provider {Provider}. RequestId={RequestId}; TenantId={TenantId}; ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
@@ -525,6 +525,9 @@ public sealed class MailRequestWorker : BackgroundService
             row.TenantId,
             errorCode,
             errorMessage);
+
+        // Post-commit best-effort: must not throw or gate the finalize/metrics outcome (#303 review).
+        await _deliveryEventEnqueuer.TryEnqueueAfterCommitAsync(row.Id);
         return true;
     }
 

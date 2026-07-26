@@ -85,6 +85,7 @@
           "tests/Amane.Mailer.Tests/BounceIngestionWorkerTests.cs",
           "tests/Amane.Mailer.Tests/MailRequestRetentionTests.cs",
           "tests/Amane.Mailer.Tests/MailRequestWorkerTests.cs",
+          "tests/Amane.Mailer.Tests/MailRequestWorkerSuppressionEnqueueTests.cs",
           "tests/Amane.Mailer.Tests/MailerMetricsTests.cs"
         ]
       }

@@ -445,6 +445,106 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
     }
 
     [Fact]
+    public async Task Worker_converges_prior_success_before_suppression_check()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var now = DateTimeOffset.UtcNow;
+        var request = MailRequestTestData.CreateRequest();
+        var internalId = Guid.CreateVersion7(now);
+        var expiredLockToken = Guid.CreateVersion7(now);
+
+        await SeedSuppressionAsync(request.To[0].Email, ct);
+        var metrics = fixture.Factory.Services.GetRequiredService<MailerRuntimeMetrics>();
+        metrics.ClearForTests();
+
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+            await repository.InsertAcceptedAsync(
+                new AcceptedMailRequestInsert
+                {
+                    Id = internalId,
+                    TenantId = request.TenantId,
+                    SourceService = request.SourceService,
+                    MailRequestId = request.MailRequestId,
+                    Purpose = request.Purpose,
+                    PayloadJson = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    PayloadHash = request.PayloadHash,
+                    Subject = request.Subject,
+                    HtmlBody = request.HtmlBody,
+                    TextBody = request.TextBody,
+                    ReplyTo = request.ReplyTo,
+                    RecipientEmail = request.To[0].Email,
+                    RecipientDisplayName = request.To[0].DisplayName,
+                    MaxAttempts = 3,
+                    AcceptedAt = now,
+                },
+                ct);
+        }
+
+        await using (var connection = new SqliteConnection(fixture.ConnectionString))
+        {
+            await connection.OpenAsync(ct);
+            await using (var update = connection.CreateCommand())
+            {
+                update.CommandText = """
+                    UPDATE mail_requests
+                    SET
+                        status = @ProcessingStatus,
+                        attempt_count = 1,
+                        lock_token = @LockToken,
+                        lock_expires_at = @LockExpiresAt,
+                        updated_at = @UpdatedAt
+                    WHERE id = @Id;
+                    """;
+                update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+                update.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
+                update.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                update.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                update.Parameters.AddWithValue("@Id", internalId.ToString("D"));
+                await update.ExecuteNonQueryAsync(ct);
+            }
+
+            await using (var insertAttempt = connection.CreateCommand())
+            {
+                insertAttempt.CommandText = """
+                    INSERT INTO mail_attempts (
+                        request_id, attempt_number, provider, status,
+                        provider_message_id, error_code, error_message, retryable,
+                        lock_token, started_at, completed_at)
+                    VALUES (
+                        @RequestId, 1, 'mailpit', @DeliveredStatus,
+                        @ProviderMessageId, NULL, NULL, 0,
+                        @LockToken, @StartedAt, @CompletedAt);
+                    """;
+                insertAttempt.Parameters.AddWithValue("@RequestId", internalId.ToString("D"));
+                insertAttempt.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+                insertAttempt.Parameters.AddWithValue("@ProviderMessageId", "prior-success-with-suppression");
+                insertAttempt.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
+                insertAttempt.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
+                insertAttempt.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                await insertAttempt.ExecuteNonQueryAsync(ct);
+            }
+        }
+
+        SignalWorker();
+
+        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 2, ct);
+        Assert.Equal(MailRequestState.Delivered, delivered.Status);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
+        Assert.Equal(0, metrics.CaptureSnapshot().SuppressedSendsTotal);
+
+        var attempts = await ListAttemptsAsync(delivered.Id, ct);
+        Assert.DoesNotContain(
+            attempts,
+            attempt => attempt.ErrorCode == MailDeliveryErrorCodes.RecipientSuppressed);
+        Assert.Contains(
+            attempts,
+            attempt => attempt.Status == MailRequestState.Delivered
+                && attempt.ProviderMessageId == "prior-success-with-suppression");
+    }
+
+    [Fact]
     public async Task Worker_does_not_skip_resend_after_manual_retry_when_prior_cycle_delivered_evidence_exists()
     {
         var ct = TestContext.Current.CancellationToken;
