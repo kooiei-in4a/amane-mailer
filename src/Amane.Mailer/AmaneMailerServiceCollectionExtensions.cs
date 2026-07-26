@@ -1,4 +1,5 @@
 using Amane.Mailer.Admin;
+using Amane.Mailer.Bounce;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Delivery;
@@ -107,6 +108,13 @@ public static class AmaneMailerServiceCollectionExtensions
             return options;
         });
 
+        services.AddStartupValidatedSingleton(provider =>
+        {
+            var options = MailerBounceIngestionOptions.Load(provider.GetRequiredService<IConfiguration>());
+            options.Validate();
+            return options;
+        });
+
         services.AddSingleton<MailerRuntimeMetrics>();
         services.AddSingleton<MailerReadinessEvaluator>();
 
@@ -124,6 +132,9 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<ProviderEventInboxRepository>();
         services.AddSingleton<BounceEventRepository>();
         services.AddSingleton<MailSuppressionRepository>();
+        services.AddSingleton<BounceIngestionStore>();
+        services.AddSingleton<BounceIngestionQueue>();
+        services.AddSingleton<IBounceIngestionQueue>(provider => provider.GetRequiredService<BounceIngestionQueue>());
         services.AddSingleton<DeliveryEventRepository>();
         services.AddSingleton<ExpiredProcessingReaper>();
         services.AddSingleton<WebhookUrlValidator>();
@@ -161,6 +172,12 @@ public static class AmaneMailerServiceCollectionExtensions
             services.AddHostedService<MailerWalCheckpointShutdownService>();
             services.AddHostedService<MailRequestWorker>();
             services.AddHostedService<WebhookDeliveryWorker>();
+
+            if (MailerBounceIngestionOptions.IsEnabled(configuration))
+            {
+                services.AddHostedService<BounceIngestionSweepService>();
+                services.AddHostedService<BounceIngestionWorker>();
+            }
         }
 
         return services;
