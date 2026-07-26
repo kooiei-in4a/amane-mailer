@@ -53,6 +53,14 @@ unchanged, so upgrading requires no consumer action.
   reaches the logger only for SQLite faults; everything else records the exception
   type name. The same rule applies to the new post-commit enqueue warning (#390).
 
+### Documentation
+
+- Add [ADR 0020](docs/adr/0020-bounce-ingestion-and-suppression.md): bounce ingestion
+  and suppression design for v1.1.0 (#300). Records the transport decision, the
+  correlation key, and the PII handling for provider delivery reports. No runtime
+  behavior in this release depends on it; the feature is registered as `planned` in
+  `docs/implementation-status.json`.
+
 ## [1.0.0] - 2026-07-25
 
 First stable release. Declares the public HTTP contract and Contracts package
