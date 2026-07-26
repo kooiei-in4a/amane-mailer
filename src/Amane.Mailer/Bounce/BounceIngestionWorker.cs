@@ -185,13 +185,6 @@ public sealed class BounceIngestionWorker(
             return;
         }
 
-        if (!BounceClassifier.ShouldRecordBounceEvent(row.DeliveryStatus))
-        {
-            stageTracker(FailureStageFinalize);
-            await FinalizeDiscardedAsync(row, now, lastErrorCode: null, stoppingToken);
-            return;
-        }
-
         stageTracker(FailureStageProcess);
         var match = await ingestionStore.FindByProviderMessageIdAsync(row.ProviderMessageId, stoppingToken);
         if (match is null)

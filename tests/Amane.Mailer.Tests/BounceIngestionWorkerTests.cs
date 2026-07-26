@@ -3,6 +3,7 @@ using Amane.Mailer.Configuration;
 using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Delivery;
 using Amane.Mailer.Operations;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -178,6 +179,48 @@ public sealed class BounceIngestionWorkerTests
 
         Assert.Equal(1, metrics.CaptureSnapshot().BounceUnmatchedTotal);
         Assert.Equal(0, metrics.CaptureSnapshot().BounceEventsTotal);
+    }
+
+    [Fact]
+    public async Task Persist_sanitizes_raw_status_message_before_write()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        await SeedDeliveredRequestAsync(db.Factory, ProviderMessageId, Recipient, ct);
+
+        var inbox = new ProviderEventInboxRepository(db.Factory);
+        Assert.True(await inbox.TryInsertAsync(NewInboxInsert("event-sanitize", ProviderMessageId, "Bounced", Recipient), ct));
+        var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
+        Assert.NotNull(claimed);
+
+        var match = await new BounceIngestionStore(db.Factory).FindByProviderMessageIdAsync(ProviderMessageId, ct);
+        Assert.NotNull(match);
+
+        const string raw =
+            "550 5.1.10 RESOLVER.ADR.RecipientNotFound; recipient pii-canary-302@example.com "
+            + "Bearer secret-token-do-not-store};'";
+        Assert.True(await new BounceIngestionStore(db.Factory).PersistCorrelatedAsync(
+            claimed,
+            match,
+            rawStatusMessage: raw,
+            suppress: true,
+            FixedNow,
+            ct));
+
+        await using var connection = await db.Factory.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT status_message
+            FROM bounce_events
+            WHERE provider_event_id = @EventId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@EventId", "event-sanitize");
+        var stored = (string?)await command.ExecuteScalarAsync(ct);
+        Assert.False(string.IsNullOrWhiteSpace(stored));
+        Assert.DoesNotContain("pii-canary-302@example.com", stored, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret-token-do-not-store", stored, StringComparison.Ordinal);
+        Assert.Equal(ProviderErrorSanitizer.Sanitize(raw), stored);
     }
 
     [Fact]

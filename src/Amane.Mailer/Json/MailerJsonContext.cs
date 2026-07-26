@@ -30,7 +30,6 @@ namespace Amane.Mailer.Json;
 [JsonSerializable(typeof(AcsEventGridEventDto))]
 [JsonSerializable(typeof(AcsEmailDeliveryReportDataDto))]
 [JsonSerializable(typeof(AcsDeliveryStatusDetailsDto))]
-[JsonSerializable(typeof(AcsEventGridEventDto[]))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]

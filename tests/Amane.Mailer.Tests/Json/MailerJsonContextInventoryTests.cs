@@ -49,7 +49,6 @@ public sealed class MailerJsonContextInventoryTests
         typeof(AcsEventGridEventDto),
         typeof(AcsEmailDeliveryReportDataDto),
         typeof(AcsDeliveryStatusDetailsDto),
-        typeof(AcsEventGridEventDto[]),
     ];
 
     [Theory]
