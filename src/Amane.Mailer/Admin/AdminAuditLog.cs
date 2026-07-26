@@ -86,6 +86,16 @@ public static class AdminAuditLog
         public const string AdminSession = "admin_session";
         public const string DbOps = "db_ops";
         public const string MailSuppressions = "mail_suppressions";
+
+        /// <summary>
+        /// Targets whose rows carry a mail tenant_id and must be filtered for scoped admins.
+        /// Auth/session/db_ops remain service-wide (no mail-tenant PII in those events).
+        /// </summary>
+        public static IReadOnlyList<string> TenantScoped { get; } =
+        [
+            MailRequest,
+            MailSuppressions,
+        ];
     }
 
     public static string ResolveActor(HttpContext context) =>

@@ -53,7 +53,8 @@ public sealed class AdminSuppressionsListUnmaskedAuditTests
         using var client = CreateClient(_unmaskedFixture.Factory);
         await LoginAsync(client, MailerAdminUnmaskedListFixture.Username, MailerAdminUnmaskedListFixture.Password, ct);
 
-        using var response = await client.GetAsync("/admin/suppressions", ct);
+        var tenantId = MailerWebApplicationFixtureBase.TenantId;
+        using var response = await client.GetAsync($"/admin/suppressions?tenant_id={tenantId:D}", ct);
         var html = await response.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -67,8 +68,8 @@ public sealed class AdminSuppressionsListUnmaskedAuditTests
         Assert.Equal(MailerAdminUnmaskedListFixture.Username, row.Actor);
         Assert.Equal(AdminAuditLog.TargetTypes.MailSuppressions, row.TargetType);
         Assert.Equal("success", row.Result);
-        Assert.Equal("result_count=1;tenant_filter=all", row.FieldName);
-        Assert.Null(row.TenantId);
+        Assert.Equal("result_count=1;tenant_filter=specific", row.FieldName);
+        Assert.Equal(tenantId.ToString("D"), row.TenantId);
         foreach (var value in row.AllValues)
         {
             if (value is null)
@@ -134,7 +135,9 @@ public sealed class AdminSuppressionsListUnmaskedAuditTests
             await drop.ExecuteNonQueryAsync(ct);
         }
 
-        using var response = await client.GetAsync("/admin/suppressions", ct);
+        using var response = await client.GetAsync(
+            $"/admin/suppressions?tenant_id={MailerWebApplicationFixtureBase.TenantId:D}",
+            ct);
         var content = await response.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
@@ -142,6 +145,28 @@ public sealed class AdminSuppressionsListUnmaskedAuditTests
         Assert.DoesNotContain("f***@e***.com", content, StringComparison.Ordinal);
         Assert.DoesNotContain("抑制リスト", content, StringComparison.Ordinal);
         Assert.DoesNotContain("<table", content, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Unmasked_suppressions_list_requires_tenant_id_filter()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(_unmaskedFixture.Factory);
+        await LoginAsync(
+            client,
+            MailerAdminUnmaskedListFixture.Username,
+            MailerAdminUnmaskedListFixture.Password,
+            ct);
+
+        using var response = await client.GetAsync("/admin/suppressions", ct);
+        var content = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("tenant_id", content, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(await ReadAuditEventsAsync(
+            _unmaskedFixture.ConnectionString,
+            AdminAuditLog.EventTypes.MailSuppressionsListUnmasked,
+            ct));
     }
 
     private static void ClearAdminCaches(MailerWebApplicationFixtureBase fixture)

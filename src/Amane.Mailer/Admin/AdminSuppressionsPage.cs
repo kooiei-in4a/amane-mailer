@@ -74,6 +74,15 @@ public static class AdminSuppressionsPage
             cancellationToken);
 
         var showUnmasked = AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii);
+        if (showUnmasked && tenantId is null)
+        {
+            // Unmasked suppressions audits are tenant-scoped; require an explicit filter so
+            // TenantId is always persisted and scoped admins cannot see cross-tenant rows.
+            return Results.Text(
+                "tenant_id filter is required when unmasked suppressions list is enabled (MAILER_ADMIN_PII_LIST_MODE=visible).",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
         if (showUnmasked)
         {
             // Fail closed: do not render unmasked PII without a durable audit row (ADR 0013 D-08).
@@ -91,7 +100,7 @@ public static class AdminSuppressionsPage
                             TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
                             TargetId = null,
                             TenantId = tenantId,
-                            FieldName = BuildUnmaskedAuditFieldName(page.Items.Count, tenantId is not null),
+                            FieldName = BuildUnmaskedAuditFieldName(page.Items.Count, tenantFiltered: true),
                             Result = AdminAuditLog.Results.Success,
                         }),
                     cancellationToken);
@@ -158,7 +167,7 @@ public static class AdminSuppressionsPage
                     </label>
                     <button type="submit" class="action-button">絞り込む</button>
                   </form>
-                  <p class="filter-note">閲覧のみ。解除 CLI は #400 で実装予定です。実装前の緊急対応は bounce ingestion runbook を参照してください。</p>
+                  <p class="filter-note">閲覧のみ。解除 CLI は #400 で実装予定です。実装前の緊急対応は bounce ingestion runbook を参照してください。非マスク表示（MAILER_ADMIN_PII_LIST_MODE=visible）ではテナント絞り込みが必須です。</p>
                 </section>
             """);
 

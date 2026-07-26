@@ -185,9 +185,11 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
     }
 
     /// <summary>
-    /// Scoped admins see auth/session events service-wide (no mail tenant PII) and
-    /// mail_request events only when the persisted tenant_id is in an allowed tenant.
-    /// Break-glass passes <paramref name="allowedTenantIds"/> as null (no filter).
+    /// Scoped admins see auth/session/db_ops events service-wide (no mail tenant PII) and
+    /// tenant-scoped targets (<see cref="AdminAuditLog.TargetTypes.TenantScoped"/>) only when
+    /// the persisted tenant_id is in an allowed tenant. Null tenant_id on those targets is
+    /// hidden from scoped admins (break-glass only). Break-glass passes
+    /// <paramref name="allowedTenantIds"/> as null (no filter).
     /// </summary>
     private static void AppendAuditTenantScopeFilter(
         StringBuilder where,
@@ -214,10 +216,19 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
             index++;
         }
 
-        where.Append("  AND (ae.target_type IS NULL OR ae.target_type <> @MailRequestTargetType OR ae.tenant_id IN (");
+        var scopedTargetNames = new List<string>(AdminAuditLog.TargetTypes.TenantScoped.Count);
+        for (var i = 0; i < AdminAuditLog.TargetTypes.TenantScoped.Count; i++)
+        {
+            var parameterName = "@TenantScopedTarget" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            scopedTargetNames.Add(parameterName);
+            command.Parameters.AddWithValue(parameterName, AdminAuditLog.TargetTypes.TenantScoped[i]);
+        }
+
+        where.Append("  AND (ae.target_type IS NULL OR ae.target_type NOT IN (");
+        where.Append(string.Join(", ", scopedTargetNames));
+        where.Append(") OR ae.tenant_id IN (");
         where.Append(string.Join(", ", parameterNames));
         where.Append("))");
-        command.Parameters.AddWithValue("@MailRequestTargetType", AdminAuditLog.TargetTypes.MailRequest);
     }
 
     /// <summary>

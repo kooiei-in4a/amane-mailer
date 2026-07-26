@@ -257,6 +257,86 @@ public sealed class AdminAuditRepositoryTests
     }
 
     [Fact]
+    public async Task List_and_get_for_admin_filter_mail_suppressions_events_by_tenant_scope()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await AuditTestDatabase.CreateAsync(ct);
+        var repository = new AdminAuditRepository(db.Factory);
+
+        var visibleTenantId = Guid.Parse("00000000-0000-0000-0000-000000000501");
+        var hiddenTenantId = Guid.Parse("00000000-0000-0000-0000-000000000502");
+        var occurredAt = new DateTimeOffset(2026, 7, 27, 10, 0, 0, TimeSpan.Zero);
+
+        await repository.WriteAsync(
+            NewSuppressionsListUnmaskedEvent(visibleTenantId, occurredAt, "suppressions-visible"),
+            ct);
+        await repository.WriteAsync(
+            NewSuppressionsListUnmaskedEvent(hiddenTenantId, occurredAt.AddMinutes(1), "suppressions-hidden"),
+            ct);
+        await repository.WriteAsync(
+            NewAuthAuditEvent(AdminAuditLog.EventTypes.Logout, "suppressions-auth", occurredAt.AddMinutes(2)),
+            ct);
+
+        var scopedTenants = new HashSet<Guid> { visibleTenantId };
+        var scopedPage = await repository.ListForAdminAsync(
+            new AdminAuditListQuery { AllowedTenantIds = scopedTenants, PageSize = 50 },
+            ct);
+
+        Assert.Equal(2, scopedPage.Items.Count);
+        Assert.Contains(scopedPage.Items, row => row.Actor == "suppressions-visible");
+        Assert.Contains(scopedPage.Items, row => row.Actor == "suppressions-auth");
+        Assert.DoesNotContain(scopedPage.Items, row => row.Actor == "suppressions-hidden");
+
+        var visible = Assert.Single(scopedPage.Items, row => row.Actor == "suppressions-visible");
+        Assert.NotNull(await repository.GetForAdminAsync(visible.Id, scopedTenants, ct));
+
+        var allRows = await repository.ListRecentAsync(50, ct);
+        var hidden = Assert.Single(allRows, row => row.Actor == "suppressions-hidden");
+        Assert.Null(await repository.GetForAdminAsync(hidden.Id, scopedTenants, ct));
+
+        var breakGlassPage = await repository.ListForAdminAsync(
+            new AdminAuditListQuery { AllowedTenantIds = null, PageSize = 50 },
+            ct);
+        Assert.Contains(breakGlassPage.Items, row => row.Actor == "suppressions-visible");
+        Assert.Contains(breakGlassPage.Items, row => row.Actor == "suppressions-hidden");
+        Assert.NotNull(await repository.GetForAdminAsync(hidden.Id, allowedTenantIds: null, ct));
+    }
+
+    [Fact]
+    public async Task Scoped_admin_excludes_mail_suppressions_audit_with_null_tenant_id_while_break_glass_sees_it()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await AuditTestDatabase.CreateAsync(ct);
+        var repository = new AdminAuditRepository(db.Factory);
+
+        var scopedTenantId = Guid.Parse("00000000-0000-0000-0000-000000000503");
+        await InsertSuppressionsAuditWithNullTenantIdAsync(
+            db.ConnectionString,
+            actor: "suppressions-null-tenant",
+            occurredAt: new DateTimeOffset(2026, 7, 27, 11, 0, 0, TimeSpan.Zero),
+            ct);
+
+        var scopedPage = await repository.ListForAdminAsync(
+            new AdminAuditListQuery
+            {
+                AllowedTenantIds = new HashSet<Guid> { scopedTenantId },
+                PageSize = 50,
+            },
+            ct);
+        Assert.DoesNotContain(scopedPage.Items, row => row.Actor == "suppressions-null-tenant");
+
+        var breakGlassPage = await repository.ListForAdminAsync(
+            new AdminAuditListQuery { AllowedTenantIds = null, PageSize = 50 },
+            ct);
+        var orphan = Assert.Single(breakGlassPage.Items, row => row.Actor == "suppressions-null-tenant");
+        Assert.Null(await repository.GetForAdminAsync(
+            orphan.Id,
+            new HashSet<Guid> { scopedTenantId },
+            ct));
+        Assert.NotNull(await repository.GetForAdminAsync(orphan.Id, allowedTenantIds: null, ct));
+    }
+
+    [Fact]
     public async Task List_for_admin_applies_event_type_and_actor_filters()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -281,6 +361,53 @@ public sealed class AdminAuditRepositoryTests
         var row = Assert.Single(page.Items);
         Assert.Equal(AdminAuditLog.EventTypes.Logout, row.EventType);
         Assert.Equal("alpha", row.Actor);
+    }
+
+    private static AdminAuditEvent NewSuppressionsListUnmaskedEvent(
+        Guid tenantId,
+        DateTimeOffset occurredAt,
+        string actor) =>
+        new()
+        {
+            EventType = AdminAuditLog.EventTypes.MailSuppressionsListUnmasked,
+            Actor = actor,
+            OccurredAt = occurredAt,
+            TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
+            TenantId = tenantId,
+            FieldName = "result_count=1;tenant_filter=specific",
+            Result = AdminAuditLog.Results.Success,
+        };
+
+    private static async Task InsertSuppressionsAuditWithNullTenantIdAsync(
+        string connectionString,
+        string actor,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO admin_audit_events (
+                event_type, actor, occurred_at,
+                source_ip, user_agent_summary,
+                target_type, target_id, tenant_id, field_name,
+                result, error_code)
+            VALUES (
+                @EventType, @Actor, @OccurredAt,
+                NULL, NULL,
+                @TargetType, NULL, NULL, @FieldName,
+                @Result, NULL);
+            """;
+        command.Parameters.AddWithValue(
+            "@EventType",
+            AdminAuditLog.EventTypes.MailSuppressionsListUnmasked);
+        command.Parameters.AddWithValue("@Actor", actor);
+        command.Parameters.AddWithValue("@OccurredAt", SqliteTime.ToStorageUtc(occurredAt));
+        command.Parameters.AddWithValue("@TargetType", AdminAuditLog.TargetTypes.MailSuppressions);
+        command.Parameters.AddWithValue("@FieldName", "result_count=0;tenant_filter=all");
+        command.Parameters.AddWithValue("@Result", AdminAuditLog.Results.Success);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static AdminAuditEvent NewMailRequestAuditEvent(
