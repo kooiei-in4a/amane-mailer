@@ -357,9 +357,10 @@ Web ホスト起動前に `argv` で早期分岐。コンテナ `ENTRYPOINT` は
 | `db migrate` | 未適用 SQL マイグレーションを適用 | 0=成功 / 130=cancelled |
 | `db checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` で `-wal` をクリーンアップ | 0=成功 / 130=cancelled |
 | `db backup <absolute-path>` | オンライン SQLite バックアップ（Backup API）。同ディレクトリの temp へ書いて検証後に destination を atomic replace する。途中失敗時も既存の正常 backup は残る。世代管理のため timestamp 付き path を推奨 | 0=成功 / 2=usage error / 130=cancelled |
-| `db stats [--tenant-id <uuid>]` | SQLite `mail_requests` の status 別件数、ready backlog、oldest queued age、stale processing、dead-letter 件数を `key=value` で出力 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db stats [--tenant-id <uuid>]` | SQLite `mail_requests` の status 別件数、ready backlog、oldest queued age、stale processing、dead-letter 件数、`mail_suppressions_count` を `key=value` で出力 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
 | `db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>` | 1 request の状態、attempt 件数、provider message id の有無を `key=value` で出力（secret / recipient は出さない） | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
 | `db admin-audit purge --older-than-days <days>` | 保持期間を過ぎた Admin 監査イベントを batch 削除 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
+| `db suppressions remove --tenant-id <uuid> --recipient <email>` | テナント別 `mail_suppressions` から 1 件を物理削除。正規化は格納/照会と同一。stdout に宛先は出さない。`admin_audit_events` に `mail_suppressions.removed` を記録 | 0=削除成功 / 1=schema unavailable / 2=usage error / 3=not found / 130=cancelled |
 | `admin user create ...` | scoped / break-glass Admin ユーザー作成 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
 
 長時間 CLI は `Ctrl+C`（`Console.CancelKeyPress`）で協調 cancel する。各 `Ctrl+C` はプロセス強制終了せず（`e.Cancel = true`）共有 `CancellationToken` を cancel し、既存の transaction rollback と backup temp cleanup を利用する。2 回目以降も同じ協調経路のみで、`Environment.Exit` や OS 既定の即時終了へフォールバックしない。`BackupDatabase` のような同期・非割込区間では次の checkpoint まで停止が遅延しうる。その間に強制終了が必要なら SIGKILL / 端末切断を使う。cancel 時の終了コードは定数 `130`（`128 + SIGINT` 慣習）で、usage error（2）や schema unavailable（1）とは衝突しない。cancel は ERROR ログにしない（短い stderr のみ）。
@@ -584,3 +585,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-25 | 長時間 CLI の Ctrl+C 協調 cancel と終了コード 130 を明記（#347） |
 | 2026-07-25 | ADR 0019: SQLite／単一プロセス維持と PostgreSQL／Worker 分離の着手 trigger・非目標を記録（#363）。#385 と同日マージで 0018 が衝突したため後着を 0019 に振り直し |
 | 2026-07-25 | `Mailer__Webhook__ReconcileBatchSize` へ改名。旧 `BatchClaimSize` は deprecated alias（#353） |
+| 2026-07-27 | `db suppressions remove` と `db stats` の `mail_suppressions_count` を追加（#400） |

@@ -39,6 +39,7 @@ public static class AdminAuditLog
         public const string DbBackupCompleted = "db_ops.backup_completed";
         public const string DbBackupFailed = "db_ops.backup_failed";
         public const string MailSuppressionsListUnmasked = "mail_suppressions.list_unmasked";
+        public const string MailSuppressionsRemoved = "mail_suppressions.removed";
 
         public static IReadOnlyList<string> All { get; } =
         [
@@ -58,6 +59,7 @@ public static class AdminAuditLog
             DbBackupCompleted,
             DbBackupFailed,
             MailSuppressionsListUnmasked,
+            MailSuppressionsRemoved,
         ];
     }
 

@@ -73,23 +73,36 @@ CLI `db stats` の `provider_events_pending` / `provider_events_dead_lettered` �
 
 誤検知や一時的な ACS 判断で宛先が止まっている場合、**本番 SQLite への直接 SQL は正規手順にしない**。
 
-予定コマンド（#400。実装後に本節をコマンド名どおりに同期すること）:
+### 解除対象の確認
+
+1. Admin `/admin/suppressions` でテナントを選び、解除したい宛先を特定する（既定はマスク表示。非マスクは `MAILER_ADMIN_PII_LIST_MODE=visible`）。
+2. 件数だけ確認する場合は `db stats [--tenant-id <uuid>]` の `mail_suppressions_count` を使う（宛先は出さない）。
+
+### 解除コマンド
 
 ```bash
-# 想定インターフェース（実装完了前のプレースホルダ）
 Amane.Mailer db suppressions remove \
   --tenant-id <tenant-guid> \
   --recipient <email>
 ```
 
+終了コード:
+
+| Code | 意味 |
+|------|------|
+| 0 | 1 件削除した |
+| 1 | schema unavailable（`mail_suppressions` 未マイグレーション等） |
+| 2 | usage error（必須引数不足・不正 UUID 等） |
+| 3 | 指定テナントに該当エントリなし（沈黙の成功にしない） |
+| 130 | Ctrl+C による協調 cancel |
+
 注意:
 
-- 宛先正規化は格納（#301）/ 照会（#303）/ 解除（#400）で同一の `RecipientEmailNormalizer` を使う。
+- 宛先正規化は格納（#301）/ 照会（#303）/ 解除（#400）で同一の `RecipientEmailNormalizer`（`Trim` + `ToLowerInvariant`）を使う。
 - 別テナントの同一宛先を巻き込まない（`--tenant-id` 必須）。
-- 標準出力へ宛先を無条件に出さない（ADR 0013）。
-- Admin UI からの解除は本 Issue スコープ外。#400 完了後に要否を判断する。
-
-#400 が未マージの環境では、緊急時のみメンテナ承認の下でバックアップ取得後に限定 SQL を検討し、事後に #400 相当の監査を残す。
+- 標準出力・標準エラーへ宛先を出さない（ADR 0013）。成功時はテナント ID のみを報告する。
+- 操作は `admin_audit_events` に `mail_suppressions.removed` として記録する（actor=`cli`、宛先は監査に載せない）。
+- Admin UI からの解除は本 Issue スコープ外。
 
 ## 7. Push（#304）について
 

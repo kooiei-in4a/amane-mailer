@@ -79,25 +79,40 @@ beyond existing sanitized fields.
 If a recipient is blocked by a false positive, **do not treat direct SQL against
 production SQLite as the normal recovery path**.
 
-Planned command (#400 — sync this section to the final command name when shipped):
+### Identify the target
+
+1. Use Admin `/admin/suppressions` with a tenant selected to find the recipient
+   (masked by default; unmask requires `MAILER_ADMIN_PII_LIST_MODE=visible`).
+2. For counts only, use `db stats [--tenant-id <uuid>]` and read
+   `mail_suppressions_count` (recipients are not printed).
+
+### Remove command
 
 ```bash
-# Planned interface (placeholder until #400 lands)
 Amane.Mailer db suppressions remove \
   --tenant-id <tenant-guid> \
   --recipient <email>
 ```
 
+Exit codes:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Removed one row |
+| 1 | Schema unavailable (`mail_suppressions` not migrated, etc.) |
+| 2 | Usage error (missing args, invalid UUID, etc.) |
+| 3 | No matching entry for the tenant (never silent success) |
+| 130 | Cooperative cancel via Ctrl+C |
+
 Notes:
 
 - Recipient normalization must match store (#301) / lookup (#303) / remove (#400)
-  via the same `RecipientEmailNormalizer`.
+  via the same `RecipientEmailNormalizer` (`Trim` + `ToLowerInvariant`).
 - `--tenant-id` is required so another tenant's identical address is not removed.
-- Do not unconditionally print the recipient to stdout (ADR 0013).
-- Admin UI removal is out of scope for #306; revisit after #400.
-
-If #400 is not yet merged, emergency SQL requires maintainer approval, a backup
-first, and a follow-up audit record.
+- Do not print the recipient to stdout or stderr (ADR 0013); success reports tenant ID only.
+- The operation writes `mail_suppressions.removed` to `admin_audit_events`
+  (actor=`cli`; recipient is never stored in the audit row).
+- Admin UI removal remains out of scope.
 
 ## 7. Push (#304)
 

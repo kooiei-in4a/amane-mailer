@@ -96,6 +96,30 @@ public sealed class MailSuppressionRepository(SqliteConnectionFactory connection
         return affected > 0;
     }
 
+    public async Task<long> CountAsync(
+        Guid? tenantId = null,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        if (tenantId is null)
+        {
+            command.CommandText = "SELECT COUNT(*) FROM mail_suppressions;";
+        }
+        else
+        {
+            command.CommandText = """
+                SELECT COUNT(*)
+                FROM mail_suppressions
+                WHERE tenant_id = @TenantId;
+                """;
+            command.Parameters.AddWithValue("@TenantId", tenantId.Value.ToString("D"));
+        }
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is long count ? count : Convert.ToInt64(result);
+    }
+
     public async Task<int> DeleteExpiredAsync(
         DateTimeOffset createdBefore,
         int batchSize,

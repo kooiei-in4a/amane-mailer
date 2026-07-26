@@ -58,11 +58,11 @@
     },
     {
       "id": "bounce-ingestion-and-suppression",
-      "status": "partial",
+      "status": "implemented",
       "trackingIssue": 306,
       "lastVerified": "2026-07-27",
       "relatedAdrs": ["0020", "0013"],
-      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305 done. Visibility #306: Admin bounce history on request detail, suppressions list (masked by default / MAILER_ADMIN_PII_LIST_MODE opt-in), metrics+bounce runbooks. Remaining: removal CLI #400. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
+      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Data/Migrations/011_bounce_ingestion.sql",
@@ -82,6 +82,8 @@
           "src/Amane.Mailer.Contracts/MailRequests/MailDeliveryErrorCodes.cs",
           "src/Amane.Mailer/Operations/MailerRuntimeMetrics.cs",
           "src/Amane.Mailer/Operations/PrometheusMetricsFormatter.cs",
+          "src/Amane.Mailer/Operations/DbSuppressionsRemoveCommand.cs",
+          "src/Amane.Mailer/Operations/DbStatsCommand.cs",
           "src/Amane.Mailer/Admin/AdminMailRequestDetailPage.cs",
           "src/Amane.Mailer/Admin/AdminSuppressionsPage.cs",
           "docs/ops/bounce-ingestion-runbook.md",
@@ -95,6 +97,7 @@
           "tests/Amane.Mailer.Tests/MailRequestWorkerTests.cs",
           "tests/Amane.Mailer.Tests/MailRequestWorkerSuppressionEnqueueTests.cs",
           "tests/Amane.Mailer.Tests/MailerMetricsTests.cs",
+          "tests/Amane.Mailer.Tests/MailerCliSuppressionsRemoveTests.cs",
           "tests/Amane.Mailer.Tests/Admin/AdminMailRequestDetailBounceRenderTests.cs",
           "tests/Amane.Mailer.Tests/Admin/AdminSuppressionsPageRenderTests.cs",
           "tests/Amane.Mailer.Tests/Admin/BounceAdminQueryTenantScopeTests.cs"

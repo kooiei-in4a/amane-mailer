@@ -67,8 +67,16 @@ public sealed class DbStatsCommand(
 
         var webhookCounts = await _deliveryEventRepository.CountOperationalAsync(cancellationToken);
         var providerEventCounts = await _providerEventInboxRepository.CountOperationalAsync(cancellationToken);
+        var suppressions = new MailSuppressionRepository(connections);
+        var suppressionsCount = await suppressions.CountAsync(options.TenantId, cancellationToken);
 
-        await WriteStatsAsync(stats, webhookCounts, providerEventCounts, options.TenantId, output);
+        await WriteStatsAsync(
+            stats,
+            webhookCounts,
+            providerEventCounts,
+            suppressionsCount,
+            options.TenantId,
+            output);
         return SuccessExitCode;
     }
 
@@ -76,6 +84,7 @@ public sealed class DbStatsCommand(
         MailerDbStatsResult stats,
         (long PendingCount, long DeadLetteredCount) webhookCounts,
         (long PendingCount, long DeadLetteredCount) providerEventCounts,
+        long suppressionsCount,
         Guid? tenantId,
         TextWriter output)
     {
@@ -102,6 +111,7 @@ public sealed class DbStatsCommand(
         await output.WriteLineAsync($"webhook_events_dead_lettered={webhookCounts.DeadLetteredCount}");
         await output.WriteLineAsync($"provider_events_pending={providerEventCounts.PendingCount}");
         await output.WriteLineAsync($"provider_events_dead_lettered={providerEventCounts.DeadLetteredCount}");
+        await output.WriteLineAsync($"mail_suppressions_count={suppressionsCount}");
     }
 
     private static bool TryParseOptions(
