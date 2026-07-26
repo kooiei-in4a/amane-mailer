@@ -7,7 +7,8 @@ namespace Amane.Mailer.Operations;
 public sealed class DbStatsCommand(
     SqliteConnectionFactory connections,
     Func<DateTimeOffset>? nowProvider = null,
-    DeliveryEventRepository? deliveryEventRepository = null)
+    DeliveryEventRepository? deliveryEventRepository = null,
+    ProviderEventInboxRepository? providerEventInboxRepository = null)
 {
     public const int SuccessExitCode = 0;
     public const int UnavailableExitCode = 1;
@@ -16,6 +17,8 @@ public sealed class DbStatsCommand(
     private readonly MailerDbStatsReader _statsReader = new(connections);
     private readonly DeliveryEventRepository _deliveryEventRepository =
         deliveryEventRepository ?? new DeliveryEventRepository(connections);
+    private readonly ProviderEventInboxRepository _providerEventInboxRepository =
+        providerEventInboxRepository ?? new ProviderEventInboxRepository(connections);
     private readonly Func<DateTimeOffset> _nowProvider = nowProvider ?? (() => SqliteTime.UtcNow);
 
     public static bool IsDbStatsCommand(IReadOnlyList<string> args) =>
@@ -63,14 +66,16 @@ public sealed class DbStatsCommand(
             ?? throw new InvalidOperationException("Mailer stats query returned no result.");
 
         var webhookCounts = await _deliveryEventRepository.CountOperationalAsync(cancellationToken);
+        var providerEventCounts = await _providerEventInboxRepository.CountOperationalAsync(cancellationToken);
 
-        await WriteStatsAsync(stats, webhookCounts, options.TenantId, output);
+        await WriteStatsAsync(stats, webhookCounts, providerEventCounts, options.TenantId, output);
         return SuccessExitCode;
     }
 
     private static async Task WriteStatsAsync(
         MailerDbStatsResult stats,
         (long PendingCount, long DeadLetteredCount) webhookCounts,
+        (long PendingCount, long DeadLetteredCount) providerEventCounts,
         Guid? tenantId,
         TextWriter output)
     {
@@ -95,6 +100,8 @@ public sealed class DbStatsCommand(
         await output.WriteLineAsync($"sweep_heartbeat_age_seconds={stats.SweepHeartbeatAgeSeconds}");
         await output.WriteLineAsync($"webhook_events_pending={webhookCounts.PendingCount}");
         await output.WriteLineAsync($"webhook_events_dead_lettered={webhookCounts.DeadLetteredCount}");
+        await output.WriteLineAsync($"provider_events_pending={providerEventCounts.PendingCount}");
+        await output.WriteLineAsync($"provider_events_dead_lettered={providerEventCounts.DeadLetteredCount}");
     }
 
     private static bool TryParseOptions(

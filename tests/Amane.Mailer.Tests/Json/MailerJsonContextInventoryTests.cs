@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Amane.Mailer.Bounce;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Json;
@@ -45,6 +46,10 @@ public sealed class MailerJsonContextInventoryTests
         typeof(MailRecipientDto),
         typeof(MailRecipientDto[]),
         typeof(Dictionary<string, string>),
+        typeof(AcsEventGridEventDto),
+        typeof(AcsEmailDeliveryReportDataDto),
+        typeof(AcsDeliveryStatusDetailsDto),
+        typeof(AcsEventGridEventDto[]),
     ];
 
     [Theory]

@@ -30,6 +30,7 @@ public sealed class MailerStartupValidationInventoryTests
         typeof(MailerWebhookOptions),
         typeof(MailerHealthcheckOptions),
         typeof(MailerMetricsOptions),
+        typeof(MailerBounceIngestionOptions),
     ];
 
     // Matches AddSingleton(x => ...) / AddSingleton<T>(x => ...) factory forms regardless of

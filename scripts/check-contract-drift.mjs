@@ -491,6 +491,10 @@ for (const typeName of [
   'MailRecipientDto',
   'MailRecipientDto[]',
   'Dictionary<string, string>',
+  'AcsEventGridEventDto',
+  'AcsEmailDeliveryReportDataDto',
+  'AcsDeliveryStatusDetailsDto',
+  'AcsEventGridEventDto[]',
 ]) {
   assertContains(
     runtimeJsonContext,

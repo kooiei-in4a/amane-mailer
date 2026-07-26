@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Bounce;
 using Amane.Mailer.Contracts.Json;
 
 namespace Amane.Mailer.Json;
@@ -26,6 +27,10 @@ namespace Amane.Mailer.Json;
 [JsonSerializable(typeof(MailRecipientDto))]
 [JsonSerializable(typeof(MailRecipientDto[]))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
+[JsonSerializable(typeof(AcsEventGridEventDto))]
+[JsonSerializable(typeof(AcsEmailDeliveryReportDataDto))]
+[JsonSerializable(typeof(AcsDeliveryStatusDetailsDto))]
+[JsonSerializable(typeof(AcsEventGridEventDto[]))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]

@@ -339,6 +339,29 @@ public sealed class ProviderEventInboxRepository(SqliteConnectionFactory connect
         return affected > 0;
     }
 
+    public async Task<(long PendingCount, long DeadLetteredCount)> CountOperationalAsync(
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT
+                SUM(CASE WHEN status IN (0, 1) THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN status = 3 THEN 1 ELSE 0 END) AS dead_lettered_count
+            FROM provider_event_inbox;
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return (0, 0);
+        }
+
+        return (
+            reader.IsDBNull(0) ? 0 : reader.GetInt64(0),
+            reader.IsDBNull(1) ? 0 : reader.GetInt64(1));
+    }
     public async Task<bool> HasPendingWorkAsync(
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
