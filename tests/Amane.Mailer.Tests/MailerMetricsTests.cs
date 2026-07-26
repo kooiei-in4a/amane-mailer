@@ -82,6 +82,7 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         Assert.Contains("mail_bounce_events_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_bounce_unmatched_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_bounce_recipient_mismatch_total", body, StringComparison.Ordinal);
+        Assert.Contains("mail_suppressed_sends_total", body, StringComparison.Ordinal);
         Assert.Contains("mail_provider_events_pending", body, StringComparison.Ordinal);
         Assert.Contains("mail_provider_events_dead_lettered", body, StringComparison.Ordinal);
         Assert.Contains("mail_webhook_events_dead_lettered", body, StringComparison.Ordinal);
@@ -134,6 +135,7 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         Assert.Contains("# TYPE mail_webhook_events_pending gauge", body, StringComparison.Ordinal);
         Assert.Contains("# TYPE mail_webhook_events_dead_lettered gauge", body, StringComparison.Ordinal);
         Assert.Contains("# TYPE mail_bounce_events_total counter", body, StringComparison.Ordinal);
+        Assert.Contains("# TYPE mail_suppressed_sends_total counter", body, StringComparison.Ordinal);
         Assert.Contains("# TYPE mail_provider_events_pending gauge", body, StringComparison.Ordinal);
         Assert.Contains("# TYPE mail_provider_events_dead_lettered gauge", body, StringComparison.Ordinal);
         Assert.Contains(

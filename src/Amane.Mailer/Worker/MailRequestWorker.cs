@@ -13,6 +13,7 @@ public sealed class MailRequestWorker : BackgroundService
 {
     private readonly IMailRequestQueue _queue;
     private readonly MailRequestRepository _repository;
+    private readonly MailSuppressionRepository _suppressions;
     private readonly MailerTenantRegistry _tenants;
     private readonly MailerOptions _mailerOptions;
     private readonly MailerWorkerOptions _workerOptions;
@@ -30,6 +31,7 @@ public sealed class MailRequestWorker : BackgroundService
     public MailRequestWorker(
         IMailRequestQueue queue,
         MailRequestRepository repository,
+        MailSuppressionRepository suppressions,
         MailerTenantRegistry tenants,
         MailerOptions mailerOptions,
         MailerWorkerOptions workerOptions,
@@ -44,6 +46,7 @@ public sealed class MailRequestWorker : BackgroundService
     {
         _queue = queue;
         _repository = repository;
+        _suppressions = suppressions;
         _tenants = tenants;
         _mailerOptions = mailerOptions;
         _workerOptions = workerOptions;
@@ -276,6 +279,24 @@ public sealed class MailRequestWorker : BackgroundService
             }
         }
 
+        // Send-time suppression check (#303). Uses the same RecipientEmailNormalizer as
+        // store (#301) and removal CLI (#400). Point lookup on UNIQUE (tenant_id, email).
+        if (await _suppressions.ExistsAsync(row.TenantId, row.RecipientEmail, stoppingToken))
+        {
+            var finalized = await FinalizeTerminalFailureAsync(
+                row,
+                startedAt,
+                provider: "none",
+                errorCode: MailDeliveryErrorCodes.RecipientSuppressed,
+                errorMessage: "Recipient is on the suppression list.");
+            if (finalized)
+            {
+                _runtimeMetrics.RecordSuppressedSend();
+            }
+
+            return;
+        }
+
         var providerName = _mailerOptions.ResolveProvider(tenant);
         var job = new MailSendJob(
             row.MailRequestId,
@@ -451,7 +472,7 @@ public sealed class MailRequestWorker : BackgroundService
         }
     }
 
-    private async Task FinalizeTerminalFailureAsync(
+    private async Task<bool> FinalizeTerminalFailureAsync(
         MailRequestRow row,
         DateTimeOffset now,
         string provider,
@@ -490,7 +511,7 @@ public sealed class MailRequestWorker : BackgroundService
                 row.MailRequestId,
                 row.Id,
                 row.TenantId);
-            return;
+            return false;
         }
 
         await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
@@ -504,6 +525,7 @@ public sealed class MailRequestWorker : BackgroundService
             row.TenantId,
             errorCode,
             errorMessage);
+        return true;
     }
 
     private static DateTimeOffset ComputeNextAttemptAt(

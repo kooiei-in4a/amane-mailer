@@ -2,11 +2,14 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Amane.Mailer.Admin;
+using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
 using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.Security;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -227,6 +230,63 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Failed, minAttemptCount: 1, ct);
 
         Assert.Equal("Tenant is not configured.", stored.LastErrorMessage);
+    }
+
+    [Fact]
+    public async Task Worker_fails_suppressed_recipient_without_provider_call()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SeedSuppressionAsync("recipient@example.com", ct);
+        var metrics = fixture.Factory.Services.GetRequiredService<MailerRuntimeMetrics>();
+        metrics.ClearForTests();
+
+        var request = await SeedQueuedRequestAsync(attemptCount: 0, ct);
+
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Failed, minAttemptCount: 1, ct);
+        Assert.Equal("Recipient is on the suppression list.", stored.LastErrorMessage);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
+
+        var attempt = await ReadSingleAttemptAsync(stored.Id, ct);
+        Assert.Equal(MailDeliveryErrorCodes.RecipientSuppressed, attempt.ErrorCode);
+        Assert.Equal("none", attempt.Provider);
+        Assert.False(attempt.Retryable);
+        Assert.Equal(1, metrics.CaptureSnapshot().SuppressedSendsTotal);
+    }
+
+    [Fact]
+    public async Task Worker_delivers_when_recipient_is_not_suppressed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SeedSuppressionAsync("other@example.com", ct);
+        var metrics = fixture.Factory.Services.GetRequiredService<MailerRuntimeMetrics>();
+        metrics.ClearForTests();
+
+        var request = await SeedQueuedRequestAsync(attemptCount: 0, ct);
+
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 1, ct);
+        Assert.Equal(MailRequestState.Delivered, stored.Status);
+        Assert.Single(fixture.DeliveryProvider.Sent);
+        Assert.Equal(0, metrics.CaptureSnapshot().SuppressedSendsTotal);
+    }
+
+    [Fact]
+    public async Task Worker_suppresses_recipient_case_insensitively()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SeedSuppressionAsync("Recipient@Example.COM", ct);
+
+        var request = await SeedQueuedRequestAsync(
+            attemptCount: 0,
+            ct,
+            recipientEmail: "recipient@example.com");
+
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Failed, minAttemptCount: 1, ct);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
+
+        var attempt = await ReadSingleAttemptAsync(stored.Id, ct);
+        Assert.Equal(MailDeliveryErrorCodes.RecipientSuppressed, attempt.ErrorCode);
+        Assert.DoesNotContain("recipient@", stored.LastErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("example.com", stored.LastErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -654,15 +714,52 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         return attempts;
     }
 
+    private async Task SeedSuppressionAsync(string recipientEmail, CancellationToken cancellationToken)
+    {
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var suppressions = scope.ServiceProvider.GetRequiredService<MailSuppressionRepository>();
+        var now = DateTimeOffset.UtcNow;
+        Assert.True(await suppressions.TryInsertAsync(
+            new MailSuppressionInsert
+            {
+                Id = Guid.CreateVersion7(now),
+                TenantId = MailerWebApplicationFixtureBase.TenantId,
+                RecipientEmail = recipientEmail,
+                Reason = MailSuppressionReasons.HardBounce,
+                CreatedAt = now,
+            },
+            cancellationToken));
+    }
+
     private async Task<MailRequestCreateRequest> SeedQueuedRequestAsync(
         int attemptCount,
         CancellationToken cancellationToken,
-        Guid? tenantId = null)
+        Guid? tenantId = null,
+        string? recipientEmail = null)
     {
         var request = MailRequestTestData.CreateRequest();
         if (tenantId is not null)
         {
             request = request with { TenantId = tenantId.Value };
+        }
+
+        if (recipientEmail is not null)
+        {
+            request = request with
+            {
+                To =
+                [
+                    new MailRecipientDto
+                    {
+                        Email = recipientEmail,
+                        DisplayName = request.To[0].DisplayName,
+                    },
+                ],
+            };
+            request = request with
+            {
+                PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+            };
         }
 
         var body = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));

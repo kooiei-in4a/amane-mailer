@@ -86,6 +86,10 @@ public static class PrometheusMetricsFormatter
             "Total bounce inbox events discarded due to recipient mismatch since process start.");
         AppendCounter(builder, "mail_bounce_recipient_mismatch_total", runtime.BounceRecipientMismatchTotal);
 
+        AppendHelpType(builder, "mail_suppressed_sends_total", "counter",
+            "Total mail sends blocked by the suppression list before provider delivery since process start.");
+        AppendCounter(builder, "mail_suppressed_sends_total", runtime.SuppressedSendsTotal);
+
         AppendHelpType(builder, "mail_provider_events_pending", "gauge",
             "Provider event inbox rows pending or processing (same aggregation as CLI provider_events_pending).");
         AppendGauge(builder, "mail_provider_events_pending", providerEventsPending);
