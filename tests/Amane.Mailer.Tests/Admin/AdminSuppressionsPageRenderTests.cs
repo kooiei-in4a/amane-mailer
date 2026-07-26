@@ -90,9 +90,34 @@ public sealed class AdminSuppressionsPageRenderTests
 
         Assert.Contains("閲覧のみ", html, StringComparison.Ordinal);
         Assert.Contains("#400 で実装予定", html, StringComparison.Ordinal);
+        Assert.Contains("すべて", html, StringComparison.Ordinal);
         Assert.DoesNotContain("db suppressions remove", html, StringComparison.Ordinal);
         Assert.DoesNotContain("解除する", html, StringComparison.Ordinal);
         Assert.DoesNotContain("method=\"post\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Unmasked_awaiting_tenant_selection_omits_all_option_and_prompts_for_tenant()
+    {
+        var tenants = new[]
+        {
+            CreateTenant(Guid.Parse("00000000-0000-0000-0000-000000000301")),
+            CreateTenant(Guid.Parse("00000000-0000-0000-0000-000000000302")),
+        };
+
+        var html = AdminSuppressionsPage.RenderHtml(
+            new AdminSuppressionListPage([], null),
+            deadLetterCount: 0,
+            selectedTenantId: null,
+            currentCursor: null,
+            visibleTenants: tenants,
+            options: new MailerAdminOptions { ListPiiVisible = true },
+            awaitingTenantSelection: true);
+
+        Assert.True(html.Contains("テナントを選択してください", StringComparison.Ordinal), "DUMP_HTML_MARKER empty-row=" + (html.Contains("empty-row") ? "yes" : "no") + " snippet=" + html[Math.Max(0, html.IndexOf("empty-row") - 20)..Math.Min(html.Length - 1, html.IndexOf("empty-row") + 120)]);
+        Assert.DoesNotContain("<option value=\"\">すべて</option>", html, StringComparison.Ordinal);
+        Assert.Contains(tenants[0].TenantId.ToString("D"), html, StringComparison.Ordinal);
+        Assert.Contains(tenants[1].TenantId.ToString("D"), html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -101,6 +126,18 @@ public sealed class AdminSuppressionsPageRenderTests
         Assert.Equal("a***@e***.com", AdminSuppressionsPage.MaskSuppressionRecipient("alice@example.com"));
         Assert.Equal("***", AdminSuppressionsPage.MaskSuppressionRecipient("not-an-email"));
     }
+
+    private static MailerTenant CreateTenant(Guid tenantId) =>
+        new()
+        {
+            TenantId = tenantId,
+            Name = "t-" + tenantId.ToString("N")[..8],
+            SourceServices = ["svc"],
+            DefaultFrom = new MailerAddress { Email = "from@example.com" },
+            TokenEnv = "TOKEN",
+            Provider = "mailpit",
+            Retry = new MailerRetryOptions { MaxAttempts = 3, InitialDelaySeconds = 1 },
+        };
 
     private static AdminSuppressionListPage SinglePage(string recipient, string reason) =>
         new(

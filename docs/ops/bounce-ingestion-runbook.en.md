@@ -37,9 +37,11 @@ Never log or expose the connection string or queue name in metrics.
 | Page | Content |
 |------|---------|
 | `/admin/mail-requests/{id}` | Request detail "bounce history" from `bounce_events`. No FK — empty is valid (not ingested yet / purged). |
-| `/admin/suppressions` | Tenant-scoped suppression list (view-only). Recipients are masked by default. Unmask requires explicit `MAILER_ADMIN_PII_LIST_MODE=visible`. |
+| `/admin/suppressions` | Tenant-scoped suppression list (view-only). Recipients are masked by default. Unmask requires explicit `MAILER_ADMIN_PII_LIST_MODE=visible`. In visible mode, viewing and audit are per-tenant; without a tenant selection the UI asks for one (single allowed tenant redirects automatically). |
 
 Scoped admins see only their tenants. Break-glass may see all tenants.
+
+When `MAILER_ADMIN_PII_LIST_MODE=visible`, unmasked suppressions list and its audit event require an explicit tenant. The side-nav link opens tenant selection (or redirects when exactly one tenant is allowed).
 
 ## 4. Metrics and backlog thresholds
 

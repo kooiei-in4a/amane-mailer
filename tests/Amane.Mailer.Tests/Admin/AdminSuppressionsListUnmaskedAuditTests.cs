@@ -148,7 +148,7 @@ public sealed class AdminSuppressionsListUnmaskedAuditTests
     }
 
     [Fact]
-    public async Task Unmasked_suppressions_list_requires_tenant_id_filter()
+    public async Task Unmasked_suppressions_without_tenant_redirects_when_single_tenant_allowed()
     {
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateClient(_unmaskedFixture.Factory);
@@ -159,10 +159,11 @@ public sealed class AdminSuppressionsListUnmaskedAuditTests
             ct);
 
         using var response = await client.GetAsync("/admin/suppressions", ct);
-        var content = await response.Content.ReadAsStringAsync(ct);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("tenant_id", content, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal(
+            $"/admin/suppressions?tenant_id={MailerWebApplicationFixtureBase.TenantId:D}",
+            response.Headers.Location?.OriginalString);
         Assert.Empty(await ReadAuditEventsAsync(
             _unmaskedFixture.ConnectionString,
             AdminAuditLog.EventTypes.MailSuppressionsListUnmasked,

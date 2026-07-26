@@ -62,6 +62,38 @@ public static class AdminSuppressionsPage
             cursor = decodedCursor;
         }
 
+        var showUnmasked = AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii);
+        var visibleTenants = tenantRegistry.ListTenants()
+            .Where(tenant => access.CanAccessTenant(tenant.TenantId))
+            .ToArray();
+
+        // Unmasked suppressions audits are tenant-scoped. Resolve tenant before any list query
+        // so nav (/admin/suppressions) never returns 400 and never audits cross-tenant views.
+        if (showUnmasked && tenantId is null)
+        {
+            if (visibleTenants.Length == 1)
+            {
+                return Results.Redirect(
+                    "/admin/suppressions?tenant_id=" + visibleTenants[0].TenantId.ToString("D"));
+            }
+
+            var deadLetterCountForSelection = await deadLetterCountCache.GetCountAsync(
+                mailRequestRepository,
+                access.AllowedTenantIdsForQuery,
+                cancellationToken);
+            context.Response.Headers.CacheControl = "no-store";
+            return Results.Content(
+                RenderHtml(
+                    new AdminSuppressionListPage([], null),
+                    deadLetterCountForSelection,
+                    selectedTenantId: null,
+                    currentCursor: null,
+                    visibleTenants,
+                    options,
+                    awaitingTenantSelection: true),
+                "text/html; charset=utf-8");
+        }
+
         var page = await suppressionRepository.ListForAdminAsync(
             new AdminSuppressionListQuery
             {
@@ -72,16 +104,6 @@ public static class AdminSuppressionsPage
                 PageSize = PageSize,
             },
             cancellationToken);
-
-        var showUnmasked = AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii);
-        if (showUnmasked && tenantId is null)
-        {
-            // Unmasked suppressions audits are tenant-scoped; require an explicit filter so
-            // TenantId is always persisted and scoped admins cannot see cross-tenant rows.
-            return Results.Text(
-                "tenant_id filter is required when unmasked suppressions list is enabled (MAILER_ADMIN_PII_LIST_MODE=visible).",
-                statusCode: StatusCodes.Status400BadRequest);
-        }
 
         if (showUnmasked)
         {
@@ -119,9 +141,6 @@ public static class AdminSuppressionsPage
             mailRequestRepository,
             access.AllowedTenantIdsForQuery,
             cancellationToken);
-        var visibleTenants = tenantRegistry.ListTenants()
-            .Where(tenant => access.CanAccessTenant(tenant.TenantId))
-            .ToArray();
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
@@ -135,8 +154,10 @@ public static class AdminSuppressionsPage
         string? selectedTenantId,
         string? currentCursor,
         IReadOnlyList<MailerTenant> visibleTenants,
-        MailerAdminOptions options)
+        MailerAdminOptions options,
+        bool awaitingTenantSelection = false)
     {
+        var requireTenantFilter = AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii);
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(html, "抑制リスト - Amane Admin", AdminNavItem.Suppressions, deadLetterCount);
 
@@ -146,8 +167,13 @@ public static class AdminSuppressionsPage
                     <label>
                       テナント
                       <select name="tenant_id">
-                        <option value="">すべて</option>
             """);
+
+        if (!requireTenantFilter)
+        {
+            html.AppendLine("""                        <option value="">すべて</option>""");
+        }
+
 
         foreach (var tenant in visibleTenants)
         {
@@ -188,11 +214,22 @@ public static class AdminSuppressionsPage
 
         if (page.Items.Count == 0)
         {
-            html.AppendLine("""
+            if (awaitingTenantSelection)
+            {
+                html.AppendLine("""
+                      <tr>
+                        <td class="empty-row" colspan="5">テナントを選択してください</td>
+                      </tr>
+                """);
+            }
+            else
+            {
+                html.AppendLine("""
                       <tr>
                         <td class="empty-row" colspan="5">抑制エントリはありません</td>
                       </tr>
                 """);
+            }
         }
         else
         {

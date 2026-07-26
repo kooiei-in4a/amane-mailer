@@ -35,9 +35,11 @@ v1.1.0 は **Storage Queue ポーリング**のみ。公開 HTTPS 受信口は�
 | 画面 | 内容 |
 |------|------|
 | `/admin/mail-requests/{id}` | リクエスト詳細の「バウンス履歴」。`bounce_events` を表示。FK は無いため、空でも正常（未取り込み / purge 済み）。 |
-| `/admin/suppressions` | テナント別抑制リスト（閲覧のみ）。宛先は既定マスク。非マスクは `MAILER_ADMIN_PII_LIST_MODE=visible` の明示 opt-in。 |
+| `/admin/suppressions` | テナント別抑制リスト（閲覧のみ）。宛先は既定マスク。非マスクは `MAILER_ADMIN_PII_LIST_MODE=visible` の明示 opt-in。visible 時はテナント単位で閲覧・監査し、未選択時はテナント選択画面（許可テナントが1件なら自動リダイレクト）。 |
 
 tenant scope を持つ管理者は自テナントのみ。break-glass のみ全テナント閲覧可。
+
+`MAILER_ADMIN_PII_LIST_MODE=visible` のときは、非マスク一覧とその監査イベントはテナント単位です。サイドナビからはテナント選択画面に入ります（許可テナントが1件だけの場合は自動リダイレクト）。
 
 ## 4. メトリクスと滞留閾値
 
