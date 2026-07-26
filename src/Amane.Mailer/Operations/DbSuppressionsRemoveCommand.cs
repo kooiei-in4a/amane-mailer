@@ -10,6 +10,7 @@ namespace Amane.Mailer.Operations;
 /// Recipient normalization matches store (#301) and lookup (#303) via
 /// <see cref="RecipientEmailNormalizer"/>. Stdout/stderr never echo the recipient (ADR 0013).
 /// Delete and audit insert share one SQLite transaction so a failed audit rolls back the delete.
+/// Connection / BEGIN IMMEDIATE / schema probe failures map to exit code 1 (not unhandled exceptions).
 /// </summary>
 public sealed class DbSuppressionsRemoveCommand(
     SqliteConnectionFactory connections,
@@ -54,12 +55,6 @@ public sealed class DbSuppressionsRemoveCommand(
             return UsageErrorExitCode;
         }
 
-        if (!await CanUseSuppressionsTableAsync(cancellationToken))
-        {
-            await error.WriteLineAsync("Mailer database schema is not migrated for mail suppressions.");
-            return UnavailableExitCode;
-        }
-
         string normalized;
         try
         {
@@ -78,9 +73,16 @@ public sealed class DbSuppressionsRemoveCommand(
         var auditRepository = new AdminAuditRepository(connections);
 
         Guid? deletedId;
-        await using (var connection = await connections.OpenConnectionAsync(cancellationToken))
-        await using (var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken))
+        try
         {
+            if (!await CanUseSuppressionsTableAsync(cancellationToken))
+            {
+                await error.WriteLineAsync("Mailer database schema is not migrated for mail suppressions.");
+                return UnavailableExitCode;
+            }
+
+            await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+            await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
             try
             {
                 deletedId = await suppressions.TryDeleteReturningIdAsync(
@@ -137,6 +139,16 @@ public sealed class DbSuppressionsRemoveCommand(
                     "Mail suppression remove failed; no changes were committed.");
                 return UnavailableExitCode;
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            await error.WriteLineAsync(
+                "Mail suppression remove failed; no changes were committed.");
+            return UnavailableExitCode;
         }
 
         // Commit already succeeded. Result I/O must not claim the change was rolled back.

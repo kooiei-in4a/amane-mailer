@@ -189,6 +189,38 @@ public sealed class MailerCliSuppressionsRemoveTests
     }
 
     [Fact]
+    public async Task returns_unavailable_when_begin_immediate_cannot_acquire_write_lock()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await TestDatabase.CreateAsync(ct);
+        await SeedSuppressionAsync(db.Factory, Guid.NewGuid(), TenantA, Recipient, ct);
+
+        // Hold a write lock so the command's BEGIN IMMEDIATE hits busy_timeout and fails.
+        await using var lockConnection = await db.Factory.OpenConnectionAsync(ct);
+        await using (var begin = lockConnection.CreateCommand())
+        {
+            begin.CommandText = "BEGIN IMMEDIATE;";
+            await begin.ExecuteNonQueryAsync(ct);
+        }
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var command = new DbSuppressionsRemoveCommand(db.Factory, TimeProvider.System);
+
+        var exitCode = await command.ExecuteAsync(
+            ["db", "suppressions", "remove", "--tenant-id", TenantA.ToString("D"), "--recipient", Recipient],
+            output,
+            error,
+            ct);
+
+        Assert.Equal(DbSuppressionsRemoveCommand.UnavailableExitCode, exitCode);
+        Assert.Empty(output.ToString());
+        Assert.Contains("no changes were committed", error.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Recipient, error.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SqliteException", error.ToString(), StringComparison.Ordinal);
+        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantA, Recipient, ct));
+    }
+    [Fact]
     public async Task rolls_back_delete_when_audit_insert_fails()
     {
         var ct = TestContext.Current.CancellationToken;
