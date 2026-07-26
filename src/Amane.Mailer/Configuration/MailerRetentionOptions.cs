@@ -5,7 +5,8 @@ public sealed record MailerRetentionOptions
     public const int DefaultRetentionDays = 90;
     public const int DefaultSweepIntervalHours = 24;
     public const int DefaultBatchSize = 100;
-    // Caps bind variables for multi-row delivery_events DELETE (3 params/row) under classic SQLite limits.
+    // Caps bind variables for multi-row delivery_events / bounce_events DELETE
+    // (3 params/row each) under classic SQLite limits.
     public const int MaxBatchSize = 250;
 
     public const int MinRetentionDays = 1;
@@ -23,6 +24,12 @@ public sealed record MailerRetentionOptions
     public int? SweepIntervalSeconds { get; init; }
 
     public int BatchSize { get; init; } = DefaultBatchSize;
+
+    /// <summary>
+    /// When true, expired <c>mail_suppressions</c> rows are purged by created_at.
+    /// Default false: suppressions outlive mail request retention (ADR 0020 D-07).
+    /// </summary>
+    public bool PurgeMailSuppressions { get; init; }
 
     public TimeSpan SweepInterval =>
         SweepIntervalSeconds is int seconds
@@ -55,5 +62,9 @@ public sealed record MailerRetentionOptions
                 DefaultBatchSize,
                 MinBatchSize,
                 MaxBatchSize),
+            PurgeMailSuppressions = ConfigurationBooleanReader.Read(
+                configuration,
+                "Mailer:Retention:PurgeMailSuppressions",
+                defaultValue: false),
         };
 }

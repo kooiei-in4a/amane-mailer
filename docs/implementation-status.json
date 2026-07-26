@@ -58,11 +58,24 @@
     },
     {
       "id": "bounce-ingestion-and-suppression",
-      "status": "planned",
+      "status": "partial",
       "trackingIssue": 302,
       "lastVerified": "2026-07-26",
       "relatedAdrs": ["0020"],
-      "notes": "v1.1.0 scope. Pull transport (Storage Queue polling) confirmed by #399; ACS delivery-report correlation confirmed against real resources by #299. Schema #301, ingestion core #302, send-time block #303, queue poller #305, visibility #306, removal CLI #400. Consumer-facing bounced notification is deferred past v1.1.0 (ADR 0020 D-11)."
+      "notes": "v1.1.0 scope. Schema foundation delivered by #301 (migration 011: provider_event_inbox / bounce_events / mail_suppressions + RecipientEmailNormalizer). Remaining: ingestion core #302, send-time block #303, queue poller #305, visibility #306, removal CLI #400. Consumer-facing bounced notification is deferred past v1.1.0 (ADR 0020 D-11).",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Data/Migrations/011_bounce_ingestion.sql",
+          "src/Amane.Mailer/Data/RecipientEmailNormalizer.cs",
+          "src/Amane.Mailer/Data/Sqlite/ProviderEventInboxRepository.cs",
+          "src/Amane.Mailer/Data/Sqlite/BounceEventRepository.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailSuppressionRepository.cs"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/BounceIngestionSchemaTests.cs",
+          "tests/Amane.Mailer.Tests/MailRequestRetentionTests.cs"
+        ]
+      }
     }
   ]
 }

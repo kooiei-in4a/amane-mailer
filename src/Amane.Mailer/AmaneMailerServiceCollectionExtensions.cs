@@ -121,6 +121,9 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<WorkerHeartbeatStore>();
         services.AddSingleton<MailRequestRepository>();
         services.AddSingleton<AdminAuditRepository>();
+        services.AddSingleton<ProviderEventInboxRepository>();
+        services.AddSingleton<BounceEventRepository>();
+        services.AddSingleton<MailSuppressionRepository>();
         services.AddSingleton<DeliveryEventRepository>();
         services.AddSingleton<ExpiredProcessingReaper>();
         services.AddSingleton<WebhookUrlValidator>();
