@@ -9,7 +9,7 @@ using Microsoft.Extensions.Logging;
 namespace Amane.Mailer.Admin;
 
 /// <summary>
-/// Admin list of mail_suppressions (view-only). Removal is CLI (#400).
+/// Admin list of mail_suppressions (view-only). Removal uses CLI <c>db suppressions remove</c> (#400).
 /// Unmasked recipients require MAILER_ADMIN_PII_LIST_MODE=visible (ADR 0013 D-05/D-07/D-08);
 /// MASK_RECIPIENTS=false alone must not unmask this page.
 /// </summary>
@@ -193,7 +193,7 @@ public static class AdminSuppressionsPage
                     </label>
                     <button type="submit" class="action-button">絞り込む</button>
                   </form>
-                  <p class="filter-note">閲覧のみ。解除 CLI は #400 で実装予定です。実装前の緊急対応は bounce ingestion runbook を参照してください。非マスク表示（MAILER_ADMIN_PII_LIST_MODE=visible）ではテナント絞り込みが必須です。</p>
+                  <p class="filter-note">閲覧のみ。解除は CLI <code>db suppressions remove</code>（bounce ingestion runbook §6）を使います。非マスク表示（MAILER_ADMIN_PII_LIST_MODE=visible）ではテナント絞り込みが必須です。</p>
                 </section>
             """);
 

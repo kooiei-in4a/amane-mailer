@@ -8,7 +8,8 @@ namespace Amane.Mailer.Operations;
 /// <summary>
 /// Removes a tenant-scoped <c>mail_suppressions</c> row (issue #400 / ADR 0020 D-07).
 /// Recipient normalization matches store (#301) and lookup (#303) via
-/// <see cref="RecipientEmailNormalizer"/>. Stdout never echoes the recipient (ADR 0013).
+/// <see cref="RecipientEmailNormalizer"/>. Stdout/stderr never echo the recipient (ADR 0013).
+/// Delete and audit insert share one SQLite transaction so a failed audit rolls back the delete.
 /// </summary>
 public sealed class DbSuppressionsRemoveCommand(
     SqliteConnectionFactory connections,
@@ -20,6 +21,12 @@ public sealed class DbSuppressionsRemoveCommand(
     public const int NotFoundExitCode = 3;
 
     public const string CliActor = "cli";
+
+    private static readonly HashSet<string> KnownOptions = new(StringComparer.Ordinal)
+    {
+        "--tenant-id",
+        "--recipient",
+    };
 
     public static bool IsDbSuppressionsRemoveCommand(IReadOnlyList<string> args) =>
         args.Count >= 3
@@ -66,69 +73,73 @@ public sealed class DbSuppressionsRemoveCommand(
             return UsageErrorExitCode;
         }
 
-        var suppressions = new MailSuppressionRepository(connections);
-        var removed = await suppressions.TryDeleteAsync(tenantId, normalized, cancellationToken);
         var occurredAt = timeProvider.GetUtcNow();
+        var suppressions = new MailSuppressionRepository(connections);
+        var auditRepository = new AdminAuditRepository(connections);
 
-        if (removed)
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
         {
-            await WriteAuditBestEffortAsync(
+            var deletedId = await suppressions.TryDeleteReturningIdAsync(
                 tenantId,
-                AdminAuditLog.Results.Success,
-                errorCode: null,
-                occurredAt,
-                error,
+                normalized,
+                connection,
                 cancellationToken);
 
+            if (deletedId is null)
+            {
+                await auditRepository.WriteAsync(
+                    AdminAuditLog.SanitizeForOutput(new AdminAuditEvent
+                    {
+                        EventType = AdminAuditLog.EventTypes.MailSuppressionsRemoveFailed,
+                        Actor = CliActor,
+                        OccurredAt = occurredAt,
+                        TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
+                        TargetId = tenantId.ToString("D"),
+                        TenantId = tenantId,
+                        Result = AdminAuditLog.Results.Failure,
+                        ErrorCode = AdminAuditLog.ErrorCodes.NotFound,
+                    }),
+                    connection,
+                    cancellationToken);
+
+                await transaction.CommitAsync(cancellationToken);
+                await error.WriteLineAsync(
+                    $"No mail suppression found for tenant {tenantId:D}.");
+                return NotFoundExitCode;
+            }
+
+            await auditRepository.WriteAsync(
+                AdminAuditLog.SanitizeForOutput(new AdminAuditEvent
+                {
+                    EventType = AdminAuditLog.EventTypes.MailSuppressionsRemoved,
+                    Actor = CliActor,
+                    OccurredAt = occurredAt,
+                    TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
+                    TargetId = deletedId.Value.ToString("D"),
+                    TenantId = tenantId,
+                    Result = AdminAuditLog.Results.Success,
+                }),
+                connection,
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
             await output.WriteLineAsync(
                 $"Removed 1 mail suppression for tenant {tenantId:D}.");
             return SuccessExitCode;
         }
-
-        await WriteAuditBestEffortAsync(
-            tenantId,
-            AdminAuditLog.Results.Failure,
-            AdminAuditLog.ErrorCodes.NotFound,
-            occurredAt,
-            error,
-            cancellationToken);
-
-        await error.WriteLineAsync(
-            $"No mail suppression found for tenant {tenantId:D}.");
-        return NotFoundExitCode;
-    }
-
-    private async Task WriteAuditBestEffortAsync(
-        Guid tenantId,
-        string result,
-        string? errorCode,
-        DateTimeOffset occurredAt,
-        TextWriter error,
-        CancellationToken cancellationToken)
-    {
-        var auditEvent = new AdminAuditEvent
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            EventType = AdminAuditLog.EventTypes.MailSuppressionsRemoved,
-            Actor = CliActor,
-            OccurredAt = occurredAt,
-            TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
-            TargetId = tenantId.ToString("D"),
-            TenantId = tenantId,
-            Result = result,
-            ErrorCode = errorCode,
-        };
-
-        try
-        {
-            var repository = new AdminAuditRepository(connections);
-            await repository.WriteAsync(
-                AdminAuditLog.SanitizeForOutput(auditEvent),
-                cancellationToken);
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
         }
         catch (Exception)
         {
+            await transaction.RollbackAsync(cancellationToken);
             await error.WriteLineAsync(
-                "Warning: mail suppression change could not be recorded in admin audit events.");
+                "Mail suppression remove failed; no changes were committed.");
+            return UnavailableExitCode;
         }
     }
 
@@ -162,6 +173,12 @@ public sealed class DbSuppressionsRemoveCommand(
         for (var index = 3; index < args.Count; index++)
         {
             var option = args[index];
+            if (!KnownOptions.Contains(option))
+            {
+                error = "Unknown option.";
+                return false;
+            }
+
             if (index + 1 >= args.Count)
             {
                 error = $"Missing value for {option}.";
@@ -191,10 +208,6 @@ public sealed class DbSuppressionsRemoveCommand(
                     recipient = value;
                     foundRecipient = true;
                     break;
-
-                default:
-                    error = $"Unknown option: {option}.";
-                    return false;
             }
         }
 

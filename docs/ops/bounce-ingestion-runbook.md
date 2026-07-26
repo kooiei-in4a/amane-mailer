@@ -101,7 +101,7 @@ Amane.Mailer db suppressions remove \
 - 宛先正規化は格納（#301）/ 照会（#303）/ 解除（#400）で同一の `RecipientEmailNormalizer`（`Trim` + `ToLowerInvariant`）を使う。
 - 別テナントの同一宛先を巻き込まない（`--tenant-id` 必須）。
 - 標準出力・標準エラーへ宛先を出さない（ADR 0013）。成功時はテナント ID のみを報告する。
-- 操作は `admin_audit_events` に `mail_suppressions.removed` として記録する（actor=`cli`、宛先は監査に載せない）。
+- 成功時は `admin_audit_events` に `mail_suppressions.removed`（`TargetId` = suppression 行 ID）、not-found 時は `mail_suppressions.remove_failed` を同一トランザクションで記録する（actor=`cli`、宛先は監査に載せない。監査失敗時は削除も rollback）。
 - Admin UI からの解除は本 Issue スコープ外。
 
 ## 7. Push（#304）について

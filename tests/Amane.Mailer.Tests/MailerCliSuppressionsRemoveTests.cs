@@ -19,7 +19,8 @@ public sealed class MailerCliSuppressionsRemoveTests
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await TestDatabase.CreateAsync(ct);
-        await SeedSuppressionAsync(db.Factory, TenantA, "User@Example.COM", ct);
+        var suppressionId = Guid.Parse("00000000-0000-0000-0000-000000000411");
+        await SeedSuppressionAsync(db.Factory, suppressionId, TenantA, "User@Example.COM", ct);
 
         var output = new StringWriter();
         var error = new StringWriter();
@@ -44,10 +45,13 @@ public sealed class MailerCliSuppressionsRemoveTests
         Assert.Equal(DbSuppressionsRemoveCommand.CliActor, removed.Actor);
         Assert.Equal(AdminAuditLog.Results.Success, removed.Result);
         Assert.Equal(AdminAuditLog.TargetTypes.MailSuppressions, removed.TargetType);
-        Assert.Equal(TenantA.ToString("D"), removed.TargetId);
+        Assert.Equal(suppressionId.ToString("D"), removed.TargetId);
         Assert.DoesNotContain(Recipient, removed.TargetId ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         Assert.Null(removed.ErrorCode);
         Assert.Equal(TenantA.ToString("D"), await ReadAuditTenantIdAsync(db.Factory, removed.Id, ct));
+        Assert.DoesNotContain(
+            audit,
+            row => row.EventType == AdminAuditLog.EventTypes.MailSuppressionsRemoveFailed);
     }
 
     [Fact]
@@ -72,11 +76,15 @@ public sealed class MailerCliSuppressionsRemoveTests
         Assert.DoesNotContain(Recipient, error.ToString(), StringComparison.OrdinalIgnoreCase);
 
         var audit = await new AdminAuditRepository(db.Factory).ListRecentAsync(10, ct);
-        var removed = Assert.Single(
+        var failed = Assert.Single(
+            audit,
+            row => row.EventType == AdminAuditLog.EventTypes.MailSuppressionsRemoveFailed);
+        Assert.Equal(AdminAuditLog.Results.Failure, failed.Result);
+        Assert.Equal(AdminAuditLog.ErrorCodes.NotFound, failed.ErrorCode);
+        Assert.Equal(TenantA.ToString("D"), failed.TargetId);
+        Assert.DoesNotContain(
             audit,
             row => row.EventType == AdminAuditLog.EventTypes.MailSuppressionsRemoved);
-        Assert.Equal(AdminAuditLog.Results.Failure, removed.Result);
-        Assert.Equal(AdminAuditLog.ErrorCodes.NotFound, removed.ErrorCode);
     }
 
     [Fact]
@@ -84,7 +92,7 @@ public sealed class MailerCliSuppressionsRemoveTests
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await TestDatabase.CreateAsync(ct);
-        await SeedSuppressionAsync(db.Factory, TenantA, "user@example.com", ct);
+        await SeedSuppressionAsync(db.Factory, Guid.NewGuid(), TenantA, "user@example.com", ct);
 
         var output = new StringWriter();
         var error = new StringWriter();
@@ -107,8 +115,8 @@ public sealed class MailerCliSuppressionsRemoveTests
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await TestDatabase.CreateAsync(ct);
-        await SeedSuppressionAsync(db.Factory, TenantA, Recipient, ct);
-        await SeedSuppressionAsync(db.Factory, TenantB, Recipient, ct);
+        await SeedSuppressionAsync(db.Factory, Guid.NewGuid(), TenantA, Recipient, ct);
+        await SeedSuppressionAsync(db.Factory, Guid.NewGuid(), TenantB, Recipient, ct);
 
         var output = new StringWriter();
         var error = new StringWriter();
@@ -153,12 +161,40 @@ public sealed class MailerCliSuppressionsRemoveTests
     }
 
     [Fact]
+    public async Task usage_error_does_not_echo_bare_recipient_token()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var command = new DbSuppressionsRemoveCommand(
+            new SqliteConnectionFactory(
+                new ConfigurationBuilder()
+                    .AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["ConnectionStrings:Mailer"] = "Data Source=:memory:",
+                    })
+                    .Build()),
+            TimeProvider.System);
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var exitCode = await command.ExecuteAsync(
+            ["db", "suppressions", "remove", "--tenant-id", TenantA.ToString("D"), Recipient],
+            output,
+            error,
+            ct);
+
+        Assert.Equal(DbSuppressionsRemoveCommand.UsageErrorExitCode, exitCode);
+        Assert.Contains("Unknown option.", error.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Recipient, error.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Missing value for", error.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task db_stats_includes_mail_suppressions_count()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await TestDatabase.CreateAsync(ct);
-        await SeedSuppressionAsync(db.Factory, TenantA, Recipient, ct);
-        await SeedSuppressionAsync(db.Factory, TenantB, "other@example.com", ct);
+        await SeedSuppressionAsync(db.Factory, Guid.NewGuid(), TenantA, Recipient, ct);
+        await SeedSuppressionAsync(db.Factory, Guid.NewGuid(), TenantB, "other@example.com", ct);
 
         var tenantOutput = new StringWriter();
         var allOutput = new StringWriter();
@@ -184,6 +220,7 @@ public sealed class MailerCliSuppressionsRemoveTests
 
     private static async Task SeedSuppressionAsync(
         SqliteConnectionFactory factory,
+        Guid id,
         Guid tenantId,
         string recipientEmail,
         CancellationToken cancellationToken)
@@ -191,7 +228,7 @@ public sealed class MailerCliSuppressionsRemoveTests
         Assert.True(await new MailSuppressionRepository(factory).TryInsertAsync(
             new MailSuppressionInsert
             {
-                Id = Guid.NewGuid(),
+                Id = id,
                 TenantId = tenantId,
                 RecipientEmail = recipientEmail,
                 Reason = MailSuppressionReasons.HardBounce,

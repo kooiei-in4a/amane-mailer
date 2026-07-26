@@ -110,8 +110,9 @@ Notes:
   via the same `RecipientEmailNormalizer` (`Trim` + `ToLowerInvariant`).
 - `--tenant-id` is required so another tenant's identical address is not removed.
 - Do not print the recipient to stdout or stderr (ADR 0013); success reports tenant ID only.
-- The operation writes `mail_suppressions.removed` to `admin_audit_events`
-  (actor=`cli`; recipient is never stored in the audit row).
+- Success writes `mail_suppressions.removed` (`TargetId` = suppression row id); not-found writes
+  `mail_suppressions.remove_failed`. Delete and audit share one SQLite transaction
+  (actor=`cli`; recipient is never stored; audit failure rolls back the delete).
 - Admin UI removal remains out of scope.
 
 ## 7. Push (#304)
