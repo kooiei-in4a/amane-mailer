@@ -10,8 +10,10 @@ using Microsoft.Data.Sqlite;
 
 namespace Amane.Mailer.Webhooks;
 
-public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
+public sealed class DeliveryEventRepository(SqliteConnectionFactory connections) : IWebhookDeliveryWorkStore
 {
+    internal const string LeaseExpiredMaxAttemptsErrorCode = "WEBHOOK_LEASE_EXPIRED_MAX_ATTEMPTS";
+
     public async Task<bool> TryInsertAsync(
         MailDeliveryEventPayload payload,
         int maxAttempts,
@@ -256,6 +258,121 @@ public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
 
             await transaction.CommitAsync(cancellationToken);
             return row;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Dead-letters Delivering rows whose lease expired at or past max_attempts.
+    /// Fencing mirrors mail <c>DeadLetterExpiredProcessingAtMaxAttemptsAsync</c>:
+    /// select candidates, then update only when id/status/lock_token/attempt_count/lease
+    /// still match inside the same write transaction. Do not enqueue after success —
+    /// DeadLettered is terminal for webhook events.
+    /// </summary>
+    public async Task<IReadOnlyList<ExpiredDeliveringDeadLetteredEvent>> DeadLetterExpiredDeliveringAtMaxAttemptsAsync(
+        DateTimeOffset now,
+        int batchSize,
+        CancellationToken cancellationToken = default)
+    {
+        const string selectSql = """
+            SELECT id, tenant_id, mail_request_id, attempt_count, lock_token
+            FROM delivery_events
+            WHERE status = @DeliveringStatus
+              AND lock_token IS NOT NULL
+              AND lock_expires_at IS NOT NULL
+              AND lock_expires_at <= @Now
+              AND attempt_count >= max_attempts
+            ORDER BY lock_expires_at ASC, created_at ASC
+            LIMIT @BatchSize;
+            """;
+
+        // Fencing: refuse to overwrite a newer claim or non-expired lease.
+        const string updateSql = """
+            UPDATE delivery_events
+            SET
+                status = @DeadLetteredStatus,
+                next_attempt_at = NULL,
+                lock_token = NULL,
+                lock_expires_at = NULL,
+                last_error_code = @LastErrorCode,
+                updated_at = @Now,
+                completed_at = @Now
+            WHERE id = @Id
+              AND status = @DeliveringStatus
+              AND lock_token = @LockToken
+              AND lock_expires_at IS NOT NULL
+              AND lock_expires_at <= @Now
+              AND attempt_count = @AttemptCount
+              AND attempt_count >= max_attempts;
+            """;
+
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+        var requestedBatchSize = Math.Max(1, batchSize);
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            var candidates = new List<(Guid Id, Guid TenantId, Guid MailRequestId, int AttemptCount, Guid LockToken)>();
+
+            await using (var select = connection.CreateCommand())
+            {
+                select.CommandText = selectSql;
+                select.Parameters.AddWithValue("@DeliveringStatus", (int)DeliveryEventState.Delivering);
+                select.Parameters.AddWithValue("@Now", nowStorage);
+                select.Parameters.AddWithValue("@BatchSize", requestedBatchSize);
+
+                await using var reader = await select.ExecuteReaderAsync(cancellationToken);
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    candidates.Add((
+                        Guid.Parse(reader.GetString(0)),
+                        Guid.Parse(reader.GetString(1)),
+                        Guid.Parse(reader.GetString(2)),
+                        reader.GetInt32(3),
+                        Guid.Parse(reader.GetString(4))));
+                }
+            }
+
+            if (candidates.Count == 0)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return [];
+            }
+
+            var deadLettered = new List<ExpiredDeliveringDeadLetteredEvent>(candidates.Count);
+            foreach (var candidate in candidates)
+            {
+                await using var update = connection.CreateCommand();
+                update.CommandText = updateSql;
+                update.Parameters.AddWithValue("@DeadLetteredStatus", (int)DeliveryEventState.DeadLettered);
+                update.Parameters.AddWithValue("@LastErrorCode", LeaseExpiredMaxAttemptsErrorCode);
+                update.Parameters.AddWithValue("@Now", nowStorage);
+                update.Parameters.AddWithValue("@Id", candidate.Id.ToString("D"));
+                update.Parameters.AddWithValue("@DeliveringStatus", (int)DeliveryEventState.Delivering);
+                update.Parameters.AddWithValue("@LockToken", candidate.LockToken.ToString("D"));
+                update.Parameters.AddWithValue("@AttemptCount", candidate.AttemptCount);
+
+                var affected = await update.ExecuteNonQueryAsync(cancellationToken);
+                if (affected == 0)
+                {
+                    continue;
+                }
+
+                deadLettered.Add(new ExpiredDeliveringDeadLetteredEvent(
+                    candidate.Id,
+                    candidate.TenantId,
+                    candidate.MailRequestId,
+                    candidate.AttemptCount,
+                    LeaseExpiredMaxAttemptsErrorCode));
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return deadLettered;
         }
         catch
         {

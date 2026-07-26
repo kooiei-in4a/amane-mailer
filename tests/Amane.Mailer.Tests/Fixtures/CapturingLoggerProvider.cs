@@ -34,6 +34,25 @@ public sealed class CapturingLoggerProvider : ILoggerProvider
             }));
     }
 
+    /// <summary>
+    /// Like <see cref="JoinedOutput"/> but also includes each entry's exception text. Logging
+    /// providers render exceptions via ToString(), so canary assertions that must cover what
+    /// actually reaches a log sink need this variant (#389).
+    /// </summary>
+    public string JoinedOutputWithExceptions()
+    {
+        var entries = Snapshot();
+        return string.Join(
+            Environment.NewLine,
+            entries.Select(static entry =>
+            {
+                var stateText = string.Join(
+                    " | ",
+                    entry.State.Select(static pair => $"{pair.Key}={pair.Value}"));
+                return $"[{entry.Category}] {entry.Level}: {entry.FormattedMessage} :: {stateText} :: {entry.Exception}";
+            }));
+    }
+
     public ILogger CreateLogger(string categoryName) =>
         new CapturingLogger(categoryName, _entries);
 
@@ -69,7 +88,8 @@ public sealed class CapturingLoggerProvider : ILoggerProvider
                     .ToDictionary(
                         static group => group.Key,
                         static group => group.Last().Value?.ToString() ?? string.Empty,
-                        StringComparer.Ordinal)));
+                        StringComparer.Ordinal),
+                exception));
         }
     }
 }
@@ -79,4 +99,5 @@ public sealed record CapturedLogEntry(
     LogLevel Level,
     EventId EventId,
     string FormattedMessage,
-    IReadOnlyDictionary<string, string> State);
+    IReadOnlyDictionary<string, string> State,
+    Exception? Exception = null);

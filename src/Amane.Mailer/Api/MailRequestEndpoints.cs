@@ -77,7 +77,6 @@ public static class MailRequestEndpoints
         DeliveryEventEnqueuer deliveryEventEnqueuer,
         MailerTenantRegistry tenantRegistry,
         TimeProvider timeProvider,
-        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (!TenantRequestAuthorizer.TryAuthorizeScoped(
@@ -99,7 +98,6 @@ public static class MailRequestEndpoints
             repository,
             deliveryEventEnqueuer,
             timeProvider,
-            loggerFactory,
             cancellationToken);
     }
 
