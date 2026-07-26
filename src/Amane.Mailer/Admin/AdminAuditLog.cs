@@ -38,6 +38,7 @@ public static class AdminAuditLog
         public const string DbBackupRequested = "db_ops.backup_requested";
         public const string DbBackupCompleted = "db_ops.backup_completed";
         public const string DbBackupFailed = "db_ops.backup_failed";
+        public const string MailSuppressionsListUnmasked = "mail_suppressions.list_unmasked";
 
         public static IReadOnlyList<string> All { get; } =
         [
@@ -56,6 +57,7 @@ public static class AdminAuditLog
             DbBackupRequested,
             DbBackupCompleted,
             DbBackupFailed,
+            MailSuppressionsListUnmasked,
         ];
     }
 
@@ -83,6 +85,7 @@ public static class AdminAuditLog
         public const string MailRequest = "mail_request";
         public const string AdminSession = "admin_session";
         public const string DbOps = "db_ops";
+        public const string MailSuppressions = "mail_suppressions";
     }
 
     public static string ResolveActor(HttpContext context) =>

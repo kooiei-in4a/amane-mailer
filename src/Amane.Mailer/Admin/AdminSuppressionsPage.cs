@@ -4,16 +4,21 @@ using System.Text.Encodings.Web;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Microsoft.Extensions.Logging;
 
 namespace Amane.Mailer.Admin;
 
 /// <summary>
 /// Admin list of mail_suppressions (view-only). Removal is CLI (#400).
-/// Recipient addresses follow ADR 0013 D-05 / MailerAdminOptions.MaskRecipients.
+/// Unmasked recipients require MAILER_ADMIN_PII_LIST_MODE=visible (ADR 0013 D-05/D-07/D-08);
+/// MASK_RECIPIENTS=false alone must not unmask this page.
 /// </summary>
 public static class AdminSuppressionsPage
 {
     private const int PageSize = 50;
+    private const string AuditLoggerCategoryName = "Amane.Mailer.Admin.SuppressionsAccessAudit";
+    private static readonly EventId ListUnmaskedAuditWriteFailedEvent =
+        new(1003, "AdminSuppressionsListUnmaskedAuditWriteFailed");
 
     public static async Task<IResult> RenderAsync(
         HttpContext context,
@@ -22,7 +27,10 @@ public static class AdminSuppressionsPage
         MailerTenantRegistry tenantRegistry,
         AdminUserRepository userRepository,
         AdminDeadLetterCountCache deadLetterCountCache,
+        AdminAuditRepository auditRepository,
         MailerAdminOptions options,
+        TimeProvider timeProvider,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         var access = await userRepository.GetTenantAccessAsync(
@@ -64,6 +72,39 @@ public static class AdminSuppressionsPage
                 PageSize = PageSize,
             },
             cancellationToken);
+
+        var showUnmasked = AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii);
+        if (showUnmasked)
+        {
+            // Fail closed: do not render unmasked PII without a durable audit row (ADR 0013 D-08).
+            try
+            {
+                await auditRepository.WriteAsync(
+                    AdminAuditLog.SanitizeForOutput(
+                        new AdminAuditEvent
+                        {
+                            EventType = AdminAuditLog.EventTypes.MailSuppressionsListUnmasked,
+                            Actor = AdminAuditLog.ResolveActor(context),
+                            OccurredAt = timeProvider.GetUtcNow(),
+                            SourceIp = options.ResolveAuditSourceIp(AdminAuditLog.ResolveSourceIp(context)),
+                            UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
+                            TargetType = AdminAuditLog.TargetTypes.MailSuppressions,
+                            TargetId = null,
+                            TenantId = tenantId,
+                            FieldName = BuildUnmaskedAuditFieldName(page.Items.Count, tenantId is not null),
+                            Result = AdminAuditLog.Results.Success,
+                        }),
+                    cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                loggerFactory.CreateLogger(AuditLoggerCategoryName).LogError(
+                    ListUnmaskedAuditWriteFailedEvent,
+                    ex,
+                    "Failed to persist suppressions list-unmasked audit; denying unmasked view.");
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+        }
 
         var deadLetterCount = await deadLetterCountCache.GetCountAsync(
             mailRequestRepository,
@@ -117,7 +158,7 @@ public static class AdminSuppressionsPage
                     </label>
                     <button type="submit" class="action-button">絞り込む</button>
                   </form>
-                  <p class="filter-note">閲覧のみ。解除は CLI（<code>db suppressions remove</code> / #400）を使用してください。</p>
+                  <p class="filter-note">閲覧のみ。解除 CLI は #400 で実装予定です。実装前の緊急対応は bounce ingestion runbook を参照してください。</p>
                 </section>
             """);
 
@@ -166,9 +207,9 @@ public static class AdminSuppressionsPage
         AdminSuppressionListRow item,
         MailerAdminOptions options)
     {
-        var recipient = options.MaskRecipients
-            ? MaskRecipient(item.RecipientEmail)
-            : item.RecipientEmail;
+        var recipient = AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii)
+            ? item.RecipientEmail
+            : MaskSuppressionRecipient(item.RecipientEmail);
 
         html.AppendLine("                  <tr>");
         AppendCell(html, item.TenantId.ToString("D"));
@@ -224,17 +265,46 @@ public static class AdminSuppressionsPage
         html.AppendLine("                </nav>");
     }
 
-    private static string MaskRecipient(string email)
+    /// <summary>
+    /// Stronger than mail-request list mask: keeps only first local-part char and first
+    /// domain-label char before the final TLD (ADR 0013 D-05 minimum for address lists).
+    /// </summary>
+    internal static string MaskSuppressionRecipient(string email)
     {
         if (string.IsNullOrEmpty(email))
             return "***";
 
         var at = email.IndexOf('@', StringComparison.Ordinal);
         if (at <= 0)
-            return $"{email[0]}***";
+            return "***";
 
-        return $"{email[0]}***{email[at..]}";
+        var local = email[..at];
+        var domain = email[(at + 1)..];
+        var localMask = local.Length == 0 ? "***" : $"{local[0]}***";
+        return $"{localMask}@{MaskDomain(domain)}";
     }
+
+    private static string MaskDomain(string domain)
+    {
+        if (string.IsNullOrEmpty(domain))
+            return "***";
+
+        var lastDot = domain.LastIndexOf('.');
+        if (lastDot <= 0)
+            return $"{domain[0]}***";
+
+        var name = domain[..lastDot];
+        var tld = domain[lastDot..];
+        if (name.Length == 0)
+            return "***" + tld;
+
+        return $"{name[0]}***{tld}";
+    }
+
+    internal static string BuildUnmaskedAuditFieldName(int resultCount, bool tenantFiltered) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"result_count={resultCount};tenant_filter={(tenantFiltered ? "specific" : "all")}");
 
     private static string FormatLocalTime(DateTimeOffset value) =>
         value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);

@@ -9,19 +9,9 @@ public sealed class AdminSuppressionsPageRenderTests
     private static readonly Guid TenantId = Guid.Parse("00000000-0000-0000-0000-000000000301");
 
     [Fact]
-    public void Masked_mode_hides_full_recipient_email()
+    public void Default_mask_hides_local_part_and_domain_body()
     {
-        var page = new AdminSuppressionListPage(
-            [
-                new AdminSuppressionListRow(
-                    Id: Guid.NewGuid(),
-                    TenantId: TenantId,
-                    RecipientEmail: "secret-user@example.com",
-                    Reason: "hard_bounce",
-                    SourceBounceEventId: Guid.NewGuid(),
-                    CreatedAt: DateTimeOffset.UtcNow),
-            ],
-            NextCursor: null);
+        var page = SinglePage("secret-user@example.com", "hard_bounce");
 
         var html = AdminSuppressionsPage.RenderHtml(
             page,
@@ -29,27 +19,18 @@ public sealed class AdminSuppressionsPageRenderTests
             selectedTenantId: null,
             currentCursor: null,
             visibleTenants: [],
-            options: new MailerAdminOptions { MaskRecipients = true, MaskSubjects = true });
+            options: new MailerAdminOptions { ListPiiVisible = false, MaskRecipients = true });
 
-        Assert.Contains("s***@example.com", html, StringComparison.Ordinal);
+        Assert.Contains("s***@e***.com", html, StringComparison.Ordinal);
         Assert.DoesNotContain("secret-user@example.com", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("@example.com", html, StringComparison.Ordinal);
         Assert.Contains("hard_bounce", html, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Visible_mode_shows_recipient_email_when_opted_in()
+    public void Mask_recipients_false_alone_does_not_unmask_suppressions_list()
     {
-        var page = new AdminSuppressionListPage(
-            [
-                new AdminSuppressionListRow(
-                    Id: Guid.NewGuid(),
-                    TenantId: TenantId,
-                    RecipientEmail: "visible-user@example.com",
-                    Reason: "manual",
-                    SourceBounceEventId: null,
-                    CreatedAt: DateTimeOffset.UtcNow),
-            ],
-            NextCursor: null);
+        var page = SinglePage("visible-user@example.com", "manual");
 
         var html = AdminSuppressionsPage.RenderHtml(
             page,
@@ -57,25 +38,32 @@ public sealed class AdminSuppressionsPageRenderTests
             selectedTenantId: null,
             currentCursor: null,
             visibleTenants: [],
-            options: new MailerAdminOptions { MaskRecipients = false, MaskSubjects = false });
+            options: new MailerAdminOptions { ListPiiVisible = false, MaskRecipients = false, MaskSubjects = false });
+
+        Assert.Contains("v***@e***.com", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("visible-user@example.com", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void List_pii_visible_capability_shows_recipient_email()
+    {
+        var page = SinglePage("visible-user@example.com", "manual");
+
+        var html = AdminSuppressionsPage.RenderHtml(
+            page,
+            deadLetterCount: 0,
+            selectedTenantId: null,
+            currentCursor: null,
+            visibleTenants: [],
+            options: new MailerAdminOptions { ListPiiVisible = true, MaskRecipients = true });
 
         Assert.Contains("visible-user@example.com", html, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Recipient_script_payload_is_escaped()
+    public void Recipient_script_payload_is_escaped_when_unmasked()
     {
-        var page = new AdminSuppressionListPage(
-            [
-                new AdminSuppressionListRow(
-                    Id: Guid.NewGuid(),
-                    TenantId: TenantId,
-                    RecipientEmail: "<script>alert(1)</script>@example.com",
-                    Reason: "hard_bounce",
-                    SourceBounceEventId: null,
-                    CreatedAt: DateTimeOffset.UtcNow),
-            ],
-            NextCursor: null);
+        var page = SinglePage("<script>alert(1)</script>@example.com", "hard_bounce");
 
         var html = AdminSuppressionsPage.RenderHtml(
             page,
@@ -83,14 +71,14 @@ public sealed class AdminSuppressionsPageRenderTests
             selectedTenantId: null,
             currentCursor: null,
             visibleTenants: Array.Empty<MailerTenant>(),
-            options: new MailerAdminOptions { MaskRecipients = false, MaskSubjects = false });
+            options: new MailerAdminOptions { ListPiiVisible = true });
 
         Assert.DoesNotContain("<script>", html, StringComparison.Ordinal);
         Assert.Contains("&lt;script&gt;", html, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Page_is_view_only_without_remove_controls()
+    public void Page_is_view_only_and_does_not_advertise_unimplemented_cli()
     {
         var html = AdminSuppressionsPage.RenderHtml(
             new AdminSuppressionListPage([], null),
@@ -98,10 +86,32 @@ public sealed class AdminSuppressionsPageRenderTests
             selectedTenantId: null,
             currentCursor: null,
             visibleTenants: [],
-            options: new MailerAdminOptions { MaskRecipients = true });
+            options: new MailerAdminOptions { ListPiiVisible = false });
 
         Assert.Contains("閲覧のみ", html, StringComparison.Ordinal);
+        Assert.Contains("#400 で実装予定", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("db suppressions remove", html, StringComparison.Ordinal);
         Assert.DoesNotContain("解除する", html, StringComparison.Ordinal);
         Assert.DoesNotContain("method=\"post\"", html, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Mask_suppression_recipient_masks_domain_label()
+    {
+        Assert.Equal("a***@e***.com", AdminSuppressionsPage.MaskSuppressionRecipient("alice@example.com"));
+        Assert.Equal("***", AdminSuppressionsPage.MaskSuppressionRecipient("not-an-email"));
+    }
+
+    private static AdminSuppressionListPage SinglePage(string recipient, string reason) =>
+        new(
+            [
+                new AdminSuppressionListRow(
+                    Id: Guid.NewGuid(),
+                    TenantId: TenantId,
+                    RecipientEmail: recipient,
+                    Reason: reason,
+                    SourceBounceEventId: Guid.NewGuid(),
+                    CreatedAt: DateTimeOffset.UtcNow),
+            ],
+            NextCursor: null);
 }

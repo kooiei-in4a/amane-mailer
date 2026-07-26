@@ -36,6 +36,13 @@ public sealed record MailerAdminOptions
 
     public bool MaskSubjects { get; init; } = true;
 
+    /// <summary>
+    /// True only when <c>MAILER_ADMIN_PII_LIST_MODE=visible</c> (or AMANE_ alias).
+    /// Suppressions list unmask requires this explicit opt-in (ADR 0013 D-05);
+    /// <see cref="MaskRecipients"/>=false alone must not unmask that page.
+    /// </summary>
+    public bool ListPiiVisible { get; init; }
+
     public static MailerAdminOptions Load(IConfiguration configuration)
     {
         // ENABLED is always strict-parsed. Other Admin UI settings are only load-bearing when
@@ -104,6 +111,7 @@ public sealed record MailerAdminOptions
                     "MAILER_ADMIN_AUDIT_IDENTIFIER_HASH_KEY",
                     string.Empty))
                 : null,
+            ListPiiVisible = listPiiVisible,
             MaskRecipients = ConfigurationBooleanReader.ReadOptional(
                     configuration,
                     "AMANE_ADMIN_MASK_RECIPIENTS",
