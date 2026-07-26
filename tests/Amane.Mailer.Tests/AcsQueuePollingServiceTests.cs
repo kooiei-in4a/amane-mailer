@@ -280,6 +280,50 @@ public sealed class AcsQueuePollingServiceTests
     }
 
     [Fact]
+    public async Task Poll_mixed_valid_and_unparseable_retains_message_after_inserting_valid()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var mixed = """
+            [
+              {
+                "id": "eg-queue-1",
+                "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+                "eventTime": "2026-07-26T18:00:00Z",
+                "data": {
+                  "messageId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                  "status": "Bounced",
+                  "recipient": "user@example.com"
+                }
+              },
+              {
+                "id": "eg-invalid",
+                "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+                "data": {}
+              }
+            ]
+            """;
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-mixed", "pop-mixed", mixed);
+
+        var metrics = new MailerRuntimeMetrics();
+        var service = CreateService(db.Factory, queue, metrics);
+        await service.PollOnceAsync(ct);
+
+        Assert.Empty(queue.Deleted);
+        Assert.Single(queue.Pending);
+        Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
+        Assert.Equal(0, await CountInboxAsync(db.Factory, "eg-invalid", ct));
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+
+        // Redelivery: UNIQUE absorbs the already-inserted valid event; message still retained.
+        await service.PollOnceAsync(ct);
+        Assert.Empty(queue.Deleted);
+        Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
+        Assert.Equal(2, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+    }
+
+    [Fact]
     public async Task Poll_retains_unparseable_message_without_delete()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -551,3 +595,4 @@ public sealed class AcsQueuePollingServiceTests
         }
     }
 }
+

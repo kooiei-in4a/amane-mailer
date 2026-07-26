@@ -166,18 +166,20 @@ public sealed class AcsQueuePollingService(
             }
         }
 
+        if (sawUnparseable)
+        {
+            // Prefer retain over delete when any event is Unparseable, even if sibling
+            // DeliveryReports were already inserted (UNIQUE absorbs redelivery; D-09).
+            runtimeMetrics.RecordProviderQueuePollFailed();
+            logger.LogWarning(
+                "ACS queue message contained an unparseable event; leaving message for redelivery.");
+            return;
+        }
+
         if (sawDeliveryReport)
         {
             // All delivery reports were durably accepted (else we returned above).
             await TryDeleteAsync(message, cancellationToken);
-            return;
-        }
-
-        if (sawUnparseable)
-        {
-            // Do not delete: Unparseable is an ingestion failure, not "nothing to ingest" (D-09).
-            runtimeMetrics.RecordProviderQueuePollFailed();
-            logger.LogWarning("ACS queue message was unparseable; leaving message for redelivery.");
             return;
         }
 
