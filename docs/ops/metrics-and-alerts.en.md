@@ -61,6 +61,13 @@ the optional-bearer path).
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | Heartbeat age for `worker` / `sweep`. No series when the row is missing |
 | `mail_ready` | gauge | none | Last `/readyz` evaluation (1 ready, 0 not ready). No series until the first evaluation |
 | `mail_readiness_failure` | gauge | `reason` | Primary failure reason from the last `/readyz`. Fixed values only (`schema_not_ready` / `worker_not_running` / `sweep_not_running` / `heartbeat_missing` / `heartbeat_stale` / `database_error` / `unexpected_error`). Only the active reason is 1; others are 0. All 0 when ready. No series until the first evaluation |
+| `mail_bounce_events_total` | counter | none | Correlated bounce facts written to `bounce_events` since process start (resets on restart) |
+| `mail_bounce_unmatched_total` | counter | none | Events that failed `provider_message_id` correlation since process start. Early signal of correlation design breakage |
+| `mail_bounce_recipient_mismatch_total` | counter | none | Events discarded because event-declared recipient did not match DB recipient |
+| `mail_suppressed_sends_total` | counter | none | Sends blocked by the pre-send suppression list since process start |
+| `mail_provider_queue_poll_failed_total` | counter | none | ACS Storage Queue poll failures since process start |
+| `mail_provider_events_pending` | gauge | none | `provider_event_inbox` pending / processing count (same as CLI `provider_events_pending`) |
+| `mail_provider_events_dead_lettered` | gauge | none | `provider_event_inbox` dead_lettered count (same as CLI `provider_events_dead_lettered`) |
 
 **Forbidden labels (must not include):** `recipient_email`, `subject`,
 `mail_request_id`, `tenant_id`, `source_service`
@@ -169,11 +176,45 @@ groups:
           severity: warning
         annotations:
           summary: Delivery-result webhook outbox has dead-lettered events
+
+      - alert: MailBounceUnmatchedRising
+        expr: increase(mail_bounce_unmatched_total[30m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bounce events failed provider_message_id correlation; check ACS Event Grid mapping and mail_attempts.provider_message_id
+
+      - alert: MailProviderEventsPendingHigh
+        expr: mail_provider_events_pending > 50
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bounce provider-event inbox backlog is elevated
+
+      - alert: MailProviderEventsDeadLettersPresent
+        expr: mail_provider_events_dead_lettered > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bounce provider-event inbox has dead-lettered rows
+
+      - alert: MailProviderQueuePollFailed
+        expr: increase(mail_provider_queue_poll_failed_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: ACS Storage Queue bounce poll failed; check queue credentials and network
 ```
 
 Because `mail_deliveries_total` is an in-process counter, `rate()` can be briefly
 unstable right after a Mailer restart. Prefer queue / heartbeat / webhook backlog
-alerts as primary signals and treat delivery rate as secondary. Use
+alerts as primary signals and treat delivery rate as secondary. Bounce metrics
+are covered in [bounce-ingestion-runbook.en.md](bounce-ingestion-runbook.en.md).
+Use
 `mail_finalize_skipped_total` for **mail-request** strict lease fencing failures;
 when it increases, check for delivery evidence, Delivered convergence, and
 DeadLetter races. Use `mail_webhook_finalize_skipped_total` for **webhook outbox**
