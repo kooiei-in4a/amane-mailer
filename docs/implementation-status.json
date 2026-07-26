@@ -55,6 +55,14 @@
       "lastVerified": "2026-07-22",
       "relatedAdrs": ["0013", "0014"],
       "notes": "No dedicated implementation issue. Delivered in Phase 1 via #89 (throttle key) and #90 (audit source_ip hash). When MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true, keyed hash is used and missing key causes startup fail-closed."
+    },
+    {
+      "id": "bounce-ingestion-and-suppression",
+      "status": "planned",
+      "trackingIssue": 302,
+      "lastVerified": "2026-07-26",
+      "relatedAdrs": ["0020"],
+      "notes": "v1.1.0 scope. Pull transport (Storage Queue polling) confirmed by #399; ACS delivery-report correlation confirmed against real resources by #299. Schema #301, ingestion core #302, send-time block #303, queue poller #305, visibility #306, removal CLI #400. Consumer-facing bounced notification is deferred past v1.1.0 (ADR 0020 D-11)."
     }
   ]
 }
