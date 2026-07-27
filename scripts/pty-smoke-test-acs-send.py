@@ -374,7 +374,8 @@ def run_ctrl_c_after_steps(command_args, env_overrides, steps, expect_regex, tim
             proc.wait(timeout=5)
             return -1, output
 
-        # ETX — Console.ReadKey(intercept: true) maps this to Ctrl+C.
+        # ETX — on Linux PTY this becomes SIGINT → CancelKeyPress (token cancelled).
+        # Console polls KeyAvailable and maps cancelled token to REJECTED_CANCELLED / exit 2.
         os.write(master, b"\x03")
         exit_code, output = _drain_until_exit(master, proc, output, timeout)
     finally:

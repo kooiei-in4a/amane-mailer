@@ -42,9 +42,10 @@ public sealed class AzureAcsTestSendClient(IAcsEmailSendTransport? transport = n
         }
         catch (OperationCanceledException)
         {
+            // Non-cooperative cancel (e.g. transport timeout) does not prove auth succeeded.
             return AcsTestSendOutcome.Failed(
                 AdminProviderTestAcsSendResultCodes.FailedAcsTimeout,
-                authenticationState: AcsEvaluationState.Succeeded);
+                authenticationState: AcsEvaluationState.NotEvaluated);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

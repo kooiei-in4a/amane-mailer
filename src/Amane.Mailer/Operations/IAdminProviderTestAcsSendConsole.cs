@@ -10,11 +10,11 @@ namespace Amane.Mailer.Operations;
 /// </summary>
 public interface IAdminProviderTestAcsSendConsole
 {
-    string ReadVisibleLine(string prompt);
+    string ReadVisibleLine(string prompt, CancellationToken cancellationToken);
 
-    string ReadSecret(string prompt);
+    string ReadSecret(string prompt, CancellationToken cancellationToken);
 
-    string ReadHiddenLine(string prompt);
+    string ReadHiddenLine(string prompt, CancellationToken cancellationToken);
 
     void WriteLine(string message);
 
@@ -22,18 +22,30 @@ public interface IAdminProviderTestAcsSendConsole
 }
 
 /// <summary>
-/// Interactive-terminal-only console. Rejects redirected stdin. All prompts use
-/// <see cref="Console.ReadKey"/> so Ctrl+C is detected deterministically as
-/// <see cref="AdminProviderTestAcsSendResultCodes.RejectedCancelled"/> (exit 2).
+/// Interactive-terminal-only console. Rejects redirected stdin.
+/// <para>
+/// On Linux PTY, Ctrl+C arrives as SIGINT and is handled by
+/// <see cref="MailerCliCancellation"/> (<c>CancelKeyPress</c> with <c>e.Cancel = true</c>).
+/// Blocking <see cref="Console.ReadKey"/> never observes that cancel and would hang, so this
+/// console polls <see cref="Console.KeyAvailable"/> and treats a cancelled shared token as
+/// <see cref="AdminProviderTestAcsSendResultCodes.RejectedCancelled"/> (exit 2). When the
+/// keystroke is delivered as input (some hosts), Ctrl+C is also detected from
+/// <see cref="Console.ReadKey"/>.
+/// </para>
 /// Secrets and PII are not echoed; visible lines are echoed manually.
 /// </summary>
 public sealed class AdminProviderTestAcsSendConsole : IAdminProviderTestAcsSendConsole
 {
-    public string ReadVisibleLine(string prompt) => ReadKeyLine(prompt, echo: true);
+    private static readonly TimeSpan KeyPollInterval = TimeSpan.FromMilliseconds(50);
 
-    public string ReadSecret(string prompt) => ReadKeyLine(prompt, echo: false);
+    public string ReadVisibleLine(string prompt, CancellationToken cancellationToken) =>
+        ReadKeyLine(prompt, echo: true, cancellationToken);
 
-    public string ReadHiddenLine(string prompt) => ReadKeyLine(prompt, echo: false);
+    public string ReadSecret(string prompt, CancellationToken cancellationToken) =>
+        ReadKeyLine(prompt, echo: false, cancellationToken);
+
+    public string ReadHiddenLine(string prompt, CancellationToken cancellationToken) =>
+        ReadKeyLine(prompt, echo: false, cancellationToken);
 
     public void WriteLine(string message) => Console.WriteLine(message);
 
@@ -49,13 +61,27 @@ public sealed class AdminProviderTestAcsSendConsole : IAdminProviderTestAcsSendC
         }
     }
 
-    private static string ReadKeyLine(string prompt, bool echo)
+    private static string ReadKeyLine(string prompt, bool echo, CancellationToken cancellationToken)
     {
         EnsureInteractiveTerminal();
         Console.Write(prompt);
         var buffer = new List<char>();
         while (true)
         {
+            // CancelKeyPress / SIGINT is authoritative on Linux PTY; do not block in ReadKey.
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new SecretOperationException(
+                    AdminProviderTestAcsSendResultCodes.RejectedCancelled,
+                    "Input was interrupted.");
+            }
+
+            if (!Console.KeyAvailable)
+            {
+                Thread.Sleep(KeyPollInterval);
+                continue;
+            }
+
             var key = Console.ReadKey(intercept: true);
             if (key.Key == ConsoleKey.Enter)
             {

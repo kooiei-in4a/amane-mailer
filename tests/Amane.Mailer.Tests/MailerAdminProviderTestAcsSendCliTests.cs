@@ -346,6 +346,49 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
     }
 
     [Fact]
+    public async Task Run_shows_timeout_failure_without_authentication_pass_line()
+    {
+        using var scratch = new TestScratch();
+        File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
+        var console = new FakeConsole(
+            lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase],
+            secretResponses: [],
+            hiddenResponses: ["sender@example.com", "recipient@example.com"]);
+        var fake = new FakeAcsClient(_ =>
+            AcsTestSendOutcome.Failed(
+                AdminProviderTestAcsSendResultCodes.FailedAcsTimeout,
+                authenticationState: AcsEvaluationState.NotEvaluated));
+        var command = CreateCommand(console, scratch, fake);
+
+        var exitCode = await command.RunAsync(CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendCommand.FailureExitCode, exitCode);
+        Assert.False(File.Exists(scratch.HandoffPath));
+        var joined = string.Join('\n', console.Output) + "\n" + string.Join('\n', console.Errors);
+        Assert.Contains(AdminProviderTestAcsSendResultCodes.FailedAcsTimeout, joined);
+        Assert.DoesNotContain("[FAIL] ACS authentication", joined);
+        Assert.DoesNotContain("[PASS] ACS authentication", joined);
+    }
+
+    [Fact]
+    public async Task Run_maps_cancel_key_press_during_prompt_to_rejected_cancelled_not_exit_130()
+    {
+        using var scratch = new TestScratch();
+        using var cts = new CancellationTokenSource();
+        var console = new CancelKeyPressDuringPromptConsole(cts);
+        var fake = new FakeAcsClient(_ => throw new InvalidOperationException("should not send"));
+        var command = CreateCommand(console, scratch, fake);
+
+        var exitCode = await command.RunAsync(cts.Token);
+
+        Assert.Equal(AdminProviderTestAcsSendCommand.RejectedExitCode, exitCode);
+        Assert.Equal(0, fake.CallCount);
+        Assert.Contains(
+            AdminProviderTestAcsSendResultCodes.RejectedCancelled,
+            string.Join('\n', console.Errors));
+    }
+
+    [Fact]
     public async Task Run_maps_visible_line_ctrl_c_to_rejected_cancelled()
     {
         using var scratch = new TestScratch();
@@ -418,8 +461,15 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
 
         public int HiddenReadCount => _hiddenIndex;
 
-        public string ReadVisibleLine(string prompt)
+        public string ReadVisibleLine(string prompt, CancellationToken cancellationToken)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new SecretOperationException(
+                    AdminProviderTestAcsSendResultCodes.RejectedCancelled,
+                    "Input was interrupted.");
+            }
+
             if (_lineIndex >= lineResponses.Count)
             {
                 throw new InvalidOperationException($"Unexpected ReadVisibleLine for prompt: {prompt}");
@@ -428,8 +478,15 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
             return lineResponses[_lineIndex++];
         }
 
-        public string ReadSecret(string prompt)
+        public string ReadSecret(string prompt, CancellationToken cancellationToken)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new SecretOperationException(
+                    AdminProviderTestAcsSendResultCodes.RejectedCancelled,
+                    "Input was interrupted.");
+            }
+
             if (_secretIndex >= secretResponses.Count)
             {
                 throw new InvalidOperationException($"Unexpected ReadSecret for prompt: {prompt}");
@@ -438,8 +495,15 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
             return secretResponses[_secretIndex++];
         }
 
-        public string ReadHiddenLine(string prompt)
+        public string ReadHiddenLine(string prompt, CancellationToken cancellationToken)
         {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new SecretOperationException(
+                    AdminProviderTestAcsSendResultCodes.RejectedCancelled,
+                    "Input was interrupted.");
+            }
+
             if (_hiddenIndex >= hiddenResponses.Count)
             {
                 throw new InvalidOperationException($"Unexpected ReadHiddenLine for prompt: {prompt}");
@@ -457,15 +521,50 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
     {
         public List<string> Errors { get; } = [];
 
-        public string ReadVisibleLine(string prompt) =>
+        public string ReadVisibleLine(string prompt, CancellationToken cancellationToken) =>
             throw new SecretOperationException(
                 AdminProviderTestAcsSendResultCodes.RejectedCancelled,
                 "Input was interrupted.");
 
-        public string ReadSecret(string prompt) =>
+        public string ReadSecret(string prompt, CancellationToken cancellationToken) =>
             throw new InvalidOperationException($"Unexpected ReadSecret: {prompt}");
 
-        public string ReadHiddenLine(string prompt) =>
+        public string ReadHiddenLine(string prompt, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException($"Unexpected ReadHiddenLine: {prompt}");
+
+        public void WriteLine(string message)
+        {
+        }
+
+        public void WriteError(string message) => Errors.Add(message);
+    }
+
+    /// <summary>
+    /// Simulates Linux PTY Ctrl+C: CancelKeyPress cancels the shared token while a prompt is
+    /// active; the console must map that to REJECTED_CANCELLED (exit 2), not exit 130.
+    /// </summary>
+    private sealed class CancelKeyPressDuringPromptConsole(CancellationTokenSource cts)
+        : IAdminProviderTestAcsSendConsole
+    {
+        public List<string> Errors { get; } = [];
+
+        public string ReadVisibleLine(string prompt, CancellationToken cancellationToken)
+        {
+            cts.Cancel();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new SecretOperationException(
+                    AdminProviderTestAcsSendResultCodes.RejectedCancelled,
+                    "Input was interrupted.");
+            }
+
+            throw new InvalidOperationException("Expected cancellation during prompt.");
+        }
+
+        public string ReadSecret(string prompt, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException($"Unexpected ReadSecret: {prompt}");
+
+        public string ReadHiddenLine(string prompt, CancellationToken cancellationToken) =>
             throw new InvalidOperationException($"Unexpected ReadHiddenLine: {prompt}");
 
         public void WriteLine(string message)
@@ -590,7 +689,7 @@ public sealed class AzureAcsTestSendClientTests
     }
 
     [Fact]
-    public async Task Maps_429_to_timeout_bucket()
+    public async Task Maps_429_to_timeout_bucket_without_claiming_authentication()
     {
         var client = new AzureAcsTestSendClient(new ThrowingTransport(
             new RequestFailedException(429, "Too Many Requests")));
@@ -598,6 +697,53 @@ public sealed class AzureAcsTestSendClientTests
         var outcome = await client.SendAsync(Request(), CancellationToken.None);
 
         Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsTimeout, outcome.CanonicalFailureCode);
+        Assert.Equal(AcsEvaluationState.NotEvaluated, outcome.AuthenticationState);
+    }
+
+    [Fact]
+    public async Task Maps_408_to_timeout_bucket_without_claiming_authentication()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(
+            new RequestFailedException(408, "Request Timeout")));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsTimeout, outcome.CanonicalFailureCode);
+        Assert.Equal(AcsEvaluationState.NotEvaluated, outcome.AuthenticationState);
+    }
+
+    [Fact]
+    public async Task Maps_5xx_to_timeout_bucket_without_claiming_authentication()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(
+            new RequestFailedException(503, "Service Unavailable")));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsTimeout, outcome.CanonicalFailureCode);
+        Assert.Equal(AcsEvaluationState.NotEvaluated, outcome.AuthenticationState);
+    }
+
+    [Fact]
+    public async Task Maps_timeout_exception_without_claiming_authentication()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(new TimeoutException("timed out")));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsTimeout, outcome.CanonicalFailureCode);
+        Assert.Equal(AcsEvaluationState.NotEvaluated, outcome.AuthenticationState);
+    }
+
+    [Fact]
+    public async Task Maps_non_cooperative_operation_canceled_without_claiming_authentication()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(new OperationCanceledException()));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsTimeout, outcome.CanonicalFailureCode);
+        Assert.Equal(AcsEvaluationState.NotEvaluated, outcome.AuthenticationState);
     }
 
     [Fact]

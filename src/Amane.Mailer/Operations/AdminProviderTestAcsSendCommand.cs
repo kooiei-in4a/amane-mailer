@@ -67,26 +67,32 @@ public sealed partial class AdminProviderTestAcsSendCommand
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var environmentConfirmation = _console.ReadVisibleLine("Confirm target environment (exact match): ");
+            var environmentConfirmation = _console.ReadVisibleLine(
+                "Confirm target environment (exact match): ",
+                cancellationToken);
             if (!string.Equals(environmentConfirmation, RequiredEnvironmentConfirmation, StringComparison.Ordinal))
             {
                 return Reject(AdminProviderTestAcsSendResultCodes.RejectedEnvironmentMismatch);
             }
 
-            var intent = _console.ReadVisibleLine($"Type {IntentPhrase} to confirm intent: ");
+            var intent = _console.ReadVisibleLine(
+                $"Type {IntentPhrase} to confirm intent: ",
+                cancellationToken);
             if (!string.Equals(intent, IntentPhrase, StringComparison.Ordinal))
             {
                 return Reject(AdminProviderTestAcsSendResultCodes.RejectedIntentMismatch);
             }
 
-            var connectionString = ResolveConnectionString();
+            var connectionString = ResolveConnectionString(cancellationToken);
             var senderEmail = ReadBareEmail(
                 "Sender email: ",
-                AdminProviderTestAcsSendResultCodes.RejectedInvalidSenderEmail);
+                AdminProviderTestAcsSendResultCodes.RejectedInvalidSenderEmail,
+                cancellationToken);
             var recipientEmail = ReadBareEmail(
                 "Recipient email: ",
-                AdminProviderTestAcsSendResultCodes.RejectedInvalidRecipientEmail);
-            var handoffPath = ResolveMessageIdHandoffPath();
+                AdminProviderTestAcsSendResultCodes.RejectedInvalidRecipientEmail,
+                cancellationToken);
+            var handoffPath = ResolveMessageIdHandoffPath(cancellationToken);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -105,13 +111,15 @@ public sealed partial class AdminProviderTestAcsSendCommand
 
             return ReportOutcome(outcome, handoffPath, operationId);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
+        // Interactive prompt cancel throws SecretOperationException(REJECTED_CANCELLED) even when
+        // CancelKeyPress has already cancelled the shared token — prefer exit 2 over 130.
         catch (SecretOperationException ex)
         {
             return Reject(ex.CanonicalCode);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (OperationCanceledException)
         {
@@ -123,7 +131,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
         }
     }
 
-    private string ResolveConnectionString()
+    private string ResolveConnectionString(CancellationToken cancellationToken)
     {
         var fromFile = TryReadSecretFile();
         if (!string.IsNullOrEmpty(fromFile))
@@ -139,7 +147,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
             return fromFile;
         }
 
-        return ReadConfirmedConnectionStringFromTty();
+        return ReadConfirmedConnectionStringFromTty(cancellationToken);
     }
 
     private string? TryReadSecretFile()
@@ -171,10 +179,10 @@ public sealed partial class AdminProviderTestAcsSendCommand
         return null;
     }
 
-    private string ReadConfirmedConnectionStringFromTty()
+    private string ReadConfirmedConnectionStringFromTty(CancellationToken cancellationToken)
     {
-        var first = _console.ReadSecret("ACS connection string: ");
-        var second = _console.ReadSecret("Re-enter ACS connection string: ");
+        var first = _console.ReadSecret("ACS connection string: ", cancellationToken);
+        var second = _console.ReadSecret("Re-enter ACS connection string: ", cancellationToken);
         if (!string.Equals(first, second, StringComparison.Ordinal))
         {
             throw new SecretOperationException(
@@ -192,10 +200,10 @@ public sealed partial class AdminProviderTestAcsSendCommand
         return first;
     }
 
-    private string ReadBareEmail(string prompt, string invalidCode)
+    private string ReadBareEmail(string prompt, string invalidCode, CancellationToken cancellationToken)
     {
         // PII: non-echo input so the address does not remain in the PTY transcript.
-        var email = _console.ReadHiddenLine(prompt).Trim();
+        var email = _console.ReadHiddenLine(prompt, cancellationToken).Trim();
         if (!MailAddress.TryCreate(email, out var parsed)
             || !string.Equals(parsed.Address, email, StringComparison.Ordinal))
         {
@@ -205,7 +213,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
         return email;
     }
 
-    private string ResolveMessageIdHandoffPath()
+    private string ResolveMessageIdHandoffPath(CancellationToken cancellationToken)
     {
         var configured = _configuration[MessageIdHandoffEnvVar];
         string path;
@@ -216,7 +224,9 @@ public sealed partial class AdminProviderTestAcsSendCommand
         }
         else
         {
-            path = _console.ReadVisibleLine("Absolute path for message ID handoff file: ").Trim();
+            path = _console.ReadVisibleLine(
+                "Absolute path for message ID handoff file: ",
+                cancellationToken).Trim();
         }
 
         if (string.IsNullOrWhiteSpace(path)

@@ -25,9 +25,10 @@ public static class AcsTestSendFailureMapper
 
         if (ex.Status is 408 or 429 or >= 500)
         {
+            // Timeout / throttle / server error do not prove credentials were accepted.
             return AcsTestSendOutcome.Failed(
                 AdminProviderTestAcsSendResultCodes.FailedAcsTimeout,
-                authenticationState: AcsEvaluationState.Succeeded);
+                authenticationState: AcsEvaluationState.NotEvaluated);
         }
 
         if ((ex.Status is 400 or 422) && LooksLikeSenderOrDomainRejection(ex))
@@ -68,7 +69,7 @@ public static class AcsTestSendFailureMapper
         {
             return AcsTestSendOutcome.Failed(
                 AdminProviderTestAcsSendResultCodes.FailedAcsTimeout,
-                authenticationState: AcsEvaluationState.Succeeded);
+                authenticationState: AcsEvaluationState.NotEvaluated);
         }
 
         return AcsTestSendOutcome.Failed(
