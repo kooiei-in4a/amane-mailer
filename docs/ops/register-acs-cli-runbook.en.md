@@ -2,6 +2,7 @@
 
 > Target: `admin provider register-acs` / `admin provider check-acs-preflight`
 > action ID: `MAILER-ACS-INPUT-01`
+> Configuration mode: **staging ACS verification** in the [setup entry point](setup-guide.en.md) (**Staging only**. Do not use for production work)
 
 ## 1. Purpose
 

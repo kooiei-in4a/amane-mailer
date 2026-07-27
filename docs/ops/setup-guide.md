@@ -8,6 +8,22 @@
 
 Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) · 本 Issue: [#424](https://github.com/kooiei-in4a/amane-mailer/issues/424)
 
+## 既存文書の役割（複製しない）
+
+| 文書 | 役割 | この入口との関係 |
+|------|------|------------------|
+| [README](../../README.md) | リポジトリ入口 | ここへ 1 クリックで到達する |
+| [Zero-Admin 初回メール quickstart](first-mail-quickstart.md) | **local Mailpit** の最短手順 | mode 1 の詳細正本 |
+| [local Docker runbook](local-mailer-docker-runbook.md)（[bash](local-mailer-docker-runbook-bash.md)） | local の追加 smoke（冪等・Admin など） | mode 1 の拡張 |
+| [local deploy rehearsal](local-deploy-rehearsal-runbook.md) | deploy 形スタックの再現 | mode 2 の詳細正本 |
+| [register-acs CLI](register-acs-cli-runbook.md) | Staging 限定の ACS file secret 登録 | mode 3 の登録正本。**production では使わない** |
+| [test-acs-send CLI](test-acs-send-cli-runbook.md) | Staging 限定の ACS 単体実送信確認 | mode 3 の検証正本 |
+| [bounce ingestion](bounce-ingestion-runbook.md) | Queue Pull の runtime 設定・運用 | mode 5 目標の設定キー正本（compose 配線は別） |
+| [event-grid config check](event-grid-config-check-runbook.md) | Event Grid / Queue の read-only 構成確認 | environment 別。到着は保証しない |
+| [verify-delivery-report](verify-delivery-report-runbook.md) | Delivery Report の Queue 到着 E2E | **Staging 限定**。production 証拠にしない |
+| [設定 README](../../config/mailer/README.md) | tenant / env / preflight | 全モードの設定 shape 正本 |
+| [release-image-smoke](release-image-smoke.md) | 公開イメージ smoke | 公開済みタグ向け。`v1.1.0` 未公開時はその検証にならない |
+
 ## 読む前に（安全）
 
 - secret、接続文字列、実テナント token、送信元・送信先、PII、provider raw error を docs・Issue・ログ・チャットへ貼らない。
@@ -34,7 +50,7 @@ bounce ingestion（migration `011` 含む）はソース上実装済みでも、
 
 ## モード完遂可否と結果コード（分離）
 
-構成が今完了できるかどうか（モード表の列）と、診断 CLI の結果コードは別レイヤとする。後続の setup doctor / 確認 CLI（[#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)–[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)）は下の結果コード意味に合わせる。現状の smoke script は主に `[PASS]` / `[FAIL]` を出す。
+構成が今完了できるかどうか（モード表の列）と、診断 CLI の結果コードは別レイヤとする。setup doctor / 確認 CLI（[#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)–[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)）は下の結果コード意味に合わせる。既存 smoke script は主に `[PASS]` / `[FAIL]` を出す。
 
 ### モード完遂可否（構成の提供状況）
 
@@ -80,7 +96,7 @@ secret 値・宛先平文・接続文字列・raw provider error を結果に含
 |--------|----------|----------|----------------|-------------|----------------------|--------------|
 | local Mailpit | 初回到達確認、開発 smoke | `mailpit` | `false` | `off`（既定） | **Available** | [Zero-Admin 初回メール quickstart](first-mail-quickstart.md)、[local Docker runbook](local-mailer-docker-runbook.md) |
 | staging ACS no-send | deploy 形の起動・token / migrate 確認。実送信なし | `acs`（または JSON どおり） | `false` | 通常 `off` | **Available**（実送信なし） | [local deploy rehearsal](local-deploy-rehearsal-runbook.md)、[設定 README](../../config/mailer/README.md) |
-| staging ACS verification | ACS 接続と承認 sender の**明示**検証 | `acs` | 検証中のみ `true`（専用 tenant / 宛先） | 通常 `off` | **Available**（Staging） | [register-acs CLI](register-acs-cli-runbook.md)（**Staging 限定**）、[設定 README](../../config/mailer/README.md)、drill guide |
+| staging ACS verification | ACS 接続と承認 sender の**明示**検証 | `acs` | 検証中のみ `true`（専用 tenant / 宛先） | 通常 `off` | **Available**（Staging） | [register-acs CLI](register-acs-cli-runbook.md)（**Staging 限定**）、[test-acs-send CLI](test-acs-send-cli-runbook.md)、[設定 README](../../config/mailer/README.md) |
 | production ACS | 本番配送の目標 | `acs` | `true`（承認済みのみ） | `off` 可 | deploy 形・設定は **Available**。live send は **Blocked**（production 正規 secret 登録なし） | [deploy `.env.example`](../../infra/deploy/.env.example)、[compose.yml](../../infra/deploy/compose.yml)、[設定 README](../../config/mailer/README.md) |
 | production ACS + Queue | 本番配送 + ハードバウンス抑制の目標 | `acs` | `true` | **`queue` のみ** | **Target only** | 目標の設定キーは [bounce ingestion runbook](bounce-ingestion-runbook.md)。compose 配線は別途対応が必要 |
 
@@ -273,24 +289,27 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 | 症状の例 | 参照 |
 |----------|------|
-| tenant / token / `LIVE_SENDING_DISABLED` / provider 不足 | [設定 README troubleshooting](../../config/mailer/README.md#tenant--env-troubleshooting) |
+| tenant / token / `LIVE_SENDING_DISABLED` / provider 不足 | [設定 README troubleshooting](../../config/mailer/README.md#tenant--env-troubleshooting)、本ガイドの setup doctor |
 | local 起動・Admin・Mailpit | [local Docker runbook](local-mailer-docker-runbook.md) |
 | deploy 形の compose / migrate / network | [local deploy rehearsal](local-deploy-rehearsal-runbook.md) |
 | Staging ACS secret 登録失敗 | [register-acs CLI](register-acs-cli-runbook.md)（Staging 限定） |
+| Staging ACS 単体送信の切り分け | [test-acs-send CLI](test-acs-send-cli-runbook.md)（Staging 限定） |
+| Event Grid / Queue 構成の不一致 | [event-grid config check](event-grid-config-check-runbook.md)（read-only） |
+| Staging で Delivery Report が Queue に来ない | [verify-delivery-report](verify-delivery-report-runbook.md)（Staging 限定。実バウンス不要） |
 | bounce / unmatched / Queue poll（runtime 説明） | [bounce ingestion](bounce-ingestion-runbook.md)、[metrics-and-alerts](metrics-and-alerts.md) |
 | backup / restore | [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md) |
 | 公開イメージ smoke（公開済みタグ） | [release-image-smoke](release-image-smoke.md) |
 
-## 今後提供予定の確認機能（#425 / #426 以外）
+## 確認機能の提供状況
 
-| Issue | 予定 | 境界 |
+| Issue | 機能 | 境界 |
 |-------|------|------|
 | [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **提供済み**（上「setup doctor」） |
 | [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS 単体の実送信確認 CLI | **提供済み** — [test-acs-send-cli-runbook.md](test-acs-send-cli-runbook.md)（Staging 限定） |
-| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認（`setup check-event-grid`） | **選択 environment 向け**（Staging 限定ではない）。構成確認のみ。イベント到着は保証しない。手順: [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md) |
+| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認（`setup check-event-grid`） | **提供済み** — [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md)（選択 environment 向け。到着は保証しない） |
 | [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report の Queue 到着 E2E（message ID 相関。実バウンス必須にしない） | **提供済み** — [verify-delivery-report-runbook.md](verify-delivery-report-runbook.md)（**Staging 限定**。production Queue / production テスト送信は非目標） |
 
-現時点では setup doctor（#425）、ACS 単体送信確認（#426）、Event Grid 構成確認（#427）、Delivery Report E2E（#428）、および既存 preflight script・smoke・runbook 手動確認で進める。
+セットアップ入口としては上記 CLI と既存 preflight / smoke / runbook 手動確認で進める。production live send の正規登録や deploy compose への bounce 配線は、この Issue の非目標（別対応）。
 
 ## この入口の非目標
 

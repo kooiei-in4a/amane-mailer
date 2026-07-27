@@ -4,6 +4,7 @@
 
 > 対象: ACS Email Delivery Report → Event Grid → Storage Queue → Mailer Pull 取り込み（ADR 0020 / #305）
 > Admin 可視化: #306。抑制解除 CLI: #400。Push（Event Grid Webhook）は v1.1.0 スコープ外（#304）。
+> 構成選択: [セットアップ入口](setup-guide.md) の **production ACS + Queue**（現行 deploy compose では Target only）
 
 ## 1. 目的
 
