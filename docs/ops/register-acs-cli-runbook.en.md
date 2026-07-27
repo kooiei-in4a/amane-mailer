@@ -20,7 +20,9 @@ input only.
   `platform-sender.json` into a runtime send decision is the responsibility of the formal
   platform-owned mail request contract (MAIL-PLATFORM-01).
 - Mode 3 uses exact **`Staging`**; mode 4 uses exact **`Production`**. Never ask production
-  operators to type `Staging` as a workaround (it destroys the safety check and is rejected).
+  operators to type `Staging` as a workaround: the CLI accepts it as a **staging** registration
+  (not production evidence), and `setup doctor --mode production-acs` reports `[FAIL]` when
+  `platform-sender.json` `environment` is `staging`.
 
 ## 2. Deploy host preparation
 

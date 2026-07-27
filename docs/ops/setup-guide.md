@@ -47,7 +47,7 @@ bounce ingestion（migration `011` 含む）はソース上実装済みでも、
 | platform-owned sender | `register-acs` が `platform-sender.json` も書くが、現時点では tenant の ACS 送信経路からは使われない | tenant 実送信の完了条件に含めない | tenant 送信完了の根拠にしない |
 | production ACS + Queue（mode 5） | [bounce ingestion runbook](bounce-ingestion-runbook.md) が要求する `MAILER_BOUNCE_INGESTION` / Queue 接続 / Queue 名は、現行 [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) の `environment` / volume に**未配線**。host shell にだけ置いてもコンテナへ渡らない | **Target only**（deploy template 対応まで完了不可） | 完了判定は `[FAIL]` + compose 配線待ちの `[ACTION]` |
 
-production ACS（mode 4）の file-secret 登録は `admin provider register-acs` の exact **`Production`** 確認で Available。production 作業で `Staging` と入力させる使い方は**禁止**（安全確認を壊す）。
+production ACS（mode 4）の file-secret 登録は `admin provider register-acs` の exact **`Production`** 確認で Available。production 作業で `Staging` と入力させる使い方は**禁止**（CLI は staging 登録として受理するため production 証跡にならない。`setup doctor --mode production-acs` は不一致を `[FAIL]` する）。
 
 ## モード完遂可否と結果コード（分離）
 
@@ -253,7 +253,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 ### 4. production ACS
 
-**範囲:** deploy テンプレートと設定に加え、`admin provider register-acs` の exact **`Production`** 確認で file secret を登録できる。production 作業で `Staging` と入力する回避策は案内しない（拒否されるうえ、安全確認を壊す）。
+**範囲:** deploy テンプレートと設定に加え、`admin provider register-acs` の exact **`Production`** 確認で file secret を登録できる。production 作業で `Staging` と入力する回避策は案内しない（`Staging` は staging 登録として受理されるため production 証跡にならず、`setup doctor --mode production-acs` は `environment` 不一致を `[FAIL]` する）。
 
 **順序**
 

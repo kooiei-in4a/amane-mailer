@@ -873,24 +873,27 @@ public sealed class SetupDoctorCommand
     {
         _report.AddPass("mode_profile", "Diagnosing staging ACS verification mode prerequisites.");
         ValidateTenantProviderExpectation(expectedProvider: "acs", liveSendingRequired: true);
+        ValidatePlatformSenderEnvironment(expectedEnvironment: "staging");
         _report.AddAction(
             "staging_register_acs",
-            "Use admin provider register-acs with Staging confirmation for ACS secret registration (Staging only).");
+            "Use admin provider register-acs with exact Staging confirmation for ACS secret registration (mode 3).");
     }
 
     private void ValidateModeProductionAcs()
     {
         _report.AddPass("mode_profile", "Diagnosing production ACS mode prerequisites (deploy shape).");
         ValidateTenantProviderExpectation(expectedProvider: "acs", liveSendingRequired: true);
+        ValidatePlatformSenderEnvironment(expectedEnvironment: "production");
         _report.AddAction(
             "production_register_acs",
-            "Use admin provider register-acs with exact Production confirmation for ACS file-secret registration. Do not type Staging for production work.");
+            "Use admin provider register-acs with exact Production confirmation for ACS file-secret registration. Staging confirmation is accepted as a staging registration and is not production evidence.");
     }
 
     private void ValidateModeProductionQueue()
     {
         _report.AddPass("mode_profile", "Diagnosing production ACS + Queue mode prerequisites (target configuration).");
         ValidateTenantProviderExpectation(expectedProvider: "acs", liveSendingRequired: true);
+        ValidatePlatformSenderEnvironment(expectedEnvironment: "production");
 
         var bounceOptions = MailerBounceIngestionOptions.Load(_configuration);
         if (bounceOptions.Mode != BounceIngestionMode.Queue)
@@ -910,6 +913,66 @@ public sealed class SetupDoctorCommand
         _report.AddAction(
             "production_queue_completion",
             "Wire MAILER_BOUNCE_INGESTION, Queue credentials, and Queue name through compose before treating mode 5 as complete.");
+    }
+
+    /// <summary>
+    /// When platform-sender.json is present and valid, require its <c>environment</c> to match the
+    /// setup mode. The register-acs CLI has no expected-mode argument, so this is the operational
+    /// gate that detects Staging confirmation used during production work (and the reverse).
+    /// Never prints sender email, display name, or secret values.
+    /// </summary>
+    private void ValidatePlatformSenderEnvironment(string expectedEnvironment)
+    {
+        var senderDirectory = _configuration["MAILER_PLATFORM_SENDER_HOST_PATH"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(senderDirectory))
+        {
+            return;
+        }
+
+        var senderPath = Path.Combine(senderDirectory, PlatformSenderFile.CanonicalFileName);
+        if (!File.Exists(senderPath))
+        {
+            return;
+        }
+
+        PlatformSenderFile? parsed;
+        try
+        {
+            var text = File.ReadAllText(senderPath);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return;
+            }
+
+            parsed = JsonSerializer.Deserialize(text, MailerJsonContext.Default.PlatformSenderFile);
+            if (parsed is null)
+            {
+                return;
+            }
+
+            parsed.Validate();
+        }
+        catch
+        {
+            // Corrupt / invalid sender files are reported by acs_registration_state when both
+            // paths are configured; avoid double-FAIL and avoid leaking parse details.
+            return;
+        }
+
+        if (!string.Equals(parsed.Environment, expectedEnvironment, StringComparison.Ordinal))
+        {
+            _report.AddFail(
+                "platform_sender_environment",
+                $"Registered platform-sender environment does not match this setup mode (expected '{expectedEnvironment}').");
+            _report.AddAction(
+                "platform_sender_environment",
+                "After removing the mismatched registration files, re-run register-acs with the confirmation phrase that matches this mode. Do not record secret or sender values.");
+            return;
+        }
+
+        _report.AddPass(
+            "platform_sender_environment",
+            $"Registered platform-sender environment matches this setup mode ('{expectedEnvironment}').");
     }
 
     private void ValidateTenantProviderExpectation(string expectedProvider, bool? liveSendingRequired)

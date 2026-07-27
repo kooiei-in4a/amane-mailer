@@ -47,7 +47,7 @@ The modes below are still useful as a **target taxonomy**, but they cannot be fi
 | Platform-owned sender | `register-acs` also writes `platform-sender.json`, which is **not** used by the current tenant ACS send path | Do not treat it as evidence that tenant live send is ready | Not grounds for tenant live-send completion |
 | Production ACS + Queue (mode 5) | [bounce ingestion runbook](bounce-ingestion-runbook.en.md) requires `MAILER_BOUNCE_INGESTION`, Queue credentials, and Queue name, but current [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) does **not** pass them in `environment` / volumes. Setting variables only in the host shell does not inject them into the container | **Target only** until deploy-template wiring exists | Completion is `[FAIL]` + `[ACTION]` waiting for compose wiring |
 
-Production ACS (mode 4) file-secret registration is **Available** via `admin provider register-acs` with exact **`Production`** confirmation. Never tell a production operator to type `Staging` while doing production work (that destroys the safety check).
+Production ACS (mode 4) file-secret registration is **Available** via `admin provider register-acs` with exact **`Production`** confirmation. Never tell a production operator to type `Staging` while doing production work: the CLI accepts it as a **staging** registration (not production evidence), and `setup doctor --mode production-acs` reports `[FAIL]` when `platform-sender.json` `environment` is `staging`.
 
 ## Mode availability vs result codes (keep them separate)
 
@@ -253,7 +253,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 ### 4. production ACS
 
-**Scope:** In addition to the deploy template and configuration, `admin provider register-acs` with exact **`Production`** confirmation registers the file secret. Do not suggest typing `Staging` as a production workaround (it is rejected and destroys the safety check).
+**Scope:** In addition to the deploy template and configuration, `admin provider register-acs` with exact **`Production`** confirmation registers the file secret. Do not suggest typing `Staging` as a production workaround: `Staging` is accepted as a **staging** registration and is not production evidence; `setup doctor --mode production-acs` reports `[FAIL]` when `environment` mismatches.
 
 **Order**
 

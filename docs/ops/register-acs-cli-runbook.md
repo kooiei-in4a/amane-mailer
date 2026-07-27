@@ -11,7 +11,7 @@
 - ACS connection stringは deploy-time secret file（`acs_connection_string`）だけに保存する。tenant JSON、DB、amane-flow側のsecret経路には一切保存しない。
 - platform-owned sender情報は新規・tenant非依存の`platform-sender.json`に保存する。既存tenantへの割当てや偽tenantの作成は行わない。
 - このcommand単体では System Admin確認メールの実送信は完了しない。`platform-sender.json`をruntime送信経路へ組み込むのは、正式なplatform-owned mail request契約（MAIL-PLATFORM-01）の責務である。
-- mode 3 では exact **`Staging`**、mode 4 では exact **`Production`** を入力する。production 作業で `Staging` と入力する回避策は禁止（安全確認を壊すうえ、不一致なら拒否される）。
+- mode 3 では exact **`Staging`**、mode 4 では exact **`Production`** を入力する。production 作業で `Staging` と入力する回避策は禁止（CLI は staging 登録として受理するため production 証跡にならず、`setup doctor --mode production-acs` は `platform-sender` の `environment` 不一致を `[FAIL]` する）。
 
 ## 2. 事前準備（deploy host）
 
