@@ -5,6 +5,7 @@ using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Json;
 using Amane.Mailer.Operations;
+using Amane.Mailer.Operations.EventGridConfigCheck;
 using Amane.Mailer.Worker;
 using Microsoft.Extensions.Logging.EventLog;
 
@@ -29,6 +30,7 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
       dotnet Amane.Mailer.dll admin provider test-acs-send
       dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
+      dotnet Amane.Mailer.dll setup check-event-grid --subscription <id-or-name> --resource-group <rg> (--acs-name <name> | --acs-resource-id <id>) --event-subscription <name> --storage-account <name> --queue-name <name> --environment <dev|staging|production>
 
     Setup doctor modes:
       local-mailpit, staging-no-send, staging-verification, production-acs, production-queue
@@ -183,6 +185,13 @@ if (SetupDoctorCommand.IsSetupDoctorCommand(commandArgs))
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
     return await MailerCliHost.RunCancellableCliAsync(
         ct => MailerCliHost.RunSetupDoctorAsync(cliConfiguration, commandArgs, Console.Out, Console.Error, ct),
+        Console.Error);
+}
+
+if (EventGridConfigCheckCommand.IsEventGridConfigCheckCommand(commandArgs))
+{
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunSetupCheckEventGridAsync(commandArgs, Console.Out, Console.Error, ct),
         Console.Error);
 }
 

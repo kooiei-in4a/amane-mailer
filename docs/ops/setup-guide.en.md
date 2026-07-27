@@ -125,7 +125,7 @@ Keep **ACS and Queue separated per environment** (dev / staging / production). M
 | token / `tenant_id` | example / local-only | non-production only | production-only; never share with staging |
 | ACS secret | local drill may use bare env (see runbook) | file secret (`register-acs`, confirmation `Staging`) | file secret required, but **current register-acs cannot confirm production** |
 | Admin | optional, internal network | optional, reachability limits required | optional, reachability limits required (no direct internet exposure) |
-| bounce Queue | usually unnecessary | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) planned for per-environment read-only config checks. [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) is Staging E2E only | Target only; current compose unwired |
+| bounce Queue | usually unnecessary | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) `setup check-event-grid` for per-environment read-only config checks. [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) is Staging E2E only | Target only; current compose unwired |
 | Done means | health + first Mailpit delivery, etc. | start + preflight + optional explicit verification | deploy-shaped prep possible; **canonical live-send completion waits on the secret-registration gap**. Real bounce not required |
 
 ## Shared checklist (information, access, secrets, network)
@@ -184,7 +184,7 @@ dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
 Output uses the result codes above (PASS / FAIL / WARN / ACTION) and ends with `Summary: PASS=… FAIL=… WARN=… ACTION=…`. Exit code `1` when any check is FAIL.
 
 - Never prints secret values, tokens, connection strings, recipient plaintext, or raw provider errors
-- Does not run DB migrate, start containers, live-send mail, or Azure configuration checks ([#427](https://github.com/kooiei-in4a/amane-mailer/issues/427))
+- Does not run DB migrate, start containers, or live-send mail. Azure Event Grid / Queue configuration checks use the separate `setup check-event-grid` command ([#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) / [event-grid-config-check-runbook.en.md](event-grid-config-check-runbook.en.md))
 - ACS directory write verification remains `admin provider check-acs-preflight` (doctor uses read-only safety checks only)
 - Compose validation is suggested as **ACTION**: run `docker compose config --quiet` on the host
 
@@ -263,7 +263,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 - Deploy template unwired → mode is **Target only**; completion is `[FAIL]` + `[ACTION]`
 - Do not treat a quiet poll-failure metric as Event Grid wiring success (unconfirmed arrival is `[WARN]` / `[ACTION]`)
-- [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) is planned as **read-only configuration checks for the selected environment** (including dev / staging / production). It is not Staging-only
+- [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) provides **read-only configuration checks for the selected environment** via `setup check-event-grid` (including dev / staging / production). It is not Staging-only
 - [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) is planned as a **Staging-only** Delivery Report E2E / pre-production wiring check. Do not treat #428 results as evidence that production was exercised. Production Queue execution and production test sends are non-goals of #428
 - **Real bounce is not a completion criterion**
 
@@ -287,7 +287,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 |-------|---------|----------|
 | [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **Available** (see “setup doctor” above) |
 | [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS-only live send check CLI | **Available** — [test-acs-send-cli-runbook.en.md](test-acs-send-cli-runbook.en.md) (Staging only) |
-| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check | **For the selected environment** (not Staging-only). Config check only; does not prove event arrival |
+| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check (`setup check-event-grid`) | **For the selected environment** (not Staging-only). Config check only; does not prove event arrival. Runbook: [event-grid-config-check-runbook.en.md](event-grid-config-check-runbook.en.md) |
 | [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report Queue arrival E2E (message ID correlation; real bounce not required) | **Staging-only** pre-production wiring check. Production Queue / production test send are non-goals |
 
 Use setup doctor (#425) together with [test-acs-send](test-acs-send-cli-runbook.en.md) (#426), existing preflight scripts, smokes, and manual runbook checks until #427–#428 land.

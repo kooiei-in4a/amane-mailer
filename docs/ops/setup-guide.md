@@ -125,7 +125,7 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 | token / `tenant_id` | example / local 専用 | non-production 専用 | production 専用。staging と共有しない |
 | ACS secret | local drill は bare env 可（runbook 参照） | file secret（`register-acs`、確認は `Staging`） | file secret 必須だが、**現行 register-acs では production 確認不可** |
 | Admin | 任意・内部 NW | 任意・到達制限必須 | 任意・到達制限必須（公開 Internet 直出し禁止） |
-| bounce Queue | 通常不要 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) で environment 別の read-only 構成確認（予定）。[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は Staging E2E のみ | Target only。現行 compose 未配線 |
+| bounce Queue | 通常不要 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) の `setup check-event-grid` で environment 別の read-only 構成確認。[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は Staging E2E のみ | Target only。現行 compose 未配線 |
 | 完了の定義 | health + 1 通 Mailpit 到着など | 起動・preflight・（任意）明示 verification | deploy 形の準備は可。**live 配送の正規完了は secret 登録ギャップ解消後**。実バウンスは不要 |
 
 ## 共通チェックリスト（必要情報・権限・secret・network）
@@ -184,7 +184,7 @@ dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
 結果コードは上表（PASS / FAIL / WARN / ACTION）に従います。末尾に `Summary: PASS=… FAIL=… WARN=… ACTION=…` を表示します。`FAIL` が 1 件でもあれば exit code `1` です。
 
 - secret 値・token・接続文字列・宛先平文・raw provider error は出力しません
-- DB migration 実行、container 起動、ACS 実送信、Azure 構成確認（[#427](https://github.com/kooiei-in4a/amane-mailer/issues/427)）は行いません
+- DB migration 実行、container 起動、ACS 実送信は行いません。Azure Event Grid / Queue の構成確認は別コマンド `setup check-event-grid`（[#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) / [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md)）
 - ACS secret ディレクトリの書き込み確認は `admin provider check-acs-preflight` を使用（doctor は read-only の安全チェックのみ）
 - compose 検証は `docker compose config --quiet` を **ACTION** として案内（host 上で人が実行）
 
@@ -263,7 +263,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 - deploy template 未配線 → モードは **Target only**、完了判定は `[FAIL]` + `[ACTION]`
 - poll 失敗メトリクスが静かなことだけで Event Grid 配線成功としない（到着未確認は `[WARN]` / `[ACTION]`）
-- [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) は**選択した environment**（dev / staging / production を含む）に対する read-only 構成確認（予定）。Staging 限定ではない
+- [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) は**選択した environment**（dev / staging / production を含む）に対する read-only 構成確認（`setup check-event-grid`）。Staging 限定ではない
 - [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は **Staging 限定**の Delivery Report E2E / pre-production 配線確認（予定）。#428 の結果を production 実行済みの証拠として扱わない。production Queue 実行・production テスト送信は #428 の非目標
 - **実バウンスは完了条件にしない**
 
@@ -287,7 +287,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 |-------|------|------|
 | [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **提供済み**（上「setup doctor」） |
 | [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS 単体の実送信確認 CLI | **提供済み** — [test-acs-send-cli-runbook.md](test-acs-send-cli-runbook.md)（Staging 限定） |
-| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認 | **選択 environment 向け**（Staging 限定ではない）。構成確認のみ。イベント到着は保証しない |
+| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認（`setup check-event-grid`） | **選択 environment 向け**（Staging 限定ではない）。構成確認のみ。イベント到着は保証しない。手順: [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md) |
 | [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report の Queue 到着 E2E（message ID 相関。実バウンス必須にしない） | **Staging 限定**の pre-production 配線確認。production Queue / production テスト送信は非目標 |
 
 現時点では setup doctor（#425）、ACS 単体送信確認（#426）、および既存 preflight script・smoke・runbook 手動確認で進める。
