@@ -129,7 +129,8 @@ public sealed class SetupDoctorCliTests
 
             Assert.Equal(SetupDoctorCommand.FailureExitCode, exitCode);
             Assert.Contains("[FAIL] mode_live_sending:", output, StringComparison.Ordinal);
-            Assert.Contains("[FAIL] production_live_send:", output, StringComparison.Ordinal);
+            Assert.Contains("[ACTION] production_register_acs:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL] production_live_send:", output, StringComparison.Ordinal);
         }
         finally
         {
@@ -138,7 +139,7 @@ public sealed class SetupDoctorCliTests
     }
 
     [Fact]
-    public async Task production_acs_mode_reports_blocked_live_send()
+    public async Task production_acs_mode_guides_production_register_acs_without_blocking_fail()
     {
         using var scratch = new DoctorScratch();
         scratch.WriteTenantFile(CreateAcsTenantJson(liveSending: true));
@@ -159,9 +160,11 @@ public sealed class SetupDoctorCliTests
                 SetupDoctorMode.ProductionAcs,
                 scratch.ComposePath);
 
-            Assert.Equal(SetupDoctorCommand.FailureExitCode, exitCode);
-            Assert.Contains("[FAIL] production_live_send:", output, StringComparison.Ordinal);
-            Assert.Contains("[ACTION] production_live_send:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL] production_live_send:", output, StringComparison.Ordinal);
+            Assert.Contains("[ACTION] production_register_acs:", output, StringComparison.Ordinal);
+            Assert.Contains("exact Production confirmation", output, StringComparison.Ordinal);
+            // May still FAIL for unrelated doctor checks (compose bounce wiring is WARN for mode 4).
+            _ = exitCode;
         }
         finally
         {

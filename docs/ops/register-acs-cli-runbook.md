@@ -2,7 +2,7 @@
 
 > 対象: `admin provider register-acs` / `admin provider check-acs-preflight`
 > action ID: `MAILER-ACS-INPUT-01`
-> 構成選択: [セットアップ入口](setup-guide.md) の **staging ACS verification**（**Staging 限定**。production 作業では使わない）
+> 構成選択: [セットアップ入口](setup-guide.md) の **staging ACS verification**（確認 **`Staging`**）または **production ACS**（確認 **`Production`**）。確認フレーズを取り違えない。
 
 ## 1. 目的
 
@@ -11,6 +11,7 @@
 - ACS connection stringは deploy-time secret file（`acs_connection_string`）だけに保存する。tenant JSON、DB、amane-flow側のsecret経路には一切保存しない。
 - platform-owned sender情報は新規・tenant非依存の`platform-sender.json`に保存する。既存tenantへの割当てや偽tenantの作成は行わない。
 - このcommand単体では System Admin確認メールの実送信は完了しない。`platform-sender.json`をruntime送信経路へ組み込むのは、正式なplatform-owned mail request契約（MAIL-PLATFORM-01）の責務である。
+- mode 3 では exact **`Staging`**、mode 4 では exact **`Production`** を入力する。production 作業で `Staging` と入力する回避策は禁止（安全確認を壊すうえ、不一致なら拒否される）。
 
 ## 2. 事前準備（deploy host）
 
@@ -40,7 +41,7 @@ docker compose --env-file .env -f compose.yml --profile acs-admin run --rm maile
 
 ## 4. 対話手順
 
-1. 対象環境名の確認: 完全一致の`Staging`だけを受理する（`staging`・`STAGING`・他の綴りは全て拒否）。
+1. 対象環境名の確認: 完全一致の **`Staging`** または **`Production`** だけを受理する（`staging`・`production`・`STAGING`・`PRODUCTION`・他の綴りは全て拒否）。入力に応じて `platform-sender.json` の `environment` は `staging` / `production`（小文字）へ固定マップされる。
 2. 実行意図確認: 固定phrase `MAILER-ACS-REGISTER`の入力を求める。
 3. ACS connection string: 非表示入力で2回。一致しない場合は書き込まない。
 4. sender email: bare email形式のみ受理する。

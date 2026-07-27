@@ -28,13 +28,20 @@ public sealed class PlatformSenderFileTests
     [Theory]
     [InlineData("Staging")]
     [InlineData("STAGING")]
-    [InlineData("production")]
+    [InlineData("Production")]
     [InlineData("")]
-    public void Rejects_environment_other_than_lowercase_staging(string environment)
+    public void Rejects_environment_other_than_lowercase_staging_or_production(string environment)
     {
         var file = Valid() with { Environment = environment };
         var ex = Assert.Throws<InvalidOperationException>(file.Validate);
         Assert.Contains("environment", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Accepts_lowercase_production_environment()
+    {
+        var file = Valid() with { Environment = "production" };
+        file.Validate();
     }
 
     [Fact]

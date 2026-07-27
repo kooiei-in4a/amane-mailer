@@ -18,7 +18,7 @@ public sealed record PlatformSenderFile
     /// </summary>
     public const string CanonicalFileName = "platform-sender.json";
 
-    private static readonly HashSet<string> AllowedEnvironments = ["staging"];
+    private static readonly HashSet<string> AllowedEnvironments = ["staging", "production"];
     private static readonly HashSet<string> AllowedProviders = ["acs"];
 
     [JsonPropertyName("version")]
@@ -46,7 +46,7 @@ public sealed record PlatformSenderFile
         if (!AllowedEnvironments.Contains(Environment))
         {
             throw new InvalidOperationException(
-                "Platform sender configuration environment must be 'staging'.");
+                "Platform sender configuration environment must be 'staging' or 'production'.");
         }
 
         if (!AllowedProviders.Contains(Provider))

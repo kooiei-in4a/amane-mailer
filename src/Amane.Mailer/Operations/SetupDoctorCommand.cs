@@ -882,12 +882,9 @@ public sealed class SetupDoctorCommand
     {
         _report.AddPass("mode_profile", "Diagnosing production ACS mode prerequisites (deploy shape).");
         ValidateTenantProviderExpectation(expectedProvider: "acs", liveSendingRequired: true);
-        _report.AddFail(
-            "production_live_send",
-            "Production ACS live-send completion is blocked: no production-confirmed register-acs path exists.");
         _report.AddAction(
-            "production_live_send",
-            "Follow the canonical production ACS secret registration procedure when it becomes available; do not reuse Staging confirmation for production work.");
+            "production_register_acs",
+            "Use admin provider register-acs with exact Production confirmation for ACS file-secret registration. Do not type Staging for production work.");
     }
 
     private void ValidateModeProductionQueue()

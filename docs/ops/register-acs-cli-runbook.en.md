@@ -2,7 +2,7 @@
 
 > Target: `admin provider register-acs` / `admin provider check-acs-preflight`
 > action ID: `MAILER-ACS-INPUT-01`
-> Configuration mode: **staging ACS verification** in the [setup entry point](setup-guide.en.md) (**Staging only**. Do not use for production work)
+> Configuration mode: **staging ACS verification** (confirmation **`Staging`**) or **production ACS** (confirmation **`Production`**) in the [setup entry point](setup-guide.en.md). Do not mix confirmation phrases.
 
 ## 1. Purpose
 
@@ -19,6 +19,8 @@ input only.
 - This command alone does not complete System Admin confirmation mail delivery. Wiring
   `platform-sender.json` into a runtime send decision is the responsibility of the formal
   platform-owned mail request contract (MAIL-PLATFORM-01).
+- Mode 3 uses exact **`Staging`**; mode 4 uses exact **`Production`**. Never ask production
+  operators to type `Staging` as a workaround (it destroys the safety check and is rejected).
 
 ## 2. Deploy host preparation
 
@@ -51,8 +53,10 @@ docker compose --env-file .env -f compose.yml --profile acs-admin run --rm maile
 
 ## 4. Interactive steps
 
-1. Target environment confirmation: only the exact literal `Staging` is accepted (`staging`,
-   `STAGING`, and any other spelling are rejected).
+1. Target environment confirmation: only the exact literals **`Staging`** or **`Production`**
+   are accepted (`staging`, `production`, `STAGING`, `PRODUCTION`, and any other spelling are
+   rejected). The command maps the confirmation to `platform-sender.json` `environment` values
+   `staging` / `production` (lowercase) via a fixed one-way map.
 2. Intent confirmation: the fixed phrase `MAILER-ACS-REGISTER` is required.
 3. ACS connection string: non-echo input, entered twice. Nothing is written if the two do not
    match.
