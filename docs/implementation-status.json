@@ -63,7 +63,7 @@
       "trackingIssue": 424,
       "lastVerified": "2026-07-27",
       "relatedAdrs": ["0020", "0013"],
-      "notes": "Single JA/EN setup entry (docs/ops/setup-guide) with mode taxonomy, checklists, PASS/FAIL/WARN/ACTION meanings, and links to existing runbooks. README reaches the entry in one click. Mode 4 live send remains Blocked (no production-confirmed register-acs). Mode 5 is Target only (deploy compose bounce wiring missing). Published v1.1.0 image final verification blocked until that release exists (latest public release v1.0.1). Docs-only; does not implement #425–#428 CLIs.",
+      "notes": "Single JA/EN setup entry (docs/ops/setup-guide) with mode taxonomy, checklists, PASS/FAIL/WARN/ACTION meanings, and links to existing runbooks. README reaches the entry in one click. Mode 4 live send is Available via production-confirmed register-acs (exact Production). Mode 5 remains Target only (deploy compose bounce wiring missing). Published v1.1.0 image final verification is a soft residual until that release exists (latest public release v1.0.1). Docs + register-acs production confirmation; does not implement compose Queue wiring or #425–#428 CLIs.",
       "evidence": {
         "files": [
           "docs/ops/setup-guide.md",
@@ -77,7 +77,14 @@
           "docs/ops/register-acs-cli-runbook.md",
           "docs/ops/register-acs-cli-runbook.en.md",
           "docs/ops/bounce-ingestion-runbook.md",
-          "docs/ops/bounce-ingestion-runbook.en.md"
+          "docs/ops/bounce-ingestion-runbook.en.md",
+          "src/Amane.Mailer/Operations/AdminProviderRegisterAcsCommand.cs",
+          "src/Amane.Mailer/Configuration/PlatformSenderFile.cs"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/MailerAdminProviderRegisterAcsCliTests.cs",
+          "tests/Amane.Mailer.Tests/PlatformSenderFileTests.cs",
+          "tests/Amane.Mailer.Tests/SetupDoctorCliTests.cs"
         ]
       }
     },

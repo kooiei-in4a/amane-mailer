@@ -129,7 +129,8 @@ public sealed class SetupDoctorCliTests
 
             Assert.Equal(SetupDoctorCommand.FailureExitCode, exitCode);
             Assert.Contains("[FAIL] mode_live_sending:", output, StringComparison.Ordinal);
-            Assert.Contains("[FAIL] production_live_send:", output, StringComparison.Ordinal);
+            Assert.Contains("[ACTION] production_register_acs:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL] production_live_send:", output, StringComparison.Ordinal);
         }
         finally
         {
@@ -138,7 +139,7 @@ public sealed class SetupDoctorCliTests
     }
 
     [Fact]
-    public async Task production_acs_mode_reports_blocked_live_send()
+    public async Task production_acs_mode_guides_production_register_acs_without_blocking_fail()
     {
         using var scratch = new DoctorScratch();
         scratch.WriteTenantFile(CreateAcsTenantJson(liveSending: true));
@@ -159,9 +160,166 @@ public sealed class SetupDoctorCliTests
                 SetupDoctorMode.ProductionAcs,
                 scratch.ComposePath);
 
+            Assert.DoesNotContain("[FAIL] production_live_send:", output, StringComparison.Ordinal);
+            Assert.Contains("[ACTION] production_register_acs:", output, StringComparison.Ordinal);
+            Assert.Contains("exact Production confirmation", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL] platform_sender_environment:", output, StringComparison.Ordinal);
+            // May still FAIL for unrelated doctor checks (compose bounce wiring is WARN for mode 4).
+            _ = exitCode;
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", null);
+        }
+    }
+
+    [Fact]
+    public async Task production_acs_mode_fails_when_platform_sender_environment_is_staging()
+    {
+        using var scratch = new DoctorScratch();
+        scratch.WriteTenantFile(CreateAcsTenantJson(liveSending: true));
+        var acsPath = scratch.WriteAcsSecret(ValidAcsSecret);
+        var senderDir = scratch.WritePlatformSender(environment: "staging");
+        Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", "local-mail-service-token");
+
+        try
+        {
+            var configuration = scratch.BuildConfiguration(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = "false",
+                ["Mailer:Metrics:Enabled"] = "false",
+                ["ACS_CONNECTION_STRING_FILE"] = acsPath,
+                ["MAILER_ACS_SECRET_HOST_PATH"] = Path.GetDirectoryName(acsPath),
+                ["MAILER_PLATFORM_SENDER_HOST_PATH"] = senderDir,
+                ["MAILER_HTTP_PORT"] = scratch.FreePort.ToString(),
+            });
+
+            var (exitCode, output, _) = await RunDoctorAsync(
+                configuration,
+                SetupDoctorMode.ProductionAcs,
+                scratch.ComposePath);
+
             Assert.Equal(SetupDoctorCommand.FailureExitCode, exitCode);
-            Assert.Contains("[FAIL] production_live_send:", output, StringComparison.Ordinal);
-            Assert.Contains("[ACTION] production_live_send:", output, StringComparison.Ordinal);
+            Assert.Contains("[FAIL] platform_sender_environment:", output, StringComparison.Ordinal);
+            Assert.Contains("expected 'production'", output, StringComparison.Ordinal);
+            Assert.Contains("[ACTION] platform_sender_environment:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("sender@example.com", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("Example Sender", output, StringComparison.Ordinal);
+            Assert.DoesNotContain(ValidAcsSecret, output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", null);
+        }
+    }
+
+    [Fact]
+    public async Task production_acs_mode_passes_platform_sender_environment_when_production()
+    {
+        using var scratch = new DoctorScratch();
+        scratch.WriteTenantFile(CreateAcsTenantJson(liveSending: true));
+        var acsPath = scratch.WriteAcsSecret(ValidAcsSecret);
+        var senderDir = scratch.WritePlatformSender(environment: "production");
+        Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", "local-mail-service-token");
+
+        try
+        {
+            var configuration = scratch.BuildConfiguration(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = "false",
+                ["Mailer:Metrics:Enabled"] = "false",
+                ["ACS_CONNECTION_STRING_FILE"] = acsPath,
+                ["MAILER_ACS_SECRET_HOST_PATH"] = Path.GetDirectoryName(acsPath),
+                ["MAILER_PLATFORM_SENDER_HOST_PATH"] = senderDir,
+                ["MAILER_HTTP_PORT"] = scratch.FreePort.ToString(),
+            });
+
+            var (_, output, _) = await RunDoctorAsync(
+                configuration,
+                SetupDoctorMode.ProductionAcs,
+                scratch.ComposePath);
+
+            Assert.Contains("[PASS] platform_sender_environment:", output, StringComparison.Ordinal);
+            Assert.Contains("'production'", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL] platform_sender_environment:", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", null);
+        }
+    }
+
+    [Fact]
+    public async Task staging_verification_mode_fails_when_platform_sender_environment_is_production()
+    {
+        using var scratch = new DoctorScratch();
+        scratch.WriteTenantFile(CreateAcsTenantJson(liveSending: true));
+        var acsPath = scratch.WriteAcsSecret(ValidAcsSecret);
+        var senderDir = scratch.WritePlatformSender(environment: "production");
+        Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", "local-mail-service-token");
+
+        try
+        {
+            var configuration = scratch.BuildConfiguration(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = "false",
+                ["Mailer:Metrics:Enabled"] = "false",
+                ["ACS_CONNECTION_STRING_FILE"] = acsPath,
+                ["MAILER_ACS_SECRET_HOST_PATH"] = Path.GetDirectoryName(acsPath),
+                ["MAILER_PLATFORM_SENDER_HOST_PATH"] = senderDir,
+                ["MAILER_HTTP_PORT"] = scratch.FreePort.ToString(),
+            });
+
+            var (exitCode, output, _) = await RunDoctorAsync(
+                configuration,
+                SetupDoctorMode.StagingVerification,
+                scratch.ComposePath);
+
+            Assert.Equal(SetupDoctorCommand.FailureExitCode, exitCode);
+            Assert.Contains("[FAIL] platform_sender_environment:", output, StringComparison.Ordinal);
+            Assert.Contains("expected 'staging'", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", null);
+        }
+    }
+
+    [Fact]
+    public async Task production_queue_mode_fails_when_platform_sender_environment_is_staging()
+    {
+        using var scratch = new DoctorScratch();
+        scratch.WriteTenantFile(CreateAcsTenantJson(liveSending: true));
+        var acsPath = scratch.WriteAcsSecret(ValidAcsSecret);
+        var senderDir = scratch.WritePlatformSender(environment: "staging");
+        Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", "local-mail-service-token");
+
+        try
+        {
+            var configuration = scratch.BuildConfiguration(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = "false",
+                ["Mailer:Metrics:Enabled"] = "false",
+                ["ACS_CONNECTION_STRING_FILE"] = acsPath,
+                ["MAILER_ACS_SECRET_HOST_PATH"] = Path.GetDirectoryName(acsPath),
+                ["MAILER_PLATFORM_SENDER_HOST_PATH"] = senderDir,
+                ["MAILER_BOUNCE_INGESTION"] = "queue",
+                ["MAILER_BOUNCE_QUEUE_CONNECTION_STRING"] =
+                    "DefaultEndpointsProtocol=https;AccountName=example;AccountKey=abc;EndpointSuffix=core.windows.net",
+                ["MAILER_BOUNCE_QUEUE_NAME"] = "bounce-events",
+                ["MAILER_HTTP_PORT"] = scratch.FreePort.ToString(),
+            });
+
+            var (exitCode, output, _) = await RunDoctorAsync(
+                configuration,
+                SetupDoctorMode.ProductionQueue,
+                scratch.ComposePath);
+
+            Assert.Equal(SetupDoctorCommand.FailureExitCode, exitCode);
+            Assert.Contains("[FAIL] platform_sender_environment:", output, StringComparison.Ordinal);
+            Assert.Contains("expected 'production'", output, StringComparison.Ordinal);
+            Assert.Contains("[FAIL] production_queue_completion:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("AccountKey=abc", output, StringComparison.Ordinal);
         }
         finally
         {
@@ -803,6 +961,19 @@ public sealed class SetupDoctorCliTests
             var path = Path.Combine(directory, AcsSecretFileNames.CanonicalFileName);
             File.WriteAllText(path, content);
             return path;
+        }
+
+        public string WritePlatformSender(string environment)
+        {
+            var directory = Path.Combine(_root, "config", "platform-sender");
+            TestSecretDirectory.CreateSecure(directory);
+            var path = Path.Combine(directory, PlatformSenderFile.CanonicalFileName);
+            var json =
+                "{\"version\":1,\"environment\":\"" + environment
+                + "\",\"sender\":{\"email\":\"sender@example.com\",\"display_name\":\"Example Sender\"},"
+                + "\"provider\":\"acs\",\"live_sending\":false}";
+            File.WriteAllText(path, json);
+            return directory;
         }
 
         public IConfiguration BuildConfiguration(IReadOnlyDictionary<string, string?> extra)

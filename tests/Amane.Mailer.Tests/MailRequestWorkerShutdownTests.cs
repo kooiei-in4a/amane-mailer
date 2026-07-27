@@ -70,6 +70,7 @@ public sealed class MailRequestWorkerShutdownTests
 
             await WaitUntilStatusAsync(connectionString, first.MailRequestId, MailRequestState.Processing, ct);
             await WaitUntilStatusAsync(connectionString, second.MailRequestId, MailRequestState.Processing, ct);
+            await deliveryProvider.WaitUntilHoldConsumedAsync(ct);
             Assert.Empty(deliveryProvider.Sent);
 
             // Cancel stoppingToken while the first wave is held and the second waits

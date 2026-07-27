@@ -21,16 +21,50 @@ public sealed class MailerAdminProviderRegisterAcsCliTests
 
         Assert.Equal(0, exitCode);
         Assert.Equal(ValidConnectionString, File.ReadAllText(scratch.AcsFilePath));
-        Assert.Contains("sender@example.com", File.ReadAllText(scratch.SenderFilePath));
+        var senderJson = File.ReadAllText(scratch.SenderFilePath);
+        Assert.Contains("sender@example.com", senderJson, StringComparison.Ordinal);
+        Assert.Contains("\"environment\":\"staging\"", senderJson, StringComparison.Ordinal);
         Assert.Contains(AdminProviderRegisterAcsResultCodes.Success, string.Join('\n', console.Output));
     }
 
     [Fact]
-    public void Run_rejects_and_writes_nothing_when_environment_confirmation_does_not_match_exactly()
+    public void Run_succeeds_with_Production_confirmation_and_writes_production_environment()
     {
         using var scratch = new ScratchDirectories();
         var console = new FakeConsole(
-            lineResponses: ["staging"],
+            lineResponses:
+            [
+                AdminProviderRegisterAcsCommand.ProductionEnvironmentConfirmation,
+                AdminProviderRegisterAcsCommand.IntentPhrase,
+                "sender@example.com",
+                "Example Sender",
+            ],
+            secretResponses: [ValidConnectionString, ValidConnectionString]);
+        var command = new AdminProviderRegisterAcsCommand(console, scratch.AcsDir, scratch.SenderDir);
+
+        var exitCode = command.Run();
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(ValidConnectionString, File.ReadAllText(scratch.AcsFilePath));
+        var senderJson = File.ReadAllText(scratch.SenderFilePath);
+        Assert.Contains("\"environment\":\"production\"", senderJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"environment\":\"staging\"", senderJson, StringComparison.Ordinal);
+        Assert.Contains(AdminProviderRegisterAcsResultCodes.Success, string.Join('\n', console.Output));
+    }
+
+    [Theory]
+    [InlineData("staging")]
+    [InlineData("production")]
+    [InlineData("PRODUCTION")]
+    [InlineData("STAGING")]
+    [InlineData("Prod")]
+    [InlineData("")]
+    public void Run_rejects_and_writes_nothing_when_environment_confirmation_does_not_match_exactly(
+        string confirmation)
+    {
+        using var scratch = new ScratchDirectories();
+        var console = new FakeConsole(
+            lineResponses: [confirmation],
             secretResponses: []);
         var command = new AdminProviderRegisterAcsCommand(console, scratch.AcsDir, scratch.SenderDir);
 
@@ -40,6 +74,16 @@ public sealed class MailerAdminProviderRegisterAcsCliTests
         Assert.False(File.Exists(scratch.AcsFilePath));
         Assert.False(File.Exists(scratch.SenderFilePath));
         Assert.Contains(AdminProviderRegisterAcsResultCodes.RejectedEnvironmentMismatch, string.Join('\n', console.Errors));
+    }
+
+    [Theory]
+    [InlineData("Staging", "staging")]
+    [InlineData("Production", "production")]
+    public void TryMapEnvironmentConfirmation_maps_exact_phrases_only(string confirmation, string expected)
+    {
+        Assert.True(AdminProviderRegisterAcsCommand.TryMapEnvironmentConfirmation(confirmation, out var mapped));
+        Assert.Equal(expected, mapped);
+        Assert.False(AdminProviderRegisterAcsCommand.TryMapEnvironmentConfirmation(confirmation.ToLowerInvariant(), out _));
     }
 
     [Fact]
