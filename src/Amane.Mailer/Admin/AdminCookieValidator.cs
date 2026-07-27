@@ -90,16 +90,16 @@ internal static class AdminCookieValidator
             return;
         }
 
-        var idleExpiresAt = now + options.SessionIdleTimeout;
-        var cookieExpiresAt = idleExpiresAt <= session.AbsoluteExpiresAt
-            ? idleExpiresAt
-            : session.AbsoluteExpiresAt;
-        context.Properties.ExpiresUtc = cookieExpiresAt;
-
-        await sessionRepository.UpdateLastSeenAsync(
+        var proposedIdleExpiresAt = now + options.SessionIdleTimeout;
+        var touchInterval = AdminSessionTouch.ResolveInterval(options.SessionIdleTimeout);
+        // Touch updates server-side idle monotonically/interval-throttled (#391).
+        // Cookie ticket uses absolute lifetime only (set at login); idle is enforced from DB
+        // here so concurrent responses cannot regress browser cookie expiry via Set-Cookie.
+        _ = await sessionRepository.TryTouchAsync(
             sessionId,
             now,
-            idleExpiresAt,
+            proposedIdleExpiresAt,
+            touchInterval,
             context.HttpContext.RequestAborted);
     }
 

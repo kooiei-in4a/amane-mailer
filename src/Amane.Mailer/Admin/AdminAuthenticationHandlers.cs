@@ -187,8 +187,10 @@ public static class AdminAuthenticationHandlers
         var identity = new ClaimsIdentity(claims, AdminAuthenticationConstants.Scheme);
         var properties = new AuthenticationProperties
         {
-            AllowRefresh = true,
-            ExpiresUtc = idleExpiresAt <= absoluteExpiresAt ? idleExpiresAt : absoluteExpiresAt,
+            AllowRefresh = false,
+            // Absolute lifetime only: idle timeout is enforced from admin_sessions on each
+            // request. Avoids touch-time Set-Cookie races that can regress browser expiry (#391).
+            ExpiresUtc = absoluteExpiresAt,
             IssuedUtc = now,
             IsPersistent = false,
         };

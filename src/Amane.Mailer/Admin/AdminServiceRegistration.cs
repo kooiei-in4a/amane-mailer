@@ -62,7 +62,9 @@ internal static class AdminServiceRegistration
                 cookie.LoginPath = "/admin/login";
                 cookie.AccessDeniedPath = "/admin/login";
                 cookie.ExpireTimeSpan = TimeSpan.FromMinutes(30);
-                cookie.SlidingExpiration = true;
+                // Session lifetime is owned by admin_sessions + AdminCookieValidator touch.
+                // Framework sliding refresh must not Set-Cookie without a successful DB touch (#391).
+                cookie.SlidingExpiration = false;
                 cookie.Events.OnRedirectToLogin = context =>
                     HandleApiRedirectAsync(context, StatusCodes.Status401Unauthorized);
                 cookie.Events.OnRedirectToAccessDenied = context =>
