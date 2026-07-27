@@ -241,6 +241,16 @@ public static class MailerCliHost
         return Task.FromResult(command.RunPreflightOnly());
     }
 
+    public static Task<int> RunAdminProviderTestAcsSendAsync(
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var command = new AdminProviderTestAcsSendCommand(
+            new AdminProviderRegisterAcsConsole(),
+            configuration);
+        return command.RunAsync(cancellationToken);
+    }
+
     public static async Task<int> RunSetupDoctorAsync(
         IConfiguration configuration,
         IReadOnlyList<string> commandArgs,

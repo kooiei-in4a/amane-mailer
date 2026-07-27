@@ -228,7 +228,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 1. Preflight: 専用 tenant / 宛先 / 承認済み sender。`live_sending=true` は短時間・限定範囲
 2. Setup: [register-acs CLI runbook](register-acs-cli-runbook.md)（対話のみ。CLI 引数に secret を渡さない。確認フレーズは runbook どおり **`Staging` のみ**）
-3. Verification: 組織で承認された drill / 手順（例: [mail-05a drill guide](drills/mail-05a-drill-guide.html)）。ACS 単体確認 CLI は [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) で今後提供予定
+3. Verification: [ACS 単体実送信確認 CLI](test-acs-send-cli-runbook.md)（`admin provider test-acs-send`。Staging + `MAILER-ACS-TEST-SEND`。Mailer API / Worker は通さない）。組織 drill が必要な場合の補助: [mail-05a drill guide](drills/mail-05a-drill-guide.html)
 4. 検証後は staging 既定どおり `live_sending=false` に戻すかを判断（WARN になり得る状態を残さない）
 
 **完了の目安:** 明示した検証メールが ACS 経由で期待どおり処理されること。**実バウンスは不要。** platform-owned sender ファイルの存在は tenant 送信完了の根拠にしない。
@@ -281,16 +281,16 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 | backup / restore | [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md) |
 | 公開イメージ smoke（公開済みタグ） | [release-image-smoke](release-image-smoke.md) |
 
-## 今後提供予定の確認機能（#425 以外）
+## 今後提供予定の確認機能（#425 / #426 以外）
 
 | Issue | 予定 | 境界 |
 |-------|------|------|
 | [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **提供済み**（上「setup doctor」） |
-| [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS 単体の実送信確認 CLI | Staging 前提の計画（Issue 本文に従う） |
+| [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS 単体の実送信確認 CLI | **提供済み** — [test-acs-send-cli-runbook.md](test-acs-send-cli-runbook.md)（Staging 限定） |
 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認 | **選択 environment 向け**（Staging 限定ではない）。構成確認のみ。イベント到着は保証しない |
 | [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report の Queue 到着 E2E（message ID 相関。実バウンス必須にしない） | **Staging 限定**の pre-production 配線確認。production Queue / production テスト送信は非目標 |
 
-現時点では setup doctor（#425）と既存 preflight script・smoke・runbook 手動確認で進める。
+現時点では setup doctor（#425）、ACS 単体送信確認（#426）、および既存 preflight script・smoke・runbook 手動確認で進める。
 
 ## この入口の非目標
 
