@@ -188,7 +188,7 @@ dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
 - ACS secret ディレクトリの書き込み確認は `admin provider check-acs-preflight` を使用（doctor は read-only の安全チェックのみ）
 - compose 検証は `docker compose config --quiet` を **ACTION** として案内（host 上で人が実行）
 
-deploy host では Mailer イメージ内から同コマンドを env / volume 前提で実行します（例: `docker compose run --rm mailer setup doctor --mode staging-no-send` — 実際の service 名・profile は deploy 正本に従う）。
+deploy host では、Docker CLI と公開 host port の意味が正確になるよう、**host 上**で同コマンドを実行することを推奨します（コンテナが使う env / compose と同じ前提で）。Mailer コンテナ内で実行する場合、Docker 利用可否と loopback port 確認はコンテナ namespaceしか見えないため WARN / ACTION になります。
 
 ## 実行順序（全モード共通）
 

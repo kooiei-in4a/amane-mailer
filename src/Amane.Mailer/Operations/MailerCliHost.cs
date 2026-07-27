@@ -241,7 +241,7 @@ public static class MailerCliHost
         return Task.FromResult(command.RunPreflightOnly());
     }
 
-    public static Task<int> RunSetupDoctorAsync(
+    public static async Task<int> RunSetupDoctorAsync(
         IConfiguration configuration,
         IReadOnlyList<string> commandArgs,
         TextWriter output,
@@ -254,13 +254,25 @@ public static class MailerCliHost
                 out var composeFilePath,
                 out var usageError))
         {
-            error.WriteLine(usageError ?? "Invalid setup doctor arguments.");
-            error.WriteLine($"Usage: setup doctor --mode {SetupDoctorModeParser.UsageHint} [--compose-file <path>]");
-            return Task.FromResult(SetupDoctorCommand.UsageErrorExitCode);
+            await error.WriteLineAsync(usageError ?? "Invalid setup doctor arguments.");
+            await error.WriteLineAsync($"Usage: setup doctor --mode {SetupDoctorModeParser.UsageHint} [--compose-file <path>]");
+            return SetupDoctorCommand.UsageErrorExitCode;
         }
 
-        var command = new SetupDoctorCommand(configuration, mode, composeFilePath, output, error);
-        return command.ExecuteAsync(cancellationToken);
+        try
+        {
+            var command = new SetupDoctorCommand(configuration, mode, composeFilePath, output, error);
+            return await command.ExecuteAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            await error.WriteLineAsync("setup doctor failed: unexpected diagnostic error (details omitted).");
+            return SetupDoctorCommand.FailureExitCode;
+        }
     }
 
     private static bool TryResolveAcsAdminDirectories(

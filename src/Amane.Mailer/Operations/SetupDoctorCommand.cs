@@ -111,16 +111,31 @@ public sealed class SetupDoctorCommand
 
     public async Task<int> ExecuteAsync(CancellationToken cancellationToken)
     {
-        RunTenantPreflight();
-        RunOptionsPreflight();
-        RunHostDirectoryChecks();
-        RunAcsSecretStateCheck();
-        await RunDatabaseReadinessCheckAsync(cancellationToken);
-        RunDockerAvailabilityCheck();
-        RunPortAvailabilityCheck();
-        RunComposeGuidanceChecks();
-        RunModeSpecificChecks();
-        RunPublishedImageGuidance();
+        try
+        {
+            RunTenantPreflight();
+            RunOptionsPreflight();
+            RunHostDirectoryChecks();
+            RunAcsSecretStateCheck();
+            await RunDatabaseReadinessCheckAsync(cancellationToken);
+            RunDockerAvailabilityCheck();
+            RunPortAvailabilityCheck();
+            RunComposeGuidanceChecks();
+            RunModeSpecificChecks();
+            RunPublishedImageGuidance();
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            _report.AddFail(
+                "doctor_unexpected",
+                "Setup doctor encountered an unexpected error while diagnosing configuration.");
+            await _error.WriteLineAsync(
+                "setup doctor failed: unexpected diagnostic error (details omitted).");
+        }
 
         await WriteReportAsync(cancellationToken);
         return _report.HasFailure ? FailureExitCode : SuccessExitCode;
@@ -141,12 +156,12 @@ public sealed class SetupDoctorCommand
             tenantFile = JsonSerializer.Deserialize(
                 File.ReadAllText(tenantsPath),
                 MailerJsonContext.Default.MailerTenantsFile)
-                ?? throw new InvalidOperationException("Tenant configuration file is empty.");
+                ?? throw new InvalidOperationException("empty");
             tenantFile.Validate();
         }
-        catch (Exception ex) when (ex is InvalidOperationException or JsonException)
+        catch (Exception)
         {
-            _report.AddFail("tenant_schema", SanitizeMessage(ex.Message));
+            _report.AddFail("tenant_schema", "Tenant configuration file failed schema validation.");
             return;
         }
 
@@ -160,9 +175,9 @@ public sealed class SetupDoctorCommand
             {
                 tenant.Validate();
             }
-            catch (InvalidOperationException ex)
+            catch (InvalidOperationException)
             {
-                _report.AddFail($"tenant_{index}", SanitizeMessage(ex.Message));
+                _report.AddFail($"tenant_{index}", $"Tenant at index {index} failed validation.");
                 continue;
             }
 
@@ -178,6 +193,7 @@ public sealed class SetupDoctorCommand
             }
 
             ValidateTenantTokenEnv(tenant, index);
+            ValidateTenantWebhookSecretEnv(tenant, index);
             ValidateTenantSourceServices(tenant, index);
         }
 
@@ -193,7 +209,7 @@ public sealed class SetupDoctorCommand
         {
             _report.AddFail(
                 $"tenant_{index}_token",
-                $"Environment variable '{tenant.TokenEnv}' is not set for tenant '{tenant.Name}'.");
+                $"Environment variable named by token_env is not set for tenant at index {index}.");
             return;
         }
 
@@ -201,7 +217,7 @@ public sealed class SetupDoctorCommand
         {
             _report.AddFail(
                 $"tenant_{index}_token",
-                $"Environment variable '{tenant.TokenEnv}' is set but empty for tenant '{tenant.Name}'.");
+                $"Environment variable named by token_env is set but empty for tenant at index {index}.");
             return;
         }
 
@@ -209,20 +225,62 @@ public sealed class SetupDoctorCommand
         {
             _report.AddFail(
                 $"tenant_{index}_token",
-                $"Environment variable '{tenant.TokenEnv}' appears to contain a placeholder value for tenant '{tenant.Name}'.");
+                $"Environment variable named by token_env appears to contain a placeholder value for tenant at index {index}.");
             return;
         }
 
         _report.AddPass(
             $"tenant_{index}_token",
-            $"Token environment variable '{tenant.TokenEnv}' is set for tenant '{tenant.Name}'.");
+            $"Token environment variable is set for tenant at index {index}.");
+    }
+
+    private void ValidateTenantWebhookSecretEnv(MailerTenant tenant, int index)
+    {
+        if (tenant.Webhook is null)
+        {
+            return;
+        }
+
+        var secretEnv = tenant.Webhook.SecretEnv;
+        var secret = _configuration[secretEnv]
+            ?? Environment.GetEnvironmentVariable(secretEnv);
+
+        if (secret is null)
+        {
+            _report.AddFail(
+                $"tenant_{index}_webhook_secret",
+                $"Environment variable named by webhook.secret_env is not set for tenant at index {index}.");
+            return;
+        }
+
+        if (secret.Length == 0)
+        {
+            _report.AddFail(
+                $"tenant_{index}_webhook_secret",
+                $"Environment variable named by webhook.secret_env is set but empty for tenant at index {index}.");
+            return;
+        }
+
+        if (ConfigurationPlaceholderDetector.LooksLikePlaceholder(secret))
+        {
+            _report.AddFail(
+                $"tenant_{index}_webhook_secret",
+                $"Environment variable named by webhook.secret_env appears to contain a placeholder value for tenant at index {index}.");
+            return;
+        }
+
+        _report.AddPass(
+            $"tenant_{index}_webhook_secret",
+            $"Webhook secret environment variable is set for tenant at index {index}.");
     }
 
     private void ValidateTenantSourceServices(MailerTenant tenant, int index)
     {
         if (tenant.SourceServices.Count == 0)
         {
-            _report.AddFail($"tenant_{index}_source_services", $"Tenant '{tenant.Name}' must list at least one source_service.");
+            _report.AddFail(
+                $"tenant_{index}_source_services",
+                $"Tenant at index {index} must list at least one source_service.");
             return;
         }
 
@@ -233,7 +291,7 @@ public sealed class SetupDoctorCommand
             {
                 _report.AddFail(
                     $"tenant_{index}_source_services",
-                    $"Tenant '{tenant.Name}' has duplicate source_service '{sourceService}'.");
+                    $"Tenant at index {index} has a duplicate source_service entry.");
             }
         }
     }
@@ -245,26 +303,33 @@ public sealed class SetupDoctorCommand
         {
             mailerOptions.ValidateEffectiveProviders(tenants);
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
-            _report.AddFail("provider_effective", SanitizeMessage(ex.Message));
+            _report.AddFail(
+                "provider_effective",
+                "Effective provider settings are inconsistent with tenant configuration or ACS secret requirements.");
             return;
         }
 
+        var liveSendingAcsChecked = false;
         foreach (var tenant in tenants)
         {
             var effectiveProvider = mailerOptions.ResolveProvider(tenant);
             if (effectiveProvider.Equals("acs", StringComparison.Ordinal)
                 && tenant.LiveSending)
             {
-                ValidateAcsSecretForLiveSending(tenant.Name);
+                if (!liveSendingAcsChecked)
+                {
+                    ValidateAcsSecretForLiveSending();
+                    liveSendingAcsChecked = true;
+                }
             }
         }
 
         _report.AddPass("provider_effective", "Effective provider settings are consistent with tenant configuration.");
     }
 
-    private void ValidateAcsSecretForLiveSending(string tenantName)
+    private void ValidateAcsSecretForLiveSending()
     {
         var filePath = _configuration["ACS_CONNECTION_STRING_FILE"];
         if (!string.IsNullOrWhiteSpace(filePath))
@@ -273,7 +338,7 @@ public sealed class SetupDoctorCommand
             {
                 _report.AddFail(
                     "acs_secret",
-                    $"ACS_CONNECTION_STRING_FILE is set but the file does not exist (required for tenant '{tenantName}' with live_sending=true).");
+                    "ACS_CONNECTION_STRING_FILE is set but the file does not exist (required for live_sending ACS).");
                 return;
             }
 
@@ -282,7 +347,7 @@ public sealed class SetupDoctorCommand
             {
                 _report.AddFail(
                     "acs_secret",
-                    $"ACS_CONNECTION_STRING_FILE is set but the file is empty (required for tenant '{tenantName}' with live_sending=true).");
+                    "ACS_CONNECTION_STRING_FILE is set but the file is empty (required for live_sending ACS).");
                 return;
             }
 
@@ -290,7 +355,7 @@ public sealed class SetupDoctorCommand
             {
                 _report.AddFail(
                     "acs_secret",
-                    $"Resolved ACS secret appears to contain a placeholder value (required for tenant '{tenantName}' with live_sending=true).");
+                    "Resolved ACS secret appears to contain a placeholder value (required for live_sending ACS).");
                 return;
             }
 
@@ -303,7 +368,7 @@ public sealed class SetupDoctorCommand
         {
             _report.AddFail(
                 "acs_secret",
-                $"Neither ACS_CONNECTION_STRING_FILE nor ACS_CONNECTION_STRING provides a value (required for tenant '{tenantName}' with live_sending=true).");
+                "Neither ACS_CONNECTION_STRING_FILE nor ACS_CONNECTION_STRING provides a value (required for live_sending ACS).");
             return;
         }
 
@@ -311,7 +376,7 @@ public sealed class SetupDoctorCommand
         {
             _report.AddFail(
                 "acs_secret",
-                $"Resolved ACS secret appears to contain a placeholder value (required for tenant '{tenantName}' with live_sending=true).");
+                "Resolved ACS secret appears to contain a placeholder value (required for live_sending ACS).");
             return;
         }
 
@@ -340,9 +405,11 @@ public sealed class SetupDoctorCommand
         {
             metrics.Validate(environmentName);
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
-            _report.AddFail("metrics_bearer", SanitizeMessage(ex.Message));
+            _report.AddFail(
+                "metrics_bearer",
+                "Metrics bearer configuration is invalid for the current environment.");
             return;
         }
 
@@ -369,9 +436,9 @@ public sealed class SetupDoctorCommand
             var adminOptions = MailerAdminOptions.Load(_configuration);
             adminOptions.Validate();
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
-            _report.AddFail("admin_config", SanitizeMessage(ex.Message));
+            _report.AddFail("admin_config", "Admin configuration is invalid.");
             return;
         }
 
@@ -380,9 +447,11 @@ public sealed class SetupDoctorCommand
         {
             AdminCookieTransportPolicy.Validate(allowHttp, environmentName, adminEnabled: true);
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
-            _report.AddFail("admin_https", SanitizeMessage(ex.Message));
+            _report.AddFail(
+                "admin_https",
+                "AMANE_ADMIN_ALLOW_HTTP=true is not permitted when ASPNETCORE_ENVIRONMENT is not Development.");
             return;
         }
 
@@ -391,7 +460,16 @@ public sealed class SetupDoctorCommand
 
     private void ValidateBounceIngestion()
     {
-        var bounceOptions = MailerBounceIngestionOptions.Load(_configuration);
+        MailerBounceIngestionOptions bounceOptions;
+        try
+        {
+            bounceOptions = MailerBounceIngestionOptions.Load(_configuration);
+        }
+        catch (InvalidOperationException)
+        {
+            _report.AddFail("bounce_ingestion", "Bounce ingestion configuration could not be loaded.");
+            return;
+        }
 
         if (bounceOptions.Mode == BounceIngestionMode.Queue)
         {
@@ -426,9 +504,9 @@ public sealed class SetupDoctorCommand
         {
             bounceOptions.Validate();
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
-            _report.AddFail("bounce_ingestion", SanitizeMessage(ex.Message));
+            _report.AddFail("bounce_ingestion", "Bounce ingestion configuration is invalid.");
             return;
         }
 
@@ -438,7 +516,7 @@ public sealed class SetupDoctorCommand
         }
         else
         {
-            _report.AddPass("bounce_ingestion", $"Bounce ingestion mode is '{bounceOptions.Mode}'.");
+            _report.AddPass("bounce_ingestion", "Bounce ingestion mode is off or disabled.");
         }
     }
 
@@ -448,7 +526,17 @@ public sealed class SetupDoctorCommand
             ?? _configuration["ConnectionStrings:Mailer"]
             ?? string.Empty;
 
-        var dbOps = MailerAdminDbOpsOptions.Load(_configuration, connectionString, adminEnabled);
+        MailerAdminDbOpsOptions dbOps;
+        try
+        {
+            dbOps = MailerAdminDbOpsOptions.Load(_configuration, connectionString, adminEnabled);
+        }
+        catch (InvalidOperationException)
+        {
+            _report.AddFail("admin_db_ops", "Admin DB operations configuration could not be loaded.");
+            return;
+        }
+
         if (!dbOps.Enabled)
         {
             _report.AddPass("admin_db_ops", "Admin DB operations are disabled.");
@@ -460,9 +548,9 @@ public sealed class SetupDoctorCommand
             var factory = new SqliteConnectionFactory(_configuration);
             dbOps.Validate(adminEnabled, factory);
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
-            _report.AddFail("admin_db_ops", SanitizeMessage(ex.Message));
+            _report.AddFail("admin_db_ops", "Admin DB backup configuration is invalid.");
             return;
         }
 
@@ -587,23 +675,35 @@ public sealed class SetupDoctorCommand
         }
     }
 
-    private async Task RunDatabaseReadinessCheckAsync(CancellationToken cancellationToken)
+    private Task RunDatabaseReadinessCheckAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var connectionString = _configuration.GetConnectionString("Mailer")
             ?? _configuration["ConnectionStrings:Mailer"];
 
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             _report.AddWarn("db_schema", "ConnectionStrings:Mailer is not configured; skipping schema readiness check.");
-            return;
+            return Task.CompletedTask;
         }
 
-        var dataSource = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(connectionString).DataSource;
+        string dataSource;
+        try
+        {
+            dataSource = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(connectionString).DataSource;
+        }
+        catch
+        {
+            _report.AddFail("db_schema", "ConnectionStrings:Mailer could not be parsed.");
+            return Task.CompletedTask;
+        }
+
         if (string.IsNullOrWhiteSpace(dataSource)
             || string.Equals(dataSource, ":memory:", StringComparison.OrdinalIgnoreCase))
         {
             _report.AddWarn("db_schema", "Mailer database is in-memory; skipping on-disk schema readiness check.");
-            return;
+            return Task.CompletedTask;
         }
 
         var databasePath = Path.GetFullPath(dataSource);
@@ -612,35 +712,31 @@ public sealed class SetupDoctorCommand
             _report.AddAction(
                 "db_schema",
                 "Database file does not exist yet. Run db migrate after first container start or manually.");
-            return;
+            return Task.CompletedTask;
         }
 
-        try
-        {
-            var factory = new SqliteConnectionFactory(_configuration);
-            var runner = new SqlMigrationRunner(factory);
-            var ready = await runner.IsCurrentSchemaReadyAsync(cancellationToken);
-            if (ready)
-            {
-                _report.AddPass("db_schema", "Database schema matches the current migration set.");
-            }
-            else
-            {
-                _report.AddFail("db_schema", "Database exists but schema is not current; run db migrate.");
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            _report.AddWarn("db_schema", "Could not read database schema state; verify ConnectionStrings:Mailer and file permissions.");
-        }
+        // Do not open the live SQLite file from setup doctor: even ReadOnly opens can create or
+        // update WAL/SHM sidecars. Presence is reported here; schema currency stays a host ACTION.
+        _report.AddPass("db_schema", "Database file exists.");
+        _report.AddAction(
+            "db_schema",
+            "Verify schema currency with `Amane.Mailer healthcheck` (or db migrate) without treating setup doctor as a live-DB opener.");
+        return Task.CompletedTask;
     }
 
     private void RunDockerAvailabilityCheck()
     {
+        if (LooksLikeContainerRuntime())
+        {
+            _report.AddWarn(
+                "docker",
+                "Running inside a container namespace; Docker CLI availability on the host was not verified.");
+            _report.AddAction(
+                "docker",
+                "Run setup doctor on the host (or verify `docker version` / `docker compose version` on the host) before compose-based setup.");
+            return;
+        }
+
         if (TryRunProcess("docker", "version --format {{.Server.Version}}", out _))
         {
             _report.AddPass("docker", "Docker CLI is available on PATH.");
@@ -665,9 +761,11 @@ public sealed class SetupDoctorCommand
 
     private void RunPortAvailabilityCheck()
     {
-        var httpPortRaw = _configuration["MAILER_HTTP_PORT"]
-            ?? _configuration["ASPNETCORE_URLS"]?.Split(':').LastOrDefault()
-            ?? "8080";
+        var httpPortRaw = _configuration["MAILER_HTTP_PORT"];
+        if (string.IsNullOrWhiteSpace(httpPortRaw))
+        {
+            httpPortRaw = "8080";
+        }
 
         if (!int.TryParse(httpPortRaw.Trim(), out var httpPort)
             || httpPort < ConfigurationIntReader.MinPort
@@ -677,13 +775,24 @@ public sealed class SetupDoctorCommand
             return;
         }
 
+        if (LooksLikeContainerRuntime())
+        {
+            _report.AddWarn(
+                "http_port",
+                "Running inside a container namespace; host port occupancy was not verified.");
+            _report.AddAction(
+                "http_port",
+                "Confirm the published host port is free on the Docker host before binding.");
+            return;
+        }
+
         if (IsPortAvailable(httpPort))
         {
-            _report.AddPass("http_port", $"Mailer HTTP port {httpPort} is not in use on this host.");
+            _report.AddPass("http_port", "Configured Mailer HTTP port is not in use on this host.");
         }
         else
         {
-            _report.AddFail("http_port", $"Mailer HTTP port {httpPort} is already in use on this host.");
+            _report.AddFail("http_port", "Configured Mailer HTTP port is already in use on this host.");
         }
     }
 
@@ -698,7 +807,7 @@ public sealed class SetupDoctorCommand
             return;
         }
 
-        _report.AddPass("compose_file", "Compose file path exists.");
+        _report.AddPass("compose_file", "Referenced compose file path exists.");
 
         var composeText = File.ReadAllText(composePath);
         if (!composeText.Contains("MAILER_BOUNCE_INGESTION", StringComparison.Ordinal)
@@ -723,7 +832,7 @@ public sealed class SetupDoctorCommand
 
         _report.AddAction(
             "compose_validate",
-            $"Run `docker compose --env-file .env -f \"{composePath}\" config --quiet` to validate rendered compose on this host.");
+            "Run `docker compose --env-file .env -f <compose-file> config --quiet` to validate rendered compose on this host.");
     }
 
     private void RunModeSpecificChecks()
@@ -772,7 +881,7 @@ public sealed class SetupDoctorCommand
     private void ValidateModeProductionAcs()
     {
         _report.AddPass("mode_profile", "Diagnosing production ACS mode prerequisites (deploy shape).");
-        ValidateTenantProviderExpectation(expectedProvider: "acs", liveSendingRequired: null);
+        ValidateTenantProviderExpectation(expectedProvider: "acs", liveSendingRequired: true);
         _report.AddFail(
             "production_live_send",
             "Production ACS live-send completion is blocked: no production-confirmed register-acs path exists.");
@@ -784,7 +893,7 @@ public sealed class SetupDoctorCommand
     private void ValidateModeProductionQueue()
     {
         _report.AddPass("mode_profile", "Diagnosing production ACS + Queue mode prerequisites (target configuration).");
-        ValidateTenantProviderExpectation(expectedProvider: "acs", liveSendingRequired: null);
+        ValidateTenantProviderExpectation(expectedProvider: "acs", liveSendingRequired: true);
 
         var bounceOptions = MailerBounceIngestionOptions.Load(_configuration);
         if (bounceOptions.Mode != BounceIngestionMode.Queue)
@@ -827,28 +936,29 @@ public sealed class SetupDoctorCommand
         }
 
         var mailerOptions = MailerOptions.Load(_configuration);
-        foreach (var tenant in tenantFile.Tenants)
+        for (var index = 0; index < tenantFile.Tenants.Count; index++)
         {
+            var tenant = tenantFile.Tenants[index];
             var effectiveProvider = mailerOptions.ResolveProvider(tenant);
             if (!effectiveProvider.Equals(expectedProvider, StringComparison.Ordinal))
             {
-                _report.AddWarn(
+                _report.AddFail(
                     "mode_tenant_provider",
-                    $"Tenant '{tenant.Name}' effective provider is '{effectiveProvider}', expected '{expectedProvider}' for this mode.");
+                    $"Tenant at index {index} effective provider does not match the selected setup mode.");
             }
 
             if (liveSendingRequired is true && !tenant.LiveSending)
             {
                 _report.AddFail(
                     "mode_live_sending",
-                    $"Tenant '{tenant.Name}' must have live_sending=true for this mode.");
+                    $"Tenant at index {index} must have live_sending=true for this mode.");
             }
 
             if (liveSendingRequired is false && tenant.LiveSending)
             {
                 _report.AddWarn(
                     "mode_live_sending",
-                    $"Tenant '{tenant.Name}' has live_sending=true; no-send mode expects live_sending=false.");
+                    $"Tenant at index {index} has live_sending=true; no-send mode expects live_sending=false.");
             }
         }
     }
@@ -1004,20 +1114,10 @@ public sealed class SetupDoctorCommand
             _ => "Host directory failed safety checks.",
         };
 
-    private static string SanitizeMessage(string message)
-    {
-        // Strip values that might appear after common secret-bearing patterns.
-        var sanitized = message;
-        foreach (var marker in new[] { "Endpoint=", "AccessKey=", "SharedAccessSignature=", "AccountKey=" })
-        {
-            var index = sanitized.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (index >= 0)
-            {
-                sanitized = sanitized[..index].TrimEnd(' ', ':', '.', ',', ';');
-                break;
-            }
-        }
-
-        return sanitized;
-    }
+    private static bool LooksLikeContainerRuntime() =>
+        File.Exists("/.dockerenv")
+        || string.Equals(
+            Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
 }

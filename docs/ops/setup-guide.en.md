@@ -188,7 +188,7 @@ Output uses the result codes above (PASS / FAIL / WARN / ACTION) and ends with `
 - ACS directory write verification remains `admin provider check-acs-preflight` (doctor uses read-only safety checks only)
 - Compose validation is suggested as **ACTION**: run `docker compose config --quiet` on the host
 
-On deploy hosts, run the same command inside the Mailer image with your env / volume wiring (for example `docker compose run --rm mailer setup doctor --mode staging-no-send` — follow the canonical deploy service names and profiles).
+On deploy hosts, prefer running setup doctor **on the host** (with the same env / compose files the containers will use) so Docker CLI and published host ports are meaningful. If you run the command inside the Mailer container, Docker availability and loopback port checks are reported as WARN / ACTION because they only reflect the container namespace.
 
 ## Execution order (all modes)
 
