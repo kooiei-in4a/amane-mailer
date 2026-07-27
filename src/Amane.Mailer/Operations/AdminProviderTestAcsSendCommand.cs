@@ -32,7 +32,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
     private const string MessageIdHandoffEnvVar = "MAILER_ACS_TEST_SEND_MESSAGE_ID_FILE";
     private const int RegexMatchTimeoutMilliseconds = 250;
 
-    private readonly IAdminProviderRegisterAcsConsole _console;
+    private readonly IAdminProviderTestAcsSendConsole _console;
     private readonly IConfiguration _configuration;
     private readonly IAcsTestSendClient _acsClient;
     private readonly Func<Guid> _operationIdFactory;
@@ -44,7 +44,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
     private static partial Regex AcsConnectionStringRegex();
 
     public AdminProviderTestAcsSendCommand(
-        IAdminProviderRegisterAcsConsole console,
+        IAdminProviderTestAcsSendConsole console,
         IConfiguration configuration,
         IAcsTestSendClient? acsClient = null,
         Func<Guid>? operationIdFactory = null)
@@ -86,7 +86,6 @@ public sealed partial class AdminProviderTestAcsSendCommand
             var recipientEmail = ReadBareEmail(
                 "Recipient email: ",
                 AdminProviderTestAcsSendResultCodes.RejectedInvalidRecipientEmail);
-            var displayName = ReadOptionalDisplayName();
             var handoffPath = ResolveMessageIdHandoffPath();
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -98,14 +97,13 @@ public sealed partial class AdminProviderTestAcsSendCommand
                     ConnectionString = connectionString,
                     SenderEmail = senderEmail,
                     RecipientEmail = recipientEmail,
-                    SenderDisplayName = displayName,
                     Subject = SyntheticSubject,
                     PlainTextBody = SyntheticPlainTextBody,
                     OperationId = operationId,
                 },
                 cancellationToken);
 
-            return ReportOutcome(outcome, handoffPath);
+            return ReportOutcome(outcome, handoffPath, operationId);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -113,7 +111,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
         }
         catch (SecretOperationException ex)
         {
-            return Reject(MapSharedSecretCode(ex.CanonicalCode));
+            return Reject(ex.CanonicalCode);
         }
         catch (OperationCanceledException)
         {
@@ -196,7 +194,8 @@ public sealed partial class AdminProviderTestAcsSendCommand
 
     private string ReadBareEmail(string prompt, string invalidCode)
     {
-        var email = _console.ReadLine(prompt).Trim();
+        // PII: non-echo input so the address does not remain in the PTY transcript.
+        var email = _console.ReadHiddenLine(prompt).Trim();
         if (!MailAddress.TryCreate(email, out var parsed)
             || !string.Equals(parsed.Address, email, StringComparison.Ordinal))
         {
@@ -204,24 +203,6 @@ public sealed partial class AdminProviderTestAcsSendCommand
         }
 
         return email;
-    }
-
-    private string? ReadOptionalDisplayName()
-    {
-        var displayName = _console.ReadLine("Sender display name (optional, empty to skip): ");
-        if (string.IsNullOrEmpty(displayName))
-        {
-            return null;
-        }
-
-        if (displayName.Length > 200 || displayName.Any(char.IsControl))
-        {
-            throw new SecretOperationException(
-                AdminProviderTestAcsSendResultCodes.RejectedInvalidDisplayName,
-                "Sender display name must be at most 200 characters with no control characters.");
-        }
-
-        return displayName;
     }
 
     private string ResolveMessageIdHandoffPath()
@@ -240,17 +221,17 @@ public sealed partial class AdminProviderTestAcsSendCommand
 
         if (string.IsNullOrWhiteSpace(path)
             || path.IndexOfAny(Path.GetInvalidPathChars()) >= 0
-            || !Path.IsPathRooted(path))
+            || !Path.IsPathFullyQualified(path))
         {
             throw new SecretOperationException(
                 AdminProviderTestAcsSendResultCodes.RejectedMessageIdHandoffPathInvalid,
-                "Message ID handoff path must be an absolute path.");
+                "Message ID handoff path must be a fully qualified absolute path.");
         }
 
         return path;
     }
 
-    private int ReportOutcome(AcsTestSendOutcome outcome, string handoffPath)
+    private int ReportOutcome(AcsTestSendOutcome outcome, string handoffPath, Guid expectedOperationId)
     {
         if (outcome.AuthenticationSucceeded)
         {
@@ -275,7 +256,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
                 extraFailLine: "[FAIL] Send request accepted");
         }
 
-        if (!outcome.OperationCompleted || string.IsNullOrWhiteSpace(outcome.ProviderMessageId))
+        if (!outcome.OperationCompleted)
         {
             return Fail(
                 outcome.CanonicalFailureCode ?? AdminProviderTestAcsSendResultCodes.FailedAcsOperation,
@@ -285,9 +266,11 @@ public sealed partial class AdminProviderTestAcsSendCommand
 
         _console.WriteLine("[PASS] ACS send operation completed");
 
+        string canonicalMessageId;
         try
         {
-            WriteMessageIdHandoff(handoffPath, outcome.ProviderMessageId);
+            canonicalMessageId = RequireCanonicalMessageId(outcome.ProviderMessageId, expectedOperationId);
+            WriteMessageIdHandoff(handoffPath, canonicalMessageId);
         }
         catch (SecretOperationException ex)
         {
@@ -307,7 +290,50 @@ public sealed partial class AdminProviderTestAcsSendCommand
         return SuccessExitCode;
     }
 
-    private static void WriteMessageIdHandoff(string path, string providerMessageId)
+    /// <summary>
+    /// Ensures the handoff value is exactly one canonical UUID matching the caller-supplied
+    /// ACS operation id. Rejects <c>NOT_SET</c>, blank, multi-line, and mismatched values
+    /// without writing a file.
+    /// </summary>
+    internal static string RequireCanonicalMessageId(string? providerMessageId, Guid expectedOperationId)
+    {
+        if (string.IsNullOrWhiteSpace(providerMessageId))
+        {
+            throw new SecretOperationException(
+                AdminProviderTestAcsSendResultCodes.FailedAcsMessageIdInvalid,
+                "Provider message id was missing.");
+        }
+
+        var trimmed = providerMessageId.Trim();
+        if (trimmed.Contains('\n')
+            || trimmed.Contains('\r')
+            || trimmed.Any(char.IsControl)
+            || string.Equals(trimmed, "NOT_SET", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new SecretOperationException(
+                AdminProviderTestAcsSendResultCodes.FailedAcsMessageIdInvalid,
+                "Provider message id was not a usable UUID.");
+        }
+
+        if (!Guid.TryParseExact(trimmed, "D", out var parsed)
+            && !Guid.TryParse(trimmed, out parsed))
+        {
+            throw new SecretOperationException(
+                AdminProviderTestAcsSendResultCodes.FailedAcsMessageIdInvalid,
+                "Provider message id was not a UUID.");
+        }
+
+        if (parsed != expectedOperationId)
+        {
+            throw new SecretOperationException(
+                AdminProviderTestAcsSendResultCodes.FailedAcsMessageIdInvalid,
+                "Provider message id did not match the requested operation id.");
+        }
+
+        return parsed.ToString("D");
+    }
+
+    private static void WriteMessageIdHandoff(string path, string canonicalMessageId)
     {
         var directory = Path.GetDirectoryName(path);
         if (string.IsNullOrEmpty(directory))
@@ -323,7 +349,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
         var tempPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {
-            File.WriteAllText(tempPath, providerMessageId.Trim() + Environment.NewLine);
+            File.WriteAllText(tempPath, canonicalMessageId + Environment.NewLine);
             if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             {
                 File.SetUnixFileMode(
@@ -338,6 +364,10 @@ public sealed partial class AdminProviderTestAcsSendCommand
                     path,
                     UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
+        }
+        catch (SecretOperationException)
+        {
+            throw;
         }
         catch
         {
@@ -383,14 +413,4 @@ public sealed partial class AdminProviderTestAcsSendCommand
         _console.WriteError($"failed: operation=test_acs_send result={canonicalCode}");
         return FailureExitCode;
     }
-
-    private static string MapSharedSecretCode(string code) =>
-        code switch
-        {
-            AdminProviderRegisterAcsResultCodes.RejectedInputRedirected =>
-                AdminProviderTestAcsSendResultCodes.RejectedInputRedirected,
-            AdminProviderRegisterAcsResultCodes.RejectedCancelled =>
-                AdminProviderTestAcsSendResultCodes.RejectedCancelled,
-            _ => code,
-        };
 }

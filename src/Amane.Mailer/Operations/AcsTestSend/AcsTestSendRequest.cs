@@ -11,8 +11,6 @@ public sealed class AcsTestSendRequest
 
     public required string RecipientEmail { get; init; }
 
-    public string? SenderDisplayName { get; init; }
-
     public required string Subject { get; init; }
 
     public required string PlainTextBody { get; init; }

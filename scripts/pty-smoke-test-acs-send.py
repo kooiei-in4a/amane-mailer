@@ -3,15 +3,10 @@
 
 Drives the built Amane.Mailer.dll through a pseudo-terminal so
 Console.IsInputRedirected is false and Console.ReadKey(intercept: true) exercises a real
-raw-mode keystroke read. Unit tests with a fake console cannot verify non-echo secret input.
+raw-mode keystroke read. Unit tests with a fake console cannot verify non-echo secret/PII input.
 
 This smoke never contacts real ACS. It uses a synthetic connection string and stops before a
-successful live send by feeding a wrong environment confirmation, mismatched intent, and
-TTY secret entry that is rejected as invalid — proving:
-  - redirected-style failures are avoided on a real PTY
-  - Staging / intent gates run before send
-  - secret values are never echoed
-  - cancel/reject paths do not print emails or synthetic subject/body
+successful live send (invalid handoff path after PII prompts, or earlier rejects).
 
 Linux only (uses the `pty` module). Run after building:
 
@@ -34,6 +29,7 @@ SYNTHETIC_CONN = (
 SYNTHETIC_EMAIL = "smoke-sender@example.com"
 SYNTHETIC_RECIPIENT = "smoke-recipient@example.com"
 INVALID_CONN = "not-a-real-acs-connection-string"
+INVALID_HANDOFF = "relative/handoff.txt"
 
 FAILURES = []
 
@@ -110,7 +106,6 @@ def _drain_until_exit(master, proc, output, timeout):
 def run_interactive(command_args, env_overrides, steps, timeout=20):
     master, slave = pty.openpty()
     env = dict(os.environ)
-    # Drop any real ACS file/env so this smoke stays synthetic-only.
     for key in list(env.keys()):
         if key.startswith("ACS_") or key.startswith("MAILER_ACS_"):
             env.pop(key, None)
@@ -161,7 +156,6 @@ def run_interactive(command_args, env_overrides, steps, timeout=20):
 
 
 def run_redirected_stdin():
-    """Redirected stdin must be rejected for interactive secret/TTY paths."""
     env = dict(os.environ)
     for key in list(env.keys()):
         if key.startswith("ACS_") or key.startswith("MAILER_ACS_"):
@@ -236,6 +230,29 @@ def scenario_tty_secret_mismatch_and_no_echo():
     assert_no_leak(text, "secretmismatch")
 
 
+def scenario_pii_prompts_then_invalid_handoff_before_send():
+    print("\n=== scenario: PII prompts + invalid handoff reject before ACS send ===")
+    steps = [
+        ("Confirm target environment", "Staging"),
+        ("Type MAILER-ACS-TEST-SEND to confirm intent", "MAILER-ACS-TEST-SEND"),
+        ("ACS connection string:", SYNTHETIC_CONN),
+        ("Re-enter ACS connection string:", SYNTHETIC_CONN),
+        ("Sender email:", SYNTHETIC_EMAIL),
+        ("Recipient email:", SYNTHETIC_RECIPIENT),
+        ("Absolute path for message ID handoff file:", INVALID_HANDOFF),
+    ]
+    exit_code, output = run_interactive(["admin", "provider", "test-acs-send"], {}, steps)
+    text = output.decode(errors="replace")
+    check("pii-handoff: exit code is 2", exit_code == 2, f"(got {exit_code})")
+    check(
+        "pii-handoff: REJECTED_MESSAGE_ID_HANDOFF_PATH_INVALID",
+        "REJECTED_MESSAGE_ID_HANDOFF_PATH_INVALID" in text,
+    )
+    check("pii-handoff: sender prompt reached", "Sender email:" in text)
+    check("pii-handoff: recipient prompt reached", "Recipient email:" in text)
+    assert_no_leak(text, "pii-handoff")
+
+
 def scenario_redirected_stdin_rejected():
     print("\n=== scenario: redirected stdin is rejected ===")
     exit_code, text = run_redirected_stdin()
@@ -253,6 +270,7 @@ def main():
     scenario_wrong_environment()
     scenario_wrong_intent()
     scenario_tty_secret_mismatch_and_no_echo()
+    scenario_pii_prompts_then_invalid_handoff_before_send()
     scenario_redirected_stdin_rejected()
 
     print("\n=== summary ===")

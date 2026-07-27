@@ -246,7 +246,7 @@ public static class MailerCliHost
         CancellationToken cancellationToken)
     {
         var command = new AdminProviderTestAcsSendCommand(
-            new AdminProviderRegisterAcsConsole(),
+            new AdminProviderTestAcsSendConsole(),
             configuration);
         return command.RunAsync(cancellationToken);
     }

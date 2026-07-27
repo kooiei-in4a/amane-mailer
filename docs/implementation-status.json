@@ -84,13 +84,17 @@
       "trackingIssue": 426,
       "lastVerified": "2026-07-27",
       "relatedAdrs": ["0013"],
-      "notes": "Staging-only admin provider test-acs-send CLI. Prefers ACS secret file, TTY fallback, fixed synthetic content, sanitized provider failures, message ID handoff file for #428. No Mailer API/Worker/DB mutation. Real ACS smoke is maintainer-only; CI uses fake provider + PTY smoke without live send.",
+      "notes": "Staging-only admin provider test-acs-send CLI. Prefers ACS secret file, TTY fallback, fixed synthetic content, hidden PII input, sanitized provider failures (auth vs network vs sender), UUID-only message ID handoff for #428. No Mailer API/Worker/DB mutation. Real ACS smoke is maintainer-only; CI uses fake provider + PTY smoke without live send.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Operations/AdminProviderTestAcsSendCommand.cs",
           "src/Amane.Mailer/Operations/AdminProviderTestAcsSendResultCodes.cs",
+          "src/Amane.Mailer/Operations/IAdminProviderTestAcsSendConsole.cs",
           "src/Amane.Mailer/Operations/AcsTestSend/IAcsTestSendClient.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/IAcsEmailSendTransport.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/AzureAcsEmailSendTransport.cs",
           "src/Amane.Mailer/Operations/AcsTestSend/AzureAcsTestSendClient.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/AcsTestSendFailureMapper.cs",
           "src/Amane.Mailer/Operations/AcsTestSend/AcsTestSendRequest.cs",
           "src/Amane.Mailer/Operations/AcsTestSend/AcsTestSendOutcome.cs",
           "docs/ops/test-acs-send-cli-runbook.md",

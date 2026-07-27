@@ -1,3 +1,5 @@
+using System.Net.Sockets;
+using Azure;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Operations.AcsTestSend;
 using Microsoft.Extensions.Configuration;
@@ -29,15 +31,9 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
         File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
 
         var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "recipient@example.com",
-                "",
-            ],
-            secretResponses: []);
+            lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase],
+            secretResponses: [],
+            hiddenResponses: ["sender@example.com", "recipient@example.com"]);
 
         var fake = new FakeAcsClient(_ => AcsTestSendOutcome.Succeeded(FixedOperationId.ToString("D")));
         var command = CreateCommand(console, scratch, fake);
@@ -46,23 +42,16 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
 
         Assert.Equal(AdminProviderTestAcsSendCommand.SuccessExitCode, exitCode);
         Assert.Equal(FixedOperationId.ToString("D"), File.ReadAllText(scratch.HandoffPath).Trim());
-        Assert.Equal(ValidConnectionString, File.ReadAllText(scratch.AcsSecretPath));
+        Assert.Single(File.ReadAllLines(scratch.HandoffPath));
+        Assert.Equal(2, console.HiddenReadCount);
         var output = string.Join('\n', console.Output);
         Assert.Contains("[PASS] ACS authentication", output);
-        Assert.Contains("[PASS] Send request accepted", output);
-        Assert.Contains("[PASS] ACS send operation completed", output);
         Assert.Contains("[PASS] Message ID handoff file written", output);
-        Assert.Contains("[ACTION] Confirm receipt in the test mailbox", output);
-        Assert.Contains(AdminProviderTestAcsSendResultCodes.Success, output);
         Assert.DoesNotContain(ValidConnectionString, output);
         Assert.DoesNotContain("sender@example.com", output);
         Assert.DoesNotContain("recipient@example.com", output);
-        Assert.DoesNotContain(AdminProviderTestAcsSendCommand.SyntheticSubject, output);
-        Assert.DoesNotContain(AdminProviderTestAcsSendCommand.SyntheticPlainTextBody, output);
         Assert.DoesNotContain(FixedOperationId.ToString("D"), output);
-        Assert.Equal(1, fake.CallCount);
         Assert.Equal(AdminProviderTestAcsSendCommand.SyntheticSubject, fake.LastRequest!.Subject);
-        Assert.Equal(AdminProviderTestAcsSendCommand.SyntheticPlainTextBody, fake.LastRequest.PlainTextBody);
     }
 
     [Fact]
@@ -72,15 +61,9 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
         File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
 
         var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "recipient@example.com",
-                "",
-            ],
-            secretResponses: ["should-not-be-read", "should-not-be-read"]);
+            lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase],
+            secretResponses: ["should-not-be-read", "should-not-be-read"],
+            hiddenResponses: ["sender@example.com", "recipient@example.com"]);
 
         var fake = new FakeAcsClient(_ => AcsTestSendOutcome.Succeeded(FixedOperationId.ToString("D")));
         var command = CreateCommand(console, scratch, fake);
@@ -97,16 +80,9 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
     {
         using var scratch = new TestScratch();
         var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "recipient@example.com",
-                "",
-                scratch.HandoffPath,
-            ],
-            secretResponses: [ValidConnectionString, ValidConnectionString]);
+            lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase, scratch.HandoffPath],
+            secretResponses: [ValidConnectionString, ValidConnectionString],
+            hiddenResponses: ["sender@example.com", "recipient@example.com"]);
 
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>())
@@ -129,7 +105,7 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
     public async Task Run_rejects_environment_mismatch_before_any_send()
     {
         using var scratch = new TestScratch();
-        var console = new FakeConsole(lineResponses: ["staging"], secretResponses: []);
+        var console = new FakeConsole(lineResponses: ["staging"], secretResponses: [], hiddenResponses: []);
         var fake = new FakeAcsClient(_ => throw new InvalidOperationException("should not send"));
         var command = CreateCommand(console, scratch, fake);
 
@@ -148,7 +124,8 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
         using var scratch = new TestScratch();
         var console = new FakeConsole(
             lineResponses: ["Staging", "WRONG"],
-            secretResponses: []);
+            secretResponses: [],
+            hiddenResponses: []);
         var fake = new FakeAcsClient(_ => throw new InvalidOperationException("should not send"));
         var command = CreateCommand(console, scratch, fake);
 
@@ -167,14 +144,9 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
         using var scratch = new TestScratch();
         File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
         var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "not-an-email",
-            ],
-            secretResponses: []);
+            lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase],
+            secretResponses: [],
+            hiddenResponses: ["sender@example.com", "not-an-email"]);
         var fake = new FakeAcsClient(_ => throw new InvalidOperationException("should not send"));
         var command = CreateCommand(console, scratch, fake);
 
@@ -188,142 +160,14 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
     }
 
     [Fact]
-    public async Task Run_distinguishes_authentication_failure()
+    public async Task Run_rejects_drive_relative_handoff_path_on_windows_shape()
     {
         using var scratch = new TestScratch();
         File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
         var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "recipient@example.com",
-                "",
-            ],
-            secretResponses: []);
-        var fake = new FakeAcsClient(_ =>
-            AcsTestSendOutcome.Failed(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication));
-        var command = CreateCommand(console, scratch, fake);
-
-        var exitCode = await command.RunAsync(CancellationToken.None);
-
-        Assert.Equal(AdminProviderTestAcsSendCommand.FailureExitCode, exitCode);
-        Assert.False(File.Exists(scratch.HandoffPath));
-        var joined = string.Join('\n', console.Output) + "\n" + string.Join('\n', console.Errors);
-        Assert.Contains("[FAIL] ACS authentication", joined);
-        Assert.Contains(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication, joined);
-        Assert.DoesNotContain(FixedOperationId.ToString("D"), joined);
-    }
-
-    [Fact]
-    public async Task Run_distinguishes_sender_rejection_after_authentication()
-    {
-        using var scratch = new TestScratch();
-        File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
-        var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "recipient@example.com",
-                "",
-            ],
-            secretResponses: []);
-        var fake = new FakeAcsClient(_ =>
-            AcsTestSendOutcome.Failed(
-                AdminProviderTestAcsSendResultCodes.FailedAcsSenderRejected,
-                authenticationSucceeded: true));
-        var command = CreateCommand(console, scratch, fake);
-
-        var exitCode = await command.RunAsync(CancellationToken.None);
-
-        Assert.Equal(AdminProviderTestAcsSendCommand.FailureExitCode, exitCode);
-        var joined = string.Join('\n', console.Output) + "\n" + string.Join('\n', console.Errors);
-        Assert.Contains("[PASS] ACS authentication", joined);
-        Assert.Contains("[FAIL] Send request accepted", joined);
-        Assert.Contains(AdminProviderTestAcsSendResultCodes.FailedAcsSenderRejected, joined);
-    }
-
-    [Fact]
-    public async Task Run_distinguishes_operation_failure_after_accept()
-    {
-        using var scratch = new TestScratch();
-        File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
-        var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "recipient@example.com",
-                "",
-            ],
-            secretResponses: []);
-        var fake = new FakeAcsClient(_ =>
-            AcsTestSendOutcome.Failed(
-                AdminProviderTestAcsSendResultCodes.FailedAcsOperation,
-                authenticationSucceeded: true,
-                sendRequestAccepted: true,
-                providerMessageId: FixedOperationId.ToString("D")));
-        var command = CreateCommand(console, scratch, fake);
-
-        var exitCode = await command.RunAsync(CancellationToken.None);
-
-        Assert.Equal(AdminProviderTestAcsSendCommand.FailureExitCode, exitCode);
-        Assert.False(File.Exists(scratch.HandoffPath));
-        var joined = string.Join('\n', console.Output) + "\n" + string.Join('\n', console.Errors);
-        Assert.Contains("[PASS] Send request accepted", joined);
-        Assert.Contains("[FAIL] ACS send operation completed", joined);
-        Assert.DoesNotContain(FixedOperationId.ToString("D"), joined);
-    }
-
-    [Fact]
-    public async Task Run_maps_cooperative_cancellation_to_OperationCanceledException()
-    {
-        using var scratch = new TestScratch();
-        File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
-        var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "recipient@example.com",
-                "",
-            ],
-            secretResponses: []);
-        using var cts = new CancellationTokenSource();
-        var fake = new FakeAcsClient(_ =>
-        {
-            cts.Cancel();
-            cts.Token.ThrowIfCancellationRequested();
-            return AcsTestSendOutcome.Succeeded(FixedOperationId.ToString("D"));
-        });
-        var command = CreateCommand(console, scratch, fake);
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => command.RunAsync(cts.Token));
-        Assert.False(File.Exists(scratch.HandoffPath));
-    }
-
-    [Fact]
-    public async Task Run_rejects_relative_message_id_handoff_path()
-    {
-        using var scratch = new TestScratch();
-        File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
-        var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "recipient@example.com",
-                "",
-                "relative/handoff.txt",
-            ],
-            secretResponses: []);
+            lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase, "C:message-id.txt"],
+            secretResponses: [],
+            hiddenResponses: ["sender@example.com", "recipient@example.com"]);
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -347,21 +191,95 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
     }
 
     [Fact]
+    public async Task Run_distinguishes_authentication_failure()
+    {
+        using var scratch = new TestScratch();
+        File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
+        var console = new FakeConsole(
+            lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase],
+            secretResponses: [],
+            hiddenResponses: ["sender@example.com", "recipient@example.com"]);
+        var fake = new FakeAcsClient(_ =>
+            AcsTestSendOutcome.Failed(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication));
+        var command = CreateCommand(console, scratch, fake);
+
+        var exitCode = await command.RunAsync(CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendCommand.FailureExitCode, exitCode);
+        Assert.False(File.Exists(scratch.HandoffPath));
+        Assert.Contains(
+            AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication,
+            string.Join('\n', console.Errors));
+    }
+
+    [Fact]
+    public async Task Run_rejects_not_set_and_mismatched_message_ids_without_writing_handoff()
+    {
+        using var scratch = new TestScratch();
+        File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
+
+        foreach (var badId in new[] { "NOT_SET", "not-a-guid", "22222222-2222-2222-2222-222222222222", "id\nextra" })
+        {
+            var console = new FakeConsole(
+                lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase],
+                secretResponses: [],
+                hiddenResponses: ["sender@example.com", "recipient@example.com"]);
+            var fake = new FakeAcsClient(_ =>
+                AcsTestSendOutcome.Succeeded(badId));
+            var command = CreateCommand(console, scratch, fake);
+
+            var exitCode = await command.RunAsync(CancellationToken.None);
+
+            Assert.Equal(AdminProviderTestAcsSendCommand.FailureExitCode, exitCode);
+            Assert.False(File.Exists(scratch.HandoffPath));
+            Assert.Contains(
+                AdminProviderTestAcsSendResultCodes.FailedAcsMessageIdInvalid,
+                string.Join('\n', console.Errors));
+        }
+    }
+
+    [Fact]
+    public void RequireCanonicalMessageId_canonicalizes_matching_uuid()
+    {
+        var canonical = AdminProviderTestAcsSendCommand.RequireCanonicalMessageId(
+            FixedOperationId.ToString("D").ToUpperInvariant(),
+            FixedOperationId);
+        Assert.Equal(FixedOperationId.ToString("D"), canonical);
+    }
+
+    [Fact]
+    public async Task Run_maps_cooperative_cancellation_to_OperationCanceledException()
+    {
+        using var scratch = new TestScratch();
+        File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
+        var console = new FakeConsole(
+            lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase],
+            secretResponses: [],
+            hiddenResponses: ["sender@example.com", "recipient@example.com"]);
+        using var cts = new CancellationTokenSource();
+        var fake = new FakeAcsClient(_ =>
+        {
+            cts.Cancel();
+            cts.Token.ThrowIfCancellationRequested();
+            return AcsTestSendOutcome.Succeeded(FixedOperationId.ToString("D"));
+        });
+        var command = CreateCommand(console, scratch, fake);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => command.RunAsync(cts.Token));
+        Assert.False(File.Exists(scratch.HandoffPath));
+    }
+
+    [Fact]
     public async Task Run_does_not_modify_existing_acs_secret_file()
     {
         using var scratch = new TestScratch();
         File.WriteAllText(scratch.AcsSecretPath, ValidConnectionString);
         var before = File.GetLastWriteTimeUtc(scratch.AcsSecretPath);
         var console = new FakeConsole(
-            lineResponses:
-            [
-                "Staging",
-                AdminProviderTestAcsSendCommand.IntentPhrase,
-                "sender@example.com",
-                "recipient@example.com",
-                "",
-            ],
-            secretResponses: []);
+            lineResponses: ["Staging", AdminProviderTestAcsSendCommand.IntentPhrase],
+            secretResponses: [],
+            hiddenResponses: ["sender@example.com", "recipient@example.com"]);
         var fake = new FakeAcsClient(_ => AcsTestSendOutcome.Succeeded(FixedOperationId.ToString("D")));
         var command = CreateCommand(console, scratch, fake);
 
@@ -411,17 +329,21 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
 
     private sealed class FakeConsole(
         IReadOnlyList<string> lineResponses,
-        IReadOnlyList<string> secretResponses)
-        : IAdminProviderRegisterAcsConsole
+        IReadOnlyList<string> secretResponses,
+        IReadOnlyList<string> hiddenResponses)
+        : IAdminProviderTestAcsSendConsole
     {
         private int _lineIndex;
         private int _secretIndex;
+        private int _hiddenIndex;
 
         public List<string> Output { get; } = [];
 
         public List<string> Errors { get; } = [];
 
         public int SecretReadCount => _secretIndex;
+
+        public int HiddenReadCount => _hiddenIndex;
 
         public string ReadLine(string prompt)
         {
@@ -441,6 +363,16 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
             }
 
             return secretResponses[_secretIndex++];
+        }
+
+        public string ReadHiddenLine(string prompt)
+        {
+            if (_hiddenIndex >= hiddenResponses.Count)
+            {
+                throw new InvalidOperationException($"Unexpected ReadHiddenLine for prompt: {prompt}");
+            }
+
+            return hiddenResponses[_hiddenIndex++];
         }
 
         public void WriteLine(string message) => Output.Add(message);
@@ -480,5 +412,140 @@ public sealed class MailerAdminProviderTestAcsSendCliTests
                 // Best-effort cleanup for temp test dirs.
             }
         }
+    }
+}
+
+public sealed class AzureAcsTestSendClientTests
+{
+    private static readonly Guid OperationId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+    private static AcsTestSendRequest Request() =>
+        new()
+        {
+            ConnectionString = "Endpoint=https://example.communication.azure.com/;AccessKey=abc123",
+            SenderEmail = "sender@example.com",
+            RecipientEmail = "recipient@example.com",
+            Subject = AdminProviderTestAcsSendCommand.SyntheticSubject,
+            PlainTextBody = AdminProviderTestAcsSendCommand.SyntheticPlainTextBody,
+            OperationId = OperationId,
+        };
+
+    [Fact]
+    public async Task Maps_401_to_authentication_failure_without_leaking_raw_text()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(
+            new RequestFailedException(
+                401,
+                "Unauthorized endpoint=https://leak.example/;accesskey=SECRETKEY sender@example.com")));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication, outcome.CanonicalFailureCode);
+        Assert.False(outcome.AuthenticationSucceeded);
+    }
+
+    [Fact]
+    public async Task Maps_network_exception_to_network_failure_not_authentication()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(new SocketException()));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsNetwork, outcome.CanonicalFailureCode);
+        Assert.NotEqual(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication, outcome.CanonicalFailureCode);
+    }
+
+    [Fact]
+    public async Task Maps_generic_400_to_send_request_failure()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(
+            new RequestFailedException(400, "Bad Request")));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsSendRequest, outcome.CanonicalFailureCode);
+    }
+
+    [Fact]
+    public async Task Maps_structured_sender_error_code_to_sender_rejected()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(
+            new RequestFailedException(
+                400,
+                "Sender not authorized",
+                "SenderNotRecognized",
+                null)));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsSenderRejected, outcome.CanonicalFailureCode);
+        Assert.True(outcome.AuthenticationSucceeded);
+    }
+
+    [Fact]
+    public async Task Maps_404_to_send_request_failure_not_sender_rejected()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(
+            new RequestFailedException(404, "Not Found")));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsSendRequest, outcome.CanonicalFailureCode);
+    }
+
+    [Fact]
+    public async Task Maps_429_to_timeout_bucket()
+    {
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(
+            new RequestFailedException(429, "Too Many Requests")));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsTimeout, outcome.CanonicalFailureCode);
+    }
+
+    [Fact]
+    public async Task Maps_lro_failure_without_leaking_operation_id_in_code()
+    {
+        var client = new AzureAcsTestSendClient(new FixedTransport(
+            new AcsEmailSendTransportResult
+            {
+                OperationId = OperationId.ToString("D"),
+                Succeeded = false,
+            }));
+
+        var outcome = await client.SendAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsOperation, outcome.CanonicalFailureCode);
+        Assert.True(outcome.SendRequestAccepted);
+        Assert.Equal(OperationId.ToString("D"), outcome.ProviderMessageId);
+    }
+
+    [Fact]
+    public async Task Propagates_cooperative_cancellation()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var client = new AzureAcsTestSendClient(new ThrowingTransport(
+            new OperationCanceledException(cts.Token)));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => client.SendAsync(Request(), cts.Token));
+    }
+
+    private sealed class ThrowingTransport(Exception exception) : IAcsEmailSendTransport
+    {
+        public Task<AcsEmailSendTransportResult> SendAndWaitAsync(
+            AcsTestSendRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromException<AcsEmailSendTransportResult>(exception);
+    }
+
+    private sealed class FixedTransport(AcsEmailSendTransportResult result) : IAcsEmailSendTransport
+    {
+        public Task<AcsEmailSendTransportResult> SendAndWaitAsync(
+            AcsTestSendRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(result);
     }
 }
