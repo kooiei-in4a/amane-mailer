@@ -34,9 +34,12 @@ Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) 
 
 ### About the published v1.1.0 image
 
-Bounce ingestion (including migration `011`) may already exist in source, but while the public GitHub release / GHCR tag `v1.1.0` is missing, treat **final verification against the published image as not done**. If you follow procedures with a local build or develop-derived artifact, record that in your ops notes. Re-verify against the published image after v1.1.0 release / publish / post-promote sync completes.
+The public GitHub release / GHCR tag `v1.1.0` (including migration `011`) is available.
+Final verification evidence is in [docs/releases/v1.1.0.md](../releases/v1.1.0.md)
+(including release-image smoke). If you follow procedures with a local build or
+develop-derived artifact, record that in your ops notes.
 
-[release-image-smoke](release-image-smoke.en.md) defaults to a currently published release tag (for example `v1.0.1`). Running it as-is does **not** verify v1.1.0.
+[release-image-smoke](release-image-smoke.en.md) defaults to the published release tag (`v1.1.0`).
 
 ### Configurations that cannot be completed today (honest boundaries)
 
@@ -78,7 +81,7 @@ Examples:
 | Production ACS secret not registered (including wrong confirmation phrase) | Available (procedure exists) | `[FAIL]` or `[ACTION]` (`Production` confirmation on register-acs) |
 | Bounce mode / Queue secret / Queue name missing (mode 5) | Available (procedure exists) | `[FAIL]` or `[ACTION]` (settings via compose) |
 | Queue poller runs but Event Grid arrival unconfirmed | (depends on mode) | `[WARN]` or `[ACTION]` |
-| Published v1.1.0 image not verified | (depends on mode) | `[WARN]` or `[ACTION]` |
+| Published v1.1.0 image not verified | (depends on mode) | After publish, see the [v1.1.0 release record](../releases/v1.1.0.md). Hosts not yet on that image: `[WARN]` / `[ACTION]` |
 
 Do not include secret values, plaintext recipients, connection strings, or raw provider errors in results. Report only which setting key or capability is missing.
 
@@ -152,7 +155,7 @@ Confirm readiness only; do not write down secret values.
 
 ### Information
 
-- [ ] Configuration mode (exactly one from the table). For modes 4 / 5, acknowledge production-specific safety boundaries (dedicated tokens / ACS·Queue isolation, no Push) and soft residuals (unpublished v1.1.0 verification)
+- [ ] Configuration mode (exactly one from the table). For modes 4 / 5, acknowledge production-specific safety boundaries (dedicated tokens / ACS·Queue isolation, no Push). Treat published image `v1.1.0` as canonical ([release record](../releases/v1.1.0.md))
 - [ ] Tenant JSON location (copy of an example; **do not commit** real files)
 - [ ] Each tenant `token_env` name and where the matching environment variable is set
 - [ ] Effective provider (tenant JSON or `MAILER_PROVIDER`)
@@ -266,10 +269,10 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 4. Setup (backup, optional): [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md)
 5. Setup (ACS secret): [register-acs CLI runbook](register-acs-cli-runbook.en.md) (confirmation phrase **`Production`**; never pass secrets as CLI arguments)
 6. Setup doctor (re-run): `setup doctor --mode production-acs`. Confirm `[PASS] platform_sender_environment` (expected `production`) before live send. A `Staging` confirmation registration fails here
-7. Verification: `/healthz` `/readyz`, and explicit live send with an approved sender. Published-image smoke: [release-image-smoke](release-image-smoke.en.md) (**default tag is a published release; it is not a v1.1.0 verification** → unpublished v1.1.0 verification is `[WARN]` / `[ACTION]`)
+7. Verification: `/healthz` `/readyz`, and explicit live send with an approved sender. Published-image smoke: [release-image-smoke](release-image-smoke.en.md) (default tag `v1.1.0`; evidence in the [v1.1.0 release record](../releases/v1.1.0.md))
 8. If bounce ingestion is needed, continue to mode 5 (otherwise you may stop here)
 
-**Done when:** deploy shape, tenant / env preflight, `Production`-confirmed secret registration, post-registration doctor `platform_sender_environment` PASS, health/ready, and approved live send can be `[PASS]`. Unpublished `v1.1.0` image verification remains a soft residual (`[WARN]` / `[ACTION]`).
+**Done when:** deploy shape, tenant / env preflight, `Production`-confirmed secret registration, post-registration doctor `platform_sender_environment` PASS, health/ready, and approved live send can be `[PASS]`. Published image is `v1.1.0` ([release record](../releases/v1.1.0.md)).
 
 ### 5. production ACS + Event Grid / Storage Queue
 
@@ -283,7 +286,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 4. Setup (bounce): follow [bounce ingestion runbook](bounce-ingestion-runbook.en.md); set `MAILER_BOUNCE_INGESTION=queue` and `MAILER_BOUNCE_QUEUE_NAME` in `.env`, and place the Queue connection string at `${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH}/queue_connection_string` (never pass secrets as CLI arguments)
 5. Setup (Azure): Delivery Report → Event Grid → **Storage Queue** (not Push). Use `setup check-event-grid` ([#427](https://github.com/kooiei-in4a/amane-mailer/issues/427)) for a read-only configuration check
 6. Setup doctor (re-run): `setup doctor --mode production-queue`. Confirm `[PASS] compose_bounce_wiring` / `mode_bounce_queue` / `bounce_queue`
-7. Verification: `/healthz` `/readyz`, approved live send. Staging Delivery Report arrival is `setup verify-delivery-report` ([#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)) — not production evidence. Unpublished `v1.1.0` verification remains `[WARN]` / `[ACTION]`
+7. Verification: `/healthz` `/readyz`, approved live send. Staging Delivery Report arrival is `setup verify-delivery-report` ([#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)) — not production evidence. Published image is `v1.1.0` ([release record](../releases/v1.1.0.md))
 
 **How to score results**
 
@@ -292,7 +295,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 - [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) is **Staging-only**. Do not treat #428 results as evidence that production was exercised
 - **Real bounce is not a completion criterion**
 
-**Done when:** mode 4 completion plus compose-wired `queue` settings, Queue file secret, Queue name, and Event Grid → Queue configuration checks can be `[PASS]` / human-confirmed. Unpublished `v1.1.0` image verification remains a soft residual.
+**Done when:** mode 4 completion plus compose-wired `queue` settings, Queue file secret, Queue name, and Event Grid → Queue configuration checks can be `[PASS]` / human-confirmed. Published image is `v1.1.0` ([release record](../releases/v1.1.0.md)).
 
 ## Where to look when something fails
 
