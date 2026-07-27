@@ -27,6 +27,10 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll admin user create --username <name> --password-hash <pbkdf2> [--tenant-id <uuid> ...] [--break-glass]
       dotnet Amane.Mailer.dll admin provider register-acs
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
+      dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
+
+    Setup doctor modes:
+      local-mailpit, staging-no-send, staging-verification, production-acs, production-queue
 
     Options:
       -h, --help    Show help.
@@ -163,6 +167,14 @@ if (AdminProviderRegisterAcsCommand.IsCheckAcsPreflightCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
     return await MailerCliHost.RunAdminProviderCheckAcsPreflightAsync(cliConfiguration, Console.Error);
+}
+
+if (SetupDoctorCommand.IsSetupDoctorCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunSetupDoctorAsync(cliConfiguration, commandArgs, Console.Out, Console.Error, ct),
+        Console.Error);
 }
 
 var builder = WebApplication.CreateBuilder(args);

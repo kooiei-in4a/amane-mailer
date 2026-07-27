@@ -241,6 +241,40 @@ public static class MailerCliHost
         return Task.FromResult(command.RunPreflightOnly());
     }
 
+    public static async Task<int> RunSetupDoctorAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        if (!SetupDoctorCommand.TryParseArguments(
+                MailerCliHost.FilterConfigurationArgs(commandArgs),
+                out var mode,
+                out var composeFilePath,
+                out var usageError))
+        {
+            await error.WriteLineAsync(usageError ?? "Invalid setup doctor arguments.");
+            await error.WriteLineAsync($"Usage: setup doctor --mode {SetupDoctorModeParser.UsageHint} [--compose-file <path>]");
+            return SetupDoctorCommand.UsageErrorExitCode;
+        }
+
+        try
+        {
+            var command = new SetupDoctorCommand(configuration, mode, composeFilePath, output, error);
+            return await command.ExecuteAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            await error.WriteLineAsync("setup doctor failed: unexpected diagnostic error (details omitted).");
+            return SetupDoctorCommand.FailureExitCode;
+        }
+    }
+
     private static bool TryResolveAcsAdminDirectories(
         IConfiguration configuration,
         TextWriter error,

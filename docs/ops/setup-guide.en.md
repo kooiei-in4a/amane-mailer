@@ -165,9 +165,34 @@ Confirm readiness only; do not write down secret values.
 - [ ] Production reachability boundary (reverse proxy / firewall; no direct Admin exposure)
 - [ ] (mode 5 target) **Outbound** reachability from Mailer to Storage Queue (no public HTTPS ingress required)
 
+## setup doctor (read-only diagnostics)
+
+Before setup or after a failed start, run read-only diagnostics for local configuration and host prerequisites. The command does **not** change config files, the DB, containers, or Azure resources.
+
+```bash
+dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
+```
+
+| `--mode` | Use case |
+|----------|----------|
+| `local-mailpit` | First local Mailpit reachability |
+| `staging-no-send` | Deploy-shaped stack, no live send |
+| `staging-verification` | Explicit Staging ACS validation |
+| `production-acs` | Production deploy shape (live-send completion is Blocked) |
+| `production-queue` | Production + Queue target (Target only) |
+
+Output uses the result codes above (PASS / FAIL / WARN / ACTION) and ends with `Summary: PASS=… FAIL=… WARN=… ACTION=…`. Exit code `1` when any check is FAIL.
+
+- Never prints secret values, tokens, connection strings, recipient plaintext, or raw provider errors
+- Does not run DB migrate, start containers, live-send mail, or Azure configuration checks ([#427](https://github.com/kooiei-in4a/amane-mailer/issues/427))
+- ACS directory write verification remains `admin provider check-acs-preflight` (doctor uses read-only safety checks only)
+- Compose validation is suggested as **ACTION**: run `docker compose config --quiet` on the host
+
+On deploy hosts, prefer running setup doctor **on the host** (with the same env / compose files the containers will use) so Docker CLI and published host ports are meaningful. If you run the command inside the Mailer container, Docker availability and loopback port checks are reported as WARN / ACTION because they only reflect the container namespace.
+
 ## Execution order (all modes)
 
-1. **Preflight** — choose mode, complete the checklist, validate tenant / env shape ([config README Preflight](../../config/mailer/README.en.md#preflight))
+1. **Preflight** — choose mode, complete the checklist, run **setup doctor** (above), validate tenant / env shape ([config README Preflight](../../config/mailer/README.en.md#preflight))
 2. **Setup** — follow the mode’s primary runbooks to start / register (do not force completion where gaps remain)
 3. **Verification** — health / ready, accept, and mode-appropriate delivery or no-send checks using the result codes above
 4. **Troubleshooting** — on FAIL / WARN, use “Where to look when something fails” below. No auto-repair (ACTION)
@@ -256,20 +281,20 @@ Confirm readiness only; do not write down secret values.
 | backup / restore | [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md) |
 | published image smoke (published tags) | [release-image-smoke](release-image-smoke.en.md) |
 
-## Planned verification helpers (not done yet)
+## Planned verification helpers (#425 excepted)
 
 | Issue | Planned | Boundary |
 |-------|---------|----------|
-| [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | — |
+| [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **Available** (see “setup doctor” above) |
 | [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS-only live send check CLI | Staging-oriented plan (follow that issue) |
 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check | **For the selected environment** (not Staging-only). Config check only; does not prove event arrival |
 | [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report Queue arrival E2E (message ID correlation; real bounce not required) | **Staging-only** pre-production wiring check. Production Queue / production test send are non-goals |
 
-Until those land, continue with existing preflight scripts, smokes, and manual runbook checks.
+Use setup doctor (#425) together with existing preflight scripts, smokes, and manual runbook checks until #426–#428 land.
 
 ## Non-goals of this entry point
 
-- Implementing setup CLI / doctor / Azure resource auto-creation
+- Azure resource auto-creation
 - Wiring bounce into deploy compose or extending register-acs for production (separate issues)
 - Copying full existing runbooks into this file
 - Documenting v1.2.0 Consumer bounce API / webhook contracts
