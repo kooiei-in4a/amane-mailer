@@ -17,6 +17,7 @@ public static class VerifyDeliveryReportResultCodes
     public const string RejectedInvalidRecipientEmail = AdminProviderTestAcsSendResultCodes.RejectedInvalidRecipientEmail;
     public const string RejectedCancelled = AdminProviderTestAcsSendResultCodes.RejectedCancelled;
 
+    public const string RejectedTargetEnvironmentRequired = "REJECTED_TARGET_ENVIRONMENT_REQUIRED";
     public const string RejectedInvalidQueueConnectionString = "REJECTED_INVALID_QUEUE_CONNECTION_STRING";
     public const string RejectedInvalidQueueName = "REJECTED_INVALID_QUEUE_NAME";
     public const string RejectedInvalidTimeout = "REJECTED_INVALID_TIMEOUT";

@@ -81,17 +81,26 @@ public static class DeliveryReportEventInspector
         }
 
         var data = dto.Data;
-        if (data is null
-            || string.IsNullOrWhiteSpace(data.MessageId)
-            || string.IsNullOrWhiteSpace(data.Status))
+        if (data is null || data.MessageId is null || data.Status is null)
         {
             return DeliveryReportPeekObservation.Malformed();
         }
 
-        // Exact match correlation (ADR 0020 D-03 / F-1). Do not normalize.
-        return DeliveryReportPeekObservation.DeliveryReport(
-            data.MessageId.Trim(),
-            data.Status.Trim());
+        // Exact match correlation (ADR 0020 D-03 / F-1). Do not trim or otherwise normalize messageId.
+        var messageId = data.MessageId;
+        if (messageId.Length == 0
+            || messageId.Any(static c => char.IsWhiteSpace(c) || char.IsControl(c)))
+        {
+            return DeliveryReportPeekObservation.Malformed();
+        }
+
+        var status = data.Status.Trim();
+        if (status.Length == 0)
+        {
+            return DeliveryReportPeekObservation.Malformed();
+        }
+
+        return DeliveryReportPeekObservation.DeliveryReport(messageId, status);
     }
 }
 

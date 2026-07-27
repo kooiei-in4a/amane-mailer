@@ -48,7 +48,6 @@ public sealed class VerifyDeliveryReportCliTests
         Assert.Equal(1, fakeAcs.CallCount);
         Assert.Equal(AdminProviderTestAcsSendCommand.SyntheticSubject, fakeAcs.LastRequest!.Subject);
         Assert.Equal(AdminProviderTestAcsSendCommand.SyntheticPlainTextBody, fakeAcs.LastRequest.PlainTextBody);
-        Assert.Equal(0, peeker.ReceiveOrDeleteCallCount);
         var output = string.Join('\n', console.Output);
         Assert.Contains("[PASS] ACS send operation completed", output);
         Assert.Contains("[PASS] Delivery Report observed in Storage Queue", output);
@@ -181,7 +180,10 @@ public sealed class VerifyDeliveryReportCliTests
         Assert.Equal(VerifyDeliveryReportCommand.FailureExitCode, exitCode);
         var output = string.Join('\n', console.Output);
         var errors = string.Join('\n', console.Errors);
+        Assert.Contains("[WARN] Delivery Report arrival could not be confirmed", output);
+        Assert.Contains("[WARN] Event correlation could not be evaluated", output);
         Assert.Contains("[WARN] Queue backlog exceeds read-only peek window", output);
+        Assert.DoesNotContain("[FAIL] Delivery Report observed in Storage Queue", output);
         Assert.Contains("[ACTION] Use a dedicated empty Staging queue", output);
         Assert.Contains(VerifyDeliveryReportResultCodes.FailedDeliveryReportBacklog, errors);
         Assert.DoesNotContain("success: operation=verify_delivery_report", output);
@@ -288,8 +290,9 @@ public sealed class VerifyDeliveryReportCliTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ACS_CONNECTION_STRING_FILE"] = scratch.AcsSecretPath,
-                ["MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE"] = scratch.QueueSecretPath,
-                ["MAILER_BOUNCE_QUEUE_NAME"] = "acs-reports-prod",
+                ["MAILER_VERIFY_DELIVERY_REPORT_TARGET_ENVIRONMENT"] = "Staging",
+                ["MAILER_VERIFY_DELIVERY_REPORT_QUEUE_CONNECTION_STRING_FILE"] = scratch.QueueSecretPath,
+                ["MAILER_VERIFY_DELIVERY_REPORT_QUEUE_NAME"] = "acs-reports-prod",
                 ["MAILER_VERIFY_DELIVERY_REPORT_TIMEOUT_SECONDS"] = "30",
                 ["MAILER_VERIFY_DELIVERY_REPORT_POLL_INTERVAL_SECONDS"] = "1",
             })
@@ -315,7 +318,12 @@ public sealed class VerifyDeliveryReportCliTests
     public async Task Run_prompt_cancel_returns_rejected_not_130()
     {
         var console = new CancellingVisibleConsole();
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection().Build();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["MAILER_VERIFY_DELIVERY_REPORT_TARGET_ENVIRONMENT"] = "Staging",
+            })
+            .Build();
         var command = new VerifyDeliveryReportCommand(
             console,
             configuration,
@@ -332,7 +340,7 @@ public sealed class VerifyDeliveryReportCliTests
     }
 
     [Fact]
-    public async Task Run_does_not_call_receive_or_delete_on_peeker()
+    public async Task Run_uses_peek_and_properties_only_on_peeker()
     {
         using var scratch = new TestScratch();
         var console = CreateHappyConsole(scratch);
@@ -344,9 +352,121 @@ public sealed class VerifyDeliveryReportCliTests
 
         _ = await command.RunAsync(CancellationToken.None);
 
-        Assert.Equal(0, peeker.ReceiveOrDeleteCallCount);
         Assert.True(peeker.PeekCallCount > 0);
         Assert.True(peeker.PropertiesCallCount > 0);
+    }
+
+    [Fact]
+    public void Azure_peeker_source_does_not_reference_mutating_queue_apis()
+    {
+        var path = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..", "..", "..", "..", "..",
+            "src", "Amane.Mailer", "Operations", "VerifyDeliveryReport", "AzureAcsEventQueuePeeker.cs"));
+        Assert.True(File.Exists(path), $"Expected peeker source at {path}");
+        var source = File.ReadAllText(path);
+        Assert.Contains("PeekMessagesAsync", source, StringComparison.Ordinal);
+        Assert.Contains("GetPropertiesAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReceiveMessagesAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReceiveMessageAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("DeleteMessageAsync", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("UpdateMessageAsync", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Run_rejects_when_target_environment_env_is_missing()
+    {
+        using var scratch = new TestScratch();
+        File.WriteAllText(scratch.AcsSecretPath, ValidAcsConnectionString);
+        File.WriteAllText(scratch.QueueSecretPath, ValidQueueConnectionString);
+        var console = CreateHappyConsole(scratch);
+        var fakeAcs = new FakeAcsClient(_ => throw new InvalidOperationException("should not send"));
+        var peeker = new FakePeeker(0, []);
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ACS_CONNECTION_STRING_FILE"] = scratch.AcsSecretPath,
+                ["MAILER_VERIFY_DELIVERY_REPORT_QUEUE_CONNECTION_STRING_FILE"] = scratch.QueueSecretPath,
+                ["MAILER_VERIFY_DELIVERY_REPORT_QUEUE_NAME"] = "staging-acs-delivery-reports",
+            })
+            .Build();
+        var command = new VerifyDeliveryReportCommand(
+            console,
+            configuration,
+            fakeAcs,
+            new FixedPeekerFactory(peeker),
+            () => FixedOperationId,
+            (_, _) => Task.CompletedTask);
+
+        var exitCode = await command.RunAsync(CancellationToken.None);
+
+        Assert.Equal(VerifyDeliveryReportCommand.RejectedExitCode, exitCode);
+        Assert.Equal(0, fakeAcs.CallCount);
+        Assert.Contains(
+            VerifyDeliveryReportResultCodes.RejectedTargetEnvironmentRequired,
+            string.Join('\n', console.Errors));
+    }
+
+    [Fact]
+    public async Task Run_ignores_mailer_bounce_queue_settings_and_requires_dedicated_or_tty_queue_name()
+    {
+        using var scratch = new TestScratch();
+        File.WriteAllText(scratch.AcsSecretPath, ValidAcsConnectionString);
+        File.WriteAllText(scratch.QueueSecretPath, ValidQueueConnectionString);
+        // No dedicated queue name env; bounce runtime name must be ignored → prompt for queue name.
+        var console = new FakeConsole(
+            lineResponses: ["Staging", VerifyDeliveryReportCommand.IntentPhrase, "staging-acs-delivery-reports"],
+            secretResponses: [],
+            hiddenResponses: ["sender@example.com", "recipient@example.com"]);
+        var fakeAcs = new FakeAcsClient(_ => AcsTestSendOutcome.Succeeded(FixedMessageId));
+        var peeker = new FakePeeker(
+            approximateCount: 1,
+            bodies: [DeliveryReportJson(FixedMessageId, "Delivered", "recipient@example.com")]);
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ACS_CONNECTION_STRING_FILE"] = scratch.AcsSecretPath,
+                ["MAILER_VERIFY_DELIVERY_REPORT_TARGET_ENVIRONMENT"] = "Staging",
+                ["MAILER_VERIFY_DELIVERY_REPORT_QUEUE_CONNECTION_STRING_FILE"] = scratch.QueueSecretPath,
+                ["MAILER_BOUNCE_QUEUE_NAME"] = "acs-delivery-reports",
+                ["MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE"] = scratch.QueueSecretPath,
+                ["MAILER_VERIFY_DELIVERY_REPORT_TIMEOUT_SECONDS"] = "30",
+                ["MAILER_VERIFY_DELIVERY_REPORT_POLL_INTERVAL_SECONDS"] = "1",
+            })
+            .Build();
+        var now = DateTimeOffset.Parse("2026-07-27T00:00:00Z");
+        var command = new VerifyDeliveryReportCommand(
+            console,
+            configuration,
+            fakeAcs,
+            new FixedPeekerFactory(peeker),
+            () => FixedOperationId,
+            (delay, _) => { now += delay; return Task.CompletedTask; },
+            () => now);
+
+        var exitCode = await command.RunAsync(CancellationToken.None);
+
+        Assert.Equal(VerifyDeliveryReportCommand.SuccessExitCode, exitCode);
+        Assert.Contains("dedicated verify-delivery-report", string.Join('\n', console.Output));
+    }
+
+    [Fact]
+    public void Inspector_treats_whitespace_padded_message_id_as_malformed()
+    {
+        var json = """
+            {
+              "id": "eg-1",
+              "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+              "eventTime": "2026-07-27T00:00:00Z",
+              "data": {
+                "messageId": " 11111111-2222-3333-4444-555555555555 ",
+                "status": "Delivered",
+                "recipient": "a@example.com"
+              }
+            }
+            """;
+        var observation = Assert.Single(DeliveryReportEventInspector.InspectBody(json));
+        Assert.Equal(DeliveryReportPeekKind.Malformed, observation.Kind);
     }
 
     [Fact]
@@ -430,8 +550,9 @@ public sealed class VerifyDeliveryReportCliTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["ACS_CONNECTION_STRING_FILE"] = scratch.AcsSecretPath,
-                ["MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE"] = scratch.QueueSecretPath,
-                ["MAILER_BOUNCE_QUEUE_NAME"] = "staging-acs-delivery-reports",
+                ["MAILER_VERIFY_DELIVERY_REPORT_TARGET_ENVIRONMENT"] = "Staging",
+                ["MAILER_VERIFY_DELIVERY_REPORT_QUEUE_CONNECTION_STRING_FILE"] = scratch.QueueSecretPath,
+                ["MAILER_VERIFY_DELIVERY_REPORT_QUEUE_NAME"] = "staging-acs-delivery-reports",
                 ["MAILER_VERIFY_DELIVERY_REPORT_TIMEOUT_SECONDS"] = timeoutSeconds,
                 ["MAILER_VERIFY_DELIVERY_REPORT_POLL_INTERVAL_SECONDS"] = pollIntervalSeconds,
             })

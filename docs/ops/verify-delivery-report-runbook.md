@@ -26,7 +26,8 @@ Staging で正常なテストメールを ACS から送信し、その message I
 2. Staging ACS の承認済み送信元と、専用のテスト用送信先。
 3. 専用または滞留の少ない Staging Queue。Mailer bounce poller が同一 Queue を消費している場合は、競合を避けるため poller を一時停止するか専用 Queue を使う。
 4. ACS secret file（`ACS_CONNECTION_STRING_FILE` または `MAILER_ACS_SECRET_DIRECTORY/acs_connection_string`）を推奨。
-5. Queue connection string file（`MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE`）と Queue 名（`MAILER_BOUNCE_QUEUE_NAME`）を推奨。
+5. fail-closed のため `MAILER_VERIFY_DELIVERY_REPORT_TARGET_ENVIRONMENT=Staging` を必須とする（対話の Staging 入力だけでは不足）。
+6. 専用の Queue connection string file（`MAILER_VERIFY_DELIVERY_REPORT_QUEUE_CONNECTION_STRING_FILE`）と Queue 名（`MAILER_VERIFY_DELIVERY_REPORT_QUEUE_NAME`）を推奨。Mailer bounce runtime の `MAILER_BOUNCE_QUEUE_*` は使わない。
 
 ## 4. 実行
 
@@ -34,8 +35,9 @@ Staging で正常なテストメールを ACS から送信し、その message I
 
 ```bash
 export ACS_CONNECTION_STRING_FILE=/path/to/acs_connection_string
-export MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE=/path/to/queue_connection_string
-export MAILER_BOUNCE_QUEUE_NAME=staging-acs-delivery-reports
+export MAILER_VERIFY_DELIVERY_REPORT_TARGET_ENVIRONMENT=Staging
+export MAILER_VERIFY_DELIVERY_REPORT_QUEUE_CONNECTION_STRING_FILE=/path/to/queue_connection_string
+export MAILER_VERIFY_DELIVERY_REPORT_QUEUE_NAME=staging-acs-delivery-reports
 # optional (defaults: timeout 180s, poll 5s; caps: timeout 30-600, poll 1-30)
 export MAILER_VERIFY_DELIVERY_REPORT_TIMEOUT_SECONDS=180
 export MAILER_VERIFY_DELIVERY_REPORT_POLL_INTERVAL_SECONDS=5
@@ -50,7 +52,7 @@ dotnet Amane.Mailer.dll setup verify-delivery-report
 3. ACS connection string（secret file が無い場合のみ、非表示・二重入力）
 4. Sender / Recipient（非表示）
 5. Queue connection string（file/env が無い場合のみ、非表示・二重入力）
-6. Queue 名（env が無い場合のみ、表示入力）。`prod` / `production` を含む明らかな production 名は拒否
+6. Queue 名（専用 env が無い場合のみ表示入力）。bounce runtime の Queue 名は無視。`prod` / `production` 名は補助ガードとして拒否
 
 送信内容は #426 と同じ固定 synthetic subject / text body。ACS 送信は `IAcsTestSendClient` を再利用する。
 
@@ -73,7 +75,7 @@ success: operation=verify_delivery_report result=SUCCESS
 |------|------|
 | ACS send operation | ACS が送信操作を完了したか（#426 相当） |
 | Delivery Report observed | Queue に Delivery Report が見えたか |
-| Event correlated | 送信した message ID と一致したか（正規化なし） |
+| Event correlated | 送信した message ID と一致したか（trim/正規化なし。空白付き ID は malformed） |
 | Delivery status classified | `Delivered` -> PASS。`Failed` / `Bounced` -> FAIL。その他 -> WARN。配線 PASS と独立 |
 | mailbox ACTION | 受信箱到着は人手確認 |
 
@@ -81,7 +83,7 @@ success: operation=verify_delivery_report result=SUCCESS
 
 timeout 時は ACS PASS と Event Grid 未確認を分離する。
 
-Queue backlog が peek 上限（32）を超え、対象を確認できない場合は WARN / ACTION とし、誤って PASS にしない。
+Queue backlog が peek 上限（32）を超え、対象を確認できない場合は WARN / ACTION（配線 FAIL とはしない）とし、誤って PASS にしない。
 
 ## 6. 終了コード
 

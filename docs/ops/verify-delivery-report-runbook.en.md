@@ -26,7 +26,8 @@ In Staging, send a normal ACS test message and confirm with **read-only peek** t
 2. Staging ACS approved sender and a dedicated test recipient.
 3. A dedicated or low-backlog Staging Queue. If the Mailer bounce poller consumes the same queue, pause it or use a dedicated queue to avoid races.
 4. Prefer ACS secret file (`ACS_CONNECTION_STRING_FILE` or `MAILER_ACS_SECRET_DIRECTORY/acs_connection_string`).
-5. Prefer Queue connection string file (`MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE`) and queue name (`MAILER_BOUNCE_QUEUE_NAME`).
+5. Set fail-closed `MAILER_VERIFY_DELIVERY_REPORT_TARGET_ENVIRONMENT=Staging` (required; interactive Staging alone is not enough).
+6. Prefer dedicated Queue connection string file (`MAILER_VERIFY_DELIVERY_REPORT_QUEUE_CONNECTION_STRING_FILE`) and queue name (`MAILER_VERIFY_DELIVERY_REPORT_QUEUE_NAME`). Do **not** rely on Mailer bounce runtime `MAILER_BOUNCE_QUEUE_*` keys.
 
 ## 4. Execution
 
@@ -34,8 +35,9 @@ A real TTY is required. Redirected stdin / compose `-T` is rejected.
 
 ```bash
 export ACS_CONNECTION_STRING_FILE=/path/to/acs_connection_string
-export MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE=/path/to/queue_connection_string
-export MAILER_BOUNCE_QUEUE_NAME=staging-acs-delivery-reports
+export MAILER_VERIFY_DELIVERY_REPORT_TARGET_ENVIRONMENT=Staging
+export MAILER_VERIFY_DELIVERY_REPORT_QUEUE_CONNECTION_STRING_FILE=/path/to/queue_connection_string
+export MAILER_VERIFY_DELIVERY_REPORT_QUEUE_NAME=staging-acs-delivery-reports
 # optional (defaults: timeout 180s, poll 5s; caps: timeout 30-600, poll 1-30)
 export MAILER_VERIFY_DELIVERY_REPORT_TIMEOUT_SECONDS=180
 export MAILER_VERIFY_DELIVERY_REPORT_POLL_INTERVAL_SECONDS=5
@@ -73,7 +75,7 @@ success: operation=verify_delivery_report result=SUCCESS
 |----------|---------|
 | ACS send operation | ACS completed the send operation (#426 equivalent) |
 | Delivery Report observed | A Delivery Report was visible in the queue |
-| Event correlated | Exact message ID match (no normalization) |
+| Event correlated | Exact message ID match (no trim/normalization; padded IDs are malformed) |
 | Delivery status classified | `Delivered` → PASS; `Failed` / `Bounced` → FAIL; other → WARN. Independent of wiring |
 | mailbox ACTION | Human mailbox confirmation |
 
@@ -81,7 +83,7 @@ If wiring is confirmed, exit `0` even when delivery status is `Failed` (wiring P
 
 On timeout, ACS success and Event Grid non-confirmation are reported separately.
 
-If queue backlog exceeds the peek window (32) and the target cannot be confirmed, emit WARN / ACTION and do not PASS.
+If queue backlog exceeds the peek window (32) and the target cannot be confirmed, emit WARN / ACTION (not wiring FAIL) and do not PASS.
 
 ## 6. Exit codes
 

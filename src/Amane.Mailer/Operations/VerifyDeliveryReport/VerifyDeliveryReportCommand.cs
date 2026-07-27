@@ -1,6 +1,5 @@
 using System.Net.Mail;
 using System.Text.RegularExpressions;
-using Amane.Mailer.Configuration;
 using Amane.Mailer.Operations.AcsTestSend;
 using Microsoft.Extensions.Configuration;
 
@@ -20,6 +19,23 @@ public sealed partial class VerifyDeliveryReportCommand
     /// Only this exact, capitalized literal is accepted (same Staging gate as test-acs-send).
     /// </summary>
     public const string RequiredEnvironmentConfirmation = "Staging";
+
+    /// <summary>
+    /// Fail-closed Staging gate. Must be the exact literal <see cref="RequiredEnvironmentConfirmation"/>.
+    /// Interactive confirmation alone is not sufficient.
+    /// </summary>
+    public const string TargetEnvironmentEnvVar = "MAILER_VERIFY_DELIVERY_REPORT_TARGET_ENVIRONMENT";
+
+    /// <summary>
+    /// Dedicated Queue connection-string file for this command. Does not read Mailer bounce runtime keys.
+    /// </summary>
+    public const string QueueConnectionStringFileEnvVar =
+        "MAILER_VERIFY_DELIVERY_REPORT_QUEUE_CONNECTION_STRING_FILE";
+
+    /// <summary>
+    /// Dedicated Queue name for this command. Does not read <c>MAILER_BOUNCE_QUEUE_NAME</c>.
+    /// </summary>
+    public const string QueueNameEnvVar = "MAILER_VERIFY_DELIVERY_REPORT_QUEUE_NAME";
 
     public const int SuccessExitCode = 0;
     public const int FailureExitCode = 1;
@@ -78,6 +94,13 @@ public sealed partial class VerifyDeliveryReportCommand
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Fail closed before prompts: dedicated Staging env var must be set exactly.
+            // Interactive confirmation alone must not unlock Production-hosted settings.
+            if (!TryValidateConfiguredTargetEnvironment(out var targetEnvironmentRejectCode))
+            {
+                return Reject(targetEnvironmentRejectCode);
+            }
 
             var environmentConfirmation = _console.ReadVisibleLine(
                 "Confirm target environment (exact match): ",
@@ -257,17 +280,20 @@ public sealed partial class VerifyDeliveryReportCommand
                     stageFailLine: "[FAIL] Delivery Report observed in Storage Queue");
 
             case DeliveryReportPollOutcome.TimedOut:
-                // ACS send already reported PASS above; distinguish Event Grid / Queue arrival failure.
-                _console.WriteLine("[FAIL] Delivery Report observed in Storage Queue");
-                _console.WriteLine("[FAIL] Event correlated to the test send");
+                // ACS send already reported PASS above. Backlog is inconclusive, not a wiring FAIL.
                 if (pollResult.BacklogPreventsConfirmation)
                 {
+                    _console.WriteLine("[WARN] Delivery Report arrival could not be confirmed");
+                    _console.WriteLine("[WARN] Event correlation could not be evaluated");
                     _console.WriteLine(
                         "[WARN] Queue backlog exceeds read-only peek window; target event cannot be confirmed");
                     _console.WriteLine(
                         "[ACTION] Use a dedicated empty Staging queue, pause the Mailer bounce poller, then retry");
                     return Fail(VerifyDeliveryReportResultCodes.FailedDeliveryReportBacklog);
                 }
+
+                _console.WriteLine("[FAIL] Delivery Report observed in Storage Queue");
+                _console.WriteLine("[FAIL] Event correlated to the test send");
 
                 if (pollResult.SawOtherDeliveryReport)
                 {
@@ -422,9 +448,28 @@ public sealed partial class VerifyDeliveryReportCommand
         return first;
     }
 
+    private bool TryValidateConfiguredTargetEnvironment(out string rejectCode)
+    {
+        var configured = _configuration[TargetEnvironmentEnvVar];
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            rejectCode = VerifyDeliveryReportResultCodes.RejectedTargetEnvironmentRequired;
+            return false;
+        }
+
+        if (!string.Equals(configured.Trim(), RequiredEnvironmentConfirmation, StringComparison.Ordinal))
+        {
+            rejectCode = VerifyDeliveryReportResultCodes.RejectedEnvironmentMismatch;
+            return false;
+        }
+
+        rejectCode = string.Empty;
+        return true;
+    }
+
     private string ResolveQueueConnectionString(CancellationToken cancellationToken)
     {
-        var fromConfig = TryReadQueueConnectionString();
+        var fromConfig = TryReadDedicatedQueueConnectionString();
         if (!string.IsNullOrEmpty(fromConfig))
         {
             if (!LooksLikeStorageConnectionString(fromConfig))
@@ -434,7 +479,7 @@ public sealed partial class VerifyDeliveryReportCommand
                     "Queue connection string file does not look like a Storage connection string.");
             }
 
-            _console.WriteLine("Using Storage Queue connection string from configured secret file or environment.");
+            _console.WriteLine("Using Storage Queue connection string from dedicated verify-delivery-report secret file.");
             return fromConfig;
         }
 
@@ -457,9 +502,10 @@ public sealed partial class VerifyDeliveryReportCommand
         return first;
     }
 
-    private string? TryReadQueueConnectionString()
+    private string? TryReadDedicatedQueueConnectionString()
     {
-        var filePath = _configuration[MailerBounceIngestionOptions.QueueConnectionStringFileKey];
+        // Intentionally does not read MAILER_BOUNCE_QUEUE_* / Mailer:BounceIngestion keys.
+        var filePath = _configuration[QueueConnectionStringFileEnvVar];
         if (!string.IsNullOrWhiteSpace(filePath) && File.Exists(filePath))
         {
             var value = File.ReadAllText(filePath).Trim();
@@ -469,30 +515,18 @@ public sealed partial class VerifyDeliveryReportCommand
             }
         }
 
-        var envValue = _configuration[MailerBounceIngestionOptions.QueueConnectionStringEnvironmentKey];
-        if (!string.IsNullOrWhiteSpace(envValue))
-        {
-            return envValue.Trim();
-        }
-
-        var configValue = _configuration[MailerBounceIngestionOptions.QueueConnectionStringKey];
-        if (!string.IsNullOrWhiteSpace(configValue))
-        {
-            return configValue.Trim();
-        }
-
         return null;
     }
 
     private string ResolveQueueName(CancellationToken cancellationToken)
     {
-        var configured = _configuration[MailerBounceIngestionOptions.QueueNameEnvironmentKey]
-            ?? _configuration[MailerBounceIngestionOptions.QueueNameKey];
+        // Intentionally does not read MAILER_BOUNCE_QUEUE_NAME.
+        var configured = _configuration[QueueNameEnvVar];
         string queueName;
         if (!string.IsNullOrWhiteSpace(configured))
         {
             queueName = configured.Trim();
-            _console.WriteLine("Using Storage Queue name from configuration.");
+            _console.WriteLine("Using Storage Queue name from dedicated verify-delivery-report configuration.");
         }
         else
         {
@@ -510,7 +544,7 @@ public sealed partial class VerifyDeliveryReportCommand
                 "Queue name is invalid.");
         }
 
-        // Soft production guard: reject obvious production queue names after Staging confirmation.
+        // Auxiliary production-name guard only; fail-closed Staging gate is TARGET_ENVIRONMENT.
         if (LooksLikeProductionQueueName(queueName))
         {
             throw new SecretOperationException(
@@ -532,7 +566,6 @@ public sealed partial class VerifyDeliveryReportCommand
             || normalized.Contains("-production-", StringComparison.Ordinal)
             || normalized.Contains("-prod-", StringComparison.Ordinal);
     }
-
     internal static bool LooksLikeStorageConnectionString(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
