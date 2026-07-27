@@ -264,7 +264,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 - deploy template 未配線 → モードは **Target only**、完了判定は `[FAIL]` + `[ACTION]`
 - poll 失敗メトリクスが静かなことだけで Event Grid 配線成功としない（到着未確認は `[WARN]` / `[ACTION]`）
 - [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) は**選択した environment**（dev / staging / production を含む）に対する read-only 構成確認（`setup check-event-grid`）。Staging 限定ではない
-- [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は **Staging 限定**の Delivery Report E2E / pre-production 配線確認（予定）。#428 の結果を production 実行済みの証拠として扱わない。production Queue 実行・production テスト送信は #428 の非目標
+- [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は **Staging 限定**の Delivery Report E2E / pre-production 配線確認（`setup verify-delivery-report` / [verify-delivery-report-runbook.md](verify-delivery-report-runbook.md)）。#428 の結果を production 実行済みの証拠として扱わない。production Queue 実行・production テスト送信は #428 の非目標
 - **実バウンスは完了条件にしない**
 
 **完了の目安（現行）:** なし（Target only）。#427 の environment 別構成確認と、#428 の Staging E2E 証跡と、production 本番構成の完了は分離する。
@@ -288,9 +288,9 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 | [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **提供済み**（上「setup doctor」） |
 | [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS 単体の実送信確認 CLI | **提供済み** — [test-acs-send-cli-runbook.md](test-acs-send-cli-runbook.md)（Staging 限定） |
 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認（`setup check-event-grid`） | **選択 environment 向け**（Staging 限定ではない）。構成確認のみ。イベント到着は保証しない。手順: [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md) |
-| [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report の Queue 到着 E2E（message ID 相関。実バウンス必須にしない） | **Staging 限定**の pre-production 配線確認。production Queue / production テスト送信は非目標 |
+| [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report の Queue 到着 E2E（message ID 相関。実バウンス必須にしない） | **提供済み** — [verify-delivery-report-runbook.md](verify-delivery-report-runbook.md)（**Staging 限定**。production Queue / production テスト送信は非目標） |
 
-現時点では setup doctor（#425）、ACS 単体送信確認（#426）、および既存 preflight script・smoke・runbook 手動確認で進める。
+現時点では setup doctor（#425）、ACS 単体送信確認（#426）、Event Grid 構成確認（#427）、Delivery Report E2E（#428）、および既存 preflight script・smoke・runbook 手動確認で進める。
 
 ## この入口の非目標
 

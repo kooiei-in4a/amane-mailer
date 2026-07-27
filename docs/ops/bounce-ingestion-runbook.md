@@ -25,7 +25,7 @@ v1.1.0 は **Storage Queue ポーリング**のみ。公開 HTTPS 受信口は�
 
 ### ACS / Event Grid 構成の要点
 
-構成の read-only 確認は `setup check-event-grid`（[#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) / [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md)）。Azure リソースは変更しない。到着確認や Queue 本文取得は行わない。
+構成の read-only 確認は `setup check-event-grid`（[#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) / [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md)）。Azure リソースは変更しない。Staging での Delivery Report 到着確認は `setup verify-delivery-report`（[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) / [verify-delivery-report-runbook.md](verify-delivery-report-runbook.md)）。
 
 1. ACS Email の Delivery Report を Event Grid で購読する。
 2. Event Grid のエンドポイントを **Storage Queue** にする（Push Webhook ではない）。

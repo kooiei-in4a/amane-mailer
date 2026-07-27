@@ -8,7 +8,7 @@
 
 Verify, without mutating Azure resources, that the Event Grid subscription and Storage Queue used for ACS Email Delivery Reports match the v1.1.0 Pull bounce-ingestion assumptions.
 
-This command only inspects configuration. It does not prove Delivery Report arrival or read queue message bodies (arrival belongs to [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) / the bounce runbook).
+This command only inspects configuration. It does not prove Delivery Report arrival or read queue message bodies (arrival belongs to [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) / [verify-delivery-report-runbook.en.md](verify-delivery-report-runbook.en.md)).
 
 ## 2. Chosen approach
 
