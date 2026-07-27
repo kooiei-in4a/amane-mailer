@@ -47,8 +47,8 @@ public sealed class EventGridConfigChecker
             return;
         }
 
-        await CheckEventSubscriptionAsync(acsResourceId, cancellationToken);
         var storageResourceId = await CheckStorageAccountAsync(cancellationToken);
+        await CheckEventSubscriptionAsync(acsResourceId, storageResourceId, cancellationToken);
         await CheckQueueExistsAsync(cancellationToken);
         CheckEnvironmentIsolation(acsResourceId, storageResourceId);
         AddManualVerificationActions();
@@ -152,7 +152,7 @@ public sealed class EventGridConfigChecker
         return resourceId;
     }
 
-    private async Task CheckEventSubscriptionAsync(string acsResourceId, CancellationToken cancellationToken)
+    private async Task CheckEventSubscriptionAsync(string acsResourceId, string? expectedStorageResourceId, CancellationToken cancellationToken)
     {
         var result = await _runner.RunAsync(
             new AzureCliQuery(
@@ -180,7 +180,7 @@ public sealed class EventGridConfigChecker
 
         CheckSource(root, acsResourceId);
         CheckEventTypes(root);
-        CheckDestination(root);
+        CheckDestination(root, expectedStorageResourceId);
         CheckDeliverySchema(root);
     }
 
@@ -248,26 +248,23 @@ public sealed class EventGridConfigChecker
             return;
         }
 
-        var hasAll = types.Any(static t => string.Equals(t, "All", StringComparison.OrdinalIgnoreCase));
         var hasDeliveryReport = types.Any(static t =>
             string.Equals(t, AcsEventParser.EmailDeliveryReportReceivedEventType, StringComparison.Ordinal));
 
-        if (!hasAll && !hasDeliveryReport)
+        if (!hasDeliveryReport)
         {
             _report.AddFail(
                 "event_types",
-                $"Missing required event type {AcsEventParser.EmailDeliveryReportReceivedEventType}.");
+                $"Missing required event type {AcsEventParser.EmailDeliveryReportReceivedEventType} (All is not accepted; the Delivery Report type must be listed explicitly).");
             return;
         }
 
         _report.AddPass(
             "event_types",
-            hasAll
-                ? "includedEventTypes includes All (covers EmailDeliveryReportReceived)."
-                : "includedEventTypes includes Microsoft.Communication.EmailDeliveryReportReceived.");
+            "includedEventTypes includes Microsoft.Communication.EmailDeliveryReportReceived.");
     }
 
-    private void CheckDestination(JsonElement root)
+    private void CheckDestination(JsonElement root, string? expectedStorageResourceId)
     {
         if (!root.TryGetProperty("destination", out var destination)
             || destination.ValueKind != JsonValueKind.Object)
@@ -335,17 +332,25 @@ public sealed class EventGridConfigChecker
             return;
         }
 
-        if (!DestinationStorageMatches(destinationResourceId, _options.StorageAccountName))
+        if (string.IsNullOrWhiteSpace(expectedStorageResourceId))
         {
             _report.AddFail(
                 "destination_storage",
-                $"Destination storage account does not match expected account ({AzureResourceIdSanitizer.SanitizeResourceId(destinationResourceId)}).");
+                "Cannot verify destination storage resource id because the expected Storage account id was not resolved.");
+            return;
+        }
+
+        if (!ResourceIdsEqual(destinationResourceId, expectedStorageResourceId))
+        {
+            _report.AddFail(
+                "destination_storage",
+                $"Destination storage resource id does not match expected Storage account ({AzureResourceIdSanitizer.SanitizeResourceId(destinationResourceId)}).");
             return;
         }
 
         _report.AddPass(
             "destination_storage",
-            $"Destination storage account matches ({AzureResourceIdSanitizer.SanitizeResourceId(destinationResourceId)}).");
+            $"Destination storage resource id matches ({AzureResourceIdSanitizer.SanitizeResourceId(destinationResourceId)}).");
     }
 
     private void CheckDeliverySchema(JsonElement root)
@@ -397,7 +402,13 @@ public sealed class EventGridConfigChecker
             return null;
         }
 
-        TryGetStringProperty(result.StandardOutput, "id", out var resourceId);
+        if (!TryGetStringProperty(result.StandardOutput, "id", out var resourceId)
+            || string.IsNullOrWhiteSpace(resourceId))
+        {
+            _report.AddFail("storage_account", "Storage account response did not include a resource id.");
+            return null;
+        }
+
         _report.AddPass(
             "storage_account",
             $"Storage account exists ({AzureResourceIdSanitizer.SanitizeResourceId(resourceId)}).");
@@ -552,18 +563,6 @@ public sealed class EventGridConfigChecker
         return !string.IsNullOrWhiteSpace(endpointUrl);
     }
 
-    private static bool DestinationStorageMatches(string destinationResourceId, string storageAccountName)
-    {
-        var sanitizedExpected = storageAccountName.Trim();
-        if (destinationResourceId.EndsWith("/" + sanitizedExpected, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return destinationResourceId.Contains(
-            "/storageAccounts/" + sanitizedExpected,
-            StringComparison.OrdinalIgnoreCase);
-    }
 
     private static bool ResourceIdsEqual(string left, string right) =>
         string.Equals(left.Trim().TrimEnd('/'), right.Trim().TrimEnd('/'), StringComparison.OrdinalIgnoreCase);

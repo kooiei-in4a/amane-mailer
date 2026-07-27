@@ -70,7 +70,7 @@ dotnet Amane.Mailer.dll setup check-event-grid \
 - source ACS 不一致
 - destination が Storage Queue ではない
 - destination Queue / Storage 不一致
-- `Microsoft.Communication.EmailDeliveryReportReceived` 不足
+- `Microsoft.Communication.EmailDeliveryReportReceived` 不足（`All` のみは不可。明示必須）
 - Push webhook destination（#304 は v1.1.0 の正常構成として扱わない）
 - Cloud Events delivery schema
 - environment 名の混線ヒューリスティック

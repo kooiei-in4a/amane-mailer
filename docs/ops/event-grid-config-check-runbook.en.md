@@ -70,7 +70,7 @@ Typical failures:
 - Source ACS mismatch
 - Non-Storage Queue destination
 - Destination queue/storage mismatch
-- Missing `Microsoft.Communication.EmailDeliveryReportReceived`
+- Missing `Microsoft.Communication.EmailDeliveryReportReceived` (`All` alone is not accepted; the type must be listed explicitly)
 - Push webhook destination (not valid for v1.1.0; #304)
 - Cloud Events delivery schema
 - Environment naming mix heuristic

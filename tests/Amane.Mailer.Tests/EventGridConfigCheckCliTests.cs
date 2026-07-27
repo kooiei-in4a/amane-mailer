@@ -104,6 +104,75 @@ public sealed class EventGridConfigCheckCliTests
     }
 
     [Fact]
+    public async Task included_event_types_all_without_delivery_report_fails()
+    {
+        var runner = FakeAzureCliRunner.HappyPath();
+        runner.Set(AzureCliQueryKind.EventSubscriptionShow, Ok(SubscriptionJson(
+            topic: AcsId,
+            endpointType: "StorageQueue",
+            queueName: "bounce-staging",
+            storageId: StorageId,
+            eventTypes: ["All"])));
+
+        var (exitCode, output, _) = await RunAsync(runner, StagingArgs());
+
+        Assert.Equal(EventGridConfigCheckCommand.FailureExitCode, exitCode);
+        Assert.Contains("[FAIL] event_types:", output, StringComparison.Ordinal);
+        Assert.Contains("All is not accepted", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task destination_storage_subscription_mismatch_fails()
+    {
+        var otherStorageId =
+            "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-mailer-staging/providers/Microsoft.Storage/storageAccounts/stmailerstaging";
+        var runner = FakeAzureCliRunner.HappyPath();
+        runner.Set(AzureCliQueryKind.EventSubscriptionShow, Ok(SubscriptionJson(
+            topic: AcsId,
+            endpointType: "StorageQueue",
+            queueName: "bounce-staging",
+            storageId: otherStorageId)));
+
+        var (exitCode, output, _) = await RunAsync(runner, StagingArgs());
+
+        Assert.Equal(EventGridConfigCheckCommand.FailureExitCode, exitCode);
+        Assert.Contains("[FAIL] destination_storage:", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("22222222-2222-2222-2222-222222222222", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task destination_storage_resource_group_mismatch_fails()
+    {
+        var otherStorageId =
+            "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-other/providers/Microsoft.Storage/storageAccounts/stmailerstaging";
+        var runner = FakeAzureCliRunner.HappyPath();
+        runner.Set(AzureCliQueryKind.EventSubscriptionShow, Ok(SubscriptionJson(
+            topic: AcsId,
+            endpointType: "StorageQueue",
+            queueName: "bounce-staging",
+            storageId: otherStorageId)));
+
+        var (exitCode, output, _) = await RunAsync(runner, StagingArgs());
+
+        Assert.Equal(EventGridConfigCheckCommand.FailureExitCode, exitCode);
+        Assert.Contains("[FAIL] destination_storage:", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task storage_account_response_missing_id_fails()
+    {
+        var runner = FakeAzureCliRunner.HappyPath();
+        runner.Set(AzureCliQueryKind.StorageAccountShow, Ok("""{"name":"stmailerstaging"}"""));
+
+        var (exitCode, output, _) = await RunAsync(runner, StagingArgs());
+
+        Assert.Equal(EventGridConfigCheckCommand.FailureExitCode, exitCode);
+        Assert.Contains("[FAIL] storage_account:", output, StringComparison.Ordinal);
+        Assert.Contains("did not include a resource id", output, StringComparison.Ordinal);
+        Assert.Contains("[FAIL] destination_storage:", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task push_webhook_destination_is_not_treated_as_valid()
     {
         var runner = FakeAzureCliRunner.HappyPath();
@@ -212,19 +281,115 @@ public sealed class EventGridConfigCheckCliTests
         Assert.Contains("[FAIL] delivery_schema:", output, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void argument_builder_only_emits_allowlisted_read_queries()
+    public static TheoryData<AzureCliQueryKind, string> AllowlistedQueryPrefixes() => new()
     {
-        var args = AzureCliArgumentBuilder.Build(new AzureCliQuery(
-            AzureCliQueryKind.EventSubscriptionShow,
-            "sub-1",
-            EventSubscriptionName: "eg-sub",
-            SourceResourceId: AcsId));
+        { AzureCliQueryKind.Version, "version --output json" },
+        { AzureCliQueryKind.AccountShow, "account show --subscription " },
+        { AzureCliQueryKind.ResourceShow, "resource show --resource-group " },
+        { AzureCliQueryKind.EventSubscriptionShow, "eventgrid event-subscription show --name " },
+        { AzureCliQueryKind.StorageAccountShow, "storage account show --name " },
+        { AzureCliQueryKind.StorageQueueExists, "storage queue exists --name " },
+    };
 
-        Assert.StartsWith("eventgrid event-subscription show --name ", args, StringComparison.Ordinal);
+    [Theory]
+    [MemberData(nameof(AllowlistedQueryPrefixes))]
+    public void argument_builder_emits_only_allowlisted_read_query_prefixes(
+        AzureCliQueryKind kind,
+        string expectedPrefix)
+    {
+        var query = kind switch
+        {
+            AzureCliQueryKind.Version => new AzureCliQuery(kind, "sub-1"),
+            AzureCliQueryKind.AccountShow => new AzureCliQuery(kind, "sub-1"),
+            AzureCliQueryKind.ResourceShow => new AzureCliQuery(
+                kind,
+                "sub-1",
+                ResourceGroup: "rg",
+                ResourceName: "acs",
+                ResourceType: EventGridConfigChecker.CommunicationResourceType),
+            AzureCliQueryKind.EventSubscriptionShow => new AzureCliQuery(
+                kind,
+                "sub-1",
+                EventSubscriptionName: "eg-sub",
+                SourceResourceId: AcsId),
+            AzureCliQueryKind.StorageAccountShow => new AzureCliQuery(
+                kind,
+                "sub-1",
+                ResourceGroup: "rg",
+                StorageAccountName: "st"),
+            AzureCliQueryKind.StorageQueueExists => new AzureCliQuery(
+                kind,
+                "sub-1",
+                StorageAccountName: "st",
+                QueueName: "q"),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
+
+        var args = AzureCliArgumentBuilder.Build(query);
+
+        Assert.StartsWith(expectedPrefix, args, StringComparison.Ordinal);
+        Assert.DoesNotContain("account set", args, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("create", args, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("update", args, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("delete", args, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("role assignment", args, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("network", args, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("firewall", args, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task azure_cli_runner_starts_path_script_without_shell_execute()
+    {
+        var tempDir = Directory.CreateTempSubdirectory("amane-az-runner-");
+        var originalPath = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                var scriptPath = Path.Combine(tempDir.FullName, "az.cmd");
+                await File.WriteAllTextAsync(
+                    scriptPath,
+                    "@echo off`r`necho {\"azure-cli\":\"test-fixture\"}`r`nexit /b 0`r`n",
+                    TestContext.Current.CancellationToken);
+            }
+            else
+            {
+                var scriptPath = Path.Combine(tempDir.FullName, "az");
+                await File.WriteAllTextAsync(
+                    scriptPath,
+                    "#!/bin/sh`necho '{\"azure-cli\":\"test-fixture\"}'`nexit 0`n",
+                    TestContext.Current.CancellationToken);
+                File.SetUnixFileMode(
+                    scriptPath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                tempDir.FullName + Path.PathSeparator + (originalPath ?? string.Empty));
+
+            var runner = new AzureCliRunner();
+            var result = await runner.RunAsync(
+                new AzureCliQuery(AzureCliQueryKind.Version, "sub-1"),
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.Started);
+            Assert.False(result.TimedOut);
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("test-fixture", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", originalPath);
+            try
+            {
+                tempDir.Delete(recursive: true);
+            }
+            catch
+            {
+                // Best-effort temp cleanup.
+            }
+        }
     }
 
     [Fact]

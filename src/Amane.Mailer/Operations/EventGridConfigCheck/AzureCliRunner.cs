@@ -13,26 +13,30 @@ public sealed class AzureCliRunner : IAzureCliRunner
     public async Task<AzureCliRunResult> RunAsync(AzureCliQuery query, CancellationToken cancellationToken)
     {
         var arguments = AzureCliArgumentBuilder.Build(query);
-        var fileName = ResolveAzFileName();
+        var azPath = TryResolveAzExecutablePath();
+        if (azPath is null)
+        {
+            return new AzureCliRunResult(
+                Started: false,
+                ExitCode: -1,
+                StandardOutput: string.Empty,
+                StandardError: string.Empty,
+                TimedOut: false);
+        }
 
         ProcessStartInfo startInfo;
         try
         {
-            startInfo = new ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8,
-            };
+            startInfo = CreateStartInfo(azPath, arguments);
         }
         catch
         {
-            return new AzureCliRunResult(Started: false, ExitCode: -1, StandardOutput: string.Empty, StandardError: string.Empty, TimedOut: false);
+            return new AzureCliRunResult(
+                Started: false,
+                ExitCode: -1,
+                StandardOutput: string.Empty,
+                StandardError: string.Empty,
+                TimedOut: false);
         }
 
         Process? process;
@@ -42,12 +46,22 @@ public sealed class AzureCliRunner : IAzureCliRunner
         }
         catch
         {
-            return new AzureCliRunResult(Started: false, ExitCode: -1, StandardOutput: string.Empty, StandardError: string.Empty, TimedOut: false);
+            return new AzureCliRunResult(
+                Started: false,
+                ExitCode: -1,
+                StandardOutput: string.Empty,
+                StandardError: string.Empty,
+                TimedOut: false);
         }
 
         if (process is null)
         {
-            return new AzureCliRunResult(Started: false, ExitCode: -1, StandardOutput: string.Empty, StandardError: string.Empty, TimedOut: false);
+            return new AzureCliRunResult(
+                Started: false,
+                ExitCode: -1,
+                StandardOutput: string.Empty,
+                StandardError: string.Empty,
+                TimedOut: false);
         }
 
         using (process)
@@ -84,8 +98,88 @@ public sealed class AzureCliRunner : IAzureCliRunner
         }
     }
 
-    private static string ResolveAzFileName() =>
-        OperatingSystem.IsWindows() ? "az.cmd" : "az";
+    internal static string? TryResolveAzExecutablePath()
+    {
+        var fileName = OperatingSystem.IsWindows() ? "az.cmd" : "az";
+        var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        foreach (var segment in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var directory = segment.Trim().Trim('"');
+            if (directory.Length == 0)
+            {
+                continue;
+            }
+
+            var candidate = Path.Combine(directory, fileName);
+            if (File.Exists(candidate))
+            {
+                return Path.GetFullPath(candidate);
+            }
+        }
+
+        return null;
+    }
+
+    private static ProcessStartInfo CreateStartInfo(string azPath, string arguments)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return new ProcessStartInfo
+            {
+                FileName = azPath,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            };
+        }
+
+        // Windows .cmd files cannot be started with UseShellExecute=false via CreateProcess.
+        // Route through ComSpec. FileName is the real cmd.exe; the /c command string is built
+        // only from a PATH-resolved az.cmd path (validated) plus allowlisted args that already
+        // reject shell metacharacters in AzureCliArgumentBuilder.
+        return new ProcessStartInfo
+        {
+            FileName = ResolveComSpec(),
+            Arguments = BuildWindowsCmdArguments(azPath, arguments),
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+    }
+
+    private static string ResolveComSpec()
+    {
+        var comSpec = Environment.GetEnvironmentVariable("ComSpec");
+        if (!string.IsNullOrWhiteSpace(comSpec) && File.Exists(comSpec))
+        {
+            return comSpec;
+        }
+
+        return Path.Combine(Environment.SystemDirectory, "cmd.exe");
+    }
+
+    /// <summary>
+    /// Builds <c>cmd /d /c</c> arguments: quoted az.cmd path plus allowlisted args.
+    /// </summary>
+    internal static string BuildWindowsCmdArguments(string azPath, string arguments)
+    {
+        if (azPath.IndexOfAny(['"', '\r', '\n', '\0', '&', '|', ';', '<', '>', '^', '%']) >= 0)
+        {
+            throw new ArgumentException("Azure CLI path contains unsupported characters.");
+        }
+
+        var command = string.IsNullOrWhiteSpace(arguments)
+            ? $"\"{azPath}\""
+            : $"\"{azPath}\" {arguments}";
+        return $"/d /c {command}";
+    }
 
     private static void TryKill(Process process)
     {
