@@ -555,7 +555,7 @@
       "amane.mailer": {
         "type": "Project",
         "dependencies": {
-          "Amane.Mailer.Contracts": "[1.0.1, )",
+          "Amane.Mailer.Contracts": "[1.1.0, )",
           "Azure.Communication.Email": "[1.1.0, )",
           "Azure.Storage.Queues": "[12.27.1, )",
           "MailKitLite": "[4.17.0, )",

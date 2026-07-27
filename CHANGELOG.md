@@ -15,6 +15,77 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-28
+
+Minor release. Ships ACS Delivery Report bounce ingestion (Storage Queue Pull),
+tenant suppressions, setup entry / diagnostic CLIs, and production deploy wiring
+for mode 4 / mode 5. **Additive HTTP contract change:** consumers may observe the
+new delivery error code `RECIPIENT_SUPPRESSED`; request schemas are unchanged.
+Requires SQLite migration `011_bounce_ingestion.sql` (not present in 1.0.x).
+
+### Added
+
+- Bounce ingestion schema (migration 011): `provider_event_inbox`, `bounce_events`,
+  and `mail_suppressions` (#301).
+- Bounce ingestion worker: parse ACS Delivery Reports, correlate by
+  `provider_message_id`, record bounce history, and upsert suppressions (#302).
+- Send-time suppression: block suppressed recipients before provider send with
+  `RECIPIENT_SUPPRESSED` and metric `mail_suppressed_sends_total` (#303).
+- Azure Storage Queue Pull transport for ACS Delivery Reports
+  (`MAILER_BOUNCE_INGESTION=queue`, queue name + file-secret connection) (#305).
+- Admin bounce visibility on mail-request detail, suppressions list (view-only),
+  and bounce ops runbooks (#306).
+- Ops CLI `db suppressions remove` with audited physical removal (#400).
+- Setup entry guide (JA/EN) with mode taxonomy and PASS/FAIL/WARN/ACTION
+  semantics (#424).
+- Read-only `setup doctor` preflight diagnostics (#425).
+- Staging-only `admin provider test-acs-send` CLI (#426).
+- Read-only `setup check-event-grid` for Event Grid → Storage Queue wiring (#427).
+- Staging-only `setup verify-delivery-report` E2E (peek/correlate; no queue
+  mutate) (#428).
+- Production-confirmed `register-acs` so setup mode 4 (production ACS) is
+  Available (#435).
+- Deploy compose / `.env.example` bounce Queue wiring so mode 5 is Available
+  (#436).
+
+### Changed
+
+- Contracts / OpenAPI: document additive delivery error code
+  `RECIPIENT_SUPPRESSED` (#303).
+- Event Grid Push webhook (`MAILER_BOUNCE_INGESTION=webhook`) remains out of
+  scope for v1.1.0 (#304); startup rejects that mode.
+- Consumer “bounced” notification remains deferred (ADR 0020 D-11).
+
+### Fixed
+
+- Admin session touch is monotonic and interval-throttled; cookie uses absolute
+  lifetime; idle expiry is enforced from `admin_sessions` only (#391).
+- Suppressions remove CLI: harden transaction / post-commit I/O and map DB
+  open/BEGIN failures to exit 1 (#400).
+- Admin suppressions: tenant-scoped audit, PII opt-in / capability gates, and
+  unmasked nav with tenant selection (#306).
+- Bounce queue poller retains mixed unparseable batches and avoids leaking
+  provider error text (#305).
+- Suppressed-send metric counted on finalize success, not enqueue (#303).
+
+### Security
+
+- Suppressions list defaults to masked PII with capability-gated unmask and
+  tenant-scoped `mail_suppressions` audit (#306 / ADR 0013).
+- Bounce and setup CLIs use redact-safe diagnostics; provider raw errors stay
+  out of logs (#305, #425–#427).
+- Admin idle lifetime is enforced server-side in DB rather than via cookie
+  reissue on touch (#391).
+
+### Documentation
+
+- Bounce ingestion runbooks and metrics/alerts guidance (#306).
+- Setup guide plus doctor / test-acs-send / check-event-grid /
+  verify-delivery-report runbooks (#424–#428).
+- `setup-entry-guide` marked `implemented` after modes 4 / 5 Available (#437).
+- ADR 0020 (recorded as design in 1.0.1) is implemented for the v1.1.0 runtime
+  slice.
+
 ## [1.0.1] - 2026-07-26
 
 Patch release. Fixes four webhook-delivery defects that could stall notifications,
