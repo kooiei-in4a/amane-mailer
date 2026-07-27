@@ -137,7 +137,7 @@ Read in this order when context is unclear:
 
 1. Target GitHub issue
 2. Related ADR in `docs/adr/`
-3. [docs/implementation-status.json](docs/implementation-status.json) for current implementation status (ADRs record design rationale)
+3. [docs/implementation-status.json](docs/implementation-status.json) for current implementation status (ADRs record design rationale). Phase 2 CI validates manifest format only; update the manifest in PRs that change tracked feature behavior and keep ADRs linked to the manifest instead of duplicating current status. Phase 3+ automation (#246) is deferred unless staleness recurs.
 4. [docs/service-spec.md](docs/service-spec.md) and [docs/api/openapi.yaml](docs/api/openapi.yaml)
 5. Ops runbooks in `docs/ops/` when changing deployment or operations
 

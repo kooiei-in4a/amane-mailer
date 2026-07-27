@@ -25,15 +25,26 @@ public sealed partial class AdminProviderRegisterAcsCommand(
     public const string IntentPhrase = "MAILER-ACS-REGISTER";
 
     /// <summary>
-    /// Only this exact, capitalized literal is accepted. Amane Mailer's own tenant schema uses a
-    /// lowercase "staging" environment enum; this command deliberately does not fold case or
-    /// accept that spelling directly from the operator, to avoid silently accepting a typo or an
-    /// unrelated environment name as confirmation. The only permitted conversion from operator
-    /// input to the internal schema value is the fixed one-way mapping below.
+    /// Exact Staging confirmation phrase. Tenant schema uses lowercase <c>staging</c>; this
+    /// command deliberately does not fold case or accept that spelling from the operator.
     /// </summary>
-    public const string RequiredEnvironmentConfirmation = "Staging";
+    public const string StagingEnvironmentConfirmation = "Staging";
 
-    private const string InternalEnvironmentValue = "staging";
+    /// <summary>
+    /// Exact Production confirmation phrase. Do not ask production operators to type
+    /// <see cref="StagingEnvironmentConfirmation"/>; that destroys the environment safety check.
+    /// </summary>
+    public const string ProductionEnvironmentConfirmation = "Production";
+
+    /// <summary>
+    /// Retained for callers/tests that still refer to the Staging-only era constant.
+    /// Prefer <see cref="StagingEnvironmentConfirmation"/> or
+    /// <see cref="ProductionEnvironmentConfirmation"/>.
+    /// </summary>
+    public const string RequiredEnvironmentConfirmation = StagingEnvironmentConfirmation;
+
+    private const string InternalStagingEnvironmentValue = "staging";
+    private const string InternalProductionEnvironmentValue = "production";
 
     private const int RegexMatchTimeoutMilliseconds = 250;
 
@@ -98,7 +109,7 @@ public sealed partial class AdminProviderRegisterAcsCommand(
             RunPreflight(acsSecretPath, senderPath);
 
             var environmentConfirmation = console.ReadLine("Confirm target environment (exact match): ");
-            if (!string.Equals(environmentConfirmation, RequiredEnvironmentConfirmation, StringComparison.Ordinal))
+            if (!TryMapEnvironmentConfirmation(environmentConfirmation, out var internalEnvironment))
             {
                 throw new SecretOperationException(
                     AdminProviderRegisterAcsResultCodes.RejectedEnvironmentMismatch,
@@ -120,7 +131,7 @@ public sealed partial class AdminProviderRegisterAcsCommand(
             var senderFile = new PlatformSenderFile
             {
                 Version = 1,
-                Environment = InternalEnvironmentValue,
+                Environment = internalEnvironment,
                 Sender = new PlatformSenderAddress { Email = senderEmail, DisplayName = senderDisplayName },
                 Provider = "acs",
                 LiveSending = false,
@@ -146,6 +157,29 @@ public sealed partial class AdminProviderRegisterAcsCommand(
         {
             return Reject("register_acs", AdminProviderRegisterAcsResultCodes.FailedUnexpected);
         }
+    }
+
+    /// <summary>
+    /// Fixed one-way map from exact operator confirmation to the platform-sender schema value.
+    /// Only <see cref="StagingEnvironmentConfirmation"/> and
+    /// <see cref="ProductionEnvironmentConfirmation"/> are accepted; no case folding.
+    /// </summary>
+    internal static bool TryMapEnvironmentConfirmation(string? confirmation, out string internalEnvironment)
+    {
+        if (string.Equals(confirmation, StagingEnvironmentConfirmation, StringComparison.Ordinal))
+        {
+            internalEnvironment = InternalStagingEnvironmentValue;
+            return true;
+        }
+
+        if (string.Equals(confirmation, ProductionEnvironmentConfirmation, StringComparison.Ordinal))
+        {
+            internalEnvironment = InternalProductionEnvironmentValue;
+            return true;
+        }
+
+        internalEnvironment = string.Empty;
+        return false;
     }
 
     private (string AcsSecretPath, string SenderPath) ResolveTargetPaths()

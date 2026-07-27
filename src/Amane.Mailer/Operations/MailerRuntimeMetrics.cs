@@ -9,6 +9,11 @@ public sealed class MailerRuntimeMetrics
     private long _retriesTotal;
     private long _finalizeSkippedTotal;
     private long _webhookFinalizeSkippedTotal;
+    private long _bounceEventsTotal;
+    private long _bounceUnmatchedTotal;
+    private long _bounceRecipientMismatchTotal;
+    private long _suppressedSendsTotal;
+    private long _providerQueuePollFailedTotal;
     private int _ready;
     private bool _readinessObserved;
     private string? _readinessFailureReason;
@@ -24,6 +29,21 @@ public sealed class MailerRuntimeMetrics
 
     public void RecordWebhookFinalizeSkipped() =>
         Interlocked.Increment(ref _webhookFinalizeSkippedTotal);
+
+    public void RecordBounceEvent() =>
+        Interlocked.Increment(ref _bounceEventsTotal);
+
+    public void RecordBounceUnmatched() =>
+        Interlocked.Increment(ref _bounceUnmatchedTotal);
+
+    public void RecordBounceRecipientMismatch() =>
+        Interlocked.Increment(ref _bounceRecipientMismatchTotal);
+
+    public void RecordSuppressedSend() =>
+        Interlocked.Increment(ref _suppressedSendsTotal);
+
+    public void RecordProviderQueuePollFailed() =>
+        Interlocked.Increment(ref _providerQueuePollFailedTotal);
 
     /// <summary>
     /// Updates readiness gauges. <paramref name="failureReason"/> must be a fixed
@@ -74,6 +94,11 @@ public sealed class MailerRuntimeMetrics
                 Interlocked.Read(ref _retriesTotal),
                 Interlocked.Read(ref _finalizeSkippedTotal),
                 Interlocked.Read(ref _webhookFinalizeSkippedTotal),
+                Interlocked.Read(ref _bounceEventsTotal),
+                Interlocked.Read(ref _bounceUnmatchedTotal),
+                Interlocked.Read(ref _bounceRecipientMismatchTotal),
+                Interlocked.Read(ref _suppressedSendsTotal),
+                Interlocked.Read(ref _providerQueuePollFailedTotal),
                 _readinessObserved,
                 _ready == 1,
                 _readinessFailureReason,
@@ -93,6 +118,11 @@ public sealed class MailerRuntimeMetrics
         Interlocked.Exchange(ref _retriesTotal, 0);
         Interlocked.Exchange(ref _finalizeSkippedTotal, 0);
         Interlocked.Exchange(ref _webhookFinalizeSkippedTotal, 0);
+        Interlocked.Exchange(ref _bounceEventsTotal, 0);
+        Interlocked.Exchange(ref _bounceUnmatchedTotal, 0);
+        Interlocked.Exchange(ref _bounceRecipientMismatchTotal, 0);
+        Interlocked.Exchange(ref _suppressedSendsTotal, 0);
+        Interlocked.Exchange(ref _providerQueuePollFailedTotal, 0);
 
         lock (_gate)
         {
@@ -152,6 +182,11 @@ public sealed record MailerRuntimeMetricsSnapshot(
     long RetriesTotal,
     long FinalizeSkippedTotal,
     long WebhookFinalizeSkippedTotal,
+    long BounceEventsTotal,
+    long BounceUnmatchedTotal,
+    long BounceRecipientMismatchTotal,
+    long SuppressedSendsTotal,
+    long ProviderQueuePollFailedTotal,
     bool ReadinessObserved,
     bool Ready,
     string? ReadinessFailureReason,

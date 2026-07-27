@@ -6,6 +6,8 @@ This is the shortest path from a fresh clone to **one delivered message** with M
 without enabling the Admin UI. ACS live sending, Dead Letter, backup / restore, deploy rehearsal,
 and multi-tenant shared Mailer are out of scope.
 
+To choose a configuration mode first, see **local Mailpit** in the [setup entry point](setup-guide.en.md).
+
 For fuller smoke coverage (idempotent repost, conflict, Admin UI, and more), see:
 
 - [Local Mailer Docker runbook](local-mailer-docker-runbook.en.md) [(ja)](local-mailer-docker-runbook.md)

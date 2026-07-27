@@ -5,6 +5,8 @@
 fresh clone 直後に、**Admin UI を有効にせず** Mailer + Mailpit で 1 通届くところまでを最短で確認する手順です。
 ACS 実送信、Dead Letter、backup / restore、deploy rehearsal、multi-tenant 共有 Mailer は対象外です。
 
+構成選択から始める場合は [セットアップ入口](setup-guide.md) の **local Mailpit** を参照してください。
+
 より詳しい smoke（冪等再送、conflict、Admin UI など）は次を参照してください。
 
 - [ローカル Mailer Docker runbook](local-mailer-docker-runbook.md) [(en)](local-mailer-docker-runbook.en.md)

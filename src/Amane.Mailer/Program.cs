@@ -5,6 +5,8 @@ using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Json;
 using Amane.Mailer.Operations;
+using Amane.Mailer.Operations.EventGridConfigCheck;
+using Amane.Mailer.Operations.VerifyDeliveryReport;
 using Amane.Mailer.Worker;
 using Microsoft.Extensions.Logging.EventLog;
 
@@ -22,10 +24,18 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll db stats [--tenant-id <uuid>] [--queued-stale-minutes <minutes>] [--failure-window-minutes <minutes>] [--stale-processing-minutes <minutes>]
       dotnet Amane.Mailer.dll db request-state --tenant-id <uuid> --source-service <name> --mail-request-id <uuid>
       dotnet Amane.Mailer.dll db admin-audit purge --older-than-days <days>
+      dotnet Amane.Mailer.dll db suppressions remove --tenant-id <uuid> --recipient <email>
       dotnet Amane.Mailer.dll admin hash-password
       dotnet Amane.Mailer.dll admin user create --username <name> --password-hash <pbkdf2> [--tenant-id <uuid> ...] [--break-glass]
       dotnet Amane.Mailer.dll admin provider register-acs
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
+      dotnet Amane.Mailer.dll admin provider test-acs-send
+      dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
+      dotnet Amane.Mailer.dll setup check-event-grid --subscription <id-or-name> --resource-group <rg> (--acs-name <name> | --acs-resource-id <id>) --event-subscription <name> --storage-account <name> --queue-name <name> --environment <dev|staging|production>
+      dotnet Amane.Mailer.dll setup verify-delivery-report
+
+    Setup doctor modes:
+      local-mailpit, staging-no-send, staging-verification, production-acs, production-queue
 
     Options:
       -h, --help    Show help.
@@ -116,6 +126,19 @@ if (DbAdminAuditPurgeCommand.IsDbAdminAuditPurgeCommand(commandArgs))
         Console.Error);
 }
 
+if (DbSuppressionsRemoveCommand.IsDbSuppressionsRemoveCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunDbSuppressionsRemoveAsync(
+            cliConfiguration,
+            commandArgs,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
+}
+
 if (AdminHashPasswordCommand.IsAdminHashPasswordCommand(commandArgs))
 {
     return await MailerCliHost.RunAdminHashPasswordAsync(
@@ -149,6 +172,37 @@ if (AdminProviderRegisterAcsCommand.IsCheckAcsPreflightCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
     return await MailerCliHost.RunAdminProviderCheckAcsPreflightAsync(cliConfiguration, Console.Error);
+}
+
+if (AdminProviderTestAcsSendCommand.IsTestAcsSendCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunAdminProviderTestAcsSendAsync(cliConfiguration, ct),
+        Console.Error);
+}
+
+if (SetupDoctorCommand.IsSetupDoctorCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunSetupDoctorAsync(cliConfiguration, commandArgs, Console.Out, Console.Error, ct),
+        Console.Error);
+}
+
+if (VerifyDeliveryReportCommand.IsVerifyDeliveryReportCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunSetupVerifyDeliveryReportAsync(cliConfiguration, ct),
+        Console.Error);
+}
+
+if (EventGridConfigCheckCommand.IsEventGridConfigCheckCommand(commandArgs))
+{
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunSetupCheckEventGridAsync(commandArgs, Console.Out, Console.Error, ct),
+        Console.Error);
 }
 
 var builder = WebApplication.CreateBuilder(args);

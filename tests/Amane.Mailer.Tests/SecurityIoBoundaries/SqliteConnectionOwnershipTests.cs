@@ -142,7 +142,7 @@ public sealed class SqliteConnectionOwnershipTests
 
         try
         {
-            // Default ReadWriteCreate is rewritten to ReadWrite for file paths, so a missing
+            // Default ReadWriteCreate is rewritten to ReadOnly for file paths, so a missing
             // file fails open without creating an empty database.
             var exception = await Assert.ThrowsAnyAsync<Exception>(
                 () => factory.OpenSchemaProbeConnectionAsync(ct));
@@ -169,7 +169,7 @@ public sealed class SqliteConnectionOwnershipTests
         Directory.CreateDirectory(root);
         var databasePath = Path.Combine(root, "mailer.db");
 
-        // Create the file first so ReadWrite probe can open it.
+        // Create the file first so ReadOnly probe can open it.
         await using (var bootstrap = new SqliteConnection($"Data Source={databasePath}"))
         {
             await bootstrap.OpenAsync(ct);

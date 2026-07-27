@@ -165,6 +165,27 @@ public sealed class MailRequestRetentionTests(MailerRetentionFixture fixture)
         }
     }
 
+    [Fact]
+    public async Task DeleteExpiredCompletedAsync_removes_matching_bounce_events()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var expiredRequest = MailRequestTestData.CreateRequest();
+
+        await SeedDeliveredRequestAsync(expiredRequest, DateTimeOffset.UtcNow.AddDays(-120), ct);
+        await SeedBounceEventAsync(expiredRequest, ct);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var deleted = await repository.DeleteExpiredCompletedAsync(
+            DateTimeOffset.UtcNow.AddDays(-90),
+            batchSize: 100,
+            ct);
+
+        Assert.Equal(1, deleted);
+        Assert.Null(await repository.FindDispatchStateByMailRequestIdAsync(expiredRequest.MailRequestId, ct));
+        Assert.False(await BounceEventExistsAsync(expiredRequest.MailRequestId, ct));
+    }
+
     private async Task SeedDeliveryEventAsync(
         MailRequestCreateRequest request,
         CancellationToken cancellationToken)
@@ -205,6 +226,53 @@ public sealed class MailRequestRetentionTests(MailerRetentionFixture fixture)
             SELECT EXISTS (
                 SELECT 1
                 FROM delivery_events
+                WHERE mail_request_id = @MailRequestId
+            );
+            """;
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is long value && value == 1L;
+    }
+
+    private async Task SeedBounceEventAsync(
+        MailRequestCreateRequest request,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var now = SqliteTime.ToStorageUtc(DateTimeOffset.UtcNow);
+        command.CommandText = """
+            INSERT INTO bounce_events (
+                id, tenant_id, source_service, mail_request_id,
+                provider, provider_event_id, provider_message_id,
+                delivery_status, status_message, occurred_at, created_at)
+            VALUES (
+                @Id, @TenantId, @SourceService, @MailRequestId,
+                'acs', @ProviderEventId, @ProviderMessageId,
+                'Bounced', 'sanitized', @Now, @Now);
+            """;
+        command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@TenantId", request.TenantId.ToString("D"));
+        command.Parameters.AddWithValue("@SourceService", request.SourceService);
+        command.Parameters.AddWithValue("@MailRequestId", request.MailRequestId.ToString("D"));
+        command.Parameters.AddWithValue("@ProviderEventId", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@ProviderMessageId", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@Now", now);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task<bool> BounceEventExistsAsync(
+        Guid mailRequestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM bounce_events
                 WHERE mail_request_id = @MailRequestId
             );
             """;

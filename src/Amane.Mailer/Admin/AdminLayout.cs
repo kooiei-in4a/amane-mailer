@@ -7,6 +7,7 @@ public enum AdminNavItem
 {
     MailRequests,
     DeadLetters,
+    Suppressions,
     AuditLog,
     Ops,
 }
@@ -59,6 +60,7 @@ public static class AdminLayout
             "Dead Letters",
             activeNav == AdminNavItem.DeadLetters,
             badgeCount: deadLetterCount);
+        AppendNavItem(html, "/admin/suppressions", "抑制リスト", activeNav == AdminNavItem.Suppressions, badgeCount: null);
         AppendNavItem(html, "/admin/audit-log", "監査ログ", activeNav == AdminNavItem.AuditLog, badgeCount: null);
         AppendNavItem(html, "/admin/ops", "運用状況", activeNav == AdminNavItem.Ops, badgeCount: null);
         html.AppendLine("      </ul>");

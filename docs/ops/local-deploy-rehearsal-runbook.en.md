@@ -4,6 +4,8 @@
 
 This runbook reproduces on local Docker the same shared Mailer stack shape as deploy-host `infra/deploy/compose.yml`. The Consumer app itself, deploy hosts, and production ACS live sending are out of scope.
 
+To choose a configuration mode first, see **staging ACS no-send** in the [setup entry point](setup-guide.en.md).
+
 For the development stack with Mailpit, see [local-mailer-docker-runbook.en.md](local-mailer-docker-runbook.en.md).
 This runbook is for rehearsing the deploy template (3 tenants / `MAILER_NETWORK_NAME` network).
 

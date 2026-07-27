@@ -13,6 +13,7 @@ public static class MailDeliveryErrorCodes
     public const string LiveSendingDisabled = "LIVE_SENDING_DISABLED";
     public const string UnknownProvider = "UNKNOWN_PROVIDER";
     public const string SendTimeout = "SEND_TIMEOUT";
+    public const string RecipientSuppressed = "RECIPIENT_SUPPRESSED";
 
     public const string ProviderTimeout = "PROVIDER_TIMEOUT";
     public const string ProviderNetwork = "PROVIDER_NETWORK";

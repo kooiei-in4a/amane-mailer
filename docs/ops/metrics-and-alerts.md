@@ -50,6 +50,13 @@ Compose / systemd では Mailer HTTP ポートを **内部ネットワークの�
 | `mail_worker_heartbeat_age_seconds` | gauge | `component` | `worker` / `sweep` の heartbeat 経過秒。行未存在時は series なし |
 | `mail_ready` | gauge | なし | 直近の `/readyz` 評価結果（1=ready、0=not ready）。未評価時は series なし |
 | `mail_readiness_failure` | gauge | `reason` | 直近 `/readyz` の primary failure reason。固定値のみ（`schema_not_ready` / `worker_not_running` / `sweep_not_running` / `heartbeat_missing` / `heartbeat_stale` / `database_error` / `unexpected_error`）。active な reason のみ 1、他は 0。ready 時はすべて 0。未評価時は series なし |
+| `mail_bounce_events_total` | counter | なし | プロセス起動以降に相関済みバウンスを `bounce_events` へ取り込んだ件数（再起動で reset） |
+| `mail_bounce_unmatched_total` | counter | なし | プロセス起動以降に `provider_message_id` 相関できなかった件数。相関設計破綻の早期シグナル |
+| `mail_bounce_recipient_mismatch_total` | counter | なし | プロセス起動以降にイベント申告宛先と DB 宛先が不一致で破棄した件数 |
+| `mail_suppressed_sends_total` | counter | なし | プロセス起動以降に送信前抑制リストでブロックした件数 |
+| `mail_provider_queue_poll_failed_total` | counter | なし | プロセス起動以降の ACS Storage Queue ポーリング失敗件数 |
+| `mail_provider_events_pending` | gauge | なし | `provider_event_inbox` の pending / processing 件数（CLI `provider_events_pending` と同集計） |
+| `mail_provider_events_dead_lettered` | gauge | なし | `provider_event_inbox` の dead_lettered 件数（CLI `provider_events_dead_lettered` と同集計） |
 
 **禁止ラベル（含めない）:** `recipient_email`, `subject`, `mail_request_id`, `tenant_id`, `source_service`
 
@@ -152,9 +159,41 @@ groups:
           severity: warning
         annotations:
           summary: Delivery-result webhook outbox has dead-lettered events
+
+      - alert: MailBounceUnmatchedRising
+        expr: increase(mail_bounce_unmatched_total[30m]) > 5
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bounce events failed provider_message_id correlation; check ACS Event Grid mapping and mail_attempts.provider_message_id
+
+      - alert: MailProviderEventsPendingHigh
+        expr: mail_provider_events_pending > 50
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bounce provider-event inbox backlog is elevated
+
+      - alert: MailProviderEventsDeadLettersPresent
+        expr: mail_provider_events_dead_lettered > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Bounce provider-event inbox has dead-lettered rows
+
+      - alert: MailProviderQueuePollFailed
+        expr: increase(mail_provider_queue_poll_failed_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: ACS Storage Queue bounce poll failed; check queue credentials and network
 ```
 
-`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat / webhook backlog アラートを primary、delivery rate は補助として運用してください。`mail_finalize_skipped_total` は **mail request** の strict lease fencing 失敗の検知用で、増加時は証跡の有無・Delivered 収束・DeadLetter との競合を確認してください。`mail_webhook_finalize_skipped_total` は **Webhook outbox** の finalize fencing 失敗用です。Webhook は at-least-once 契約のため、skip 後に同一 `event_id` の再 POST が起き得ます。増加時は Warning ログの `EventId` / `TenantId` / `MailRequestId` / `FinalizeOutcome` / `FinalizeSkipReason` と webhook backlog を確認し、Consumer 側の `event_id` 重複排除が機能しているかを確認してください。metric / ログには lock token 実値・Webhook URL / secret・payload 本文・recipient 等の PII は含めません。Webhook backlog はメール配送が正常でも通知だけ止まる障害の早期検知用です。Admin 手動リトライは監査付きの明示操作として `attempt_count` をリセットし、旧サイクルの Delivered 証跡を prior-success 収束の対象外にします（#268）。そのため delivered 証跡付きの DeadLetter を再投入すると新サイクルでは実再送されます。同一サイクル内の #238 prior-success 収束は維持されます。再送前に Admin attempt 履歴の `provider_message_id` を確認してください。
+`mail_deliveries_total` はプロセス内 counter のため、Mailer 再起動直後は `rate()` が短時間不安定になることがあります。queue / heartbeat / webhook backlog アラートを primary、delivery rate は補助として運用してください。バウンス系は [bounce-ingestion-runbook.md](bounce-ingestion-runbook.md) も参照してください。`mail_finalize_skipped_total` は **mail request** の strict lease fencing 失敗の検知用で、増加時は証跡の有無・Delivered 収束・DeadLetter との競合を確認してください。`mail_webhook_finalize_skipped_total` は **Webhook outbox** の finalize fencing 失敗用です。Webhook は at-least-once 契約のため、skip 後に同一 `event_id` の再 POST が起き得ます。増加時は Warning ログの `EventId` / `TenantId` / `MailRequestId` / `FinalizeOutcome` / `FinalizeSkipReason` と webhook backlog を確認し、Consumer 側の `event_id` 重複排除が機能しているかを確認してください。metric / ログには lock token 実値・Webhook URL / secret・payload 本文・recipient 等の PII は含めません。Webhook backlog はメール配送が正常でも通知だけ止まる障害の早期検知用です。Admin 手動リトライは監査付きの明示操作として `attempt_count` をリセットし、旧サイクルの Delivered 証跡を prior-success 収束の対象外にします（#268）。そのため delivered 証跡付きの DeadLetter を再投入すると新サイクルでは実再送されます。同一サイクル内の #238 prior-success 収束は維持されます。再送前に Admin attempt 履歴の `provider_message_id` を確認してください。
 
 ## Worker lease と wall-clock jump（#276）
 

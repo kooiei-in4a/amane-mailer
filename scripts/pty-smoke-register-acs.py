@@ -221,9 +221,46 @@ def scenario_success():
             data.get("sender", {}).get("email") == SYNTHETIC_EMAIL,
         )
         check("success: platform-sender.json live_sending is false", data.get("live_sending") is False)
+        check(
+            "success: platform-sender.json environment is staging",
+            data.get("environment") == "staging",
+        )
     else:
         check("success: platform-sender.json written", False)
     return acs_dir, sender_dir
+
+
+def scenario_production_success():
+    print("\n=== scenario: successful interactive Production register-acs ===")
+    acs_dir, sender_dir = fresh_dirs("success-production")
+    env = {
+        "MAILER_ACS_SECRET_DIRECTORY": acs_dir,
+        "MAILER_PLATFORM_SENDER_DIRECTORY": sender_dir,
+    }
+    steps = [
+        ("Confirm target environment", "Production"),
+        ("Type MAILER-ACS-REGISTER to confirm intent", "MAILER-ACS-REGISTER"),
+        ("ACS connection string:", SYNTHETIC_CONN),
+        ("Re-enter ACS connection string:", SYNTHETIC_CONN),
+        ("Sender email:", SYNTHETIC_EMAIL),
+        ("Sender display name:", SYNTHETIC_DISPLAY_NAME),
+    ]
+    exit_code, output = run_interactive(["admin", "provider", "register-acs"], env, steps)
+    text = output.decode(errors="replace")
+    check("prod success: exit code is 0", exit_code == 0, f"(got {exit_code})")
+    check("prod success: stdout reports SUCCESS", "SUCCESS" in text)
+    check("prod success: secret connection string never echoed to terminal", SYNTHETIC_CONN not in text)
+
+    sender_file = os.path.join(sender_dir, "platform-sender.json")
+    if os.path.exists(sender_file):
+        data = json.loads(open(sender_file).read())
+        check(
+            "prod success: platform-sender.json environment is production",
+            data.get("environment") == "production",
+        )
+        check("prod success: platform-sender.json live_sending is false", data.get("live_sending") is False)
+    else:
+        check("prod success: platform-sender.json written", False)
 
 
 def scenario_rerun_rejected(acs_dir, sender_dir):
@@ -295,6 +332,7 @@ def main():
     scenario_rerun_rejected(acs_dir, sender_dir)
     scenario_partial_state_rejected()
     scenario_wrong_environment_rejects_before_secret()
+    scenario_production_success()
     scenario_preflight_only_does_not_prompt()
 
     print("\n=== summary ===")

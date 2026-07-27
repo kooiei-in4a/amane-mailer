@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Canonical current implementation status. ADRs record design rationale; this file records present-day status (#246 / #250). Allowed status values: planned, partial, implemented, deferred, removed.",
+  "description": "Canonical current implementation status. ADRs record design rationale; this file records present-day status (#246 / #250). Allowed status values: planned, partial, implemented, deferred, removed. Rollout: Phase 1 (#250) manifest + ADR links; Phase 2 (#252) CI format check; Phase 3+ (GitHub Issue state / evidence) deferred until staleness recurs or maintainer reopens #246.",
   "features": [
     {
       "id": "admin-audit-retention-sweep",
@@ -29,8 +29,9 @@
       "id": "admin-durable-session-store",
       "status": "implemented",
       "trackingIssue": 88,
-      "lastVerified": "2026-07-22",
-      "relatedAdrs": ["0013", "0014"]
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0013", "0014"],
+      "notes": "Session touch is monotonic and interval-throttled (#391). Cookie ticket uses absolute lifetime; idle expiry is enforced from admin_sessions only (no touch-time Set-Cookie)."
     },
     {
       "id": "admin-per-admin-tenant-scope",
@@ -57,12 +58,187 @@
       "notes": "No dedicated implementation issue. Delivered in Phase 1 via #89 (throttle key) and #90 (audit source_ip hash). When MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true, keyed hash is used and missing key causes startup fail-closed."
     },
     {
+      "id": "setup-entry-guide",
+      "status": "implemented",
+      "trackingIssue": 424,
+      "lastVerified": "2026-07-28",
+      "relatedAdrs": ["0020", "0013"],
+      "notes": "Single JA/EN setup entry (docs/ops/setup-guide) with mode taxonomy, checklists, PASS/FAIL/WARN/ACTION meanings, and links to existing runbooks. README reaches the entry in one click. Mode 4 (production ACS) is Available via production-confirmed register-acs (exact Production). Mode 5 (production ACS + Queue) is Available via deploy compose bounce Queue wiring (MAILER_BOUNCE_INGESTION / Queue name / file secret mount). Published v1.1.0 image final verification is soft residual until release exists (latest public release v1.0.1). Does not implement Azure resource creation; #425–#428 CLIs are tracked separately.",
+      "evidence": {
+        "files": [
+          "docs/ops/setup-guide.md",
+          "docs/ops/setup-guide.en.md",
+          "README.md",
+          "README.en.md",
+          "docs/ops/first-mail-quickstart.md",
+          "docs/ops/first-mail-quickstart.en.md",
+          "docs/ops/local-deploy-rehearsal-runbook.md",
+          "docs/ops/local-deploy-rehearsal-runbook.en.md",
+          "docs/ops/register-acs-cli-runbook.md",
+          "docs/ops/register-acs-cli-runbook.en.md",
+          "docs/ops/bounce-ingestion-runbook.md",
+          "docs/ops/bounce-ingestion-runbook.en.md",
+          "infra/deploy/compose.yml",
+          "infra/deploy/.env.example",
+          "src/Amane.Mailer/Operations/AdminProviderRegisterAcsCommand.cs",
+          "src/Amane.Mailer/Configuration/PlatformSenderFile.cs",
+          "src/Amane.Mailer/Operations/SetupDoctorCommand.cs"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/MailerAdminProviderRegisterAcsCliTests.cs",
+          "tests/Amane.Mailer.Tests/PlatformSenderFileTests.cs",
+          "tests/Amane.Mailer.Tests/SetupDoctorCliTests.cs",
+          "tests/Amane.Mailer.Tests/DeployComposeBounceBoundaryTests.cs"
+        ]
+      }
+    },
+    {
+      "id": "setup-doctor-read-only",
+      "status": "implemented",
+      "trackingIssue": 425,
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0013"],
+      "notes": "Read-only setup doctor CLI (setup doctor --mode). PASS/FAIL/WARN/ACTION output; no config/DB/container/Azure mutation. Regression: tests/Amane.Mailer.Tests/SetupDoctorCliTests.cs",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Operations/SetupDoctorCommand.cs",
+          "src/Amane.Mailer/Operations/SetupDoctorMode.cs",
+          "src/Amane.Mailer/Operations/SetupDoctorCheck.cs",
+          "src/Amane.Mailer/Configuration/ConfigurationPlaceholderDetector.cs",
+          "docs/ops/setup-guide.md",
+          "docs/ops/setup-guide.en.md"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/SetupDoctorCliTests.cs"
+        ]
+      }
+    },
+    {
+      "id": "acs-standalone-test-send-cli",
+      "status": "implemented",
+      "trackingIssue": 426,
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0013"],
+      "notes": "Staging-only admin provider test-acs-send CLI. Prefers ACS secret file, TTY fallback, fixed synthetic content, hidden PII input, sanitized provider failures (auth vs network vs sender), UUID-only message ID handoff for #428. No Mailer API/Worker/DB mutation. Real ACS smoke is maintainer-only; CI uses fake provider + PTY smoke without live send.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Operations/AdminProviderTestAcsSendCommand.cs",
+          "src/Amane.Mailer/Operations/AdminProviderTestAcsSendResultCodes.cs",
+          "src/Amane.Mailer/Operations/IAdminProviderTestAcsSendConsole.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/IAcsTestSendClient.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/IAcsEmailSendTransport.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/AzureAcsEmailSendTransport.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/AzureAcsTestSendClient.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/AcsTestSendFailureMapper.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/AcsTestSendRequest.cs",
+          "src/Amane.Mailer/Operations/AcsTestSend/AcsTestSendOutcome.cs",
+          "docs/ops/test-acs-send-cli-runbook.md",
+          "docs/ops/test-acs-send-cli-runbook.en.md",
+          "scripts/pty-smoke-test-acs-send.py"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/MailerAdminProviderTestAcsSendCliTests.cs"
+        ]
+      }
+    },
+    {
+      "id": "event-grid-queue-config-check",
+      "status": "implemented",
+      "trackingIssue": 427,
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0020", "0013"],
+      "notes": "Read-only setup check-event-grid CLI. Invokes allowlisted Azure CLI show/exists queries only (no ARM SDK). PASS/FAIL/WARN/ACTION; rejects Push webhook as valid v1.1.0 config; does not mutate Azure, read queue bodies, or require live Azure auth in CI (fake runner fixtures).",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/EventGridConfigCheckCommand.cs",
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/EventGridConfigChecker.cs",
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/AzureCliRunner.cs",
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/AzureCliArgumentBuilder.cs",
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/AzureResourceIdSanitizer.cs",
+          "docs/ops/event-grid-config-check-runbook.md",
+          "docs/ops/event-grid-config-check-runbook.en.md",
+          "docs/ops/setup-guide.md",
+          "docs/ops/setup-guide.en.md",
+          "docs/ops/bounce-ingestion-runbook.md",
+          "docs/ops/bounce-ingestion-runbook.en.md"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/EventGridConfigCheckCliTests.cs"
+        ]
+      }
+    },
+    {
+      "id": "acs-delivery-report-queue-e2e",
+      "status": "implemented",
+      "trackingIssue": 428,
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0020", "0013"],
+      "notes": "Staging-only setup verify-delivery-report CLI. Reuses #426 IAcsTestSendClient, then read-only PeekMessages/GetProperties correlation for EmailDeliveryReportReceived. Separates wiring vs delivery status; backlog outside peek window is WARN/ACTION not PASS. No Receive/Delete/visibility change. Real Azure E2E is maintainer-only; CI uses fake ACS + synthetic peeker.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/VerifyDeliveryReportCommand.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/VerifyDeliveryReportResultCodes.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/IAcsEventQueuePeeker.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/AzureAcsEventQueuePeeker.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/DeliveryReportEventInspector.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/DeliveryReportQueuePoller.cs",
+          "docs/ops/verify-delivery-report-runbook.md",
+          "docs/ops/verify-delivery-report-runbook.en.md",
+          "docs/ops/setup-guide.md",
+          "docs/ops/setup-guide.en.md"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/VerifyDeliveryReportCliTests.cs"
+        ]
+      }
+    },
+    {
       "id": "bounce-ingestion-and-suppression",
-      "status": "planned",
-      "trackingIssue": 302,
-      "lastVerified": "2026-07-26",
-      "relatedAdrs": ["0020"],
-      "notes": "v1.1.0 scope. Pull transport (Storage Queue polling) confirmed by #399; ACS delivery-report correlation confirmed against real resources by #299. Schema #301, ingestion core #302, send-time block #303, queue poller #305, visibility #306, removal CLI #400. Consumer-facing bounced notification is deferred past v1.1.0 (ADR 0020 D-11)."
+      "status": "implemented",
+      "trackingIssue": 306,
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0020", "0013"],
+      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Data/Migrations/011_bounce_ingestion.sql",
+          "src/Amane.Mailer/Data/RecipientEmailNormalizer.cs",
+          "src/Amane.Mailer/Data/Sqlite/ProviderEventInboxRepository.cs",
+          "src/Amane.Mailer/Data/Sqlite/BounceEventRepository.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailSuppressionRepository.cs",
+          "src/Amane.Mailer/Data/Sqlite/BounceIngestionStore.cs",
+          "src/Amane.Mailer/Bounce/AcsEventParser.cs",
+          "src/Amane.Mailer/Bounce/BounceIngestionWorker.cs",
+          "src/Amane.Mailer/Bounce/BounceIngestionSweepService.cs",
+          "src/Amane.Mailer/Bounce/AcsQueuePollingService.cs",
+          "src/Amane.Mailer/Bounce/AzureAcsEventQueueClient.cs",
+          "src/Amane.Mailer/Bounce/AcsQueueMessageBodyDecoder.cs",
+          "src/Amane.Mailer/Configuration/MailerBounceIngestionOptions.cs",
+          "src/Amane.Mailer/Worker/MailRequestWorker.cs",
+          "src/Amane.Mailer.Contracts/MailRequests/MailDeliveryErrorCodes.cs",
+          "src/Amane.Mailer/Operations/MailerRuntimeMetrics.cs",
+          "src/Amane.Mailer/Operations/PrometheusMetricsFormatter.cs",
+          "src/Amane.Mailer/Operations/DbSuppressionsRemoveCommand.cs",
+          "src/Amane.Mailer/Operations/DbStatsCommand.cs",
+          "src/Amane.Mailer/Admin/AdminMailRequestDetailPage.cs",
+          "src/Amane.Mailer/Admin/AdminSuppressionsPage.cs",
+          "docs/ops/bounce-ingestion-runbook.md",
+          "docs/ops/metrics-and-alerts.md"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/BounceIngestionSchemaTests.cs",
+          "tests/Amane.Mailer.Tests/BounceIngestionWorkerTests.cs",
+          "tests/Amane.Mailer.Tests/AcsQueuePollingServiceTests.cs",
+          "tests/Amane.Mailer.Tests/MailRequestRetentionTests.cs",
+          "tests/Amane.Mailer.Tests/MailRequestWorkerTests.cs",
+          "tests/Amane.Mailer.Tests/MailRequestWorkerSuppressionEnqueueTests.cs",
+          "tests/Amane.Mailer.Tests/MailerMetricsTests.cs",
+          "tests/Amane.Mailer.Tests/MailerCliSuppressionsRemoveTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminMailRequestDetailBounceRenderTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminSuppressionsPageRenderTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/BounceAdminQueryTenantScopeTests.cs"
+        ]
+      }
     }
   ]
 }

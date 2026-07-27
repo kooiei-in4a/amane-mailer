@@ -54,7 +54,8 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
 
     /// <summary>
     /// Opens the configured database without creating a missing file (when using the default
-    /// ReadWriteCreate mode). Used by readiness probes that must not create an empty DB.
+    /// ReadWriteCreate mode). Used by readiness probes and setup doctor that must not create or
+    /// mutate an on-disk DB (including WAL/SHM sidecars).
     /// </summary>
     public async Task<SqliteConnection> OpenSchemaProbeConnectionAsync(
         CancellationToken cancellationToken = default)
@@ -294,7 +295,10 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
         var builder = new SqliteConnectionStringBuilder(_connectionString);
         if (ShouldRequireExistingDatabase(builder))
         {
-            builder.Mode = SqliteOpenMode.ReadWrite;
+            // ReadOnly refuses create-missing-file. Prefer this over ReadWrite for readiness /
+            // healthcheck probes so SELECT-only schema checks do not open the DB for write.
+            builder.Mode = SqliteOpenMode.ReadOnly;
+            builder.Pooling = false;
         }
 
         return new SqliteConnection(builder.ConnectionString);

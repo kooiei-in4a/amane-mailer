@@ -38,6 +38,9 @@ public static class AdminAuditLog
         public const string DbBackupRequested = "db_ops.backup_requested";
         public const string DbBackupCompleted = "db_ops.backup_completed";
         public const string DbBackupFailed = "db_ops.backup_failed";
+        public const string MailSuppressionsListUnmasked = "mail_suppressions.list_unmasked";
+        public const string MailSuppressionsRemoved = "mail_suppressions.removed";
+        public const string MailSuppressionsRemoveFailed = "mail_suppressions.remove_failed";
 
         public static IReadOnlyList<string> All { get; } =
         [
@@ -56,6 +59,9 @@ public static class AdminAuditLog
             DbBackupRequested,
             DbBackupCompleted,
             DbBackupFailed,
+            MailSuppressionsListUnmasked,
+            MailSuppressionsRemoved,
+            MailSuppressionsRemoveFailed,
         ];
     }
 
@@ -83,6 +89,17 @@ public static class AdminAuditLog
         public const string MailRequest = "mail_request";
         public const string AdminSession = "admin_session";
         public const string DbOps = "db_ops";
+        public const string MailSuppressions = "mail_suppressions";
+
+        /// <summary>
+        /// Targets whose rows carry a mail tenant_id and must be filtered for scoped admins.
+        /// Auth/session/db_ops remain service-wide (no mail-tenant PII in those events).
+        /// </summary>
+        public static IReadOnlyList<string> TenantScoped { get; } =
+        [
+            MailRequest,
+            MailSuppressions,
+        ];
     }
 
     public static string ResolveActor(HttpContext context) =>

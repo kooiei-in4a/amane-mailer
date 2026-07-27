@@ -5,6 +5,8 @@
 ローカル PC の Docker で、deploy host 向け `infra/deploy/compose.yml` と同じ形の shared Mailer
 スタックを再現する手順です。Consumer アプリ本体や deploy host、本番 ACS 実送信は対象外です。
 
+構成選択から始める場合は [セットアップ入口](setup-guide.md) の **staging ACS no-send** を参照してください。
+
 Mailpit 付きの開発用スタックは
 [local-mailer-docker-runbook.md](local-mailer-docker-runbook.md) を参照してください。
 こちらは deploy テンプレート（3 tenant / `MAILER_NETWORK_NAME` ネットワーク）の rehearsal 用です。

@@ -14,6 +14,7 @@ public sealed class MailerRetentionOptionsTests
         Assert.Equal(MailerRetentionOptions.DefaultSweepIntervalHours, options.SweepIntervalHours);
         Assert.Null(options.SweepIntervalSeconds);
         Assert.Equal(MailerRetentionOptions.DefaultBatchSize, options.BatchSize);
+        Assert.False(options.PurgeMailSuppressions);
         Assert.Equal(TimeSpan.FromHours(24), options.SweepInterval);
     }
 
@@ -83,5 +84,21 @@ public sealed class MailerRetentionOptionsTests
         var ex = Assert.Throws<InvalidOperationException>(() => MailerRetentionOptions.Load(configuration));
         Assert.Contains(key, ex.Message, StringComparison.Ordinal);
         Assert.Contains("between", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    public void Load_purge_mail_suppressions_accepts_bool(string value, bool expected)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Mailer:Retention:PurgeMailSuppressions"] = value,
+            })
+            .Build();
+
+        var options = MailerRetentionOptions.Load(configuration);
+        Assert.Equal(expected, options.PurgeMailSuppressions);
     }
 }

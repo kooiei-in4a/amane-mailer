@@ -17,8 +17,14 @@
 
 ## Implementation Status
 
-- [ ] If this PR changes or touches related feature behavior, `docs/implementation-status.json` was reviewed and updated as needed.
-- [ ] ADRs were not updated with a new duplicate "current implementation status" section.
+When this PR changes or touches a feature tracked in `docs/implementation-status.json`:
+
+- [ ] `docs/implementation-status.json` was reviewed and updated (`status`, `lastVerified`, `trackingIssue`, `notes` as needed).
+- [ ] If a tracking issue is closed or deferred, the manifest reflects the final status (`implemented`, `deferred`, or `removed` with `resolution` when applicable).
+- [ ] ADRs were not updated with a new duplicate "current implementation status" section; link to the manifest instead.
+- [ ] `node scripts/check-implementation-status.mjs` passes locally when the manifest changed.
+
+CI validates manifest format and known ADR duplication patterns only. Content accuracy remains a PR review responsibility.
 
 ## Notes
 

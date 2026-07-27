@@ -2,11 +2,14 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Amane.Mailer.Admin;
+using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
 using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.Security;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -230,6 +233,63 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
     }
 
     [Fact]
+    public async Task Worker_fails_suppressed_recipient_without_provider_call()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SeedSuppressionAsync("recipient@example.com", ct);
+        var metrics = fixture.Factory.Services.GetRequiredService<MailerRuntimeMetrics>();
+        metrics.ClearForTests();
+
+        var request = await SeedQueuedRequestAsync(attemptCount: 0, ct);
+
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Failed, minAttemptCount: 1, ct);
+        Assert.Equal("Recipient is on the suppression list.", stored.LastErrorMessage);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
+
+        var attempt = await ReadSingleAttemptAsync(stored.Id, ct);
+        Assert.Equal(MailDeliveryErrorCodes.RecipientSuppressed, attempt.ErrorCode);
+        Assert.Equal("none", attempt.Provider);
+        Assert.False(attempt.Retryable);
+        Assert.Equal(1, metrics.CaptureSnapshot().SuppressedSendsTotal);
+    }
+
+    [Fact]
+    public async Task Worker_delivers_when_recipient_is_not_suppressed()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SeedSuppressionAsync("other@example.com", ct);
+        var metrics = fixture.Factory.Services.GetRequiredService<MailerRuntimeMetrics>();
+        metrics.ClearForTests();
+
+        var request = await SeedQueuedRequestAsync(attemptCount: 0, ct);
+
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 1, ct);
+        Assert.Equal(MailRequestState.Delivered, stored.Status);
+        Assert.Single(fixture.DeliveryProvider.Sent);
+        Assert.Equal(0, metrics.CaptureSnapshot().SuppressedSendsTotal);
+    }
+
+    [Fact]
+    public async Task Worker_suppresses_recipient_case_insensitively()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await SeedSuppressionAsync("Recipient@Example.COM", ct);
+
+        var request = await SeedQueuedRequestAsync(
+            attemptCount: 0,
+            ct,
+            recipientEmail: "recipient@example.com");
+
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Failed, minAttemptCount: 1, ct);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
+
+        var attempt = await ReadSingleAttemptAsync(stored.Id, ct);
+        Assert.Equal(MailDeliveryErrorCodes.RecipientSuppressed, attempt.ErrorCode);
+        Assert.DoesNotContain("recipient@", stored.LastErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("example.com", stored.LastErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Worker_skips_finalize_when_lock_token_is_stale()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -382,6 +442,106 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
             prior,
             attempt => attempt.Status == MailRequestState.Delivered
                 && attempt.ProviderMessageId == "prior-success-provider-msg");
+    }
+
+    [Fact]
+    public async Task Worker_converges_prior_success_before_suppression_check()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var now = DateTimeOffset.UtcNow;
+        var request = MailRequestTestData.CreateRequest();
+        var internalId = Guid.CreateVersion7(now);
+        var expiredLockToken = Guid.CreateVersion7(now);
+
+        await SeedSuppressionAsync(request.To[0].Email, ct);
+        var metrics = fixture.Factory.Services.GetRequiredService<MailerRuntimeMetrics>();
+        metrics.ClearForTests();
+
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+            await repository.InsertAcceptedAsync(
+                new AcceptedMailRequestInsert
+                {
+                    Id = internalId,
+                    TenantId = request.TenantId,
+                    SourceService = request.SourceService,
+                    MailRequestId = request.MailRequestId,
+                    Purpose = request.Purpose,
+                    PayloadJson = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+                    PayloadHash = request.PayloadHash,
+                    Subject = request.Subject,
+                    HtmlBody = request.HtmlBody,
+                    TextBody = request.TextBody,
+                    ReplyTo = request.ReplyTo,
+                    RecipientEmail = request.To[0].Email,
+                    RecipientDisplayName = request.To[0].DisplayName,
+                    MaxAttempts = 3,
+                    AcceptedAt = now,
+                },
+                ct);
+        }
+
+        await using (var connection = new SqliteConnection(fixture.ConnectionString))
+        {
+            await connection.OpenAsync(ct);
+            await using (var update = connection.CreateCommand())
+            {
+                update.CommandText = """
+                    UPDATE mail_requests
+                    SET
+                        status = @ProcessingStatus,
+                        attempt_count = 1,
+                        lock_token = @LockToken,
+                        lock_expires_at = @LockExpiresAt,
+                        updated_at = @UpdatedAt
+                    WHERE id = @Id;
+                    """;
+                update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+                update.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
+                update.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                update.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                update.Parameters.AddWithValue("@Id", internalId.ToString("D"));
+                await update.ExecuteNonQueryAsync(ct);
+            }
+
+            await using (var insertAttempt = connection.CreateCommand())
+            {
+                insertAttempt.CommandText = """
+                    INSERT INTO mail_attempts (
+                        request_id, attempt_number, provider, status,
+                        provider_message_id, error_code, error_message, retryable,
+                        lock_token, started_at, completed_at)
+                    VALUES (
+                        @RequestId, 1, 'mailpit', @DeliveredStatus,
+                        @ProviderMessageId, NULL, NULL, 0,
+                        @LockToken, @StartedAt, @CompletedAt);
+                    """;
+                insertAttempt.Parameters.AddWithValue("@RequestId", internalId.ToString("D"));
+                insertAttempt.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
+                insertAttempt.Parameters.AddWithValue("@ProviderMessageId", "prior-success-with-suppression");
+                insertAttempt.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
+                insertAttempt.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
+                insertAttempt.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
+                await insertAttempt.ExecuteNonQueryAsync(ct);
+            }
+        }
+
+        SignalWorker();
+
+        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 2, ct);
+        Assert.Equal(MailRequestState.Delivered, delivered.Status);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
+        Assert.Equal(0, metrics.CaptureSnapshot().SuppressedSendsTotal);
+
+        var attempts = await ListAttemptsAsync(delivered.Id, ct);
+        Assert.DoesNotContain(
+            attempts,
+            attempt => attempt.ErrorCode == MailDeliveryErrorCodes.RecipientSuppressed);
+        Assert.Contains(
+            attempts,
+            attempt => attempt.Status == MailRequestState.Delivered
+                && attempt.ProviderMessageId == "prior-success-with-suppression");
     }
 
     [Fact]
@@ -654,15 +814,52 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         return attempts;
     }
 
+    private async Task SeedSuppressionAsync(string recipientEmail, CancellationToken cancellationToken)
+    {
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var suppressions = scope.ServiceProvider.GetRequiredService<MailSuppressionRepository>();
+        var now = DateTimeOffset.UtcNow;
+        Assert.True(await suppressions.TryInsertAsync(
+            new MailSuppressionInsert
+            {
+                Id = Guid.CreateVersion7(now),
+                TenantId = MailerWebApplicationFixtureBase.TenantId,
+                RecipientEmail = recipientEmail,
+                Reason = MailSuppressionReasons.HardBounce,
+                CreatedAt = now,
+            },
+            cancellationToken));
+    }
+
     private async Task<MailRequestCreateRequest> SeedQueuedRequestAsync(
         int attemptCount,
         CancellationToken cancellationToken,
-        Guid? tenantId = null)
+        Guid? tenantId = null,
+        string? recipientEmail = null)
     {
         var request = MailRequestTestData.CreateRequest();
         if (tenantId is not null)
         {
             request = request with { TenantId = tenantId.Value };
+        }
+
+        if (recipientEmail is not null)
+        {
+            request = request with
+            {
+                To =
+                [
+                    new MailRecipientDto
+                    {
+                        Email = recipientEmail,
+                        DisplayName = request.To[0].DisplayName,
+                    },
+                ],
+            };
+            request = request with
+            {
+                PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+            };
         }
 
         var body = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));

@@ -1,5 +1,7 @@
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Operations.EventGridConfigCheck;
+using Amane.Mailer.Operations.VerifyDeliveryReport;
 using Amane.Mailer.Webhooks;
 
 namespace Amane.Mailer.Operations;
@@ -197,6 +199,22 @@ public static class MailerCliHost
             cancellationToken);
     }
 
+    public static async Task<int> RunDbSuppressionsRemoveAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var factory = new SqliteConnectionFactory(configuration);
+        var command = new DbSuppressionsRemoveCommand(factory, TimeProvider.System);
+        return await command.ExecuteAsync(
+            FilterConfigurationArgs(commandArgs),
+            output,
+            error,
+            cancellationToken);
+    }
+
     public static Task<int> RunAdminProviderRegisterAcsAsync(IConfiguration configuration, TextWriter error)
     {
         if (!TryResolveAcsAdminDirectories(configuration, error, out var acsDirectory, out var senderDirectory))
@@ -223,6 +241,97 @@ public static class MailerCliHost
             acsDirectory,
             senderDirectory);
         return Task.FromResult(command.RunPreflightOnly());
+    }
+
+    public static Task<int> RunAdminProviderTestAcsSendAsync(
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var command = new AdminProviderTestAcsSendCommand(
+            new AdminProviderTestAcsSendConsole(),
+            configuration);
+        return command.RunAsync(cancellationToken);
+    }
+
+    public static async Task<int> RunSetupDoctorAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        if (!SetupDoctorCommand.TryParseArguments(
+                MailerCliHost.FilterConfigurationArgs(commandArgs),
+                out var mode,
+                out var composeFilePath,
+                out var usageError))
+        {
+            await error.WriteLineAsync(usageError ?? "Invalid setup doctor arguments.");
+            await error.WriteLineAsync($"Usage: setup doctor --mode {SetupDoctorModeParser.UsageHint} [--compose-file <path>]");
+            return SetupDoctorCommand.UsageErrorExitCode;
+        }
+
+        try
+        {
+            var command = new SetupDoctorCommand(configuration, mode, composeFilePath, output, error);
+            return await command.ExecuteAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            await error.WriteLineAsync("setup doctor failed: unexpected diagnostic error (details omitted).");
+            return SetupDoctorCommand.FailureExitCode;
+        }
+    }
+
+    public static async Task<int> RunSetupCheckEventGridAsync(
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        if (!EventGridConfigCheckCommand.TryParseArguments(
+                FilterConfigurationArgs(commandArgs),
+                out var options,
+                out var usageError)
+            || options is null)
+        {
+            await error.WriteLineAsync(usageError ?? "Invalid setup check-event-grid arguments.");
+            await error.WriteLineAsync($"Usage: {EventGridConfigCheckCommand.Usage}");
+            return EventGridConfigCheckCommand.UsageErrorExitCode;
+        }
+
+        try
+        {
+            var command = new EventGridConfigCheckCommand(
+                new AzureCliRunner(),
+                options,
+                output,
+                error);
+            return await command.ExecuteAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            await error.WriteLineAsync("setup check-event-grid failed: unexpected diagnostic error (details omitted).");
+            return EventGridConfigCheckCommand.FailureExitCode;
+        }
+    }
+
+    public static Task<int> RunSetupVerifyDeliveryReportAsync(
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var command = new VerifyDeliveryReportCommand(
+            new AdminProviderTestAcsSendConsole(),
+            configuration);
+        return command.RunAsync(cancellationToken);
     }
 
     private static bool TryResolveAcsAdminDirectories(

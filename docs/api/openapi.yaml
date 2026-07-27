@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Amane Mailer Service API
-  version: "1.0.1"
+  version: "1.1.0"
   description: >-
     汎用メール送信マイクロサービス。送信依頼を受け付けて永続化し、
     バックグラウンド Worker が ACS (Azure Communication Services) または Mailpit
@@ -624,7 +624,7 @@ components:
           description: 配送成功時刻（UTC）。status が delivered の場合のみ。
         last_error_code:
           type: [string, "null"]
-          description: 直近試行の stable delivery error code（`MailDeliveryErrorCodes`。例: ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN。raw provider message / exception 型名は含めない）。
+          description: 直近試行の stable delivery error code（`MailDeliveryErrorCodes`。例: ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN, RECIPIENT_SUPPRESSED。raw provider message / exception 型名は含めない）。
 
     MailRequestRescheduleRequest:
       type: object
@@ -683,7 +683,7 @@ components:
           minimum: 0
         last_error_code:
           type: [string, "null"]
-          description: 最新 attempt の stable delivery error code（`MailDeliveryErrorCodes`。PII / exception 型名を含まない分類コード）。
+          description: 最新 attempt の stable delivery error code（`MailDeliveryErrorCodes`。例: ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN, RECIPIENT_SUPPRESSED。PII / exception 型名を含まない分類コード）。
 
     Error:
       type: object

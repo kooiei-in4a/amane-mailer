@@ -21,6 +21,12 @@ Amane Mailer は汎用メール送信マイクロサービスです。送信依�
 - [.NET SDK](https://dotnet.microsoft.com/download) — `global.json` で指定したバージョン（現在 10.0.301）
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
+## セットアップ入口
+
+初めて構築するときは、構成選択・必要情報・実行順序・確認方法をまとめた
+[セットアップ入口](docs/ops/setup-guide.md) [(en)](docs/ops/setup-guide.en.md)
+から始めてください。詳細手順は既存 runbook へリンクします。
+
 ## ローカル検証
 
 リポジトリ root で実行します。
@@ -98,13 +104,13 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
-v1.0.1 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v1.0.1`）を clean state から
+v1.1.0 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v1.1.0`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
 conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（Linux / macOS / Git Bash）または
 `scripts/release-smoke.ps1`（Windows / PowerShell + Docker Desktop）を使います。手順と設定は
 [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
 
-v1.0.1 release では、既定 smoke tag `v1.0.1` の GHCR runtime image は publish 後
+v1.1.0 release では、既定 smoke tag `v1.1.0` の GHCR runtime image は publish 後
 **multi-arch**（`linux/amd64` と
 `linux/arm64`）です。smoke では release notes または Docker manifest の platform を確認し、
 `MAILER_IMAGE_PLATFORM=linux/amd64` または `MAILER_IMAGE_PLATFORM=linux/arm64` を指定してください。
@@ -256,6 +262,7 @@ smoke を含むフル CI が走ります（arm64 Docker は `main` push）。詳
 
 ## 主要ドキュメント
 
+- [セットアップ入口](docs/ops/setup-guide.md) [(en)](docs/ops/setup-guide.en.md)
 - [ブランチ戦略と CI 重み付け](docs/ops/branch-and-ci-workflow.md) [(en)](docs/ops/branch-and-ci-workflow.en.md)
 - [サービス仕様](docs/service-spec.md) [(en)](docs/service-spec.en.md)
 - [OpenAPI HTTP reference](docs/api/openapi.yaml)

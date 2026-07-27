@@ -12,7 +12,9 @@ public static class PrometheusMetricsFormatter
         MailerDbStatsResult stats,
         MailerRuntimeMetricsSnapshot runtime,
         long webhookEventsPending = 0,
-        long webhookEventsDeadLettered = 0)
+        long webhookEventsDeadLettered = 0,
+        long providerEventsPending = 0,
+        long providerEventsDeadLettered = 0)
     {
         var builder = new StringBuilder(2048);
 
@@ -71,6 +73,34 @@ public static class PrometheusMetricsFormatter
         AppendHelpType(builder, "mail_webhook_events_dead_lettered", "gauge",
             "Delivery-result webhook outbox events currently dead-lettered (same aggregation as CLI webhook_events_dead_lettered).");
         AppendGauge(builder, "mail_webhook_events_dead_lettered", webhookEventsDeadLettered);
+
+        AppendHelpType(builder, "mail_bounce_events_total", "counter",
+            "Total correlated bounce events recorded since process start.");
+        AppendCounter(builder, "mail_bounce_events_total", runtime.BounceEventsTotal);
+
+        AppendHelpType(builder, "mail_bounce_unmatched_total", "counter",
+            "Total bounce inbox events that could not be correlated to a mail attempt since process start.");
+        AppendCounter(builder, "mail_bounce_unmatched_total", runtime.BounceUnmatchedTotal);
+
+        AppendHelpType(builder, "mail_bounce_recipient_mismatch_total", "counter",
+            "Total bounce inbox events discarded due to recipient mismatch since process start.");
+        AppendCounter(builder, "mail_bounce_recipient_mismatch_total", runtime.BounceRecipientMismatchTotal);
+
+        AppendHelpType(builder, "mail_suppressed_sends_total", "counter",
+            "Total mail sends blocked by the suppression list before provider delivery since process start.");
+        AppendCounter(builder, "mail_suppressed_sends_total", runtime.SuppressedSendsTotal);
+
+        AppendHelpType(builder, "mail_provider_queue_poll_failed_total", "counter",
+            "Total ACS Storage Queue receive, inbox-acceptance, delete, or unparseable-message failures since process start.");
+        AppendCounter(builder, "mail_provider_queue_poll_failed_total", runtime.ProviderQueuePollFailedTotal);
+
+        AppendHelpType(builder, "mail_provider_events_pending", "gauge",
+            "Provider event inbox rows pending or processing (same aggregation as CLI provider_events_pending).");
+        AppendGauge(builder, "mail_provider_events_pending", providerEventsPending);
+
+        AppendHelpType(builder, "mail_provider_events_dead_lettered", "gauge",
+            "Provider event inbox rows currently dead-lettered (same aggregation as CLI provider_events_dead_lettered).");
+        AppendGauge(builder, "mail_provider_events_dead_lettered", providerEventsDeadLettered);
 
         AppendHelpType(builder, "mail_worker_heartbeat_age_seconds", "gauge",
             "Age in seconds since the last worker heartbeat.");
