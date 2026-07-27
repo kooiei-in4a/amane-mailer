@@ -65,6 +65,13 @@ services:
       # container's process environment. The local ACS drill never sets this flag, so its own
       # ACS_CONNECTION_STRING fallback is unaffected. See MailerOptionsAcsConnectionStringTests.
       MAILER_REQUIRE_ACS_SECRET_FILE: "true"
+      # Bounce ingestion (ADR 0020 / mode 5). Default off keeps modes 1–4 unchanged. When
+      # MAILER_BOUNCE_INGESTION=queue, Mailer reads the Queue connection string from the mounted
+      # file only — do not put MAILER_BOUNCE_QUEUE_CONNECTION_STRING in this service (file-secret
+      # boundary mirrors ACS). Host shell env alone never reaches the container.
+      MAILER_BOUNCE_INGESTION: ${MAILER_BOUNCE_INGESTION:-off}
+      MAILER_BOUNCE_QUEUE_NAME: ${MAILER_BOUNCE_QUEUE_NAME:-}
+      MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE: /run/secrets/bounce-queue/queue_connection_string
       Mailer__Retention__Days: ${MAILER_RETENTION_DAYS:-90}
       Mailer__Retention__SweepIntervalHours: ${MAILER_RETENTION_SWEEP_INTERVAL_HOURS:-24}
       # Required when Mailer:Metrics:Enabled=true under Production (#283). Leave unset only if
@@ -88,6 +95,7 @@ services:
       - ${MAILER_DATA_PATH:-./data}:/app/data
       - ${MAILER_TENANTS_HOST_PATH:-./tenants.json}:${MAILER_TENANTS_CONTAINER_PATH:-/app/config/mailer/tenants.json}:ro
       - ${MAILER_ACS_SECRET_HOST_PATH:-./secrets/acs}:/run/secrets/acs:ro
+      - ${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH:-./secrets/bounce-queue}:/run/secrets/bounce-queue:ro
     networks:
       internal:
       mailer:

@@ -4,7 +4,7 @@
 
 > Scope: ACS Email Delivery Report → Event Grid → Storage Queue → Mailer Pull ingestion (ADR 0020 / #305).
 > Admin visibility: #306. Suppression removal CLI: #400. Push (Event Grid Webhook) is out of v1.1.0 scope (#304).
-> Configuration mode: **production ACS + Queue** in the [setup entry point](setup-guide.en.md) (Target only with the current deploy compose).
+> Configuration mode: **production ACS + Queue** in the [setup entry point](setup-guide.en.md) (pass settings through deploy compose).
 
 ## 1. Purpose
 
@@ -24,6 +24,8 @@ v1.1.0 uses **Storage Queue polling only**. No public HTTPS ingress is added.
 | Poll interval | `Mailer:BounceIngestion:Queue:PollIntervalSeconds` (default 30) |
 
 Never log or expose the connection string or queue name in metrics.
+
+On production deploy hosts, [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) passes `MAILER_BOUNCE_INGESTION`, `MAILER_BOUNCE_QUEUE_NAME`, and `MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE` (file mount) into the Mailer container. Host-shell-only variables do not reach the container. See mode 5 in the [setup entry point](setup-guide.en.md) and [deploy `.env.example`](../../infra/deploy/.env.example).
 
 ### ACS / Event Grid setup notes
 

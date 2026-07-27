@@ -18,7 +18,7 @@ Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) 
 | [local deploy rehearsal](local-deploy-rehearsal-runbook.md) | deploy 形スタックの再現 | mode 2 の詳細正本 |
 | [register-acs CLI](register-acs-cli-runbook.md) | ACS file secret 登録（確認は exact `Staging` または `Production`） | mode 3 は `Staging`、mode 4 は `Production`。確認フレーズを取り違えない |
 | [test-acs-send CLI](test-acs-send-cli-runbook.md) | Staging 限定の ACS 単体実送信確認 | mode 3 の検証正本 |
-| [bounce ingestion](bounce-ingestion-runbook.md) | Queue Pull の runtime 設定・運用 | mode 5 目標の設定キー正本（compose 配線は別） |
+| [bounce ingestion](bounce-ingestion-runbook.md) | Queue Pull の runtime 設定・運用 | mode 5 の設定キー正本。deploy compose 経由で渡す |
 | [event-grid config check](event-grid-config-check-runbook.md) | Event Grid / Queue の read-only 構成確認 | environment 別。到着は保証しない |
 | [verify-delivery-report](verify-delivery-report-runbook.md) | Delivery Report の Queue 到着 E2E | **Staging 限定**。production 証拠にしない |
 | [設定 README](../../config/mailer/README.md) | tenant / env / preflight | 全モードの設定 shape 正本 |
@@ -40,14 +40,15 @@ bounce ingestion（migration `011` 含む）はソース上実装済みでも、
 
 ### 現時点で完了できない構成（正直な境界）
 
-次は構成の**目標像**として区別するが、現行の正本 deploy テンプレートだけでは完遂できない。完了可能なモードとして扱わない。
+次は構成の説明上残るが、**tenant 実送信の完了条件には含めない**項目である。
 
 | ギャップ | 現状 | モード完遂可否 | 診断時の扱い |
 |----------|------|----------------|--------------|
 | platform-owned sender | `register-acs` が `platform-sender.json` も書くが、現時点では tenant の ACS 送信経路からは使われない | tenant 実送信の完了条件に含めない | tenant 送信完了の根拠にしない |
-| production ACS + Queue（mode 5） | [bounce ingestion runbook](bounce-ingestion-runbook.md) が要求する `MAILER_BOUNCE_INGESTION` / Queue 接続 / Queue 名は、現行 [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) の `environment` / volume に**未配線**。host shell にだけ置いてもコンテナへ渡らない | **Target only**（deploy template 対応まで完了不可） | 完了判定は `[FAIL]` + compose 配線待ちの `[ACTION]` |
 
 production ACS（mode 4）の file-secret 登録は `admin provider register-acs` の exact **`Production`** 確認で Available。production 作業で `Staging` と入力させる使い方は**禁止**（CLI は staging 登録として受理するため production 証跡にならない。`setup doctor --mode production-acs` は不一致を `[FAIL]` する）。
+
+production ACS + Queue（mode 5）は [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) / [`.env.example`](../../infra/deploy/.env.example) 経由で `MAILER_BOUNCE_INGESTION` / Queue 名 / Queue 接続（file）をコンテナへ渡せるため **Available**。host shell にだけ変数を置いてもコンテナへは入らない。
 
 ## モード完遂可否と結果コード（分離）
 
@@ -75,7 +76,7 @@ production ACS（mode 4）の file-secret 登録は `admin provider register-acs
 | 状態 | モード完遂可否 | 診断 |
 |------|----------------|------|
 | production ACS secret 未登録（確認フレーズ取り違え含む） | Available（手順はある） | `[FAIL]` または `[ACTION]`（`Production` 確認の register-acs） |
-| bounce env / Queue secret の compose 未配線 | Target only | `[FAIL]` + `[ACTION]` |
+| bounce mode / Queue secret / Queue 名の不足（mode 5） | Available（手順はある） | `[FAIL]` または `[ACTION]`（compose 経由の設定） |
 | Queue poller は動くが Event Grid 到着未確認 | （モードによる） | `[WARN]` または `[ACTION]` |
 | 公開 v1.1.0 イメージ未検証 | （モードによる） | `[WARN]` または `[ACTION]` |
 
@@ -91,7 +92,7 @@ secret 値・宛先平文・接続文字列・raw provider error を結果に含
 2. deploy 形のスタックを組み、ACS 実送信はまだしない → **staging ACS no-send**
 3. staging で ACS 接続・sender を、明示した短時間だけ検証する → **staging ACS verification**
 4. 承認済み sender で本番配送する（bounce 取り込みはまだ不要） → **production ACS**
-5. 本番配送に加え、Delivery Report を Queue 経由で取り込む → **production ACS + Event Grid / Storage Queue**（**目標構成**。現行 deploy template では未対応）
+5. 本番配送に加え、Delivery Report を Queue 経由で取り込む → **production ACS + Event Grid / Storage Queue**
 
 | モード | 想定用途 | provider | `live_sending` | bounce mode | 完遂可否（現行正本） | 主に使う正本 |
 |--------|----------|----------|----------------|-------------|----------------------|--------------|
@@ -99,7 +100,7 @@ secret 値・宛先平文・接続文字列・raw provider error を結果に含
 | staging ACS no-send | deploy 形の起動・token / migrate 確認。実送信なし | `acs`（または JSON どおり） | `false` | 通常 `off` | **Available**（実送信なし） | [local deploy rehearsal](local-deploy-rehearsal-runbook.md)、[設定 README](../../config/mailer/README.md) |
 | staging ACS verification | ACS 接続と承認 sender の**明示**検証 | `acs` | 検証中のみ `true`（専用 tenant / 宛先） | 通常 `off` | **Available**（Staging） | [register-acs CLI](register-acs-cli-runbook.md)（確認 **`Staging`**）、[test-acs-send CLI](test-acs-send-cli-runbook.md)、[設定 README](../../config/mailer/README.md) |
 | production ACS | 本番配送 | `acs` | `true`（承認済みのみ） | `off` 可 | **Available** | [register-acs CLI](register-acs-cli-runbook.md)（確認 **`Production`**）、[deploy `.env.example`](../../infra/deploy/.env.example)、[compose.yml](../../infra/deploy/compose.yml)、[設定 README](../../config/mailer/README.md) |
-| production ACS + Queue | 本番配送 + ハードバウンス抑制の目標 | `acs` | `true` | **`queue` のみ** | **Target only** | 目標の設定キーは [bounce ingestion runbook](bounce-ingestion-runbook.md)。compose 配線は別途対応が必要 |
+| production ACS + Queue | 本番配送 + ハードバウンス抑制 | `acs` | `true` | **`queue` のみ** | **Available** | [bounce ingestion runbook](bounce-ingestion-runbook.md)、[deploy `.env.example`](../../infra/deploy/.env.example)、[compose.yml](../../infra/deploy/compose.yml)、[register-acs CLI](register-acs-cli-runbook.md)（確認 **`Production`**） |
 
 ## provider / `live_sending` / bounce mode
 
@@ -109,7 +110,7 @@ secret 値・宛先平文・接続文字列・raw provider error を結果に含
 | `acs` + `live_sending=false` | **送らない** | する（実送信ゲートで止まる） | staging no-send。`LIVE_SENDING_DISABLED` になり得る |
 | `acs` + `live_sending=true` | **送る** | する | 承認済み sender + 登録済み ACS secret が必須 |
 | bounce `off` | — | — | v1.0 互換の既定。取り込みしない |
-| bounce `queue` | — | — | v1.1.0 採用。Storage Queue Pull のみ。**runtime は対応、deploy compose は未配線** |
+| bounce `queue` | — | — | v1.1.0 採用。Storage Queue Pull のみ。deploy compose 経由で設定を渡す |
 | bounce `webhook` | — | — | **未実装（#304）。設定すると起動失敗。採用しない** |
 
 `MAILER_PROVIDER` / `Mailer__Provider` は全 tenant の provider を上書きする。意図しない上書きに注意（[設定 README](../../config/mailer/README.md)）。
@@ -130,7 +131,7 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 | **ACS Email** | メール送信の引き受け、Delivery Report の発行 | Mailer DB の抑制リスト管理 |
 | **Event Grid** | ACS Delivery Report を購読し、**Storage Queue** へ配送 | Mailer への HTTPS Push（v1.1.0 では使わない） |
 | **Storage Queue** | イベントの一時保管（at-least-once） | 相関・抑制・PII マスク |
-| **Mailer** | 送信依頼の受理、Worker 配送、Queue Pull、相関、`mail_suppressions`、Admin / metrics 可視化 | Azure リソースの自動作成、実バウンスの強制発生、deploy template に無い env の暗黙注入 |
+| **Mailer** | 送信依頼の受理、Worker 配送、Queue Pull、相関、`mail_suppressions`、Admin / metrics 可視化 | Azure リソースの自動作成、実バウンスの強制発生、host shell だけの env をコンテナ設定とみなすこと |
 
 環境（dev / staging / production）ごとに **ACS と Queue を分離**する。混線すると `provider_message_id` 誤相関の原因になる（[bounce runbook](bounce-ingestion-runbook.md)）。
 
@@ -142,7 +143,7 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 | token / `tenant_id` | example / local 専用 | non-production 専用 | production 専用。staging と共有しない |
 | ACS secret | local drill は bare env 可（runbook 参照） | file secret（`register-acs`、確認は `Staging`） | file secret（`register-acs`、確認は **`Production`**。`Staging` 流用禁止） |
 | Admin | 任意・内部 NW | 任意・到達制限必須 | 任意・到達制限必須（公開 Internet 直出し禁止） |
-| bounce Queue | 通常不要 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) の `setup check-event-grid` で environment 別の read-only 構成確認。[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は Staging E2E のみ | Target only。現行 compose 未配線 |
+| bounce Queue | 通常不要 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) の `setup check-event-grid` で environment 別の read-only 構成確認。[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は Staging E2E のみ | Available。compose 経由で `queue` + Queue 名 + file secret |
 | 完了の定義 | health + 1 通 Mailpit 到着など | 起動・preflight・（任意）明示 verification | deploy 形 + production 確認付き secret 登録 + 承認済み live send。実バウンスは不要 |
 
 ## 共通チェックリスト（必要情報・権限・secret・network）
@@ -151,12 +152,12 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 
 ### 情報
 
-- [ ] 使う構成モード（上表の 1 つ）。mode 4 / 5 は上記ギャップを理解したうえでの選択
+- [ ] 使う構成モード（上表の 1 つ）。mode 4 / 5 は production 固有の安全境界（専用 token / ACS・Queue 分離、Push 非採用）と soft residual（公開 v1.1.0 未検証）を理解したうえでの選択
 - [ ] tenant JSON の置き場所（example をコピーした **未コミット** ファイル）
 - [ ] 各 tenant の `token_env` 名と、対応する環境変数を設定する場所
 - [ ] 実効 provider（tenant JSON または `MAILER_PROVIDER`）
 - [ ] `live_sending` の意図（false / 明示 true）
-- [ ] bounce mode（`off` または目標としての `queue`）
+- [ ] bounce mode（`off` または `queue`）
 - [ ] Admin / metrics / backup を有効にするか（既定オフまたは runbook のとおり）
 
 ### Azure 側で必要な能力（mode 2 以降。具体ロール名は組織の IAM に従う）
@@ -164,15 +165,16 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 - [ ] ACS Email リソースを参照し、承認済み sender / domain を確認できる
 - [ ]（mode 3）deploy host で `admin provider register-acs` を実行できる（対話 TTY、secret ディレクトリ権限、確認フレーズ **`Staging`**）
 - [ ]（mode 4）deploy host で同 CLI を実行できる（確認フレーズ **`Production`**。production 作業で `Staging` と入力しない）
-- [ ]（mode 5・目標）Delivery Report を Event Grid で購読し、エンドポイントを **Storage Queue** にできる
-- [ ]（mode 5・Target only）対象 Queue の接続情報を、**compose 経由で** Mailer コンテナへ渡せる手段がある（現状の upstream `compose.yml` だけでは不可 → 完了判定は `[FAIL]` + `[ACTION]`）
+- [ ]（mode 5）Delivery Report を Event Grid で購読し、エンドポイントを **Storage Queue** にできる
+- [ ]（mode 5）対象 Queue の接続情報を、**compose 経由で** Mailer コンテナへ渡せる（`.env` + secret file mount。host shell だけでは不十分）
 
 ### secret（置き場所だけ。値は記録しない）
 
 - [ ] tenant Bearer token（環境変数。JSON 平文禁止）
 - [ ]（Staging ACS live）`register-acs`（確認 `Staging`）が書く `ACS_CONNECTION_STRING_FILE` 経路の file secret
 - [ ]（production ACS）`register-acs`（確認 **`Production`**）が書く同経路の file secret
-- [ ]（mode 5・Target only）Queue 接続文字列または file。compose 未配線ならコンテナからは読めない → 完了判定は `[FAIL]` + `[ACTION]`
+- [ ]（mode 5）Queue 接続文字列を `${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH}/queue_connection_string` に置く（値は記録しない。compose が file としてマウント）
+- [ ]（mode 5）`.env` で `MAILER_BOUNCE_INGESTION=queue` と `MAILER_BOUNCE_QUEUE_NAME` を設定する
 - [ ]（metrics 有効時）scrape bearer
 - [ ]（Admin 有効時）password hash など Admin 秘密
 
@@ -181,7 +183,7 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 - [ ] Docker（local / rehearsal）または deploy host の compose ネットワーク
 - [ ] Mailer HTTP（health / ready）と、local なら Mailpit UI/API
 - [ ] production では reverse proxy / firewall 等の到達境界（Admin 直公開なし）
-- [ ]（mode 5・目標）Mailer から Storage Queue への**外向き**到達（公開 HTTPS 受信口は不要）
+- [ ]（mode 5）Mailer から Storage Queue への**外向き**到達（公開 HTTPS 受信口は不要）
 
 ## setup doctor（read-only 診断）
 
@@ -197,7 +199,7 @@ dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
 | `staging-no-send` | deploy 形・no-send |
 | `staging-verification` | Staging ACS 明示検証 |
 | `production-acs` | production deploy 形（register-acs は **`Production`** 確認） |
-| `production-queue` | production + Queue 目標構成（Target only） |
+| `production-queue` | production + Queue（compose 経由の `queue` 設定） |
 
 結果コードは上表（PASS / FAIL / WARN / ACTION）に従います。末尾に `Summary: PASS=… FAIL=… WARN=… ACTION=…` を表示します。`FAIL` が 1 件でもあれば exit code `1` です。
 
@@ -265,30 +267,32 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 5. Setup（ACS secret）: [register-acs CLI runbook](register-acs-cli-runbook.md)（確認フレーズ **`Production`**。CLI 引数に secret を渡さない）
 6. Setup doctor（再実行）: `setup doctor --mode production-acs`。`[PASS] platform_sender_environment`（expected `production`）を確認してから live send へ進む。`Staging` 確認で登録した場合はここで `[FAIL]`
 7. Verification: `/healthz` `/readyz`、承認済み sender での明示 live send。公開 release イメージ smoke は [release-image-smoke](release-image-smoke.md)（**既定タグは公開済み版。v1.1.0 検証には使わない** → 公開 v1.1.0 未検証は `[WARN]` / `[ACTION]`）
-8. bounce が不要でも、mode 5 の compose 配線は別ギャップとして残る
+8. bounce 取り込みが必要なら mode 5 へ進む（不要ならここで完了してよい）
 
 **完了の目安:** deploy 形・tenant / env preflight・`Production` 確認付き secret 登録・doctor 再実行での `platform_sender_environment` PASS・health/ready・承認済み live send を `[PASS]` にし得る。公開 `v1.1.0` イメージ未検証は soft residual（`[WARN]` / `[ACTION]`）。
 
-### 5. production ACS + Event Grid / Storage Queue（目標構成）
+### 5. production ACS + Event Grid / Storage Queue
 
-**前提の限界:** 現行 [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) / [`.env.example`](../../infra/deploy/.env.example) は bounce 用 env・Queue secret mount を渡さない。host に変数を置いただけではコンテナへ入らない。**このモードを現行テンプレートだけで完了させない。** mode 4 の secret 登録は Available だが、mode 5 完遂には compose 配線が別途必要。
+**範囲:** mode 4 に加え、[`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) / [`.env.example`](../../infra/deploy/.env.example) 経由で bounce Queue 設定を Mailer コンテナへ渡せる。host shell にだけ変数を置いてもコンテナへは入らない。Push webhook（#304）は作らない。
 
-**目標の理解（実装・別対応待ち）**
+**順序**
 
-1. ACS / Event Grid / Queue を **production 専用**に分離する。Push webhook（#304）は作らない
-2. Azure 側: Delivery Report → Event Grid → **Storage Queue**
-3. Mailer 側: [bounce ingestion runbook](bounce-ingestion-runbook.md) の `MAILER_BOUNCE_INGESTION=queue`、Queue 接続、Queue 名を、**compose（または承認済み override）経由で**渡す
-4. **v1.1.0 系イメージ**（migration `011`）と公開イメージ検証は、release 完了後
+1. Preflight: mode 4 と同じ production 専用 token / tenant / 承認済み sender。加えて production 専用 ACS / Event Grid / Storage Queue を分離する
+2. Setup doctor（登録前）: `setup doctor --mode production-queue`（[#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)）
+3. Setup（スタック + ACS）: mode 4 の手順（deploy compose・`Production` 確認の register-acs・doctor 再実行）
+4. Setup（bounce）: [bounce ingestion runbook](bounce-ingestion-runbook.md) に従い、`.env` で `MAILER_BOUNCE_INGESTION=queue` と `MAILER_BOUNCE_QUEUE_NAME` を設定し、Queue 接続文字列を `${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH}/queue_connection_string` に置く（CLI 引数に secret を渡さない）
+5. Setup（Azure）: Delivery Report → Event Grid → **Storage Queue**（Push ではない）。`setup check-event-grid`（[#427](https://github.com/kooiei-in4a/amane-mailer/issues/427)）で read-only 構成確認
+6. Setup doctor（再実行）: `setup doctor --mode production-queue`。`[PASS] compose_bounce_wiring` / `mode_bounce_queue` / `bounce_queue` を確認
+7. Verification: `/healthz` `/readyz`、承認済み live send。Staging での Delivery Report 到着確認は `setup verify-delivery-report`（[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)）— production 実行済みの証拠にはしない。公開 `v1.1.0` 未検証は `[WARN]` / `[ACTION]`
 
-**いま付けられる結果**
+**結果の付け方**
 
-- deploy template 未配線 → モードは **Target only**、完了判定は `[FAIL]` + `[ACTION]`
 - poll 失敗メトリクスが静かなことだけで Event Grid 配線成功としない（到着未確認は `[WARN]` / `[ACTION]`）
-- [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) は**選択した environment**（dev / staging / production を含む）に対する read-only 構成確認（`setup check-event-grid`）。Staging 限定ではない
-- [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は **Staging 限定**の Delivery Report E2E / pre-production 配線確認（`setup verify-delivery-report` / [verify-delivery-report-runbook.md](verify-delivery-report-runbook.md)）。#428 の結果を production 実行済みの証拠として扱わない。production Queue 実行・production テスト送信は #428 の非目標
+- [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) は**選択した environment**（dev / staging / production を含む）に対する read-only 構成確認。Staging 限定ではない
+- [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は **Staging 限定**。#428 の結果を production 実行済みの証拠として扱わない
 - **実バウンスは完了条件にしない**
 
-**完了の目安（現行）:** なし（Target only）。#427 の environment 別構成確認と、#428 の Staging E2E 証跡と、production 本番構成の完了は分離する。
+**完了の目安:** mode 4 の完了条件に加え、compose 経由の `queue` 設定・Queue file secret・Queue 名・Event Grid → Queue の構成確認を `[PASS]` / 人手確認できること。公開 `v1.1.0` イメージ未検証は soft residual。
 
 ## 失敗時の参照先
 
@@ -314,12 +318,11 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認（`setup check-event-grid`） | **提供済み** — [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md)（選択 environment 向け。到着は保証しない） |
 | [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report の Queue 到着 E2E（message ID 相関。実バウンス必須にしない） | **提供済み** — [verify-delivery-report-runbook.md](verify-delivery-report-runbook.md)（**Staging 限定**。production Queue / production テスト送信は非目標） |
 
-セットアップ入口としては上記 CLI と既存 preflight / smoke / runbook 手動確認で進める。deploy compose への bounce 配線は別対応（mode 5 Target only）。
+セットアップ入口としては上記 CLI と既存 preflight / smoke / runbook 手動確認で進める。
 
 ## この入口の非目標
 
 - Azure リソース自動作成
-- deploy compose への bounce 配線（別 PR / Issue）
 - 既存 runbook 全文のこのファイルへの複製
 - v1.2.0 の Consumer bounce API / webhook 契約の説明
 - Event Grid Push（#304）の採用手順

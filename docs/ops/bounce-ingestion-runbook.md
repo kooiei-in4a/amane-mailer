@@ -4,7 +4,7 @@
 
 > 対象: ACS Email Delivery Report → Event Grid → Storage Queue → Mailer Pull 取り込み（ADR 0020 / #305）
 > Admin 可視化: #306。抑制解除 CLI: #400。Push（Event Grid Webhook）は v1.1.0 スコープ外（#304）。
-> 構成選択: [セットアップ入口](setup-guide.md) の **production ACS + Queue**（現行 deploy compose では Target only）
+> 構成選択: [セットアップ入口](setup-guide.md) の **production ACS + Queue**（deploy compose 経由で設定を渡す）
 
 ## 1. 目的
 
@@ -23,6 +23,8 @@ v1.1.0 は **Storage Queue ポーリング**のみ。公開 HTTPS 受信口は�
 | ポーリング間隔 | `Mailer:BounceIngestion:Queue:PollIntervalSeconds`（既定 30） |
 
 接続文字列・キュー名をログやメトリクスに出さないこと。
+
+本番 deploy では [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) が `MAILER_BOUNCE_INGESTION` / `MAILER_BOUNCE_QUEUE_NAME` / `MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE`（file mount）を Mailer コンテナへ渡す。host shell にだけ変数を置いてもコンテナへは入らない。詳細は [セットアップ入口](setup-guide.md) の mode 5 と [deploy `.env.example`](../../infra/deploy/.env.example)。
 
 ### ACS / Event Grid 構成の要点
 

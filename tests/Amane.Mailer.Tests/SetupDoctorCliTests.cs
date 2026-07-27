@@ -318,7 +318,8 @@ public sealed class SetupDoctorCliTests
             Assert.Equal(SetupDoctorCommand.FailureExitCode, exitCode);
             Assert.Contains("[FAIL] platform_sender_environment:", output, StringComparison.Ordinal);
             Assert.Contains("expected 'production'", output, StringComparison.Ordinal);
-            Assert.Contains("[FAIL] production_queue_completion:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL] production_queue_completion:", output, StringComparison.Ordinal);
+            Assert.Contains("[ACTION] production_queue_azure:", output, StringComparison.Ordinal);
             Assert.DoesNotContain("AccountKey=abc", output, StringComparison.Ordinal);
         }
         finally
@@ -353,9 +354,13 @@ public sealed class SetupDoctorCliTests
                 SetupDoctorMode.ProductionQueue,
                 scratch.ComposePath);
 
+            // Scratch compose is intentionally unwired; expect compose_bounce_wiring FAIL until
+            // the test points at a template that includes MAILER_BOUNCE_* keys.
             Assert.Equal(SetupDoctorCommand.FailureExitCode, exitCode);
             Assert.Contains("[PASS] bounce_queue:", output, StringComparison.Ordinal);
-            Assert.Contains("[FAIL] production_queue_completion:", output, StringComparison.Ordinal);
+            Assert.Contains("[FAIL] compose_bounce_wiring:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL] production_queue_completion:", output, StringComparison.Ordinal);
+            Assert.Contains("[ACTION] production_queue_azure:", output, StringComparison.Ordinal);
             Assert.DoesNotContain("AccountKey=abc", output, StringComparison.Ordinal);
         }
         finally
@@ -363,6 +368,190 @@ public sealed class SetupDoctorCliTests
             Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", null);
         }
     }
+
+    [Fact]
+    public async Task production_queue_mode_passes_compose_bounce_wiring_for_deploy_template()
+    {
+        using var scratch = new DoctorScratch();
+        scratch.WriteTenantFile(CreateAcsTenantJson(liveSending: true));
+        scratch.WriteDeployComposeWithBounceWiring();
+        var queueSecretPath = scratch.WriteBounceQueueSecret(
+            "DefaultEndpointsProtocol=https;AccountName=example;AccountKey=abc;EndpointSuffix=core.windows.net");
+        Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", "local-mail-service-token");
+
+        try
+        {
+            var configuration = scratch.BuildConfiguration(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = "false",
+                ["Mailer:Metrics:Enabled"] = "false",
+                ["ACS_CONNECTION_STRING_FILE"] = scratch.WriteAcsSecret(ValidAcsSecret),
+                ["MAILER_BOUNCE_INGESTION"] = "queue",
+                ["MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE"] = queueSecretPath,
+                ["MAILER_BOUNCE_QUEUE_NAME"] = "bounce-events",
+                ["MAILER_HTTP_PORT"] = scratch.FreePort.ToString(),
+            });
+
+            var (_, output, _) = await RunDoctorAsync(
+                configuration,
+                SetupDoctorMode.ProductionQueue,
+                scratch.ComposePath);
+
+            Assert.Contains("[PASS] compose_bounce_wiring:", output, StringComparison.Ordinal);
+            Assert.Contains("[PASS] mode_bounce_queue:", output, StringComparison.Ordinal);
+            Assert.Contains("[PASS] bounce_queue:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL] compose_bounce_wiring:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[FAIL] production_queue_completion:", output, StringComparison.Ordinal);
+            Assert.Contains("[ACTION] production_queue_azure:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("AccountKey=abc", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", null);
+        }
+    }
+
+    [Theory]
+    [InlineData("missing_ingestion")]
+    [InlineData("missing_queue_name")]
+    [InlineData("missing_file_key")]
+    [InlineData("missing_ro_mount")]
+    [InlineData("bare_connection_string")]
+    [InlineData("comment_only")]
+    [InlineData("migrate_service_only")]
+    public async Task production_queue_mode_fails_compose_bounce_wiring_for_partial_or_misleading_compose(
+        string variant)
+    {
+        using var scratch = new DoctorScratch();
+        scratch.WriteTenantFile(CreateAcsTenantJson(liveSending: true));
+        scratch.WriteComposeText(ComposeBounceWiringVariant(variant));
+        var queueSecretPath = scratch.WriteBounceQueueSecret(
+            "DefaultEndpointsProtocol=https;AccountName=example;AccountKey=abc;EndpointSuffix=core.windows.net");
+        Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", "local-mail-service-token");
+
+        try
+        {
+            var configuration = scratch.BuildConfiguration(new Dictionary<string, string?>
+            {
+                ["Mailer:Worker:Enabled"] = "false",
+                ["Mailer:Metrics:Enabled"] = "false",
+                ["ACS_CONNECTION_STRING_FILE"] = scratch.WriteAcsSecret(ValidAcsSecret),
+                ["MAILER_BOUNCE_INGESTION"] = "queue",
+                ["MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE"] = queueSecretPath,
+                ["MAILER_BOUNCE_QUEUE_NAME"] = "bounce-events",
+                ["MAILER_HTTP_PORT"] = scratch.FreePort.ToString(),
+            });
+
+            var (exitCode, output, _) = await RunDoctorAsync(
+                configuration,
+                SetupDoctorMode.ProductionQueue,
+                scratch.ComposePath);
+
+            Assert.Equal(SetupDoctorCommand.FailureExitCode, exitCode);
+            Assert.Contains("[FAIL] compose_bounce_wiring:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("[PASS] compose_bounce_wiring:", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("AccountKey=abc", output, StringComparison.Ordinal);
+            Assert.False(
+                SetupDoctorCommand.IsMailerBounceQueueFullyWired(File.ReadAllText(scratch.ComposePath)));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("MAIL_SERVICE_TOKEN", null);
+        }
+    }
+
+    [Fact]
+    public void IsMailerBounceQueueFullyWired_accepts_canonical_mailer_block_only()
+    {
+        var wired = """
+            services:
+              mailer-migrate:
+                image: example
+              mailer:
+                environment:
+                  MAILER_BOUNCE_INGESTION: off
+                  MAILER_BOUNCE_QUEUE_NAME: ""
+                  MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE: /run/secrets/bounce-queue/queue_connection_string
+                volumes:
+                  - ./secrets/bounce-queue:/run/secrets/bounce-queue:ro
+            """;
+        Assert.True(SetupDoctorCommand.IsMailerBounceQueueFullyWired(wired));
+    }
+
+    private static string ComposeBounceWiringVariant(string variant) =>
+        variant switch
+        {
+            "missing_ingestion" => """
+                services:
+                  mailer:
+                    environment:
+                      MAILER_BOUNCE_QUEUE_NAME: bounce-events
+                      MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE: /run/secrets/bounce-queue/queue_connection_string
+                    volumes:
+                      - ./secrets/bounce-queue:/run/secrets/bounce-queue:ro
+                """,
+            "missing_queue_name" => """
+                services:
+                  mailer:
+                    environment:
+                      MAILER_BOUNCE_INGESTION: queue
+                      MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE: /run/secrets/bounce-queue/queue_connection_string
+                    volumes:
+                      - ./secrets/bounce-queue:/run/secrets/bounce-queue:ro
+                """,
+            "missing_file_key" => """
+                services:
+                  mailer:
+                    environment:
+                      MAILER_BOUNCE_INGESTION: queue
+                      MAILER_BOUNCE_QUEUE_NAME: bounce-events
+                    volumes:
+                      - ./secrets/bounce-queue:/run/secrets/bounce-queue:ro
+                """,
+            "missing_ro_mount" => """
+                services:
+                  mailer:
+                    environment:
+                      MAILER_BOUNCE_INGESTION: queue
+                      MAILER_BOUNCE_QUEUE_NAME: bounce-events
+                      MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE: /run/secrets/bounce-queue/queue_connection_string
+                    volumes:
+                      - ./secrets/bounce-queue:/run/secrets/bounce-queue
+                """,
+            "bare_connection_string" => """
+                services:
+                  mailer:
+                    environment:
+                      MAILER_BOUNCE_INGESTION: queue
+                      MAILER_BOUNCE_QUEUE_NAME: bounce-events
+                      MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE: /run/secrets/bounce-queue/queue_connection_string
+                      MAILER_BOUNCE_QUEUE_CONNECTION_STRING: replace-with-queue-connection-string
+                    volumes:
+                      - ./secrets/bounce-queue:/run/secrets/bounce-queue:ro
+                """,
+            "comment_only" => """
+                services:
+                  mailer:
+                    image: example
+                    # MAILER_BOUNCE_INGESTION: queue
+                    # MAILER_BOUNCE_QUEUE_NAME: bounce-events
+                    # MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE: /run/secrets/bounce-queue/queue_connection_string
+                    # volumes: ./secrets/bounce-queue:/run/secrets/bounce-queue:ro
+                """,
+            "migrate_service_only" => """
+                services:
+                  mailer-migrate:
+                    environment:
+                      MAILER_BOUNCE_INGESTION: queue
+                      MAILER_BOUNCE_QUEUE_NAME: bounce-events
+                      MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE: /run/secrets/bounce-queue/queue_connection_string
+                    volumes:
+                      - ./secrets/bounce-queue:/run/secrets/bounce-queue:ro
+                  mailer:
+                    image: example
+                """,
+            _ => throw new ArgumentOutOfRangeException(nameof(variant), variant, null),
+        };
 
     [Fact]
     public async Task queue_mode_fails_when_connection_string_is_missing()
@@ -974,6 +1163,34 @@ public sealed class SetupDoctorCliTests
                 + "\"provider\":\"acs\",\"live_sending\":false}";
             File.WriteAllText(path, json);
             return directory;
+        }
+
+        public void WriteDeployComposeWithBounceWiring()
+        {
+            // Minimal structural stand-in for infra/deploy/compose.yml bounce keys.
+            WriteComposeText(
+                """
+                services:
+                  mailer:
+                    image: example
+                    environment:
+                      MAILER_BOUNCE_INGESTION: ${MAILER_BOUNCE_INGESTION:-off}
+                      MAILER_BOUNCE_QUEUE_NAME: ${MAILER_BOUNCE_QUEUE_NAME:-}
+                      MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE: /run/secrets/bounce-queue/queue_connection_string
+                    volumes:
+                      - ${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH:-./secrets/bounce-queue}:/run/secrets/bounce-queue:ro
+                """);
+        }
+
+        public void WriteComposeText(string yaml) => File.WriteAllText(ComposePath, yaml);
+
+        public string WriteBounceQueueSecret(string content)
+        {
+            var directory = Path.Combine(_root, "secrets", "bounce-queue");
+            TestSecretDirectory.CreateSecure(directory);
+            var path = Path.Combine(directory, "queue_connection_string");
+            File.WriteAllText(path, content);
+            return path;
         }
 
         public IConfiguration BuildConfiguration(IReadOnlyDictionary<string, string?> extra)
