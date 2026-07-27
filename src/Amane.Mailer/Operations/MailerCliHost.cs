@@ -1,6 +1,7 @@
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations.EventGridConfigCheck;
+using Amane.Mailer.Operations.VerifyDeliveryReport;
 using Amane.Mailer.Webhooks;
 
 namespace Amane.Mailer.Operations;
@@ -321,6 +322,16 @@ public static class MailerCliHost
             await error.WriteLineAsync("setup check-event-grid failed: unexpected diagnostic error (details omitted).");
             return EventGridConfigCheckCommand.FailureExitCode;
         }
+    }
+
+    public static Task<int> RunSetupVerifyDeliveryReportAsync(
+        IConfiguration configuration,
+        CancellationToken cancellationToken)
+    {
+        var command = new VerifyDeliveryReportCommand(
+            new AdminProviderTestAcsSendConsole(),
+            configuration);
+        return command.RunAsync(cancellationToken);
     }
 
     private static bool TryResolveAcsAdminDirectories(

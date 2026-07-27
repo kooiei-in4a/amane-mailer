@@ -133,6 +133,31 @@
       }
     },
     {
+      "id": "acs-delivery-report-queue-e2e",
+      "status": "implemented",
+      "trackingIssue": 428,
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0020", "0013"],
+      "notes": "Staging-only setup verify-delivery-report CLI. Reuses #426 IAcsTestSendClient, then read-only PeekMessages/GetProperties correlation for EmailDeliveryReportReceived. Separates wiring vs delivery status; backlog outside peek window is WARN/ACTION not PASS. No Receive/Delete/visibility change. Real Azure E2E is maintainer-only; CI uses fake ACS + synthetic peeker.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/VerifyDeliveryReportCommand.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/VerifyDeliveryReportResultCodes.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/IAcsEventQueuePeeker.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/AzureAcsEventQueuePeeker.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/DeliveryReportEventInspector.cs",
+          "src/Amane.Mailer/Operations/VerifyDeliveryReport/DeliveryReportQueuePoller.cs",
+          "docs/ops/verify-delivery-report-runbook.md",
+          "docs/ops/verify-delivery-report-runbook.en.md",
+          "docs/ops/setup-guide.md",
+          "docs/ops/setup-guide.en.md"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/VerifyDeliveryReportCliTests.cs"
+        ]
+      }
+    },
+    {
       "id": "bounce-ingestion-and-suppression",
       "status": "implemented",
       "trackingIssue": 306,

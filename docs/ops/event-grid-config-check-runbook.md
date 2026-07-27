@@ -8,7 +8,7 @@
 
 ACS Email Delivery Report 用の Event Grid subscription と Storage Queue が、v1.1.0 の Pull 型 bounce ingestion 前提に沿っているかを、**Azure リソースを変更せず**に確認する。
 
-このコマンドは構成の照会のみを行う。Delivery Report の実到着や Queue message 本文の確認は対象外（到着確認は [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) / bounce runbook）。
+このコマンドは構成の照会のみを行う。Delivery Report の実到着や Queue message 本文の確認は対象外（到着確認は [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) / [verify-delivery-report-runbook.md](verify-delivery-report-runbook.md)）。
 
 ## 2. 採用方式
 
