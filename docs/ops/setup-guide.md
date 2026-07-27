@@ -34,9 +34,11 @@ Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) 
 
 ### v1.1.0 公開イメージについて
 
-bounce ingestion（migration `011` 含む）はソース上実装済みでも、**公開 GitHub release / GHCR タグ `v1.1.0` が無い間は、公開イメージを基準にした最終検証は未実施**として扱う。local build や develop 由来の成果物で手順を追う場合はその旨を運用記録に残す。`v1.1.0` の release / publish / post-promote sync 完了後に、公開イメージで再確認する。
+公開 GitHub release / GHCR タグ `v1.1.0` と migration `011` を含むイメージが利用可能です。
+最終確認の証跡は [docs/releases/v1.1.0.md](../releases/v1.1.0.md)（release-image smoke 含む）を参照してください。
+local build や develop 由来の成果物で手順を追う場合はその旨を運用記録に残してください。
 
-[release-image-smoke](release-image-smoke.md) の既定タグは現時点で公開済み release（例: `v1.0.1`）向けです。そのまま実行しても **v1.1.0 の検証にはなりません**。
+[release-image-smoke](release-image-smoke.md) の既定タグは公開済み release（`v1.1.0`）向けです。
 
 ### 現時点で完了できない構成（正直な境界）
 
@@ -78,7 +80,7 @@ production ACS + Queue（mode 5）は [`infra/deploy/compose.yml`](../../infra/d
 | production ACS secret 未登録（確認フレーズ取り違え含む） | Available（手順はある） | `[FAIL]` または `[ACTION]`（`Production` 確認の register-acs） |
 | bounce mode / Queue secret / Queue 名の不足（mode 5） | Available（手順はある） | `[FAIL]` または `[ACTION]`（compose 経由の設定） |
 | Queue poller は動くが Event Grid 到着未確認 | （モードによる） | `[WARN]` または `[ACTION]` |
-| 公開 v1.1.0 イメージ未検証 | （モードによる） | `[WARN]` または `[ACTION]` |
+| 公開 v1.1.0 イメージ未検証 | （モードによる） | 公開後は [v1.1.0 release record](../releases/v1.1.0.md) を参照。未追従ホストは `[WARN]` / `[ACTION]` |
 
 secret 値・宛先平文・接続文字列・raw provider error を結果に含めない。不足は「どの設定キー / どの権限能力が欠けているか」だけを示す。
 
@@ -152,7 +154,7 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 
 ### 情報
 
-- [ ] 使う構成モード（上表の 1 つ）。mode 4 / 5 は production 固有の安全境界（専用 token / ACS・Queue 分離、Push 非採用）と soft residual（公開 v1.1.0 未検証）を理解したうえでの選択
+- [ ] 使う構成モード（上表の 1 つ）。mode 4 / 5 は production 固有の安全境界（専用 token / ACS・Queue 分離、Push 非採用）を理解したうえでの選択。公開イメージは `v1.1.0` を正とする（[release record](../releases/v1.1.0.md)）
 - [ ] tenant JSON の置き場所（example をコピーした **未コミット** ファイル）
 - [ ] 各 tenant の `token_env` 名と、対応する環境変数を設定する場所
 - [ ] 実効 provider（tenant JSON または `MAILER_PROVIDER`）
@@ -266,10 +268,10 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 4. Setup（backup・任意）: [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md)
 5. Setup（ACS secret）: [register-acs CLI runbook](register-acs-cli-runbook.md)（確認フレーズ **`Production`**。CLI 引数に secret を渡さない）
 6. Setup doctor（再実行）: `setup doctor --mode production-acs`。`[PASS] platform_sender_environment`（expected `production`）を確認してから live send へ進む。`Staging` 確認で登録した場合はここで `[FAIL]`
-7. Verification: `/healthz` `/readyz`、承認済み sender での明示 live send。公開 release イメージ smoke は [release-image-smoke](release-image-smoke.md)（**既定タグは公開済み版。v1.1.0 検証には使わない** → 公開 v1.1.0 未検証は `[WARN]` / `[ACTION]`）
+7. Verification: `/healthz` `/readyz`、承認済み sender での明示 live send。公開 release イメージ smoke は [release-image-smoke](release-image-smoke.md)（既定タグ `v1.1.0`。証跡は [v1.1.0 release record](../releases/v1.1.0.md)）
 8. bounce 取り込みが必要なら mode 5 へ進む（不要ならここで完了してよい）
 
-**完了の目安:** deploy 形・tenant / env preflight・`Production` 確認付き secret 登録・doctor 再実行での `platform_sender_environment` PASS・health/ready・承認済み live send を `[PASS]` にし得る。公開 `v1.1.0` イメージ未検証は soft residual（`[WARN]` / `[ACTION]`）。
+**完了の目安:** deploy 形・tenant / env preflight・`Production` 確認付き secret 登録・doctor 再実行での `platform_sender_environment` PASS・health/ready・承認済み live send を `[PASS]` にし得る。公開イメージは `v1.1.0`（[release record](../releases/v1.1.0.md)）。
 
 ### 5. production ACS + Event Grid / Storage Queue
 
@@ -283,7 +285,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 4. Setup（bounce）: [bounce ingestion runbook](bounce-ingestion-runbook.md) に従い、`.env` で `MAILER_BOUNCE_INGESTION=queue` と `MAILER_BOUNCE_QUEUE_NAME` を設定し、Queue 接続文字列を `${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH}/queue_connection_string` に置く（CLI 引数に secret を渡さない）
 5. Setup（Azure）: Delivery Report → Event Grid → **Storage Queue**（Push ではない）。`setup check-event-grid`（[#427](https://github.com/kooiei-in4a/amane-mailer/issues/427)）で read-only 構成確認
 6. Setup doctor（再実行）: `setup doctor --mode production-queue`。`[PASS] compose_bounce_wiring` / `mode_bounce_queue` / `bounce_queue` を確認
-7. Verification: `/healthz` `/readyz`、承認済み live send。Staging での Delivery Report 到着確認は `setup verify-delivery-report`（[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)）— production 実行済みの証拠にはしない。公開 `v1.1.0` 未検証は `[WARN]` / `[ACTION]`
+7. Verification: `/healthz` `/readyz`、承認済み live send。Staging での Delivery Report 到着確認は `setup verify-delivery-report`（[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)）— production 実行済みの証拠にはしない。公開イメージは `v1.1.0`（[release record](../releases/v1.1.0.md)）
 
 **結果の付け方**
 
@@ -292,7 +294,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 - [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は **Staging 限定**。#428 の結果を production 実行済みの証拠として扱わない
 - **実バウンスは完了条件にしない**
 
-**完了の目安:** mode 4 の完了条件に加え、compose 経由の `queue` 設定・Queue file secret・Queue 名・Event Grid → Queue の構成確認を `[PASS]` / 人手確認できること。公開 `v1.1.0` イメージ未検証は soft residual。
+**完了の目安:** mode 4 の完了条件に加え、compose 経由の `queue` 設定・Queue file secret・Queue 名・Event Grid → Queue の構成確認を `[PASS]` / 人手確認できること。公開イメージは `v1.1.0`（[release record](../releases/v1.1.0.md)）。
 
 ## 失敗時の参照先
 
