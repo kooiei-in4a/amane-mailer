@@ -375,7 +375,8 @@ def run_ctrl_c_after_steps(command_args, env_overrides, steps, expect_regex, tim
             return -1, output
 
         # ETX — on Linux PTY this becomes SIGINT → CancelKeyPress (token cancelled).
-        # Console polls KeyAvailable and maps cancelled token to REJECTED_CANCELLED / exit 2.
+        # Console reads keys on a background thread and maps cancelled token to
+        # REJECTED_CANCELLED / exit 2 (blocking ReadKey on the main thread would hang).
         os.write(master, b"\x03")
         exit_code, output = _drain_until_exit(master, proc, output, timeout)
     finally:

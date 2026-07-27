@@ -26,8 +26,9 @@ public interface IAdminProviderTestAcsSendConsole
 /// <para>
 /// On Linux PTY, Ctrl+C arrives as SIGINT and is handled by
 /// <see cref="MailerCliCancellation"/> (<c>CancelKeyPress</c> with <c>e.Cancel = true</c>).
-/// Blocking <see cref="Console.ReadKey"/> never observes that cancel and would hang, so this
-/// console polls <see cref="Console.KeyAvailable"/> and treats a cancelled shared token as
+/// A blocking <see cref="Console.ReadKey"/> on the calling thread would hang forever after that
+/// cancel, so keystrokes are read on a background thread while the caller polls the shared
+/// cancellation token and maps it to
 /// <see cref="AdminProviderTestAcsSendResultCodes.RejectedCancelled"/> (exit 2). When the
 /// keystroke is delivered as input (some hosts), Ctrl+C is also detected from
 /// <see cref="Console.ReadKey"/>.
@@ -68,21 +69,7 @@ public sealed class AdminProviderTestAcsSendConsole : IAdminProviderTestAcsSendC
         var buffer = new List<char>();
         while (true)
         {
-            // CancelKeyPress / SIGINT is authoritative on Linux PTY; do not block in ReadKey.
-            if (cancellationToken.IsCancellationRequested)
-            {
-                throw new SecretOperationException(
-                    AdminProviderTestAcsSendResultCodes.RejectedCancelled,
-                    "Input was interrupted.");
-            }
-
-            if (!Console.KeyAvailable)
-            {
-                Thread.Sleep(KeyPollInterval);
-                continue;
-            }
-
-            var key = Console.ReadKey(intercept: true);
+            var key = ReadKeyCancellable(cancellationToken);
             if (key.Key == ConsoleKey.Enter)
             {
                 Console.WriteLine();
@@ -117,6 +104,43 @@ public sealed class AdminProviderTestAcsSendConsole : IAdminProviderTestAcsSendC
                 {
                     Console.Write(key.KeyChar);
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads one key without blocking the caller's ability to observe
+    /// <see cref="MailerCliCancellation"/> / SIGINT. The background <see cref="Console.ReadKey"/>
+    /// may remain blocked after cancel; this CLI exits immediately afterward.
+    /// </summary>
+    private static ConsoleKeyInfo ReadKeyCancellable(CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            throw new SecretOperationException(
+                AdminProviderTestAcsSendResultCodes.RejectedCancelled,
+                "Input was interrupted.");
+        }
+
+        var readTask = Task.Factory.StartNew(
+            static () => Console.ReadKey(intercept: true),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+        while (true)
+        {
+            // Observe CancelKeyPress via IsCancellationRequested below; do not let Wait throw OCE.
+            if (readTask.Wait(KeyPollInterval, CancellationToken.None))
+            {
+                return readTask.GetAwaiter().GetResult();
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new SecretOperationException(
+                    AdminProviderTestAcsSendResultCodes.RejectedCancelled,
+                    "Input was interrupted.");
             }
         }
     }
