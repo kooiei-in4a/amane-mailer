@@ -24,14 +24,12 @@ public interface IAdminProviderTestAcsSendConsole
 /// <summary>
 /// Interactive-terminal-only console. Rejects redirected stdin.
 /// <para>
-/// On Linux PTY, Ctrl+C arrives as SIGINT and is handled by
-/// <see cref="MailerCliCancellation"/> (<c>CancelKeyPress</c> with <c>e.Cancel = true</c>).
-/// A blocking <see cref="Console.ReadKey"/> on the calling thread would hang forever after that
-/// cancel, so keystrokes are read on a background thread while the caller polls the shared
-/// cancellation token and maps it to
-/// <see cref="AdminProviderTestAcsSendResultCodes.RejectedCancelled"/> (exit 2). When the
-/// keystroke is delivered as input (some hosts), Ctrl+C is also detected from
-/// <see cref="Console.ReadKey"/>.
+/// On Linux PTY, <see cref="Console.ReadKey"/> switches the terminal to raw/cbreak mode, so
+/// Ctrl+C arrives as <c>KeyChar == '\\x03'</c> rather than SIGINT. This console treats that
+/// (and Control+C modifiers when reported) as
+/// <see cref="AdminProviderTestAcsSendResultCodes.RejectedCancelled"/> (exit 2). Keystrokes are
+/// read on a background thread so a concurrent <see cref="MailerCliCancellation"/> cancel
+/// (SIGINT before raw mode, or during ACS I/O) is still observed.
 /// </para>
 /// Secrets and PII are not echoed; visible lines are echoed manually.
 /// </summary>
@@ -76,7 +74,10 @@ public sealed class AdminProviderTestAcsSendConsole : IAdminProviderTestAcsSendC
                 return new string(buffer.ToArray());
             }
 
-            if (key.Key == ConsoleKey.C && key.Modifiers.HasFlag(ConsoleModifiers.Control))
+            // Linux PTY + Console.ReadKey uses raw/cbreak mode: ETX arrives as KeyChar '\x03'
+            // (not SIGINT). Also accept Control+C modifiers when the host reports them.
+            if (key.KeyChar == '\u0003'
+                || (key.Key == ConsoleKey.C && key.Modifiers.HasFlag(ConsoleModifiers.Control)))
             {
                 throw new SecretOperationException(
                     AdminProviderTestAcsSendResultCodes.RejectedCancelled,
