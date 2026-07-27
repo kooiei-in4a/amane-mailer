@@ -90,17 +90,25 @@ internal static class AdminCookieValidator
             return;
         }
 
-        var idleExpiresAt = now + options.SessionIdleTimeout;
-        var cookieExpiresAt = idleExpiresAt <= session.AbsoluteExpiresAt
-            ? idleExpiresAt
-            : session.AbsoluteExpiresAt;
-        context.Properties.ExpiresUtc = cookieExpiresAt;
-
-        await sessionRepository.UpdateLastSeenAsync(
+        var proposedIdleExpiresAt = now + options.SessionIdleTimeout;
+        var touchInterval = AdminSessionTouch.ResolveInterval(options.SessionIdleTimeout);
+        var touch = await sessionRepository.TryTouchAsync(
             sessionId,
             now,
-            idleExpiresAt,
+            proposedIdleExpiresAt,
+            touchInterval,
             context.HttpContext.RequestAborted);
+
+        // Cookie renewal is tied to the atomic DB touch winner only (#391).
+        // SlidingExpiration is disabled so the framework cannot Set-Cookie without a touch.
+        // IssuedUtc must advance with ExpiresUtc so RequestRefresh computes
+        // refreshExpires = now + (ExpiresUtc - IssuedUtc) == IdleExpiresAt.
+        if (touch is not null)
+        {
+            context.Properties.IssuedUtc = now;
+            context.Properties.ExpiresUtc = touch.IdleExpiresAt;
+            context.ShouldRenew = true;
+        }
     }
 
     private static async Task RejectSessionAsync(

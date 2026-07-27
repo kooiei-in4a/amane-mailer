@@ -123,25 +123,63 @@ public sealed class AdminSessionRepository(SqliteConnectionFactory connections)
         return await ReadSessionAsync(connection, sessionId, cancellationToken);
     }
 
-    public async Task UpdateLastSeenAsync(
+    /// <summary>
+    /// Atomically touches an active session when the previous touch is older than
+    /// <paramref name="touchInterval"/>. Updates are monotonic and capped by absolute expiry.
+    /// Returns the persisted timestamps only when this call updated the row (#391).
+    /// </summary>
+    public async Task<AdminSessionTouchResult?> TryTouchAsync(
         string sessionId,
         DateTimeOffset lastSeenAt,
-        DateTimeOffset idleExpiresAt,
+        DateTimeOffset proposedIdleExpiresAt,
+        TimeSpan touchInterval,
         CancellationToken cancellationToken = default)
     {
+        if (touchInterval < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(touchInterval));
+
+        var touchBefore = lastSeenAt - touchInterval;
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
+        // SqliteTime.StorageFormat is lexicographically ordered for UTC instants, so TEXT
+        // comparisons match chronological order (covered by regression tests).
         command.CommandText = """
             UPDATE admin_sessions
-            SET last_seen_at = @LastSeenAt,
-                idle_expires_at = @IdleExpiresAt
+            SET last_seen_at =
+                    CASE
+                        WHEN last_seen_at < @LastSeenAt THEN @LastSeenAt
+                        ELSE last_seen_at
+                    END,
+                idle_expires_at =
+                    CASE
+                        WHEN idle_expires_at < @ProposedIdleExpiresAt THEN
+                            CASE
+                                WHEN absolute_expires_at < @ProposedIdleExpiresAt
+                                    THEN absolute_expires_at
+                                ELSE @ProposedIdleExpiresAt
+                            END
+                        ELSE idle_expires_at
+                    END
             WHERE session_id = @SessionId
-              AND revoked_at IS NULL;
+              AND revoked_at IS NULL
+              AND last_seen_at <= @TouchBefore
+            RETURNING last_seen_at, idle_expires_at, absolute_expires_at;
             """;
         command.Parameters.AddWithValue("@SessionId", sessionId);
         command.Parameters.AddWithValue("@LastSeenAt", SqliteTime.ToStorageUtc(lastSeenAt));
-        command.Parameters.AddWithValue("@IdleExpiresAt", SqliteTime.ToStorageUtc(idleExpiresAt));
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        command.Parameters.AddWithValue(
+            "@ProposedIdleExpiresAt",
+            SqliteTime.ToStorageUtc(proposedIdleExpiresAt));
+        command.Parameters.AddWithValue("@TouchBefore", SqliteTime.ToStorageUtc(touchBefore));
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+
+        return new AdminSessionTouchResult(
+            SqliteTime.FromStorage(reader.GetString(0)),
+            SqliteTime.FromStorage(reader.GetString(1)),
+            SqliteTime.FromStorage(reader.GetString(2)));
     }
 
     public async Task RevokeSessionAsync(
