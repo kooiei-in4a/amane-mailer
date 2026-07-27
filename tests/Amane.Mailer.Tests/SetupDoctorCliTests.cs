@@ -567,6 +567,29 @@ public sealed class SetupDoctorCliTests
     }
 
     [Fact]
+    public async Task usage_error_for_unknown_argument_does_not_echo_secret_like_value()
+    {
+        const string secretArg = "Endpoint=https://secret.example/;AccessKey=leaked-key-value";
+        var configuration = new ConfigurationBuilder().Build();
+        var output = new StringWriter();
+        var error = new StringWriter();
+
+        var exitCode = await MailerCliHost.RunSetupDoctorAsync(
+            configuration,
+            ["setup", "doctor", "--mode", "local-mailpit", secretArg],
+            output,
+            error,
+            TestContext.Current.CancellationToken);
+
+        var combined = output.ToString() + error.ToString();
+        Assert.Equal(SetupDoctorCommand.UsageErrorExitCode, exitCode);
+        Assert.Contains("Unknown argument.", error.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(secretArg, combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("leaked-key-value", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret.example", combined, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void placeholder_detector_matches_validate_tenant_config_rules()
     {
         Assert.True(ConfigurationPlaceholderDetector.LooksLikePlaceholder("replace-with-token"));

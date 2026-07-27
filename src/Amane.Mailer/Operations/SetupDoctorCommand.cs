@@ -96,7 +96,7 @@ public sealed class SetupDoctorCommand
                 continue;
             }
 
-            usageError = $"Unknown argument: {token}.";
+            usageError = "Unknown argument.";
             return false;
         }
 
