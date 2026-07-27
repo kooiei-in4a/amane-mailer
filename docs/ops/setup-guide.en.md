@@ -26,26 +26,45 @@ Bounce ingestion (including migration `011`) may already exist in source, but wh
 
 The modes below are still useful as a **target taxonomy**, but they cannot be finished with only the current canonical deploy templates / CLIs. Do not treat them as completable setup paths yet.
 
-| Gap | Current state | How this guide treats it |
-|-----|---------------|--------------------------|
-| Production ACS file-secret registration | `admin provider register-acs` accepts only the exact confirmation phrase **`Staging`**. Never tell a production operator to type `Staging` while doing production work (that destroys the safety check) | Mode 4 covers deploy-shaped preparation. **A production-confirmed secret registration procedure is not available yet** (`[WARN]` / `[ACTION]`) |
-| Platform-owned sender | The same CLI also writes `platform-sender.json`, which is **not** used by the current tenant ACS send path | Do not treat it as evidence that tenant live send is ready |
-| Production ACS + Queue (mode 5) | [bounce ingestion runbook](bounce-ingestion-runbook.en.md) requires `MAILER_BOUNCE_INGESTION`, Queue credentials, and Queue name, but current [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) does **not** pass them in `environment` / volumes. Setting variables only in the host shell does not inject them into the container | Mode 5 is a **target**. Do not mark it complete until deploy-template wiring exists (`[WARN]` / `[ACTION]`) |
+| Gap | Current state | Mode availability | Diagnostic treatment |
+|-----|---------------|-------------------|----------------------|
+| Production ACS file-secret registration | `admin provider register-acs` accepts only the exact confirmation phrase **`Staging`**. Never tell a production operator to type `Staging` while doing production work (that destroys the safety check) | Mode 4 live send is **Blocked** (deploy-shaped prep remains Available) | Live-send completion is `[FAIL]` + `[ACTION]` waiting for a canonical procedure |
+| Platform-owned sender | The same CLI also writes `platform-sender.json`, which is **not** used by the current tenant ACS send path | Do not treat it as evidence that tenant live send is ready | Not grounds for tenant live-send completion |
+| Production ACS + Queue (mode 5) | [bounce ingestion runbook](bounce-ingestion-runbook.en.md) requires `MAILER_BOUNCE_INGESTION`, Queue credentials, and Queue name, but current [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) does **not** pass them in `environment` / volumes. Setting variables only in the host shell does not inject them into the container | **Target only** until deploy-template wiring exists | Completion is `[FAIL]` + `[ACTION]` waiting for compose wiring |
 
-## Result codes (PASS / FAIL / WARN / ACTION)
+## Mode availability vs result codes (keep them separate)
 
-Use the same meanings in later setup doctor / verification CLIs ([#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)–[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)). Existing smoke scripts mainly emit `[PASS]` / `[FAIL]`.
+Whether a configuration can be finished today (the mode-table column) is a different layer from diagnostic CLI result codes. Later setup doctor / verification CLIs ([#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)–[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)) must use the result-code meanings below. Existing smoke scripts mainly emit `[PASS]` / `[FAIL]`.
+
+### Mode availability (what the sources support today)
+
+| Value | Meaning |
+|-------|---------|
+| **Available** | Completable with current canonical runbooks / CLIs / deploy templates |
+| **Blocked** | Desired mode, but a required path is missing so it cannot be finished now |
+| **Target only** | Taxonomy / target description only; do not mark complete with current templates |
+
+### Result codes (diagnostic output)
 
 | Code | Meaning | What to do next |
 |------|---------|-----------------|
-| **PASS** | The check matches the intended configuration | Continue to the next check or mode |
-| **FAIL** | A required precondition is missing; continuing risks a wrong or unsafe live send | Stop and fix using the linked runbook / config docs |
-| **WARN** | Not strictly required, but risky or discouraged—or a **gap that current tools cannot finish** remains | Record it; do not treat setup as complete until a real remediation path exists |
-| **ACTION** | The tool will not auto-fix; a human must perform an explicit step—or take a **separate approved path** | Follow the indicated steps. Do not invent missing procedures |
+| **PASS** | Machine-verified; the check matches the intended configuration | Continue to the next check or mode |
+| **FAIL** | An inconsistency that blocks setup progress, or a missing required precondition | Stop. Includes unblockable required gaps (not “usable with caveats”) |
+| **WARN** | **Operable**, but a human must confirm or judge risk | Record and confirm manually. Do not use WARN for “cannot finish” |
+| **ACTION** | Next safe human step (the tool will not auto-fix) | Follow the indicated steps. Do not invent missing procedures |
+
+Examples:
+
+| State | Mode availability | Diagnostic |
+|-------|-------------------|------------|
+| No production-safe secret registration path | Blocked (live send) | `[FAIL]` + `[ACTION]` |
+| Bounce env / Queue secret not wired in compose | Target only | `[FAIL]` + `[ACTION]` |
+| Queue poller runs but Event Grid arrival unconfirmed | (depends on mode) | `[WARN]` or `[ACTION]` |
+| Published v1.1.0 image not verified | (depends on mode) | `[WARN]` or `[ACTION]` |
 
 Do not include secret values, plaintext recipients, connection strings, or raw provider errors in results. Report only which setting key or capability is missing.
 
-A quiet `mail_provider_queue_poll_failed_total` alone is **not** proof that Event Grid → Queue wiring works (the poller can run with no events arriving).
+A quiet `mail_provider_queue_poll_failed_total` alone is **not** proof that Event Grid → Queue wiring works (the poller can run with no events arriving → `[WARN]` / `[ACTION]`).
 
 ## Choose a configuration mode
 
@@ -59,11 +78,11 @@ Answer these questions and pick **exactly one** mode.
 
 | Mode | Intended use | provider | `live_sending` | bounce mode | Completable with current sources? | Primary sources |
 |------|--------------|----------|----------------|-------------|-----------------------------------|-----------------|
-| local Mailpit | First delivery, local smoke | `mailpit` | `false` | `off` (default) | Yes | [Zero-Admin first-mail quickstart](first-mail-quickstart.en.md), [local Docker runbook](local-mailer-docker-runbook.en.md) |
-| staging ACS no-send | Deploy-shaped start, token / migrate checks; no live send | `acs` (or as in JSON) | `false` | usually `off` | Yes (no live send) | [local deploy rehearsal](local-deploy-rehearsal-runbook.en.md), [config README](../../config/mailer/README.en.md) |
-| staging ACS verification | **Explicit** ACS / approved-sender validation | `acs` | `true` only during the validation (dedicated tenant / recipients) | usually `off` | Yes for Staging | [register-acs CLI](register-acs-cli-runbook.en.md) (**Staging only**), [config README](../../config/mailer/README.en.md), drill guide |
-| production ACS | Production delivery target | `acs` | `true` (approved only) | `off` allowed | Deploy shape / config yes; **production-confirmed file-secret registration not available** | [deploy `.env.example`](../../infra/deploy/.env.example), [compose.yml](../../infra/deploy/compose.yml), [config README](../../config/mailer/README.en.md) |
-| production ACS + Queue | Production delivery + hard-bounce suppression target | `acs` | `true` | **`queue` only** | **No with current deploy template—do not mark complete** | Target setting names in [bounce ingestion runbook](bounce-ingestion-runbook.en.md); compose wiring needs separate work |
+| local Mailpit | First delivery, local smoke | `mailpit` | `false` | `off` (default) | **Available** | [Zero-Admin first-mail quickstart](first-mail-quickstart.en.md), [local Docker runbook](local-mailer-docker-runbook.en.md) |
+| staging ACS no-send | Deploy-shaped start, token / migrate checks; no live send | `acs` (or as in JSON) | `false` | usually `off` | **Available** (no live send) | [local deploy rehearsal](local-deploy-rehearsal-runbook.en.md), [config README](../../config/mailer/README.en.md) |
+| staging ACS verification | **Explicit** ACS / approved-sender validation | `acs` | `true` only during the validation (dedicated tenant / recipients) | usually `off` | **Available** (Staging) | [register-acs CLI](register-acs-cli-runbook.en.md) (**Staging only**), [config README](../../config/mailer/README.en.md), drill guide |
+| production ACS | Production delivery target | `acs` | `true` (approved only) | `off` allowed | Deploy shape / config **Available**; live send **Blocked** (no production-confirmed secret registration) | [deploy `.env.example`](../../infra/deploy/.env.example), [compose.yml](../../infra/deploy/compose.yml), [config README](../../config/mailer/README.en.md) |
+| production ACS + Queue | Production delivery + hard-bounce suppression target | `acs` | `true` | **`queue` only** | **Target only** | Target setting names in [bounce ingestion runbook](bounce-ingestion-runbook.en.md); compose wiring needs separate work |
 
 ## provider / `live_sending` / bounce mode
 
@@ -106,7 +125,7 @@ Keep **ACS and Queue separated per environment** (dev / staging / production). M
 | token / `tenant_id` | example / local-only | non-production only | production-only; never share with staging |
 | ACS secret | local drill may use bare env (see runbook) | file secret (`register-acs`, confirmation `Staging`) | file secret required, but **current register-acs cannot confirm production** |
 | Admin | optional, internal network | optional, reachability limits required | optional, reachability limits required (no direct internet exposure) |
-| bounce Queue | usually unnecessary | Staging wiring checks planned in [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) / [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | target only; current compose unwired |
+| bounce Queue | usually unnecessary | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) planned for per-environment read-only config checks. [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) is Staging E2E only | Target only; current compose unwired |
 | Done means | health + first Mailpit delivery, etc. | start + preflight + optional explicit verification | deploy-shaped prep possible; **canonical live-send completion waits on the secret-registration gap**. Real bounce not required |
 
 ## Shared checklist (information, access, secrets, network)
@@ -128,14 +147,14 @@ Confirm readiness only; do not write down secret values.
 - [ ] Can inspect the ACS Email resource and approved sender / domain
 - [ ] (mode 3) Can run `admin provider register-acs` on the deploy host (interactive TTY, secret directory permissions, confirmation phrase `Staging`)
 - [ ] (mode 5 target) Can subscribe Delivery Reports via Event Grid with a **Storage Queue** endpoint
-- [ ] (mode 5 target) Can pass Queue credentials **into the Mailer container via compose** (upstream `compose.yml` alone cannot → `[WARN]`)
+- [ ] (mode 5 / Target only) Can pass Queue credentials **into the Mailer container via compose** (upstream `compose.yml` alone cannot → completion is `[FAIL]` + `[ACTION]`)
 
 ### Secrets (location only; never record values)
 
 - [ ] Tenant Bearer token (environment variable; never plaintext in JSON)
 - [ ] (Staging ACS live) file secret written by `register-acs` for `ACS_CONNECTION_STRING_FILE`
-- [ ] (production ACS) file secret is required per [`.env.example`](../../infra/deploy/.env.example). **Production confirmation on the registration CLI is unsupported** → `[ACTION]` (do not invent a workaround)
-- [ ] (mode 5 target) Queue connection string or file. If compose is unwired, the container cannot read host-only env → `[WARN]`
+- [ ] (production ACS) file secret is required per [`.env.example`](../../infra/deploy/.env.example). **Production confirmation on the registration CLI is unsupported** → live-send completion is `[FAIL]` + `[ACTION]` (do not invent a workaround)
+- [ ] (mode 5 / Target only) Queue connection string or file. If compose is unwired, the container cannot read host-only env → completion is `[FAIL]` + `[ACTION]`
 - [ ] (metrics enabled) scrape bearer
 - [ ] (Admin enabled) Admin secrets such as password hash
 
@@ -198,11 +217,11 @@ Confirm readiness only; do not write down secret values.
 1. Preflight: production-only tokens / tenants; approved sender; metrics bearer as needed ([deploy `.env.example`](../../infra/deploy/.env.example))
 2. Setup (what you can do): prepare the host in the shape of deploy compose ([infra/deploy/compose.yml](../../infra/deploy/compose.yml)); align tenant JSON / tokens / metrics / Admin with the [config README](../../config/mailer/README.en.md)
 3. Setup (backup, optional): [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md)
-4. Setup (ACS secret): compose expects `ACS_CONNECTION_STRING_FILE`. **There is no production-confirmed registration CLI / runbook this entry point can link today** → `[WARN]` / `[ACTION]`. Do not reuse register-acs for production work
-5. Verification (before the secret gap is closed): limit checks to `/healthz` `/readyz`, no-send, or accept-only paths that do **not** require live send. Published-image smoke: [release-image-smoke](release-image-smoke.en.md) (**default tag is a published release; it is not a v1.1.0 verification**)
+4. Setup (ACS secret): compose expects `ACS_CONNECTION_STRING_FILE`. **There is no production-confirmed registration CLI / runbook this entry point can link today** → live send is **Blocked**; diagnosis is `[FAIL]` + `[ACTION]`. Do not reuse register-acs for production work
+5. Verification (before the secret gap is closed): limit checks to `/healthz` `/readyz`, no-send, or accept-only paths that do **not** require live send. Published-image smoke: [release-image-smoke](release-image-smoke.en.md) (**default tag is a published release; it is not a v1.1.0 verification** → unpublished v1.1.0 verification is `[WARN]` / `[ACTION]`)
 6. Even if bounce is not needed, canonical production live-send completion waits on the secret-registration gap
 
-**Done when (today):** deploy shape, tenant / env preflight, and health/ready may be `[PASS]`. Production live send remains `[WARN]` (no production-confirmed secret registration).
+**Done when (today):** deploy shape, tenant / env preflight, and health/ready may be `[PASS]`. Production live-send completion is **Blocked**, so report `[FAIL]` + `[ACTION]` (do not call that state WARN / “usable with caveats”).
 
 ### 5. production ACS + Event Grid / Storage Queue (target)
 
@@ -217,12 +236,13 @@ Confirm readiness only; do not write down secret values.
 
 **Results you can assign today**
 
-- Deploy template unwired → `[WARN]` / `[ACTION]` (not complete)
-- Do not treat a quiet poll-failure metric as Event Grid wiring success
-- [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) / [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) are planned for **Staging pre-production wiring checks**. Production Queue execution and production test sends are non-goals of #428
+- Deploy template unwired → mode is **Target only**; completion is `[FAIL]` + `[ACTION]`
+- Do not treat a quiet poll-failure metric as Event Grid wiring success (unconfirmed arrival is `[WARN]` / `[ACTION]`)
+- [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) is planned as **read-only configuration checks for the selected environment** (including dev / staging / production). It is not Staging-only
+- [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) is planned as a **Staging-only** Delivery Report E2E / pre-production wiring check. Do not treat #428 results as evidence that production was exercised. Production Queue execution and production test sends are non-goals of #428
 - **Real bounce is not a completion criterion**
 
-**Done when (today):** nowhere—target only. Keep Staging pre-production evidence (future #427 / #428) separate from production completion.
+**Done when (today):** nowhere—Target only. Keep #427 per-environment config evidence, #428 Staging E2E evidence, and production completion separate.
 
 ## Where to look when something fails
 
@@ -242,8 +262,8 @@ Confirm readiness only; do not write down secret values.
 |-------|---------|----------|
 | [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | — |
 | [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS-only live send check CLI | Staging-oriented plan (follow that issue) |
-| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check | Config check only; does not prove event arrival |
-| [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report Queue arrival E2E (message ID correlation; real bounce not required) | **Staging-only pre-production wiring check**. Production Queue / production test send are non-goals |
+| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check | **For the selected environment** (not Staging-only). Config check only; does not prove event arrival |
+| [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report Queue arrival E2E (message ID correlation; real bounce not required) | **Staging-only** pre-production wiring check. Production Queue / production test send are non-goals |
 
 Until those land, continue with existing preflight scripts, smokes, and manual runbook checks.
 
