@@ -63,7 +63,7 @@
       "trackingIssue": 424,
       "lastVerified": "2026-07-28",
       "relatedAdrs": ["0020", "0013"],
-      "notes": "Single JA/EN setup entry (docs/ops/setup-guide) with mode taxonomy, checklists, PASS/FAIL/WARN/ACTION meanings, and links to existing runbooks. README reaches the entry in one click. Mode 4 (production ACS) is Available via production-confirmed register-acs (exact Production). Mode 5 (production ACS + Queue) is Available via deploy compose bounce Queue wiring (MAILER_BOUNCE_INGESTION / Queue name / file secret mount). Published v1.1.0 image final verification is soft residual until release exists (latest public release v1.0.1). Does not implement Azure resource creation; #425–#428 CLIs are tracked separately.",
+      "notes": "Single JA/EN setup entry (docs/ops/setup-guide) with mode taxonomy, checklists, PASS/FAIL/WARN/ACTION meanings, and links to existing runbooks. README reaches the entry in one click. Mode 4 (production ACS) is Available via production-confirmed register-acs (exact Production). Mode 5 (production ACS + Queue) is Available via deploy compose bounce Queue wiring (MAILER_BOUNCE_INGESTION / Queue name / file secret mount). Published v1.1.0 image final verification completed (GHCR tag v1.1.0 + release-image smoke; see docs/releases/v1.1.0.md). Does not implement Azure resource creation; #425–#428 CLIs are tracked separately.",
       "evidence": {
         "files": [
           "docs/ops/setup-guide.md",
