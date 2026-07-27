@@ -2,6 +2,7 @@
 
 > 対象: `admin provider register-acs` / `admin provider check-acs-preflight`
 > action ID: `MAILER-ACS-INPUT-01`
+> 構成選択: [セットアップ入口](setup-guide.md) の **staging ACS verification**（**Staging 限定**。production 作業では使わない）
 
 ## 1. 目的
 

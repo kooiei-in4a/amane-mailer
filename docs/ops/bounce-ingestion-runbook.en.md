@@ -4,6 +4,7 @@
 
 > Scope: ACS Email Delivery Report → Event Grid → Storage Queue → Mailer Pull ingestion (ADR 0020 / #305).
 > Admin visibility: #306. Suppression removal CLI: #400. Push (Event Grid Webhook) is out of v1.1.0 scope (#304).
+> Configuration mode: **production ACS + Queue** in the [setup entry point](setup-guide.en.md) (Target only with the current deploy compose).
 
 ## 1. Purpose
 

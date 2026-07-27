@@ -8,6 +8,22 @@ This document is the source of truth for decisions, order, safety boundaries, an
 
 Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) · This issue: [#424](https://github.com/kooiei-in4a/amane-mailer/issues/424)
 
+## Role of existing docs (do not duplicate)
+
+| Document | Role | Relation to this entry |
+|----------|------|------------------------|
+| [README](../../README.en.md) | Repository front door | One click to reach this guide |
+| [Zero-Admin first-mail quickstart](first-mail-quickstart.en.md) | Shortest **local Mailpit** path | Mode 1 procedure source of truth |
+| [local Docker runbook](local-mailer-docker-runbook.en.md) ([bash](local-mailer-docker-runbook-bash.en.md)) | Extra local smoke (idempotency, Admin, etc.) | Mode 1 extension |
+| [local deploy rehearsal](local-deploy-rehearsal-runbook.en.md) | Deploy-shaped stack rehearsal | Mode 2 procedure source of truth |
+| [register-acs CLI](register-acs-cli-runbook.en.md) | Staging-only ACS file-secret registration | Mode 3 registration source. **Do not use for production** |
+| [test-acs-send CLI](test-acs-send-cli-runbook.en.md) | Staging-only ACS standalone live-send check | Mode 3 verification source |
+| [bounce ingestion](bounce-ingestion-runbook.en.md) | Queue Pull runtime settings / operations | Mode 5 target setting names (compose wiring is separate) |
+| [event-grid config check](event-grid-config-check-runbook.en.md) | Read-only Event Grid / Queue configuration check | Per environment; does not prove arrival |
+| [verify-delivery-report](verify-delivery-report-runbook.en.md) | Delivery Report Queue arrival E2E | **Staging only**. Not production evidence |
+| [config README](../../config/mailer/README.en.md) | tenant / env / preflight | Config shape source for all modes |
+| [release-image-smoke](release-image-smoke.en.md) | Published-image smoke | For published tags; not a `v1.1.0` check while that tag is missing |
+
 ## Before you start (safety)
 
 - Do not paste secrets, connection strings, real tenant tokens, sender/recipient addresses, PII, or raw provider errors into docs, issues, logs, or chat.
@@ -34,7 +50,7 @@ The modes below are still useful as a **target taxonomy**, but they cannot be fi
 
 ## Mode availability vs result codes (keep them separate)
 
-Whether a configuration can be finished today (the mode-table column) is a different layer from diagnostic CLI result codes. Later setup doctor / verification CLIs ([#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)–[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)) must use the result-code meanings below. Existing smoke scripts mainly emit `[PASS]` / `[FAIL]`.
+Whether a configuration can be finished today (the mode-table column) is a different layer from diagnostic CLI result codes. Setup doctor / verification CLIs ([#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)–[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)) use the result-code meanings below. Existing smoke scripts mainly emit `[PASS]` / `[FAIL]`.
 
 ### Mode availability (what the sources support today)
 
@@ -80,7 +96,7 @@ Answer these questions and pick **exactly one** mode.
 |------|--------------|----------|----------------|-------------|-----------------------------------|-----------------|
 | local Mailpit | First delivery, local smoke | `mailpit` | `false` | `off` (default) | **Available** | [Zero-Admin first-mail quickstart](first-mail-quickstart.en.md), [local Docker runbook](local-mailer-docker-runbook.en.md) |
 | staging ACS no-send | Deploy-shaped start, token / migrate checks; no live send | `acs` (or as in JSON) | `false` | usually `off` | **Available** (no live send) | [local deploy rehearsal](local-deploy-rehearsal-runbook.en.md), [config README](../../config/mailer/README.en.md) |
-| staging ACS verification | **Explicit** ACS / approved-sender validation | `acs` | `true` only during the validation (dedicated tenant / recipients) | usually `off` | **Available** (Staging) | [register-acs CLI](register-acs-cli-runbook.en.md) (**Staging only**), [config README](../../config/mailer/README.en.md), drill guide |
+| staging ACS verification | **Explicit** ACS / approved-sender validation | `acs` | `true` only during the validation (dedicated tenant / recipients) | usually `off` | **Available** (Staging) | [register-acs CLI](register-acs-cli-runbook.en.md) (**Staging only**), [test-acs-send CLI](test-acs-send-cli-runbook.en.md), [config README](../../config/mailer/README.en.md) |
 | production ACS | Production delivery target | `acs` | `true` (approved only) | `off` allowed | Deploy shape / config **Available**; live send **Blocked** (no production-confirmed secret registration) | [deploy `.env.example`](../../infra/deploy/.env.example), [compose.yml](../../infra/deploy/compose.yml), [config README](../../config/mailer/README.en.md) |
 | production ACS + Queue | Production delivery + hard-bounce suppression target | `acs` | `true` | **`queue` only** | **Target only** | Target setting names in [bounce ingestion runbook](bounce-ingestion-runbook.en.md); compose wiring needs separate work |
 
@@ -273,24 +289,27 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 | Example symptom | See |
 |-----------------|-----|
-| tenant / token / `LIVE_SENDING_DISABLED` / missing provider config | [config README troubleshooting](../../config/mailer/README.en.md#tenant--env-troubleshooting) |
+| tenant / token / `LIVE_SENDING_DISABLED` / missing provider config | [config README troubleshooting](../../config/mailer/README.en.md#tenant--env-troubleshooting), setup doctor in this guide |
 | local start / Admin / Mailpit | [local Docker runbook](local-mailer-docker-runbook.en.md) |
 | deploy-shaped compose / migrate / network | [local deploy rehearsal](local-deploy-rehearsal-runbook.en.md) |
 | Staging ACS secret registration failure | [register-acs CLI](register-acs-cli-runbook.en.md) (Staging only) |
+| Staging ACS standalone send triage | [test-acs-send CLI](test-acs-send-cli-runbook.en.md) (Staging only) |
+| Event Grid / Queue configuration mismatch | [event-grid config check](event-grid-config-check-runbook.en.md) (read-only) |
+| Staging Delivery Report not arriving in Queue | [verify-delivery-report](verify-delivery-report-runbook.en.md) (Staging only; real bounce not required) |
 | bounce / unmatched / Queue poll (runtime description) | [bounce ingestion](bounce-ingestion-runbook.en.md), [metrics-and-alerts](metrics-and-alerts.en.md) |
 | backup / restore | [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md) |
 | published image smoke (published tags) | [release-image-smoke](release-image-smoke.en.md) |
 
-## Planned verification helpers (#425 / #426 excepted)
+## Verification helpers (availability)
 
-| Issue | Planned | Boundary |
-|-------|---------|----------|
+| Issue | Capability | Boundary |
+|-------|------------|----------|
 | [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **Available** (see “setup doctor” above) |
 | [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS-only live send check CLI | **Available** — [test-acs-send-cli-runbook.en.md](test-acs-send-cli-runbook.en.md) (Staging only) |
-| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check (`setup check-event-grid`) | **For the selected environment** (not Staging-only). Config check only; does not prove event arrival. Runbook: [event-grid-config-check-runbook.en.md](event-grid-config-check-runbook.en.md) |
+| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check (`setup check-event-grid`) | **Available** — [event-grid-config-check-runbook.en.md](event-grid-config-check-runbook.en.md) (selected environment; does not prove arrival) |
 | [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report Queue arrival E2E (message ID correlation; real bounce not required) | **Available** — [verify-delivery-report-runbook.en.md](verify-delivery-report-runbook.en.md) (**Staging only**. Production Queue / production test send are non-goals) |
 
-Use setup doctor (#425), [test-acs-send](test-acs-send-cli-runbook.en.md) (#426), [check-event-grid](event-grid-config-check-runbook.en.md) (#427), [verify-delivery-report](verify-delivery-report-runbook.en.md) (#428), existing preflight scripts, smokes, and manual runbook checks.
+For the setup entry point, use the CLIs above plus existing preflight / smoke / manual runbook checks. Canonical production live-send registration and deploy-compose bounce wiring are non-goals of this issue (handled separately).
 
 ## Non-goals of this entry point
 

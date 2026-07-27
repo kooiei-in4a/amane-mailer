@@ -58,6 +58,30 @@
       "notes": "No dedicated implementation issue. Delivered in Phase 1 via #89 (throttle key) and #90 (audit source_ip hash). When MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true, keyed hash is used and missing key causes startup fail-closed."
     },
     {
+      "id": "setup-entry-guide",
+      "status": "partial",
+      "trackingIssue": 424,
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0020", "0013"],
+      "notes": "Single JA/EN setup entry (docs/ops/setup-guide) with mode taxonomy, checklists, PASS/FAIL/WARN/ACTION meanings, and links to existing runbooks. README reaches the entry in one click. Mode 4 live send remains Blocked (no production-confirmed register-acs). Mode 5 is Target only (deploy compose bounce wiring missing). Published v1.1.0 image final verification blocked until that release exists (latest public release v1.0.1). Docs-only; does not implement #425–#428 CLIs.",
+      "evidence": {
+        "files": [
+          "docs/ops/setup-guide.md",
+          "docs/ops/setup-guide.en.md",
+          "README.md",
+          "README.en.md",
+          "docs/ops/first-mail-quickstart.md",
+          "docs/ops/first-mail-quickstart.en.md",
+          "docs/ops/local-deploy-rehearsal-runbook.md",
+          "docs/ops/local-deploy-rehearsal-runbook.en.md",
+          "docs/ops/register-acs-cli-runbook.md",
+          "docs/ops/register-acs-cli-runbook.en.md",
+          "docs/ops/bounce-ingestion-runbook.md",
+          "docs/ops/bounce-ingestion-runbook.en.md"
+        ]
+      }
+    },
+    {
       "id": "setup-doctor-read-only",
       "status": "implemented",
       "trackingIssue": 425,
