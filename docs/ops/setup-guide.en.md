@@ -152,12 +152,12 @@ Confirm readiness only; do not write down secret values.
 
 ### Information
 
-- [ ] Configuration mode (exactly one from the table). For modes 4 / 5, acknowledge the gaps above
+- [ ] Configuration mode (exactly one from the table). For modes 4 / 5, acknowledge production-specific safety boundaries (dedicated tokens / ACS·Queue isolation, no Push) and soft residuals (unpublished v1.1.0 verification)
 - [ ] Tenant JSON location (copy of an example; **do not commit** real files)
 - [ ] Each tenant `token_env` name and where the matching environment variable is set
 - [ ] Effective provider (tenant JSON or `MAILER_PROVIDER`)
 - [ ] Intended `live_sending` (`false` / explicit `true`)
-- [ ] Bounce mode (`off`, or `queue` as a target only)
+- [ ] Bounce mode (`off` or `queue`)
 - [ ] Whether Admin / metrics / backup are enabled (defaults off or as in runbooks)
 
 ### Azure capabilities required (mode 2+, exact IAM role names follow your org)

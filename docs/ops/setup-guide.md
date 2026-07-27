@@ -152,12 +152,12 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 
 ### 情報
 
-- [ ] 使う構成モード（上表の 1 つ）。mode 4 / 5 は上記ギャップを理解したうえでの選択
+- [ ] 使う構成モード（上表の 1 つ）。mode 4 / 5 は production 固有の安全境界（専用 token / ACS・Queue 分離、Push 非採用）と soft residual（公開 v1.1.0 未検証）を理解したうえでの選択
 - [ ] tenant JSON の置き場所（example をコピーした **未コミット** ファイル）
 - [ ] 各 tenant の `token_env` 名と、対応する環境変数を設定する場所
 - [ ] 実効 provider（tenant JSON または `MAILER_PROVIDER`）
 - [ ] `live_sending` の意図（false / 明示 true）
-- [ ] bounce mode（`off` または目標としての `queue`）
+- [ ] bounce mode（`off` または `queue`）
 - [ ] Admin / metrics / backup を有効にするか（既定オフまたは runbook のとおり）
 
 ### Azure 側で必要な能力（mode 2 以降。具体ロール名は組織の IAM に従う）

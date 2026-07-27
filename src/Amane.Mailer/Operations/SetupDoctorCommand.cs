@@ -810,24 +810,23 @@ public sealed class SetupDoctorCommand
         _report.AddPass("compose_file", "Referenced compose file path exists.");
 
         var composeText = File.ReadAllText(composePath);
-        var bounceWired = composeText.Contains("MAILER_BOUNCE_INGESTION", StringComparison.Ordinal)
-            || composeText.Contains("MAILER_BOUNCE_QUEUE", StringComparison.Ordinal);
+        var bounceWired = IsMailerBounceQueueFullyWired(composeText);
         if (!bounceWired)
         {
             if (_mode == SetupDoctorMode.ProductionQueue)
             {
                 _report.AddFail(
                     "compose_bounce_wiring",
-                    "Deploy compose template does not wire bounce Queue settings into the mailer service.");
+                    "Deploy compose template does not fully wire bounce Queue settings into the mailer service.");
                 _report.AddAction(
                     "compose_bounce_wiring",
-                    "Add MAILER_BOUNCE_INGESTION, Queue credentials (file mount preferred), and Queue name to compose environment/volumes before mode 5 completion.");
+                    "In the mailer service, set MAILER_BOUNCE_INGESTION, MAILER_BOUNCE_QUEUE_NAME, MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE, and a read-only /run/secrets/bounce-queue mount. Do not wire a bare MAILER_BOUNCE_QUEUE_CONNECTION_STRING on that service.");
             }
             else
             {
                 _report.AddPass(
                     "compose_bounce_wiring",
-                    "Bounce Queue env is not wired in the referenced compose file (expected unless mode 5).");
+                    "Bounce Queue env is not fully wired on the mailer service (expected unless mode 5).");
             }
         }
         else if (_mode == SetupDoctorMode.ProductionQueue)
@@ -1124,6 +1123,95 @@ public sealed class SetupDoctorCommand
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Require the <c>mailer</c> service block to carry the canonical bounce Queue wiring
+    /// (mode, queue name, file-secret path, read-only mount) without a bare connection-string env.
+    /// Comments or keys only on other services do not count.
+    /// </summary>
+    internal static bool IsMailerBounceQueueFullyWired(string composeText)
+    {
+        var mailerBlock = TryExtractTopLevelServiceBlock(composeText, "mailer");
+        if (mailerBlock is null)
+        {
+            return false;
+        }
+
+        var significant = StripFullLineYamlComments(mailerBlock);
+        return significant.Contains("MAILER_BOUNCE_INGESTION:", StringComparison.Ordinal)
+            && significant.Contains("MAILER_BOUNCE_QUEUE_NAME:", StringComparison.Ordinal)
+            && significant.Contains("MAILER_BOUNCE_QUEUE_CONNECTION_STRING_FILE:", StringComparison.Ordinal)
+            && significant.Contains("/run/secrets/bounce-queue:ro", StringComparison.Ordinal)
+            && !significant.Contains("MAILER_BOUNCE_QUEUE_CONNECTION_STRING:", StringComparison.Ordinal);
+    }
+
+    private static string StripFullLineYamlComments(string block)
+    {
+        var lines = block.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var kept = new List<string>(lines.Length);
+        foreach (var line in lines)
+        {
+            if (line.TrimStart().StartsWith('#'))
+            {
+                continue;
+            }
+
+            kept.Add(line);
+        }
+
+        return string.Join('\n', kept);
+    }
+
+    /// <summary>
+    /// Extracts a top-level Compose service block (two-space indent) as plain text.
+    /// Not a YAML parser; matches the structural guards used by deploy compose boundary tests.
+    /// </summary>
+    internal static string? TryExtractTopLevelServiceBlock(string composeText, string serviceName)
+    {
+        ArgumentNullException.ThrowIfNull(composeText);
+        ArgumentException.ThrowIfNullOrWhiteSpace(serviceName);
+
+        var lines = composeText.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var header = $"  {serviceName}:";
+        var startIndex = -1;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (lines[i] == header)
+            {
+                startIndex = i;
+                break;
+            }
+        }
+
+        if (startIndex < 0)
+        {
+            return null;
+        }
+
+        var endIndex = lines.Length;
+        for (var i = startIndex + 1; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            var isTwoSpaceKey = line.Length > 2
+                && line[0] == ' '
+                && line[1] == ' '
+                && line[2] != ' '
+                && line.TrimEnd().EndsWith(':');
+            var isZeroIndentKey = line[0] != ' ' && line.TrimEnd().EndsWith(':');
+            if (isTwoSpaceKey || isZeroIndentKey)
+            {
+                endIndex = i;
+                break;
+            }
+        }
+
+        return string.Join('\n', lines[startIndex..endIndex]);
     }
 
     private static bool IsPortAvailable(int port)
