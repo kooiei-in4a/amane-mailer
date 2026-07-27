@@ -2,7 +2,6 @@ using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
-using Microsoft.AspNetCore.Authentication;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 
@@ -236,80 +235,6 @@ public sealed class AdminSessionRepositoryTouchTests
         {
             Assert.Equal(db.Now, session.LastSeenAt);
         }
-    }
-
-    [Fact]
-    public void Cookie_renewal_is_authoritative_only_for_matching_active_touch()
-    {
-        var touch = new AdminSessionTouchResult(
-            new DateTimeOffset(2026, 7, 27, 10, 0, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 7, 27, 10, 30, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 7, 27, 22, 0, 0, TimeSpan.Zero));
-
-        Assert.True(AdminSessionCookieRenewal.IsStillAuthoritative(
-            touch,
-            new AdminSessionRow(
-                "s",
-                "admin",
-                touch.LastSeenAt,
-                touch.LastSeenAt,
-                touch.AbsoluteExpiresAt,
-                touch.IdleExpiresAt,
-                null,
-                null,
-                0)));
-
-        Assert.False(AdminSessionCookieRenewal.IsStillAuthoritative(
-            touch,
-            new AdminSessionRow(
-                "s",
-                "admin",
-                touch.LastSeenAt,
-                touch.LastSeenAt.AddMinutes(1),
-                touch.AbsoluteExpiresAt,
-                touch.IdleExpiresAt.AddMinutes(1),
-                null,
-                null,
-                0)));
-
-        Assert.False(AdminSessionCookieRenewal.IsStillAuthoritative(
-            touch,
-            new AdminSessionRow(
-                "s",
-                "admin",
-                touch.LastSeenAt,
-                touch.LastSeenAt,
-                touch.AbsoluteExpiresAt,
-                touch.IdleExpiresAt,
-                touch.LastSeenAt.AddSeconds(1),
-                AdminSessionRevokeReasons.Logout,
-                0)));
-
-        Assert.False(AdminSessionCookieRenewal.IsStillAuthoritative(touch, null));
-    }
-
-    [Fact]
-    public void CreateRenewalProperties_uses_repository_exact_expiry()
-    {
-        var touch = new AdminSessionTouchResult(
-            new DateTimeOffset(2026, 7, 27, 10, 0, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 7, 27, 10, 30, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 7, 27, 22, 0, 0, TimeSpan.Zero));
-        var source = new AuthenticationProperties
-        {
-            AllowRefresh = true,
-            IsPersistent = false,
-            IssuedUtc = touch.LastSeenAt.AddMinutes(-5),
-            ExpiresUtc = touch.LastSeenAt.AddMinutes(25),
-        };
-        source.Items[AdminAuthenticationConstants.SessionIdProperty] = "session-1";
-
-        var renew = AdminSessionCookieRenewal.CreateRenewalProperties(source, touch);
-
-        Assert.Equal(touch.LastSeenAt, renew.IssuedUtc);
-        Assert.Equal(touch.IdleExpiresAt, renew.ExpiresUtc);
-        Assert.Equal("session-1", renew.Items[AdminAuthenticationConstants.SessionIdProperty]);
-        Assert.False(renew.IsPersistent);
     }
 
     [Fact]

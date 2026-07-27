@@ -92,28 +92,15 @@ internal static class AdminCookieValidator
 
         var proposedIdleExpiresAt = now + options.SessionIdleTimeout;
         var touchInterval = AdminSessionTouch.ResolveInterval(options.SessionIdleTimeout);
-        var touch = await sessionRepository.TryTouchAsync(
+        // Touch updates server-side idle monotonically/interval-throttled (#391).
+        // Cookie ticket uses absolute lifetime only (set at login); idle is enforced from DB
+        // here so concurrent responses cannot regress browser cookie expiry via Set-Cookie.
+        _ = await sessionRepository.TryTouchAsync(
             sessionId,
             now,
             proposedIdleExpiresAt,
             touchInterval,
             context.HttpContext.RequestAborted);
-
-        // Cookie renewal is deferred to OnStarting (#391):
-        // - SignInAsync writes repository-exact ExpiresUtc (avoids RequestRefresh drift)
-        // - Re-check authority so a later touch's cookie is not overwritten by a stale response
-        if (touch is not null && context.Principal is not null)
-        {
-            AdminSessionCookieRenewal.Schedule(
-                context.HttpContext,
-                context.Principal,
-                context.Properties,
-                sessionId,
-                touch);
-            await AdminSessionCookieRenewal.MaybeHoldAfterTouchForTestsAsync(
-                context.HttpContext,
-                touch);
-        }
     }
 
     private static async Task RejectSessionAsync(

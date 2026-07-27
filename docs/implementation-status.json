@@ -31,7 +31,7 @@
       "trackingIssue": 88,
       "lastVerified": "2026-07-27",
       "relatedAdrs": ["0013", "0014"],
-      "notes": "Session touch is monotonic and interval-throttled (#391); cookie renewal follows successful TryTouchAsync only."
+      "notes": "Session touch is monotonic and interval-throttled (#391). Cookie ticket uses absolute lifetime; idle expiry is enforced from admin_sessions only (no touch-time Set-Cookie)."
     },
     {
       "id": "admin-per-admin-tenant-scope",
