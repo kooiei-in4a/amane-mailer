@@ -241,6 +241,28 @@ public static class MailerCliHost
         return Task.FromResult(command.RunPreflightOnly());
     }
 
+    public static Task<int> RunSetupDoctorAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        if (!SetupDoctorCommand.TryParseArguments(
+                MailerCliHost.FilterConfigurationArgs(commandArgs),
+                out var mode,
+                out var composeFilePath,
+                out var usageError))
+        {
+            error.WriteLine(usageError ?? "Invalid setup doctor arguments.");
+            error.WriteLine($"Usage: setup doctor --mode {SetupDoctorModeParser.UsageHint} [--compose-file <path>]");
+            return Task.FromResult(SetupDoctorCommand.UsageErrorExitCode);
+        }
+
+        var command = new SetupDoctorCommand(configuration, mode, composeFilePath, output, error);
+        return command.ExecuteAsync(cancellationToken);
+    }
+
     private static bool TryResolveAcsAdminDirectories(
         IConfiguration configuration,
         TextWriter error,

@@ -58,6 +58,27 @@
       "notes": "No dedicated implementation issue. Delivered in Phase 1 via #89 (throttle key) and #90 (audit source_ip hash). When MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true, keyed hash is used and missing key causes startup fail-closed."
     },
     {
+      "id": "setup-doctor-read-only",
+      "status": "implemented",
+      "trackingIssue": 425,
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0013"],
+      "notes": "Read-only setup doctor CLI (setup doctor --mode). PASS/FAIL/WARN/ACTION output; no config/DB/container/Azure mutation. Regression: tests/Amane.Mailer.Tests/SetupDoctorCliTests.cs",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Operations/SetupDoctorCommand.cs",
+          "src/Amane.Mailer/Operations/SetupDoctorMode.cs",
+          "src/Amane.Mailer/Operations/SetupDoctorCheck.cs",
+          "src/Amane.Mailer/Configuration/ConfigurationPlaceholderDetector.cs",
+          "docs/ops/setup-guide.md",
+          "docs/ops/setup-guide.en.md"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/SetupDoctorCliTests.cs"
+        ]
+      }
+    },
+    {
       "id": "bounce-ingestion-and-suppression",
       "status": "implemented",
       "trackingIssue": 306,

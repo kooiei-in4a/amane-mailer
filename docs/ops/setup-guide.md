@@ -165,9 +165,34 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 - [ ] production では reverse proxy / firewall 等の到達境界（Admin 直公開なし）
 - [ ]（mode 5・目標）Mailer から Storage Queue への**外向き**到達（公開 HTTPS 受信口は不要）
 
+## setup doctor（read-only 診断）
+
+セットアップ前または起動失敗時に、ローカル設定と host 前提を **read-only** で診断する CLI です。設定ファイル、DB、container、Azure リソースは変更しません。
+
+```bash
+dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
+```
+
+| `--mode` | 用途 |
+|----------|------|
+| `local-mailpit` | local Mailpit 初回到達 |
+| `staging-no-send` | deploy 形・no-send |
+| `staging-verification` | Staging ACS 明示検証 |
+| `production-acs` | production deploy 形（live send 完了は Blocked） |
+| `production-queue` | production + Queue 目標構成（Target only） |
+
+結果コードは上表（PASS / FAIL / WARN / ACTION）に従います。末尾に `Summary: PASS=… FAIL=… WARN=… ACTION=…` を表示します。`FAIL` が 1 件でもあれば exit code `1` です。
+
+- secret 値・token・接続文字列・宛先平文・raw provider error は出力しません
+- DB migration 実行、container 起動、ACS 実送信、Azure 構成確認（[#427](https://github.com/kooiei-in4a/amane-mailer/issues/427)）は行いません
+- ACS secret ディレクトリの書き込み確認は `admin provider check-acs-preflight` を使用（doctor は read-only の安全チェックのみ）
+- compose 検証は `docker compose config --quiet` を **ACTION** として案内（host 上で人が実行）
+
+deploy host では Mailer イメージ内から同コマンドを env / volume 前提で実行します（例: `docker compose run --rm mailer setup doctor --mode staging-no-send` — 実際の service 名・profile は deploy 正本に従う）。
+
 ## 実行順序（全モード共通）
 
-1. **Preflight** — モード選択、チェックリスト、tenant / env の shape 確認（[設定 README Preflight](../../config/mailer/README.md#preflight)）
+1. **Preflight** — モード選択、チェックリスト、**setup doctor**（上）、tenant / env の shape 確認（[設定 README Preflight](../../config/mailer/README.md#preflight)）
 2. **Setup** — 該当モードの正本 runbook に従い起動・登録（ギャップがあるモードは無理に完了させない）
 3. **Verification** — health / ready、受理、（モードに応じた）配送または no-send 確認。結果コードは上表
 4. **Troubleshooting** — FAIL / WARN 時は下の「失敗時の参照先」へ。自動修正はしない（ACTION）
@@ -256,20 +281,20 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 | backup / restore | [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md) |
 | 公開イメージ smoke（公開済みタグ） | [release-image-smoke](release-image-smoke.md) |
 
-## 今後提供予定の確認機能（完成済み扱いしない）
+## 今後提供予定の確認機能（#425 以外）
 
 | Issue | 予定 | 境界 |
 |-------|------|------|
-| [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | — |
+| [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **提供済み**（上「setup doctor」） |
 | [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS 単体の実送信確認 CLI | Staging 前提の計画（Issue 本文に従う） |
 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認 | **選択 environment 向け**（Staging 限定ではない）。構成確認のみ。イベント到着は保証しない |
 | [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report の Queue 到着 E2E（message ID 相関。実バウンス必須にしない） | **Staging 限定**の pre-production 配線確認。production Queue / production テスト送信は非目標 |
 
-現時点では既存の preflight script・smoke・runbook 手動確認で進める。
+現時点では setup doctor（#425）と既存 preflight script・smoke・runbook 手動確認で進める。
 
 ## この入口の非目標
 
-- setup CLI / doctor / Azure リソース自動作成の実装
+- Azure リソース自動作成
 - deploy compose への bounce 配線や production 向け register-acs 拡張（別 Issue）
 - 既存 runbook 全文のこのファイルへの複製
 - v1.2.0 の Consumer bounce API / webhook 契約の説明
