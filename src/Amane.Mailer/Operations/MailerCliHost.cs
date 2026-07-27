@@ -1,5 +1,6 @@
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Operations.EventGridConfigCheck;
 using Amane.Mailer.Webhooks;
 
 namespace Amane.Mailer.Operations;
@@ -282,6 +283,43 @@ public static class MailerCliHost
         {
             await error.WriteLineAsync("setup doctor failed: unexpected diagnostic error (details omitted).");
             return SetupDoctorCommand.FailureExitCode;
+        }
+    }
+
+    public static async Task<int> RunSetupCheckEventGridAsync(
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        if (!EventGridConfigCheckCommand.TryParseArguments(
+                FilterConfigurationArgs(commandArgs),
+                out var options,
+                out var usageError)
+            || options is null)
+        {
+            await error.WriteLineAsync(usageError ?? "Invalid setup check-event-grid arguments.");
+            await error.WriteLineAsync($"Usage: {EventGridConfigCheckCommand.Usage}");
+            return EventGridConfigCheckCommand.UsageErrorExitCode;
+        }
+
+        try
+        {
+            var command = new EventGridConfigCheckCommand(
+                new AzureCliRunner(),
+                options,
+                output,
+                error);
+            return await command.ExecuteAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            await error.WriteLineAsync("setup check-event-grid failed: unexpected diagnostic error (details omitted).");
+            return EventGridConfigCheckCommand.FailureExitCode;
         }
     }
 

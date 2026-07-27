@@ -26,6 +26,8 @@ Never log or expose the connection string or queue name in metrics.
 
 ### ACS / Event Grid setup notes
 
+For a read-only configuration check use `setup check-event-grid` ([#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) / [event-grid-config-check-runbook.en.md](event-grid-config-check-runbook.en.md)). It does not mutate Azure resources, prove event arrival, or read queue message bodies.
+
 1. Subscribe ACS Email Delivery Reports via Event Grid.
 2. Point Event Grid at a **Storage Queue** (not a Push webhook).
 3. Separate ACS resources and queues per environment (dev / staging / production).

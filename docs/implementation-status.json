@@ -107,6 +107,32 @@
       }
     },
     {
+      "id": "event-grid-queue-config-check",
+      "status": "implemented",
+      "trackingIssue": 427,
+      "lastVerified": "2026-07-27",
+      "relatedAdrs": ["0020", "0013"],
+      "notes": "Read-only setup check-event-grid CLI. Invokes allowlisted Azure CLI show/exists queries only (no ARM SDK). PASS/FAIL/WARN/ACTION; rejects Push webhook as valid v1.1.0 config; does not mutate Azure, read queue bodies, or require live Azure auth in CI (fake runner fixtures).",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/EventGridConfigCheckCommand.cs",
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/EventGridConfigChecker.cs",
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/AzureCliRunner.cs",
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/AzureCliArgumentBuilder.cs",
+          "src/Amane.Mailer/Operations/EventGridConfigCheck/AzureResourceIdSanitizer.cs",
+          "docs/ops/event-grid-config-check-runbook.md",
+          "docs/ops/event-grid-config-check-runbook.en.md",
+          "docs/ops/setup-guide.md",
+          "docs/ops/setup-guide.en.md",
+          "docs/ops/bounce-ingestion-runbook.md",
+          "docs/ops/bounce-ingestion-runbook.en.md"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/EventGridConfigCheckCliTests.cs"
+        ]
+      }
+    },
+    {
       "id": "bounce-ingestion-and-suppression",
       "status": "implemented",
       "trackingIssue": 306,
