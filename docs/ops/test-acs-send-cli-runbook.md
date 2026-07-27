@@ -42,12 +42,12 @@ dotnet Amane.Mailer.dll admin provider test-acs-send
 
 対話手順:
 
-1. 環境: `Staging`（完全一致・通常エコー可）
-2. 意図: `MAILER-ACS-TEST-SEND`（通常エコー可）
-3. secret file が無い場合のみ ACS connection string を**非表示**で 2 回
-4. sender email（bare・**非表示**入力。PTY transcript に残さない）
-5. recipient email（bare・**非表示**入力）
-6. message ID handoff の**完全修飾絶対パス**（env `MAILER_ACS_TEST_SEND_MESSAGE_ID_FILE` 未設定時。通常エコー可）
+1. 環境: `Staging`（完全一致・可視入力。Ctrl+C は即 `REJECTED_CANCELLED` / exit `2`）
+2. 意図: `MAILER-ACS-TEST-SEND`（可視入力。Ctrl+C は exit `2`）
+3. secret file が無い場合のみ ACS connection string を**非表示**で 2 回（Ctrl+C は exit `2`）
+4. sender email（bare・**非表示**入力。PTY transcript に残さない。Ctrl+C は exit `2`）
+5. recipient email（bare・**非表示**入力。Ctrl+C は exit `2`）
+6. message ID handoff の**完全修飾絶対パス**（env `MAILER_ACS_TEST_SEND_MESSAGE_ID_FILE` 未設定時・可視入力）。**既存ファイルがある場合は送信前に拒否**（`REJECTED_MESSAGE_ID_HANDOFF_PATH_EXISTS`）。オペレータが確認・削除してから再実行する
 
 display name の入力は持たない（wire 上も sender email のみ）。
 
@@ -81,8 +81,9 @@ success: operation=test_acs_send result=SUCCESS
 | `REJECTED_INPUT_REDIRECTED` | 非対話 stdin |
 | `REJECTED_SECRET_MISMATCH` / `REJECTED_INVALID_CONNECTION_STRING` | secret 入力不備 |
 | `REJECTED_MESSAGE_ID_HANDOFF_PATH_INVALID` | handoff path が完全修飾絶対パスでない |
-| `FAILED_ACS_AUTHENTICATION` | 認証・資格情報失敗（401/403 等） |
-| `FAILED_ACS_NETWORK` | ネットワーク到達失敗（DNS/TCP 等）。認証失敗とは区別する |
+| `REJECTED_MESSAGE_ID_HANDOFF_PATH_EXISTS` | handoff ファイルが既に存在（古い UUID の誤利用を防ぐため送信前に拒否） |
+| `FAILED_ACS_AUTHENTICATION` | 認証・資格情報失敗（401/403 等）。表示は `[FAIL] ACS authentication` |
+| `FAILED_ACS_NETWORK` | ネットワーク到達失敗（DNS/TCP 等）。認証は未判定。表示は `[FAIL] ACS network reachability`（認証 FAIL/PASS は出さない） |
 | `FAILED_ACS_SENDER_REJECTED` | ACS 構造化 error code が sender/domain を明示した拒否 |
 | `FAILED_ACS_SEND_REQUEST` | その他の送信要求失敗（汎用 4xx 等） |
 | `FAILED_ACS_OPERATION` | LRO 完了だが Succeeded 以外 |
@@ -95,12 +96,14 @@ success: operation=test_acs_send result=SUCCESS
 |------|------|
 | `0` | send operation 完了 + UUID handoff 成功 |
 | `1` | ACS 側失敗または message ID 検証失敗 |
-| `2` | 入力・前提拒否（環境 / phrase / secret / path / redirected stdin）。対話中の Ctrl+C（secret/PII の `ReadKey` 経路）も `REJECTED_CANCELLED` → `2` |
-| `130` | ACS 通信中の協調 cancel（`RunCancellableCliAsync` が token 連動の `OperationCanceledException` を変換）。通常の `ReadLine` 待ちは token 非対応のため、ここでの Ctrl+C は OS/端末の既定挙動に依存する |
+| `2` | 入力・前提拒否。**すべての対話入力中**（環境 / intent / secret / PII / handoff path）の Ctrl+C は `REJECTED_CANCELLED` → `2`。redirected stdin・既存 handoff も `2` |
+| `130` | **ACS I/O 中のみ**の協調 cancel（`RunCancellableCliAsync` が token 連動の `OperationCanceledException` を変換） |
 
 ## 6. message ID の引き渡し（#428 向け）
 
 成功時、handoff ファイルへ **呼び出し時 operation id と一致する UUID を `D` 形式で 1 行だけ**書き込む（email / subject / body / secret は含めない）。`NOT_SET`・非 UUID・不一致の場合はファイルを作らず `FAILED_ACS_MESSAGE_ID_INVALID` で終了する。
+
+実行前に同じ path のファイルが既にある場合は、ACS を呼び出さず `REJECTED_MESSAGE_ID_HANDOFF_PATH_EXISTS` で拒否する（前回 UUID の誤利用防止）。上書きや自動削除はしない。
 
 - 後続の Delivery Report E2E（#428）は、このファイルまたは同一 `IAcsTestSendClient` 経路を再利用する想定。
 - handoff ファイルを evidence や Issue / PR に貼らない。
@@ -114,7 +117,7 @@ dotnet build src/Amane.Mailer/Amane.Mailer.csproj
 python3 scripts/pty-smoke-test-acs-send.py
 ```
 
-環境確認拒否、intent 拒否、TTY secret mismatch、sender/recipient 非エコー + 不正 handoff での送信前停止、redirected stdin 拒否を確認する。CI の `build-test` ジョブでも同スクリプトを実行する。
+環境確認拒否、intent 拒否、TTY secret mismatch、sender/recipient 非エコー + 不正 handoff での送信前停止、対話中 Ctrl+C（exit `2`）、redirected stdin 拒否を確認する。CI の `build-test` ジョブでも同スクリプトを実行する。ACS I/O 中の exit `130` は unit test（cooperative cancellation）で検証する。
 
 ## 8. 記録してよいもの / 記録しないもの
 

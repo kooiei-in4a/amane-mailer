@@ -28,7 +28,7 @@ public sealed class AzureAcsTestSendClient(IAcsEmailSendTransport? transport = n
 
             return AcsTestSendOutcome.Failed(
                 AdminProviderTestAcsSendResultCodes.FailedAcsOperation,
-                authenticationSucceeded: true,
+                authenticationState: AcsEvaluationState.Succeeded,
                 sendRequestAccepted: true,
                 providerMessageId: result.OperationId);
         }
@@ -44,7 +44,7 @@ public sealed class AzureAcsTestSendClient(IAcsEmailSendTransport? transport = n
         {
             return AcsTestSendOutcome.Failed(
                 AdminProviderTestAcsSendResultCodes.FailedAcsTimeout,
-                authenticationSucceeded: true);
+                authenticationState: AcsEvaluationState.Succeeded);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

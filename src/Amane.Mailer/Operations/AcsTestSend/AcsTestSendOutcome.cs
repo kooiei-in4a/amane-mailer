@@ -1,12 +1,23 @@
 namespace Amane.Mailer.Operations.AcsTestSend;
 
 /// <summary>
+/// Three-state evaluation for a verification stage. <see cref="NotEvaluated"/> means the stage
+/// was not reached or could not be judged (for example network failure before auth).
+/// </summary>
+public enum AcsEvaluationState
+{
+    NotEvaluated = 0,
+    Succeeded = 1,
+    Failed = 2,
+}
+
+/// <summary>
 /// Result of a standalone ACS test send. Safe for in-process handoff to later verification
 /// (#428). Do not serialize this type to operator-facing logs without redaction.
 /// </summary>
 public sealed class AcsTestSendOutcome
 {
-    public required bool AuthenticationSucceeded { get; init; }
+    public required AcsEvaluationState AuthenticationState { get; init; }
 
     public required bool SendRequestAccepted { get; init; }
 
@@ -22,7 +33,7 @@ public sealed class AcsTestSendOutcome
     public static AcsTestSendOutcome Succeeded(string providerMessageId) =>
         new()
         {
-            AuthenticationSucceeded = true,
+            AuthenticationState = AcsEvaluationState.Succeeded,
             SendRequestAccepted = true,
             OperationCompleted = true,
             ProviderMessageId = providerMessageId,
@@ -30,12 +41,12 @@ public sealed class AcsTestSendOutcome
 
     public static AcsTestSendOutcome Failed(
         string canonicalFailureCode,
-        bool authenticationSucceeded = false,
+        AcsEvaluationState authenticationState = AcsEvaluationState.NotEvaluated,
         bool sendRequestAccepted = false,
         string? providerMessageId = null) =>
         new()
         {
-            AuthenticationSucceeded = authenticationSucceeded,
+            AuthenticationState = authenticationState,
             SendRequestAccepted = sendRequestAccepted,
             OperationCompleted = false,
             ProviderMessageId = providerMessageId,

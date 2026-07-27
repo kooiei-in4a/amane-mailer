@@ -18,26 +18,28 @@ public static class AcsTestSendFailureMapper
 
         if (ex.Status is 401 or 403)
         {
-            return AcsTestSendOutcome.Failed(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication);
+            return AcsTestSendOutcome.Failed(
+                AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication,
+                authenticationState: AcsEvaluationState.Failed);
         }
 
         if (ex.Status is 408 or 429 or >= 500)
         {
             return AcsTestSendOutcome.Failed(
                 AdminProviderTestAcsSendResultCodes.FailedAcsTimeout,
-                authenticationSucceeded: true);
+                authenticationState: AcsEvaluationState.Succeeded);
         }
 
         if ((ex.Status is 400 or 422) && LooksLikeSenderOrDomainRejection(ex))
         {
             return AcsTestSendOutcome.Failed(
                 AdminProviderTestAcsSendResultCodes.FailedAcsSenderRejected,
-                authenticationSucceeded: true);
+                authenticationState: AcsEvaluationState.Succeeded);
         }
 
         return AcsTestSendOutcome.Failed(
             AdminProviderTestAcsSendResultCodes.FailedAcsSendRequest,
-            authenticationSucceeded: true);
+            authenticationState: AcsEvaluationState.Succeeded);
     }
 
     public static AcsTestSendOutcome MapException(Exception ex)
@@ -47,13 +49,18 @@ public static class AcsTestSendFailureMapper
 
         if (string.Equals(errorCode, MailDeliveryErrorCodes.ProviderAuth, StringComparison.Ordinal))
         {
-            return AcsTestSendOutcome.Failed(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication);
+            return AcsTestSendOutcome.Failed(
+                AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication,
+                authenticationState: AcsEvaluationState.Failed);
         }
 
         if (string.Equals(errorCode, MailDeliveryErrorCodes.ProviderNetwork, StringComparison.Ordinal)
             || ex is SocketException or IOException or HttpRequestException)
         {
-            return AcsTestSendOutcome.Failed(AdminProviderTestAcsSendResultCodes.FailedAcsNetwork);
+            // Network failure does not prove authentication succeeded or failed.
+            return AcsTestSendOutcome.Failed(
+                AdminProviderTestAcsSendResultCodes.FailedAcsNetwork,
+                authenticationState: AcsEvaluationState.NotEvaluated);
         }
 
         if (string.Equals(errorCode, MailDeliveryErrorCodes.ProviderTimeout, StringComparison.Ordinal)
@@ -61,10 +68,12 @@ public static class AcsTestSendFailureMapper
         {
             return AcsTestSendOutcome.Failed(
                 AdminProviderTestAcsSendResultCodes.FailedAcsTimeout,
-                authenticationSucceeded: true);
+                authenticationState: AcsEvaluationState.Succeeded);
         }
 
-        return AcsTestSendOutcome.Failed(AdminProviderTestAcsSendResultCodes.FailedAcsSendRequest);
+        return AcsTestSendOutcome.Failed(
+            AdminProviderTestAcsSendResultCodes.FailedAcsSendRequest,
+            authenticationState: AcsEvaluationState.NotEvaluated);
     }
 
     /// <summary>

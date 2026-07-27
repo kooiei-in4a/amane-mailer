@@ -41,12 +41,12 @@ dotnet Amane.Mailer.dll admin provider test-acs-send
 
 Interactive steps:
 
-1. Environment: `Staging` (exact match; normal echo OK)
-2. Intent: `MAILER-ACS-TEST-SEND` (normal echo OK)
-3. ACS connection string twice (**hidden**) only when no secret file is available
-4. Sender email (bare; **hidden** so it does not remain in the PTY transcript)
-5. Recipient email (bare; **hidden**)
-6. Fully qualified absolute path for the message ID handoff file (when `MAILER_ACS_TEST_SEND_MESSAGE_ID_FILE` is unset; normal echo OK)
+1. Environment: `Staging` (exact match; visible input. Ctrl+C → `REJECTED_CANCELLED` / exit `2`)
+2. Intent: `MAILER-ACS-TEST-SEND` (visible input. Ctrl+C → exit `2`)
+3. ACS connection string twice (**hidden**) only when no secret file is available (Ctrl+C → exit `2`)
+4. Sender email (bare; **hidden** so it does not remain in the PTY transcript. Ctrl+C → exit `2`)
+5. Recipient email (bare; **hidden**. Ctrl+C → exit `2`)
+6. Fully qualified absolute path for the message ID handoff file (when `MAILER_ACS_TEST_SEND_MESSAGE_ID_FILE` is unset; visible input). **If the file already exists, reject before any ACS call** (`REJECTED_MESSAGE_ID_HANDOFF_PATH_EXISTS`). Operators must inspect/remove it and retry
 
 Display-name input is not collected (wire path uses sender email only).
 
@@ -80,8 +80,9 @@ Failures use `failed: operation=test_acs_send result=<CODE>` or `rejected: ...`.
 | `REJECTED_INPUT_REDIRECTED` | Non-interactive stdin |
 | `REJECTED_SECRET_MISMATCH` / `REJECTED_INVALID_CONNECTION_STRING` | Secret input problems |
 | `REJECTED_MESSAGE_ID_HANDOFF_PATH_INVALID` | Handoff path is not fully qualified |
-| `FAILED_ACS_AUTHENTICATION` | Auth / credential failure (401/403) |
-| `FAILED_ACS_NETWORK` | Network reachability failure (DNS/TCP). Distinct from auth |
+| `REJECTED_MESSAGE_ID_HANDOFF_PATH_EXISTS` | Handoff file already exists (reject before send to prevent stale UUID reuse) |
+| `FAILED_ACS_AUTHENTICATION` | Auth / credential failure (401/403). Display: `[FAIL] ACS authentication` |
+| `FAILED_ACS_NETWORK` | Network reachability failure (DNS/TCP). Auth not judged. Display: `[FAIL] ACS network reachability` (no auth PASS/FAIL line) |
 | `FAILED_ACS_SENDER_REJECTED` | Structured ACS error code clearly names sender/domain |
 | `FAILED_ACS_SEND_REQUEST` | Other send-request failures (generic 4xx, etc.) |
 | `FAILED_ACS_OPERATION` | LRO finished but not Succeeded |
@@ -94,12 +95,14 @@ Exit codes:
 |------|---------|
 | `0` | Send operation completed + UUID handoff written |
 | `1` | ACS-side failure or message ID validation failure |
-| `2` | Input/precondition rejection (environment / phrase / secret / path / redirected stdin). Ctrl+C during secret/PII `ReadKey` paths is `REJECTED_CANCELLED` → `2` |
-| `130` | Cooperative cancel during ACS I/O (`RunCancellableCliAsync` maps token-linked `OperationCanceledException`). Plain `ReadLine` waits are not token-aware; Ctrl+C there follows the terminal default |
+| `2` | Input/precondition rejection. **Ctrl+C during any interactive prompt** (environment / intent / secret / PII / handoff path) is `REJECTED_CANCELLED` → `2`. Redirected stdin and existing handoff also use `2` |
+| `130` | Cooperative cancel **during ACS I/O only** (`RunCancellableCliAsync` maps token-linked `OperationCanceledException`) |
 
 ## 6. Message ID handoff (for #428)
 
 On success, write **one `D`-format UUID line that matches the caller-supplied operation id** (no email / subject / body / secret). `NOT_SET`, non-UUID, or mismatched values fail with `FAILED_ACS_MESSAGE_ID_INVALID` and do not create/overwrite the file.
+
+If a file already exists at the handoff path, reject with `REJECTED_MESSAGE_ID_HANDOFF_PATH_EXISTS` before any ACS call (prevents reusing a previous UUID). No auto-delete or overwrite.
 
 - Later Delivery Report E2E (#428) is expected to reuse this file or the same `IAcsTestSendClient` path.
 - Do not paste handoff file contents into evidence, issues, or PRs.
@@ -113,7 +116,7 @@ dotnet build src/Amane.Mailer/Amane.Mailer.csproj
 python3 scripts/pty-smoke-test-acs-send.py
 ```
 
-Covers environment rejection, intent rejection, TTY secret mismatch, non-echo sender/recipient + invalid handoff before send, and redirected stdin rejection. The CI `build-test` job runs the same script.
+Covers environment rejection, intent rejection, TTY secret mismatch, non-echo sender/recipient + invalid handoff before send, interactive Ctrl+C (exit `2`), and redirected stdin rejection. The CI `build-test` job runs the same script. Exit `130` during ACS I/O is covered by unit tests (cooperative cancellation).
 
 ## 8. What may / must not be recorded
 

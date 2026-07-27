@@ -253,6 +253,138 @@ def scenario_pii_prompts_then_invalid_handoff_before_send():
     assert_no_leak(text, "pii-handoff")
 
 
+def scenario_ctrl_c_during_environment_prompt():
+    print("\n=== scenario: Ctrl+C during environment prompt exits 2 ===")
+    exit_code, output = run_ctrl_c_at_prompt(
+        ["admin", "provider", "test-acs-send"],
+        {},
+        "Confirm target environment",
+    )
+    text = output.decode(errors="replace")
+    check("ctrlc-env: exit code is 2", exit_code == 2, f"(got {exit_code})")
+    check("ctrlc-env: REJECTED_CANCELLED", "REJECTED_CANCELLED" in text)
+    assert_no_leak(text, "ctrlc-env")
+
+
+def scenario_ctrl_c_during_secret_prompt():
+    print("\n=== scenario: Ctrl+C during secret prompt exits 2 ===")
+    steps_before = [
+        ("Confirm target environment", "Staging"),
+        ("Type MAILER-ACS-TEST-SEND to confirm intent", "MAILER-ACS-TEST-SEND"),
+    ]
+    exit_code, output = run_ctrl_c_after_steps(
+        ["admin", "provider", "test-acs-send"],
+        {},
+        steps_before,
+        "ACS connection string:",
+    )
+    text = output.decode(errors="replace")
+    check("ctrlc-secret: exit code is 2", exit_code == 2, f"(got {exit_code})")
+    check("ctrlc-secret: REJECTED_CANCELLED", "REJECTED_CANCELLED" in text)
+    assert_no_leak(text, "ctrlc-secret")
+
+
+def scenario_ctrl_c_during_sender_prompt():
+    print("\n=== scenario: Ctrl+C during sender PII prompt exits 2 ===")
+    steps_before = [
+        ("Confirm target environment", "Staging"),
+        ("Type MAILER-ACS-TEST-SEND to confirm intent", "MAILER-ACS-TEST-SEND"),
+        ("ACS connection string:", SYNTHETIC_CONN),
+        ("Re-enter ACS connection string:", SYNTHETIC_CONN),
+    ]
+    exit_code, output = run_ctrl_c_after_steps(
+        ["admin", "provider", "test-acs-send"],
+        {},
+        steps_before,
+        "Sender email:",
+    )
+    text = output.decode(errors="replace")
+    check("ctrlc-sender: exit code is 2", exit_code == 2, f"(got {exit_code})")
+    check("ctrlc-sender: REJECTED_CANCELLED", "REJECTED_CANCELLED" in text)
+    assert_no_leak(text, "ctrlc-sender")
+
+
+def run_ctrl_c_at_prompt(command_args, env_overrides, expect_regex, timeout=20):
+    return run_ctrl_c_after_steps(command_args, env_overrides, [], expect_regex, timeout)
+
+
+def run_ctrl_c_after_steps(command_args, env_overrides, steps, expect_regex, timeout=20):
+    master, slave = pty.openpty()
+    env = dict(os.environ)
+    for key in list(env.keys()):
+        if key.startswith("ACS_") or key.startswith("MAILER_ACS_"):
+            env.pop(key, None)
+    env.update(env_overrides)
+    proc = subprocess.Popen(
+        [DOTNET, DLL] + command_args,
+        stdin=slave, stdout=slave, stderr=slave,
+        env=env, close_fds=True,
+    )
+    os.close(slave)
+    output = b""
+    try:
+        for step_regex, send_text in steps:
+            pattern = re.compile(step_regex.encode())
+            buf = b""
+            deadline = time.time() + timeout
+            matched = False
+            while time.time() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.5)
+                if master in ready:
+                    try:
+                        chunk = os.read(master, 4096)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    buf += chunk
+                    output += chunk
+                    if pattern.search(buf):
+                        matched = True
+                        break
+            if not matched:
+                print(f"TIMEOUT waiting for pattern: {step_regex!r}")
+                proc.kill()
+                proc.wait(timeout=5)
+                return -1, output
+            if send_text is not None:
+                os.write(master, send_text.encode() + b"\n")
+
+        pattern = re.compile(expect_regex.encode())
+        buf = b""
+        deadline = time.time() + timeout
+        matched = False
+        while time.time() < deadline:
+            ready, _, _ = select.select([master], [], [], 0.5)
+            if master in ready:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                output += chunk
+                if pattern.search(buf):
+                    matched = True
+                    break
+        if not matched:
+            print(f"TIMEOUT waiting for Ctrl+C target prompt: {expect_regex!r}")
+            proc.kill()
+            proc.wait(timeout=5)
+            return -1, output
+
+        # ETX — Console.ReadKey(intercept: true) maps this to Ctrl+C.
+        os.write(master, b"\x03")
+        exit_code, output = _drain_until_exit(master, proc, output, timeout)
+    finally:
+        try:
+            os.close(master)
+        except OSError:
+            pass
+    return exit_code, output
+
+
 def scenario_redirected_stdin_rejected():
     print("\n=== scenario: redirected stdin is rejected ===")
     exit_code, text = run_redirected_stdin()
@@ -271,6 +403,9 @@ def main():
     scenario_wrong_intent()
     scenario_tty_secret_mismatch_and_no_echo()
     scenario_pii_prompts_then_invalid_handoff_before_send()
+    scenario_ctrl_c_during_environment_prompt()
+    scenario_ctrl_c_during_secret_prompt()
+    scenario_ctrl_c_during_sender_prompt()
     scenario_redirected_stdin_rejected()
 
     print("\n=== summary ===")

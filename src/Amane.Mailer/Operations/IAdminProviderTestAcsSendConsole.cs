@@ -3,14 +3,14 @@ namespace Amane.Mailer.Operations;
 /// <summary>
 /// Interactive console for <c>admin provider test-acs-send</c>.
 /// <para>
-/// <see cref="ReadSecret"/> is for ACS connection strings.
-/// <see cref="ReadHiddenLine"/> is for PII (sender / recipient) and must not echo to the terminal.
-/// Confirmation phrases and non-PII paths may use <see cref="ReadLine"/>.
+/// <see cref="ReadVisibleLine"/> echoes confirmation / path input and detects Ctrl+C.
+/// <see cref="ReadSecret"/> is for ACS connection strings (no echo).
+/// <see cref="ReadHiddenLine"/> is for PII (sender / recipient; no echo).
 /// </para>
 /// </summary>
 public interface IAdminProviderTestAcsSendConsole
 {
-    string ReadLine(string prompt);
+    string ReadVisibleLine(string prompt);
 
     string ReadSecret(string prompt);
 
@@ -22,25 +22,18 @@ public interface IAdminProviderTestAcsSendConsole
 }
 
 /// <summary>
-/// Interactive-terminal-only console. Rejects redirected stdin. Secrets and PII use
-/// <see cref="Console.ReadKey"/> with intercept so keystrokes are not echoed into the PTY
-/// transcript.
+/// Interactive-terminal-only console. Rejects redirected stdin. All prompts use
+/// <see cref="Console.ReadKey"/> so Ctrl+C is detected deterministically as
+/// <see cref="AdminProviderTestAcsSendResultCodes.RejectedCancelled"/> (exit 2).
+/// Secrets and PII are not echoed; visible lines are echoed manually.
 /// </summary>
 public sealed class AdminProviderTestAcsSendConsole : IAdminProviderTestAcsSendConsole
 {
-    public string ReadLine(string prompt)
-    {
-        EnsureInteractiveTerminal();
-        Console.Write(prompt);
-        return Console.ReadLine()
-            ?? throw new SecretOperationException(
-                AdminProviderTestAcsSendResultCodes.RejectedCancelled,
-                "Input was interrupted.");
-    }
+    public string ReadVisibleLine(string prompt) => ReadKeyLine(prompt, echo: true);
 
-    public string ReadSecret(string prompt) => ReadWithoutEcho(prompt);
+    public string ReadSecret(string prompt) => ReadKeyLine(prompt, echo: false);
 
-    public string ReadHiddenLine(string prompt) => ReadWithoutEcho(prompt);
+    public string ReadHiddenLine(string prompt) => ReadKeyLine(prompt, echo: false);
 
     public void WriteLine(string message) => Console.WriteLine(message);
 
@@ -56,7 +49,7 @@ public sealed class AdminProviderTestAcsSendConsole : IAdminProviderTestAcsSendC
         }
     }
 
-    private static string ReadWithoutEcho(string prompt)
+    private static string ReadKeyLine(string prompt, bool echo)
     {
         EnsureInteractiveTerminal();
         Console.Write(prompt);
@@ -82,6 +75,10 @@ public sealed class AdminProviderTestAcsSendConsole : IAdminProviderTestAcsSendC
                 if (buffer.Count > 0)
                 {
                     buffer.RemoveAt(buffer.Count - 1);
+                    if (echo)
+                    {
+                        Console.Write("\b \b");
+                    }
                 }
 
                 continue;
@@ -90,6 +87,10 @@ public sealed class AdminProviderTestAcsSendConsole : IAdminProviderTestAcsSendC
             if (!char.IsControl(key.KeyChar))
             {
                 buffer.Add(key.KeyChar);
+                if (echo)
+                {
+                    Console.Write(key.KeyChar);
+                }
             }
         }
     }

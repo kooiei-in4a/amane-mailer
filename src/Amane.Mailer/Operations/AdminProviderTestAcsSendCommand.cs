@@ -67,13 +67,13 @@ public sealed partial class AdminProviderTestAcsSendCommand
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var environmentConfirmation = _console.ReadLine("Confirm target environment (exact match): ");
+            var environmentConfirmation = _console.ReadVisibleLine("Confirm target environment (exact match): ");
             if (!string.Equals(environmentConfirmation, RequiredEnvironmentConfirmation, StringComparison.Ordinal))
             {
                 return Reject(AdminProviderTestAcsSendResultCodes.RejectedEnvironmentMismatch);
             }
 
-            var intent = _console.ReadLine($"Type {IntentPhrase} to confirm intent: ");
+            var intent = _console.ReadVisibleLine($"Type {IntentPhrase} to confirm intent: ");
             if (!string.Equals(intent, IntentPhrase, StringComparison.Ordinal))
             {
                 return Reject(AdminProviderTestAcsSendResultCodes.RejectedIntentMismatch);
@@ -216,7 +216,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
         }
         else
         {
-            path = _console.ReadLine("Absolute path for message ID handoff file: ").Trim();
+            path = _console.ReadVisibleLine("Absolute path for message ID handoff file: ").Trim();
         }
 
         if (string.IsNullOrWhiteSpace(path)
@@ -228,20 +228,41 @@ public sealed partial class AdminProviderTestAcsSendCommand
                 "Message ID handoff path must be a fully qualified absolute path.");
         }
 
+        // Fail closed before any ACS call so a previous UUID cannot be mistaken for this run.
+        if (File.Exists(path))
+        {
+            throw new SecretOperationException(
+                AdminProviderTestAcsSendResultCodes.RejectedMessageIdHandoffPathExists,
+                "Message ID handoff file already exists; remove it before retrying.");
+        }
+
         return path;
     }
 
     private int ReportOutcome(AcsTestSendOutcome outcome, string handoffPath, Guid expectedOperationId)
     {
-        if (outcome.AuthenticationSucceeded)
+        switch (outcome.AuthenticationState)
         {
-            _console.WriteLine("[PASS] ACS authentication");
-        }
-        else
-        {
-            return Fail(
-                outcome.CanonicalFailureCode ?? AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication,
-                authenticationLine: "[FAIL] ACS authentication");
+            case AcsEvaluationState.Succeeded:
+                _console.WriteLine("[PASS] ACS authentication");
+                break;
+            case AcsEvaluationState.Failed:
+                return Fail(
+                    outcome.CanonicalFailureCode ?? AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication,
+                    stageFailLine: "[FAIL] ACS authentication");
+            case AcsEvaluationState.NotEvaluated:
+                if (string.Equals(
+                        outcome.CanonicalFailureCode,
+                        AdminProviderTestAcsSendResultCodes.FailedAcsNetwork,
+                        StringComparison.Ordinal))
+                {
+                    return Fail(
+                        AdminProviderTestAcsSendResultCodes.FailedAcsNetwork,
+                        stageFailLine: "[FAIL] ACS network reachability");
+                }
+
+                // Auth was not judged; do not claim PASS or FAIL for authentication.
+                break;
         }
 
         if (outcome.SendRequestAccepted)
@@ -252,16 +273,14 @@ public sealed partial class AdminProviderTestAcsSendCommand
         {
             return Fail(
                 outcome.CanonicalFailureCode ?? AdminProviderTestAcsSendResultCodes.FailedAcsSendRequest,
-                authenticationLine: null,
-                extraFailLine: "[FAIL] Send request accepted");
+                stageFailLine: "[FAIL] Send request accepted");
         }
 
         if (!outcome.OperationCompleted)
         {
             return Fail(
                 outcome.CanonicalFailureCode ?? AdminProviderTestAcsSendResultCodes.FailedAcsOperation,
-                authenticationLine: null,
-                extraFailLine: "[FAIL] ACS send operation completed");
+                stageFailLine: "[FAIL] ACS send operation completed");
         }
 
         _console.WriteLine("[PASS] ACS send operation completed");
@@ -274,13 +293,13 @@ public sealed partial class AdminProviderTestAcsSendCommand
         }
         catch (SecretOperationException ex)
         {
-            return Fail(ex.CanonicalCode, extraFailLine: "[FAIL] Message ID handoff file written");
+            return Fail(ex.CanonicalCode, stageFailLine: "[FAIL] Message ID handoff file written");
         }
         catch (Exception)
         {
             return Fail(
                 AdminProviderTestAcsSendResultCodes.RejectedMessageIdHandoffWriteFailed,
-                extraFailLine: "[FAIL] Message ID handoff file written");
+                stageFailLine: "[FAIL] Message ID handoff file written");
         }
 
         _console.WriteLine("[PASS] Message ID handoff file written");
@@ -343,6 +362,13 @@ public sealed partial class AdminProviderTestAcsSendCommand
                 "Message ID handoff path must include a directory.");
         }
 
+        if (File.Exists(path))
+        {
+            throw new SecretOperationException(
+                AdminProviderTestAcsSendResultCodes.RejectedMessageIdHandoffPathExists,
+                "Message ID handoff file already exists; remove it before retrying.");
+        }
+
         Directory.CreateDirectory(directory);
 
         // Write UUID only. Never include emails, subject, body, or secrets.
@@ -357,7 +383,8 @@ public sealed partial class AdminProviderTestAcsSendCommand
                     UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
 
-            File.Move(tempPath, path, overwrite: true);
+            // Never overwrite: freshness of the handoff file is part of the safety contract.
+            File.Move(tempPath, path, overwrite: false);
             if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             {
                 File.SetUnixFileMode(
@@ -368,6 +395,24 @@ public sealed partial class AdminProviderTestAcsSendCommand
         catch (SecretOperationException)
         {
             throw;
+        }
+        catch (IOException) when (File.Exists(path))
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup of temp handoff content.
+            }
+
+            throw new SecretOperationException(
+                AdminProviderTestAcsSendResultCodes.RejectedMessageIdHandoffPathExists,
+                "Message ID handoff file already exists; remove it before retrying.");
         }
         catch
         {
@@ -395,19 +440,11 @@ public sealed partial class AdminProviderTestAcsSendCommand
         return RejectedExitCode;
     }
 
-    private int Fail(
-        string canonicalCode,
-        string? authenticationLine = null,
-        string? extraFailLine = null)
+    private int Fail(string canonicalCode, string? stageFailLine = null)
     {
-        if (authenticationLine is not null)
+        if (stageFailLine is not null)
         {
-            _console.WriteLine(authenticationLine);
-        }
-
-        if (extraFailLine is not null)
-        {
-            _console.WriteLine(extraFailLine);
+            _console.WriteLine(stageFailLine);
         }
 
         _console.WriteError($"failed: operation=test_acs_send result={canonicalCode}");

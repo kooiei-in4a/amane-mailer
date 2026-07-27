@@ -17,6 +17,7 @@ public static class AdminProviderTestAcsSendResultCodes
     public const string RejectedInvalidSenderEmail = "REJECTED_INVALID_SENDER_EMAIL";
     public const string RejectedInvalidRecipientEmail = "REJECTED_INVALID_RECIPIENT_EMAIL";
     public const string RejectedMessageIdHandoffPathInvalid = "REJECTED_MESSAGE_ID_HANDOFF_PATH_INVALID";
+    public const string RejectedMessageIdHandoffPathExists = "REJECTED_MESSAGE_ID_HANDOFF_PATH_EXISTS";
     public const string RejectedMessageIdHandoffWriteFailed = "REJECTED_MESSAGE_ID_HANDOFF_WRITE_FAILED";
     public const string RejectedCancelled = "REJECTED_CANCELLED";
 
