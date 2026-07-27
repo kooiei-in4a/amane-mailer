@@ -99,15 +99,20 @@ internal static class AdminCookieValidator
             touchInterval,
             context.HttpContext.RequestAborted);
 
-        // Cookie renewal is tied to the atomic DB touch winner only (#391).
-        // SlidingExpiration is disabled so the framework cannot Set-Cookie without a touch.
-        // IssuedUtc must advance with ExpiresUtc so RequestRefresh computes
-        // refreshExpires = now + (ExpiresUtc - IssuedUtc) == IdleExpiresAt.
-        if (touch is not null)
+        // Cookie renewal is deferred to OnStarting (#391):
+        // - SignInAsync writes repository-exact ExpiresUtc (avoids RequestRefresh drift)
+        // - Re-check authority so a later touch's cookie is not overwritten by a stale response
+        if (touch is not null && context.Principal is not null)
         {
-            context.Properties.IssuedUtc = now;
-            context.Properties.ExpiresUtc = touch.IdleExpiresAt;
-            context.ShouldRenew = true;
+            AdminSessionCookieRenewal.Schedule(
+                context.HttpContext,
+                context.Principal,
+                context.Properties,
+                sessionId,
+                touch);
+            await AdminSessionCookieRenewal.MaybeHoldAfterTouchForTestsAsync(
+                context.HttpContext,
+                touch);
         }
     }
 

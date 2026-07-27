@@ -2,10 +2,15 @@ using System.Net;
 using System.Net.Http;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Amane.Mailer.Tests;
 
@@ -18,9 +23,14 @@ public sealed class MailerAdminSessionTouchIntegrationTests(MailerAdminFixture f
         await fixture.ResetAsync();
         fixture.Factory.Services.GetRequiredService<AdminLoginThrottle>().Clear();
         fixture.Factory.Services.GetRequiredService<AdminSessionExpiredDedupe>().Clear();
+        AdminSessionCookieRenewal.HoldAfterTouchAsync = null;
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync()
+    {
+        AdminSessionCookieRenewal.HoldAfterTouchAsync = null;
+        return ValueTask.CompletedTask;
+    }
 
     [Fact]
     public async Task Authenticated_burst_within_touch_interval_does_not_write_or_renew_cookie()
@@ -67,6 +77,12 @@ public sealed class MailerAdminSessionTouchIntegrationTests(MailerAdminFixture f
         Assert.True(afterTouch.LastSeenAt > agedLastSeen);
         Assert.True(afterTouch.IdleExpiresAt <= afterTouch.AbsoluteExpiresAt);
 
+        var ticketExpires = ReadAuthTicketExpiresUtc(fixture.Factory.Services, first);
+        AssertTicketExpiresMatchesRepository(
+            ticketExpires,
+            afterTouch.IdleExpiresAt,
+            afterTouch.AbsoluteExpiresAt);
+
         using var second = await client.GetAsync("/admin/mail-requests", ct);
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
         Assert.False(
@@ -76,6 +92,93 @@ public sealed class MailerAdminSessionTouchIntegrationTests(MailerAdminFixture f
         var afterSkip = await ReadSessionTimestampsAsync(fixture.ConnectionString, sessionId, ct);
         Assert.Equal(afterTouch.LastSeenAt, afterSkip.LastSeenAt);
         Assert.Equal(afterTouch.IdleExpiresAt, afterSkip.IdleExpiresAt);
+    }
+
+    [Fact]
+    public async Task Stale_touch_response_after_later_interval_touch_does_not_regress_cookie_expiry()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-session-touch-race", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+        var tenantConfigDirectory = Path.Combine(root, "config");
+        Directory.CreateDirectory(tenantConfigDirectory);
+        var tenantConfigPath = Path.Combine(tenantConfigDirectory, "tenants.json");
+        await File.WriteAllTextAsync(tenantConfigPath, MailerAdminFixtureHelpers.TenantConfigJson, ct);
+
+        var connectionString = $"Data Source={databasePath}";
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["ConnectionStrings:Mailer"] = connectionString })
+            .Build();
+        await new SqlMigrationRunner(new SqliteConnectionFactory(configuration)).ApplyPendingAsync(ct);
+
+        await using var factory = MailerAdminFixtureHelpers.CreateFactory(
+            connectionString,
+            tenantConfigPath,
+            MailerAdminFixture.PasswordHash,
+            new Dictionary<string, string?>
+            {
+                ["AMANE_ADMIN_SESSION_IDLE_MINUTES"] = "1",
+                ["AMANE_ADMIN_SESSION_ABSOLUTE_HOURS"] = "1",
+            });
+
+        try
+        {
+            using var loginClient = CreateClient(factory);
+            var authCookie = await LoginAndCaptureAuthCookieAsync(loginClient, ct);
+            var sessionId = await GetSingleActiveSessionAsync(connectionString, ct);
+            var options = factory.Services.GetRequiredService<MailerAdminOptions>();
+            var touchInterval = AdminSessionTouch.ResolveInterval(options.SessionIdleTimeout);
+            Assert.Equal(TimeSpan.FromSeconds(15), touchInterval);
+
+            await SetLastSeenAsync(
+                connectionString,
+                sessionId,
+                DateTimeOffset.UtcNow - touchInterval - TimeSpan.FromSeconds(1),
+                ct);
+
+            var releaseA = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var aTouched = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            AdminSessionCookieRenewal.HoldAfterTouchAsync = async _ =>
+            {
+                aTouched.TrySetResult();
+                await releaseA.Task.WaitAsync(ct);
+            };
+
+            using var clientA = CreateClient(factory);
+            clientA.DefaultRequestHeaders.Add("Cookie", authCookie);
+            clientA.DefaultRequestHeaders.Add(AdminSessionTouchTestHooks.HoldAfterTouchHeaderName, "1");
+            var responseATask = clientA.GetAsync("/admin/mail-requests", ct);
+            await aTouched.Task.WaitAsync(ct);
+
+            await Task.Delay(touchInterval + TimeSpan.FromSeconds(1), ct);
+
+            using var clientB = CreateClient(factory);
+            clientB.DefaultRequestHeaders.Add("Cookie", authCookie);
+            using var responseB = await clientB.GetAsync("/admin/mail-requests", ct);
+            Assert.Equal(HttpStatusCode.OK, responseB.StatusCode);
+            Assert.True(HasAuthSetCookie(responseB), "Later interval touch must renew the cookie.");
+
+            var afterB = await ReadSessionTimestampsAsync(connectionString, sessionId, ct);
+            var ticketB = ReadAuthTicketExpiresUtc(factory.Services, responseB);
+            AssertTicketExpiresMatchesRepository(
+                ticketB,
+                afterB.IdleExpiresAt,
+                afterB.AbsoluteExpiresAt);
+
+            releaseA.SetResult();
+            using var responseA = await responseATask;
+            Assert.Equal(HttpStatusCode.OK, responseA.StatusCode);
+            Assert.False(
+                HasAuthSetCookie(responseA),
+                "Stale in-flight touch must not Set-Cookie after a newer touch.");
+        }
+        finally
+        {
+            AdminSessionCookieRenewal.HoldAfterTouchAsync = null;
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
@@ -100,17 +203,69 @@ public sealed class MailerAdminSessionTouchIntegrationTests(MailerAdminFixture f
                 using var client = CreateClient(fixture.Factory);
                 client.DefaultRequestHeaders.Add("Cookie", authCookie);
                 using var response = await client.GetAsync("/admin/mail-requests", ct);
-                return (response.StatusCode, Renewed: HasAuthSetCookie(response));
+                DateTimeOffset? ticketExpires = null;
+                if (HasAuthSetCookie(response))
+                    ticketExpires = ReadAuthTicketExpiresUtc(fixture.Factory.Services, response);
+
+                return (response.StatusCode, TicketExpires: ticketExpires);
             })
             .ToArray();
 
         var results = await Task.WhenAll(tasks);
         Assert.All(results, result => Assert.Equal(HttpStatusCode.OK, result.StatusCode));
-        Assert.Equal(1, results.Count(result => result.Renewed));
+        var renewed = Assert.Single(results, result => result.TicketExpires is not null);
 
         var session = await ReadSessionTimestampsAsync(fixture.ConnectionString, sessionId, ct);
         Assert.True(session.IdleExpiresAt <= session.AbsoluteExpiresAt);
+        AssertTicketExpiresMatchesRepository(
+            renewed.TicketExpires!.Value,
+            session.IdleExpiresAt,
+            session.AbsoluteExpiresAt);
     }
+
+    private static DateTimeOffset ReadAuthTicketExpiresUtc(
+        IServiceProvider services,
+        HttpResponseMessage response)
+    {
+        var prefix = AdminCookieTransportPolicy.SecureAuthCookieName + "=";
+        var setCookie = Assert.Single(
+            response.Headers.GetValues("Set-Cookie"),
+            value => value.StartsWith(prefix, StringComparison.Ordinal));
+        var encoded = setCookie.Split(';', 2)[0][prefix.Length..];
+        var ticketValue = Uri.UnescapeDataString(encoded);
+        var options = services.GetRequiredService<IOptionsMonitor<CookieAuthenticationOptions>>()
+            .Get(AdminAuthenticationConstants.Scheme);
+        var ticket = options.TicketDataFormat.Unprotect(ticketValue);
+        Assert.NotNull(ticket);
+        Assert.NotNull(ticket.Properties.ExpiresUtc);
+        return ticket.Properties.ExpiresUtc.Value;
+    }
+
+    /// <summary>
+    /// Auth ticket serialization stores expiry at whole-second precision, so compare
+    /// floored UTC seconds and assert the ticket never exceeds the repository value.
+    /// </summary>
+    private static void AssertTicketExpiresMatchesRepository(
+        DateTimeOffset ticketExpiresUtc,
+        DateTimeOffset repositoryIdleExpiresAt,
+        DateTimeOffset repositoryAbsoluteExpiresAt)
+    {
+        var ticketSeconds = AlignToUtcSeconds(ticketExpiresUtc);
+        var idleSeconds = AlignToUtcSeconds(repositoryIdleExpiresAt);
+        Assert.Equal(idleSeconds, ticketSeconds);
+        Assert.True(ticketExpiresUtc <= repositoryIdleExpiresAt.AddSeconds(1));
+        Assert.True(ticketExpiresUtc <= repositoryAbsoluteExpiresAt);
+    }
+
+    private static DateTimeOffset AlignToUtcSeconds(DateTimeOffset value) =>
+        new(
+            value.UtcDateTime.Year,
+            value.UtcDateTime.Month,
+            value.UtcDateTime.Day,
+            value.UtcDateTime.Hour,
+            value.UtcDateTime.Minute,
+            value.UtcDateTime.Second,
+            TimeSpan.Zero);
 
     private static bool HasAuthSetCookie(HttpResponseMessage response)
     {

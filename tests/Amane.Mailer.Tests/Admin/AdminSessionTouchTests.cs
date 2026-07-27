@@ -2,6 +2,7 @@ using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 
@@ -179,6 +180,136 @@ public sealed class AdminSessionRepositoryTouchTests
         var session = await repository.GetSessionAsync(sessionId, ct);
         Assert.NotNull(session!.RevokedAt);
         Assert.Equal(db.Now, session.LastSeenAt);
+    }
+
+    [Fact]
+    public async Task TryTouch_and_revoke_race_leaves_session_revoked_and_untouchable()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await SessionTestDatabase.CreateAsync(ct);
+        var repository = new AdminSessionRepository(db.Factory);
+        var sessionId = await CreateSessionAsync(repository, db.Now, ct);
+        var barrier = new Barrier(2);
+        AdminSessionTouchResult? touchResult = null;
+
+        var revokeTask = Task.Run(async () =>
+        {
+            barrier.SignalAndWait(ct);
+            await repository.RevokeSessionAsync(
+                sessionId,
+                AdminSessionRevokeReasons.Logout,
+                db.Now.AddSeconds(1),
+                ct);
+        }, ct);
+
+        var touchTask = Task.Run(async () =>
+        {
+            barrier.SignalAndWait(ct);
+            touchResult = await repository.TryTouchAsync(
+                sessionId,
+                db.Now.AddMinutes(1),
+                db.Now.AddMinutes(31),
+                TimeSpan.Zero,
+                ct);
+        }, ct);
+
+        await Task.WhenAll(revokeTask, touchTask);
+
+        var session = await repository.GetSessionAsync(sessionId, ct);
+        Assert.NotNull(session!.RevokedAt);
+        Assert.Equal(AdminSessionRevokeReasons.Logout, session.RevokeReason);
+
+        // Regardless of which writer ran first, a later touch must not revive the row.
+        Assert.Null(await repository.TryTouchAsync(
+            sessionId,
+            db.Now.AddMinutes(2),
+            db.Now.AddMinutes(32),
+            TimeSpan.Zero,
+            ct));
+
+        if (touchResult is not null)
+        {
+            // Touch won the race before revoke; timestamps may have advanced, but revoke stuck.
+            Assert.True(session.LastSeenAt >= db.Now);
+        }
+        else
+        {
+            Assert.Equal(db.Now, session.LastSeenAt);
+        }
+    }
+
+    [Fact]
+    public void Cookie_renewal_is_authoritative_only_for_matching_active_touch()
+    {
+        var touch = new AdminSessionTouchResult(
+            new DateTimeOffset(2026, 7, 27, 10, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 27, 10, 30, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 27, 22, 0, 0, TimeSpan.Zero));
+
+        Assert.True(AdminSessionCookieRenewal.IsStillAuthoritative(
+            touch,
+            new AdminSessionRow(
+                "s",
+                "admin",
+                touch.LastSeenAt,
+                touch.LastSeenAt,
+                touch.AbsoluteExpiresAt,
+                touch.IdleExpiresAt,
+                null,
+                null,
+                0)));
+
+        Assert.False(AdminSessionCookieRenewal.IsStillAuthoritative(
+            touch,
+            new AdminSessionRow(
+                "s",
+                "admin",
+                touch.LastSeenAt,
+                touch.LastSeenAt.AddMinutes(1),
+                touch.AbsoluteExpiresAt,
+                touch.IdleExpiresAt.AddMinutes(1),
+                null,
+                null,
+                0)));
+
+        Assert.False(AdminSessionCookieRenewal.IsStillAuthoritative(
+            touch,
+            new AdminSessionRow(
+                "s",
+                "admin",
+                touch.LastSeenAt,
+                touch.LastSeenAt,
+                touch.AbsoluteExpiresAt,
+                touch.IdleExpiresAt,
+                touch.LastSeenAt.AddSeconds(1),
+                AdminSessionRevokeReasons.Logout,
+                0)));
+
+        Assert.False(AdminSessionCookieRenewal.IsStillAuthoritative(touch, null));
+    }
+
+    [Fact]
+    public void CreateRenewalProperties_uses_repository_exact_expiry()
+    {
+        var touch = new AdminSessionTouchResult(
+            new DateTimeOffset(2026, 7, 27, 10, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 27, 10, 30, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 7, 27, 22, 0, 0, TimeSpan.Zero));
+        var source = new AuthenticationProperties
+        {
+            AllowRefresh = true,
+            IsPersistent = false,
+            IssuedUtc = touch.LastSeenAt.AddMinutes(-5),
+            ExpiresUtc = touch.LastSeenAt.AddMinutes(25),
+        };
+        source.Items[AdminAuthenticationConstants.SessionIdProperty] = "session-1";
+
+        var renew = AdminSessionCookieRenewal.CreateRenewalProperties(source, touch);
+
+        Assert.Equal(touch.LastSeenAt, renew.IssuedUtc);
+        Assert.Equal(touch.IdleExpiresAt, renew.ExpiresUtc);
+        Assert.Equal("session-1", renew.Items[AdminAuthenticationConstants.SessionIdProperty]);
+        Assert.False(renew.IsPersistent);
     }
 
     [Fact]
