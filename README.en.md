@@ -23,6 +23,13 @@ Mailer handles transport.
 - [.NET SDK](https://dotnet.microsoft.com/download) — version pinned in `global.json` (currently 10.0.301)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
+## Setup entry point
+
+For first-time setup, start at the
+[setup entry point](docs/ops/setup-guide.en.md) [(ja)](docs/ops/setup-guide.md)
+for configuration choice, required inputs, order of operations, and verification.
+Detailed steps link out to existing runbooks.
+
 ## Verify Locally
 
 From the repository root:
@@ -265,6 +272,7 @@ and compose smoke (arm64 Docker on `main` push). See
 
 ## Key Docs
 
+- [Setup entry point](docs/ops/setup-guide.en.md) [(ja)](docs/ops/setup-guide.md)
 - [Branch strategy and CI weighting](docs/ops/branch-and-ci-workflow.en.md) [(ja)](docs/ops/branch-and-ci-workflow.md)
 - [Service spec](docs/service-spec.en.md) [(ja)](docs/service-spec.md)
 - [OpenAPI HTTP reference](docs/api/openapi.yaml)
