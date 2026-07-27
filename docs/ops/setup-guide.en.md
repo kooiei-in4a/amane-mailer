@@ -228,7 +228,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 1. Preflight: dedicated tenant / recipients / approved sender; keep `live_sending=true` short-lived and scoped
 2. Setup: [register-acs CLI runbook](register-acs-cli-runbook.en.md) (interactive only; never pass secrets as CLI arguments; confirmation phrase is **`Staging` only**, per that runbook)
-3. Verification: your org-approved drill / procedure (for example [mail-05a drill guide](drills/mail-05a-drill-guide.html)). A dedicated ACS send-check CLI is planned in [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426)
+3. Verification: [ACS standalone live-send CLI](test-acs-send-cli-runbook.en.md) (`admin provider test-acs-send`; Staging + `MAILER-ACS-TEST-SEND`; does not go through Mailer API / Worker). Optional org drill: [mail-05a drill guide](drills/mail-05a-drill-guide.html)
 4. After validation, decide whether to return staging to `live_sending=false` (do not leave a WARN-worthy state)
 
 **Done when:** the explicit validation message is processed via ACS as expected. **A real bounce is not required.** Presence of `platform-sender.json` is not evidence that tenant live send is complete.
@@ -281,16 +281,16 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 | backup / restore | [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md) |
 | published image smoke (published tags) | [release-image-smoke](release-image-smoke.en.md) |
 
-## Planned verification helpers (#425 excepted)
+## Planned verification helpers (#425 / #426 excepted)
 
 | Issue | Planned | Boundary |
 |-------|---------|----------|
 | [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **Available** (see “setup doctor” above) |
-| [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS-only live send check CLI | Staging-oriented plan (follow that issue) |
+| [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS-only live send check CLI | **Available** — [test-acs-send-cli-runbook.en.md](test-acs-send-cli-runbook.en.md) (Staging only) |
 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check | **For the selected environment** (not Staging-only). Config check only; does not prove event arrival |
 | [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report Queue arrival E2E (message ID correlation; real bounce not required) | **Staging-only** pre-production wiring check. Production Queue / production test send are non-goals |
 
-Use setup doctor (#425) together with existing preflight scripts, smokes, and manual runbook checks until #426–#428 land.
+Use setup doctor (#425) together with [test-acs-send](test-acs-send-cli-runbook.en.md) (#426), existing preflight scripts, smokes, and manual runbook checks until #427–#428 land.
 
 ## Non-goals of this entry point
 
