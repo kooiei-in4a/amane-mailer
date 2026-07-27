@@ -810,8 +810,9 @@ public sealed class SetupDoctorCommand
         _report.AddPass("compose_file", "Referenced compose file path exists.");
 
         var composeText = File.ReadAllText(composePath);
-        if (!composeText.Contains("MAILER_BOUNCE_INGESTION", StringComparison.Ordinal)
-            && !composeText.Contains("MAILER_BOUNCE_QUEUE", StringComparison.Ordinal))
+        var bounceWired = composeText.Contains("MAILER_BOUNCE_INGESTION", StringComparison.Ordinal)
+            || composeText.Contains("MAILER_BOUNCE_QUEUE", StringComparison.Ordinal);
+        if (!bounceWired)
         {
             if (_mode == SetupDoctorMode.ProductionQueue)
             {
@@ -820,7 +821,7 @@ public sealed class SetupDoctorCommand
                     "Deploy compose template does not wire bounce Queue settings into the mailer service.");
                 _report.AddAction(
                     "compose_bounce_wiring",
-                    "Add MAILER_BOUNCE_INGESTION, Queue credentials, and Queue name to compose environment/volumes before mode 5 completion.");
+                    "Add MAILER_BOUNCE_INGESTION, Queue credentials (file mount preferred), and Queue name to compose environment/volumes before mode 5 completion.");
             }
             else
             {
@@ -828,6 +829,12 @@ public sealed class SetupDoctorCommand
                     "compose_bounce_wiring",
                     "Bounce Queue env is not wired in the referenced compose file (expected unless mode 5).");
             }
+        }
+        else if (_mode == SetupDoctorMode.ProductionQueue)
+        {
+            _report.AddPass(
+                "compose_bounce_wiring",
+                "Deploy compose template wires bounce Queue settings into the mailer service.");
         }
 
         _report.AddAction(
@@ -891,7 +898,7 @@ public sealed class SetupDoctorCommand
 
     private void ValidateModeProductionQueue()
     {
-        _report.AddPass("mode_profile", "Diagnosing production ACS + Queue mode prerequisites (target configuration).");
+        _report.AddPass("mode_profile", "Diagnosing production ACS + Queue mode prerequisites.");
         ValidateTenantProviderExpectation(expectedProvider: "acs", liveSendingRequired: true);
         ValidatePlatformSenderEnvironment(expectedEnvironment: "production");
 
@@ -901,18 +908,18 @@ public sealed class SetupDoctorCommand
             _report.AddFail(
                 "mode_bounce_queue",
                 "Production Queue mode requires MAILER_BOUNCE_INGESTION=queue.");
+            _report.AddAction(
+                "mode_bounce_queue",
+                "Set MAILER_BOUNCE_INGESTION=queue in deploy .env (passed through compose). Keep Queue credentials in the mounted file secret; do not put connection strings on the command line.");
         }
         else
         {
             _report.AddPass("mode_bounce_queue", "Bounce ingestion mode is queue.");
         }
 
-        _report.AddFail(
-            "production_queue_completion",
-            "Production ACS + Queue mode is target-only until deploy compose wires Queue settings into the container.");
         _report.AddAction(
-            "production_queue_completion",
-            "Wire MAILER_BOUNCE_INGESTION, Queue credentials, and Queue name through compose before treating mode 5 as complete.");
+            "production_queue_azure",
+            "Confirm ACS Delivery Reports → Event Grid → Storage Queue (Queue endpoint only; do not use Push webhook #304). Use setup check-event-grid; Staging arrival E2E is setup verify-delivery-report. A real bounce is not required for setup completion.");
     }
 
     /// <summary>
