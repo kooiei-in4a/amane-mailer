@@ -140,7 +140,7 @@ public sealed class AzureCliRunner : IAzureCliRunner
         // Windows .cmd files cannot be started with UseShellExecute=false via CreateProcess.
         // Route through ComSpec. FileName is the real cmd.exe; the /c command string is built
         // only from a PATH-resolved az.cmd path (validated) plus allowlisted args that already
-        // reject shell metacharacters in AzureCliArgumentBuilder.
+        // reject shell metacharacters in AzureCliArgumentBuilder. /s + outer quotes keep nested quotes;
         return new ProcessStartInfo
         {
             FileName = ResolveComSpec(),
@@ -166,19 +166,22 @@ public sealed class AzureCliRunner : IAzureCliRunner
     }
 
     /// <summary>
-    /// Builds <c>cmd /d /c</c> arguments: quoted az.cmd path plus allowlisted args.
+    /// Builds <c>cmd /d /s /v:off /c</c> arguments.
+    /// Uses the classic outer-quote form so nested quotes around az.cmd and allowlisted
+    /// argument values (for example subscription display names with spaces) survive cmd parsing.
     /// </summary>
     internal static string BuildWindowsCmdArguments(string azPath, string arguments)
     {
-        if (azPath.IndexOfAny(['"', '\r', '\n', '\0', '&', '|', ';', '<', '>', '^', '%']) >= 0)
+        if (azPath.IndexOfAny(['"', '\r', '\n', '\0', '&', '|', ';', '<', '>', '^', '%', '!']) >= 0)
         {
             throw new ArgumentException("Azure CLI path contains unsupported characters.");
         }
 
-        var command = string.IsNullOrWhiteSpace(arguments)
-            ? $"\"{azPath}\""
-            : $"\"{azPath}\" {arguments}";
-        return $"/d /c {command}";
+        // Pattern: cmd /d /s /v:off /c ""path\az.cmd" arg1 "value with spaces""
+        // The outer quotes are stripped by /s; nested quotes around path and values remain.
+        return string.IsNullOrWhiteSpace(arguments)
+            ? $"/d /s /v:off /c \"\"{azPath}\"\""
+            : $"/d /s /v:off /c \"\"{azPath}\" {arguments}\"";
     }
 
     private static void TryKill(Process process)

@@ -349,7 +349,7 @@ public sealed class EventGridConfigCheckCliTests
                 var scriptPath = Path.Combine(tempDir.FullName, "az.cmd");
                 await File.WriteAllTextAsync(
                     scriptPath,
-                    "@echo off`r`necho {\"azure-cli\":\"test-fixture\"}`r`nexit /b 0`r`n",
+                    "@echo off\r\necho {\"azure-cli\":\"test-fixture\"}\r\nexit /b 0\r\n",
                     TestContext.Current.CancellationToken);
             }
             else
@@ -357,7 +357,7 @@ public sealed class EventGridConfigCheckCliTests
                 var scriptPath = Path.Combine(tempDir.FullName, "az");
                 await File.WriteAllTextAsync(
                     scriptPath,
-                    "#!/bin/sh`necho '{\"azure-cli\":\"test-fixture\"}'`nexit 0`n",
+                    "#!/bin/sh\necho '{\"azure-cli\":\"test-fixture\"}'\nexit 0\n",
                     TestContext.Current.CancellationToken);
                 File.SetUnixFileMode(
                     scriptPath,
@@ -384,6 +384,84 @@ public sealed class EventGridConfigCheckCliTests
             try
             {
                 tempDir.Delete(recursive: true);
+            }
+            catch
+            {
+                // Best-effort temp cleanup.
+            }
+        }
+    }
+
+    [Fact]
+    public void build_windows_cmd_arguments_preserves_nested_quotes_for_spaced_path_and_subscription()
+    {
+        var built = AzureCliRunner.BuildWindowsCmdArguments(
+            @"C:\Program Files\Azure CLI\az.cmd",
+            "account show --subscription \"Mailer Staging\" --output json");
+
+        Assert.Equal(
+            "/d /s /v:off /c \"\"C:\\Program Files\\Azure CLI\\az.cmd\" account show --subscription \"Mailer Staging\" --output json\"",
+            built);
+    }
+
+    [Fact]
+    public void build_windows_cmd_arguments_rejects_bang_in_az_path()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            AzureCliRunner.BuildWindowsCmdArguments(@"C:\tools\az!cli\az.cmd", "version --output json"));
+    }
+
+    [Fact]
+    public void argument_builder_rejects_bang_in_subscription()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            AzureCliArgumentBuilder.Build(new AzureCliQuery(
+                AzureCliQueryKind.AccountShow,
+                "Mailer Staging!")));
+    }
+
+    [Fact]
+    public async Task azure_cli_runner_preserves_spaced_path_and_subscription_argv_on_windows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), "amane az runner " + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var originalPath = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            var scriptPath = Path.Combine(root, "az.cmd");
+            await File.WriteAllTextAsync(
+                scriptPath,
+                "@echo off\r\necho ARGS=%*\r\nexit /b 0\r\n",
+                TestContext.Current.CancellationToken);
+
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                root + Path.PathSeparator + (originalPath ?? string.Empty));
+
+            var runner = new AzureCliRunner();
+            var result = await runner.RunAsync(
+                new AzureCliQuery(AzureCliQueryKind.AccountShow, "Mailer Staging"),
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.Started, result.StandardError);
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("account", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("show", result.StandardOutput, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Mailer Staging", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("--output", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("json", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", originalPath);
+            try
+            {
+                Directory.Delete(root, recursive: true);
             }
             catch
             {

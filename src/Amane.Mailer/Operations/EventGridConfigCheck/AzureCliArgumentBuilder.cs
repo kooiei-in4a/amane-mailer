@@ -119,7 +119,7 @@ internal static class AzureCliArgumentBuilder
         }
 
         // Reject shell metacharacters that could break out of a single argv token.
-        if (value.IndexOfAny(['&', '|', ';', '>', '<', '`', '$', '(', ')', '%', '^']) >= 0)
+        if (value.IndexOfAny(['&', '|', ';', '>', '<', '`', '$', '(', ')', '%', '^', '!']) >= 0)
         {
             throw new ArgumentException("Argument contains unsupported shell metacharacters.");
         }
