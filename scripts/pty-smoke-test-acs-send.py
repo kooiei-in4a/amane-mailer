@@ -374,8 +374,8 @@ def run_ctrl_c_after_steps(command_args, env_overrides, steps, expect_regex, tim
             proc.wait(timeout=5)
             return -1, output
 
-        # ETX — after Console.ReadKey the PTY is in raw/cbreak mode, so this arrives as
-        # KeyChar '\\x03' and maps to REJECTED_CANCELLED / exit 2 (not SIGINT).
+        # ETX — TreatControlCAsInput makes this a ReadKey keystroke (KeyChar '\\x03'),
+        # mapped to REJECTED_CANCELLED / exit 2 (not CancelKeyPress / exit 130).
         os.write(master, b"\x03")
         exit_code, output = _drain_until_exit(master, proc, output, timeout)
     finally:
