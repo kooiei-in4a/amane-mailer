@@ -246,8 +246,9 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 1. Preflight: dedicated tenant / recipients / approved sender; keep `live_sending=true` short-lived and scoped
 2. Setup: [register-acs CLI runbook](register-acs-cli-runbook.en.md) (interactive only; never pass secrets as CLI arguments; mode 3 confirmation phrase is **`Staging` only**)
-3. Verification: [ACS standalone live-send CLI](test-acs-send-cli-runbook.en.md) (`admin provider test-acs-send`; Staging + `MAILER-ACS-TEST-SEND`; does not go through Mailer API / Worker). Optional org drill: [mail-05a drill guide](drills/mail-05a-drill-guide.html)
-4. After validation, decide whether to return staging to `live_sending=false` (do not leave a WARN-worthy state)
+3. Setup doctor (re-run): `setup doctor --mode staging-verification`. Confirm `[PASS] platform_sender_environment` (expected `staging`). On mismatch, `[FAIL]` — do not proceed to live send
+4. Verification: [ACS standalone live-send CLI](test-acs-send-cli-runbook.en.md) (`admin provider test-acs-send`; Staging + `MAILER-ACS-TEST-SEND`; does not go through Mailer API / Worker). Optional org drill: [mail-05a drill guide](drills/mail-05a-drill-guide.html)
+5. After validation, decide whether to return staging to `live_sending=false` (do not leave a WARN-worthy state)
 
 **Done when:** the explicit validation message is processed via ACS as expected. **A real bounce is not required.** Presence of `platform-sender.json` is not evidence that tenant live send is complete.
 
@@ -258,14 +259,15 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 **Order**
 
 1. Preflight: production-only tokens / tenants; approved sender; metrics bearer as needed ([deploy `.env.example`](../../infra/deploy/.env.example))
-2. Setup doctor: `setup doctor --mode production-acs` ([#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)). Production registration guidance is `[ACTION] production_register_acs`
+2. Setup doctor (before registration): `setup doctor --mode production-acs` ([#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)). Production registration guidance is `[ACTION] production_register_acs` (environment match is not evaluated yet because `platform-sender` does not exist)
 3. Setup (stack): prepare the host in the shape of deploy compose ([infra/deploy/compose.yml](../../infra/deploy/compose.yml)); align tenant JSON / tokens / metrics / Admin with the [config README](../../config/mailer/README.en.md)
 4. Setup (backup, optional): [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md)
 5. Setup (ACS secret): [register-acs CLI runbook](register-acs-cli-runbook.en.md) (confirmation phrase **`Production`**; never pass secrets as CLI arguments)
-6. Verification: `/healthz` `/readyz`, and explicit live send with an approved sender. Published-image smoke: [release-image-smoke](release-image-smoke.en.md) (**default tag is a published release; it is not a v1.1.0 verification** → unpublished v1.1.0 verification is `[WARN]` / `[ACTION]`)
-7. Even if bounce is not needed, mode 5 compose wiring remains a separate gap
+6. Setup doctor (re-run): `setup doctor --mode production-acs`. Confirm `[PASS] platform_sender_environment` (expected `production`) before live send. A `Staging` confirmation registration fails here
+7. Verification: `/healthz` `/readyz`, and explicit live send with an approved sender. Published-image smoke: [release-image-smoke](release-image-smoke.en.md) (**default tag is a published release; it is not a v1.1.0 verification** → unpublished v1.1.0 verification is `[WARN]` / `[ACTION]`)
+8. Even if bounce is not needed, mode 5 compose wiring remains a separate gap
 
-**Done when:** deploy shape, tenant / env preflight, `Production`-confirmed secret registration, health/ready, and approved live send can be `[PASS]`. Unpublished `v1.1.0` image verification remains a soft residual (`[WARN]` / `[ACTION]`).
+**Done when:** deploy shape, tenant / env preflight, `Production`-confirmed secret registration, post-registration doctor `platform_sender_environment` PASS, health/ready, and approved live send can be `[PASS]`. Unpublished `v1.1.0` image verification remains a soft residual (`[WARN]` / `[ACTION]`).
 
 ### 5. production ACS + Event Grid / Storage Queue (target)
 

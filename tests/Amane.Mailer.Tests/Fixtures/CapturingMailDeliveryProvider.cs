@@ -77,6 +77,38 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
         _activity.Pulse();
     }
 
+    /// <summary>
+    /// Waits until a held <see cref="SendAsync"/> has entered the hold gate.
+    /// Use before host shutdown in tests that rely on an in-flight held send.
+    /// </summary>
+    public async Task WaitUntilHoldConsumedAsync(CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            lock (_holdGate)
+            {
+                if (_holdConsumed)
+                {
+                    return;
+                }
+            }
+
+            using var delayCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            delayCts.CancelAfter(TimeSpan.FromMilliseconds(50));
+            try
+            {
+                await _activity.WaitAsync(delayCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Poll interval elapsed; re-check _holdConsumed.
+            }
+        }
+
+        throw new TimeoutException("Timed out waiting for the delivery provider hold to be consumed.");
+    }
+
     public void SetSendDelay(TimeSpan delay)
     {
         lock (_holdGate)

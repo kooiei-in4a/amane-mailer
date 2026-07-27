@@ -246,8 +246,9 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 1. Preflight: 専用 tenant / 宛先 / 承認済み sender。`live_sending=true` は短時間・限定範囲
 2. Setup: [register-acs CLI runbook](register-acs-cli-runbook.md)（対話のみ。CLI 引数に secret を渡さない。mode 3 の確認フレーズは **`Staging` のみ**）
-3. Verification: [ACS 単体実送信確認 CLI](test-acs-send-cli-runbook.md)（`admin provider test-acs-send`。Staging + `MAILER-ACS-TEST-SEND`。Mailer API / Worker は通さない）。組織 drill が必要な場合の補助: [mail-05a drill guide](drills/mail-05a-drill-guide.html)
-4. 検証後は staging 既定どおり `live_sending=false` に戻すかを判断（WARN になり得る状態を残さない）
+3. Setup doctor（再実行）: `setup doctor --mode staging-verification`。`[PASS] platform_sender_environment`（expected `staging`）を確認。不一致なら `[FAIL]` — live send に進まない
+4. Verification: [ACS 単体実送信確認 CLI](test-acs-send-cli-runbook.md)（`admin provider test-acs-send`。Staging + `MAILER-ACS-TEST-SEND`。Mailer API / Worker は通さない）。組織 drill が必要な場合の補助: [mail-05a drill guide](drills/mail-05a-drill-guide.html)
+5. 検証後は staging 既定どおり `live_sending=false` に戻すかを判断（WARN になり得る状態を残さない）
 
 **完了の目安:** 明示した検証メールが ACS 経由で期待どおり処理されること。**実バウンスは不要。** platform-owned sender ファイルの存在は tenant 送信完了の根拠にしない。
 
@@ -258,14 +259,15 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 **順序**
 
 1. Preflight: production 専用 token / tenant。承認済み sender。metrics bearer 等（[deploy `.env.example`](../../infra/deploy/.env.example)）
-2. Setup doctor: `setup doctor --mode production-acs`（[#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)）。production 登録は `[ACTION] production_register_acs`
+2. Setup doctor（登録前）: `setup doctor --mode production-acs`（[#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)）。production 登録は `[ACTION] production_register_acs`（この時点では `platform-sender` 未作成のため環境一致は未判定）
 3. Setup（スタック）: deploy compose（[infra/deploy/compose.yml](../../infra/deploy/compose.yml)）の形で host を用意し、tenant JSON / token / metrics / Admin を [設定 README](../../config/mailer/README.md) に沿って揃える
 4. Setup（backup・任意）: [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md)
 5. Setup（ACS secret）: [register-acs CLI runbook](register-acs-cli-runbook.md)（確認フレーズ **`Production`**。CLI 引数に secret を渡さない）
-6. Verification: `/healthz` `/readyz`、承認済み sender での明示 live send。公開 release イメージ smoke は [release-image-smoke](release-image-smoke.md)（**既定タグは公開済み版。v1.1.0 検証には使わない** → 公開 v1.1.0 未検証は `[WARN]` / `[ACTION]`）
-7. bounce が不要でも、mode 5 の compose 配線は別ギャップとして残る
+6. Setup doctor（再実行）: `setup doctor --mode production-acs`。`[PASS] platform_sender_environment`（expected `production`）を確認してから live send へ進む。`Staging` 確認で登録した場合はここで `[FAIL]`
+7. Verification: `/healthz` `/readyz`、承認済み sender での明示 live send。公開 release イメージ smoke は [release-image-smoke](release-image-smoke.md)（**既定タグは公開済み版。v1.1.0 検証には使わない** → 公開 v1.1.0 未検証は `[WARN]` / `[ACTION]`）
+8. bounce が不要でも、mode 5 の compose 配線は別ギャップとして残る
 
-**完了の目安:** deploy 形・tenant / env preflight・`Production` 確認付き secret 登録・health/ready・承認済み live send を `[PASS]` にし得る。公開 `v1.1.0` イメージ未検証は soft residual（`[WARN]` / `[ACTION]`）。
+**完了の目安:** deploy 形・tenant / env preflight・`Production` 確認付き secret 登録・doctor 再実行での `platform_sender_environment` PASS・health/ready・承認済み live send を `[PASS]` にし得る。公開 `v1.1.0` イメージ未検証は soft residual（`[WARN]` / `[ACTION]`）。
 
 ### 5. production ACS + Event Grid / Storage Queue（目標構成）
 
