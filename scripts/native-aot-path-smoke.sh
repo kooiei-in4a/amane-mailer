@@ -14,6 +14,7 @@
 #   http:admin-login-post    — Admin cookie sign-in (CSRF + password hash)
 #   http:webhook-https-ready — HTTPS webhook tenant config loads; /readyz 200
 #   cli:setup-core-self-check — Setup Core dry-run fingerprint smoke (#448)
+#   cli:setup-inspect-effective — Effective inspection JSON smoke (#447)
 #
 # Non-goals (remain JIT tests / manual / release-smoke):
 #   ACS live send, full signed webhook delivery e2e (SSRF blocks loopback;
@@ -315,6 +316,26 @@ main() {
     if [[ "$hash" == pbkdf2:sha256:* ]]; then
       pass "cli:admin-hash-password"
 
+
+# --- cli:setup-inspect-effective (#447) ---
+INSPECT_WORK="$(mktemp -d "${TMPDIR:-/tmp}/amane-aot-inspect.XXXXXX")"
+INSPECT_TENANTS="$INSPECT_WORK/tenants.json"
+cat > "$INSPECT_TENANTS" <<'JSON'
+{"version":1,"environment":"develop","tenants":[{"tenant_id":"00000000-0000-0000-0000-000000000101","name":"aot-inspect","source_services":["aot"],"default_from":{"email":"noreply@example.com","display_name":"AOT"},"token_env":"MAIL_SERVICE_TOKEN","provider":"mailpit","live_sending":false,"retry":{"max_attempts":3,"initial_delay_seconds":1,"max_delay_seconds":10}}]}
+JSON
+if MAILER_TENANTS_PATH="$INSPECT_TENANTS" "$MAILER_BIN" setup inspect-effective --format json >"$INSPECT_WORK/out.json" 2>"$INSPECT_WORK/err.txt"; then
+  if awk 'NR==1{if ($0 ~ /^\{/) found=1} END{exit !found}' "$INSPECT_WORK/out.json" \
+    && ! grep -Eiq 'secret|token|canary|sessionKey|HMAC|accesskey' "$INSPECT_WORK/out.json" "$INSPECT_WORK/err.txt" \
+    && grep -Eq '"managed"[[:space:]]*:[[:space:]]*false' "$INSPECT_WORK/out.json" \
+    && grep -Eq '"not-managed"' "$INSPECT_WORK/out.json"; then
+    pass "cli:setup-inspect-effective"
+  else
+    fail "cli:setup-inspect-effective" "json contract or canary check failed"
+  fi
+else
+  fail "cli:setup-inspect-effective" "command failed (details omitted)"
+fi
+rm -rf "$INSPECT_WORK"
 # --- cli:setup-core-self-check (#448) ---
 if "$MAILER_BIN" setup core-self-check >/tmp/amane-aot-setup-core.out 2>/tmp/amane-aot-setup-core.err; then
   if grep -q 'success: operation=setup_core_self_check' /tmp/amane-aot-setup-core.out; then

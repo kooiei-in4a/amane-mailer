@@ -8,9 +8,11 @@ This document is the source of truth for decisions, order, safety boundaries, an
 
 Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) · This issue: [#424](https://github.com/kooiei-in4a/amane-mailer/issues/424)
 
-### v1.2.0 Easy Setup (design fixed; not implemented yet)
+### v1.2.0 Easy Setup (design fixed; partially implemented)
 
-Execution boundaries, configuration source of truth, Managed vs Manual, Admin, and Gate contracts for v1.2.0 Easy Setup are owned by [ADR 0021](../adr/0021-easy-setup-boundaries.md) ([#446](https://github.com/kooiei-in4a/amane-mailer/issues/446)) as Design authority. Tracking: [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445). **The current completion path remains this guide’s Manual flow.** Host assistant / immutable bundle implementation is #447 onward and does not replace the mode procedures in this guide.
+Execution boundaries, configuration source of truth, Managed vs Manual, Admin, and Gate contracts for v1.2.0 Easy Setup are owned by [ADR 0021](../adr/0021-easy-setup-boundaries.md) ([#446](https://github.com/kooiei-in4a/amane-mailer/issues/446)) as Design authority. Tracking: [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445). **The current completion path remains this guide’s Manual flow.**
+
+Container one-shot effective inspection (`Amane.Mailer setup inspect-effective --format json`, [#447](https://github.com/kooiei-in4a/amane-mailer/issues/447)) is implemented. stdout is JSON only. recorded / effective / mountAttestation are separate fields; the one-shot never claims final `bundleIntegrity=matched` by itself (host at-rest integration is #450). Host assistant / ACTIVE apply / Docker operations remain later issues and do not replace the mode procedures in this guide.
 
 ## Role of existing docs (do not duplicate)
 

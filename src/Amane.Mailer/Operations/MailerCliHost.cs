@@ -253,6 +253,29 @@ public static class MailerCliHost
         return command.RunAsync(cancellationToken);
     }
 
+    public static async Task<int> RunSetupInspectEffectiveAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+        if (!Amane.Mailer.Setup.SetupInspectEffectiveCommand.TryParseArguments(
+                FilterConfigurationArgs(commandArgs),
+                out var usageError))
+        {
+            await error.WriteLineAsync(usageError ?? "Invalid setup inspect-effective arguments.");
+            await error.WriteLineAsync("Usage: setup inspect-effective --format json");
+            return Amane.Mailer.Setup.SetupInspectEffectiveCommand.UsageErrorExitCode;
+        }
+
+        return await Amane.Mailer.Setup.SetupInspectEffectiveCommand.ExecuteAsync(
+            configuration,
+            output,
+            error);
+    }
+
     public static async Task<int> RunSetupDoctorAsync(
         IConfiguration configuration,
         IReadOnlyList<string> commandArgs,
