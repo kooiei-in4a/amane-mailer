@@ -174,6 +174,9 @@ public static class SetupInspectEffectiveCommand
             or SetupInspectReason.CredentialInvalid
             or SetupInspectReason.ConfigConflict
             or SetupInspectReason.TenantsMissing
+            or SetupInspectReason.TenantsInvalid
+            or SetupInspectReason.ProviderInvalid
+            or SetupInspectReason.MailpitInvalid
             or SetupInspectReason.MetadataMalformed
             or SetupInspectReason.UnsupportedSchemaVersion
             or SetupInspectReason.VerifierMemberSetMismatch

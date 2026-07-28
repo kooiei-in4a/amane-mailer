@@ -30,6 +30,9 @@ public static class SetupInspectReason
     public const string HostAtRestPending = "host-at-rest-pending";
     public const string ConfigConflict = "config-conflict";
     public const string TenantsMissing = "tenants-missing";
+    public const string TenantsInvalid = "tenants-invalid";
+    public const string ProviderInvalid = "provider-invalid";
+    public const string MailpitInvalid = "mailpit-invalid";
     public const string FingerprintMismatch = "fingerprint-mismatch";
     public const string CredentialMissing = "credential-missing";
     public const string CredentialInvalid = "credential-invalid";

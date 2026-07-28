@@ -347,7 +347,7 @@ public sealed class SetupInspectEffectiveTests
     }
 
     [Fact]
-    public async Task Unknown_provider_is_config_conflict_like_runtime()
+    public async Task Unknown_provider_is_provider_invalid_like_runtime()
     {
         using var dir = new TempDir();
         var tenantsPath = WriteTenants(dir.Path, SetupTestFixtures.LocalMailpitTenants());
@@ -359,13 +359,13 @@ public sealed class SetupInspectEffectiveTests
         var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
         Assert.Equal(SetupInspectEffectiveCommand.InspectionIssueExitCode, exit);
         var result = Deserialize(stdout);
-        Assert.Equal(SetupInspectReason.ConfigConflict, result.Reason);
+        Assert.Equal(SetupInspectReason.ProviderInvalid, result.Reason);
         Assert.DoesNotContain("acs-secret-value", stdout, StringComparison.Ordinal);
         AssertNoCanaries(stdout, stderr, TokenCanary);
     }
 
     [Fact]
-    public async Task Mailpit_port_conflict_is_config_conflict_like_runtime()
+    public async Task Mailpit_port_conflict_is_mailpit_invalid_like_runtime()
     {
         using var dir = new TempDir();
         var tenantsPath = WriteTenants(dir.Path, SetupTestFixtures.LocalMailpitTenants());
@@ -377,7 +377,7 @@ public sealed class SetupInspectEffectiveTests
         var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
         Assert.Equal(SetupInspectEffectiveCommand.InspectionIssueExitCode, exit);
         var result = Deserialize(stdout);
-        Assert.Equal(SetupInspectReason.ConfigConflict, result.Reason);
+        Assert.Equal(SetupInspectReason.MailpitInvalid, result.Reason);
         AssertNoCanaries(stdout, stderr, TokenCanary);
     }
 

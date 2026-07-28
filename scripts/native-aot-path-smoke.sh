@@ -345,7 +345,7 @@ INSPECT_WORK="$(mktemp -d "${TMPDIR:-/tmp}/amane-aot-inspect.XXXXXX")"
 INSPECT_TENANTS="$INSPECT_WORK/tenants.json"
 INSPECT_TOKEN="aot-inspect-token-not-real"
 cat > "$INSPECT_TENANTS" <<'JSON'
-{"version":1,"environment":"develop","tenants":[{"tenant_id":"00000000-0000-0000-0000-000000000101","name":"aot-inspect","source_services":["aot"],"default_from":{"email":"noreply@example.com","display_name":"AOT"},"token_env":"MAIL_SERVICE_TOKEN","provider":"mailpit","live_sending":false,"retry":{"max_attempts":3,"initial_delay_seconds":1,"max_delay_seconds":10}}]}
+{"version":1,"environment":"develop","tenants":[{"tenant_id":"00000000-0000-0000-0000-000000000101","name":"aot-inspect","source_services":["aot"],"default_from":{"email":"noreply@example.com","display_name":"AOT"},"token_env":"MAIL_SERVICE_TOKEN","provider":"mailpit","live_sending":false,"metadata_max_bytes":4096,"retry":{"max_attempts":3,"initial_delay_seconds":1,"max_delay_seconds":10}}]}
 JSON
 INSPECT_EXIT=0
 MAILER_TENANTS_PATH="$INSPECT_TENANTS" MAIL_SERVICE_TOKEN="$INSPECT_TOKEN" \

@@ -187,6 +187,8 @@ public static partial class SetupInspectEffectiveEngine
         {
             MailerConfigurationSnapshot.LoadFailureKind.TenantsMissing =>
                 (SetupInspectReason.TenantsMissing, SetupInspectCredentialStatus.NotApplicable),
+            MailerConfigurationSnapshot.LoadFailureKind.TenantsInvalid =>
+                (SetupInspectReason.TenantsInvalid, SetupInspectCredentialStatus.NotApplicable),
             MailerConfigurationSnapshot.LoadFailureKind.TokenMissing =>
                 (SetupInspectReason.CredentialMissing, SetupInspectCredentialStatus.Missing),
             MailerConfigurationSnapshot.LoadFailureKind.WebhookSecretMissing =>
@@ -194,9 +196,9 @@ public static partial class SetupInspectEffectiveEngine
             MailerConfigurationSnapshot.LoadFailureKind.AcsCredentialMissing =>
                 (SetupInspectReason.CredentialMissing, SetupInspectCredentialStatus.Missing),
             MailerConfigurationSnapshot.LoadFailureKind.ProviderInvalid =>
-                (SetupInspectReason.ConfigConflict, SetupInspectCredentialStatus.NotApplicable),
+                (SetupInspectReason.ProviderInvalid, SetupInspectCredentialStatus.NotApplicable),
             MailerConfigurationSnapshot.LoadFailureKind.MailpitInvalid =>
-                (SetupInspectReason.ConfigConflict, SetupInspectCredentialStatus.NotApplicable),
+                (SetupInspectReason.MailpitInvalid, SetupInspectCredentialStatus.NotApplicable),
             _ => (SetupInspectReason.ConfigConflict, SetupInspectCredentialStatus.NotApplicable),
         };
 
