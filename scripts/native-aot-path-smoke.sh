@@ -13,6 +13,7 @@
 #   http:admin-login-get     — Admin enabled; GET /admin/login
 #   http:admin-login-post    — Admin cookie sign-in (CSRF + password hash)
 #   http:webhook-https-ready — HTTPS webhook tenant config loads; /readyz 200
+#   cli:setup-core-self-check — Setup Core dry-run fingerprint smoke (#448)
 #
 # Non-goals (remain JIT tests / manual / release-smoke):
 #   ACS live send, full signed webhook delivery e2e (SSRF blocks loopback;
@@ -313,6 +314,18 @@ main() {
     hash="$(tr -d '\r\n' <"$hash_out")"
     if [[ "$hash" == pbkdf2:sha256:* ]]; then
       pass "cli:admin-hash-password"
+
+# --- cli:setup-core-self-check (#448) ---
+if "$MAILER_BIN" setup core-self-check >/tmp/amane-aot-setup-core.out 2>/tmp/amane-aot-setup-core.err; then
+  if grep -q 'success: operation=setup_core_self_check' /tmp/amane-aot-setup-core.out; then
+    pass "cli:setup-core-self-check"
+  else
+    fail "cli:setup-core-self-check" "missing success marker"
+  fi
+else
+  fail "cli:setup-core-self-check" "command failed (details omitted)"
+fi
+
     else
       fail "cli:admin-hash-password" "stdout was not a pbkdf2:sha256 hash"
       hash=""

@@ -31,6 +31,7 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
       dotnet Amane.Mailer.dll admin provider test-acs-send
       dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
+      dotnet Amane.Mailer.dll setup core-self-check
       dotnet Amane.Mailer.dll setup check-event-grid --subscription <id-or-name> --resource-group <rg> (--acs-name <name> | --acs-resource-id <id>) --event-subscription <name> --storage-account <name> --queue-name <name> --environment <dev|staging|production>
       dotnet Amane.Mailer.dll setup verify-delivery-report
 
@@ -180,6 +181,12 @@ if (AdminProviderTestAcsSendCommand.IsTestAcsSendCommand(commandArgs))
     return await MailerCliHost.RunCancellableCliAsync(
         ct => MailerCliHost.RunAdminProviderTestAcsSendAsync(cliConfiguration, ct),
         Console.Error);
+}
+
+
+if (Amane.Mailer.Setup.SetupCoreSelfCheckCommand.IsSelfCheckCommand(commandArgs))
+{
+    return await Amane.Mailer.Setup.SetupCoreSelfCheckCommand.ExecuteAsync(Console.Out, Console.Error);
 }
 
 if (SetupDoctorCommand.IsSetupDoctorCommand(commandArgs))

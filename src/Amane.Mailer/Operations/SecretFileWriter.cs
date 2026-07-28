@@ -2,11 +2,11 @@ namespace Amane.Mailer.Operations;
 
 /// <summary>
 /// Atomic single-file writer: write to a temp file in the same directory as the target (same
-/// filesystem, so the final rename is atomic), set restrictive permissions, then rename over the
-/// target. Split into <see cref="Prepare"/> / <see cref="Commit"/> / <see cref="TryDiscardPrepared"/>
-/// / <see cref="TryRollbackCommitted"/> so <see cref="TwoPhaseSecretWriteCoordinator"/> can prepare
-/// two independent files before committing either, and roll the first back if the second's
-/// commit fails.
+/// filesystem, so the final rename is atomic), with owner-only permissions from creation time,
+/// then rename over the target. Split into <see cref="Prepare"/> / <see cref="Commit"/> /
+/// <see cref="TryDiscardPrepared"/> / <see cref="TryRollbackCommitted"/> so
+/// <see cref="TwoPhaseSecretWriteCoordinator"/> can prepare two independent files before
+/// committing either, and roll the first back if the second's commit fails.
 /// <para>
 /// <see cref="Commit"/> always overwrites the target. This is safe only because the caller
 /// (<see cref="AdminProviderRegisterAcsCommand"/>) verifies via
@@ -38,11 +38,8 @@ public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
         var tempPath = Path.Combine(directory, $".{Path.GetFileName(TargetPath)}.tmp-{Guid.NewGuid():N}");
         FileSystemSafetyGuard.EnsureTargetFileIsSafeIfExists(tempPath);
 
-        File.WriteAllText(tempPath, content);
-        if (!OperatingSystem.IsWindows())
-        {
-            File.SetUnixFileMode(tempPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-        }
+        // Create with owner-only permissions before writing content (Linux 0600 / Windows ACL).
+        SecureFileCreate.WriteAllTextCreateNew(tempPath, content);
 
         _tempPath = tempPath;
     }
@@ -60,15 +57,7 @@ public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
 
     /// <summary>
     /// Deletes the uncommitted temp file created by <see cref="Prepare"/>, if any.
-    /// <para>
-    /// Returns <see langword="false"/> if a temp file existed but the delete failed — the caller
-    /// must not treat cleanup as having succeeded in that case. The temp file may still contain
-    /// the prepared secret content (e.g. the ACS connection string) on disk.
-    /// <see cref="TwoPhaseSecretWriteCoordinator"/> maps a failed discard to
-    /// <see cref="AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed"/> so an operator
-    /// knows a temp file may need manual removal, instead of silently reporting only the
-    /// original failure that triggered the cleanup attempt.
-    /// </para>
+    /// Returns <see langword="false"/> if a temp file existed but the delete failed.
     /// </summary>
     public bool TryDiscardPrepared()
     {
@@ -92,18 +81,7 @@ public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
     }
 
     /// <summary>
-    /// Undo a completed <see cref="Commit"/>. Only meaningful immediately after a successful
-    /// commit, used when a sibling write in the same two-phase operation subsequently fails.
-    /// Deleting is safe because <see cref="Commit"/> is only reachable once preflight already
-    /// confirmed the pre-commit state was absent/empty.
-    /// <para>
-    /// Returns <see langword="false"/> if the delete itself fails. The caller must not claim the
-    /// operation was rolled back in that case — <see cref="TwoPhaseSecretWriteCoordinator"/> maps
-    /// a failed rollback to a distinct canonical code
-    /// (<see cref="AdminProviderRegisterAcsResultCodes.RejectedRollbackFailed"/>) rather than
-    /// <see cref="AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack"/>, since the
-    /// latter implies the on-disk state is clean again when it may not be.
-    /// </para>
+    /// Undo a completed <see cref="Commit"/>. Returns <see langword="false"/> if delete fails.
     /// </summary>
     public bool TryRollbackCommitted()
     {
