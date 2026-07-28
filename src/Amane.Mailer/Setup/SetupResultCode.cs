@@ -23,5 +23,6 @@ public static class SetupResultCode
     public const string RejectedOwnershipFailed = "setup.rejected.ownership_failed";
     public const string RejectedDurabilityFailed = "setup.rejected.durability_failed";
     public const string RejectedConcurrentExecution = "setup.rejected.concurrent_execution";
+    public const string RejectedLockFailed = "setup.rejected.lock_failed";
     public const string FailedUnexpected = "setup.failed.unexpected";
 }

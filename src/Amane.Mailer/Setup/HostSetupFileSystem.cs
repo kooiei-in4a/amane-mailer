@@ -79,6 +79,23 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
         throw new IOException("File durability flush is not supported on this platform.");
     }
 
+
+    public FileStream OpenExclusiveGenerationLock(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            return OpenExclusiveGenerationLockUnix(path);
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            return OpenExclusiveGenerationLockWindows(path);
+        }
+
+        return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+    }
     public void SetUnixOwnership(string path, uint userId, uint groupId)
     {
         if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
@@ -427,8 +444,124 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
         || sid.Equals("S-1-5-11", StringComparison.OrdinalIgnoreCase)
         || sid.Equals("S-1-5-32-545", StringComparison.OrdinalIgnoreCase);
 
+    private const int ORdWr = 2;
+    private const int OCreat = 64; // 0x40
+    private const int UnixOwnerReadWriteMode = 384; // 0600
+
+    [SupportedOSPlatform("linux")]
+    [SupportedOSPlatform("macos")]
+    private static FileStream OpenExclusiveGenerationLockUnix(string path)
+    {
+        // Linux O_NOFOLLOW=0x20000, O_CLOEXEC=0x80000; macOS O_NOFOLLOW=0x100, O_CLOEXEC=0x1000000.
+        var noFollow = OperatingSystem.IsMacOS() ? 0x100 : 0x20000;
+        var cloExec = OperatingSystem.IsMacOS() ? 0x1000000 : 0x80000;
+        var fd = Open3(path, ORdWr | OCreat | noFollow | cloExec, UnixOwnerReadWriteMode);
+        if (fd < 0)
+        {
+            var errno = Marshal.GetLastPInvokeError();
+            if (errno is 40 or 62) // ELOOP
+            {
+                throw new IOException("Generation lock path resolved through a symlink.", errno);
+            }
+
+            throw new IOException($"Failed to open generation lock (errno {errno}).", errno);
+        }
+
+        try
+        {
+            // Advisory exclusive lock (matches FileShare.None); O_NOFOLLOW alone does not serialize.
+            const int lockEx = 2;
+            const int lockNb = 4;
+            if (Flock(fd, lockEx | lockNb) != 0)
+            {
+                var errno = Marshal.GetLastPInvokeError();
+                _ = Close(fd);
+                // EAGAIN/EWOULDBLOCK: Linux 11; macOS EAGAIN often 35.
+                if (errno is 11 or 35)
+                {
+                    throw new IOException(
+                        "Generation lock is being used by another process.",
+                        unchecked((int)0x80070020));
+                }
+
+                throw new IOException($"Failed to flock generation lock (errno {errno}).", errno);
+            }
+
+            var mode = File.GetUnixFileMode(path);
+            const UnixFileMode groupOrOther =
+                UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
+                UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+            if ((mode & groupOrOther) != 0)
+            {
+                _ = Close(fd);
+                throw new UnauthorizedAccessException("Generation lock file permissions are not owner-only.");
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            throw;
+        }
+        catch (IOException)
+        {
+            throw;
+        }
+        catch
+        {
+            _ = Close(fd);
+            throw;
+        }
+
+        // Ownership transfers to FileStream on success; keep a local so CA2000
+        // understands the dispose path on construction failure.
+        SafeFileHandle? handle = null;
+        try
+        {
+            handle = new SafeFileHandle((IntPtr)fd, ownsHandle: true);
+            var stream = new FileStream(handle, FileAccess.ReadWrite);
+            handle = null; // ownership transferred to FileStream
+            return stream;
+        }
+        finally
+        {
+            handle?.Dispose();
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private FileStream OpenExclusiveGenerationLockWindows(string path)
+    {
+        var attrs = GetFileAttributesW(path);
+        if (attrs != unchecked((uint)(-1)) && (attrs & 0x400) != 0) // FILE_ATTRIBUTE_REPARSE_POINT
+        {
+            throw new IOException("Generation lock path must not be a reparse point.");
+        }
+
+        if (attrs == unchecked((uint)(-1)))
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (error is not (2 or 3)) // FILE_NOT_FOUND / PATH_NOT_FOUND
+            {
+                throw new IOException($"Failed to inspect generation lock path (Win32 error {error}).", error);
+            }
+
+            // Create owner-only then open exclusively. SecureFileCreate refuses overwrite.
+            SecureFileCreate.WriteAllBytesCreateNew(path, ReadOnlySpan<byte>.Empty);
+        }
+        else if (!IsOwnerOnlyFile(path))
+        {
+            throw new UnauthorizedAccessException("Generation lock file permissions are not owner-only.");
+        }
+
+        return new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+    }
+
+    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
+    private static extern int Open3(string pathname, int flags, int mode);
     [DllImport("libc", EntryPoint = "chown", SetLastError = true)]
     private static extern int Chown(string path, uint owner, uint group);
+
+    [DllImport("libc", EntryPoint = "flock", SetLastError = true)]
+    private static extern int Flock(int fd, int operation);
 
     [DllImport("libc", EntryPoint = "open", SetLastError = true)]
     private static extern int Open(string pathname, int flags);

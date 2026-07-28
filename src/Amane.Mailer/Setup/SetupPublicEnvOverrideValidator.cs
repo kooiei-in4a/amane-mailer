@@ -38,9 +38,13 @@ public static partial class SetupPublicEnvOverrideValidator
         {
             if (string.IsNullOrWhiteSpace(imageRepository)
                 || !IsEnvFileSafeValue(imageRepository)
-                || !ImageRepositoryRegex().IsMatch(imageRepository))
+                || !TryValidateImageRepository(imageRepository, out message))
             {
-                message = "Image repository is not a valid compose image repository value.";
+                if (string.IsNullOrEmpty(message))
+                {
+                    message = "Image repository is not a valid compose image repository value.";
+                }
+
                 return false;
             }
         }
@@ -107,9 +111,11 @@ public static partial class SetupPublicEnvOverrideValidator
 
             case "MAILER_HEALTHCHECK_RETRIES":
                 if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var retries)
-                    || retries is < 1 or > 100)
+                    || retries < 1
+                    || retries > SetupPublicEnvLimits.MaxHealthcheckRetries)
                 {
-                    message = "MAILER_HEALTHCHECK_RETRIES must be an integer from 1 to 100.";
+                    message =
+                        $"MAILER_HEALTHCHECK_RETRIES must be an integer from 1 to {SetupPublicEnvLimits.MaxHealthcheckRetries}.";
                     return false;
                 }
 
@@ -117,9 +123,11 @@ public static partial class SetupPublicEnvOverrideValidator
 
             case "LOG_MAX_FILE":
                 if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var maxFile)
-                    || maxFile is < 1 or > 1000)
+                    || maxFile < 1
+                    || maxFile > SetupPublicEnvLimits.MaxLogMaxFile)
                 {
-                    message = "LOG_MAX_FILE must be an integer from 1 to 1000.";
+                    message =
+                        $"LOG_MAX_FILE must be an integer from 1 to {SetupPublicEnvLimits.MaxLogMaxFile}.";
                     return false;
                 }
 
@@ -138,10 +146,16 @@ public static partial class SetupPublicEnvOverrideValidator
                 return true;
 
             case "MAILER_CPUS":
-                if (!decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var cpus)
+                // Compose cpus interpolation needs a canonical ASCII number (no thousands separators).
+                if (!CanonicalCpusRegex().IsMatch(value)
+                    || !decimal.TryParse(
+                        value,
+                        NumberStyles.AllowDecimalPoint,
+                        CultureInfo.InvariantCulture,
+                        out var cpus)
                     || cpus <= 0)
                 {
-                    message = "MAILER_CPUS must be a positive decimal.";
+                    message = "MAILER_CPUS must be a positive decimal (digits with optional fraction).";
                     return false;
                 }
 
@@ -284,20 +298,64 @@ public static partial class SetupPublicEnvOverrideValidator
         }
 
         var unitChar = char.ToLowerInvariant(unit[0]);
-        bytes = unitChar switch
+        try
         {
-            'b' when allowBytesUnit => amount,
-            'k' => amount * 1024L,
-            'm' => amount * 1024L * 1024L,
-            'g' => amount * 1024L * 1024L * 1024L,
-            't' when allowTerabyte => amount * 1024L * 1024L * 1024L * 1024L,
-            _ => -1,
-        };
+            bytes = unitChar switch
+            {
+                'b' when allowBytesUnit => amount,
+                'k' => checked(amount * 1024L),
+                'm' => checked(amount * 1024L * 1024L),
+                'g' => checked(amount * 1024L * 1024L * 1024L),
+                't' when allowTerabyte => checked(amount * 1024L * 1024L * 1024L * 1024L),
+                _ => -1,
+            };
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+
         return bytes > 0;
+    }
+
+    private static bool TryValidateImageRepository(string imageRepository, out string message)
+    {
+        message = string.Empty;
+        if (!ImageRepositoryRegex().IsMatch(imageRepository))
+        {
+            message = "Image repository is not a valid compose image repository value.";
+            return false;
+        }
+
+        var slash = imageRepository.IndexOf('/');
+        if (slash <= 0)
+        {
+            return true;
+        }
+
+        var registry = imageRepository[..slash];
+        var colon = registry.LastIndexOf(':');
+        if (colon < 0)
+        {
+            return true;
+        }
+
+        var portText = registry[(colon + 1)..];
+        if (!int.TryParse(portText, NumberStyles.None, CultureInfo.InvariantCulture, out var port)
+            || port is < 1 or > 65535)
+        {
+            message = "Image repository registry port must be an integer from 1 to 65535.";
+            return false;
+        }
+
+        return true;
     }
 
     [GeneratedRegex(@"^([1-9]\d*)([bBkKmMgGtT])?$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
     private static partial Regex DockerByteSizeRegex();
+
+    [GeneratedRegex(@"^[0-9]+(?:\.[0-9]+)?$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
+    private static partial Regex CanonicalCpusRegex();
 
     [GeneratedRegex(@"^[1-9]\d*[smh]$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
     private static partial Regex DurationRegex();

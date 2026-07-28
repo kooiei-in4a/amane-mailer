@@ -18,6 +18,9 @@ public interface ISetupFileSystem
     void MoveReplace(string sourcePath, string destinationPath);
     void FlushDirectory(string path);
     void FlushFile(string path);
+
+    /// <summary>Open or create an owner-only exclusive lock file without following symlinks.</summary>
+    FileStream OpenExclusiveGenerationLock(string path);
     void SetUnixOwnership(string path, uint userId, uint groupId);
     void SetUnixFileModeOwnerOnly(string path, bool executableDirectory);
     bool TryGetUnixFileMode(string path, out UnixFileMode mode);
