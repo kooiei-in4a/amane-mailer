@@ -14,7 +14,7 @@
 #   http:admin-login-post    — Admin cookie sign-in (CSRF + password hash)
 #   http:webhook-https-ready — HTTPS webhook tenant config loads; /readyz 200
 #   cli:setup-core-self-check — Setup Core dry-run fingerprint smoke (#448)
-#   cli:setup-inspect-effective — Effective inspection JSON smoke (#447)
+#   cli:setup-inspect-effective — Manual + Managed mount attestation JSON smoke (#447)
 #
 # Non-goals (remain JIT tests / manual / release-smoke):
 #   ACS live send, full signed webhook delivery e2e (SSRF blocks loopback;
@@ -320,12 +320,14 @@ main() {
 # --- cli:setup-inspect-effective (#447) ---
 INSPECT_WORK="$(mktemp -d "${TMPDIR:-/tmp}/amane-aot-inspect.XXXXXX")"
 INSPECT_TENANTS="$INSPECT_WORK/tenants.json"
+INSPECT_TOKEN="aot-inspect-token-not-real"
 cat > "$INSPECT_TENANTS" <<'JSON'
 {"version":1,"environment":"develop","tenants":[{"tenant_id":"00000000-0000-0000-0000-000000000101","name":"aot-inspect","source_services":["aot"],"default_from":{"email":"noreply@example.com","display_name":"AOT"},"token_env":"MAIL_SERVICE_TOKEN","provider":"mailpit","live_sending":false,"retry":{"max_attempts":3,"initial_delay_seconds":1,"max_delay_seconds":10}}]}
 JSON
-if MAILER_TENANTS_PATH="$INSPECT_TENANTS" "$MAILER_BIN" setup inspect-effective --format json >"$INSPECT_WORK/out.json" 2>"$INSPECT_WORK/err.txt"; then
+if MAILER_TENANTS_PATH="$INSPECT_TENANTS" MAIL_SERVICE_TOKEN="$INSPECT_TOKEN" \
+  "$MAILER_BIN" setup inspect-effective --format json >"$INSPECT_WORK/out.json" 2>"$INSPECT_WORK/err.txt"; then
   if awk 'NR==1{if ($0 ~ /^\{/) found=1} END{exit !found}' "$INSPECT_WORK/out.json" \
-    && ! grep -Eiq 'secret|token|canary|sessionKey|HMAC|accesskey' "$INSPECT_WORK/out.json" "$INSPECT_WORK/err.txt" \
+    && ! grep -Eiq 'secret|token|canary|sessionKey|HMAC|accesskey|aot-inspect-token' "$INSPECT_WORK/out.json" "$INSPECT_WORK/err.txt" \
     && grep -Eq '"managed"[[:space:]]*:[[:space:]]*false' "$INSPECT_WORK/out.json" \
     && grep -Eq '"not-managed"' "$INSPECT_WORK/out.json"; then
     pass "cli:setup-inspect-effective"
@@ -334,6 +336,69 @@ if MAILER_TENANTS_PATH="$INSPECT_TENANTS" "$MAILER_BIN" setup inspect-effective 
   fi
 else
   fail "cli:setup-inspect-effective" "command failed (details omitted)"
+fi
+
+# Managed mount attestation path (deserialize metadata/verifier + HMAC; provisional integrity only).
+INSPECT_META="$INSPECT_WORK/recorded.json"
+INSPECT_VERIFIER="$INSPECT_WORK/verifier.json"
+INSPECT_BUNDLE_ID="20260728120000-a0t00001"
+cat > "$INSPECT_META" <<JSON
+{"schemaVersion":1,"bundleId":"$INSPECT_BUNDLE_ID","configurationFingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mode":"local-mailpit","createdAt":"2026-07-28T00:00:00Z"}
+JSON
+python3 - "$INSPECT_VERIFIER" "$INSPECT_BUNDLE_ID" "$INSPECT_TOKEN" <<'PY'
+import base64, hashlib, hmac, json, os, sys, time
+verifier_path, bundle_id, token = sys.argv[1], sys.argv[2], sys.argv[3]
+session_key = os.urandom(32)
+session_nonce = os.urandom(16)
+member_id = "env:MAIL_SERVICE_TOKEN"
+content = token.encode("utf-8")
+h = hmac.new(session_key, digestmod=hashlib.sha256)
+h.update(b"AMANE-MOUNT-ATTEST-V1")
+h.update(b"\x00")
+h.update(session_nonce)
+h.update(b"\x00")
+h.update(member_id.encode("utf-8"))
+h.update(b"\x00")
+h.update(content)
+mac = h.digest()
+doc = {
+  "schemaVersion": 1,
+  "bundleId": bundle_id,
+  "sessionNonce": base64.b64encode(session_nonce).decode("ascii"),
+  "sessionKey": base64.b64encode(session_key).decode("ascii"),
+  "expiresAtUnix": int(time.time()) + 3600,
+  "members": [{"memberId": member_id, "expectedMac": base64.b64encode(mac).decode("ascii")}],
+}
+with open(verifier_path, "w", encoding="utf-8") as f:
+  json.dump(doc, f, separators=(",", ":"))
+PY
+if MAILER_TENANTS_PATH="$INSPECT_TENANTS" \
+  MAIL_SERVICE_TOKEN="$INSPECT_TOKEN" \
+  MAILER_SETUP_RECORDED_METADATA_PATH="$INSPECT_META" \
+  MAILER_SETUP_MOUNT_VERIFIER_PATH="$INSPECT_VERIFIER" \
+  "$MAILER_BIN" setup inspect-effective --format json >"$INSPECT_WORK/managed-out.json" 2>"$INSPECT_WORK/managed-err.txt"; then
+  if awk 'NR==1{if ($0 ~ /^\{/) found=1} END{exit !found}' "$INSPECT_WORK/managed-out.json" \
+    && ! grep -Eiq 'secret|token|canary|sessionKey|HMAC|accesskey|aot-inspect-token' "$INSPECT_WORK/managed-out.json" "$INSPECT_WORK/managed-err.txt" \
+    && grep -Eq '"managed"[[:space:]]*:[[:space:]]*true' "$INSPECT_WORK/managed-out.json" \
+    && grep -Eq '"matched"' "$INSPECT_WORK/managed-out.json" \
+    && grep -Eq '"not-verified"' "$INSPECT_WORK/managed-out.json" \
+    && grep -Eq 'host-at-rest-pending' "$INSPECT_WORK/managed-out.json"; then
+    pass "cli:setup-inspect-effective-managed"
+  else
+    fail "cli:setup-inspect-effective-managed" "managed mount contract or canary check failed"
+  fi
+else
+  # Fingerprint mismatch may yield exit 1 while still emitting JSON; accept nonzero only if contract holds.
+  if awk 'NR==1{if ($0 ~ /^\{/) found=1} END{exit !found}' "$INSPECT_WORK/managed-out.json" \
+    && ! grep -Eiq 'secret|token|canary|sessionKey|HMAC|accesskey|aot-inspect-token' "$INSPECT_WORK/managed-out.json" "$INSPECT_WORK/managed-err.txt" \
+    && grep -Eq '"managed"[[:space:]]*:[[:space:]]*true' "$INSPECT_WORK/managed-out.json" \
+    && grep -Eq '"matched"' "$INSPECT_WORK/managed-out.json" \
+    && grep -Eq '"not-verified"' "$INSPECT_WORK/managed-out.json" \
+    && grep -Eq 'host-at-rest-pending' "$INSPECT_WORK/managed-out.json"; then
+    pass "cli:setup-inspect-effective-managed"
+  else
+    fail "cli:setup-inspect-effective-managed" "command failed (details omitted)"
+  fi
 fi
 rm -rf "$INSPECT_WORK"
 # --- cli:setup-core-self-check (#448) ---

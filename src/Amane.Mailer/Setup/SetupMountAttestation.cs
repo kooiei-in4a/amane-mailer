@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Operations;
 
 namespace Amane.Mailer.Setup;
@@ -7,17 +8,41 @@ namespace Amane.Mailer.Setup;
 /// <summary>
 /// Container-side ephemeral mount attestation (ADR 0021 D-04 step 2).
 /// Host generates expected MACs; one-shot recomputes from actually mounted bytes.
+/// Required member IDs must exactly match the verifier member set (fail-closed).
 /// </summary>
 public static class SetupMountAttestation
 {
     public const int SessionKeyLength = 32;
     public const int MacLength = 32;
+    public const int SessionNonceLength = 16;
     private static readonly byte[] DomainPrefix = "AMANE-MOUNT-ATTEST-V1"u8.ToArray();
 
     public const string AcsConnectionStringMemberId =
         $"{SetupBundleLayout.SecretsDirectoryName}/{AcsSecretFileNames.CanonicalFileName}";
 
     public static string EnvMemberId(string envKey) => "env:" + envKey;
+
+    public static HashSet<string> DeriveRequiredMemberIds(
+        MailerOptions options,
+        IReadOnlyList<MailerTenant> tenants)
+    {
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var tenant in tenants)
+        {
+            ids.Add(EnvMemberId(tenant.TokenEnv));
+            if (tenant.Webhook is not null)
+            {
+                ids.Add(EnvMemberId(tenant.Webhook.SecretEnv));
+            }
+        }
+
+        if (tenants.Any(t => string.Equals(options.ResolveProvider(t), "acs", StringComparison.Ordinal)))
+        {
+            ids.Add(AcsConnectionStringMemberId);
+        }
+
+        return ids;
+    }
 
     public static byte[] CreateSessionKey()
     {
@@ -26,8 +51,16 @@ public static class SetupMountAttestation
         return key;
     }
 
+    public static byte[] CreateSessionNonce()
+    {
+        var nonce = new byte[SessionNonceLength];
+        RandomNumberGenerator.Fill(nonce);
+        return nonce;
+    }
+
     public static byte[] ComputeMac(
         ReadOnlySpan<byte> sessionKey,
+        ReadOnlySpan<byte> sessionNonce,
         string memberId,
         ReadOnlySpan<byte> content)
     {
@@ -35,6 +68,8 @@ public static class SetupMountAttestation
 
         using var hmac = new HMACSHA256(sessionKey.ToArray());
         hmac.TransformBlock(DomainPrefix, 0, DomainPrefix.Length, null, 0);
+        TransformNul(hmac);
+        hmac.TransformBlock(sessionNonce.ToArray(), 0, sessionNonce.Length, null, 0);
         TransformNul(hmac);
         TransformUtf8(hmac, memberId);
         TransformNul(hmac);
@@ -51,6 +86,7 @@ public static class SetupMountAttestation
     public static SetupInspectAttestationSummary Verify(
         SetupMountVerifierDocument verifier,
         string expectedBundleId,
+        IReadOnlyCollection<string> requiredMemberIds,
         Func<string, byte[]?> resolveMemberBytes,
         DateTimeOffset utcNow)
     {
@@ -69,7 +105,13 @@ public static class SetupMountAttestation
             return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierExpired);
         }
 
+        if (requiredMemberIds.Count == 0)
+        {
+            return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierMalformed);
+        }
+
         byte[]? sessionKey = null;
+        byte[]? sessionNonce = null;
         try
         {
             sessionKey = Convert.FromBase64String(verifier.SessionKey);
@@ -78,12 +120,27 @@ public static class SetupMountAttestation
                 return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierMalformed);
             }
 
-            if (verifier.Members.Count == 0)
+            try
+            {
+                sessionNonce = Convert.FromBase64String(verifier.SessionNonce);
+            }
+            catch (FormatException)
             {
                 return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierMalformed);
             }
 
-            foreach (var member in verifier.Members.OrderBy(m => m.MemberId, StringComparer.Ordinal))
+            if (sessionNonce.Length != SessionNonceLength)
+            {
+                return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierMalformed);
+            }
+
+            if (verifier.Members is null || verifier.Members.Count == 0)
+            {
+                return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierMalformed);
+            }
+
+            var verifierIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var member in verifier.Members)
             {
                 if (string.IsNullOrWhiteSpace(member.MemberId)
                     || string.IsNullOrWhiteSpace(member.ExpectedMac))
@@ -91,6 +148,20 @@ public static class SetupMountAttestation
                     return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierMalformed);
                 }
 
+                if (!verifierIds.Add(member.MemberId))
+                {
+                    return Attestation(SetupInspectIntegrityResult.Mismatch, SetupInspectReason.VerifierMemberSetMismatch);
+                }
+            }
+
+            var required = new HashSet<string>(requiredMemberIds, StringComparer.Ordinal);
+            if (!required.SetEquals(verifierIds))
+            {
+                return Attestation(SetupInspectIntegrityResult.Mismatch, SetupInspectReason.VerifierMemberSetMismatch);
+            }
+
+            foreach (var member in verifier.Members.OrderBy(m => m.MemberId, StringComparer.Ordinal))
+            {
                 byte[] expectedMac;
                 try
                 {
@@ -113,7 +184,7 @@ public static class SetupMountAttestation
                     return Attestation(SetupInspectIntegrityResult.Mismatch, SetupInspectReason.SecretMissing);
                 }
 
-                var actualMac = ComputeMac(sessionKey, member.MemberId, actualBytes);
+                var actualMac = ComputeMac(sessionKey, sessionNonce, member.MemberId, actualBytes);
                 try
                 {
                     if (!FixedTimeEqualsMac(expectedMac, actualMac))
@@ -140,6 +211,11 @@ public static class SetupMountAttestation
             if (sessionKey is not null)
             {
                 CryptographicOperations.ZeroMemory(sessionKey);
+            }
+
+            if (sessionNonce is not null)
+            {
+                CryptographicOperations.ZeroMemory(sessionNonce);
             }
         }
     }

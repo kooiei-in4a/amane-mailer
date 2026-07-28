@@ -18,7 +18,9 @@ public sealed class SetupInspectEffectiveTests
     {
         using var dir = new TempDir();
         var tenantsPath = WriteTenants(dir.Path, SetupTestFixtures.LocalMailpitTenants());
-        var config = BuildConfig(("MAILER_TENANTS_PATH", tenantsPath));
+        var config = BuildConfig(
+            ("MAILER_TENANTS_PATH", tenantsPath),
+            ("MAIL_SERVICE_TOKEN", TokenCanary));
 
         var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
 
@@ -48,7 +50,8 @@ public sealed class SetupInspectEffectiveTests
 
         var config = BuildConfig(
             ("MAILER_TENANTS_PATH", tenantsPath),
-            ("MAILER_SETUP_RECORDED_METADATA_PATH", metadataPath));
+            ("MAILER_SETUP_RECORDED_METADATA_PATH", metadataPath),
+            ("MAIL_SERVICE_TOKEN", TokenCanary));
 
         var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
 
@@ -69,17 +72,18 @@ public sealed class SetupInspectEffectiveTests
         var acsPath = Path.Combine(bundle.BundleRoot, "secrets", "acs_connection_string");
         var metadataPath = Path.Combine(bundle.BundleRoot, "metadata", "recorded.json");
         var verifierPath = Path.Combine(dir.Path, "verifier.json");
+        using var stagedRecorded = StageContainerRecordedMetadata(metadataPath);
 
         WriteVerifier(
             verifierPath,
             bundle.BundleId,
             expiresAtUnix: DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds(),
-            (SetupMountAttestation.AcsConnectionStringMemberId, await File.ReadAllBytesAsync(acsPath)));
+            AcsRequiredMembers(await File.ReadAllBytesAsync(acsPath), TokenCanary));
 
         var config = BuildConfigFromCompose(
             bundle.ComposeEnv,
             ("MAILER_TENANTS_PATH", tenantsPath),
-            ("MAILER_SETUP_RECORDED_METADATA_PATH", metadataPath),
+            // Keep compose MAILER_SETUP_RECORDED_METADATA_PATH for fingerprint sameness.
             ("ACS_CONNECTION_STRING_FILE", acsPath),
             ("MAILER_SETUP_MOUNT_VERIFIER_PATH", verifierPath),
             ("MAIL_SERVICE_TOKEN_STAGING", TokenCanary));
@@ -90,6 +94,7 @@ public sealed class SetupInspectEffectiveTests
         var result = Deserialize(stdout);
         Assert.True(result.Managed);
         Assert.Equal(bundle.BundleId, result.Recorded!.SetupBundleId);
+        Assert.True(result.Effective.FingerprintsMatchRecorded);
         Assert.Equal(SetupInspectIntegrityResult.Matched, result.MountAttestation.Result);
         Assert.Equal(SetupInspectIntegrityResult.NotVerified, result.BundleIntegrity.Result);
         Assert.Equal(SetupInspectReason.HostAtRestPending, result.BundleIntegrity.Reason);
@@ -115,19 +120,20 @@ public sealed class SetupInspectEffectiveTests
         var metadataPath = Path.Combine(bundle.BundleRoot, "metadata", "recorded.json");
         var verifierPath = Path.Combine(dir.Path, "verifier.json");
         var original = await File.ReadAllBytesAsync(acsPath);
+        using var stagedRecorded = StageContainerRecordedMetadata(metadataPath);
 
         WriteVerifier(
             verifierPath,
             bundle.BundleId,
             expiresAtUnix: DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds(),
-            (SetupMountAttestation.AcsConnectionStringMemberId, original));
+            AcsRequiredMembers(original, TokenCanary));
 
         await File.WriteAllTextAsync(acsPath, "endpoint=https://swapped.example/;accesskey=SWAPPED_SECRET");
 
         var config = BuildConfigFromCompose(
             bundle.ComposeEnv,
             ("MAILER_TENANTS_PATH", tenantsPath),
-            ("MAILER_SETUP_RECORDED_METADATA_PATH", metadataPath),
+            // Keep compose MAILER_SETUP_RECORDED_METADATA_PATH for fingerprint sameness.
             ("ACS_CONNECTION_STRING_FILE", acsPath),
             ("MAILER_SETUP_MOUNT_VERIFIER_PATH", verifierPath),
             ("MAIL_SERVICE_TOKEN_STAGING", TokenCanary));
@@ -152,6 +158,7 @@ public sealed class SetupInspectEffectiveTests
         var metadataPath = Path.Combine(bundle.BundleRoot, "metadata", "recorded.json");
         var foreignBytes = Encoding.UTF8.GetBytes("endpoint=https://other-bundle.example/;accesskey=OTHER");
         var verifierPath = Path.Combine(dir.Path, "verifier.json");
+        using var stagedRecorded = StageContainerRecordedMetadata(metadataPath);
 
         WriteVerifier(
             verifierPath,
@@ -162,7 +169,7 @@ public sealed class SetupInspectEffectiveTests
         var config = BuildConfigFromCompose(
             bundle.ComposeEnv,
             ("MAILER_TENANTS_PATH", tenantsPath),
-            ("MAILER_SETUP_RECORDED_METADATA_PATH", metadataPath),
+            // Keep compose MAILER_SETUP_RECORDED_METADATA_PATH for fingerprint sameness.
             ("ACS_CONNECTION_STRING_FILE", acsPath),
             ("MAILER_SETUP_MOUNT_VERIFIER_PATH", verifierPath),
             ("MAIL_SERVICE_TOKEN_STAGING", TokenCanary));
@@ -180,7 +187,9 @@ public sealed class SetupInspectEffectiveTests
             expiresAtUnix: DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeSeconds(),
             (SetupMountAttestation.AcsConnectionStringMemberId, await File.ReadAllBytesAsync(acsPath)));
 
-        (_, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        int expiredExit;
+        (expiredExit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        Assert.Equal(SetupInspectEffectiveCommand.InspectionIncompleteExitCode, expiredExit);
         result = Deserialize(stdout);
         Assert.Equal(SetupInspectIntegrityResult.NotVerified, result.MountAttestation.Result);
         Assert.Equal(SetupInspectReason.VerifierExpired, result.MountAttestation.Reason);
@@ -189,7 +198,7 @@ public sealed class SetupInspectEffectiveTests
     }
 
     [Fact]
-    public async Task Missing_mounted_secret_is_mismatch_with_secret_missing_reason()
+    public async Task Missing_acs_credential_file_is_credential_missing_issue()
     {
         using var dir = new TempDir();
         var bundle = await GenerateAcsBundleAsync(dir.Path);
@@ -198,18 +207,18 @@ public sealed class SetupInspectEffectiveTests
         var metadataPath = Path.Combine(bundle.BundleRoot, "metadata", "recorded.json");
         var verifierPath = Path.Combine(dir.Path, "verifier.json");
         var original = await File.ReadAllBytesAsync(acsPath);
+        using var stagedRecorded = StageContainerRecordedMetadata(metadataPath);
 
         WriteVerifier(
             verifierPath,
             bundle.BundleId,
             expiresAtUnix: DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds(),
-            (SetupMountAttestation.AcsConnectionStringMemberId, original));
+            AcsRequiredMembers(original, TokenCanary));
 
         var missingPath = Path.Combine(dir.Path, "missing-acs");
         var config = BuildConfigFromCompose(
             bundle.ComposeEnv,
             ("MAILER_TENANTS_PATH", tenantsPath),
-            ("MAILER_SETUP_RECORDED_METADATA_PATH", metadataPath),
             ("ACS_CONNECTION_STRING_FILE", missingPath),
             ("MAILER_SETUP_MOUNT_VERIFIER_PATH", verifierPath),
             ("MAIL_SERVICE_TOKEN_STAGING", TokenCanary));
@@ -217,9 +226,9 @@ public sealed class SetupInspectEffectiveTests
         var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
         Assert.Equal(SetupInspectEffectiveCommand.InspectionIssueExitCode, exit);
         var result = Deserialize(stdout);
-        Assert.Equal(SetupInspectIntegrityResult.Mismatch, result.MountAttestation.Result);
-        Assert.Equal(SetupInspectReason.SecretMissing, result.MountAttestation.Reason);
+        Assert.Equal(SetupInspectReason.CredentialMissing, result.Reason);
         Assert.Equal(SetupInspectCredentialStatus.Missing, result.Effective.CredentialStatus);
+        Assert.Equal(SetupInspectIntegrityResult.NotVerified, result.MountAttestation.Result);
         AssertNoCanaries(stdout, stderr, SecretCanary, TokenCanary);
     }
 
@@ -242,6 +251,191 @@ public sealed class SetupInspectEffectiveTests
     }
 
     [Fact]
+    public async Task Incomplete_verifier_member_set_is_not_matched()
+    {
+        using var dir = new TempDir();
+        var bundle = await GenerateAcsBundleAsync(dir.Path);
+        var tenantsPath = Path.Combine(bundle.BundleRoot, "config", "tenants.json");
+        var acsPath = Path.Combine(bundle.BundleRoot, "secrets", "acs_connection_string");
+        var metadataPath = Path.Combine(bundle.BundleRoot, "metadata", "recorded.json");
+        var verifierPath = Path.Combine(dir.Path, "verifier.json");
+
+        using var stagedRecorded = StageContainerRecordedMetadata(metadataPath);
+
+        // ACS only — omits required env:MAIL_SERVICE_TOKEN_STAGING (Agent B M-01).
+        WriteVerifier(
+            verifierPath,
+            bundle.BundleId,
+            expiresAtUnix: DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds(),
+            (SetupMountAttestation.AcsConnectionStringMemberId, await File.ReadAllBytesAsync(acsPath)));
+
+        var config = BuildConfigFromCompose(
+            bundle.ComposeEnv,
+            ("MAILER_TENANTS_PATH", tenantsPath),
+            // Keep compose MAILER_SETUP_RECORDED_METADATA_PATH for fingerprint sameness.
+            ("ACS_CONNECTION_STRING_FILE", acsPath),
+            ("MAILER_SETUP_MOUNT_VERIFIER_PATH", verifierPath),
+            ("MAIL_SERVICE_TOKEN_STAGING", TokenCanary));
+
+        var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        Assert.Equal(SetupInspectEffectiveCommand.InspectionIssueExitCode, exit);
+        var result = Deserialize(stdout);
+        Assert.Equal(SetupInspectIntegrityResult.Mismatch, result.MountAttestation.Result);
+        Assert.Equal(SetupInspectReason.VerifierMemberSetMismatch, result.MountAttestation.Reason);
+        Assert.NotEqual(SetupInspectIntegrityResult.Matched, result.BundleIntegrity.Result);
+        AssertNoCanaries(stdout, stderr, SecretCanary, TokenCanary);
+    }
+
+    [Fact]
+    public async Task Missing_tenant_token_is_credential_issue_like_runtime()
+    {
+        using var dir = new TempDir();
+        var tenantsPath = WriteTenants(dir.Path, SetupTestFixtures.LocalMailpitTenants());
+        var config = BuildConfig(("MAILER_TENANTS_PATH", tenantsPath));
+
+        var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        Assert.Equal(SetupInspectEffectiveCommand.InspectionIssueExitCode, exit);
+        var result = Deserialize(stdout);
+        Assert.Equal(SetupInspectReason.CredentialMissing, result.Reason);
+        Assert.False(result.Managed);
+        AssertNoCanaries(stdout, stderr);
+    }
+
+    [Fact]
+    public async Task Missing_webhook_secret_is_credential_issue_like_runtime()
+    {
+        using var dir = new TempDir();
+        var tenants = SetupTestFixtures.LocalMailpitTenants();
+        tenants = new MailerTenantsFile
+        {
+            Version = tenants.Version,
+            Environment = tenants.Environment,
+            Tenants =
+            [
+                new MailerTenant
+                {
+                    TenantId = tenants.Tenants[0].TenantId,
+                    Name = tenants.Tenants[0].Name,
+                    SourceServices = tenants.Tenants[0].SourceServices,
+                    DefaultFrom = tenants.Tenants[0].DefaultFrom,
+                    TokenEnv = tenants.Tenants[0].TokenEnv,
+                    Provider = tenants.Tenants[0].Provider,
+                    LiveSending = tenants.Tenants[0].LiveSending,
+                    Retry = tenants.Tenants[0].Retry,
+                    Webhook = new MailerWebhookConfig
+                    {
+                        Url = "https://example.com/webhook",
+                        SecretEnv = "WEBHOOK_SIGNING_SECRET",
+                    },
+                },
+            ],
+        };
+        var tenantsPath = WriteTenants(dir.Path, tenants);
+        var config = BuildConfig(
+            ("MAILER_TENANTS_PATH", tenantsPath),
+            ("MAIL_SERVICE_TOKEN", TokenCanary));
+
+        var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        Assert.Equal(SetupInspectEffectiveCommand.InspectionIssueExitCode, exit);
+        var result = Deserialize(stdout);
+        Assert.Equal(SetupInspectReason.CredentialMissing, result.Reason);
+        AssertNoCanaries(stdout, stderr, TokenCanary);
+    }
+
+    [Fact]
+    public async Task Unknown_provider_is_config_conflict_like_runtime()
+    {
+        using var dir = new TempDir();
+        var tenantsPath = WriteTenants(dir.Path, SetupTestFixtures.LocalMailpitTenants());
+        var config = BuildConfig(
+            ("MAILER_TENANTS_PATH", tenantsPath),
+            ("MAIL_SERVICE_TOKEN", TokenCanary),
+            ("MAILER_PROVIDER", "acs-secret-value"));
+
+        var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        Assert.Equal(SetupInspectEffectiveCommand.InspectionIssueExitCode, exit);
+        var result = Deserialize(stdout);
+        Assert.Equal(SetupInspectReason.ConfigConflict, result.Reason);
+        Assert.DoesNotContain("acs-secret-value", stdout, StringComparison.Ordinal);
+        AssertNoCanaries(stdout, stderr, TokenCanary);
+    }
+
+    [Fact]
+    public async Task Mailpit_port_conflict_is_config_conflict_like_runtime()
+    {
+        using var dir = new TempDir();
+        var tenantsPath = WriteTenants(dir.Path, SetupTestFixtures.LocalMailpitTenants());
+        var config = BuildConfig(
+            ("MAILER_TENANTS_PATH", tenantsPath),
+            ("MAIL_SERVICE_TOKEN", TokenCanary),
+            ("MAILPIT_SMTP_PORT", "not-a-port"));
+
+        var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        Assert.Equal(SetupInspectEffectiveCommand.InspectionIssueExitCode, exit);
+        var result = Deserialize(stdout);
+        Assert.Equal(SetupInspectReason.ConfigConflict, result.Reason);
+        AssertNoCanaries(stdout, stderr, TokenCanary);
+    }
+
+    [Fact]
+    public async Task Verifier_missing_exits_incomplete()
+    {
+        using var dir = new TempDir();
+        var bundle = await GenerateAcsBundleAsync(dir.Path);
+        var tenantsPath = Path.Combine(bundle.BundleRoot, "config", "tenants.json");
+        var acsPath = Path.Combine(bundle.BundleRoot, "secrets", "acs_connection_string");
+        var metadataPath = Path.Combine(bundle.BundleRoot, "metadata", "recorded.json");
+        using var stagedRecorded = StageContainerRecordedMetadata(metadataPath);
+
+        var config = BuildConfigFromCompose(
+            bundle.ComposeEnv,
+            ("MAILER_TENANTS_PATH", tenantsPath),
+            // Keep compose MAILER_SETUP_RECORDED_METADATA_PATH for fingerprint sameness.
+            ("ACS_CONNECTION_STRING_FILE", acsPath),
+            ("MAIL_SERVICE_TOKEN_STAGING", TokenCanary));
+
+        var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        Assert.Equal(SetupInspectEffectiveCommand.InspectionIncompleteExitCode, exit);
+        var result = Deserialize(stdout);
+        Assert.Equal(SetupInspectIntegrityResult.NotVerified, result.MountAttestation.Result);
+        Assert.Equal(SetupInspectReason.VerifierMissing, result.MountAttestation.Reason);
+        AssertNoCanaries(stdout, stderr, SecretCanary, TokenCanary);
+    }
+
+    [Fact]
+    public async Task Verifier_expired_exits_incomplete()
+    {
+        using var dir = new TempDir();
+        var bundle = await GenerateAcsBundleAsync(dir.Path);
+        var tenantsPath = Path.Combine(bundle.BundleRoot, "config", "tenants.json");
+        var acsPath = Path.Combine(bundle.BundleRoot, "secrets", "acs_connection_string");
+        var metadataPath = Path.Combine(bundle.BundleRoot, "metadata", "recorded.json");
+        var verifierPath = Path.Combine(dir.Path, "verifier.json");
+        using var stagedRecorded = StageContainerRecordedMetadata(metadataPath);
+
+        WriteVerifier(
+            verifierPath,
+            bundle.BundleId,
+            expiresAtUnix: DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeSeconds(),
+            AcsRequiredMembers(await File.ReadAllBytesAsync(acsPath), TokenCanary));
+
+        var config = BuildConfigFromCompose(
+            bundle.ComposeEnv,
+            ("MAILER_TENANTS_PATH", tenantsPath),
+            // Keep compose MAILER_SETUP_RECORDED_METADATA_PATH for fingerprint sameness.
+            ("ACS_CONNECTION_STRING_FILE", acsPath),
+            ("MAILER_SETUP_MOUNT_VERIFIER_PATH", verifierPath),
+            ("MAIL_SERVICE_TOKEN_STAGING", TokenCanary));
+
+        var (exit, stdout, stderr) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        Assert.Equal(SetupInspectEffectiveCommand.InspectionIncompleteExitCode, exit);
+        var result = Deserialize(stdout);
+        Assert.Equal(SetupInspectIntegrityResult.NotVerified, result.MountAttestation.Result);
+        Assert.Equal(SetupInspectReason.VerifierExpired, result.MountAttestation.Reason);
+        AssertNoCanaries(stdout, stderr, SecretCanary, TokenCanary);
+    }
+
+    [Fact]
     public async Task Recorded_metadata_is_not_used_as_effective_provider()
     {
         using var dir = new TempDir();
@@ -251,8 +445,8 @@ public sealed class SetupInspectEffectiveTests
         var recorded = new SetupRecordedMetadata
         {
             SchemaVersion = 1,
-            BundleId = "synthetic-bundle",
-            ConfigurationFingerprint = "sha256:deadbeef",
+            BundleId = "20260728120000-abcdef12",
+            ConfigurationFingerprint = "sha256:" + new string('a', 64),
             Mode = "production-acs",
             CreatedAt = "2026-07-28T00:00:00Z",
         };
@@ -263,15 +457,18 @@ public sealed class SetupInspectEffectiveTests
         var config = BuildConfig(
             ("MAILER_TENANTS_PATH", tenantsPath),
             ("MAILER_SETUP_RECORDED_METADATA_PATH", metadataPath),
-            ("MAILER_PROVIDER", "mailpit"));
+            ("MAILER_PROVIDER", "mailpit"),
+            ("MAIL_SERVICE_TOKEN", TokenCanary));
 
-        var (_, stdout, _) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        var (exit, stdout, _) = await RunAsync(config, ["setup", "inspect-effective", "--format", "json"]);
+        Assert.Equal(SetupInspectEffectiveCommand.InspectionIssueExitCode, exit);
         var result = Deserialize(stdout);
         Assert.True(result.Managed);
         Assert.Equal("production-acs", result.Recorded!.Mode);
         Assert.Equal("mailpit", result.Effective.ProviderSummary);
         Assert.False(result.Effective.LiveSendingEnabled);
         Assert.False(result.Effective.FingerprintsMatchRecorded);
+        Assert.Equal(SetupInspectReason.FingerprintMismatch, result.Reason);
     }
 
 
@@ -368,6 +565,36 @@ public sealed class SetupInspectEffectiveTests
         return new ConfigurationBuilder().AddInMemoryCollection(dict).Build();
     }
 
+    private static StagedRecordedMetadata StageContainerRecordedMetadata(string sourcePath) =>
+        new(sourcePath);
+
+    private sealed class StagedRecordedMetadata : IDisposable
+    {
+        private readonly string _dest;
+
+        public StagedRecordedMetadata(string sourcePath)
+        {
+            _dest = Path.GetFullPath(SetupBundleLayout.ContainerRecordedMetadataPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(_dest)!);
+            File.Copy(sourcePath, _dest, overwrite: true);
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                if (File.Exists(_dest))
+                {
+                    File.Delete(_dest);
+                }
+            }
+            catch
+            {
+                // best-effort cleanup for host-side container path staging
+            }
+        }
+    }
+
     private static string WriteTenants(string root, MailerTenantsFile tenants)
     {
         var path = Path.Combine(root, "tenants.json");
@@ -382,20 +609,21 @@ public sealed class SetupInspectEffectiveTests
         params (string MemberId, byte[] Content)[] members)
     {
         var sessionKey = SetupMountAttestation.CreateSessionKey();
+        var sessionNonce = SetupMountAttestation.CreateSessionNonce();
         try
         {
             var doc = new SetupMountVerifierDocument
             {
                 SchemaVersion = 1,
                 BundleId = bundleId,
-                SessionNonce = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16)),
+                SessionNonce = Convert.ToBase64String(sessionNonce),
                 SessionKey = Convert.ToBase64String(sessionKey),
                 ExpiresAtUnix = expiresAtUnix,
                 Members = members.Select(m => new SetupMountVerifierMember
                 {
                     MemberId = m.MemberId,
                     ExpectedMac = Convert.ToBase64String(
-                        SetupMountAttestation.ComputeMac(sessionKey, m.MemberId, m.Content)),
+                        SetupMountAttestation.ComputeMac(sessionKey, sessionNonce, m.MemberId, m.Content)),
                 }).ToArray(),
             };
             File.WriteAllText(path, JsonSerializer.Serialize(doc, SetupInspectJsonContext.Default.SetupMountVerifierDocument));
@@ -403,8 +631,18 @@ public sealed class SetupInspectEffectiveTests
         finally
         {
             CryptographicOperations.ZeroMemory(sessionKey);
+            CryptographicOperations.ZeroMemory(sessionNonce);
         }
     }
+
+    private static (string MemberId, byte[] Content) TokenMember(string envKey, string token) =>
+        (SetupMountAttestation.EnvMemberId(envKey), Encoding.UTF8.GetBytes(token));
+
+    private static (string MemberId, byte[] Content)[] AcsRequiredMembers(byte[] acsBytes, string token) =>
+    [
+        (SetupMountAttestation.AcsConnectionStringMemberId, acsBytes),
+        TokenMember("MAIL_SERVICE_TOKEN_STAGING", token),
+    ];
 
     private static async Task<GeneratedBundle> GenerateAcsBundleAsync(string root)
     {

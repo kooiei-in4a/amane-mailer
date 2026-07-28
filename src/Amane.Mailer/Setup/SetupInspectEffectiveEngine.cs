@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Json;
 using Microsoft.Extensions.Configuration;
@@ -9,12 +11,18 @@ namespace Amane.Mailer.Setup;
 
 /// <summary>
 /// Resolves effective non-secret configuration and container mount attestation using the same
-/// configuration loader paths as runtime (ADR 0021 D-05). Does not introspect a running process.
+/// configuration load/validation path as runtime (ADR 0021 D-05).
 /// </summary>
-public static class SetupInspectEffectiveEngine
+public static partial class SetupInspectEffectiveEngine
 {
     public const string MountVerifierPathEnv = "MAILER_SETUP_MOUNT_VERIFIER_PATH";
     public const string RecordedMetadataPathEnv = "MAILER_SETUP_RECORDED_METADATA_PATH";
+
+    [GeneratedRegex("^sha256:[a-f0-9]{64}$", RegexOptions.CultureInvariant)]
+    private static partial Regex FingerprintRegex();
+
+    [GeneratedRegex("^[0-9]{14}-[a-f0-9]{8}$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex BundleIdRegex();
 
     public static SetupInspectEffectiveResult Inspect(
         IConfiguration configuration,
@@ -25,42 +33,12 @@ public static class SetupInspectEffectiveEngine
         var mailerVersion = ResolveMailerVersion();
 
         var recordedLoad = TryLoadRecorded(configuration);
-        if (recordedLoad.Kind == RecordedLoadKind.Malformed)
+        if (recordedLoad.Kind is RecordedLoadKind.Malformed or RecordedLoadKind.UnsupportedSchema)
         {
-            return BuildTerminal(
-                mailerVersion,
-                managed: false,
-                recorded: null,
-                effective: EmptyEffective(),
-                mount: Attestation(
-                    SetupInspectIntegrityResult.InvalidMetadata,
-                    SetupInspectReason.MetadataMalformed),
-                integrity: Attestation(
-                    SetupInspectIntegrityResult.InvalidMetadata,
-                    SetupInspectReason.MetadataMalformed,
-                    scope: "provisional"),
-                tenantSource: SetupInspectSourceIds.NotApplicable,
-                credentialSource: SetupInspectSourceIds.NotApplicable,
-                reason: SetupInspectReason.MetadataMalformed);
-        }
-
-        if (recordedLoad.Kind == RecordedLoadKind.UnsupportedSchema)
-        {
-            return BuildTerminal(
-                mailerVersion,
-                managed: false,
-                recorded: null,
-                effective: EmptyEffective(),
-                mount: Attestation(
-                    SetupInspectIntegrityResult.InvalidMetadata,
-                    SetupInspectReason.UnsupportedSchemaVersion),
-                integrity: Attestation(
-                    SetupInspectIntegrityResult.InvalidMetadata,
-                    SetupInspectReason.UnsupportedSchemaVersion,
-                    scope: "provisional"),
-                tenantSource: SetupInspectSourceIds.NotApplicable,
-                credentialSource: SetupInspectSourceIds.NotApplicable,
-                reason: SetupInspectReason.UnsupportedSchemaVersion);
+            var invalidReason = recordedLoad.Kind == RecordedLoadKind.UnsupportedSchema
+                ? SetupInspectReason.UnsupportedSchemaVersion
+                : SetupInspectReason.MetadataMalformed;
+            return TerminalInvalidMetadata(mailerVersion, invalidReason);
         }
 
         var managed = recordedLoad.Kind == RecordedLoadKind.Present;
@@ -76,56 +54,53 @@ public static class SetupInspectEffectiveEngine
             };
         }
 
-        if (!TryLoadTenantsFile(configuration, out var tenantsFile, out var tenantsPath, out var tenantsError))
+        var load = MailerConfigurationSnapshot.TryLoad(configuration);
+        if (!load.Succeeded || load.Snapshot is null)
         {
-            var tenantsLoadReason = tenantsError ?? SetupInspectReason.ConfigConflict;
-            var mountWhenNoTenants = managed
-                ? Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.ConfigConflict)
+            return TerminalConfigFailure(mailerVersion, managed, recordedSummary, load.FailureKind);
+        }
+
+        var snapshot = load.Snapshot;
+        var options = snapshot.Options;
+        var tenantsFile = snapshot.TenantsFile;
+        var tenants = snapshot.Registry.ListTenants();
+
+        var providerSummary = SummarizeProvider(options, tenants);
+        if (providerSummary is null)
+        {
+            return TerminalConfigFailure(
+                mailerVersion,
+                managed,
+                recordedSummary,
+                MailerConfigurationSnapshot.LoadFailureKind.ProviderInvalid);
+        }
+
+        var liveSending = tenants.Any(t => t.LiveSending);
+        var (credentialStatus, credentialSource) = ResolveCredentialStatus(options, tenants, configuration);
+        if (credentialStatus is SetupInspectCredentialStatus.Missing or SetupInspectCredentialStatus.Invalid)
+        {
+            var credReason = credentialStatus == SetupInspectCredentialStatus.Invalid
+                ? SetupInspectReason.CredentialInvalid
+                : SetupInspectReason.CredentialMissing;
+            var credMount = managed
+                ? Attestation(SetupInspectIntegrityResult.NotVerified, credReason)
                 : Attestation(SetupInspectIntegrityResult.NotManaged, SetupInspectReason.MetadataMissing);
-            return BuildTerminal(
+            return BuildResult(
                 mailerVersion,
                 managed,
                 recordedSummary,
-                EmptyEffective(),
-                mountWhenNoTenants,
-                DeriveProvisionalIntegrity(managed, mountWhenNoTenants),
-                SetupInspectSourceIds.NotApplicable,
-                SetupInspectSourceIds.NotApplicable,
-                tenantsLoadReason);
-        }
-
-        MailerOptions mailerOptions;
-        try
-        {
-            mailerOptions = MailerOptions.Load(configuration);
-        }
-        catch
-        {
-            return BuildTerminal(
-                mailerVersion,
-                managed,
-                recordedSummary,
-                EmptyEffective(),
-                managed
-                    ? Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.ConfigConflict)
-                    : Attestation(SetupInspectIntegrityResult.NotManaged, SetupInspectReason.MetadataMissing),
-                managed
-                    ? Attestation(
-                        SetupInspectIntegrityResult.NotVerified,
-                        SetupInspectReason.ConfigConflict,
-                        scope: "provisional")
-                    : Attestation(
-                        SetupInspectIntegrityResult.NotManaged,
-                        SetupInspectReason.MetadataMissing,
-                        scope: "provisional"),
+                new SetupInspectEffectiveSummary
+                {
+                    ProviderSummary = providerSummary,
+                    LiveSendingEnabled = liveSending,
+                    CredentialStatus = credentialStatus,
+                },
+                credMount,
+                DeriveProvisionalIntegrity(managed, credMount),
                 SetupInspectSourceIds.ContainerTenants,
-                SetupInspectSourceIds.NotApplicable,
-                SetupInspectReason.ConfigConflict);
+                credentialSource,
+                credReason);
         }
-
-        var providerSummary = SummarizeProvider(mailerOptions, tenantsFile);
-        var liveSending = tenantsFile.Tenants.Any(t => t.LiveSending);
-        var (credentialStatus, credentialSource) = ResolveCredentialStatus(mailerOptions, tenantsFile, configuration);
 
         string? effectiveFingerprint = null;
         bool? fingerprintsMatch = null;
@@ -134,7 +109,7 @@ public static class SetupInspectEffectiveEngine
             effectiveFingerprint = ComputeEffectiveFingerprint(
                 configuration,
                 tenantsFile,
-                tenantsPath,
+                snapshot.TenantsPath,
                 recordedLoad.Metadata);
             if (recordedSummary is not null && effectiveFingerprint is not null)
             {
@@ -146,7 +121,6 @@ public static class SetupInspectEffectiveEngine
         }
         catch
         {
-            // Fingerprint failure is non-secret; keep inspection usable.
             effectiveFingerprint = null;
             fingerprintsMatch = null;
         }
@@ -160,10 +134,12 @@ public static class SetupInspectEffectiveEngine
             FingerprintsMatchRecorded = fingerprintsMatch,
         };
 
+        var requiredMembers = SetupMountAttestation.DeriveRequiredMemberIds(options, tenants);
         var mount = ResolveMountAttestation(
             configuration,
             managed,
             recordedLoad.Metadata,
+            requiredMembers,
             utcNow);
 
         var integrity = DeriveProvisionalIntegrity(managed, mount);
@@ -171,25 +147,82 @@ public static class SetupInspectEffectiveEngine
             ?? mount.Reason
             ?? (managed ? null : SetupInspectReason.MetadataMissing);
 
-        return new SetupInspectEffectiveResult
+        // Prefer fingerprint mismatch over incomplete mount reasons when both apply.
+        if (fingerprintsMatch == false)
         {
-            SchemaVersion = SetupInspectEffectiveResult.CurrentSchemaVersion,
-            MailerVersion = mailerVersion,
-            Managed = managed,
-            Recorded = recordedSummary,
-            Effective = effective,
-            MountAttestation = mount,
-            BundleIntegrity = integrity,
-            TenantConfigurationSource = SetupInspectSourceIds.ContainerTenants,
-            CredentialSource = credentialSource,
-            Reason = reason,
+            reason = SetupInspectReason.FingerprintMismatch;
+        }
+
+        return BuildResult(
+            mailerVersion,
+            managed,
+            recordedSummary,
+            effective,
+            mount,
+            integrity,
+            SetupInspectSourceIds.ContainerTenants,
+            credentialSource,
+            reason);
+    }
+
+    private static SetupInspectEffectiveResult TerminalInvalidMetadata(string mailerVersion, string reason) =>
+        BuildResult(
+            mailerVersion,
+            managed: false,
+            recorded: null,
+            EmptyEffective(),
+            Attestation(SetupInspectIntegrityResult.InvalidMetadata, reason),
+            Attestation(SetupInspectIntegrityResult.InvalidMetadata, reason, scope: "provisional"),
+            SetupInspectSourceIds.NotApplicable,
+            SetupInspectSourceIds.NotApplicable,
+            reason);
+
+    private static SetupInspectEffectiveResult TerminalConfigFailure(
+        string mailerVersion,
+        bool managed,
+        SetupInspectRecordedSummary? recorded,
+        MailerConfigurationSnapshot.LoadFailureKind failureKind)
+    {
+        var (reason, credentialStatus) = failureKind switch
+        {
+            MailerConfigurationSnapshot.LoadFailureKind.TenantsMissing =>
+                (SetupInspectReason.TenantsMissing, SetupInspectCredentialStatus.NotApplicable),
+            MailerConfigurationSnapshot.LoadFailureKind.TokenMissing =>
+                (SetupInspectReason.CredentialMissing, SetupInspectCredentialStatus.Missing),
+            MailerConfigurationSnapshot.LoadFailureKind.WebhookSecretMissing =>
+                (SetupInspectReason.CredentialMissing, SetupInspectCredentialStatus.Missing),
+            MailerConfigurationSnapshot.LoadFailureKind.AcsCredentialMissing =>
+                (SetupInspectReason.CredentialMissing, SetupInspectCredentialStatus.Missing),
+            MailerConfigurationSnapshot.LoadFailureKind.ProviderInvalid =>
+                (SetupInspectReason.ConfigConflict, SetupInspectCredentialStatus.NotApplicable),
+            MailerConfigurationSnapshot.LoadFailureKind.MailpitInvalid =>
+                (SetupInspectReason.ConfigConflict, SetupInspectCredentialStatus.NotApplicable),
+            _ => (SetupInspectReason.ConfigConflict, SetupInspectCredentialStatus.NotApplicable),
         };
+
+        var mount = managed
+            ? Attestation(SetupInspectIntegrityResult.NotVerified, reason)
+            : Attestation(SetupInspectIntegrityResult.NotManaged, SetupInspectReason.MetadataMissing);
+
+        return BuildResult(
+            mailerVersion,
+            managed,
+            recorded,
+            new SetupInspectEffectiveSummary { CredentialStatus = credentialStatus },
+            mount,
+            DeriveProvisionalIntegrity(managed, mount),
+            failureKind == MailerConfigurationSnapshot.LoadFailureKind.TenantsMissing
+                ? SetupInspectSourceIds.NotApplicable
+                : SetupInspectSourceIds.ContainerTenants,
+            SetupInspectSourceIds.NotApplicable,
+            reason);
     }
 
     private static SetupInspectAttestationSummary ResolveMountAttestation(
         IConfiguration configuration,
         bool managed,
         SetupRecordedMetadata? recorded,
+        IReadOnlyCollection<string> requiredMemberIds,
         DateTimeOffset utcNow)
     {
         if (!managed || recorded is null)
@@ -197,14 +230,8 @@ public static class SetupInspectEffectiveEngine
             return Attestation(SetupInspectIntegrityResult.NotManaged, SetupInspectReason.MetadataMissing);
         }
 
-        var verifierPath = configuration[MountVerifierPathEnv]
-            ?? Environment.GetEnvironmentVariable(MountVerifierPathEnv);
-        if (string.IsNullOrWhiteSpace(verifierPath))
-        {
-            return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierMissing);
-        }
-
-        if (!File.Exists(verifierPath))
+        var verifierPath = configuration[MountVerifierPathEnv];
+        if (string.IsNullOrWhiteSpace(verifierPath) || !File.Exists(verifierPath))
         {
             return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierMissing);
         }
@@ -223,6 +250,7 @@ public static class SetupInspectEffectiveEngine
         if (verifier is null
             || string.IsNullOrWhiteSpace(verifier.BundleId)
             || string.IsNullOrWhiteSpace(verifier.SessionKey)
+            || string.IsNullOrWhiteSpace(verifier.SessionNonce)
             || verifier.Members is null)
         {
             return Attestation(SetupInspectIntegrityResult.NotVerified, SetupInspectReason.VerifierMalformed);
@@ -231,6 +259,7 @@ public static class SetupInspectEffectiveEngine
         return SetupMountAttestation.Verify(
             verifier,
             recorded.BundleId,
+            requiredMemberIds,
             memberId => ResolveMountedMemberBytes(configuration, memberId),
             utcNow);
     }
@@ -239,8 +268,7 @@ public static class SetupInspectEffectiveEngine
     {
         if (string.Equals(memberId, SetupMountAttestation.AcsConnectionStringMemberId, StringComparison.Ordinal))
         {
-            var filePath = configuration["ACS_CONNECTION_STRING_FILE"]
-                ?? Environment.GetEnvironmentVariable("ACS_CONNECTION_STRING_FILE");
+            var filePath = configuration["ACS_CONNECTION_STRING_FILE"];
             if (!string.IsNullOrWhiteSpace(filePath) && File.Exists(filePath))
             {
                 return File.ReadAllBytes(filePath);
@@ -250,27 +278,19 @@ public static class SetupInspectEffectiveEngine
         }
 
         const string envPrefix = "env:";
-        if (memberId.StartsWith(envPrefix, StringComparison.Ordinal))
+        if (!memberId.StartsWith(envPrefix, StringComparison.Ordinal))
         {
-            var envKey = memberId[envPrefix.Length..];
-            if (string.IsNullOrWhiteSpace(envKey))
-            {
-                return null;
-            }
-
-            // Only allowlisted secret-valued keys (or known tenant token names) are readable.
-            if (!ManagedEnvKeyCatalog.SecretValuedEnvironmentKeys.Contains(envKey)
-                && !envKey.StartsWith("MAIL_SERVICE_TOKEN", StringComparison.Ordinal)
-                && !envKey.EndsWith("_WEBHOOK_SECRET", StringComparison.Ordinal))
-            {
-                return null;
-            }
-
-            var value = configuration[envKey] ?? Environment.GetEnvironmentVariable(envKey);
-            return value is null ? null : Encoding.UTF8.GetBytes(value);
+            return null;
         }
 
-        return null;
+        var envKey = memberId[envPrefix.Length..];
+        if (string.IsNullOrWhiteSpace(envKey))
+        {
+            return null;
+        }
+
+        var value = configuration[envKey] ?? Environment.GetEnvironmentVariable(envKey);
+        return value is null ? null : Encoding.UTF8.GetBytes(value);
     }
 
     private static SetupInspectAttestationSummary DeriveProvisionalIntegrity(
@@ -288,22 +308,17 @@ public static class SetupInspectEffectiveEngine
 
         if (string.Equals(mount.Result, SetupInspectIntegrityResult.InvalidMetadata, StringComparison.Ordinal))
         {
-            return Attestation(
-                SetupInspectIntegrityResult.InvalidMetadata,
-                mount.Reason,
-                scope: "provisional");
+            return Attestation(SetupInspectIntegrityResult.InvalidMetadata, mount.Reason, scope: "provisional");
         }
 
         if (string.Equals(mount.Result, SetupInspectIntegrityResult.Mismatch, StringComparison.Ordinal))
         {
-            // Fail-closed: mount mismatch cannot become matched after host integration.
             return Attestation(
                 SetupInspectIntegrityResult.Mismatch,
                 mount.Reason ?? SetupInspectReason.MountMismatch,
                 scope: "provisional");
         }
 
-        // Mount matched or not-verified: one-shot must not claim final host+mount matched.
         return Attestation(
             SetupInspectIntegrityResult.NotVerified,
             mount.Reason ?? SetupInspectReason.HostAtRestPending,
@@ -316,17 +331,33 @@ public static class SetupInspectEffectiveEngine
         string tenantsPath,
         SetupRecordedMetadata? recorded)
     {
-        var modeWire = recorded?.Mode;
-        if (string.IsNullOrWhiteSpace(modeWire))
+        if (recorded is null || !SetupModeParser.TryParse(recorded.Mode, out var mode))
         {
-            modeWire = "not-managed";
+            return SetupCanonicalPayload.FingerprintSha256(
+                SetupCanonicalPayload.BuildFromWireMode(
+                    "not-managed",
+                    tenants,
+                    CollectPublicCompose(configuration, recorded?.BundleId),
+                    TryLoadPlatformSender(tenantsPath),
+                    ConfigurationBooleanReader.Read(configuration, "AMANE_ADMIN_ENABLED", defaultValue: false)));
         }
 
+        var canonical = SetupCanonicalPayload.Build(
+            mode,
+            tenants,
+            CollectPublicCompose(configuration, recorded.BundleId),
+            TryLoadPlatformSender(tenantsPath),
+            ConfigurationBooleanReader.Read(configuration, "AMANE_ADMIN_ENABLED", defaultValue: false));
+        return SetupCanonicalPayload.FingerprintSha256(canonical);
+    }
+
+    private static SortedDictionary<string, string> CollectPublicCompose(
+        IConfiguration configuration,
+        string? bundleId)
+    {
         var compose = new SortedDictionary<string, string>(StringComparer.Ordinal);
         foreach (var key in ManagedEnvKeyCatalog.PublicNonSecretKeys)
         {
-            // IConfiguration already includes process env for the CLI host. Do not also
-            // merge Environment.GetEnvironmentVariable here or test/host ambient env pollutes fingerprints.
             var value = configuration[key];
             if (value is not null)
             {
@@ -334,7 +365,7 @@ public static class SetupInspectEffectiveEngine
             }
         }
 
-        if (recorded?.BundleId is { Length: > 0 } bundleId)
+        if (bundleId is { Length: > 0 })
         {
             foreach (var key in compose.Keys.ToList())
             {
@@ -343,48 +374,41 @@ public static class SetupInspectEffectiveEngine
             }
         }
 
-        PlatformSenderFile? platformSender = null;
+        return compose;
+    }
+
+    private static PlatformSenderFile? TryLoadPlatformSender(string tenantsPath)
+    {
         var tenantsDir = Path.GetDirectoryName(tenantsPath);
-        if (!string.IsNullOrWhiteSpace(tenantsDir))
+        if (string.IsNullOrWhiteSpace(tenantsDir))
         {
-            var senderPath = Path.Combine(tenantsDir, PlatformSenderFile.CanonicalFileName);
-            if (File.Exists(senderPath))
-            {
-                platformSender = JsonSerializer.Deserialize(
-                    File.ReadAllText(senderPath),
-                    SetupJsonContext.Default.PlatformSenderFile);
-            }
+            return null;
         }
 
-        var adminRequested = ConfigurationBooleanReader.Read(
-            configuration,
-            "AMANE_ADMIN_ENABLED",
-            defaultValue: false);
+        var senderPath = Path.Combine(tenantsDir, PlatformSenderFile.CanonicalFileName);
+        if (!File.Exists(senderPath))
+        {
+            return null;
+        }
 
-        var canonical = SetupCanonicalPayload.BuildFromWireMode(
-            modeWire,
-            tenants,
-            compose,
-            platformSender,
-            adminRequested);
-        return SetupCanonicalPayload.FingerprintSha256(canonical);
+        return JsonSerializer.Deserialize(
+            File.ReadAllText(senderPath),
+            SetupJsonContext.Default.PlatformSenderFile);
     }
 
     private static (string Status, string Source) ResolveCredentialStatus(
         MailerOptions options,
-        MailerTenantsFile tenants,
+        IReadOnlyList<MailerTenant> tenants,
         IConfiguration configuration)
     {
-        var needsAcs = tenants.Tenants.Any(t =>
+        var needsAcs = tenants.Any(t =>
             string.Equals(options.ResolveProvider(t), "acs", StringComparison.Ordinal));
-
         if (!needsAcs)
         {
             return (SetupInspectCredentialStatus.NotApplicable, SetupInspectSourceIds.NotApplicable);
         }
 
-        var filePath = configuration["ACS_CONNECTION_STRING_FILE"]
-            ?? Environment.GetEnvironmentVariable("ACS_CONNECTION_STRING_FILE");
+        var filePath = configuration["ACS_CONNECTION_STRING_FILE"];
         if (!string.IsNullOrWhiteSpace(filePath))
         {
             if (!File.Exists(filePath))
@@ -419,70 +443,30 @@ public static class SetupInspectEffectiveEngine
         return (SetupInspectCredentialStatus.Missing, SetupInspectSourceIds.ContainerAcsFile);
     }
 
-    private static string SummarizeProvider(MailerOptions options, MailerTenantsFile tenants)
+    private static string? SummarizeProvider(MailerOptions options, IReadOnlyList<MailerTenant> tenants)
     {
+        static bool IsKnown(string provider) =>
+            provider.Equals("mailpit", StringComparison.Ordinal)
+            || provider.Equals("acs", StringComparison.Ordinal);
+
         if (!string.IsNullOrWhiteSpace(options.ProviderOverride))
         {
-            return options.ProviderOverride.Trim().ToLowerInvariant();
+            var overrideProvider = options.ProviderOverride.Trim().ToLowerInvariant();
+            return IsKnown(overrideProvider) ? overrideProvider : null;
         }
 
-        var providers = tenants.Tenants
+        var providers = tenants
             .Select(t => options.ResolveProvider(t).Trim().ToLowerInvariant())
             .Distinct(StringComparer.Ordinal)
             .OrderBy(p => p, StringComparer.Ordinal)
             .ToArray();
 
-        return providers.Length switch
+        if (providers.Length == 0 || providers.Any(p => !IsKnown(p)))
         {
-            0 => "none",
-            1 => providers[0],
-            _ => string.Join("+", providers),
-        };
-    }
-
-    private static bool TryLoadTenantsFile(
-        IConfiguration configuration,
-        out MailerTenantsFile tenants,
-        out string tenantsPath,
-        out string? errorReason)
-    {
-        tenants = null!;
-        errorReason = null;
-        tenantsPath = configuration["Mailer:TenantsPath"]
-            ?? configuration["MAILER_TENANTS_PATH"]
-            ?? Path.Combine(AppContext.BaseDirectory, "config", "mailer", "tenants.example.json");
-
-        if (!File.Exists(tenantsPath))
-        {
-            errorReason = SetupInspectReason.TenantsMissing;
-            return false;
+            return null;
         }
 
-        try
-        {
-            var loaded = JsonSerializer.Deserialize(
-                File.ReadAllText(tenantsPath),
-                MailerJsonContext.Default.MailerTenantsFile);
-            if (loaded is null)
-            {
-                errorReason = SetupInspectReason.ConfigConflict;
-                return false;
-            }
-
-            loaded.Validate();
-            foreach (var tenant in loaded.Tenants)
-            {
-                tenant.Validate();
-            }
-
-            tenants = loaded;
-            return true;
-        }
-        catch
-        {
-            errorReason = SetupInspectReason.ConfigConflict;
-            return false;
-        }
+        return providers.Length == 1 ? providers[0] : string.Join("+", providers);
     }
 
     private enum RecordedLoadKind
@@ -502,7 +486,6 @@ public static class SetupInspectEffectiveEngine
     private static RecordedLoadResult TryLoadRecorded(IConfiguration configuration)
     {
         var path = configuration[RecordedMetadataPathEnv]
-            ?? Environment.GetEnvironmentVariable(RecordedMetadataPathEnv)
             ?? SetupBundleLayout.ContainerRecordedMetadataPath;
 
         if (!File.Exists(path))
@@ -517,13 +500,6 @@ public static class SetupInspectEffectiveEngine
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
                 return new RecordedLoadResult { Kind = RecordedLoadKind.Malformed };
-            }
-
-            if (document.RootElement.TryGetProperty("schemaVersion", out var schemaEl)
-                && schemaEl.TryGetInt32(out var schemaVersion)
-                && schemaVersion > SetupBundleLayout.RecordedSchemaVersion)
-            {
-                return new RecordedLoadResult { Kind = RecordedLoadKind.UnsupportedSchema };
             }
 
             var metadata = JsonSerializer.Deserialize(json, SetupInspectJsonContext.Default.SetupRecordedMetadata);
@@ -546,6 +522,30 @@ public static class SetupInspectEffectiveEngine
                 return new RecordedLoadResult { Kind = RecordedLoadKind.UnsupportedSchema };
             }
 
+            if (!SetupModeParser.TryParse(metadata.Mode, out _))
+            {
+                return new RecordedLoadResult { Kind = RecordedLoadKind.Malformed };
+            }
+
+            if (!FingerprintRegex().IsMatch(metadata.ConfigurationFingerprint))
+            {
+                return new RecordedLoadResult { Kind = RecordedLoadKind.Malformed };
+            }
+
+            if (!DateTimeOffset.TryParse(
+                    metadata.CreatedAt,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind,
+                    out _))
+            {
+                return new RecordedLoadResult { Kind = RecordedLoadKind.Malformed };
+            }
+
+            if (!BundleIdRegex().IsMatch(metadata.BundleId))
+            {
+                return new RecordedLoadResult { Kind = RecordedLoadKind.Malformed };
+            }
+
             return new RecordedLoadResult { Kind = RecordedLoadKind.Present, Metadata = metadata };
         }
         catch
@@ -554,7 +554,7 @@ public static class SetupInspectEffectiveEngine
         }
     }
 
-    private static SetupInspectEffectiveResult BuildTerminal(
+    private static SetupInspectEffectiveResult BuildResult(
         string mailerVersion,
         bool managed,
         SetupInspectRecordedSummary? recorded,
@@ -579,10 +579,7 @@ public static class SetupInspectEffectiveEngine
         };
 
     private static SetupInspectEffectiveSummary EmptyEffective() =>
-        new()
-        {
-            CredentialStatus = SetupInspectCredentialStatus.NotApplicable,
-        };
+        new() { CredentialStatus = SetupInspectCredentialStatus.NotApplicable };
 
     private static SetupInspectAttestationSummary Attestation(
         string result,

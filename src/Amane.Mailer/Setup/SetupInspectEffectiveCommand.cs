@@ -13,6 +13,7 @@ public static class SetupInspectEffectiveCommand
     public const int InspectionIssueExitCode = 1;
     public const int UsageErrorExitCode = 2;
     public const int UnexpectedFailureExitCode = 3;
+    public const int InspectionIncompleteExitCode = 4;
 
     public static bool IsInspectEffectiveCommand(IReadOnlyList<string> args) =>
         args.Count >= 2
@@ -99,16 +100,31 @@ public static class SetupInspectEffectiveCommand
 
     internal static int ResolveExitCode(SetupInspectEffectiveResult result)
     {
-        if (string.Equals(
+        var reason = result.Reason
+            ?? result.BundleIntegrity.Reason
+            ?? result.MountAttestation.Reason;
+
+        // Fail-closed business issues before Manual/Managed success or incomplete paths.
+        if (IsIssueReason(reason)
+            || IsIssueResult(result.MountAttestation.Result)
+            || IsIssueResult(result.BundleIntegrity.Result))
+        {
+            return InspectionIssueExitCode;
+        }
+
+        // Manual not-managed success.
+        if (!result.Managed
+            && string.Equals(
                 result.BundleIntegrity.Result,
                 SetupInspectIntegrityResult.NotManaged,
-                StringComparison.Ordinal)
-            && !result.Managed)
+                StringComparison.Ordinal))
         {
             return SuccessExitCode;
         }
 
-        if (string.Equals(
+        // Managed container mount attestation succeeded; host at-rest still pending (#450).
+        if (result.Managed
+            && string.Equals(
                 result.MountAttestation.Result,
                 SetupInspectIntegrityResult.Matched,
                 StringComparison.Ordinal)
@@ -119,34 +135,54 @@ public static class SetupInspectEffectiveCommand
             && string.Equals(
                 result.BundleIntegrity.Reason,
                 SetupInspectReason.HostAtRestPending,
-                StringComparison.Ordinal))
+                StringComparison.Ordinal)
+            && result.Effective.FingerprintsMatchRecorded == true
+            && result.Effective.CredentialStatus is SetupInspectCredentialStatus.Loaded
+                or SetupInspectCredentialStatus.NotApplicable)
         {
-            // Mount attestation succeeded; host integration is owned by #450.
             return SuccessExitCode;
         }
 
-        if (string.Equals(
+        if (IsIncompleteReason(reason)
+            || string.Equals(
                 result.MountAttestation.Result,
                 SetupInspectIntegrityResult.NotVerified,
                 StringComparison.Ordinal)
-            && string.Equals(
-                result.MountAttestation.Reason,
-                SetupInspectReason.VerifierMissing,
-                StringComparison.Ordinal)
-            && result.Managed)
+            || (result.Managed
+                && string.Equals(
+                    result.BundleIntegrity.Result,
+                    SetupInspectIntegrityResult.NotVerified,
+                    StringComparison.Ordinal)
+                && !string.Equals(
+                    result.BundleIntegrity.Reason,
+                    SetupInspectReason.HostAtRestPending,
+                    StringComparison.Ordinal)))
         {
-            // Managed without ephemeral verifier is expected until host apply (#449/#450).
-            return SuccessExitCode;
+            return InspectionIncompleteExitCode;
         }
 
-        if (string.Equals(result.BundleIntegrity.Result, SetupInspectIntegrityResult.Mismatch, StringComparison.Ordinal)
-            || string.Equals(result.BundleIntegrity.Result, SetupInspectIntegrityResult.InvalidMetadata, StringComparison.Ordinal)
-            || string.Equals(result.Reason, SetupInspectReason.ConfigConflict, StringComparison.Ordinal)
-            || string.Equals(result.Reason, SetupInspectReason.TenantsMissing, StringComparison.Ordinal))
-        {
-            return InspectionIssueExitCode;
-        }
-
-        return SuccessExitCode;
+        return InspectionIssueExitCode;
     }
+
+    private static bool IsIssueResult(string result) =>
+        result is SetupInspectIntegrityResult.Mismatch
+            or SetupInspectIntegrityResult.InvalidMetadata;
+
+    private static bool IsIssueReason(string? reason) =>
+        reason is SetupInspectReason.FingerprintMismatch
+            or SetupInspectReason.CredentialMissing
+            or SetupInspectReason.CredentialInvalid
+            or SetupInspectReason.ConfigConflict
+            or SetupInspectReason.TenantsMissing
+            or SetupInspectReason.MetadataMalformed
+            or SetupInspectReason.UnsupportedSchemaVersion
+            or SetupInspectReason.VerifierMemberSetMismatch
+            or SetupInspectReason.VerifierBundleMismatch
+            or SetupInspectReason.MountMismatch
+            or SetupInspectReason.SecretMissing;
+
+    private static bool IsIncompleteReason(string? reason) =>
+        reason is SetupInspectReason.VerifierMissing
+            or SetupInspectReason.VerifierExpired
+            or SetupInspectReason.VerifierMalformed;
 }

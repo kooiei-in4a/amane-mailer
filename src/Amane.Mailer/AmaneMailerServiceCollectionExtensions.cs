@@ -21,15 +21,13 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddMailerAdmin(configuration);
 
         services.AddStartupValidatedSingleton(provider =>
-            MailerTenantRegistry.Load(provider.GetRequiredService<IConfiguration>()));
+            MailerConfigurationSnapshot.Load(provider.GetRequiredService<IConfiguration>()));
 
         services.AddStartupValidatedSingleton(provider =>
-        {
-            var options = MailerOptions.Load(provider.GetRequiredService<IConfiguration>());
-            var tenants = provider.GetRequiredService<MailerTenantRegistry>();
-            options.ValidateEffectiveProviders(tenants.ListTenants());
-            return options;
-        });
+            provider.GetRequiredService<MailerConfigurationSnapshot>().Registry);
+
+        services.AddStartupValidatedSingleton(provider =>
+            provider.GetRequiredService<MailerConfigurationSnapshot>().Options);
 
         services.AddStartupValidatedSingleton(provider =>
         {

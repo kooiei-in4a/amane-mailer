@@ -24,11 +24,15 @@ public static class SetupInspectReason
     public const string VerifierMalformed = "verifier-malformed";
     public const string VerifierExpired = "verifier-expired";
     public const string VerifierBundleMismatch = "verifier-bundle-mismatch";
+    public const string VerifierMemberSetMismatch = "verifier-member-set-mismatch";
     public const string SecretMissing = "secret-missing";
     public const string MountMismatch = "mount-mismatch";
     public const string HostAtRestPending = "host-at-rest-pending";
     public const string ConfigConflict = "config-conflict";
     public const string TenantsMissing = "tenants-missing";
+    public const string FingerprintMismatch = "fingerprint-mismatch";
+    public const string CredentialMissing = "credential-missing";
+    public const string CredentialInvalid = "credential-invalid";
 }
 
 /// <summary>
