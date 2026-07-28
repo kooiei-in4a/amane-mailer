@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Runtime.Versioning;
 using Amane.Mailer.Operations;
 using Microsoft.Win32.SafeHandles;
@@ -467,15 +468,19 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
             throw new IOException($"Failed to open generation lock (errno {errno}).", errno);
         }
 
+        // Own the fd immediately so every exception path releases flock via Dispose.
+        SafeFileHandle? handle = null;
         try
         {
-            // Advisory exclusive lock (matches FileShare.None); O_NOFOLLOW alone does not serialize.
+            handle = new SafeFileHandle((IntPtr)fd, ownsHandle: true);
+            fd = -1;
+
             const int lockEx = 2;
             const int lockNb = 4;
-            if (Flock(fd, lockEx | lockNb) != 0)
+            var rawFd = handle.DangerousGetHandle().ToInt32();
+            if (Flock(rawFd, lockEx | lockNb) != 0)
             {
                 var errno = Marshal.GetLastPInvokeError();
-                _ = Close(fd);
                 // EAGAIN/EWOULDBLOCK: Linux 11; macOS EAGAIN often 35.
                 if (errno is 11 or 35)
                 {
@@ -487,36 +492,16 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
                 throw new IOException($"Failed to flock generation lock (errno {errno}).", errno);
             }
 
-            var mode = File.GetUnixFileMode(path);
+            // Prefer the open descriptor (Linux /proc/self/fd/N) so mode is for the locked inode.
+            var mode = GetUnixFileModeForOpenHandle(handle, path);
             const UnixFileMode groupOrOther =
                 UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
                 UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
             if ((mode & groupOrOther) != 0)
             {
-                _ = Close(fd);
                 throw new UnauthorizedAccessException("Generation lock file permissions are not owner-only.");
             }
-        }
-        catch (UnauthorizedAccessException)
-        {
-            throw;
-        }
-        catch (IOException)
-        {
-            throw;
-        }
-        catch
-        {
-            _ = Close(fd);
-            throw;
-        }
 
-        // Ownership transfers to FileStream on success; keep a local so CA2000
-        // understands the dispose path on construction failure.
-        SafeFileHandle? handle = null;
-        try
-        {
-            handle = new SafeFileHandle((IntPtr)fd, ownsHandle: true);
             var stream = new FileStream(handle, FileAccess.ReadWrite);
             handle = null; // ownership transferred to FileStream
             return stream;
@@ -524,36 +509,290 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
         finally
         {
             handle?.Dispose();
+            if (fd >= 0)
+            {
+                _ = Close(fd);
+            }
         }
+    }
+
+    [SupportedOSPlatform("linux")]
+    [SupportedOSPlatform("macos")]
+    private static UnixFileMode GetUnixFileModeForOpenHandle(SafeFileHandle handle, string path)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            var rawFd = handle.DangerousGetHandle().ToInt32();
+            return File.GetUnixFileMode($"/proc/self/fd/{rawFd}");
+        }
+
+        return File.GetUnixFileMode(path);
     }
 
     [SupportedOSPlatform("windows")]
     private FileStream OpenExclusiveGenerationLockWindows(string path)
     {
-        var attrs = GetFileAttributesW(path);
-        if (attrs != unchecked((uint)(-1)) && (attrs & 0x400) != 0) // FILE_ATTRIBUTE_REPARSE_POINT
+        const uint genericRead = 0x80000000;
+        const uint genericWrite = 0x40000000;
+        const uint createNew = 1;
+        const uint openExisting = 3;
+        const uint fileAttributeNormal = 0x80;
+        const uint fileFlagOpenReparsePoint = 0x00200000;
+        const uint fileAttributeReparsePoint = 0x400;
+        const int errorFileNotFound = 2;
+        const int errorPathNotFound = 3;
+        const int errorSharingViolation = 32;
+        const int errorFileExists = 80;
+        const int errorAlreadyExists = 183;
+
+        var sid = WindowsIdentity.GetCurrent().User
+            ?? throw new InvalidOperationException("Unable to resolve the current Windows user SID.");
+        var sddl = $"D:P(A;;FA;;;{sid.Value})";
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl,
+                SddlRevision1,
+                out var securityDescriptor,
+                out _))
         {
-            throw new IOException("Generation lock path must not be a reparse point.");
+            throw new IOException("Failed to build an owner-only security descriptor for the generation lock.");
         }
 
-        if (attrs == unchecked((uint)(-1)))
+        SafeFileHandle? handle = null;
+        try
         {
-            var error = Marshal.GetLastWin32Error();
-            if (error is not (2 or 3)) // FILE_NOT_FOUND / PATH_NOT_FOUND
+            var attributes = new SecurityAttributes
             {
-                throw new IOException($"Failed to inspect generation lock path (Win32 error {error}).", error);
+                nLength = Marshal.SizeOf<SecurityAttributes>(),
+                lpSecurityDescriptor = securityDescriptor,
+                bInheritHandle = 0,
+            };
+
+            // Atomic create-or-open with OPEN_REPARSE_POINT so a symlink is never followed.
+            handle = CreateFileWWithSecurity(
+                path,
+                genericRead | genericWrite,
+                dwShareMode: 0,
+                ref attributes,
+                createNew,
+                fileAttributeNormal | fileFlagOpenReparsePoint,
+                hTemplateFile: IntPtr.Zero);
+
+            if (handle.IsInvalid)
+            {
+                var createError = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                handle = null;
+
+                if (createError == errorSharingViolation)
+                {
+                    throw Win32LockIOException(
+                        "Generation lock is being used by another process.",
+                        createError);
+                }
+
+                if (createError is not (errorFileExists or errorAlreadyExists))
+                {
+                    throw Win32LockIOException(
+                        $"Failed to create generation lock (Win32 error {createError}).",
+                        createError);
+                }
+
+                handle = CreateFileW(
+                    path,
+                    genericRead | genericWrite,
+                    dwShareMode: 0,
+                    lpSecurityAttributes: IntPtr.Zero,
+                    openExisting,
+                    fileAttributeNormal | fileFlagOpenReparsePoint,
+                    hTemplateFile: IntPtr.Zero);
+
+                if (handle.IsInvalid)
+                {
+                    var openError = Marshal.GetLastWin32Error();
+                    handle.Dispose();
+                    handle = null;
+
+                    if (openError is errorSharingViolation or errorFileExists or errorAlreadyExists)
+                    {
+                        throw Win32LockIOException(
+                            "Generation lock is being used by another process.",
+                            openError == errorSharingViolation ? errorSharingViolation : openError);
+                    }
+
+                    if (openError is errorFileNotFound or errorPathNotFound)
+                    {
+                        // Lost a create/delete race; treat as contention so callers retry/serialize.
+                        throw Win32LockIOException(
+                            "Generation lock is being used by another process.",
+                            errorSharingViolation);
+                    }
+
+                    throw Win32LockIOException(
+                        $"Failed to open generation lock (Win32 error {openError}).",
+                        openError);
+                }
             }
 
-            // Create owner-only then open exclusively. SecureFileCreate refuses overwrite.
-            SecureFileCreate.WriteAllBytesCreateNew(path, ReadOnlySpan<byte>.Empty);
+            if (!GetFileInformationByHandle(handle, out var info))
+            {
+                var infoError = Marshal.GetLastWin32Error();
+                throw Win32LockIOException(
+                    $"Failed to inspect generation lock handle (Win32 error {infoError}).",
+                    infoError);
+            }
+
+            if ((info.FileAttributes & fileAttributeReparsePoint) != 0)
+            {
+                throw new IOException("Generation lock path must not be a reparse point.");
+            }
+
+            if (!IsOwnerOnlyFileHandleWindows(handle))
+            {
+                throw new UnauthorizedAccessException("Generation lock file permissions are not owner-only.");
+            }
+
+            var stream = new FileStream(handle, FileAccess.ReadWrite);
+            handle = null;
+            return stream;
         }
-        else if (!IsOwnerOnlyFile(path))
+        finally
         {
-            throw new UnauthorizedAccessException("Generation lock file permissions are not owner-only.");
+            handle?.Dispose();
+            if (securityDescriptor != IntPtr.Zero)
+            {
+                _ = LocalFree(securityDescriptor);
+            }
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static IOException Win32LockIOException(string message, int win32Error) =>
+        new(message, unchecked((int)0x80070000) | win32Error);
+
+    [SupportedOSPlatform("windows")]
+    private static bool IsOwnerOnlyFileHandleWindows(SafeFileHandle handle)
+    {
+        var status = GetSecurityInfo(
+            handle,
+            SeFileObject,
+            OwnerSecurityInformation | DaclSecurityInformation,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            out var securityDescriptor);
+        if (status != 0 || securityDescriptor == IntPtr.Zero)
+        {
+            return false;
         }
 
-        return new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        try
+        {
+            if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    securityDescriptor,
+                    SddlRevision1,
+                    OwnerSecurityInformation | DaclSecurityInformation,
+                    out var sddlPtr,
+                    out _))
+            {
+                return false;
+            }
+
+            try
+            {
+                var sddl = Marshal.PtrToStringUni(sddlPtr) ?? string.Empty;
+                if (!sddl.StartsWith("O:", StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                var ownerEnd = sddl.IndexOf('G', 2);
+                if (ownerEnd < 0)
+                {
+                    ownerEnd = sddl.IndexOf('D', 2);
+                }
+
+                if (ownerEnd < 0)
+                {
+                    return false;
+                }
+
+                var ownerSid = sddl[2..ownerEnd];
+                return IsOwnerOnlySddl(sddl, ownerSid);
+            }
+            finally
+            {
+                _ = LocalFree(sddlPtr);
+            }
+        }
+        finally
+        {
+            _ = LocalFree(securityDescriptor);
+        }
     }
+
+    private const uint SeFileObject = 1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SecurityAttributes
+    {
+        public int nLength;
+        public IntPtr lpSecurityDescriptor;
+        public int bInheritHandle;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public uint CreationTimeLow;
+        public uint CreationTimeHigh;
+        public uint LastAccessTimeLow;
+        public uint LastAccessTimeHigh;
+        public uint LastWriteTimeLow;
+        public uint LastWriteTimeHigh;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        string stringSecurityDescriptor,
+        uint stringSdRevision,
+        out IntPtr securityDescriptor,
+        out uint securityDescriptorSize);
+
+    [DllImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern SafeFileHandle CreateFileWWithSecurity(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        ref SecurityAttributes lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        IntPtr hTemplateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(
+        SafeFileHandle hFile,
+        out ByHandleFileInformation lpFileInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern uint GetSecurityInfo(
+        SafeFileHandle handle,
+        uint objectType,
+        uint securityInfo,
+        IntPtr sidOwner,
+        IntPtr sidGroup,
+        IntPtr dacl,
+        IntPtr sacl,
+        out IntPtr securityDescriptor);
 
     [DllImport("libc", EntryPoint = "open", SetLastError = true)]
     private static extern int Open3(string pathname, int flags, int mode);

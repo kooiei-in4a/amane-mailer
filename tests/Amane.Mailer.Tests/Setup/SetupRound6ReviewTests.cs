@@ -130,19 +130,21 @@ public sealed class SetupRound6ReviewTests
     [Fact]
     public void Generation_lock_symlink_is_rejected_as_path_unsafe()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            Assert.Skip("symlink lock probe is exercised on Unix CI.");
-            return;
-        }
-
         var root = SetupTestFixtures.CreateManagedRoot();
         var outside = Path.Combine(Path.GetTempPath(), "amane-r6-lock-out-" + Guid.NewGuid().ToString("N"));
         try
         {
             File.WriteAllText(outside, "outside\n", Encoding.UTF8);
             var lockPath = Path.Combine(root, SetupGenerationLock.LockFileName);
-            File.CreateSymbolicLink(lockPath, outside);
+            try
+            {
+                File.CreateSymbolicLink(lockPath, outside);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+            {
+                Assert.Skip("Symlink creation is not permitted in this test environment.");
+                return;
+            }
 
             var result = new SetupCore().GenerateBundle(SetupTestFixtures.LocalMailpitRequest(root));
             Assert.Equal(SetupResultCode.RejectedPathUnsafe, result.Code);

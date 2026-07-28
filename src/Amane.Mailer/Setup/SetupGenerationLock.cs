@@ -71,14 +71,18 @@ public sealed class SetupGenerationLock : IDisposable
     {
         const int errorSharingViolation = unchecked((int)0x80070020);
         const int errorLockViolation = unchecked((int)0x80070021);
-        if (ex.HResult is errorSharingViolation or errorLockViolation)
+        const int errorFileExists = unchecked((int)0x80070050); // ERROR_FILE_EXISTS
+        const int errorAlreadyExists = unchecked((int)0x800700B7); // ERROR_ALREADY_EXISTS
+        if (ex.HResult is errorSharingViolation or errorLockViolation
+            or errorFileExists or errorAlreadyExists)
         {
             return true;
         }
 
         // Exclusive open contention surfaces as sharing/in-use errors across platforms.
         return ex.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("Resource temporarily unavailable", StringComparison.OrdinalIgnoreCase);
+            || ex.Message.Contains("Resource temporarily unavailable", StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("already exists", StringComparison.OrdinalIgnoreCase);
     }
 
     public void Dispose() => _lockStream.Dispose();

@@ -86,24 +86,19 @@ public sealed class SetupCore
                     "Dry-run plan generated; no files were written.");
             }
 
-            // Manual conflict / sealing preflight before any write (including the generation lock
-            // file) so a rejected Manual root does not leave .setup-generation.lock behind.
-            if (_fileSystem.DirectoryExists(managedRootFull))
+            // Manual conflict only before any write (including the generation lock file) so a
+            // rejected Manual root does not leave .setup-generation.lock behind. Sealing-key
+            // checks run only under the lock so concurrent writers are not misclassified as
+            // RejectedSealingKeyUnsafe.
+            if (_fileSystem.DirectoryExists(managedRootFull)
+                && !SetupConflictDetector.TryDetectConflicts(
+                    _fileSystem,
+                    managedRootFull,
+                    bundleId,
+                    out var preConflictCode,
+                    out var preConflictMessage))
             {
-                if (!SetupConflictDetector.TryDetectConflicts(
-                        _fileSystem,
-                        managedRootFull,
-                        bundleId,
-                        out var preConflictCode,
-                        out var preConflictMessage))
-                {
-                    return SetupResult.Fail(preConflictCode, preConflictMessage);
-                }
-
-                if (!TryValidateSealingKeyPreflight(managedRootFull, out var preSealCode, out var preSealMessage))
-                {
-                    return SetupResult.Fail(preSealCode, preSealMessage);
-                }
+                return SetupResult.Fail(preConflictCode, preConflictMessage);
             }
 
             // Ensure the managed root exists so the generation lock file can be created, then hold
