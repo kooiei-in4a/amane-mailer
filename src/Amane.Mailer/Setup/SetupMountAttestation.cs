@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System.Security.Cryptography;
 using System.Text;
 using Amane.Mailer.Configuration;
@@ -24,7 +25,8 @@ public static class SetupMountAttestation
 
     public static HashSet<string> DeriveRequiredMemberIds(
         MailerOptions options,
-        IReadOnlyList<MailerTenant> tenants)
+        IReadOnlyList<MailerTenant> tenants,
+        IConfiguration configuration)
     {
         var ids = new HashSet<string>(StringComparer.Ordinal);
         foreach (var tenant in tenants)
@@ -36,12 +38,28 @@ public static class SetupMountAttestation
             }
         }
 
+        // Managed secret-valued env present in the effective container environment.
+        AddPresentSecretEnv(ids, configuration, "MAILER_METRICS_BEARER_TOKEN");
+        AddPresentSecretEnv(ids, configuration, "AMANE_ADMIN_PASSWORD_HASH");
+
         if (tenants.Any(t => string.Equals(options.ResolveProvider(t), "acs", StringComparison.Ordinal)))
         {
             ids.Add(AcsConnectionStringMemberId);
         }
 
         return ids;
+    }
+
+    private static void AddPresentSecretEnv(
+        HashSet<string> ids,
+        IConfiguration configuration,
+        string envKey)
+    {
+        var value = configuration[envKey] ?? Environment.GetEnvironmentVariable(envKey);
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            ids.Add(EnvMemberId(envKey));
+        }
     }
 
     public static byte[] CreateSessionKey()

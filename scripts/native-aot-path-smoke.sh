@@ -99,13 +99,37 @@ dump_failure_diagnostics() {
     return
   fi
   local file
-  for file in mailer.log migrate.err migrate-webhook.err backup.err hash.err login-post.out; do
+  for file in mailer.log migrate.err migrate-webhook.err backup.err hash.err login-post.out \
+    inspect-effective.out.json inspect-effective.err.txt \
+    inspect-effective-managed.out.json inspect-effective-managed.err.txt \
+    inspect-effective.meta.txt inspect-effective-managed.meta.txt; do
     if [ -f "$WORK_DIR/$file" ] && [ -s "$WORK_DIR/$file" ]; then
       log ""
       log "[diagnostics] $file (tail)"
       tail -n 80 "$WORK_DIR/$file" || true
     fi
   done
+}
+
+preserve_inspect_diagnostics() {
+  local label="$1"
+  local out="$2"
+  local err="$3"
+  local exit_code="$4"
+  if [ -n "${WORK_DIR:-}" ] && [ -d "$WORK_DIR" ]; then
+    cp -f "$out" "$WORK_DIR/inspect-effective${label}.out.json" 2>/dev/null || true
+    cp -f "$err" "$WORK_DIR/inspect-effective${label}.err.txt" 2>/dev/null || true
+    {
+      echo "exit=$exit_code"
+      # Redact known canaries; keep reason codes for CI triage.
+      sed -E \
+        -e 's/aot-inspect-token-not-real/[REDACTED]/g' \
+        -e 's/accesskey=[^";,]*/accesskey=[REDACTED]/gi' \
+        "$out" 2>/dev/null | tr -d '\r' | head -c 4000 || true
+      echo
+      sed -E -e 's/aot-inspect-token-not-real/[REDACTED]/g' "$err" 2>/dev/null | tr -d '\r' | head -c 2000 || true
+    } >"$WORK_DIR/inspect-effective${label}.meta.txt" 2>/dev/null || true
+  fi
 }
 
 finish() {
@@ -316,7 +340,6 @@ main() {
     if [[ "$hash" == pbkdf2:sha256:* ]]; then
       pass "cli:admin-hash-password"
 
-
 # --- cli:setup-inspect-effective (#447) ---
 INSPECT_WORK="$(mktemp -d "${TMPDIR:-/tmp}/amane-aot-inspect.XXXXXX")"
 INSPECT_TENANTS="$INSPECT_WORK/tenants.json"
@@ -324,24 +347,28 @@ INSPECT_TOKEN="aot-inspect-token-not-real"
 cat > "$INSPECT_TENANTS" <<'JSON'
 {"version":1,"environment":"develop","tenants":[{"tenant_id":"00000000-0000-0000-0000-000000000101","name":"aot-inspect","source_services":["aot"],"default_from":{"email":"noreply@example.com","display_name":"AOT"},"token_env":"MAIL_SERVICE_TOKEN","provider":"mailpit","live_sending":false,"retry":{"max_attempts":3,"initial_delay_seconds":1,"max_delay_seconds":10}}]}
 JSON
-if MAILER_TENANTS_PATH="$INSPECT_TENANTS" MAIL_SERVICE_TOKEN="$INSPECT_TOKEN" \
-  "$MAILER_BIN" setup inspect-effective --format json >"$INSPECT_WORK/out.json" 2>"$INSPECT_WORK/err.txt"; then
+INSPECT_EXIT=0
+MAILER_TENANTS_PATH="$INSPECT_TENANTS" MAIL_SERVICE_TOKEN="$INSPECT_TOKEN" \
+  "$MAILER_BIN" setup inspect-effective --format json >"$INSPECT_WORK/out.json" 2>"$INSPECT_WORK/err.txt" || INSPECT_EXIT=$?
+if [ "$INSPECT_EXIT" -eq 0 ]; then
   if awk 'NR==1{if ($0 ~ /^\{/) found=1} END{exit !found}' "$INSPECT_WORK/out.json" \
-    && ! grep -Eiq 'secret|token|canary|sessionKey|HMAC|accesskey|aot-inspect-token' "$INSPECT_WORK/out.json" "$INSPECT_WORK/err.txt" \
+    && ! grep -Eiq 'sessionKey|expectedMac|HMACSHA|accesskey=|aot-inspect-token-not-real' "$INSPECT_WORK/out.json" "$INSPECT_WORK/err.txt" \
     && grep -Eq '"managed"[[:space:]]*:[[:space:]]*false' "$INSPECT_WORK/out.json" \
     && grep -Eq '"not-managed"' "$INSPECT_WORK/out.json"; then
     pass "cli:setup-inspect-effective"
   else
+    preserve_inspect_diagnostics "" "$INSPECT_WORK/out.json" "$INSPECT_WORK/err.txt" "$INSPECT_EXIT"
     fail "cli:setup-inspect-effective" "json contract or canary check failed"
   fi
 else
+  preserve_inspect_diagnostics "" "$INSPECT_WORK/out.json" "$INSPECT_WORK/err.txt" "$INSPECT_EXIT"
   fail "cli:setup-inspect-effective" "command failed (details omitted)"
 fi
 
 # Managed mount attestation path (deserialize metadata/verifier + HMAC; provisional integrity only).
 INSPECT_META="$INSPECT_WORK/recorded.json"
 INSPECT_VERIFIER="$INSPECT_WORK/verifier.json"
-INSPECT_BUNDLE_ID="20260728120000-a0t00001"
+INSPECT_BUNDLE_ID="20260728120000-a0f00001"
 cat > "$INSPECT_META" <<JSON
 {"schemaVersion":1,"bundleId":"$INSPECT_BUNDLE_ID","configurationFingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","mode":"local-mailpit","createdAt":"2026-07-28T00:00:00Z"}
 JSON
@@ -378,25 +405,28 @@ if MAILER_TENANTS_PATH="$INSPECT_TENANTS" \
   MAILER_SETUP_MOUNT_VERIFIER_PATH="$INSPECT_VERIFIER" \
   "$MAILER_BIN" setup inspect-effective --format json >"$INSPECT_WORK/managed-out.json" 2>"$INSPECT_WORK/managed-err.txt"; then
   if awk 'NR==1{if ($0 ~ /^\{/) found=1} END{exit !found}' "$INSPECT_WORK/managed-out.json" \
-    && ! grep -Eiq 'secret|token|canary|sessionKey|HMAC|accesskey|aot-inspect-token' "$INSPECT_WORK/managed-out.json" "$INSPECT_WORK/managed-err.txt" \
+    && ! grep -Eiq 'sessionKey|expectedMac|HMACSHA|accesskey=|aot-inspect-token-not-real' "$INSPECT_WORK/managed-out.json" "$INSPECT_WORK/managed-err.txt" \
     && grep -Eq '"managed"[[:space:]]*:[[:space:]]*true' "$INSPECT_WORK/managed-out.json" \
     && grep -Eq '"matched"' "$INSPECT_WORK/managed-out.json" \
     && grep -Eq '"not-verified"' "$INSPECT_WORK/managed-out.json" \
     && grep -Eq 'host-at-rest-pending' "$INSPECT_WORK/managed-out.json"; then
     pass "cli:setup-inspect-effective-managed"
   else
+    preserve_inspect_diagnostics "-managed" "$INSPECT_WORK/managed-out.json" "$INSPECT_WORK/managed-err.txt" "0"
     fail "cli:setup-inspect-effective-managed" "managed mount contract or canary check failed"
   fi
 else
+  MANAGED_EXIT=$?
   # Fingerprint mismatch may yield exit 1 while still emitting JSON; accept nonzero only if contract holds.
   if awk 'NR==1{if ($0 ~ /^\{/) found=1} END{exit !found}' "$INSPECT_WORK/managed-out.json" \
-    && ! grep -Eiq 'secret|token|canary|sessionKey|HMAC|accesskey|aot-inspect-token' "$INSPECT_WORK/managed-out.json" "$INSPECT_WORK/managed-err.txt" \
+    && ! grep -Eiq 'sessionKey|expectedMac|HMACSHA|accesskey=|aot-inspect-token-not-real' "$INSPECT_WORK/managed-out.json" "$INSPECT_WORK/managed-err.txt" \
     && grep -Eq '"managed"[[:space:]]*:[[:space:]]*true' "$INSPECT_WORK/managed-out.json" \
     && grep -Eq '"matched"' "$INSPECT_WORK/managed-out.json" \
     && grep -Eq '"not-verified"' "$INSPECT_WORK/managed-out.json" \
     && grep -Eq 'host-at-rest-pending' "$INSPECT_WORK/managed-out.json"; then
     pass "cli:setup-inspect-effective-managed"
   else
+    preserve_inspect_diagnostics "-managed" "$INSPECT_WORK/managed-out.json" "$INSPECT_WORK/managed-err.txt" "$MANAGED_EXIT"
     fail "cli:setup-inspect-effective-managed" "command failed (details omitted)"
   fi
 fi

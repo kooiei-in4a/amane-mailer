@@ -134,7 +134,7 @@ public static partial class SetupInspectEffectiveEngine
             FingerprintsMatchRecorded = fingerprintsMatch,
         };
 
-        var requiredMembers = SetupMountAttestation.DeriveRequiredMemberIds(options, tenants);
+        var requiredMembers = SetupMountAttestation.DeriveRequiredMemberIds(options, tenants, configuration);
         var mount = ResolveMountAttestation(
             configuration,
             managed,
@@ -408,39 +408,34 @@ public static partial class SetupInspectEffectiveEngine
             return (SetupInspectCredentialStatus.NotApplicable, SetupInspectSourceIds.NotApplicable);
         }
 
-        var filePath = configuration["ACS_CONNECTION_STRING_FILE"];
-        if (!string.IsNullOrWhiteSpace(filePath))
+        var resolution = MailerAcsCredential.Resolve(configuration);
+        switch (resolution.Source)
         {
-            if (!File.Exists(filePath))
-            {
-                return (SetupInspectCredentialStatus.Missing, SetupInspectSourceIds.ContainerAcsFile);
-            }
+            case MailerAcsCredentialSource.File:
+                if (ConfigurationPlaceholderDetector.LooksLikePlaceholder(resolution.Value))
+                {
+                    return (SetupInspectCredentialStatus.Invalid, SetupInspectSourceIds.ContainerAcsFile);
+                }
 
-            var text = File.ReadAllText(filePath).Trim();
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return (SetupInspectCredentialStatus.Missing, SetupInspectSourceIds.ContainerAcsFile);
-            }
+                return (SetupInspectCredentialStatus.Loaded, SetupInspectSourceIds.ContainerAcsFile);
 
-            if (ConfigurationPlaceholderDetector.LooksLikePlaceholder(text))
-            {
-                return (SetupInspectCredentialStatus.Invalid, SetupInspectSourceIds.ContainerAcsFile);
-            }
+            case MailerAcsCredentialSource.Environment:
+                if (ConfigurationPlaceholderDetector.LooksLikePlaceholder(resolution.Value))
+                {
+                    return (SetupInspectCredentialStatus.Invalid, SetupInspectSourceIds.ContainerAcsEnv);
+                }
 
-            return (SetupInspectCredentialStatus.Loaded, SetupInspectSourceIds.ContainerAcsFile);
+                return (SetupInspectCredentialStatus.Loaded, SetupInspectSourceIds.ContainerAcsEnv);
+
+            default:
+                {
+                    var fileConfigured = !string.IsNullOrWhiteSpace(configuration["ACS_CONNECTION_STRING_FILE"]);
+                    var source = fileConfigured || resolution.RequiredFile
+                        ? SetupInspectSourceIds.ContainerAcsFile
+                        : SetupInspectSourceIds.ContainerAcsEnv;
+                    return (SetupInspectCredentialStatus.Missing, source);
+                }
         }
-
-        if (!string.IsNullOrWhiteSpace(options.AcsConnectionString))
-        {
-            if (ConfigurationPlaceholderDetector.LooksLikePlaceholder(options.AcsConnectionString))
-            {
-                return (SetupInspectCredentialStatus.Invalid, SetupInspectSourceIds.ContainerAcsEnv);
-            }
-
-            return (SetupInspectCredentialStatus.Loaded, SetupInspectSourceIds.ContainerAcsEnv);
-        }
-
-        return (SetupInspectCredentialStatus.Missing, SetupInspectSourceIds.ContainerAcsFile);
     }
 
     private static string? SummarizeProvider(MailerOptions options, IReadOnlyList<MailerTenant> tenants)

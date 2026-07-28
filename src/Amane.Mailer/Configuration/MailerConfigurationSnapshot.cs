@@ -14,16 +14,18 @@ public sealed class MailerConfigurationSnapshot
     public required MailerTenantRegistry Registry { get; init; }
     public required MailerOptions Options { get; init; }
 
+    // Compatibility alias used by inspect/command code.
+    // Keep numeric values aligned with MailerConfigurationLoadFailureKind.
     public enum LoadFailureKind
     {
         None = 0,
-        TenantsMissing,
-        TenantsInvalid,
-        TokenMissing,
-        WebhookSecretMissing,
-        ProviderInvalid,
-        AcsCredentialMissing,
-        MailpitInvalid,
+        TenantsMissing = 1,
+        TenantsInvalid = 2,
+        TokenMissing = 3,
+        WebhookSecretMissing = 4,
+        ProviderInvalid = 5,
+        AcsCredentialMissing = 6,
+        MailpitInvalid = 7,
     }
 
     public readonly record struct LoadResult(
@@ -31,10 +33,6 @@ public sealed class MailerConfigurationSnapshot
         MailerConfigurationSnapshot? Snapshot,
         LoadFailureKind FailureKind);
 
-    /// <summary>
-    /// Loads and validates configuration exactly as runtime DI does for tenants + MailerOptions.
-    /// Throws on failure (startup path).
-    /// </summary>
     public static MailerConfigurationSnapshot Load(IConfiguration configuration)
     {
         var result = TryLoad(configuration);
@@ -43,12 +41,11 @@ public sealed class MailerConfigurationSnapshot
             return result.Snapshot;
         }
 
-        throw new InvalidOperationException(FailureMessage(result.FailureKind));
+        throw new MailerConfigurationLoadException(
+            (MailerConfigurationLoadFailureKind)result.FailureKind,
+            FailureMessage(result.FailureKind));
     }
 
-    /// <summary>
-    /// Same load/validation as <see cref="Load"/> but returns a classified failure for CLI inspection.
-    /// </summary>
     public static LoadResult TryLoad(IConfiguration configuration)
     {
         string tenantsPath;
@@ -62,6 +59,10 @@ public sealed class MailerConfigurationSnapshot
             }
 
             tenantsFile = MailerTenantRegistry.LoadTenantsFile(tenantsPath);
+        }
+        catch (MailerConfigurationLoadException ex)
+        {
+            return new LoadResult(false, null, (LoadFailureKind)ex.Kind);
         }
         catch (InvalidOperationException)
         {
@@ -77,19 +78,12 @@ public sealed class MailerConfigurationSnapshot
         {
             registry = MailerTenantRegistry.LoadFromTenantsFile(configuration, tenantsPath, tenantsFile);
         }
-        catch (InvalidOperationException ex)
+        catch (MailerConfigurationLoadException ex)
         {
-            var message = ex.Message;
-            if (message.Contains("webhook", StringComparison.OrdinalIgnoreCase))
-            {
-                return new LoadResult(false, null, LoadFailureKind.WebhookSecretMissing);
-            }
-
-            if (message.Contains("must be set for tenant", StringComparison.Ordinal))
-            {
-                return new LoadResult(false, null, LoadFailureKind.TokenMissing);
-            }
-
+            return new LoadResult(false, null, (LoadFailureKind)ex.Kind);
+        }
+        catch (InvalidOperationException)
+        {
             return new LoadResult(false, null, LoadFailureKind.TenantsInvalid);
         }
 
@@ -99,28 +93,12 @@ public sealed class MailerConfigurationSnapshot
             options = MailerOptions.Load(configuration);
             options.ValidateEffectiveProviders(registry.ListTenants());
         }
-        catch (InvalidOperationException ex)
+        catch (MailerConfigurationLoadException ex)
         {
-            var message = ex.Message;
-            if (message.Contains("ACS connection string", StringComparison.Ordinal)
-                || message.Contains("ACS_CONNECTION_STRING", StringComparison.Ordinal))
-            {
-                return new LoadResult(false, null, LoadFailureKind.AcsCredentialMissing);
-            }
-
-            if (message.Contains("mailpit", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("MAILPIT_", StringComparison.Ordinal)
-                || message.Contains("SmtpPort", StringComparison.Ordinal)
-                || message.Contains("SmtpHost", StringComparison.Ordinal))
-            {
-                return new LoadResult(false, null, LoadFailureKind.MailpitInvalid);
-            }
-
-            if (message.Contains("provider", StringComparison.OrdinalIgnoreCase))
-            {
-                return new LoadResult(false, null, LoadFailureKind.ProviderInvalid);
-            }
-
+            return new LoadResult(false, null, (LoadFailureKind)ex.Kind);
+        }
+        catch (InvalidOperationException)
+        {
             return new LoadResult(false, null, LoadFailureKind.ProviderInvalid);
         }
 

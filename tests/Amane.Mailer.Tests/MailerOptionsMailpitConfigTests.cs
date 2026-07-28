@@ -118,7 +118,7 @@ public sealed class MailerOptionsMailpitConfigTests
             .AddInMemoryCollection(new Dictionary<string, string?> { [key] = value })
             .Build();
 
-        var ex = Assert.Throws<InvalidOperationException>(() => MailerOptions.Load(configuration));
+        var ex = Assert.Throws<MailerConfigurationLoadException>(() => MailerOptions.Load(configuration));
         Assert.Contains(key, ex.Message, StringComparison.Ordinal);
         Assert.Contains("true", ex.Message, StringComparison.Ordinal);
         Assert.Contains("false", ex.Message, StringComparison.Ordinal);
@@ -135,7 +135,7 @@ public sealed class MailerOptionsMailpitConfigTests
             .Build());
         var tenants = new[] { CreateTenant(provider: "mailpit", liveSending: false) };
 
-        var ex = Assert.Throws<InvalidOperationException>(
+        var ex = Assert.Throws<MailerConfigurationLoadException>(
             () => options.ValidateEffectiveProviders(tenants));
 
         Assert.Contains(key, ex.Message, StringComparison.Ordinal);
@@ -155,7 +155,7 @@ public sealed class MailerOptionsMailpitConfigTests
             .Build());
         var tenants = new[] { CreateTenant(provider: "mailpit", liveSending: false) };
 
-        var ex = Assert.Throws<InvalidOperationException>(
+        var ex = Assert.Throws<MailerConfigurationLoadException>(
             () => options.ValidateEffectiveProviders(tenants));
 
         Assert.Contains(key, ex.Message, StringComparison.Ordinal);
@@ -222,7 +222,7 @@ public sealed class MailerOptionsMailpitConfigTests
             .Build());
         var tenants = new[] { CreateTenant(provider: "acs", liveSending: true) };
 
-        var ex = Assert.Throws<InvalidOperationException>(
+        var ex = Assert.Throws<MailerConfigurationLoadException>(
             () => options.ValidateEffectiveProviders(tenants));
 
         Assert.Contains("MAILPIT_SMTP_HOST", ex.Message, StringComparison.Ordinal);
@@ -251,7 +251,7 @@ public sealed class MailerOptionsMailpitConfigTests
         var options = new MailerOptions { MailpitSmtpHost = "mailpit", MailpitSmtpPort = 0 };
         var tenants = new[] { CreateTenant(provider: "mailpit", liveSending: false) };
 
-        var ex = Assert.Throws<InvalidOperationException>(
+        var ex = Assert.Throws<MailerConfigurationLoadException>(
             () => options.ValidateEffectiveProviders(tenants));
 
         Assert.Contains("65535", ex.Message, StringComparison.Ordinal);

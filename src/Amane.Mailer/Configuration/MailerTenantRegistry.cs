@@ -79,7 +79,8 @@ public sealed class MailerTenantRegistry
 
             if (string.IsNullOrWhiteSpace(token))
             {
-                throw new InvalidOperationException(
+                throw new MailerConfigurationLoadException(
+                    MailerConfigurationLoadFailureKind.TokenMissing,
                     $"Environment variable '{tenant.TokenEnv}' must be set for tenant '{tenant.Name}'.");
             }
 
@@ -92,7 +93,8 @@ public sealed class MailerTenantRegistry
 
                 if (string.IsNullOrWhiteSpace(webhookSecret))
                 {
-                    throw new InvalidOperationException(
+                    throw new MailerConfigurationLoadException(
+                        MailerConfigurationLoadFailureKind.WebhookSecretMissing,
                         $"Environment variable '{tenant.Webhook.SecretEnv}' must be set for tenant '{tenant.Name}' webhook delivery.");
                 }
 
