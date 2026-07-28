@@ -1,6 +1,5 @@
 using System.Text.RegularExpressions;
 using Amane.Mailer.Configuration;
-using Amane.Mailer.Operations;
 
 namespace Amane.Mailer.Setup;
 
@@ -50,22 +49,16 @@ public static partial class SetupRequestValidator
 
         foreach (var key in request.PublicEnvOverrides.Keys)
         {
-            if (!ManagedEnvKeyCatalog.TryClassify(key, out var keyClass))
+            if (!ManagedEnvKeyCatalog.PublicEnvOverrideAllowlist.Contains(key))
             {
-                message = "Public env override contains an unknown key.";
+                message = "Public env override key is not allowlisted for Setup Core.";
                 return false;
             }
 
-            if (keyClass != ManagedEnvKeyCatalog.KeyClass.PublicNonSecret)
+            if (string.IsNullOrWhiteSpace(request.PublicEnvOverrides[key])
+                && request.PublicEnvOverrides[key] is not "")
             {
-                message = "Public env override must only contain public/non-secret keys.";
-                return false;
-            }
-
-            if (ManagedEnvKeyCatalog.ExternalManualOnlyKeys.Contains(key)
-                || ManagedEnvKeyCatalog.SecretValuedEnvironmentKeys.Contains(key))
-            {
-                message = "Public env override must not include secret or external keys.";
+                message = "Public env override values must not be whitespace-only.";
                 return false;
             }
         }
@@ -159,6 +152,14 @@ public static partial class SetupRequestValidator
 
         if (request.Admin is not null)
         {
+            // Admin enablement / bootstrap is owned by #459. Core must fail closed instead of
+            // silently writing AMANE_ADMIN_ENABLED=true into compose.env.
+            if (request.Admin.Enabled || request.Admin.AllowHttp)
+            {
+                message = "Admin enablement is not performed by Setup Core; use the Admin bootstrap workflow.";
+                return false;
+            }
+
             if (string.IsNullOrWhiteSpace(request.Admin.Username))
             {
                 message = "Admin username must be non-empty when Admin representation is provided.";
@@ -170,6 +171,22 @@ public static partial class SetupRequestValidator
                 message = "Admin allowed local address must be non-empty when Admin representation is provided.";
                 return false;
             }
+        }
+
+        if (!request.DryRun && OperatingSystem.IsLinux() && request.RuntimeFileOwnership is null)
+        {
+            failureCode = SetupResultCode.RejectedOwnershipRequired;
+            message = "Linux bundle generation requires runtime file ownership (container UID/GID).";
+            return false;
+        }
+
+        if (request.RuntimeFileOwnership is not null
+            && (request.RuntimeFileOwnership.UnixUserId == 0 || request.RuntimeFileOwnership.UnixGroupId == 0))
+        {
+            // Refuse root ownership as the Mailer runtime identity; deploy images use non-root APP_UID.
+            failureCode = SetupResultCode.RejectedOwnershipRequired;
+            message = "Runtime file ownership must use a non-root container UID/GID.";
+            return false;
         }
 
         failureCode = string.Empty;

@@ -5,51 +5,54 @@ namespace Amane.Mailer.Setup;
 /// </summary>
 public static class SetupPathGuard
 {
-    public static bool TryResolveUnderRoot(
+    public static bool TryEnsureManagedRootSafe(
         ISetupFileSystem fileSystem,
-        string managedRoot,
-        string candidatePath,
-        out string fullPath,
+        string managedRootFull,
         out string failureCode,
         out string message)
     {
-        fullPath = string.Empty;
+        failureCode = SetupResultCode.RejectedPathUnsafe;
+        message = "Managed root path rejected.";
+
+        if (string.IsNullOrWhiteSpace(managedRootFull))
+        {
+            message = "Managed root path is required.";
+            return false;
+        }
+
+        if (HasSymlinkOrReparseInAncestry(fileSystem, managedRootFull))
+        {
+            message = "Managed root must not be a symlink/reparse point or descend through one.";
+            return false;
+        }
+
+        failureCode = string.Empty;
+        message = string.Empty;
+        return true;
+    }
+
+    public static bool TryEnsurePathSafeUnderRoot(
+        ISetupFileSystem fileSystem,
+        string managedRootFull,
+        string candidateFull,
+        out string failureCode,
+        out string message)
+    {
         failureCode = SetupResultCode.RejectedPathUnsafe;
         message = "Path rejected.";
 
-        if (string.IsNullOrWhiteSpace(managedRoot) || string.IsNullOrWhiteSpace(candidatePath))
-        {
-            message = "Managed root and candidate path are required.";
-            return false;
-        }
-
-        string rootFull;
-        string candidateFull;
-        try
-        {
-            rootFull = Path.GetFullPath(managedRoot);
-            candidateFull = Path.GetFullPath(candidatePath);
-        }
-        catch
-        {
-            message = "Path could not be resolved.";
-            return false;
-        }
-
-        if (!IsUnderRoot(rootFull, candidateFull))
+        if (!IsUnderRoot(managedRootFull, candidateFull))
         {
             message = "Path is outside the managed root.";
             return false;
         }
 
-        if (fileSystem.IsSymlinkOrReparsePoint(candidateFull)
-            || HasSymlinkAncestor(fileSystem, rootFull, candidateFull))
+        if (HasSymlinkOrReparseInAncestry(fileSystem, candidateFull))
         {
             message = "Symlink or reparse point paths are rejected.";
             return false;
         }
 
-        fullPath = candidateFull;
         failureCode = string.Empty;
         message = string.Empty;
         return true;
@@ -72,23 +75,26 @@ public static class SetupPathGuard
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
     }
 
-    private static bool HasSymlinkAncestor(ISetupFileSystem fileSystem, string rootFull, string candidateFull)
+    public static bool HasSymlinkOrReparseInAncestry(ISetupFileSystem fileSystem, string path)
     {
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        var current = candidateFull;
-        while (!string.IsNullOrEmpty(current)
-               && !current.Equals(
-                   rootFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                   comparison))
+        var current = path;
+        while (!string.IsNullOrEmpty(current))
         {
             if (fileSystem.IsSymlinkOrReparsePoint(current))
             {
                 return true;
             }
 
-            current = Path.GetDirectoryName(current);
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || parent.Equals(current, comparison))
+            {
+                break;
+            }
+
+            current = parent;
         }
 
-        return fileSystem.IsSymlinkOrReparsePoint(rootFull);
+        return false;
     }
 }

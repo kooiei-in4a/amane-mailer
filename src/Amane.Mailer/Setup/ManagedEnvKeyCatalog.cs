@@ -52,6 +52,35 @@ public static class ManagedEnvKeyCatalog
         "MAILER_SETUP_RECORDED_METADATA_PATH",
     };
 
+    /// <summary>
+    /// Keys callers may supply via <see cref="SetupRequest.PublicEnvOverrides"/>.
+    /// Workflow-owned Admin/bounce/provider/path-binding keys are excluded and must use typed inputs
+    /// or Core-fixed values instead.
+    /// </summary>
+    public static IReadOnlySet<string> PublicEnvOverrideAllowlist { get; } = new HashSet<string>(StringComparer.Ordinal)
+    {
+        "COMPOSE_PROJECT_NAME",
+        "MAILER_IMAGE_REPOSITORY",
+        "MAILER_IMAGE_TAG",
+        "MAILER_PULL_POLICY",
+        "MAILER_MEM_LIMIT",
+        "MAILER_CPUS",
+        "MAILER_STOP_GRACE_PERIOD",
+        "MAILER_HTTP_PORT",
+        "ASPNETCORE_FORWARDEDHEADERS_ENABLED",
+        "MAILER_NETWORK_NAME",
+        "MAILER_NETWORK_ALIAS",
+        "MAILER_HEALTHCHECK_INTERVAL",
+        "MAILER_HEALTHCHECK_TIMEOUT",
+        "MAILER_HEALTHCHECK_RETRIES",
+        "MAILER_HEALTHCHECK_START_PERIOD",
+        "LOG_MAX_SIZE",
+        "LOG_MAX_FILE",
+        "MAILER_RETENTION_DAYS",
+        "MAILER_RETENTION_SWEEP_INTERVAL_HOURS",
+        "MAILER_METRICS_ENABLED",
+    };
+
     public static IReadOnlySet<string> SecretValuedEnvironmentKeys { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         "MAIL_SERVICE_TOKEN",

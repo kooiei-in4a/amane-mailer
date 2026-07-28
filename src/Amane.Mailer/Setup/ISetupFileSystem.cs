@@ -16,4 +16,9 @@ public interface ISetupFileSystem
     void DeleteFile(string path);
     void DeleteDirectoryRecursive(string path);
     void MoveReplace(string sourcePath, string destinationPath);
+    void FlushDirectory(string path);
+    void SetUnixOwnership(string path, uint userId, uint groupId);
+    void SetUnixFileModeOwnerOnly(string path, bool executableDirectory);
+    bool TryGetUnixFileMode(string path, out UnixFileMode mode);
+    uint? GetEffectiveUnixUserId();
 }

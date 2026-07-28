@@ -52,6 +52,11 @@ public sealed class SetupPathAndCleanupTests
         public void CreateOwnerOnlyDirectory(string path) => inner.CreateOwnerOnlyDirectory(path);
         public byte[] ReadAllBytes(string path) => inner.ReadAllBytes(path);
         public void MoveReplace(string sourcePath, string destinationPath) => inner.MoveReplace(sourcePath, destinationPath);
+        public void FlushDirectory(string path) => inner.FlushDirectory(path);
+        public void SetUnixOwnership(string path, uint userId, uint groupId) => inner.SetUnixOwnership(path, userId, groupId);
+        public void SetUnixFileModeOwnerOnly(string path, bool executableDirectory) => inner.SetUnixFileModeOwnerOnly(path, executableDirectory);
+        public bool TryGetUnixFileMode(string path, out UnixFileMode mode) => inner.TryGetUnixFileMode(path, out mode);
+        public uint? GetEffectiveUnixUserId() => inner.GetEffectiveUnixUserId();
         public void DeleteDirectoryRecursive(string path)
         {
             if (FailDeletes)

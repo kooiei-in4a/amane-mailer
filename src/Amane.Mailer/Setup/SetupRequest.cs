@@ -1,4 +1,3 @@
-using System.Text.Json.Serialization;
 using Amane.Mailer.Configuration;
 
 namespace Amane.Mailer.Setup;
@@ -33,12 +32,24 @@ public sealed class SetupRequest
     /// <summary>Platform sender representation for ACS modes. Not tenant send-path authority.</summary>
     public SetupPlatformSenderInput? PlatformSender { get; init; }
 
-    /// <summary>Non-secret public env overrides. Unknown / misclassified keys are rejected.</summary>
+    /// <summary>
+    /// Non-secret public env overrides limited to <see cref="ManagedEnvKeyCatalog.PublicEnvOverrideAllowlist"/>.
+    /// Workflow-owned Admin/bounce/provider/path keys are rejected.
+    /// </summary>
     public IReadOnlyDictionary<string, string> PublicEnvOverrides { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
-    /// <summary>Admin non-secret representation for #459. Password handling is out of scope.</summary>
+    /// <summary>
+    /// Admin non-secret representation contract for #459. Enabling Admin in Core is rejected;
+    /// password handling remains out of scope.
+    /// </summary>
     public SetupAdminBootstrapRepresentation? Admin { get; init; }
+
+    /// <summary>
+    /// Linux runtime ownership for generated bundle files (Mailer container UID/GID).
+    /// Required for non-dry-run writes on Linux so the container can read finalized files.
+    /// </summary>
+    public SetupRuntimeFileOwnership? RuntimeFileOwnership { get; init; }
 
     /// <summary>Optional image repository/tag recorded in compose.env and fingerprint.</summary>
     public string? ImageRepository { get; init; }
@@ -55,7 +66,7 @@ public sealed class SetupPlatformSenderInput
 
 /// <summary>
 /// Non-secret Admin bootstrap representation owned as a typed contract for #459.
-/// Does not accept password or password hash.
+/// Does not accept password or password hash. Enabled=true is rejected by Setup Core.
 /// </summary>
 public sealed class SetupAdminBootstrapRepresentation
 {
@@ -64,6 +75,16 @@ public sealed class SetupAdminBootstrapRepresentation
     public string AllowedLocalAddress { get; init; } = "127.0.0.1";
     public bool AllowHttp { get; init; }
     public string PiiListMode { get; init; } = "masked";
+}
+
+/// <summary>
+/// Connects host-generated files to the Mailer container runtime identity on Linux.
+/// Typical deploy image uses a non-root APP_UID (documented as 1654 for current tags).
+/// </summary>
+public sealed class SetupRuntimeFileOwnership
+{
+    public required uint UnixUserId { get; init; }
+    public required uint UnixGroupId { get; init; }
 }
 
 /// <summary>ACS workflow typed input surface for #451 (no network / exact confirmation here).</summary>

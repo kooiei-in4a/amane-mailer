@@ -17,5 +17,10 @@ public static class SetupResultCode
     public const string RejectedPartialWrite = "setup.rejected.partial_write";
     public const string RejectedCleanupFailed = "setup.rejected.cleanup_failed";
     public const string RejectedRollbackFailed = "setup.rejected.rollback_failed";
+    public const string RejectedSealingKeyMissing = "setup.rejected.sealing_key_missing";
+    public const string RejectedSealingKeyUnsafe = "setup.rejected.sealing_key_unsafe";
+    public const string RejectedOwnershipRequired = "setup.rejected.ownership_required";
+    public const string RejectedOwnershipFailed = "setup.rejected.ownership_failed";
+    public const string RejectedDurabilityFailed = "setup.rejected.durability_failed";
     public const string FailedUnexpected = "setup.failed.unexpected";
 }

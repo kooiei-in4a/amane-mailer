@@ -53,7 +53,7 @@ public sealed class SetupBundleWriterTests
                     "secrets/acs_connection_string",
                     File.ReadAllBytes(Path.Combine(bundleRoot, "secrets", AcsSecretFileNames.CanonicalFileName))),
             };
-            Assert.True(SetupIntegritySealer.TryVerifySeal(sealingKey, seal, secretMembers));
+            Assert.True(SetupIntegritySealer.TryVerifySeal(sealingKey, seal, result.BundleId!, result.ConfigurationFingerprint!, SetupBundleLayout.RecordedSchemaVersion, secretMembers));
         }
         finally
         {

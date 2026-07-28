@@ -6,6 +6,24 @@ namespace Amane.Mailer.Tests.Setup;
 
 internal static class SetupTestFixtures
 {
+    public static SetupRuntimeFileOwnership? LinuxRuntimeOwnershipOrNull()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return null;
+        }
+
+        // Use the current non-root euid when available so chown is a no-op identity assign.
+        // Tests that need a distinct container UID should set ownership explicitly.
+        var euid = new HostSetupFileSystem().GetEffectiveUnixUserId() ?? 1654u;
+        if (euid == 0)
+        {
+            euid = 1654;
+        }
+
+        return new SetupRuntimeFileOwnership { UnixUserId = euid, UnixGroupId = euid };
+    }
+
     public static MailerTenantsFile LocalMailpitTenants() => new()
     {
         Version = 1,
@@ -75,6 +93,7 @@ internal static class SetupTestFixtures
             ["MAIL_SERVICE_TOKEN"] = "synthetic-mail-token-not-real",
         },
         MetricsBearerToken = "synthetic-metrics-token-not-real",
+        RuntimeFileOwnership = dryRun ? null : LinuxRuntimeOwnershipOrNull(),
     };
 
     public static SetupRequest StagingAcsRequest(string managedRoot, bool dryRun = false) => new()
@@ -96,6 +115,7 @@ internal static class SetupTestFixtures
             Email = "platform@example.com",
             DisplayName = "Platform Sender",
         },
+        RuntimeFileOwnership = dryRun ? null : LinuxRuntimeOwnershipOrNull(),
     };
 
     public static string CreateManagedRoot()
