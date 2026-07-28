@@ -8,6 +8,10 @@
 
 Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) · 本 Issue: [#424](https://github.com/kooiei-in4a/amane-mailer/issues/424)
 
+### v1.2.0 Easy Setup（設計固定・未実装）
+
+v1.2.0 向け Easy Setup の実行境界・設定正本・Managed／Manual・Admin／Gate 契約は [ADR 0021](../adr/0021-easy-setup-boundaries.md)（[#446](https://github.com/kooiei-in4a/amane-mailer/issues/446)）を Design authority とする。tracking は [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445)。**現行の完遂経路は本ガイドの Manual 導線のまま**である。host assistant／immutable bundle 等の実装は #447 以降であり、本ガイドの mode 手順を置き換えない。
+
 ## 既存文書の役割（複製しない）
 
 | 文書 | 役割 | この入口との関係 |
