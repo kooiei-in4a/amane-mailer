@@ -17,66 +17,13 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
 
     public bool FileExists(string path) => File.Exists(path);
 
-    public SetupLinkInspectionResult InspectSymlinkOrReparsePoint(string path)
-    {
-        try
+    public SetupLinkInspectionResult InspectSymlinkOrReparsePoint(string path) =>
+        FileSystemLinkInspector.Inspect(path) switch
         {
-            if (Directory.Exists(path))
-            {
-                var info = new DirectoryInfo(path);
-                if (info.LinkTarget is not null)
-                {
-                    return SetupLinkInspectionResult.IsLinkOrReparse;
-                }
-
-                return info.Attributes.HasFlag(FileAttributes.ReparsePoint)
-                    ? SetupLinkInspectionResult.IsLinkOrReparse
-                    : SetupLinkInspectionResult.NotALink;
-            }
-
-            if (File.Exists(path))
-            {
-                var info = new FileInfo(path);
-                if (info.LinkTarget is not null)
-                {
-                    return SetupLinkInspectionResult.IsLinkOrReparse;
-                }
-
-                return info.Attributes.HasFlag(FileAttributes.ReparsePoint)
-                    ? SetupLinkInspectionResult.IsLinkOrReparse
-                    : SetupLinkInspectionResult.NotALink;
-            }
-
-            if (OperatingSystem.IsWindows())
-            {
-                return WindowsPathHasReparsePoint(path);
-            }
-
-            var dangling = new FileInfo(path);
-            if (dangling.LinkTarget is not null)
-            {
-                return SetupLinkInspectionResult.IsLinkOrReparse;
-            }
-
-            try
-            {
-                if (dangling.Exists && dangling.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                {
-                    return SetupLinkInspectionResult.IsLinkOrReparse;
-                }
-            }
-            catch
-            {
-                return SetupLinkInspectionResult.InspectionFailed;
-            }
-
-            return SetupLinkInspectionResult.NotALink;
-        }
-        catch
-        {
-            return SetupLinkInspectionResult.InspectionFailed;
-        }
-    }
+            FileSystemLinkInspectionResult.NotALink => SetupLinkInspectionResult.NotALink,
+            FileSystemLinkInspectionResult.IsLinkOrReparse => SetupLinkInspectionResult.IsLinkOrReparse,
+            _ => SetupLinkInspectionResult.InspectionFailed,
+        };
 
     public IEnumerable<string> EnumerateFileSystemEntries(string path) =>
         Directory.EnumerateFileSystemEntries(path);
@@ -113,6 +60,23 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
         }
 
         throw new IOException("Directory durability flush is not supported on this platform.");
+    }
+
+    public void FlushFile(string path)
+    {
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            FlushFileUnix(path);
+            return;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            FlushFileWindows(path);
+            return;
+        }
+
+        throw new IOException("File durability flush is not supported on this platform.");
     }
 
     public void SetUnixOwnership(string path, uint userId, uint groupId)
@@ -202,27 +166,6 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
         return Geteuid();
     }
 
-    [SupportedOSPlatform("windows")]
-    private static SetupLinkInspectionResult WindowsPathHasReparsePoint(string path)
-    {
-        var attrs = GetFileAttributesW(path);
-        if (attrs == unchecked((uint)(-1)))
-        {
-            var error = Marshal.GetLastWin32Error();
-            // ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND → not a link.
-            if (error is 2 or 3)
-            {
-                return SetupLinkInspectionResult.NotALink;
-            }
-
-            return SetupLinkInspectionResult.InspectionFailed;
-        }
-
-        const uint fileAttributeReparsePoint = 0x400;
-        return (attrs & fileAttributeReparsePoint) != 0
-            ? SetupLinkInspectionResult.IsLinkOrReparse
-            : SetupLinkInspectionResult.NotALink;
-    }
 
     [SupportedOSPlatform("linux")]
     [SupportedOSPlatform("macos")]
@@ -274,6 +217,51 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
         if (!FlushFileBuffers(handle))
         {
             throw new IOException("Failed to flush directory buffers.");
+        }
+    }
+
+    [SupportedOSPlatform("linux")]
+    [SupportedOSPlatform("macos")]
+    private static void FlushFileUnix(string path)
+    {
+        var fd = Open(path, ORdOnly);
+        if (fd < 0)
+        {
+            throw new IOException("Failed to open file for durability flush.");
+        }
+
+        try
+        {
+            if (Fsync(fd) != 0)
+            {
+                throw new IOException("Failed to fsync file metadata.");
+            }
+        }
+        finally
+        {
+            _ = Close(fd);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void FlushFileWindows(string path)
+    {
+        using var handle = CreateFileW(
+            path,
+            dwDesiredAccess: 0x40000000, // GENERIC_WRITE
+            dwShareMode: 0x7,
+            lpSecurityAttributes: IntPtr.Zero,
+            dwCreationDisposition: 3, // OPEN_EXISTING
+            dwFlagsAndAttributes: 0x80, // FILE_ATTRIBUTE_NORMAL
+            hTemplateFile: IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            throw new IOException("Failed to open file for durability flush.");
+        }
+
+        if (!FlushFileBuffers(handle))
+        {
+            throw new IOException("Failed to flush file buffers.");
         }
     }
 

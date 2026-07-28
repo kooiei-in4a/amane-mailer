@@ -53,10 +53,13 @@ public sealed class SetupRequest
     public SetupAdminBootstrapRepresentation? Admin { get; init; }
 
     /// <summary>
-    /// Linux runtime ownership for generated bundle files (Mailer container UID/GID).
-    /// Required for non-dry-run writes on Linux so the container can read finalized files.
-    /// When the Setup process EUID differs from this UID and is not root, ownership assignment
-    /// fails closed; host adapter / packaging (#449, #455) must document the supported operator model.
+    /// Linux ownership for runtime-readable bundle members that the Mailer container bind-mounts
+    /// (tenants, compose/secrets env, ACS secret, platform sender, recorded metadata, and their
+    /// parent directories under <c>bundles/</c>). Host-only paths (managed root, <c>sealing/</c>,
+    /// host sealing key, integrity seal, FINALIZED) keep the Setup process owner and are not
+    /// chowned to this UID/GID. Required for non-dry-run writes on Linux. When the Setup process
+    /// EUID differs from this UID and is not root, ownership assignment fails closed; host adapter
+    /// / packaging (#449, #455) must document the supported operator model.
     /// </summary>
     public SetupRuntimeFileOwnership? RuntimeFileOwnership { get; init; }
 

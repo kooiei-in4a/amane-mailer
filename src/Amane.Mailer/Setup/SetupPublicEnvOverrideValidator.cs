@@ -1,4 +1,5 @@
 using System.Globalization;
+using Amane.Mailer.Configuration;
 using System.Text.RegularExpressions;
 
 namespace Amane.Mailer.Setup;
@@ -33,18 +34,22 @@ public static partial class SetupPublicEnvOverrideValidator
             }
         }
 
-        if (!string.IsNullOrEmpty(imageRepository))
+        if (imageRepository is not null)
         {
-            if (!IsEnvFileSafeValue(imageRepository) || !ImageRepositoryRegex().IsMatch(imageRepository))
+            if (string.IsNullOrWhiteSpace(imageRepository)
+                || !IsEnvFileSafeValue(imageRepository)
+                || !ImageRepositoryRegex().IsMatch(imageRepository))
             {
                 message = "Image repository is not a valid compose image repository value.";
                 return false;
             }
         }
 
-        if (!string.IsNullOrEmpty(imageTag))
+        if (imageTag is not null)
         {
-            if (!IsEnvFileSafeValue(imageTag) || !ImageTagRegex().IsMatch(imageTag))
+            if (string.IsNullOrWhiteSpace(imageTag)
+                || !IsEnvFileSafeValue(imageTag)
+                || !ImageTagRegex().IsMatch(imageTag))
             {
                 message = "Image tag is not a valid compose image tag value.";
                 return false;
@@ -91,11 +96,24 @@ public static partial class SetupPublicEnvOverrideValidator
             case "MAILER_HEALTHCHECK_RETRIES":
             case "LOG_MAX_FILE":
             case "MAILER_RETENTION_DAYS":
-            case "MAILER_RETENTION_SWEEP_INTERVAL_HOURS":
-                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var positive)
-                    || positive <= 0)
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var days)
+                    || days < MailerRetentionOptions.MinRetentionDays
+                    || days > MailerRetentionOptions.MaxRetentionDays)
                 {
-                    message = $"{key} must be a positive integer.";
+                    message =
+                        $"MAILER_RETENTION_DAYS must be an integer between {MailerRetentionOptions.MinRetentionDays} and {MailerRetentionOptions.MaxRetentionDays} (inclusive).";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_RETENTION_SWEEP_INTERVAL_HOURS":
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var hours)
+                    || hours < MailerRetentionOptions.MinSweepIntervalHours
+                    || hours > MailerRetentionOptions.MaxSweepIntervalHours)
+                {
+                    message =
+                        $"MAILER_RETENTION_SWEEP_INTERVAL_HOURS must be an integer between {MailerRetentionOptions.MinSweepIntervalHours} and {MailerRetentionOptions.MaxSweepIntervalHours} (inclusive).";
                     return false;
                 }
 
@@ -134,6 +152,14 @@ public static partial class SetupPublicEnvOverrideValidator
                 return true;
 
             case "COMPOSE_PROJECT_NAME":
+                if (!ComposeProjectNameRegex().IsMatch(value))
+                {
+                    message = "COMPOSE_PROJECT_NAME must be lowercase alphanumeric, '-', or '_', starting with a letter or digit.";
+                    return false;
+                }
+
+                return true;
+
             case "MAILER_NETWORK_NAME":
             case "MAILER_NETWORK_ALIAS":
                 if (!DnsLabelRegex().IsMatch(value))
@@ -195,8 +221,12 @@ public static partial class SetupPublicEnvOverrideValidator
     [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
     private static partial Regex DnsLabelRegex();
 
+    [GeneratedRegex(@"^[a-z0-9][a-z0-9_-]*$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
+    private static partial Regex ComposeProjectNameRegex();
+
+    // Docker image reference name without tag: [HOST[:PORT]/]PATH (path components lowercase).
     [GeneratedRegex(
-        @"^[a-zA-Z0-9]+([._-][a-zA-Z0-9]+)*(/[a-zA-Z0-9]+([._-][a-zA-Z0-9]+)*)*$",
+        @"^(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(?:\.(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?))*(?::[0-9]{1,5})?/)?[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$",
         RegexOptions.CultureInvariant,
         RegexMatchTimeoutMilliseconds)]
     private static partial Regex ImageRepositoryRegex();

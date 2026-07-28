@@ -16,14 +16,25 @@ namespace Amane.Mailer.Operations;
 /// <see cref="Commit"/> would ever run.
 /// </para>
 /// </summary>
-public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
+public sealed class SecretFileWriter : ISecretFileWriter
 {
-    public string TargetPath { get; } = targetPath;
+    public SecretFileWriter(string targetPath, string approvedRootDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(approvedRootDirectory);
+        TargetPath = Path.GetFullPath(targetPath);
+        ApprovedRootDirectory = Path.GetFullPath(approvedRootDirectory);
+    }
+
+    public string TargetPath { get; }
+
+    public string ApprovedRootDirectory { get; }
 
     private string? _tempPath;
 
     public void Prepare(string content)
     {
+        FileSystemSafetyGuard.EnsurePathSafeUnderApprovedRoot(ApprovedRootDirectory, TargetPath);
         FileSystemSafetyGuard.EnsureTargetFileIsSafeIfExists(TargetPath);
         var directory = Path.GetDirectoryName(TargetPath);
         if (string.IsNullOrEmpty(directory))
@@ -36,6 +47,7 @@ public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
         FileSystemSafetyGuard.EnsureDirectoryIsSafe(directory);
 
         var tempPath = Path.Combine(directory, $".{Path.GetFileName(TargetPath)}.tmp-{Guid.NewGuid():N}");
+        FileSystemSafetyGuard.EnsurePathSafeUnderApprovedRoot(ApprovedRootDirectory, tempPath);
         FileSystemSafetyGuard.EnsureTargetFileIsSafeIfExists(tempPath);
 
         // Register temp path before content write so discard can run if create-then-write fails.

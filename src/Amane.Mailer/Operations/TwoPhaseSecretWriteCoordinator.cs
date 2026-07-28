@@ -90,13 +90,15 @@ public static class TwoPhaseSecretWriteCoordinator
         }
         catch (Exception ex)
         {
-            if (!second.TryDiscardPrepared())
+            // File.Move failure leaves the first temp path registered; discard both prepared temps.
+            var firstDiscarded = first.TryDiscardPrepared();
+            var secondDiscarded = second.TryDiscardPrepared();
+            if (!firstDiscarded || !secondDiscarded)
             {
                 throw new SecretOperationException(
                     AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed,
-                    "The first file failed to commit and cleaning up the second file's temp " +
-                    "file also failed. A temp file may still be present on disk. Manual review " +
-                    "is required.",
+                    "The first file failed to commit and cleaning up prepared temp file(s) also " +
+                    "failed. A temp file may still be present on disk. Manual review is required.",
                     ex);
             }
 

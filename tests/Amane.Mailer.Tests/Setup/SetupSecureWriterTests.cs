@@ -87,7 +87,7 @@ public sealed class SetupSecureWriterTests
         try
         {
             var target = Path.Combine(dir, "acs_connection_string");
-            var writer = new SecretFileWriter(target);
+            var writer = new SecretFileWriter(target, dir);
             writer.Prepare("Endpoint=https://example;AccessKey=secret");
             var temp = Assert.Single(Directory.GetFiles(dir));
             var mode = File.GetUnixFileMode(temp);

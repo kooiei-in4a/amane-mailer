@@ -183,11 +183,13 @@ public sealed class SetupCore
         {
             // Sealing key must exist before any bundles/<id> directory is created so a fresh
             // install is not misclassified as "bundles exist without a sealing key".
-            EnsureDirectory(managedRootFull, managedRootFull, createdDirs, ownership);
+            // Host-only paths keep the Setup process owner (do not chown to container runtime UID).
+            SetupRuntimeFileOwnership? hostOnlyOwnership = null;
+            EnsureDirectory(managedRootFull, managedRootFull, createdDirs, hostOnlyOwnership);
             var sealingDir = SetupBundleLayout.SealingDir(managedRootFull);
-            EnsureDirectory(managedRootFull, sealingDir, createdDirs, ownership);
+            EnsureDirectory(managedRootFull, sealingDir, createdDirs, hostOnlyOwnership);
             var sealingKeyPath = SetupBundleLayout.HostSealingKeyPath(managedRootFull);
-            var sealingKey = EnsureSealingKey(managedRootFull, sealingKeyPath, ownership, writtenFiles);
+            var sealingKey = EnsureSealingKey(managedRootFull, sealingKeyPath, hostOnlyOwnership, writtenFiles);
 
             // ADR D-03 / host sealing key durability: persist sealing/ before any bundles/<id> work.
             try
@@ -276,7 +278,7 @@ public sealed class SetupCore
                 managedRootFull,
                 Path.Combine(SetupBundleLayout.MetadataDir(bundleRoot), SetupBundleLayout.IntegritySealFileName),
                 seal,
-                ownership,
+                hostOnlyOwnership,
                 writtenFiles);
 
             WriteNew(
@@ -314,7 +316,7 @@ public sealed class SetupCore
                 managedRootFull,
                 Path.Combine(bundleRoot, SetupBundleLayout.FinalizedMarkerFileName),
                 materialized.BundleId + "\n",
-                ownership,
+                hostOnlyOwnership,
                 writtenFiles);
 
             try
@@ -625,6 +627,11 @@ public sealed class SetupCore
 
             _fileSystem.SetUnixOwnership(path, ownership.UnixUserId, ownership.UnixGroupId);
             _fileSystem.SetUnixFileModeOwnerOnly(path, executableDirectory: directory);
+            if (!directory)
+            {
+                // Persist ownership/mode inode metadata; directory fsync does not substitute.
+                _fileSystem.FlushFile(path);
+            }
         }
         catch (SetupCoreException)
         {
@@ -645,10 +652,17 @@ public sealed class SetupCore
         {
             try
             {
-                if (_fileSystem.FileExists(writtenFiles[i]))
-                {
-                    _fileSystem.DeleteFile(writtenFiles[i]);
-                }
+                // Do not probe with FileExists: it returns false on access/IO errors and can hide
+                // an orphaned partial file as successful cleanup.
+                _fileSystem.DeleteFile(writtenFiles[i]);
+            }
+            catch (FileNotFoundException)
+            {
+                // Already gone.
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // Parent gone.
             }
             catch
             {
@@ -660,10 +674,12 @@ public sealed class SetupCore
         {
             try
             {
-                if (_fileSystem.DirectoryExists(createdDirs[i]))
-                {
-                    _fileSystem.DeleteDirectoryRecursive(createdDirs[i]);
-                }
+                // Same Exists fail-open concern for directories.
+                _fileSystem.DeleteDirectoryRecursive(createdDirs[i]);
+            }
+            catch (DirectoryNotFoundException)
+            {
+                // Already gone.
             }
             catch
             {

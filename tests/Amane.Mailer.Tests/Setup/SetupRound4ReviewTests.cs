@@ -193,6 +193,94 @@ public sealed class SetupRound4ReviewTests
         }
     }
 
+
+    [Fact]
+    public void Compose_project_name_with_uppercase_or_dot_is_rejected()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "amane-r4-proj-" + Guid.NewGuid().ToString("N")));
+        var request = SetupTestFixtures.LocalMailpitRequest(root, dryRun: true);
+        request = new SetupRequest
+        {
+            Mode = request.Mode,
+            ManagedRootPath = request.ManagedRootPath,
+            DryRun = true,
+            Tenants = request.Tenants,
+            TokenSecrets = request.TokenSecrets,
+            MetricsBearerToken = request.MetricsBearerToken,
+            PublicEnvOverrides = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["COMPOSE_PROJECT_NAME"] = "Example.Project",
+            },
+        };
+
+        var result = new SetupCore().GenerateBundle(request);
+        Assert.Equal(SetupResultCode.RejectedValidation, result.Code);
+    }
+
+    [Fact]
+    public void Retention_days_above_runtime_max_are_rejected()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "amane-r4-ret-" + Guid.NewGuid().ToString("N")));
+        var request = SetupTestFixtures.LocalMailpitRequest(root, dryRun: true);
+        request = new SetupRequest
+        {
+            Mode = request.Mode,
+            ManagedRootPath = request.ManagedRootPath,
+            DryRun = true,
+            Tenants = request.Tenants,
+            TokenSecrets = request.TokenSecrets,
+            MetricsBearerToken = request.MetricsBearerToken,
+            PublicEnvOverrides = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["MAILER_RETENTION_DAYS"] = "3651",
+            },
+        };
+
+        var result = new SetupCore().GenerateBundle(request);
+        Assert.Equal(SetupResultCode.RejectedValidation, result.Code);
+    }
+
+    [Fact]
+    public void Empty_image_repository_is_rejected()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "amane-r4-img-" + Guid.NewGuid().ToString("N")));
+        var request = SetupTestFixtures.LocalMailpitRequest(root, dryRun: true);
+        request = new SetupRequest
+        {
+            Mode = request.Mode,
+            ManagedRootPath = request.ManagedRootPath,
+            DryRun = true,
+            Tenants = request.Tenants,
+            TokenSecrets = request.TokenSecrets,
+            MetricsBearerToken = request.MetricsBearerToken,
+            ImageRepository = "",
+        };
+
+        var result = new SetupCore().GenerateBundle(request);
+        Assert.Equal(SetupResultCode.RejectedValidation, result.Code);
+    }
+
+    [Fact]
+    public void Private_registry_repository_with_port_is_accepted()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "amane-r4-reg-" + Guid.NewGuid().ToString("N")));
+        var request = SetupTestFixtures.LocalMailpitRequest(root, dryRun: true);
+        request = new SetupRequest
+        {
+            Mode = request.Mode,
+            ManagedRootPath = request.ManagedRootPath,
+            DryRun = true,
+            Tenants = request.Tenants,
+            TokenSecrets = request.TokenSecrets,
+            MetricsBearerToken = request.MetricsBearerToken,
+            ImageRepository = "registry.example.com:5000/team/amane-mailer",
+            ImageTag = "1.2.0",
+        };
+
+        var result = new SetupCore().GenerateBundle(request);
+        Assert.Equal(SetupResultCode.DryRunPlan, result.Code);
+    }
+
     private static bool IsDockerComposeAvailable()
     {
         try

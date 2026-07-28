@@ -87,6 +87,7 @@ public sealed class SetupPathAndCleanupTests
         public void MoveReplace(string sourcePath, string destinationPath) =>
             inner.MoveReplace(sourcePath, destinationPath);
         public void FlushDirectory(string path) => inner.FlushDirectory(path);
+        public void FlushFile(string path) => inner.FlushFile(path);
         public void SetUnixOwnership(string path, uint userId, uint groupId) =>
             inner.SetUnixOwnership(path, userId, groupId);
         public void SetUnixFileModeOwnerOnly(string path, bool executableDirectory) =>
@@ -132,6 +133,8 @@ public sealed class SetupPathAndCleanupTests
 
             inner.FlushDirectory(path);
         }
+
+        public void FlushFile(string path) => inner.FlushFile(path);
 
         public void DeleteDirectoryRecursive(string path)
         {
