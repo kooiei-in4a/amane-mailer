@@ -245,6 +245,14 @@
           "tests/Amane.Mailer.Tests/Admin/BounceAdminQueryTenantScopeTests.cs"
         ]
       }
+    },
+    {
+      "id": "easy-setup",
+      "status": "planned",
+      "trackingIssue": 445,
+      "lastVerified": "2026-07-28",
+      "relatedAdrs": ["0021", "0013", "0019"],
+      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR) → evidence updates (#447–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. Does not change public HTTP contract, DB schema, or Manual Deployment source of truth."
     }
   ]
 }
