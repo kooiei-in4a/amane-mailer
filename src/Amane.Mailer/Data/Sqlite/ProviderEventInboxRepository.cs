@@ -32,10 +32,12 @@ public class ProviderEventInboxRepository(SqliteConnectionFactory connections)
         const string sql = """
             INSERT INTO provider_event_inbox (
                 id, provider, event_id, provider_message_id, delivery_status, recipient_email,
+                status_message, occurred_at,
                 status, disposition, attempt_count, max_attempts, next_attempt_at,
                 created_at, updated_at)
             VALUES (
                 @Id, @Provider, @EventId, @ProviderMessageId, @DeliveryStatus, @RecipientEmail,
+                @StatusMessage, @OccurredAt,
                 @PendingStatus, NULL, 0, @MaxAttempts, NULL,
                 @Now, @Now)
             ON CONFLICT (provider, event_id) DO NOTHING;
@@ -50,6 +52,10 @@ public class ProviderEventInboxRepository(SqliteConnectionFactory connections)
         command.Parameters.AddWithValue("@ProviderMessageId", (object?)row.ProviderMessageId ?? DBNull.Value);
         command.Parameters.AddWithValue("@DeliveryStatus", (object?)row.DeliveryStatus ?? DBNull.Value);
         command.Parameters.AddWithValue("@RecipientEmail", (object?)recipientEmail ?? DBNull.Value);
+        command.Parameters.AddWithValue("@StatusMessage", (object?)row.StatusMessage ?? DBNull.Value);
+        command.Parameters.AddWithValue(
+            "@OccurredAt",
+            row.OccurredAt is null ? DBNull.Value : SqliteTime.ToStorageUtc(row.OccurredAt.Value));
         command.Parameters.AddWithValue("@PendingStatus", (int)ProviderEventInboxState.Pending);
         command.Parameters.AddWithValue("@MaxAttempts", row.MaxAttempts);
         command.Parameters.AddWithValue("@Now", nowStorage);
@@ -106,6 +112,7 @@ public class ProviderEventInboxRepository(SqliteConnectionFactory connections)
         const string readSql = """
             SELECT
                 id, provider, event_id, provider_message_id, delivery_status, recipient_email,
+                status_message, occurred_at,
                 status, disposition, attempt_count, max_attempts, lock_token, lock_expires_at
             FROM provider_event_inbox
             WHERE id = @Id
@@ -436,12 +443,14 @@ public class ProviderEventInboxRepository(SqliteConnectionFactory connections)
             ProviderMessageId = reader.IsDBNull(3) ? null : reader.GetString(3),
             DeliveryStatus = reader.IsDBNull(4) ? null : reader.GetString(4),
             RecipientEmail = reader.IsDBNull(5) ? null : reader.GetString(5),
-            Status = (ProviderEventInboxState)reader.GetInt32(6),
-            Disposition = reader.IsDBNull(7) ? null : reader.GetString(7),
-            AttemptCount = reader.GetInt32(8),
-            MaxAttempts = reader.GetInt32(9),
-            LockToken = Guid.Parse(reader.GetString(10)),
-            LockExpiresAt = SqliteTime.FromStorage(reader.GetString(11)),
+            StatusMessage = reader.IsDBNull(6) ? null : reader.GetString(6),
+            OccurredAt = reader.IsDBNull(7) ? null : SqliteTime.FromStorage(reader.GetString(7)),
+            Status = (ProviderEventInboxState)reader.GetInt32(8),
+            Disposition = reader.IsDBNull(9) ? null : reader.GetString(9),
+            AttemptCount = reader.GetInt32(10),
+            MaxAttempts = reader.GetInt32(11),
+            LockToken = Guid.Parse(reader.GetString(12)),
+            LockExpiresAt = SqliteTime.FromStorage(reader.GetString(13)),
         };
 
     private static (ProviderEventInboxState NewStatus, string? Disposition, DateTimeOffset? CompletedAt) MapOutcome(

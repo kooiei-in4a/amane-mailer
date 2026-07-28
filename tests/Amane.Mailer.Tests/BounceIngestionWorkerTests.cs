@@ -40,6 +40,7 @@ public sealed class AcsEventParserTests
         Assert.Equal("Bounced", result.Report.Status);
         Assert.Equal("User@Example.COM", result.Report.Recipient);
         Assert.Contains("550", result.Report.StatusMessage, StringComparison.Ordinal);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-26T00:00:00Z"), result.Report.OccurredAt);
     }
 
     [Fact]
@@ -202,7 +203,7 @@ public sealed class BounceIngestionWorkerTests
         Assert.True(await new BounceIngestionStore(db.Factory).PersistCorrelatedAsync(
             claimed,
             match,
-            rawStatusMessage: raw,
+            statusMessage: raw,
             suppress: true,
             FixedNow,
             ct));
@@ -221,6 +222,150 @@ public sealed class BounceIngestionWorkerTests
         Assert.DoesNotContain("pii-canary-302@example.com", stored, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("secret-token-do-not-store", stored, StringComparison.Ordinal);
         Assert.Equal(ProviderErrorSanitizer.Sanitize(raw), stored);
+    }
+
+    [Fact]
+    public async Task Worker_carries_inbox_occurred_at_and_status_message_to_bounce_events()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        await SeedDeliveredRequestAsync(db.Factory, ProviderMessageId, Recipient, ct);
+
+        var eventTime = DateTimeOffset.Parse("2026-07-26T10:30:00Z");
+        const string raw =
+            "550 5.1.10 RESOLVER.ADR.RecipientNotFound; recipient pii-canary-460@example.com "
+            + "Bearer secret-token-do-not-store};'";
+        var sanitized = ProviderErrorSanitizer.Sanitize(raw);
+
+        var inbox = new ProviderEventInboxRepository(db.Factory);
+        Assert.True(await inbox.TryInsertAsync(
+            new ProviderEventInboxInsert
+            {
+                Id = Guid.CreateVersion7(FixedNow),
+                Provider = "acs",
+                EventId = "event-carry",
+                ProviderMessageId = ProviderMessageId,
+                DeliveryStatus = "Bounced",
+                RecipientEmail = Recipient,
+                StatusMessage = sanitized,
+                OccurredAt = eventTime,
+                MaxAttempts = 3,
+                CreatedAt = FixedNow,
+            },
+            ct));
+        var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
+        Assert.NotNull(claimed);
+        Assert.Equal(eventTime, claimed.OccurredAt);
+        Assert.Equal(sanitized, claimed.StatusMessage);
+
+        await CreateWorker(db.Factory, new MailerRuntimeMetrics()).ProcessClaimedEventForTestsAsync(claimed, ct);
+
+        await using var connection = await db.Factory.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT status_message, occurred_at
+            FROM bounce_events
+            WHERE provider_event_id = @EventId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@EventId", "event-carry");
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        Assert.True(await reader.ReadAsync(ct));
+        var storedMessage = reader.GetString(0);
+        var storedOccurred = SqliteTime.FromStorage(reader.GetString(1));
+        Assert.Equal(sanitized, storedMessage);
+        Assert.Equal(eventTime, storedOccurred);
+        Assert.DoesNotContain("pii-canary-460@example.com", storedMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret-token-do-not-store", storedMessage, StringComparison.Ordinal);
+        Assert.Equal(ProviderErrorSanitizer.Sanitize(sanitized), storedMessage);
+    }
+
+    [Fact]
+    public async Task Worker_falls_back_to_processing_time_when_inbox_occurred_at_is_null()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        await SeedDeliveredRequestAsync(db.Factory, ProviderMessageId, Recipient, ct);
+
+        var inbox = new ProviderEventInboxRepository(db.Factory);
+        Assert.True(await inbox.TryInsertAsync(
+            NewInboxInsert("event-fallback", ProviderMessageId, "Bounced", Recipient),
+            ct));
+        var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
+        Assert.NotNull(claimed);
+        Assert.Null(claimed.OccurredAt);
+
+        await CreateWorker(db.Factory, new MailerRuntimeMetrics()).ProcessClaimedEventForTestsAsync(claimed, ct);
+
+        await using var connection = await db.Factory.OpenConnectionAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT occurred_at
+            FROM bounce_events
+            WHERE provider_event_id = @EventId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@EventId", "event-fallback");
+        var stored = (string?)await command.ExecuteScalarAsync(ct);
+        Assert.Equal(SqliteTime.ToStorageUtc(FixedNow), stored);
+    }
+
+    [Fact]
+    public async Task Persist_fencing_failure_rolls_back_bounce_and_suppression()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        await SeedDeliveredRequestAsync(db.Factory, ProviderMessageId, Recipient, ct);
+
+        var eventTime = DateTimeOffset.Parse("2026-07-26T09:00:00Z");
+        var inbox = new ProviderEventInboxRepository(db.Factory);
+        Assert.True(await inbox.TryInsertAsync(
+            new ProviderEventInboxInsert
+            {
+                Id = Guid.CreateVersion7(FixedNow),
+                Provider = "acs",
+                EventId = "event-fence",
+                ProviderMessageId = ProviderMessageId,
+                DeliveryStatus = "Bounced",
+                RecipientEmail = Recipient,
+                StatusMessage = "sanitized-safe",
+                OccurredAt = eventTime,
+                MaxAttempts = 3,
+                CreatedAt = FixedNow,
+            },
+            ct));
+        var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
+        Assert.NotNull(claimed);
+
+        // Expire the lease so finalize fencing fails inside the same transaction.
+        await using (var connection = await db.Factory.OpenConnectionAsync(ct))
+        await using (var expire = connection.CreateCommand())
+        {
+            expire.CommandText = """
+                UPDATE provider_event_inbox
+                SET lock_expires_at = @Expired
+                WHERE id = @Id;
+                """;
+            expire.Parameters.AddWithValue("@Expired", SqliteTime.ToStorageUtc(FixedNow.AddMinutes(-1)));
+            expire.Parameters.AddWithValue("@Id", claimed.Id.ToString("D"));
+            Assert.Equal(1, await expire.ExecuteNonQueryAsync(ct));
+        }
+
+        var match = await new BounceIngestionStore(db.Factory).FindByProviderMessageIdAsync(ProviderMessageId, ct);
+        Assert.NotNull(match);
+        Assert.False(await new BounceIngestionStore(db.Factory).PersistCorrelatedAsync(
+            claimed,
+            match,
+            statusMessage: claimed.StatusMessage,
+            suppress: true,
+            FixedNow,
+            ct));
+
+        await using var verify = await db.Factory.OpenConnectionAsync(ct);
+        await using var bounceCount = verify.CreateCommand();
+        bounceCount.CommandText = "SELECT COUNT(*) FROM bounce_events WHERE provider_event_id = 'event-fence';";
+        Assert.Equal(0L, Convert.ToInt64(await bounceCount.ExecuteScalarAsync(ct)));
+        Assert.False(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
     }
 
     [Fact]

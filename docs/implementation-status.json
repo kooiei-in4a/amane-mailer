@@ -196,12 +196,13 @@
       "id": "bounce-ingestion-and-suppression",
       "status": "implemented",
       "trackingIssue": 306,
-      "lastVerified": "2026-07-27",
+      "lastVerified": "2026-07-28",
       "relatedAdrs": ["0020", "0013"],
-      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
+      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. #460 persists sanitized status_message and Event Grid eventTime on provider_event_inbox through bounce_events. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Data/Migrations/011_bounce_ingestion.sql",
+          "src/Amane.Mailer/Data/Migrations/012_provider_event_inbox_details.sql",
           "src/Amane.Mailer/Data/RecipientEmailNormalizer.cs",
           "src/Amane.Mailer/Data/Sqlite/ProviderEventInboxRepository.cs",
           "src/Amane.Mailer/Data/Sqlite/BounceEventRepository.cs",

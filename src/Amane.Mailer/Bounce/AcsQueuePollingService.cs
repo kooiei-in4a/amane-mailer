@@ -146,6 +146,8 @@ public sealed class AcsQueuePollingService(
                         ProviderMessageId = parseResult.Report.MessageId,
                         DeliveryStatus = parseResult.Report.Status,
                         RecipientEmail = parseResult.Report.Recipient,
+                        StatusMessage = SanitizeStatusMessage(parseResult.Report.StatusMessage),
+                        OccurredAt = parseResult.Report.OccurredAt,
                         MaxAttempts = options.MaxAttempts,
                         CreatedAt = now,
                     },
@@ -229,4 +231,10 @@ public sealed class AcsQueuePollingService(
             "ACS queue inbox insert failed; leaving message for visibility redelivery. Detail={Detail}",
             ProviderErrorSanitizer.Sanitize(ex.Message));
     }
+
+    /// <summary>
+    /// Sanitize before the first DB write (#460 / ADR 0020 D-08). Missing/blank stays null.
+    /// </summary>
+    internal static string? SanitizeStatusMessage(string? raw) =>
+        string.IsNullOrWhiteSpace(raw) ? null : ProviderErrorSanitizer.Sanitize(raw);
 }
