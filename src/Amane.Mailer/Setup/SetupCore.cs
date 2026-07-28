@@ -57,7 +57,44 @@ public sealed class SetupCore
 
             var bundleId = _bundleIdFactory();
 
-            // Safety/conflict preflight runs for dry-run and write paths alike.
+            if (request.DryRun)
+            {
+                // Dry-run does not create sealing keys or bundles; skip generation lock.
+                if (!SetupConflictDetector.TryDetectConflicts(
+                        _fileSystem,
+                        managedRootFull,
+                        bundleId,
+                        out var dryConflictCode,
+                        out var dryConflictMessage))
+                {
+                    return SetupResult.Fail(dryConflictCode, dryConflictMessage);
+                }
+
+                if (!TryValidateSealingKeyPreflight(managedRootFull, out var drySealCode, out var drySealMessage))
+                {
+                    return SetupResult.Fail(drySealCode, drySealMessage);
+                }
+
+                var dryCreatedAt = _timeProvider.GetUtcNow();
+                var dryMaterialized = SetupConfigurationMaterializer.Materialize(request, bundleId, dryCreatedAt);
+                var dryPlan = BuildPlan(request.Mode, dryMaterialized);
+                return SetupResult.Ok(
+                    SetupResultCode.DryRunPlan,
+                    bundleId,
+                    dryMaterialized.ConfigurationFingerprint,
+                    dryPlan,
+                    "Dry-run plan generated; no files were written.");
+            }
+
+            // Ensure the managed root exists so the generation lock file can be created, then hold
+            // the lock across sealing-key preflight, key creation, bundle write, and cleanup.
+            if (!_fileSystem.DirectoryExists(managedRootFull))
+            {
+                _fileSystem.CreateOwnerOnlyDirectory(managedRootFull);
+            }
+
+            using var generationLock = SetupGenerationLock.Acquire(managedRootFull);
+
             if (!SetupConflictDetector.TryDetectConflicts(
                     _fileSystem,
                     managedRootFull,
@@ -76,17 +113,6 @@ public sealed class SetupCore
             var createdAt = _timeProvider.GetUtcNow();
             var materialized = SetupConfigurationMaterializer.Materialize(request, bundleId, createdAt);
             var plan = BuildPlan(request.Mode, materialized);
-
-            if (request.DryRun)
-            {
-                return SetupResult.Ok(
-                    SetupResultCode.DryRunPlan,
-                    bundleId,
-                    materialized.ConfigurationFingerprint,
-                    plan,
-                    "Dry-run plan generated; no files were written.");
-            }
-
             return WriteBundle(managedRootFull, request.RuntimeFileOwnership, materialized, plan);
         }
         catch (SetupCoreException ex)

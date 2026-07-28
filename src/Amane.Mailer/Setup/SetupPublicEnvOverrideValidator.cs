@@ -93,8 +93,6 @@ public static partial class SetupPublicEnvOverrideValidator
 
                 return true;
 
-            case "MAILER_HEALTHCHECK_RETRIES":
-            case "LOG_MAX_FILE":
             case "MAILER_RETENTION_DAYS":
                 if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var days)
                     || days < MailerRetentionOptions.MinRetentionDays
@@ -102,6 +100,26 @@ public static partial class SetupPublicEnvOverrideValidator
                 {
                     message =
                         $"MAILER_RETENTION_DAYS must be an integer between {MailerRetentionOptions.MinRetentionDays} and {MailerRetentionOptions.MaxRetentionDays} (inclusive).";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_HEALTHCHECK_RETRIES":
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var retries)
+                    || retries is < 1 or > 100)
+                {
+                    message = "MAILER_HEALTHCHECK_RETRIES must be an integer from 1 to 100.";
+                    return false;
+                }
+
+                return true;
+
+            case "LOG_MAX_FILE":
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var maxFile)
+                    || maxFile is < 1 or > 1000)
+                {
+                    message = "LOG_MAX_FILE must be an integer from 1 to 1000.";
                     return false;
                 }
 
@@ -130,10 +148,16 @@ public static partial class SetupPublicEnvOverrideValidator
                 return true;
 
             case "MAILER_MEM_LIMIT":
-            case "LOG_MAX_SIZE":
-                if (!ByteSizeRegex().IsMatch(value))
+                if (!TryValidateMemLimit(value, out message))
                 {
-                    message = $"{key} must look like a Docker byte size (e.g. 512m, 1g).";
+                    return false;
+                }
+
+                return true;
+
+            case "LOG_MAX_SIZE":
+                if (!TryValidateLogMaxSize(value, out message))
+                {
                     return false;
                 }
 
@@ -170,24 +194,6 @@ public static partial class SetupPublicEnvOverrideValidator
 
                 return true;
 
-            case "MAILER_IMAGE_REPOSITORY":
-                if (!ImageRepositoryRegex().IsMatch(value))
-                {
-                    message = "MAILER_IMAGE_REPOSITORY is not a valid compose image repository value.";
-                    return false;
-                }
-
-                return true;
-
-            case "MAILER_IMAGE_TAG":
-                if (!ImageTagRegex().IsMatch(value))
-                {
-                    message = "MAILER_IMAGE_TAG is not a valid compose image tag value.";
-                    return false;
-                }
-
-                return true;
-
             default:
                 message = "Public env override key is not allowlisted for Setup Core.";
                 return false;
@@ -212,8 +218,86 @@ public static partial class SetupPublicEnvOverrideValidator
         return true;
     }
 
-    [GeneratedRegex(@"^[1-9]\d*[bBkKmMgGtT]?$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
-    private static partial Regex ByteSizeRegex();
+    /// <summary>Docker <c>--memory</c>: positive integer with optional b/k/m/g; minimum 6m.</summary>
+    private static bool TryValidateMemLimit(string value, out string message)
+    {
+        message = string.Empty;
+        if (!TryParseDockerByteSize(value, allowBytesUnit: true, allowTerabyte: false, out var bytes))
+        {
+            message = "MAILER_MEM_LIMIT must be a Docker memory size using b/k/m/g (minimum 6m).";
+            return false;
+        }
+
+        const long minBytes = 6L * 1024 * 1024;
+        if (bytes < minBytes)
+        {
+            message = "MAILER_MEM_LIMIT must be at least 6m.";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Docker json-file <c>max-size</c>: positive integer with k/m/g.</summary>
+    private static bool TryValidateLogMaxSize(string value, out string message)
+    {
+        message = string.Empty;
+        if (!TryParseDockerByteSize(value, allowBytesUnit: false, allowTerabyte: false, out var bytes)
+            || bytes <= 0)
+        {
+            message = "LOG_MAX_SIZE must be a Docker logging max-size using k/m/g (e.g. 10m).";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseDockerByteSize(
+        string value,
+        bool allowBytesUnit,
+        bool allowTerabyte,
+        out long bytes)
+    {
+        bytes = 0;
+        var match = DockerByteSizeRegex().Match(value);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        if (!long.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var amount)
+            || amount <= 0)
+        {
+            return false;
+        }
+
+        var unit = match.Groups[2].Value;
+        if (unit.Length == 0)
+        {
+            if (!allowBytesUnit)
+            {
+                return false;
+            }
+
+            bytes = amount;
+            return true;
+        }
+
+        var unitChar = char.ToLowerInvariant(unit[0]);
+        bytes = unitChar switch
+        {
+            'b' when allowBytesUnit => amount,
+            'k' => amount * 1024L,
+            'm' => amount * 1024L * 1024L,
+            'g' => amount * 1024L * 1024L * 1024L,
+            't' when allowTerabyte => amount * 1024L * 1024L * 1024L * 1024L,
+            _ => -1,
+        };
+        return bytes > 0;
+    }
+
+    [GeneratedRegex(@"^([1-9]\d*)([bBkKmMgGtT])?$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
+    private static partial Regex DockerByteSizeRegex();
 
     [GeneratedRegex(@"^[1-9]\d*[smh]$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
     private static partial Regex DurationRegex();

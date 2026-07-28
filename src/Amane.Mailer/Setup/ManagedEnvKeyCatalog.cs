@@ -54,14 +54,12 @@ public static class ManagedEnvKeyCatalog
 
     /// <summary>
     /// Keys callers may supply via <see cref="SetupRequest.PublicEnvOverrides"/>.
-    /// Workflow-owned Admin/bounce/provider/path-binding keys are excluded and must use typed inputs
-    /// or Core-fixed values instead.
+    /// Workflow-owned Admin/bounce/provider/path-binding/image keys are excluded and must use typed
+    /// inputs or Core-fixed values instead.
     /// </summary>
     public static IReadOnlySet<string> PublicEnvOverrideAllowlist { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         "COMPOSE_PROJECT_NAME",
-        "MAILER_IMAGE_REPOSITORY",
-        "MAILER_IMAGE_TAG",
         "MAILER_PULL_POLICY",
         "MAILER_MEM_LIMIT",
         "MAILER_CPUS",

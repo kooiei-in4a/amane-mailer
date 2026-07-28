@@ -146,8 +146,11 @@ public static class SetupConfigurationMaterializer
         var compose = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["COMPOSE_PROJECT_NAME"] = "amane-mailer",
-            ["MAILER_IMAGE_REPOSITORY"] = request.ImageRepository ?? "ghcr.io/kooiei-in4a/amane-mailer",
-            ["MAILER_IMAGE_TAG"] = request.ImageTag ?? "replace-with-published-git-sha",
+            ["MAILER_IMAGE_REPOSITORY"] = request.ImageRepository ?? SetupImageDefaults.DefaultRepository,
+            ["MAILER_IMAGE_TAG"] = request.ImageTag
+                ?? (request.DryRun
+                    ? SetupImageDefaults.DryRunImageTagPlaceholder
+                    : throw new InvalidOperationException("Image tag is required for non-dry-run materialization.")),
             ["MAILER_PULL_POLICY"] = "always",
             ["MAILER_MEM_LIMIT"] = "512m",
             ["MAILER_CPUS"] = "1.0",

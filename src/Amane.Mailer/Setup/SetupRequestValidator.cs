@@ -92,6 +92,17 @@ public static partial class SetupRequestValidator
             return false;
         }
 
+        // Image repository/tag are typed-only (not PublicEnvOverrides). Non-dry-run must not
+        // finalize a placeholder tag that Compose cannot pull.
+        if (!request.DryRun)
+        {
+            if (string.IsNullOrWhiteSpace(request.ImageTag)
+                || SetupImageDefaults.IsPlaceholderImageTag(request.ImageTag))
+            {
+                message = "Image tag is required for bundle generation; placeholders are dry-run only.";
+                return false;
+            }
+        }
         foreach (var key in request.TokenSecrets.Keys)
         {
             // Admin password/hash bootstrap is owned by #459. Silent ignore is forbidden (ADR D-10).

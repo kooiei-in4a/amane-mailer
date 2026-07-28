@@ -93,6 +93,8 @@ internal static class SetupTestFixtures
             ["MAIL_SERVICE_TOKEN"] = "synthetic-mail-token-not-real",
         },
         MetricsBearerToken = "synthetic-metrics-token-not-real",
+        ImageRepository = dryRun ? null : SetupImageDefaults.DefaultRepository,
+        ImageTag = dryRun ? null : "test-synthetic-image-tag",
         RuntimeFileOwnership = dryRun ? null : LinuxRuntimeOwnershipOrNull(),
     };
 
@@ -115,6 +117,8 @@ internal static class SetupTestFixtures
             Email = "platform@example.com",
             DisplayName = "Platform Sender",
         },
+        ImageRepository = dryRun ? null : SetupImageDefaults.DefaultRepository,
+        ImageTag = dryRun ? null : "test-synthetic-image-tag",
         RuntimeFileOwnership = dryRun ? null : LinuxRuntimeOwnershipOrNull(),
     };
 
