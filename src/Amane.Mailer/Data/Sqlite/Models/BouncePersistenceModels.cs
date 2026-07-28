@@ -16,6 +16,12 @@ public sealed class ProviderEventInboxInsert
 
     public string? RecipientEmail { get; init; }
 
+    /// <summary>Sanitized provider status detail; never raw ACS/SMTP text.</summary>
+    public string? StatusMessage { get; init; }
+
+    /// <summary>ACS Event Grid <c>eventTime</c> when present.</summary>
+    public DateTimeOffset? OccurredAt { get; init; }
+
     public required int MaxAttempts { get; init; }
 
     public required DateTimeOffset CreatedAt { get; init; }
@@ -34,6 +40,12 @@ public sealed class ProviderEventInboxRow
     public string? DeliveryStatus { get; init; }
 
     public string? RecipientEmail { get; init; }
+
+    /// <summary>Sanitized provider status detail stored at inbox insert.</summary>
+    public string? StatusMessage { get; init; }
+
+    /// <summary>ACS Event Grid <c>eventTime</c> when present; null falls back at persist.</summary>
+    public DateTimeOffset? OccurredAt { get; init; }
 
     public ProviderEventInboxState Status { get; init; }
 

@@ -4,6 +4,7 @@ using Amane.Mailer.Bounce;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Delivery;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
 using Microsoft.Data.Sqlite;
@@ -159,6 +160,37 @@ public sealed class AcsQueuePollingServiceTests
         }
         """;
 
+    private const string BouncedJsonWithDetails = """
+        {
+          "id": "eg-queue-details",
+          "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+          "eventTime": "2026-07-26T17:45:00Z",
+          "data": {
+            "messageId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "status": "Bounced",
+            "recipient": "user@example.com",
+            "deliveryStatusDetails": {
+              "statusMessage": "550 5.1.10 RESOLVER.ADR.RecipientNotFound; recipient pii-canary-queue@example.com Bearer secret-token-do-not-store};'"
+            }
+          }
+        }
+        """;
+
+    private const string BouncedJsonNoEventTime = """
+        {
+          "id": "eg-queue-no-time",
+          "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+          "data": {
+            "messageId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "status": "Bounced",
+            "recipient": "user@example.com",
+            "deliveryStatusDetails": {
+              "statusMessage": "mailbox unavailable"
+            }
+          }
+        }
+        """;
+
     private const string BouncedJsonSecond = """
         {
           "id": "eg-queue-2",
@@ -196,11 +228,97 @@ public sealed class AcsQueuePollingServiceTests
     }
 
     [Fact]
+    public async Task Poll_persists_sanitized_status_message_and_event_time()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-details", "pop-details", BouncedJsonWithDetails);
+
+        await CreateService(db.Factory, queue, new MailerRuntimeMetrics()).PollOnceAsync(ct);
+
+        var row = await ReadInboxDetailsAsync(db.Factory, "eg-queue-details", ct);
+        Assert.NotNull(row);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-26T17:45:00Z"), row.Value.OccurredAt);
+        Assert.False(string.IsNullOrWhiteSpace(row.Value.StatusMessage));
+        Assert.DoesNotContain("pii-canary-queue@example.com", row.Value.StatusMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret-token-do-not-store", row.Value.StatusMessage!, StringComparison.Ordinal);
+        Assert.Equal(
+            ProviderErrorSanitizer.Sanitize(
+                "550 5.1.10 RESOLVER.ADR.RecipientNotFound; recipient pii-canary-queue@example.com Bearer secret-token-do-not-store};'"),
+            row.Value.StatusMessage);
+        Assert.Contains(("msg-details", "pop-details"), queue.Deleted);
+    }
+
+    [Fact]
+    public async Task Poll_allows_null_occurred_at_when_event_time_missing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-no-time", "pop-no-time", BouncedJsonNoEventTime);
+
+        await CreateService(db.Factory, queue, new MailerRuntimeMetrics()).PollOnceAsync(ct);
+
+        var row = await ReadInboxDetailsAsync(db.Factory, "eg-queue-no-time", ct);
+        Assert.NotNull(row);
+        Assert.Null(row.Value.OccurredAt);
+        Assert.Equal(ProviderErrorSanitizer.Sanitize("mailbox unavailable"), row.Value.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Poll_multi_event_message_keeps_per_event_time_and_status()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var batch = $$"""
+            [
+              {
+                "id": "eg-multi-1",
+                "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+                "eventTime": "2026-07-26T16:00:00Z",
+                "data": {
+                  "messageId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                  "status": "Bounced",
+                  "recipient": "user@example.com",
+                  "deliveryStatusDetails": { "statusMessage": "first-detail" }
+                }
+              },
+              {
+                "id": "eg-multi-2",
+                "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+                "eventTime": "2026-07-26T16:05:00Z",
+                "data": {
+                  "messageId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                  "status": "Bounced",
+                  "recipient": "other@example.com",
+                  "deliveryStatusDetails": { "statusMessage": "second-detail" }
+                }
+              }
+            ]
+            """;
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-multi", "pop-multi", batch);
+
+        await CreateService(db.Factory, queue, new MailerRuntimeMetrics()).PollOnceAsync(ct);
+
+        var first = await ReadInboxDetailsAsync(db.Factory, "eg-multi-1", ct);
+        var second = await ReadInboxDetailsAsync(db.Factory, "eg-multi-2", ct);
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-26T16:00:00Z"), first.Value.OccurredAt);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-26T16:05:00Z"), second.Value.OccurredAt);
+        Assert.Equal(ProviderErrorSanitizer.Sanitize("first-detail"), first.Value.StatusMessage);
+        Assert.Equal(ProviderErrorSanitizer.Sanitize("second-detail"), second.Value.StatusMessage);
+    }
+
+    [Fact]
     public async Task Poll_duplicate_event_still_deletes_queue_message()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await OpenMigratedAsync(ct);
         var inbox = new ProviderEventInboxRepository(db.Factory);
+        var originalOccurredAt = DateTimeOffset.Parse("2026-07-26T12:00:00Z");
         Assert.True(await inbox.TryInsertAsync(
             new ProviderEventInboxInsert
             {
@@ -210,18 +328,24 @@ public sealed class AcsQueuePollingServiceTests
                 ProviderMessageId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 DeliveryStatus = "Bounced",
                 RecipientEmail = "user@example.com",
+                StatusMessage = "original-safe-message",
+                OccurredAt = originalOccurredAt,
                 MaxAttempts = 3,
                 CreatedAt = FixedNow,
             },
             ct));
 
         var queue = new FakeAcsEventQueueClient();
-        queue.Enqueue("msg-dup", "pop-dup", BouncedJson);
+        queue.Enqueue("msg-dup", "pop-dup", BouncedJsonWithDetails.Replace("eg-queue-details", "eg-queue-1", StringComparison.Ordinal));
         var service = CreateService(db.Factory, queue, new MailerRuntimeMetrics());
         await service.PollOnceAsync(ct);
 
         Assert.Contains(("msg-dup", "pop-dup"), queue.Deleted);
         Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
+        var preserved = await ReadInboxDetailsAsync(db.Factory, "eg-queue-1", ct);
+        Assert.NotNull(preserved);
+        Assert.Equal("original-safe-message", preserved.Value.StatusMessage);
+        Assert.Equal(originalOccurredAt, preserved.Value.OccurredAt);
     }
 
     [Fact]
@@ -440,6 +564,31 @@ public sealed class AcsQueuePollingServiceTests
             metrics,
             new FixedUtcTimeProvider(FixedNow),
             CreateCapturingLogger(out _));
+
+    private static async Task<(string? StatusMessage, DateTimeOffset? OccurredAt)?> ReadInboxDetailsAsync(
+        SqliteConnectionFactory factory,
+        string eventId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT status_message, occurred_at
+            FROM provider_event_inbox
+            WHERE provider = 'acs' AND event_id = @EventId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@EventId", eventId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return (
+            reader.IsDBNull(0) ? null : reader.GetString(0),
+            reader.IsDBNull(1) ? null : SqliteTime.FromStorage(reader.GetString(1)));
+    }
 
     private static async Task<long> CountInboxAsync(
         SqliteConnectionFactory factory,

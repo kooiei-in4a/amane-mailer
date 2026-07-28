@@ -208,7 +208,7 @@ public sealed class BounceIngestionWorker(
         var persisted = await ingestionStore.PersistCorrelatedAsync(
             row,
             match,
-            rawStatusMessage: null,
+            statusMessage: row.StatusMessage,
             suppress,
             now,
             stoppingToken);
