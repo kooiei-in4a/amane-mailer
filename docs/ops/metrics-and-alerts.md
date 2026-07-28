@@ -54,7 +54,9 @@ Compose / systemd では Mailer HTTP ポートを **内部ネットワークの�
 | `mail_bounce_unmatched_total` | counter | なし | プロセス起動以降に `provider_message_id` 相関できなかった件数。相関設計破綻の早期シグナル |
 | `mail_bounce_recipient_mismatch_total` | counter | なし | プロセス起動以降にイベント申告宛先と DB 宛先が不一致で破棄した件数 |
 | `mail_suppressed_sends_total` | counter | なし | プロセス起動以降に送信前抑制リストでブロックした件数 |
-| `mail_provider_queue_poll_failed_total` | counter | なし | プロセス起動以降の ACS Storage Queue ポーリング失敗件数 |
+| `mail_provider_queue_poll_failed_total` | counter | なし | プロセス起動以降の ACS Storage Queue 運用失敗件数（接続・受信・inbox insert・削除・dead-letter insert）。payload 破損は含めない |
+| `mail_provider_queue_payload_invalid_total` | counter | なし | プロセス起動以降の decode／parse 不能 Queue メッセージ件数（閾値未満の再配送含む） |
+| `mail_provider_queue_poisoned_total` | counter | なし | プロセス起動以降に `provider_queue_dead_letters` へ新規記録した poison envelope 件数 |
 | `mail_provider_events_pending` | gauge | なし | `provider_event_inbox` の pending / processing 件数（CLI `provider_events_pending` と同集計） |
 | `mail_provider_events_dead_lettered` | gauge | なし | `provider_event_inbox` の dead_lettered 件数（CLI `provider_events_dead_lettered` と同集計） |
 

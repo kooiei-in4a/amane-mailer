@@ -75,6 +75,7 @@ public sealed class AcsQueueAzuriteIntegrationTests
             var service = new AcsQueuePollingService(
                 client,
                 new ProviderEventInboxRepository(db.Factory),
+                new ProviderQueueDeadLetterRepository(db.Factory),
                 options,
                 new BounceIngestionQueue(),
                 metrics,
@@ -89,6 +90,52 @@ public sealed class AcsQueueAzuriteIntegrationTests
             // Success-path deserialize residual from #399: receive returned a real message body.
             var leftover = await queue.ReceiveMessagesAsync(maxMessages: 1, cancellationToken: ct);
             Assert.Empty(leftover.Value);
+        }
+        finally
+        {
+            await queue.DeleteIfExistsAsync(cancellationToken: CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Azure_queue_client_maps_dequeue_count_from_azurite()
+    {
+        if (!string.Equals(
+                Environment.GetEnvironmentVariable("AMANE_AZURITE_TESTS"),
+                "1",
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var ct = TestContext.Current.CancellationToken;
+        var connectionString = Environment.GetEnvironmentVariable("AMANE_AZURITE_QUEUE_CONNECTION_STRING")
+            ?? DefaultConnectionString;
+        var queueName = "amane-bounce-dc-" + Guid.NewGuid().ToString("N")[..12];
+
+        var serviceClient = new QueueServiceClient(
+            connectionString,
+            new QueueClientOptions { MessageEncoding = QueueMessageEncoding.None });
+        var queue = serviceClient.GetQueueClient(queueName);
+        await queue.CreateIfNotExistsAsync(cancellationToken: ct);
+
+        try
+        {
+            await queue.SendMessageAsync("""{"id":"eg-dc"}""", cancellationToken: ct);
+            var options = new MailerBounceIngestionOptions
+            {
+                Mode = BounceIngestionMode.Queue,
+                QueueConnectionString = connectionString,
+                QueueName = queueName,
+            };
+            var client = new AzureAcsEventQueueClient(options);
+            var received = await client.ReceiveMessagesAsync(1, TimeSpan.FromSeconds(30), ct);
+            Assert.Single(received);
+            Assert.Equal(1, received[0].DequeueCount);
+            Assert.False(string.IsNullOrWhiteSpace(received[0].MessageId));
+            Assert.False(string.IsNullOrWhiteSpace(received[0].PopReceipt));
+            Assert.Contains("eg-dc", received[0].Body, StringComparison.Ordinal);
+            await client.DeleteMessageAsync(received[0].MessageId, received[0].PopReceipt, ct);
         }
         finally
         {
