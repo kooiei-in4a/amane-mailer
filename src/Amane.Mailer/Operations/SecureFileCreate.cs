@@ -105,11 +105,17 @@ internal static class SecureFileCreate
     {
         try
         {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-
+            // Do not probe with File.Exists first: it returns false on access/IO errors and can
+            // hide an orphaned create-new file as a successful cleanup.
+            File.Delete(path);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return true;
+        }
+        catch (DirectoryNotFoundException)
+        {
             return true;
         }
         catch

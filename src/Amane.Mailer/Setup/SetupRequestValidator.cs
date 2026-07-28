@@ -47,6 +47,16 @@ public static partial class SetupRequestValidator
             return false;
         }
 
+        var seenTenantIds = new HashSet<Guid>();
+        foreach (var tenant in request.Tenants.Tenants)
+        {
+            if (!seenTenantIds.Add(tenant.TenantId))
+            {
+                message = "Duplicate tenant_id is not allowed.";
+                return false;
+            }
+        }
+
         var expectedEnvironment = ExpectedEnvironment(request.Mode);
         if (!request.Tenants.Environment.Equals(expectedEnvironment, StringComparison.Ordinal))
         {
@@ -71,41 +81,66 @@ public static partial class SetupRequestValidator
                 message = "Public env override key is not allowlisted for Setup Core.";
                 return false;
             }
+        }
 
-            if (string.IsNullOrWhiteSpace(request.PublicEnvOverrides[key])
-                && request.PublicEnvOverrides[key] is not "")
-            {
-                message = "Public env override values must not be whitespace-only.";
-                return false;
-            }
+        if (!SetupPublicEnvOverrideValidator.TryValidate(
+                request.PublicEnvOverrides,
+                request.ImageRepository,
+                request.ImageTag,
+                out message))
+        {
+            return false;
         }
 
         foreach (var key in request.TokenSecrets.Keys)
         {
             // Admin password/hash bootstrap is owned by #459. Silent ignore is forbidden (ADR D-10).
+            // Check before exact token_env inventory so the dedicated message is preserved.
             if (key.Equals("AMANE_ADMIN_PASSWORD_HASH", StringComparison.Ordinal))
             {
                 message = "Admin password hash is not accepted by Setup Core; use the Admin bootstrap workflow.";
                 return false;
             }
+        }
 
+        var requiredTokenEnvs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var tenant in request.Tenants.Tenants)
+        {
+            requiredTokenEnvs.Add(tenant.TokenEnv);
+        }
+
+        if (request.TokenSecrets.Count != requiredTokenEnvs.Count
+            || requiredTokenEnvs.Any(name => !request.TokenSecrets.ContainsKey(name))
+            || request.TokenSecrets.Keys.Any(name => !requiredTokenEnvs.Contains(name)))
+        {
+            message = "Token secrets must exactly match tenant token_env names.";
+            return false;
+        }
+
+        foreach (var key in request.TokenSecrets.Keys)
+        {
             if (!ManagedEnvKeyCatalog.SecretValuedEnvironmentKeys.Contains(key))
             {
                 message = "Token secret key is not an allowlisted secret-valued environment key.";
                 return false;
             }
 
-            if (!TryValidateSecretValue(request.TokenSecrets[key], "Token secret", out message))
+            if (key.Equals("MAILER_METRICS_BEARER_TOKEN", StringComparison.Ordinal)
+                || key.Equals("AMANE_ADMIN_PASSWORD_HASH", StringComparison.Ordinal))
             {
+                message = "Token secret keys must not use metrics or Admin reserved environment names.";
                 return false;
             }
-        }
 
-        foreach (var tenant in request.Tenants.Tenants)
-        {
-            if (!request.TokenSecrets.ContainsKey(tenant.TokenEnv))
+            if (ManagedEnvKeyCatalog.PublicNonSecretKeys.Contains(key)
+                || ManagedEnvKeyCatalog.ExternalManualOnlyKeys.Contains(key))
             {
-                message = "Each tenant token_env must have a corresponding token secret.";
+                message = "Token secret keys must not collide with public or external environment names.";
+                return false;
+            }
+
+            if (!TryValidateSecretValue(request.TokenSecrets[key], "Token secret", out message))
+            {
                 return false;
             }
         }
@@ -135,6 +170,20 @@ public static partial class SetupRequestValidator
             {
                 return false;
             }
+
+            if (!TryEnsureSecretKeyIsExclusive(
+                    pair.Key,
+                    requiredTokenEnvs,
+                    out message))
+            {
+                return false;
+            }
+        }
+
+        if (requiredTokenEnvs.Overlaps(requiredWebhookSecretEnvs))
+        {
+            message = "token_env and webhook.secret_env names must be mutually exclusive.";
+            return false;
         }
 
         var metricsEnabled = IsMetricsEnabled(request);
@@ -298,10 +347,31 @@ public static partial class SetupRequestValidator
     {
         if (request.PublicEnvOverrides.TryGetValue("MAILER_METRICS_ENABLED", out var raw))
         {
-            return string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
+            // Public override schema requires exact true/false before this runs.
+            return string.Equals(raw, "true", StringComparison.Ordinal);
         }
 
         // Matches SetupConfigurationMaterializer default.
+        return true;
+    }
+
+    private static bool TryEnsureSecretKeyIsExclusive(
+        string key,
+        IReadOnlySet<string> requiredTokenEnvs,
+        out string message)
+    {
+        message = string.Empty;
+        if (requiredTokenEnvs.Contains(key)
+            || key.Equals("MAILER_METRICS_BEARER_TOKEN", StringComparison.Ordinal)
+            || key.Equals("AMANE_ADMIN_PASSWORD_HASH", StringComparison.Ordinal)
+            || ManagedEnvKeyCatalog.PublicNonSecretKeys.Contains(key)
+            || ManagedEnvKeyCatalog.ExternalManualOnlyKeys.Contains(key)
+            || ManagedEnvKeyCatalog.SecretValuedEnvironmentKeys.Contains(key))
+        {
+            message = "Webhook secret env names must not collide with token, metrics, Admin, public, or external keys.";
+            return false;
+        }
+
         return true;
     }
 
@@ -326,23 +396,8 @@ public static partial class SetupRequestValidator
     /// <summary>
     /// Secrets must round-trip through Compose env-file serialization without CR/LF/NUL.
     /// </summary>
-    public static bool IsEnvFileSafeSecret(string value)
-    {
-        foreach (var ch in value)
-        {
-            if (ch is '\0' or '\n' or '\r')
-            {
-                return false;
-            }
-
-            if (ch < 0x20 && ch is not '\t')
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
+    public static bool IsEnvFileSafeSecret(string value) =>
+        SetupPublicEnvOverrideValidator.IsEnvFileSafeValue(value);
 
     [GeneratedRegex(
         @"^(?:endpoint=https://.+;accesskey=.+)$",

@@ -78,7 +78,7 @@ public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
         var tempPath = _tempPath;
         _tempPath = null;
 
-        if (tempPath is null || !File.Exists(tempPath))
+        if (tempPath is null)
         {
             return true;
         }
@@ -86,6 +86,14 @@ public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
         try
         {
             File.Delete(tempPath);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return true;
+        }
+        catch (DirectoryNotFoundException)
+        {
             return true;
         }
         catch
@@ -101,11 +109,17 @@ public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
     {
         try
         {
-            if (File.Exists(TargetPath))
-            {
-                File.Delete(TargetPath);
-            }
-
+            // Do not probe with File.Exists: it can return false on access/IO errors and hide a
+            // still-present committed secret as a successful rollback.
+            File.Delete(TargetPath);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            return true;
+        }
+        catch (DirectoryNotFoundException)
+        {
             return true;
         }
         catch

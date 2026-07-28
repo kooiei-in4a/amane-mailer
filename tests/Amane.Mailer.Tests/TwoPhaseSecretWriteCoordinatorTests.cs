@@ -155,6 +155,21 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
 
         Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed, ex.CanonicalCode);
         Assert.True(first.DiscardAttempted);
+        Assert.True(second.DiscardAttempted);
+    }
+
+    [Fact]
+    public void WriteBothCore_reports_cleanup_failed_when_the_first_prepare_fails_and_discard_also_fails()
+    {
+        var first = new FakeSecretFileWriter { PrepareSucceeds = false, DiscardSucceeds = false };
+        var second = new FakeSecretFileWriter();
+
+        var ex = Assert.Throws<SecretOperationException>(() =>
+            TwoPhaseSecretWriteCoordinator.WriteBothCore(first, "first-content", second, "second-content"));
+
+        Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed, ex.CanonicalCode);
+        Assert.True(first.DiscardAttempted);
+        Assert.False(second.DiscardAttempted);
     }
 
     private sealed class FakeSecretFileWriter : ISecretFileWriter
