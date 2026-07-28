@@ -38,10 +38,24 @@ public sealed class SecretFileWriter(string targetPath) : ISecretFileWriter
         var tempPath = Path.Combine(directory, $".{Path.GetFileName(TargetPath)}.tmp-{Guid.NewGuid():N}");
         FileSystemSafetyGuard.EnsureTargetFileIsSafeIfExists(tempPath);
 
-        // Create with owner-only permissions before writing content (Linux 0600 / Windows ACL).
-        SecureFileCreate.WriteAllTextCreateNew(tempPath, content);
-
+        // Register temp path before content write so discard can run if create-then-write fails.
         _tempPath = tempPath;
+        try
+        {
+            // Create with owner-only permissions before writing content (Linux 0600 / Windows ACL).
+            SecureFileCreate.WriteAllTextCreateNew(tempPath, content);
+        }
+        catch (SecureFileWriteException ex) when (ex.CreatedFileCleanupFailed)
+        {
+            // Incomplete temp may remain; leave _tempPath set for TryDiscardPrepared.
+            throw;
+        }
+        catch
+        {
+            // SecureFileCreate removed the incomplete file, or create never succeeded.
+            _tempPath = null;
+            throw;
+        }
     }
 
     public void Commit()

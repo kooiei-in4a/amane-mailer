@@ -23,7 +23,14 @@ public sealed class SetupRequest
     public IReadOnlyDictionary<string, string> TokenSecrets { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
-    /// <summary>Optional metrics bearer. Secret-valued; never fingerprinted.</summary>
+    /// <summary>
+    /// Webhook <c>secret_env</c> name to secret value for tenants that declare webhooks.
+    /// Required keys are derived from tenant webhook.secret_env; values never enter fingerprint.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> WebhookSecrets { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>Metrics bearer when metrics are enabled. Secret-valued; never fingerprinted.</summary>
     public string? MetricsBearerToken { get; init; }
 
     /// <summary>ACS connection string for modes 2-4. File secret; never fingerprinted.</summary>

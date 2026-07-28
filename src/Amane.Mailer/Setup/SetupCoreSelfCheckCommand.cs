@@ -61,6 +61,7 @@ public static class SetupCoreSelfCheckCommand
                 {
                     ["MAIL_SERVICE_TOKEN"] = "synthetic-self-check-token-not-real",
                 },
+                MetricsBearerToken = "synthetic-self-check-metrics-token-not-real",
             };
 
             var core = new SetupCore(bundleIdFactory: static () => "selfcheck-00000001");

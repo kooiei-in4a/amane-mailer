@@ -104,6 +104,18 @@ public static class SetupCanonicalPayload
                 writer.WriteStartObject();
                 writer.WriteString("url", tenant.Webhook.Url);
                 writer.WriteString("secret_env", tenant.Webhook.SecretEnv);
+                if (tenant.Webhook.AllowedHostSuffixes is { Count: > 0 })
+                {
+                    writer.WritePropertyName("allowed_host_suffixes");
+                    writer.WriteStartArray();
+                    foreach (var suffix in tenant.Webhook.AllowedHostSuffixes
+                                 .OrderBy(s => s, StringComparer.Ordinal))
+                    {
+                        writer.WriteStringValue(suffix);
+                    }
+
+                    writer.WriteEndArray();
+                }
 
                 writer.WriteEndObject();
             }

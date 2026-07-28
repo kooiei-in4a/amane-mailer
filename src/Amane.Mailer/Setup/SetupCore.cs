@@ -286,7 +286,9 @@ public sealed class SetupCore
                 ownership,
                 writtenFiles);
 
-            // ADR D-03: flush files, fsync bundle directory, then write FINALIZED, then fsync again.
+            // ADR D-03: flush files, fsync child dirs, bundle root, then parents (bundles/, managed root),
+            // then write FINALIZED, then fsync parents again.
+            var bundlesDir = Path.Combine(managedRootFull, SetupBundleLayout.BundlesDirectoryName);
             try
             {
                 _fileSystem.FlushDirectory(SetupBundleLayout.ConfigDir(bundleRoot));
@@ -298,6 +300,8 @@ public sealed class SetupCore
                 }
 
                 _fileSystem.FlushDirectory(bundleRoot);
+                _fileSystem.FlushDirectory(bundlesDir);
+                _fileSystem.FlushDirectory(managedRootFull);
             }
             catch
             {
@@ -316,6 +320,8 @@ public sealed class SetupCore
             try
             {
                 _fileSystem.FlushDirectory(bundleRoot);
+                _fileSystem.FlushDirectory(bundlesDir);
+                _fileSystem.FlushDirectory(managedRootFull);
             }
             catch
             {
@@ -581,7 +587,19 @@ public sealed class SetupCore
                 "Target directory must not be a symlink or reparse point.");
         }
 
-        _fileSystem.WriteProtectedFileCreateNew(path, content);
+        try
+        {
+            _fileSystem.WriteProtectedFileCreateNew(path, content);
+        }
+        catch (SecureFileWriteException ex) when (ex.CreatedFileCleanupFailed)
+        {
+            // Incomplete file may remain; track it so FailAfterPartialCleanup can surface cleanup_failed.
+            writtenFiles.Add(path);
+            throw new SetupCoreException(
+                SetupResultCode.RejectedCleanupFailed,
+                "Partial write cleanup failed; manual intervention may be required.");
+        }
+
         writtenFiles.Add(path);
         ApplyOwnership(path, ownership, directory: false);
     }

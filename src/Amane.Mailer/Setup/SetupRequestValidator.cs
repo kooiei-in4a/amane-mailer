@@ -47,6 +47,23 @@ public static partial class SetupRequestValidator
             return false;
         }
 
+        var expectedEnvironment = ExpectedEnvironment(request.Mode);
+        if (!request.Tenants.Environment.Equals(expectedEnvironment, StringComparison.Ordinal))
+        {
+            message = "Tenant configuration environment must match the Setup mode.";
+            return false;
+        }
+
+        foreach (var tenant in request.Tenants.Tenants)
+        {
+            // #451 owns live_sending=true promotion after exact environment confirmation.
+            if (tenant.LiveSending)
+            {
+                message = "live_sending=true is not accepted by Setup Core; use the ACS approval workflow.";
+                return false;
+            }
+        }
+
         foreach (var key in request.PublicEnvOverrides.Keys)
         {
             if (!ManagedEnvKeyCatalog.PublicEnvOverrideAllowlist.Contains(key))
@@ -78,9 +95,8 @@ public static partial class SetupRequestValidator
                 return false;
             }
 
-            if (string.IsNullOrWhiteSpace(request.TokenSecrets[key]))
+            if (!TryValidateSecretValue(request.TokenSecrets[key], "Token secret", out message))
             {
-                message = "Token secret values must be non-empty.";
                 return false;
             }
         }
@@ -94,10 +110,52 @@ public static partial class SetupRequestValidator
             }
         }
 
-        if (!string.IsNullOrEmpty(request.MetricsBearerToken)
-            && string.IsNullOrWhiteSpace(request.MetricsBearerToken))
+        var requiredWebhookSecretEnvs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var tenant in request.Tenants.Tenants)
+        {
+            if (tenant.Webhook is null)
+            {
+                continue;
+            }
+
+            requiredWebhookSecretEnvs.Add(tenant.Webhook.SecretEnv);
+        }
+
+        if (requiredWebhookSecretEnvs.Count != request.WebhookSecrets.Count
+            || requiredWebhookSecretEnvs.Any(name => !request.WebhookSecrets.ContainsKey(name))
+            || request.WebhookSecrets.Keys.Any(name => !requiredWebhookSecretEnvs.Contains(name)))
+        {
+            message = "Webhook secrets must exactly match tenant webhook.secret_env names.";
+            return false;
+        }
+
+        foreach (var pair in request.WebhookSecrets)
+        {
+            if (!TryValidateSecretValue(pair.Value, "Webhook secret", out message))
+            {
+                return false;
+            }
+        }
+
+        var metricsEnabled = IsMetricsEnabled(request);
+        if (metricsEnabled)
+        {
+            if (!TryValidateSecretValue(request.MetricsBearerToken, "Metrics bearer token", out message))
+            {
+                message = "Metrics bearer token is required when MAILER_METRICS_ENABLED=true.";
+                return false;
+            }
+        }
+        else if (!string.IsNullOrEmpty(request.MetricsBearerToken)
+                 && string.IsNullOrWhiteSpace(request.MetricsBearerToken))
         {
             message = "Metrics bearer token must not be whitespace.";
+            return false;
+        }
+        else if (!string.IsNullOrEmpty(request.MetricsBearerToken)
+                 && !IsEnvFileSafeSecret(request.MetricsBearerToken))
+        {
+            message = "Metrics bearer token contains unsupported control characters.";
             return false;
         }
 
@@ -114,9 +172,21 @@ public static partial class SetupRequestValidator
                 return false;
             }
 
+            if (!IsEnvFileSafeSecret(request.AcsConnectionString))
+            {
+                message = "ACS connection string contains unsupported control characters.";
+                return false;
+            }
+
             if (request.PlatformSender is null)
             {
                 message = "Platform sender representation is required for ACS modes.";
+                return false;
+            }
+
+            if (!request.PlatformSender.Environment.Equals(expectedEnvironment, StringComparison.Ordinal))
+            {
+                message = "Platform sender environment must match the Setup mode.";
                 return false;
             }
 
@@ -214,6 +284,65 @@ public static partial class SetupRequestValidator
             Provider = "acs",
             LiveSending = false,
         };
+
+    public static string ExpectedEnvironment(SetupMode mode) =>
+        mode switch
+        {
+            SetupMode.LocalMailpit => "develop",
+            SetupMode.StagingNoSend or SetupMode.StagingVerification => "staging",
+            SetupMode.ProductionAcs => "production",
+            _ => "develop",
+        };
+
+    public static bool IsMetricsEnabled(SetupRequest request)
+    {
+        if (request.PublicEnvOverrides.TryGetValue("MAILER_METRICS_ENABLED", out var raw))
+        {
+            return string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Matches SetupConfigurationMaterializer default.
+        return true;
+    }
+
+    private static bool TryValidateSecretValue(string? value, string label, out string message)
+    {
+        message = string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            message = $"{label} must be non-empty.";
+            return false;
+        }
+
+        if (!IsEnvFileSafeSecret(value))
+        {
+            message = $"{label} contains unsupported control characters.";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Secrets must round-trip through Compose env-file serialization without CR/LF/NUL.
+    /// </summary>
+    public static bool IsEnvFileSafeSecret(string value)
+    {
+        foreach (var ch in value)
+        {
+            if (ch is '\0' or '\n' or '\r')
+            {
+                return false;
+            }
+
+            if (ch < 0x20 && ch is not '\t')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     [GeneratedRegex(
         @"^(?:endpoint=https://.+;accesskey=.+)$",

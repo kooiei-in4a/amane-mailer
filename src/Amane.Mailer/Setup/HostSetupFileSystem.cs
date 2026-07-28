@@ -285,6 +285,12 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
             return false;
         }
 
+        return IsOwnerOnlySddl(sddl, ownerSid);
+    }
+
+    /// <summary>Test seam for Windows SDDL owner-only parsing (including unknown ACE fail-closed).</summary>
+    internal static bool IsOwnerOnlySddl(string sddl, string ownerSid)
+    {
         var daclIndex = sddl.IndexOf("D:", StringComparison.Ordinal);
         if (daclIndex < 0)
         {
@@ -336,6 +342,15 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
                 {
                     return false;
                 }
+            }
+            else if (parts[0] is "D" or "OD" or "DA")
+            {
+                // Explicit deny ACEs are acceptable for lockdown.
+            }
+            else
+            {
+                // Unknown / callback / object ACE types (XA, ZA, ...) — fail closed.
+                return false;
             }
 
             cursor = close + 1;

@@ -21,14 +21,101 @@ internal static class SecureFileCreate
 
     public static void WriteAllBytesCreateNew(string path, ReadOnlySpan<byte> content)
     {
-        using var stream = OpenCreateNewWriteStream(path);
-        stream.Write(content);
-        stream.Flush(flushToDisk: true);
+        var created = false;
+        try
+        {
+            using (var stream = OpenCreateNewWriteStream(path))
+            {
+                created = true;
+                stream.Write(content);
+                stream.Flush(flushToDisk: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!created)
+            {
+                throw;
+            }
+
+            var cleanupFailed = !TryDeleteCreatedFile(path);
+            throw new SecureFileWriteException(
+                "Failed to write a newly created protected file.",
+                ex,
+                cleanupFailed);
+        }
     }
 
     public static void WriteAllTextCreateNew(string path, string content)
     {
         WriteAllBytesCreateNew(path, Encoding.UTF8.GetBytes(content));
+    }
+
+    /// <summary>
+    /// Test seam: write through a custom stream factory so create-then-write failures can be simulated.
+    /// </summary>
+    internal static void WriteAllBytesCreateNewForTests(
+        string path,
+        ReadOnlySpan<byte> content,
+        Func<string, Stream> openStream,
+        Action<string> deleteFile)
+    {
+        var created = false;
+        try
+        {
+            using (var stream = openStream(path))
+            {
+                created = true;
+                stream.Write(content);
+                if (stream is FileStream fileStream)
+                {
+                    fileStream.Flush(flushToDisk: true);
+                }
+                else
+                {
+                    stream.Flush();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!created)
+            {
+                throw;
+            }
+
+            var cleanupFailed = false;
+            try
+            {
+                deleteFile(path);
+            }
+            catch
+            {
+                cleanupFailed = true;
+            }
+
+            throw new SecureFileWriteException(
+                "Failed to write a newly created protected file.",
+                ex,
+                cleanupFailed);
+        }
+    }
+
+    private static bool TryDeleteCreatedFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static FileStream OpenCreateNewWriteStream(string path)

@@ -57,6 +57,11 @@ public static class SetupConfigurationMaterializer
             secrets[pair.Key] = pair.Value;
         }
 
+        foreach (var pair in request.WebhookSecrets)
+        {
+            secrets[pair.Key] = pair.Value;
+        }
+
         if (!string.IsNullOrEmpty(request.MetricsBearerToken))
         {
             secrets["MAILER_METRICS_BEARER_TOKEN"] = request.MetricsBearerToken;
@@ -193,17 +198,32 @@ public static class SetupConfigurationMaterializer
 
     private static string EscapeEnvValue(string value)
     {
-        if (value.Length == 0)
+        // Compose env-file interpolation applies to unquoted and double-quoted values.
+        // Always double-quote and escape so secrets round-trip literally:
+        // - \ and " for the quoted form
+        // - $ as $$ so ${NAME}/$NAME are not expanded from the host environment
+        var sb = new StringBuilder(value.Length + 2);
+        sb.Append('"');
+        foreach (var ch in value)
         {
-            return string.Empty;
+            switch (ch)
+            {
+                case '\\':
+                    sb.Append("\\\\");
+                    break;
+                case '"':
+                    sb.Append("\\\"");
+                    break;
+                case '$':
+                    sb.Append("$$");
+                    break;
+                default:
+                    sb.Append(ch);
+                    break;
+            }
         }
 
-        if (value.IndexOfAny([' ', '#', '"', '\'', '\n', '\r', '\t']) >= 0)
-        {
-            return "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal)
-                .Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
-        }
-
-        return value;
+        sb.Append('"');
+        return sb.ToString();
     }
 }
