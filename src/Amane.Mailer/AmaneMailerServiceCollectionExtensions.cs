@@ -130,6 +130,7 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<MailRequestRepository>();
         services.AddSingleton<AdminAuditRepository>();
         services.AddSingleton<ProviderEventInboxRepository>();
+        services.AddSingleton<ProviderQueueDeadLetterRepository>();
         services.AddSingleton<BounceEventRepository>();
         services.AddSingleton<MailSuppressionRepository>();
         services.AddSingleton<BounceIngestionStore>();

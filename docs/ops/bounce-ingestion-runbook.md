@@ -58,11 +58,21 @@ tenant scope を持つ管理者は自テナントのみ。break-glass のみ全�
 | `mail_suppressed_sends_total` | 送信前ブロック発生 |
 | `mail_provider_events_pending` | inbox 滞留（例: 50 超を 15m） |
 | `mail_provider_events_dead_lettered` | inbox dead letter（0 超を警告） |
-| `mail_provider_queue_poll_failed_total` | Queue ポーリング失敗 |
+| `mail_provider_queue_poll_failed_total` | Queue 運用失敗（接続・受信・削除・DB 等） |
+| `mail_provider_queue_payload_invalid_total` | decode／parse 不能メッセージ（閾値未満の再配送含む） |
+| `mail_provider_queue_poisoned_total` | 閾値到達後にローカル dead-letter へ新規隔離した件数 |
 
 ラベルに `tenant_id` / 宛先を付けない（ADR 0020 D-10）。
 
-CLI `db stats` の `provider_events_pending` / `provider_events_dead_lettered` も同じ inbox 集計。
+CLI `db stats` の `provider_events_pending` / `provider_events_dead_lettered` は inbox 集計。
+`provider_queue_dead_letters_count` は Queue envelope 用ローカル dead-letter 件数（#461）。
+Admin `/admin/ops` の Provider queue セクションでも同件数を確認できる。
+
+### Poison message（壊れた Queue envelope）
+
+decode／parse 不能なメッセージは、Azure 側の `DequeueCount` が内部閾値（5）未満の間は削除せず visibility redelivery に委譲する。
+閾値到達後は raw body を保存せず `provider_queue_dead_letters` へ固定 error code のみ記録し、commit 成功後に Queue メッセージを削除する。
+DB 記録に失敗した場合は削除しない。正常イベントと混在する message では正常 event の inbox insert を維持する。
 
 ## 5. unmatched 多発時の確認手順
 

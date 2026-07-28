@@ -65,7 +65,9 @@ the optional-bearer path).
 | `mail_bounce_unmatched_total` | counter | none | Events that failed `provider_message_id` correlation since process start. Early signal of correlation design breakage |
 | `mail_bounce_recipient_mismatch_total` | counter | none | Events discarded because event-declared recipient did not match DB recipient |
 | `mail_suppressed_sends_total` | counter | none | Sends blocked by the pre-send suppression list since process start |
-| `mail_provider_queue_poll_failed_total` | counter | none | ACS Storage Queue poll failures since process start |
+| `mail_provider_queue_poll_failed_total` | counter | none | ACS Storage Queue operational failures since process start (connect/receive/inbox insert/delete/dead-letter insert). Does not include payload corruption |
+| `mail_provider_queue_payload_invalid_total` | counter | none | Decode/parse-invalid Queue messages since process start (includes sub-threshold redelivery) |
+| `mail_provider_queue_poisoned_total` | counter | none | Poison envelopes newly recorded to `provider_queue_dead_letters` since process start |
 | `mail_provider_events_pending` | gauge | none | `provider_event_inbox` pending / processing count (same as CLI `provider_events_pending`) |
 | `mail_provider_events_dead_lettered` | gauge | none | `provider_event_inbox` dead_lettered count (same as CLI `provider_events_dead_lettered`) |
 

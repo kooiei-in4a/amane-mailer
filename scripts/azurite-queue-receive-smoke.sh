@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Azurite + Native AOT receive smoke for ACS Storage Queue Pull transport (#305).
+# Azurite + Native AOT receive/delete smoke for ACS Storage Queue Pull transport (#305 / #461).
 #
 # Closes the #399 residual: successful ReceiveMessages XML -> QueueMessage[] deserialize
-# must run on the linux-x64 AOT binary (not only JIT tests).
+# must run on the linux-x64 AOT binary (not only JIT tests). After durable inbox insert,
+# also asserts the Queue message was deleted (ApproximateMessagesCount includes invisible
+# messages, so a failed delete cannot pass by relying on visibility timeout alone).
 #
 # Prerequisites:
 #   - MAILER_BIN: path to published Amane.Mailer (linux-x64 AOT)
@@ -225,6 +227,29 @@ if [ "$INBOX_COUNT" = "1" ]; then
   pass "aot:queue-receive-and-inbox-insert"
 else
   fail "aot:queue-receive-and-inbox-insert" "inbox row missing after poll window"
+fi
+
+log "[info] verifying Queue delete after durable inbox acceptance (#461)"
+# ApproximateMessagesCount includes invisible (leased) messages, so a failed delete still reports >0.
+cat >"$SEED_DIR/Program.cs" <<'CS'
+using Azure.Storage.Queues;
+var cs = Environment.GetEnvironmentVariable("SEED_CONN") ?? throw new InvalidOperationException("SEED_CONN");
+var qn = args[0];
+var client = new QueueClient(cs, qn, new QueueClientOptions { MessageEncoding = QueueMessageEncoding.None });
+var props = await client.GetPropertiesAsync();
+var approximate = props.Value.ApproximateMessagesCount;
+var leftover = await client.ReceiveMessagesAsync(maxMessages: 32, visibilityTimeout: TimeSpan.FromSeconds(1));
+var leftoverCount = leftover.Value?.Length ?? 0;
+Console.WriteLine($"approximate={approximate};receive={leftoverCount}");
+if (approximate != 0 || leftoverCount != 0)
+{
+    Environment.Exit(1);
+}
+CS
+if SEED_CONN="$CONN" dotnet run --project "$SEED_DIR/seed.csproj" -- "$QUEUE_NAME" >/dev/null; then
+  pass "aot:queue-delete-after-inbox-insert"
+else
+  fail "aot:queue-delete-after-inbox-insert" "queue still has messages after inbox insert (delete missing or failed)"
 fi
 
 if grep -Eiq 'AccountKey=|SharedAccessKey=' "$WORK_DIR/mailer.log"; then
