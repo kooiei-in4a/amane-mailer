@@ -2,7 +2,8 @@ namespace Amane.Mailer.Operations;
 
 /// <summary>
 /// Shared filesystem safety checks for <see cref="SecretFileWriter"/> and
-/// <see cref="ExclusiveOperationLock"/>. Rejects symlinks/reparse points and overly permissive
+/// <see cref="ExclusiveOperationLock"/>. Rejects symlinks/reparse points (including ancestor
+/// traversal with three-state inspection), paths outside an approved root, and overly permissive
 /// directory modes before any secret touches disk. Directory mode enforcement only runs on
 /// Linux (the real deploy target); Windows dev/test exercises the calling logic only, matching
 /// this repository's existing stance that Windows cannot substitute for Linux owner/mode
@@ -12,37 +13,52 @@ internal static class FileSystemSafetyGuard
 {
     public static void EnsureDirectoryIsSafe(string directoryPath)
     {
-        if (!Directory.Exists(directoryPath))
+        var fullPath = Path.GetFullPath(directoryPath);
+        if (!Directory.Exists(fullPath))
         {
             throw new SecretOperationException(
                 AdminProviderRegisterAcsResultCodes.RejectedDirectoryUnsafe,
                 "Target directory does not exist.");
         }
 
-        var info = new DirectoryInfo(directoryPath);
-        if (info.LinkTarget is not null)
+        if (FileSystemLinkInspector.HasUnsafeLinkInAncestry(fullPath))
         {
             throw new SecretOperationException(
                 AdminProviderRegisterAcsResultCodes.RejectedDirectoryUnsafe,
-                "Target directory must not be a symlink or reparse point.");
+                "Target directory must not be a symlink or reparse point, or descend through one.");
         }
 
-        EnsureNotGroupOrOtherAccessible(directoryPath);
+        EnsureNotGroupOrOtherAccessible(fullPath);
     }
 
     public static void EnsureTargetFileIsSafeIfExists(string filePath)
     {
-        if (!File.Exists(filePath))
-        {
-            return;
-        }
-
-        var info = new FileInfo(filePath);
-        if (info.LinkTarget is not null)
+        var fullPath = Path.GetFullPath(filePath);
+        if (FileSystemLinkInspector.IsUnsafe(FileSystemLinkInspector.Inspect(fullPath)))
         {
             throw new SecretOperationException(
                 AdminProviderRegisterAcsResultCodes.RejectedDirectoryUnsafe,
                 "Target file must not be a symlink or reparse point.");
+        }
+    }
+
+    public static void EnsurePathSafeUnderApprovedRoot(string approvedRootDirectory, string candidatePath)
+    {
+        var approvedRootFull = Path.GetFullPath(approvedRootDirectory);
+        var candidateFull = Path.GetFullPath(candidatePath);
+
+        if (!FileSystemLinkInspector.IsUnderApprovedRoot(approvedRootFull, candidateFull))
+        {
+            throw new SecretOperationException(
+                AdminProviderRegisterAcsResultCodes.RejectedDirectoryUnsafe,
+                "Target path is outside the approved root directory.");
+        }
+
+        if (FileSystemLinkInspector.HasUnsafeLinkInAncestry(candidateFull))
+        {
+            throw new SecretOperationException(
+                AdminProviderRegisterAcsResultCodes.RejectedDirectoryUnsafe,
+                "Symlink or reparse point paths are rejected.");
         }
     }
 

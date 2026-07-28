@@ -1,0 +1,378 @@
+using System.Globalization;
+using Amane.Mailer.Configuration;
+using System.Text.RegularExpressions;
+
+namespace Amane.Mailer.Setup;
+
+/// <summary>
+/// Key-specific value schema checks for <see cref="SetupRequest.PublicEnvOverrides"/> and
+/// typed image fields that flow into compose.env.
+/// </summary>
+public static partial class SetupPublicEnvOverrideValidator
+{
+    private const int RegexMatchTimeoutMilliseconds = 250;
+
+    public static bool TryValidate(
+        IReadOnlyDictionary<string, string> overrides,
+        string? imageRepository,
+        string? imageTag,
+        out string message)
+    {
+        message = string.Empty;
+
+        foreach (var pair in overrides)
+        {
+            if (!IsEnvFileSafeValue(pair.Value))
+            {
+                message = "Public env override values must not contain unsupported control characters.";
+                return false;
+            }
+
+            if (!TryValidateKey(pair.Key, pair.Value, out message))
+            {
+                return false;
+            }
+        }
+
+        if (imageRepository is not null)
+        {
+            if (string.IsNullOrWhiteSpace(imageRepository)
+                || !IsEnvFileSafeValue(imageRepository)
+                || !TryValidateImageRepository(imageRepository, out message))
+            {
+                if (string.IsNullOrEmpty(message))
+                {
+                    message = "Image repository is not a valid compose image repository value.";
+                }
+
+                return false;
+            }
+        }
+
+        if (imageTag is not null)
+        {
+            if (string.IsNullOrWhiteSpace(imageTag)
+                || !IsEnvFileSafeValue(imageTag)
+                || !ImageTagRegex().IsMatch(imageTag))
+            {
+                message = "Image tag is not a valid compose image tag value.";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool TryValidateKey(string key, string value, out string message)
+    {
+        message = string.Empty;
+        switch (key)
+        {
+            case "MAILER_METRICS_ENABLED":
+            case "ASPNETCORE_FORWARDEDHEADERS_ENABLED":
+                if (value is not ("true" or "false"))
+                {
+                    message = $"{key} must be exactly 'true' or 'false'.";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_PULL_POLICY":
+                if (value is not ("always" or "never" or "missing" or "build"))
+                {
+                    message = "MAILER_PULL_POLICY must be one of: always, never, missing, build.";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_HTTP_PORT":
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var port)
+                    || port is < 1 or > 65535)
+                {
+                    message = "MAILER_HTTP_PORT must be an integer from 1 to 65535.";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_RETENTION_DAYS":
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var days)
+                    || days < MailerRetentionOptions.MinRetentionDays
+                    || days > MailerRetentionOptions.MaxRetentionDays)
+                {
+                    message =
+                        $"MAILER_RETENTION_DAYS must be an integer between {MailerRetentionOptions.MinRetentionDays} and {MailerRetentionOptions.MaxRetentionDays} (inclusive).";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_HEALTHCHECK_RETRIES":
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var retries)
+                    || retries < 1
+                    || retries > SetupPublicEnvLimits.MaxHealthcheckRetries)
+                {
+                    message =
+                        $"MAILER_HEALTHCHECK_RETRIES must be an integer from 1 to {SetupPublicEnvLimits.MaxHealthcheckRetries}.";
+                    return false;
+                }
+
+                return true;
+
+            case "LOG_MAX_FILE":
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var maxFile)
+                    || maxFile < 1
+                    || maxFile > SetupPublicEnvLimits.MaxLogMaxFile)
+                {
+                    message =
+                        $"LOG_MAX_FILE must be an integer from 1 to {SetupPublicEnvLimits.MaxLogMaxFile}.";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_RETENTION_SWEEP_INTERVAL_HOURS":
+                if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var hours)
+                    || hours < MailerRetentionOptions.MinSweepIntervalHours
+                    || hours > MailerRetentionOptions.MaxSweepIntervalHours)
+                {
+                    message =
+                        $"MAILER_RETENTION_SWEEP_INTERVAL_HOURS must be an integer between {MailerRetentionOptions.MinSweepIntervalHours} and {MailerRetentionOptions.MaxSweepIntervalHours} (inclusive).";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_CPUS":
+                // Compose cpus interpolation needs a canonical ASCII number (no thousands separators).
+                if (!CanonicalCpusRegex().IsMatch(value)
+                    || !decimal.TryParse(
+                        value,
+                        NumberStyles.AllowDecimalPoint,
+                        CultureInfo.InvariantCulture,
+                        out var cpus)
+                    || cpus <= 0)
+                {
+                    message = "MAILER_CPUS must be a positive decimal (digits with optional fraction).";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_MEM_LIMIT":
+                if (!TryValidateMemLimit(value, out message))
+                {
+                    return false;
+                }
+
+                return true;
+
+            case "LOG_MAX_SIZE":
+                if (!TryValidateLogMaxSize(value, out message))
+                {
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_STOP_GRACE_PERIOD":
+            case "MAILER_HEALTHCHECK_INTERVAL":
+            case "MAILER_HEALTHCHECK_TIMEOUT":
+            case "MAILER_HEALTHCHECK_START_PERIOD":
+                if (!DurationRegex().IsMatch(value))
+                {
+                    message = $"{key} must look like a Docker duration (e.g. 30s, 2m).";
+                    return false;
+                }
+
+                return true;
+
+            case "COMPOSE_PROJECT_NAME":
+                if (!ComposeProjectNameRegex().IsMatch(value))
+                {
+                    message = "COMPOSE_PROJECT_NAME must be lowercase alphanumeric, '-', or '_', starting with a letter or digit.";
+                    return false;
+                }
+
+                return true;
+
+            case "MAILER_NETWORK_NAME":
+            case "MAILER_NETWORK_ALIAS":
+                if (!DnsLabelRegex().IsMatch(value))
+                {
+                    message = $"{key} must be a DNS-safe label.";
+                    return false;
+                }
+
+                return true;
+
+            default:
+                message = "Public env override key is not allowlisted for Setup Core.";
+                return false;
+        }
+    }
+
+    public static bool IsEnvFileSafeValue(string value)
+    {
+        foreach (var ch in value)
+        {
+            if (ch is '\0' or '\n' or '\r')
+            {
+                return false;
+            }
+
+            if (ch < 0x20 && ch is not '\t')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Docker <c>--memory</c>: positive integer with optional b/k/m/g; minimum 6m.</summary>
+    private static bool TryValidateMemLimit(string value, out string message)
+    {
+        message = string.Empty;
+        if (!TryParseDockerByteSize(value, allowBytesUnit: true, allowTerabyte: false, out var bytes))
+        {
+            message = "MAILER_MEM_LIMIT must be a Docker memory size using b/k/m/g (minimum 6m).";
+            return false;
+        }
+
+        const long minBytes = 6L * 1024 * 1024;
+        if (bytes < minBytes)
+        {
+            message = "MAILER_MEM_LIMIT must be at least 6m.";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Docker json-file <c>max-size</c>: positive integer with k/m/g.</summary>
+    private static bool TryValidateLogMaxSize(string value, out string message)
+    {
+        message = string.Empty;
+        if (!TryParseDockerByteSize(value, allowBytesUnit: false, allowTerabyte: false, out var bytes)
+            || bytes <= 0)
+        {
+            message = "LOG_MAX_SIZE must be a Docker logging max-size using k/m/g (e.g. 10m).";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseDockerByteSize(
+        string value,
+        bool allowBytesUnit,
+        bool allowTerabyte,
+        out long bytes)
+    {
+        bytes = 0;
+        var match = DockerByteSizeRegex().Match(value);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        if (!long.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var amount)
+            || amount <= 0)
+        {
+            return false;
+        }
+
+        var unit = match.Groups[2].Value;
+        if (unit.Length == 0)
+        {
+            if (!allowBytesUnit)
+            {
+                return false;
+            }
+
+            bytes = amount;
+            return true;
+        }
+
+        var unitChar = char.ToLowerInvariant(unit[0]);
+        try
+        {
+            bytes = unitChar switch
+            {
+                'b' when allowBytesUnit => amount,
+                'k' => checked(amount * 1024L),
+                'm' => checked(amount * 1024L * 1024L),
+                'g' => checked(amount * 1024L * 1024L * 1024L),
+                't' when allowTerabyte => checked(amount * 1024L * 1024L * 1024L * 1024L),
+                _ => -1,
+            };
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+
+        return bytes > 0;
+    }
+
+    private static bool TryValidateImageRepository(string imageRepository, out string message)
+    {
+        message = string.Empty;
+        if (!ImageRepositoryRegex().IsMatch(imageRepository))
+        {
+            message = "Image repository is not a valid compose image repository value.";
+            return false;
+        }
+
+        var slash = imageRepository.IndexOf('/');
+        if (slash <= 0)
+        {
+            return true;
+        }
+
+        var registry = imageRepository[..slash];
+        var colon = registry.LastIndexOf(':');
+        if (colon < 0)
+        {
+            return true;
+        }
+
+        var portText = registry[(colon + 1)..];
+        if (!int.TryParse(portText, NumberStyles.None, CultureInfo.InvariantCulture, out var port)
+            || port is < 1 or > 65535)
+        {
+            message = "Image repository registry port must be an integer from 1 to 65535.";
+            return false;
+        }
+
+        return true;
+    }
+
+    [GeneratedRegex(@"^([1-9]\d*)([bBkKmMgGtT])?$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
+    private static partial Regex DockerByteSizeRegex();
+
+    [GeneratedRegex(@"^[0-9]+(?:\.[0-9]+)?$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
+    private static partial Regex CanonicalCpusRegex();
+
+    [GeneratedRegex(@"^[1-9]\d*[smh]$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
+    private static partial Regex DurationRegex();
+
+    [GeneratedRegex(@"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
+    private static partial Regex DnsLabelRegex();
+
+    [GeneratedRegex(@"^[a-z0-9][a-z0-9_-]*$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
+    private static partial Regex ComposeProjectNameRegex();
+
+    // Docker image reference name without tag: [HOST[:PORT]/]PATH (path components lowercase).
+    [GeneratedRegex(
+        @"^(?:(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(?:\.(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?))*(?::[0-9]{1,5})?/)?[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$",
+        RegexOptions.CultureInvariant,
+        RegexMatchTimeoutMilliseconds)]
+    private static partial Regex ImageRepositoryRegex();
+
+    [GeneratedRegex(@"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", RegexOptions.CultureInvariant, RegexMatchTimeoutMilliseconds)]
+    private static partial Regex ImageTagRegex();
+}

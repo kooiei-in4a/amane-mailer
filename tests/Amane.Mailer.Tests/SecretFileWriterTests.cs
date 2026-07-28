@@ -10,7 +10,7 @@ public sealed class SecretFileWriterTests
     {
         using var scratch = new ScratchDirectory();
         var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
-        var writer = new SecretFileWriter(targetPath);
+        var writer = new SecretFileWriter(targetPath, scratch.Path);
 
         writer.Prepare("Endpoint=https://example;AccessKey=secret");
         var entriesWhilePrepared = Directory.GetFiles(scratch.Path);
@@ -31,7 +31,7 @@ public sealed class SecretFileWriterTests
         var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
         File.WriteAllText(targetPath, string.Empty);
 
-        var writer = new SecretFileWriter(targetPath);
+        var writer = new SecretFileWriter(targetPath, scratch.Path);
         writer.Prepare("new-value");
         writer.Commit();
 
@@ -43,7 +43,7 @@ public sealed class SecretFileWriterTests
     {
         using var scratch = new ScratchDirectory();
         var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
-        var writer = new SecretFileWriter(targetPath);
+        var writer = new SecretFileWriter(targetPath, scratch.Path);
 
         writer.Prepare("value");
         var discarded = writer.TryDiscardPrepared();
@@ -57,7 +57,7 @@ public sealed class SecretFileWriterTests
     public void TryDiscardPrepared_returns_true_when_nothing_was_prepared()
     {
         using var scratch = new ScratchDirectory();
-        var writer = new SecretFileWriter(Path.Combine(scratch.Path, "acs_connection_string"));
+        var writer = new SecretFileWriter(Path.Combine(scratch.Path, "acs_connection_string"), scratch.Path);
 
         Assert.True(writer.TryDiscardPrepared());
     }
@@ -73,7 +73,7 @@ public sealed class SecretFileWriterTests
 
         using var scratch = new ScratchDirectory();
         var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
-        var writer = new SecretFileWriter(targetPath);
+        var writer = new SecretFileWriter(targetPath, scratch.Path);
         const string acsLikeSecret = "Endpoint=https://synthetic.example.communication.azure.com/;AccessKey=SYNTHETIC-NOT-REAL";
 
         writer.Prepare(acsLikeSecret);
@@ -102,7 +102,7 @@ public sealed class SecretFileWriterTests
     {
         using var scratch = new ScratchDirectory();
         var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
-        var writer = new SecretFileWriter(targetPath);
+        var writer = new SecretFileWriter(targetPath, scratch.Path);
         writer.Prepare("value");
         writer.Commit();
         Assert.True(File.Exists(targetPath));
@@ -124,7 +124,7 @@ public sealed class SecretFileWriterTests
 
         using var scratch = new ScratchDirectory();
         var targetPath = Path.Combine(scratch.Path, "acs_connection_string");
-        var writer = new SecretFileWriter(targetPath);
+        var writer = new SecretFileWriter(targetPath, scratch.Path);
         writer.Prepare("value");
         writer.Commit();
         Assert.True(File.Exists(targetPath));
@@ -149,7 +149,7 @@ public sealed class SecretFileWriterTests
     public void Prepare_throws_when_target_directory_does_not_exist()
     {
         var missingDirectory = Path.Combine(Path.GetTempPath(), "amane-mailer-missing-" + Guid.NewGuid().ToString("N"));
-        var writer = new SecretFileWriter(Path.Combine(missingDirectory, "acs_connection_string"));
+        var writer = new SecretFileWriter(Path.Combine(missingDirectory, "acs_connection_string"), missingDirectory);
 
         var ex = Assert.Throws<SecretOperationException>(() => writer.Prepare("value"));
 
@@ -174,7 +174,7 @@ public sealed class SecretFileWriterTests
             return;
         }
 
-        var writer = new SecretFileWriter(symlinkPath);
+        var writer = new SecretFileWriter(symlinkPath, scratch.Path);
         var thrown = Assert.Throws<SecretOperationException>(() => writer.Prepare("value"));
         Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedDirectoryUnsafe, thrown.CanonicalCode);
     }

@@ -141,9 +141,9 @@ public sealed partial class AdminProviderRegisterAcsCommand(
             var senderJson = JsonSerializer.Serialize(senderFile, MailerJsonContext.Default.PlatformSenderFile);
 
             TwoPhaseSecretWriteCoordinator.WriteBoth(
-                new SecretFileWriter(acsSecretPath),
+                new SecretFileWriter(acsSecretPath, acsSecretDirectory),
                 connectionString,
-                new SecretFileWriter(senderPath),
+                new SecretFileWriter(senderPath, platformSenderDirectory),
                 senderJson);
 
             console.WriteLine($"success: operation=register_acs result={AdminProviderRegisterAcsResultCodes.Success}");

@@ -46,10 +46,9 @@ public static class TwoPhaseSecretWriteCoordinator
         ArgumentNullException.ThrowIfNull(first);
         ArgumentNullException.ThrowIfNull(second);
 
-        first.Prepare(firstContent);
         try
         {
-            second.Prepare(secondContent);
+            first.Prepare(firstContent);
         }
         catch (Exception ex)
         {
@@ -57,9 +56,28 @@ public static class TwoPhaseSecretWriteCoordinator
             {
                 throw new SecretOperationException(
                     AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed,
-                    "The second file failed to prepare and cleaning up the first file's temp " +
-                    "file also failed. A temp file may still be present on disk. Manual review " +
-                    "is required.",
+                    "The first file failed to prepare and cleaning up its temp file also failed. " +
+                    "A temp file may still be present on disk. Manual review is required.",
+                    ex);
+            }
+
+            throw;
+        }
+
+        try
+        {
+            second.Prepare(secondContent);
+        }
+        catch (Exception ex)
+        {
+            var firstDiscarded = first.TryDiscardPrepared();
+            var secondDiscarded = second.TryDiscardPrepared();
+            if (!firstDiscarded || !secondDiscarded)
+            {
+                throw new SecretOperationException(
+                    AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed,
+                    "A file failed to prepare and cleaning up prepared temp file(s) also failed. " +
+                    "A temp file may still be present on disk. Manual review is required.",
                     ex);
             }
 
@@ -72,13 +90,15 @@ public static class TwoPhaseSecretWriteCoordinator
         }
         catch (Exception ex)
         {
-            if (!second.TryDiscardPrepared())
+            // File.Move failure leaves the first temp path registered; discard both prepared temps.
+            var firstDiscarded = first.TryDiscardPrepared();
+            var secondDiscarded = second.TryDiscardPrepared();
+            if (!firstDiscarded || !secondDiscarded)
             {
                 throw new SecretOperationException(
                     AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed,
-                    "The first file failed to commit and cleaning up the second file's temp " +
-                    "file also failed. A temp file may still be present on disk. Manual review " +
-                    "is required.",
+                    "The first file failed to commit and cleaning up prepared temp file(s) also " +
+                    "failed. A temp file may still be present on disk. Manual review is required.",
                     ex);
             }
 
