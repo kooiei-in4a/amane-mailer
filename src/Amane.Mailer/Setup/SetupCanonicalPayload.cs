@@ -110,7 +110,7 @@ public static class SetupCanonicalPayload
             writer.WriteString("token_env", tenant.TokenEnv);
             writer.WriteString("provider", tenant.Provider);
             writer.WriteBoolean("live_sending", tenant.LiveSending);
-            writer.WriteNumber("metadata_max_bytes", tenant.MetadataMaxBytes);
+            writer.WriteNumber("metadata_max_bytes", tenant.EffectiveMetadataMaxBytes);
             writer.WritePropertyName("retry");
             writer.WriteStartObject();
             writer.WriteNumber("max_attempts", tenant.Retry.MaxAttempts);

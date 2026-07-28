@@ -12,6 +12,9 @@ public sealed class SetupInspectAotFixtureDiagTests
     private const string SmokeTenantsJsonWithoutMetadataMaxBytes =
         "{\"version\":1,\"environment\":\"develop\",\"tenants\":[{\"tenant_id\":\"00000000-0000-0000-0000-000000000101\",\"name\":\"aot-inspect\",\"source_services\":[\"aot\"],\"default_from\":{\"email\":\"noreply@example.com\",\"display_name\":\"AOT\"},\"token_env\":\"MAIL_SERVICE_TOKEN\",\"provider\":\"mailpit\",\"live_sending\":false,\"retry\":{\"max_attempts\":3,\"initial_delay_seconds\":1,\"max_delay_seconds\":10}}]}";
 
+    private const string SmokeTenantsJsonWithExplicitZeroMetadataMaxBytes =
+        "{\"version\":1,\"environment\":\"develop\",\"tenants\":[{\"tenant_id\":\"00000000-0000-0000-0000-000000000101\",\"name\":\"aot-inspect\",\"source_services\":[\"aot\"],\"default_from\":{\"email\":\"noreply@example.com\",\"display_name\":\"AOT\"},\"token_env\":\"MAIL_SERVICE_TOKEN\",\"provider\":\"mailpit\",\"live_sending\":false,\"metadata_max_bytes\":0,\"retry\":{\"max_attempts\":3,\"initial_delay_seconds\":1,\"max_delay_seconds\":10}}]}";
+
     private const string InspectToken = "aot-inspect-token-not-real";
 
     [Fact]
@@ -31,7 +34,7 @@ public sealed class SetupInspectAotFixtureDiagTests
     }
 
     [Fact]
-    public void Omitted_metadata_max_bytes_deserializes_as_zero_and_yields_tenants_invalid()
+    public void Omitted_metadata_max_bytes_defaults_to_4096_and_tryload_succeeds()
     {
         using var dir = new TempDirectory();
         var path = Path.Combine(dir.Path, "tenants.json");
@@ -42,8 +45,32 @@ public sealed class SetupInspectAotFixtureDiagTests
             ("MAIL_SERVICE_TOKEN", InspectToken));
 
         var load = MailerConfigurationSnapshot.TryLoad(config);
+        Assert.True(load.Succeeded, load.FailureKind.ToString());
+        Assert.NotNull(load.Snapshot);
+        Assert.Equal(
+            MailerTenant.DefaultMetadataMaxBytes,
+            load.Snapshot.TenantsFile.Tenants[0].EffectiveMetadataMaxBytes);
+        Assert.Equal(
+            MailerTenant.DefaultMetadataMaxBytes,
+            load.Snapshot.TenantsFile.Tenants[0].MetadataMaxBytes);
+    }
+
+    [Fact]
+    public void Explicit_zero_metadata_max_bytes_yields_tenants_invalid()
+    {
+        using var dir = new TempDirectory();
+        var path = Path.Combine(dir.Path, "tenants.json");
+        File.WriteAllText(path, SmokeTenantsJsonWithExplicitZeroMetadataMaxBytes);
+
+        var config = BuildConfig(
+            ("MAILER_TENANTS_PATH", path),
+            ("MAIL_SERVICE_TOKEN", InspectToken));
+
+        var load = MailerConfigurationSnapshot.TryLoad(config);
         Assert.False(load.Succeeded);
-        Assert.Equal(MailerConfigurationSnapshot.LoadFailureKind.TenantsInvalid, load.FailureKind);
+        Assert.Equal(
+            MailerConfigurationSnapshot.LoadFailureKind.TenantsInvalid,
+            load.FailureKind);
     }
 
     [Fact]

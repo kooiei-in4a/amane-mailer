@@ -41,6 +41,7 @@ public sealed class MailerTenantRegistry
             MailerJsonContext.Default.MailerTenantsFile)
             ?? throw new InvalidOperationException("Mailer tenant configuration file is empty.");
 
+        tenantFile = tenantFile.WithJsonDefaultsApplied();
         tenantFile.Validate();
         foreach (var tenant in tenantFile.Tenants)
         {

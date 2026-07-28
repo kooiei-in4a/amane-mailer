@@ -264,7 +264,7 @@ public static class MailRequestCreateHandler
                 StatusCodes.Status422UnprocessableEntity);
         }
 
-        if (!IsValidMetadata(request, tenant.MetadataMaxBytes))
+        if (!IsValidMetadata(request, tenant.EffectiveMetadataMaxBytes))
         {
             return MailRequestHttpErrorMapper.Error(
                 StatusCodes.Status422UnprocessableEntity,
