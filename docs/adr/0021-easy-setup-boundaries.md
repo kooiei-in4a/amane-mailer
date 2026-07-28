@@ -98,14 +98,45 @@ Easy Setup の主目的は **誤設定・取り違え・偶発変更・誤 mount
 | **public/non-secret configuration** | provider、`live_sending`、bounce mode／queue name、image tag、ports、resource limits、Admin enabled／username／local-address／allow-http／pii mode、path **bindings**（値は path）、metrics enabled 等 | **含める** | 改変検知は fingerprint／FINALIZED | `env/compose.env`（immutable） | ACTIVE 切替で戻る |
 | **secret-valued environment** | `MAIL_SERVICE_TOKEN`、`MAIL_SERVICE_TOKEN_DEVELOP`／`_STAGING`／`_PRODUCTION`、`MAILER_METRICS_BEARER_TOKEN`、`AMANE_ADMIN_PASSWORD_HASH` | **含めない** | **integrity seal 対象**＋ owner-only（0600 相当） | `env/secrets.env`（immutable、host のみ読取可能な権限） | ACTIVE 切替で戻る |
 | **file secret** | ACS connection string file、bounce queue connection string file 等 | **含めない** | **integrity seal 対象**＋ owner-only | `secrets/` | ACTIVE 切替で戻る |
-| **external/manual-only operational** | `MAILER_DATA_PATH`（SQLite データ領域）、`MAILER_BACKUP_*`、rclone 設定、backup ping 等。Easy Setup が deployment 切替の一部として管理しない運用入力 | 含めない | Easy Setup integrity の対象外（運用 runbook） | **bundle に入れない** | config rollback 対象外 |
+| **external/manual-only operational** | `MAILER_DATA_PATH`（SQLite データ領域）、`MAILER_CONNECTION_STRING`（コンテナ内接続文字列。host data とセットで扱う）、`MAILER_BACKUP_*`、rclone 設定、backup ping 等。Easy Setup が bundle 切替の一部として管理しない運用入力 | 含めない（ただし runtime-identity は verification の stale 対象。下記） | bundle integrity の HMAC 対象外。runtime-identity は host 内部 binding 照合の対象 | **bundle に入れない**。allowlist 済み external 入力から合成 | config bundle rollback 対象外 |
 
 追加契約:
 
 - secret-valued environment を `env/` の「non-secret 断片」と呼んではならない。`compose.env` と `secrets.env` を分離する。
-- Managed 適用時、host adapter は **ACTIVE が指す bundle の immutable env のみ**を Compose に渡し、host 直下の旧 `.env` の secret-valued key と **マージして上書き競合させない**。競合検出時は FAIL。
-- Manual 値が external に残り Managed が同一 key を要求する場合は fail-closed（下記競合規則）。
 - `AMANE_ADMIN_PASSWORD_HASH` を Managed に含める場合でも、Admin bootstrap 成功条件・non-interactive 禁止（D-09／D-10）は別契約として優先する。
+
+#### Managed Compose 入力の構成規則（固定）
+
+Managed Setup で Compose／one-shot に渡す env は、次の **排他的レイヤ**だけから構成する。旧 Manual `.env` 全体を無条件に読み込まない。
+
+```text
+1. fixed release defaults          … 配布／文書化された固定テンプレートの既定値
+2. allowlisted external inputs     … external/manual-only の allowlist キーのみ
+3. ACTIVE compose.env              … public/non-secret + path bindings（immutable）
+4. ACTIVE secrets.env              … secret-valued environment（immutable）
+```
+
+| 規則 | 契約 |
+|------|------|
+| 合成順序 | 上表の 1→4。後段レイヤは **自分類のキーのみ**を供給する。先勝ち／後勝ちによる曖昧な上書きを許可しない |
+| キー集合の排他 | 4 分類のキー集合は **互いに排他**。同一キーが複数分類／複数レイヤに現れたら **FAIL** |
+| 分類外キー | allowlisted external 入力に分類外キー、または Managed（compose／secrets／path binding）キーが混入したら **FAIL** |
+| external 入力元 | #449 が文書化する **allowlist 済み専用入力**（例: Managed root 配下の `external.env`、または同等）。旧 host `.env` を丸ごと `--env-file` しない |
+| Managed キーの供給元 | `ACTIVE` が指す immutable `compose.env`／`secrets.env` のみ |
+| 欠落 | allowlist 上必須の runtime-identity external（少なくとも `MAILER_DATA_PATH`）が欠落し、Compose 既定（例: `./data`）へ暗黙フォールバックする状態は **FAIL**（別 DB を黙って開かない） |
+
+#### external の runtime-identity と backup 分離
+
+| 区分 | 例 | deployment verification との関係 |
+|------|----|----------------------------------|
+| **runtime-identity external** | 少なくとも `MAILER_DATA_PATH`。必要なら `MAILER_CONNECTION_STRING`（data volume／DB 同一性に影響する値） | apply／inspect 時に host 内部で binding 一致を確認する。変更後に旧 verification record を **有効扱いしない**（stale）。public result／Admin／ログへ **private host path の原文を出さない**（一致／不一致の enum または理由コードのみ） |
+| **ops-only external** | `MAILER_BACKUP_*`、rclone 設定、backup ping 等 | Mailer runtime の send-ready／deployment verification とは **分離**する。変更しても Easy Setup の configuration applied／send-ready 判定を自動では壊さない（backup runbook の責任） |
+
+runtime-identity binding の具体的な内部 stamp／digest byte layout は #449／#450 へ委譲してよい。契約として必須なのは:
+
+1. 以前の verification が参照した runtime-identity binding と、現在 Compose に渡している binding が一致すること。
+2. 不一致・欠落・暗黙フォールバックは stale または FAIL であり、同じ `ACTIVE`＋旧 record のまま成功表示しないこと。
+3. 検出結果の公開面に host private path／接続文字列を載せないこと。
 
 #### Ownership / source-of-truth
 
@@ -117,26 +148,28 @@ Easy Setup の主目的は **誤設定・取り違え・偶発変更・誤 mount
 | file secrets | ファイル内容 | integrity seal の入力（値は出さない） | file／loader が正 |
 | Compose file | `infra/deploy/compose.yml`（または文書化された固定テンプレート） | image／compose bundle version を記録 | Compose + image tag が正 |
 | Easy Setup metadata | active bundle の `recorded.json`（D-04 transport） | bundle 識別・照合・Assistant／Admin 表示 | **正本にしない** |
-| verification record | Managed root 内（secret なし） | 直近照合結果の記録 | 送信判断に使わない |
+| verification record | Managed root 内（secret なし） | 直近照合結果の記録。runtime-identity binding 照合結果を含む（path 原文なし） | 送信判断に使わない |
 | Admin DB (`admin_*`) | SQLite | bootstrap 結果の副作用 | config 正本ではない |
-| external/manual-only | host 運用ファイル | 管理外 | 各 runbook |
+| runtime-identity external | allowlisted external 入力 | verification stale 判定の入力（path 非公開） | DB／data volume の同一性 |
+| ops-only external | allowlisted external 入力 | deployment verification 対象外 | backup／ops runbook |
 
 #### Managed Setup vs Manual Deployment
 
 | モード | 定義 | runtime 動作 |
 |--------|------|--------------|
-| **Managed Setup** | Managed root に finalize 済み bundle と有効な `ACTIVE` があり、Easy Setup が適用・照合する | host adapter が ACTIVE → immutable bundle env／mount を Compose に渡す。metadata は補助 |
+| **Managed Setup** | Managed root に finalize 済み bundle と有効な `ACTIVE` があり、Easy Setup が適用・照合する | host adapter が上表の Compose 構成規則で env／mount を組み立てる。metadata は補助 |
 | **Manual Deployment** | Managed root／`ACTIVE`／managed metadata が無い、または利用者が Easy Setup を使わない | **現行どおり動作**。`managed=false`。integrity を推測しない |
 
 #### 競合時 fail-closed
 
 次のいずれかを検出したら適用・成功判定を **FAIL** し、曖昧な「部分 Managed」を成功にしない。
 
-1. `ACTIVE` が存在するのに、Compose に渡された env／mount が active bundle 外の tenants／secret／secret-valued env を指している。
+1. `ACTIVE` が存在するのに、Compose に渡された Managed path／secret／secret-valued env が active bundle 外を指している。
 2. active managed bundle 配下の immutable 対象ファイルが finalize 後に変更された（integrity mismatch）。
 3. Manual 編集と Managed apply が同時進行し、lock を取れない／stamp が不一致。
 4. 利用者が Managed 成功を主張しているのに recorded metadata または integrity 結果が `not-managed`／`not-verified`／`mismatch`。
-5. Managed 適用時に host 側 Manual `.env` の secret-valued key が Compose 入力へ混入し、bundle `secrets.env` と競合する。
+5. allowlisted external 以外から Managed キーが混入する、分類横断のキー重複がある、または分類外キーがある。
+6. runtime-identity external（少なくとも `MAILER_DATA_PATH`）が欠落し Compose 既定へフォールバックする、または verification 時の binding と不一致である。
 
 Manual Deployment では metadata が無くても既存 runtime を変更しない。Easy Setup が Manual 環境を自動 adopt しない。
 
@@ -175,7 +208,7 @@ Managed root（実装が文書化する固定相対レイアウト。概念名�
 | 項目 | 契約 |
 |------|------|
 | `ACTIVE` ペイロード | `bundleId`、`activationGeneration`（単調増加）、`schemaVersion`。secret を含めない |
-| Compose への入力 | host adapter が `ACTIVE.bundleId` を読み、**その bundle 内の immutable** `env/compose.env` と `env/secrets.env`、および path bindings が指す `config/`・`secrets/`・`metadata/recorded.json` だけを Compose に渡す |
+| Compose への入力 | host adapter が D-02 の構成規則（fixed defaults + allowlisted external + ACTIVE `compose.env` + ACTIVE `secrets.env`）で組み立て、path bindings が指す `config/`・`secrets/`・`metadata/recorded.json` を Compose に渡す |
 | mutable overlay | `managed.active.env` のような **ACTIVE と別の mutable env ファイルを永続化しない**（split-brain 禁止） |
 | path の実体 | path bindings の値は常に `bundles/<ACTIVE.bundleId>/...` 配下を指す |
 
@@ -335,6 +368,7 @@ Compose 本体 YAML に setup 専用サービスは追加しない。Managed 時
 - `record.bundleId != ACTIVE.bundleId` → stale
 - `record.activationGeneration != ACTIVE.activationGeneration` → stale
 - image digest／compose version／fingerprint／schema が ACTIVE／recorded と不一致 → stale または mismatch（理由コードで区別）
+- runtime-identity external binding（少なくとも `MAILER_DATA_PATH`、必要なら `MAILER_CONNECTION_STRING`）が record 作成時と不一致 → stale（path 原文は出さない）
 - APPLY.lock 保持中／TX.stamp が未完了 → verification pending（send-ready にしない）
 
 **Admin 表示:**
@@ -361,7 +395,7 @@ Compose 本体 YAML に setup 専用サービスは追加しない。Managed 時
 | コンポーネント | 責任 | 禁止 |
 |----------------|------|------|
 | **Setup Core** | bundle 生成、fingerprint、at-rest seal、canonical integrity 統合、apply オーケストレーション、verification commit、状態機械 | UI フレームワーク依存、任意 shell 文字列実行、mutable overlay 永続化 |
-| **Host adapter** | ローカル Docker／Compose の固定操作、`ACTIVE` → immutable bundle env 解決、preflight、remote context 拒否、ephemeral verifier の単回受け渡しと削除 | 利用者任意の docker 引数／path／compose ファイル注入、長期 sealing key のコンテナ永続化 |
+| **Host adapter** | ローカル Docker／Compose の固定操作、`ACTIVE` 解決、allowlisted external 合成、preflight、remote context 拒否、ephemeral verifier の単回受け渡しと削除 | 利用者任意の docker 引数／path／compose ファイル注入、旧 Manual `.env` 全体の無条件合成、長期 sealing key のコンテナ永続化 |
 | **localhost Web adapter** | loopback UI、入力収集、Core 呼び出し | **interactive CLI subprocess／PTY の自動操作**、任意コマンド実行 |
 | **terminal adapter** | headless／VPS 向け対話 UI、Core 呼び出し | Web 専用前提の省略による契約緩和 |
 | **既存 TTY CLI** | `register-acs` / `test-acs-send` 等の人間向け adapter | Web からの PTY ラップ対象にしない |
@@ -507,6 +541,7 @@ setup apply --non-interactive
 - non-interactive Admin bootstrap
 - active pointer の主方式としての symlink／reparse point
 - **ACTIVE と別の mutable overlay env を第二の activation authority にすること**
+- 旧 Manual `.env` 全体の無条件合成、または runtime-identity external 欠落時の暗黙 `./data` フォールバック成功扱い
 - 長期 sealing key の通常 runtime 常駐、または container 検証なしの host-only integrity
 - fingerprint 一致のみでの bundle 全体一致宣言
 - #456 必須シナリオ表以外への Hard gate 二重管理
@@ -564,7 +599,7 @@ setup apply --non-interactive
 ## Residual risks
 
 1. 特権 host 改ざんは検知目標外（D-04）。
-2. NAS／特殊 FS での atomic rename／fsync 意味論の差（サポート分類は best-effort。Gate 扱いは #456）。
+2. NAS／特殊 FS での atomic rename／fsync 意味論の差（サポート分類は best-effort。Gate 分類の正本は #456）。
 3. compose 外の手動 `docker run` との混在は fail-closed でも運用者が混乱しうる。
 4. platform-sender 未使用ギャップは v1.1.0 から継続（send-ready に含めない）。
 5. integrity／ephemeral verifier 実装バグは #456 の必須シナリオで潰す前提。
@@ -575,7 +610,7 @@ setup apply --non-interactive
 |-------|------|
 | #447 | effective inspection、ephemeral mount attestation の one-shot 面 |
 | #448 | Setup Core／immutable bundle／fingerprint／at-rest seal／env 分類のキー表 |
-| #449 | host Docker adapter／ACTIVE 解決／preflight |
+| #449 | host Docker adapter／ACTIVE 解決／allowlisted external 合成／preflight |
 | #450 | apply／verify／rollback／crash 収束／verification record commit |
 | #451 | typed ACS workflow 統合 |
 | #452 | localhost Web Assistant |
@@ -589,7 +624,7 @@ setup apply --non-interactive
 
 ## English decision summary（JA 本文との意味整合用）
 
-This ADR accepts host-side Easy Setup that wraps existing `.env` / `tenants.json` / file-secret / deploy compose contracts. Metadata is not a runtime authority. Managed deployments use immutable bundles; the sole activation authority is `ACTIVE` (bundleId + activationGeneration). Host adapters resolve `ACTIVE` to immutable per-bundle `compose.env` / `secrets.env` — no separate mutable overlay. Env keys are classified as public/non-secret, secret-valued environment, file secret, or external/manual-only. Configuration fingerprint covers non-secret only; integrity combines host at-rest seal verification with container mount attestation via an ephemeral verifier (long-term sealing key never enters normal runtime). Recorded metadata is mounted read-only at `/run/amane/setup/recorded.json`. Verification records commit only after recreate + inspection + integrity + readiness succeed, and are stale when they disagree with `ACTIVE`. Effective inspection is a same-image one-shot after recreate. Web/terminal call typed ACS operations and must not drive TTY/PTY CLIs. Admin bootstrap is optional (#459). Modes 1–4 are in scope; mode 5 stays manual. Gate classifications live only in issue #456. Feature id `easy-setup` is `planned` here and becomes `implemented` only after #458.
+This ADR accepts host-side Easy Setup that wraps existing `.env` / `tenants.json` / file-secret / deploy compose contracts. Metadata is not a runtime authority. Managed deployments use immutable bundles; the sole activation authority is `ACTIVE` (bundleId + activationGeneration). Compose input is composed only from fixed release defaults + allowlisted external/manual-only inputs + ACTIVE `compose.env` + ACTIVE `secrets.env` (exclusive key sets; no whole Manual `.env` merge). Env keys are classified as public/non-secret, secret-valued environment, file secret, or external/manual-only. Runtime-identity externals (at least `MAILER_DATA_PATH`, and `MAILER_CONNECTION_STRING` when it affects DB identity) participate in verification stale detection without exposing private host paths; backup/rclone externals stay outside send-ready. Configuration fingerprint covers non-secret only; integrity combines host at-rest seal verification with container mount attestation via an ephemeral verifier (long-term sealing key never enters normal runtime). Recorded metadata is mounted read-only at `/run/amane/setup/recorded.json`. Verification records commit only after recreate + inspection + integrity + readiness succeed, and are stale when they disagree with `ACTIVE` or runtime-identity bindings. Effective inspection is a same-image one-shot after recreate. Web/terminal call typed ACS operations and must not drive TTY/PTY CLIs. Admin bootstrap is optional (#459). Modes 1–4 are in scope; mode 5 stays manual. Gate classifications live only in issue #456. Feature id `easy-setup` is `planned` here and becomes `implemented` only after #458.
 
 ## 実装ステータス
 
