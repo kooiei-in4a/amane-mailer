@@ -135,7 +135,7 @@ public sealed class SetupCore
             return false;
         }
 
-        if (_fileSystem.IsSymlinkOrReparsePoint(sealingKeyPath))
+        if (_fileSystem.InspectSymlinkOrReparsePoint(sealingKeyPath) is not SetupLinkInspectionResult.NotALink)
         {
             failureCode = SetupResultCode.RejectedPathUnsafe;
             message = "Sealing key path must not be a symlink or reparse point.";
@@ -159,19 +159,11 @@ public sealed class SetupCore
             return false;
         }
 
-        if (_fileSystem.TryGetUnixFileMode(sealingKeyPath, out var mode))
+        if (!_fileSystem.IsOwnerOnlyFile(sealingKeyPath))
         {
-            const UnixFileMode groupOrOther =
-                UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute |
-                UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
-            if ((mode & groupOrOther) != 0
-                || (mode & (UnixFileMode.UserRead | UnixFileMode.UserWrite))
-                    != (UnixFileMode.UserRead | UnixFileMode.UserWrite))
-            {
-                failureCode = SetupResultCode.RejectedSealingKeyUnsafe;
-                message = "Host sealing key permissions are not owner-only.";
-                return false;
-            }
+            failureCode = SetupResultCode.RejectedSealingKeyUnsafe;
+            message = "Host sealing key permissions are not owner-only.";
+            return false;
         }
 
         return true;
@@ -196,6 +188,19 @@ public sealed class SetupCore
             EnsureDirectory(managedRootFull, sealingDir, createdDirs, ownership);
             var sealingKeyPath = SetupBundleLayout.HostSealingKeyPath(managedRootFull);
             var sealingKey = EnsureSealingKey(managedRootFull, sealingKeyPath, ownership, writtenFiles);
+
+            // ADR D-03 / host sealing key durability: persist sealing/ before any bundles/<id> work.
+            try
+            {
+                _fileSystem.FlushDirectory(sealingDir);
+                _fileSystem.FlushDirectory(managedRootFull);
+            }
+            catch
+            {
+                throw new SetupCoreException(
+                    SetupResultCode.RejectedDurabilityFailed,
+                    "Sealing directory durability flush failed before bundle generation.");
+            }
 
             EnsureDirectory(
                 managedRootFull,
@@ -339,35 +344,38 @@ public sealed class SetupCore
                 or SetupResultCode.RejectedPathUnsafe
                 or SetupResultCode.RejectedBundleExists)
         {
-            if (ex.Code is SetupResultCode.RejectedDurabilityFailed
-                or SetupResultCode.RejectedOwnershipFailed
-                or SetupResultCode.RejectedSealingKeyMissing
-                or SetupResultCode.RejectedSealingKeyUnsafe
-                or SetupResultCode.RejectedPathUnsafe
-                or SetupResultCode.RejectedBundleExists)
+            // Cleanup failure always wins so callers learn that secret/partial state may remain.
+            if (ex.Code is SetupResultCode.RejectedCleanupFailed or SetupResultCode.RejectedRollbackFailed)
             {
-                _ = TryCleanupPartial(writtenFiles, createdDirs, out _);
+                return SetupResult.Fail(ex.Code, ex.SafeMessage);
             }
 
-            return SetupResult.Fail(ex.Code, ex.SafeMessage);
+            return FailAfterPartialCleanup(writtenFiles, createdDirs, ex.Code, ex.SafeMessage);
         }
         catch
         {
-            if (!TryCleanupPartial(writtenFiles, createdDirs, out var cleanupFailed))
-            {
-                return SetupResult.Fail(
-                    cleanupFailed
-                        ? SetupResultCode.RejectedCleanupFailed
-                        : SetupResultCode.RejectedRollbackFailed,
-                    cleanupFailed
-                        ? "Partial write cleanup failed; manual intervention may be required."
-                        : "Partial write rollback failed; manual intervention may be required.");
-            }
-
-            return SetupResult.Fail(
+            return FailAfterPartialCleanup(
+                writtenFiles,
+                createdDirs,
                 SetupResultCode.RejectedPartialWrite,
                 "Bundle write failed and partial output was removed.");
         }
+    }
+
+    private SetupResult FailAfterPartialCleanup(
+        List<string> writtenFiles,
+        List<string> createdDirs,
+        string primaryCode,
+        string primaryMessage)
+    {
+        if (!TryCleanupPartial(writtenFiles, createdDirs, out _))
+        {
+            return SetupResult.Fail(
+                SetupResultCode.RejectedCleanupFailed,
+                "Partial write cleanup failed; manual intervention may be required.");
+        }
+
+        return SetupResult.Fail(primaryCode, primaryMessage);
     }
 
     private static SetupPlan BuildPlan(
@@ -457,7 +465,7 @@ public sealed class SetupCore
 
         if (_fileSystem.DirectoryExists(path))
         {
-            if (_fileSystem.IsSymlinkOrReparsePoint(path))
+            if (SetupPathGuard.IsUnsafeLink(_fileSystem.InspectSymlinkOrReparsePoint(path)))
             {
                 throw new SetupCoreException(
                     SetupResultCode.RejectedPathUnsafe,
@@ -496,6 +504,13 @@ public sealed class SetupCore
                 throw new SetupCoreException(
                     SetupResultCode.RejectedSealingKeyUnsafe,
                     "Host sealing key has an unexpected length.");
+            }
+
+            if (!_fileSystem.IsOwnerOnlyFile(sealingKeyPath))
+            {
+                throw new SetupCoreException(
+                    SetupResultCode.RejectedSealingKeyUnsafe,
+                    "Host sealing key permissions are not owner-only.");
             }
 
             return existing;
@@ -543,15 +558,23 @@ public sealed class SetupCore
             throw new SetupCoreException(code, message);
         }
 
-        if (_fileSystem.FileExists(path) || _fileSystem.IsSymlinkOrReparsePoint(path))
+        if (_fileSystem.FileExists(path))
         {
             throw new SetupCoreException(
                 SetupResultCode.RejectedBundleExists,
                 "Refusing to overwrite an existing bundle file.");
         }
 
+        if (SetupPathGuard.IsUnsafeLink(_fileSystem.InspectSymlinkOrReparsePoint(path)))
+        {
+            throw new SetupCoreException(
+                SetupResultCode.RejectedPathUnsafe,
+                "Target path must not be a symlink or reparse point.");
+        }
+
         var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory) && _fileSystem.IsSymlinkOrReparsePoint(directory))
+        if (!string.IsNullOrEmpty(directory)
+            && SetupPathGuard.IsUnsafeLink(_fileSystem.InspectSymlinkOrReparsePoint(directory)))
         {
             throw new SetupCoreException(
                 SetupResultCode.RejectedPathUnsafe,

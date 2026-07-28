@@ -81,7 +81,9 @@ public static class SetupPathGuard
         var current = path;
         while (!string.IsNullOrEmpty(current))
         {
-            if (fileSystem.IsSymlinkOrReparsePoint(current))
+            var inspection = fileSystem.InspectSymlinkOrReparsePoint(current);
+            if (inspection is SetupLinkInspectionResult.IsLinkOrReparse
+                or SetupLinkInspectionResult.InspectionFailed)
             {
                 return true;
             }
@@ -97,4 +99,8 @@ public static class SetupPathGuard
 
         return false;
     }
+
+    public static bool IsUnsafeLink(SetupLinkInspectionResult inspection) =>
+        inspection is SetupLinkInspectionResult.IsLinkOrReparse
+            or SetupLinkInspectionResult.InspectionFailed;
 }

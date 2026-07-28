@@ -21,7 +21,7 @@ public static class SetupConflictDetector
             return true;
         }
 
-        if (fileSystem.IsSymlinkOrReparsePoint(managedRootFull))
+        if (SetupPathGuard.IsUnsafeLink(fileSystem.InspectSymlinkOrReparsePoint(managedRootFull)))
         {
             failureCode = SetupResultCode.RejectedPathUnsafe;
             message = "Managed root must not be a symlink or reparse point.";

@@ -48,6 +48,8 @@ public sealed class SetupRequest
     /// <summary>
     /// Linux runtime ownership for generated bundle files (Mailer container UID/GID).
     /// Required for non-dry-run writes on Linux so the container can read finalized files.
+    /// When the Setup process EUID differs from this UID and is not root, ownership assignment
+    /// fails closed; host adapter / packaging (#449, #455) must document the supported operator model.
     /// </summary>
     public SetupRuntimeFileOwnership? RuntimeFileOwnership { get; init; }
 

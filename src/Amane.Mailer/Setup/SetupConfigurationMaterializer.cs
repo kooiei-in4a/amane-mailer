@@ -62,9 +62,6 @@ public static class SetupConfigurationMaterializer
             secrets["MAILER_METRICS_BEARER_TOKEN"] = request.MetricsBearerToken;
         }
 
-        // Admin password hash is intentionally omitted (#459 ownership).
-        secrets.Remove("AMANE_ADMIN_PASSWORD_HASH");
-
         PlatformSenderFile? platformSender = null;
         string? platformSenderJson = null;
         byte[]? acsBytes = null;

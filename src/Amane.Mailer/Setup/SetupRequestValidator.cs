@@ -65,6 +65,13 @@ public static partial class SetupRequestValidator
 
         foreach (var key in request.TokenSecrets.Keys)
         {
+            // Admin password/hash bootstrap is owned by #459. Silent ignore is forbidden (ADR D-10).
+            if (key.Equals("AMANE_ADMIN_PASSWORD_HASH", StringComparison.Ordinal))
+            {
+                message = "Admin password hash is not accepted by Setup Core; use the Admin bootstrap workflow.";
+                return false;
+            }
+
             if (!ManagedEnvKeyCatalog.SecretValuedEnvironmentKeys.Contains(key))
             {
                 message = "Token secret key is not an allowlisted secret-valued environment key.";

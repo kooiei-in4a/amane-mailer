@@ -7,7 +7,7 @@ public interface ISetupFileSystem
 {
     bool DirectoryExists(string path);
     bool FileExists(string path);
-    bool IsSymlinkOrReparsePoint(string path);
+    SetupLinkInspectionResult InspectSymlinkOrReparsePoint(string path);
     IEnumerable<string> EnumerateFileSystemEntries(string path);
     void CreateOwnerOnlyDirectory(string path);
     void WriteProtectedFileCreateNew(string path, ReadOnlySpan<byte> content);
@@ -20,5 +20,12 @@ public interface ISetupFileSystem
     void SetUnixOwnership(string path, uint userId, uint groupId);
     void SetUnixFileModeOwnerOnly(string path, bool executableDirectory);
     bool TryGetUnixFileMode(string path, out UnixFileMode mode);
+
+    /// <summary>
+    /// Returns <c>true</c> only when the file is verifiably owner-only.
+    /// Returns <c>false</c> when permissions are weak or when inspection fails (fail-closed).
+    /// </summary>
+    bool IsOwnerOnlyFile(string path);
+
     uint? GetEffectiveUnixUserId();
 }
