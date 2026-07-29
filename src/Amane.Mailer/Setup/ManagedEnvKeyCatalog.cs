@@ -19,6 +19,7 @@ public static class ManagedEnvKeyCatalog
         "COMPOSE_PROJECT_NAME",
         "MAILER_IMAGE_REPOSITORY",
         "MAILER_IMAGE_TAG",
+        "MAILER_IMAGE_REFERENCE",
         "MAILER_PULL_POLICY",
         "MAILER_MEM_LIMIT",
         "MAILER_CPUS",
@@ -50,6 +51,7 @@ public static class ManagedEnvKeyCatalog
         "AMANE_ADMIN_ALLOW_HTTP",
         "AMANE_ADMIN_PII_LIST_MODE",
         "MAILER_SETUP_RECORDED_METADATA_PATH",
+        "MAILER_SETUP_RECORDED_METADATA_HOST_PATH",
     };
 
     /// <summary>

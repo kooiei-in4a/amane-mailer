@@ -19,6 +19,8 @@ public static class SetupBundleLayout
     public const string IntegritySealFileName = "integrity.seal";
     public const string FinalizedMarkerFileName = "FINALIZED";
     public const string ActivePointerFileName = "ACTIVE";
+    public const string ApplyLockFileName = SetupApplyLock.LockFileName;
+    public const string ExternalEnvFileName = TrustedSetupHostLayoutResolver.ExternalEnvFileName;
     public const string HostSealingKeyFileName = "host-sealing-key";
     public const string TenantsFileName = "tenants.json";
     public const string ContainerRecordedMetadataPath = "/run/amane/setup/recorded.json";

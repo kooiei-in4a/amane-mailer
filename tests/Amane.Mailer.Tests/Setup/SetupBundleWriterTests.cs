@@ -28,6 +28,7 @@ public sealed class SetupBundleWriterTests
             Assert.True(File.Exists(Path.Combine(bundleRoot, "env", "compose.env")));
             Assert.True(File.Exists(Path.Combine(bundleRoot, "env", "secrets.env")));
             Assert.True(File.Exists(Path.Combine(bundleRoot, "secrets", AcsSecretFileNames.CanonicalFileName)));
+            Assert.True(Directory.Exists(Path.Combine(bundleRoot, "secrets", "bounce-queue")));
             Assert.True(File.Exists(Path.Combine(bundleRoot, "metadata", "recorded.json")));
             Assert.True(File.Exists(Path.Combine(bundleRoot, "metadata", "integrity.seal")));
             Assert.False(File.Exists(SetupBundleLayout.ActivePointerPath(root)));
@@ -54,6 +55,40 @@ public sealed class SetupBundleWriterTests
                     File.ReadAllBytes(Path.Combine(bundleRoot, "secrets", AcsSecretFileNames.CanonicalFileName))),
             };
             Assert.True(SetupIntegritySealer.TryVerifySeal(sealingKey, seal, result.BundleId!, result.ConfigurationFingerprint!, SetupBundleLayout.RecordedSchemaVersion, secretMembers));
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+    }
+
+    [Fact]
+    public void Local_mailpit_bundle_creates_mount_directories_and_active_relative_paths()
+    {
+        var root = SetupTestFixtures.CreateManagedRoot();
+        try
+        {
+            const string bundleId = "mailpit-mounts";
+            var result = new SetupCore(bundleIdFactory: static () => bundleId)
+                .GenerateBundle(SetupTestFixtures.LocalMailpitRequest(root));
+            Assert.Equal(SetupResultCode.Succeeded, result.Code);
+
+            var bundleRoot = SetupBundleLayout.BundleRoot(root, bundleId);
+            Assert.True(Directory.Exists(Path.Combine(bundleRoot, "secrets")));
+            Assert.True(Directory.Exists(Path.Combine(bundleRoot, "secrets", "bounce-queue")));
+            var composeEnv = File.ReadAllText(Path.Combine(bundleRoot, "env", "compose.env"));
+            Assert.Contains(
+                $"MAILER_ACS_SECRET_HOST_PATH=\"bundles/{bundleId}/secrets\"",
+                composeEnv,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH=\"bundles/{bundleId}/secrets/bounce-queue\"",
+                composeEnv,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"MAILER_PLATFORM_SENDER_HOST_PATH=\"bundles/{bundleId}/config\"",
+                composeEnv,
+                StringComparison.Ordinal);
         }
         finally
         {

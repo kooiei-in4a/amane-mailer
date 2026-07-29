@@ -1,0 +1,6 @@
+services:
+  mailer:
+    environment:
+      MAILER_SETUP_RECORDED_METADATA_PATH: /run/amane/setup/recorded.json
+    volumes:
+      - ${MAILER_SETUP_RECORDED_METADATA_HOST_PATH}:/run/amane/setup/recorded.json:ro

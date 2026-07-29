@@ -291,7 +291,7 @@
         "0013",
         "0019"
       ],
-      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR #448 Setup Core; #447 inspect-effective evidence) → evidence updates (#449–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. Does not change public HTTP contract, DB schema, or Manual Deployment source of truth.",
+      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR #448 Setup Core; #447 inspect-effective; #449 host Docker adapter) → evidence updates (#450–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. Does not change public HTTP contract, DB schema, or Manual Deployment source of truth.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Setup/SetupCore.cs",
@@ -299,7 +299,16 @@
           "src/Amane.Mailer/Setup/SetupIntegritySealer.cs",
           "src/Amane.Mailer/Setup/SetupInspectEffectiveEngine.cs",
           "src/Amane.Mailer/Setup/SetupMountAttestation.cs",
+          "src/Amane.Mailer/Setup/SetupHostDockerAdapter.cs",
+          "src/Amane.Mailer/Setup/TrustedReleaseInventory.cs",
+          "src/Amane.Mailer/Setup/TrustedSetupHostLayout.cs",
+          "src/Amane.Mailer/Setup/DockerEnvironmentProbe.cs",
+          "src/Amane.Mailer/Setup/SetupApplyLock.cs",
+          "src/Amane.Mailer/Setup/HostProcessRunner.cs",
           "src/Amane.Mailer/Operations/SecureFileCreate.cs",
+          "infra/deploy/compose.image-digest.yml",
+          "infra/deploy/compose.recorded-metadata.yml",
+          "infra/deploy/compose.mailpit.yml",
           "docs/adr/0021-easy-setup-boundaries.md"
         ],
         "types": [
@@ -309,7 +318,11 @@
           "Amane.Mailer.Setup.SetupResult",
           "Amane.Mailer.Setup.ManagedEnvKeyCatalog",
           "Amane.Mailer.Setup.SetupInspectEffectiveEngine",
-          "Amane.Mailer.Setup.SetupMountAttestation"
+          "Amane.Mailer.Setup.SetupMountAttestation",
+          "Amane.Mailer.Setup.SetupHostDockerAdapter",
+          "Amane.Mailer.Setup.TrustedReleaseInventory",
+          "Amane.Mailer.Setup.SetupHostDockerSession",
+          "Amane.Mailer.Setup.DockerConnectionBinding"
         ],
         "tests": [
           "tests/Amane.Mailer.Tests/Setup/SetupCanonicalPayloadTests.cs",
@@ -317,7 +330,10 @@
           "tests/Amane.Mailer.Tests/Setup/SetupSecureWriterTests.cs",
           "tests/Amane.Mailer.Tests/Setup/SetupPathAndCleanupTests.cs",
           "tests/Amane.Mailer.Tests/Setup/SetupValidationAndRedactionTests.cs",
-          "tests/Amane.Mailer.Tests/Setup/SetupInspectEffectiveTests.cs"
+          "tests/Amane.Mailer.Tests/Setup/SetupInspectEffectiveTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupHostDockerAdapterTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupCoreHostDockerIntegrationTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/HostProcessRunnerLiveTests.cs"
         ]
       }
     }
