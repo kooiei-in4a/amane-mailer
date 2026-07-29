@@ -8,6 +8,11 @@ namespace Amane.Mailer.Setup;
 /// Composes Managed Docker/Compose environment from ADR 0021 D-02 layers only.
 /// Never merges a Manual project-directory <c>.env</c>.
 /// </summary>
+/// <remarks>
+/// Issue #450 splits composition into two pins so one apply session cannot silently observe two
+/// different inputs: the ACTIVE-independent external layer is pinned once, and the ACTIVE-dependent
+/// bundle layers are composed against an explicit <see cref="SetupActivePointer"/> generation.
+/// </remarks>
 public sealed class ManagedComposeEnvComposer
 {
     private static readonly Regex SafeProjectName = new(
@@ -30,21 +35,223 @@ public sealed class ManagedComposeEnvComposer
         @"^\d{1,5}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
+    private static readonly string[] TrustedFixedKeys =
+    [
+        "COMPOSE_PROJECT_NAME",
+        "MAILER_IMAGE_REPOSITORY",
+        "MAILER_IMAGE_TAG",
+        "MAILER_IMAGE_REFERENCE",
+        "MAILER_PULL_POLICY",
+        "MAILER_SETUP_RECORDED_METADATA_PATH",
+        "MAILPIT_IMAGE",
+    ];
+
     private readonly ISetupFileSystem _fileSystem;
+    private readonly TimeProvider _timeProvider;
 
     public ManagedComposeEnvComposer(ISetupFileSystem fileSystem)
+        : this(fileSystem, timeProvider: null)
     {
-        _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
     }
 
-    public SetupDockerResult TryCompose(
-        TrustedSetupHostLayout layout,
-        out IReadOnlyDictionary<string, string> environment,
-        out string? recordedMetadataHostPath)
+    internal ManagedComposeEnvComposer(ISetupFileSystem fileSystem, TimeProvider? timeProvider)
     {
-        environment = new Dictionary<string, string>(StringComparer.Ordinal);
-        recordedMetadataHostPath = null;
+        _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
+        _timeProvider = timeProvider ?? TimeProvider.System;
+    }
+
+    /// <summary>
+    /// Reads the strict ACTIVE pointer document. Bare bundle-id payloads are rejected (ADR 0021 D-03).
+    /// </summary>
+    public bool TryReadActivePointer(
+        TrustedSetupHostLayout layout,
+        out SetupActivePointer? pointer,
+        out SetupDockerResult result)
+    {
         ArgumentNullException.ThrowIfNull(layout);
+        pointer = null;
+
+        var activePath = layout.ActivePointerPath;
+        if (!_fileSystem.FileExists(activePath))
+        {
+            result = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "ACTIVE pointer is missing.");
+            return false;
+        }
+
+        if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
+                _fileSystem, layout.ManagedRoot, activePath, out _, out _))
+        {
+            result = SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsafePath,
+                "ACTIVE pointer path rejected.");
+            return false;
+        }
+
+        if (SetupPathGuard.IsUnsafeLink(_fileSystem.InspectSymlinkOrReparsePoint(activePath)))
+        {
+            result = SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsafePath,
+                "ACTIVE pointer must not be a symlink or reparse point.");
+            return false;
+        }
+
+        var activeText = Encoding.UTF8.GetString(_fileSystem.ReadAllBytes(activePath));
+        if (!SetupActivePointer.TryParse(activeText, out var parsed) || parsed is null)
+        {
+            result = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "ACTIVE pointer payload is invalid.");
+            return false;
+        }
+
+        pointer = parsed;
+        result = SetupDockerResult.Ok();
+        return true;
+    }
+
+    /// <summary>
+    /// Pins the ACTIVE-independent external layer (<c>managed/external.env</c>) for one session.
+    /// Produces a canonical digest plus the owner-only runtime-identity binding MAC. Values stay in
+    /// process memory; public surfaces only see the digest.
+    /// </summary>
+    public bool TryPinExternalLayer(
+        TrustedSetupHostLayout layout,
+        ReadOnlySpan<byte> sealingKey,
+        out SetupExternalInputSnapshot? snapshot,
+        out SetupDockerResult result)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        snapshot = null;
+
+        if (sealingKey.Length != SetupIntegritySealer.SealingKeyLength)
+        {
+            result = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Host sealing key is invalid.");
+            return false;
+        }
+
+        var external = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (_fileSystem.FileExists(layout.ExternalEnvPath))
+        {
+            if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
+                    _fileSystem,
+                    layout.ManagedRoot,
+                    layout.ExternalEnvPath,
+                    out _,
+                    out _))
+            {
+                result = SetupDockerResult.Fail(
+                    SetupDockerResultCode.UnsafePath,
+                    "external.env path rejected.");
+                return false;
+            }
+
+            if (SetupPathGuard.IsUnsafeLink(
+                    _fileSystem.InspectSymlinkOrReparsePoint(layout.ExternalEnvPath)))
+            {
+                result = SetupDockerResult.Fail(
+                    SetupDockerResultCode.UnsafePath,
+                    "external.env must not be a symlink or reparse point.");
+                return false;
+            }
+
+            if (!TryParseEnvFile(_fileSystem.ReadAllBytes(layout.ExternalEnvPath), out var parsed, out var parseFail))
+            {
+                result = parseFail!;
+                return false;
+            }
+
+            foreach (var pair in parsed)
+            {
+                if (!ManagedEnvKeyCatalog.ExternalManualOnlyKeys.Contains(pair.Key))
+                {
+                    result = SetupDockerResult.Fail(
+                        SetupDockerResultCode.InvalidBundleInventory,
+                        "external.env contains a non-allowlisted key.");
+                    return false;
+                }
+
+                if (!TryValidateValue(pair.Key, pair.Value, out var valueFailure))
+                {
+                    result = valueFailure!;
+                    return false;
+                }
+
+                external[pair.Key] = pair.Value;
+            }
+        }
+
+        if (!external.TryGetValue("MAILER_DATA_PATH", out var dataPath)
+            || string.IsNullOrWhiteSpace(dataPath))
+        {
+            result = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "MAILER_DATA_PATH is required in allowlisted external input.");
+            return false;
+        }
+
+        var canonical = BuildCanonicalExternalBytes(external);
+        string digest;
+        try
+        {
+            digest = SetupExternalInputDigests.Sha256Hex(canonical);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(canonical);
+        }
+
+        var normalizedDataPath = NormalizeHostPathValue(dataPath);
+        external.TryGetValue("MAILER_CONNECTION_STRING", out var connectionString);
+        var normalizedConnectionString = string.IsNullOrWhiteSpace(connectionString)
+            ? null
+            : connectionString.Trim();
+
+        var bindingMac = SetupRuntimeIdentityBindingStamp.ComputeBindingMac(
+            sealingKey,
+            normalizedDataPath,
+            normalizedConnectionString);
+
+        snapshot = new SetupExternalInputSnapshot(
+            digest,
+            normalizedDataPath,
+            normalizedConnectionString,
+            bindingMac,
+            external,
+            _timeProvider.GetUtcNow());
+        result = SetupDockerResult.Ok();
+        return true;
+    }
+
+    /// <summary>
+    /// Composes the full Managed environment for an explicit activation generation. The bundle id
+    /// comes from <paramref name="expected"/>, never from a fresh ACTIVE read, so a concurrent
+    /// pointer flip cannot retarget an in-flight operation.
+    /// </summary>
+    public bool TryComposeWithActivePointer(
+        TrustedSetupHostLayout layout,
+        SetupExternalInputSnapshot externalSnapshot,
+        SetupActivePointer expected,
+        out SetupComposeInputSnapshot? snapshot,
+        out SetupDockerResult result)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(externalSnapshot);
+        ArgumentNullException.ThrowIfNull(expected);
+        snapshot = null;
+
+        if (!SetupActivePointer.IsSafeBundleId(expected.BundleId)
+            || expected.ActivationGeneration < 1
+            || expected.SchemaVersion != SetupActivePointer.CurrentSchemaVersion)
+        {
+            result = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Expected ACTIVE pointer is invalid.");
+            return false;
+        }
 
         var merged = new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -62,134 +269,157 @@ public sealed class ManagedComposeEnvComposer
             merged["MAILPIT_IMAGE"] = layout.ReleaseInventory.MailpitImageReference!;
         }
 
-        // Layer 2: allowlisted external.env
-        if (_fileSystem.FileExists(layout.ExternalEnvPath))
+        // Layer 2: pinned allowlisted external input (never re-read from disk here).
+        foreach (var pair in externalSnapshot.ExternalEnvironmentValues)
         {
-            if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
-                    _fileSystem,
-                    layout.ManagedRoot,
-                    layout.ExternalEnvPath,
-                    out _,
-                    out _))
+            if (!ManagedEnvKeyCatalog.ExternalManualOnlyKeys.Contains(pair.Key))
             {
-                return SetupDockerResult.Fail(
-                    SetupDockerResultCode.UnsafePath,
-                    "external.env path rejected.");
+                result = SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Pinned external input contains a non-allowlisted key.");
+                return false;
             }
 
-            if (!TryParseEnvFile(_fileSystem.ReadAllBytes(layout.ExternalEnvPath), out var external, out var parseFail))
+            if (merged.ContainsKey(pair.Key))
             {
-                return parseFail!;
+                result = SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Environment key collision across composition layers.");
+                return false;
             }
 
-            foreach (var pair in external)
-            {
-                if (!ManagedEnvKeyCatalog.ExternalManualOnlyKeys.Contains(pair.Key))
-                {
-                    return SetupDockerResult.Fail(
-                        SetupDockerResultCode.InvalidBundleInventory,
-                        "external.env contains a non-allowlisted key.");
-                }
-
-                if (merged.ContainsKey(pair.Key))
-                {
-                    return SetupDockerResult.Fail(
-                        SetupDockerResultCode.InvalidBundleInventory,
-                        "Environment key collision across composition layers.");
-                }
-
-                merged[pair.Key] = pair.Value;
-            }
+            merged[pair.Key] = pair.Value;
         }
 
         if (!merged.ContainsKey("MAILER_DATA_PATH"))
         {
-            return SetupDockerResult.Fail(
+            result = SetupDockerResult.Fail(
                 SetupDockerResultCode.InvalidBundleInventory,
                 "MAILER_DATA_PATH is required in allowlisted external input.");
+            return false;
         }
 
-        // Layers 3-4: ACTIVE compose.env + secrets.env
-        if (!TryReadActiveBundleEnv(
+        // Layers 3-4: expected bundle compose.env + secrets.env
+        if (!TryReadBundleEnv(
                 layout,
+                expected.BundleId,
                 merged,
-                out recordedMetadataHostPath,
-                out var activeFailure))
+                out var recordedMetadataHostPath,
+                out var bundleFailure))
         {
-            return activeFailure!;
+            result = bundleFailure!;
+            return false;
         }
 
-        // ACTIVE image must match inventory before trusted keys overwrite project/pull policy.
+        // Bundle image fields must match inventory before trusted keys overwrite them.
         if (!merged.TryGetValue("MAILER_IMAGE_REPOSITORY", out var activeRepo)
             || !merged.TryGetValue("MAILER_IMAGE_TAG", out var activeTag)
             || !layout.ReleaseInventory.MatchesActiveImage(activeRepo, activeTag))
         {
-            return SetupDockerResult.Fail(
+            result = SetupDockerResult.Fail(
                 SetupDockerResultCode.InvalidBundleInventory,
                 "ACTIVE image does not match the trusted release inventory.");
+            return false;
         }
 
-        // Enforce trusted project identity and pull policy over ACTIVE freeform values.
+        // Enforce trusted project identity and pull policy over bundle freeform values.
         merged["COMPOSE_PROJECT_NAME"] = layout.ProjectName;
         merged["MAILER_IMAGE_REPOSITORY"] = layout.ReleaseInventory.AllowedImageRepository;
         merged["MAILER_IMAGE_TAG"] = layout.ReleaseInventory.AllowedDisplayTag;
         merged["MAILER_IMAGE_REFERENCE"] = layout.ReleaseInventory.PinnedMailerImageReference;
         merged["MAILER_PULL_POLICY"] = "never";
+        merged["MAILER_SETUP_RECORDED_METADATA_PATH"] =
+            SetupBundleLayout.ContainerRecordedMetadataPath;
 
         foreach (var pair in merged)
         {
             if (!TryValidateValue(pair.Key, pair.Value, out var valueFailure))
             {
-                return valueFailure!;
+                result = valueFailure!;
+                return false;
             }
         }
 
-        environment = merged;
-        return SetupDockerResult.Ok();
+        snapshot = new SetupComposeInputSnapshot(
+            externalSnapshot,
+            expected.BundleId,
+            expected.ActivationGeneration,
+            merged,
+            recordedMetadataHostPath,
+            _timeProvider.GetUtcNow());
+        result = SetupDockerResult.Ok();
+        return true;
     }
 
-    private bool TryReadActiveBundleEnv(
+    /// <summary>
+    /// Convenience path that pins the external layer, reads strict ACTIVE, and composes in one call.
+    /// Apply/rollback callers must use the explicit pin APIs instead so every operation in a session
+    /// observes one generation.
+    /// </summary>
+    public SetupDockerResult TryCompose(
         TrustedSetupHostLayout layout,
+        ReadOnlySpan<byte> sealingKey,
+        out IReadOnlyDictionary<string, string> environment,
+        out string? recordedMetadataHostPath)
+    {
+        environment = new Dictionary<string, string>(StringComparer.Ordinal);
+        recordedMetadataHostPath = null;
+        ArgumentNullException.ThrowIfNull(layout);
+
+        SetupExternalInputSnapshot? external = null;
+        SetupComposeInputSnapshot? snapshot = null;
+        try
+        {
+            if (!TryPinExternalLayer(layout, sealingKey, out external, out var pinResult) || external is null)
+            {
+                return pinResult;
+            }
+
+            if (!TryReadActivePointer(layout, out var active, out var activeResult) || active is null)
+            {
+                return activeResult;
+            }
+
+            if (!TryComposeWithActivePointer(layout, external, active, out snapshot, out var composeResult)
+                || snapshot is null)
+            {
+                return composeResult;
+            }
+
+            environment = new Dictionary<string, string>(snapshot.ComposedEnvironment, StringComparer.Ordinal);
+            recordedMetadataHostPath = snapshot.RecordedMetadataHostPath;
+            return SetupDockerResult.Ok();
+        }
+        finally
+        {
+            snapshot?.Dispose();
+            external?.Dispose();
+        }
+    }
+
+    internal static byte[] BuildCanonicalExternalBytes(IReadOnlyDictionary<string, string> external)
+    {
+        var builder = new StringBuilder();
+        foreach (var key in external.Keys.OrderBy(static k => k, StringComparer.Ordinal))
+        {
+            builder.Append(key).Append('=').Append(external[key]).Append('\n');
+        }
+
+        return Encoding.UTF8.GetBytes(builder.ToString());
+    }
+
+    internal static string NormalizeHostPathValue(string value) =>
+        value.Trim().TrimEnd('/', '\\');
+
+    private bool TryReadBundleEnv(
+        TrustedSetupHostLayout layout,
+        string bundleId,
         Dictionary<string, string> merged,
         out string? recordedMetadataHostPath,
         out SetupDockerResult? failure)
     {
         recordedMetadataHostPath = null;
         failure = null;
-        var activePath = layout.ActivePointerPath;
-        if (!_fileSystem.FileExists(activePath))
-        {
-            failure = SetupDockerResult.Fail(
-                SetupDockerResultCode.InvalidBundleInventory,
-                "ACTIVE pointer is missing.");
-            return false;
-        }
-
-        if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
-                _fileSystem, layout.ManagedRoot, activePath, out _, out _))
-        {
-            failure = SetupDockerResult.Fail(
-                SetupDockerResultCode.UnsafePath,
-                "ACTIVE pointer path rejected.");
-            return false;
-        }
-
-        if (SetupPathGuard.IsUnsafeLink(_fileSystem.InspectSymlinkOrReparsePoint(activePath)))
-        {
-            failure = SetupDockerResult.Fail(
-                SetupDockerResultCode.UnsafePath,
-                "ACTIVE pointer must not be a symlink or reparse point.");
-            return false;
-        }
-
-        var activeText = Encoding.UTF8.GetString(_fileSystem.ReadAllBytes(activePath)).Trim();
-        if (!TryParseActiveBundleId(activeText, out var bundleId))
-        {
-            failure = SetupDockerResult.Fail(
-                SetupDockerResultCode.InvalidBundleInventory,
-                "ACTIVE pointer payload is invalid.");
-            return false;
-        }
 
         var bundleRoot = Path.GetFullPath(SetupBundleLayout.BundleRoot(layout.ManagedRoot, bundleId));
         if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
@@ -246,18 +476,6 @@ public sealed class ManagedComposeEnvComposer
         }
 
         recordedMetadataHostPath = recordedPath;
-
-        // ACTIVE image fields must agree with trusted inventory before we overwrite.
-        if (merged.TryGetValue("MAILER_IMAGE_REPOSITORY", out var repo)
-            && merged.TryGetValue("MAILER_IMAGE_TAG", out var tag)
-            && !layout.ReleaseInventory.MatchesActiveImage(repo, tag))
-        {
-            failure = SetupDockerResult.Fail(
-                SetupDockerResultCode.InvalidBundleInventory,
-                "ACTIVE image does not match the trusted release inventory.");
-            return false;
-        }
-
         return true;
     }
 
@@ -336,26 +554,10 @@ public sealed class ManagedComposeEnvComposer
                 return false;
             }
 
+            // Trusted fixed keys are re-asserted from the inventory after merging; any other
+            // collision across layers is a hard failure.
             if (merged.ContainsKey(pair.Key)
-                && !string.Equals(merged[pair.Key], pair.Value, StringComparison.Ordinal)
-                && pair.Key is not ("COMPOSE_PROJECT_NAME" or "MAILER_IMAGE_REPOSITORY" or "MAILER_IMAGE_TAG"
-                    or "MAILER_PULL_POLICY" or "MAILER_SETUP_RECORDED_METADATA_PATH"))
-            {
-                // Trusted fixed keys may be overwritten by inventory; other collisions fail.
-                if (merged.ContainsKey(pair.Key)
-                    && keyClass == ManagedEnvKeyCatalog.KeyClass.PublicNonSecret
-                    && pair.Key is "COMPOSE_PROJECT_NAME" or "MAILER_IMAGE_REPOSITORY" or "MAILER_IMAGE_TAG"
-                        or "MAILER_PULL_POLICY")
-                {
-                    // Stash ACTIVE values temporarily; inventory overwrite happens after.
-                    merged[pair.Key] = pair.Value;
-                    continue;
-                }
-            }
-
-            if (merged.ContainsKey(pair.Key)
-                && pair.Key is not ("COMPOSE_PROJECT_NAME" or "MAILER_IMAGE_REPOSITORY" or "MAILER_IMAGE_TAG"
-                    or "MAILER_PULL_POLICY" or "MAILER_SETUP_RECORDED_METADATA_PATH" or "MAILPIT_IMAGE"))
+                && !TrustedFixedKeys.Contains(pair.Key, StringComparer.Ordinal))
             {
                 failure = SetupDockerResult.Fail(
                     SetupDockerResultCode.InvalidBundleInventory,
@@ -367,39 +569,6 @@ public sealed class ManagedComposeEnvComposer
         }
 
         return true;
-    }
-
-    internal static bool TryParseActiveBundleId(string activeText, out string bundleId)
-    {
-        bundleId = string.Empty;
-        // Minimal ACTIVE payload: either bare bundleId or JSON with bundleId.
-        if (activeText.StartsWith('{'))
-        {
-            // Avoid pulling full ACTIVE DTO; extract with a tight scan.
-            const string marker = "\"bundleId\"";
-            var idx = activeText.IndexOf(marker, StringComparison.Ordinal);
-            if (idx < 0)
-            {
-                return false;
-            }
-
-            var colon = activeText.IndexOf(':', idx + marker.Length);
-            var firstQuote = activeText.IndexOf('"', colon + 1);
-            var secondQuote = activeText.IndexOf('"', firstQuote + 1);
-            if (colon < 0 || firstQuote < 0 || secondQuote < 0)
-            {
-                return false;
-            }
-
-            bundleId = activeText.Substring(firstQuote + 1, secondQuote - firstQuote - 1);
-        }
-        else
-        {
-            bundleId = activeText.Trim();
-        }
-
-        return bundleId.Length is > 0 and <= 64
-            && bundleId.All(static c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
     }
 
     internal static bool TryParseEnvFile(

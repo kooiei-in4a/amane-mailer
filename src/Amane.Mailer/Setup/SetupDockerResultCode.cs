@@ -20,6 +20,18 @@ public static class SetupDockerResultCode
     public const string UnsafePath = "setup.docker.unsafe_path";
     public const string ConcurrentSetupRejected = "setup.docker.concurrent_setup_rejected";
 
+    /// <summary>An ACTIVE-dependent Docker operation ran without a pinned compose snapshot.</summary>
+    public const string ComposeInputNotPinned = "setup.docker.compose_input_not_pinned";
+
+    /// <summary>An operation needed pinned external inputs before composing or comparing.</summary>
+    public const string ExternalInputNotPinned = "setup.docker.external_input_not_pinned";
+
+    /// <summary>Allowlisted external input changed underneath a pinned apply session.</summary>
+    public const string ExternalInputChanged = "setup.docker.external_input_changed";
+
+    /// <summary>On-disk ACTIVE no longer matches the generation the caller pinned.</summary>
+    public const string ActiveGenerationMismatch = "setup.docker.active_generation_mismatch";
+
     public const string Timeout = "setup.docker.timeout";
     public const string Cancelled = "setup.docker.cancelled";
     public const string ProcessFailed = "setup.docker.process_failed";

@@ -25,6 +25,9 @@ public static class SetupDockerInventory
     public const string ContainerVerifierMountPath = "/run/amane/setup/mount-verifier.json";
     public const string ContainerVerifierEnvKey = "MAILER_SETUP_MOUNT_VERIFIER_PATH";
 
+    /// <summary>Fixed in-container entrypoint used for readiness exec (never operator supplied).</summary>
+    public const string ContainerMailerEntrypointPath = "/app/Amane.Mailer";
+
     /// <summary>Services that may legally appear in trusted compose files.</summary>
     public static IReadOnlySet<string> KnownServices { get; } = new HashSet<string>(StringComparer.Ordinal)
     {

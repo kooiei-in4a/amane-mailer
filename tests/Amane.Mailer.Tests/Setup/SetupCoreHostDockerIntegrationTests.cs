@@ -67,6 +67,13 @@ public sealed class SetupCoreHostDockerIntegrationTests
             Assert.NotNull(session);
             await using (session!)
             {
+                // Compose validation is ACTIVE-dependent, so the generated bundle has to survive
+                // the same external + compose pin the apply engine performs.
+                var externalPin = await adapter.PinExternalInputsAsync(session, CancellationToken.None);
+                Assert.True(externalPin.IsSuccess);
+                var composePin = await adapter.ComposeCurrentActiveInputAsync(session, CancellationToken.None);
+                Assert.True(composePin.IsSuccess);
+
                 var validate = await adapter.ValidateComposeAsync(session, CancellationToken.None);
                 Assert.True(validate.IsSuccess);
             }

@@ -58,7 +58,7 @@ if (DbMigrateCommand.IsDbMigrateCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
     return await MailerCliHost.RunCancellableCliAsync(
-        ct => MailerCliHost.RunDbMigrateAsync(cliConfiguration, Console.Out, Console.Error, ct),
+        ct => MailerCliHost.RunDbMigrateAsync(cliConfiguration, commandArgs, Console.Out, Console.Error, ct),
         Console.Error);
 }
 

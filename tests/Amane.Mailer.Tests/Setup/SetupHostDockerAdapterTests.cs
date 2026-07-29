@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Setup;
 
 namespace Amane.Mailer.Tests.Setup;
@@ -403,8 +404,192 @@ public sealed class SetupHostDockerAdapterTests
     public async Task Active_image_mismatch_is_rejected()
     {
         await using var harness = await CreateHarnessAsync(seedMatchingActive: false);
+        Assert.Equal(SetupDockerResultCode.InvalidBundleInventory, harness.ComposePin.Code);
+
+        // Without a usable compose pin the ACTIVE-dependent operation must not run at all.
         var result = await harness.Adapter.ValidateComposeAsync(harness.Session, CancellationToken.None);
-        Assert.Equal(SetupDockerResultCode.InvalidBundleInventory, result.Code);
+        Assert.Equal(SetupDockerResultCode.ComposeInputNotPinned, result.Code);
+    }
+
+    [Fact]
+    public async Task Active_dependent_operations_refuse_to_run_without_a_compose_pin()
+    {
+        await using var harness = await CreateHarnessAsync(pinInputs: false);
+
+        Assert.Equal(
+            SetupDockerResultCode.ExternalInputNotPinned,
+            (await harness.Adapter.ValidateComposeAsync(harness.Session, CancellationToken.None)).Code);
+        Assert.Equal(
+            SetupDockerResultCode.ExternalInputNotPinned,
+            (await harness.Adapter.RunMigrationAsync(harness.Session, CancellationToken.None)).Code);
+        Assert.Equal(
+            SetupDockerResultCode.ExternalInputNotPinned,
+            (await harness.Adapter.StartOrRecreateMailerAsync(harness.Session, CancellationToken.None)).Code);
+        Assert.Equal(
+            SetupDockerResultCode.ExternalInputNotPinned,
+            (await harness.Adapter.StopFailedMailerAsync(harness.Session, CancellationToken.None)).Code);
+        Assert.Equal(
+            SetupDockerResultCode.ExternalInputNotPinned,
+            (await harness.Adapter.VerifyExternalInputsUnchangedAsync(harness.Session, CancellationToken.None)).Code);
+
+        // The ACTIVE-independent pull is the one operation that stays available.
+        Assert.True(
+            (await harness.Adapter.EnsurePinnedImageAvailableAsync(harness.Session, CancellationToken.None))
+                .IsSuccess);
+    }
+
+    [Fact]
+    public async Task Compose_pin_requires_external_pin_first()
+    {
+        await using var harness = await CreateHarnessAsync(pinInputs: false);
+
+        Assert.Equal(
+            SetupDockerResultCode.ExternalInputNotPinned,
+            (await harness.Adapter.ComposeCurrentActiveInputAsync(harness.Session, CancellationToken.None)).Code);
+
+        Assert.True(
+            (await harness.Adapter.PinExternalInputsAsync(harness.Session, CancellationToken.None)).IsSuccess);
+        Assert.True(
+            (await harness.Adapter.ComposeCurrentActiveInputAsync(harness.Session, CancellationToken.None)).IsSuccess);
+        Assert.NotNull(harness.Session.ComposeInputs);
+    }
+
+    [Fact]
+    public async Task External_input_change_is_detected_without_revealing_values()
+    {
+        await using var harness = await CreateHarnessAsync();
+        Assert.True(
+            (await harness.Adapter.VerifyExternalInputsUnchangedAsync(harness.Session, CancellationToken.None))
+                .IsSuccess);
+
+        File.WriteAllText(harness.Layout.ExternalEnvPath, "MAILER_DATA_PATH=/tmp/amane-canary-moved\n");
+
+        var changed = await harness.Adapter.VerifyExternalInputsUnchangedAsync(
+            harness.Session,
+            CancellationToken.None);
+        Assert.Equal(SetupDockerResultCode.ExternalInputChanged, changed.Code);
+        Assert.DoesNotContain("amane-canary-moved", changed.Message ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Compose_pin_for_expected_generation_rejects_a_moved_active_pointer()
+    {
+        await using var harness = await CreateHarnessAsync();
+        var expected = new SetupActivePointer
+        {
+            SchemaVersion = SetupActivePointer.CurrentSchemaVersion,
+            BundleId = "bundle-test01",
+            ActivationGeneration = 7,
+        };
+
+        var result = await harness.Adapter.ComposeExpectedActiveInputAsync(
+            harness.Session,
+            expected,
+            CancellationToken.None);
+        Assert.Equal(SetupDockerResultCode.ActiveGenerationMismatch, result.Code);
+    }
+
+    [Fact]
+    public async Task Purge_rejects_unexpected_residue_in_the_verifier_temp_directory()
+    {
+        await using var harness = await CreateHarnessAsync();
+        Directory.CreateDirectory(harness.Layout.VerifierTempDir);
+        File.WriteAllText(Path.Combine(harness.Layout.VerifierTempDir, "not-a-verifier.json"), "{}");
+
+        var result = await harness.Adapter.PurgeStaleMountVerifiersAsync(
+            harness.Session,
+            CancellationToken.None);
+        Assert.Equal(SetupDockerResultCode.UnsafePath, result.Code);
+    }
+
+    [Fact]
+    public async Task Purge_deletes_only_well_formed_stale_verifiers()
+    {
+        await using var harness = await CreateHarnessAsync();
+        Directory.CreateDirectory(harness.Layout.VerifierTempDir);
+        var stale = SetupBundleLayout.MountVerifierPath(
+            harness.Layout.ManagedRoot,
+            new string('a', 32));
+        File.WriteAllText(stale, "{}");
+
+        var result = await harness.Adapter.PurgeStaleMountVerifiersAsync(
+            harness.Session,
+            CancellationToken.None);
+        Assert.True(result.IsSuccess);
+        Assert.False(File.Exists(stale));
+        Assert.True(harness.Session.StaleVerifiersPurged);
+    }
+
+    [Fact]
+    public async Task Migration_status_inspection_deserializes_the_classification()
+    {
+        await using var harness = await CreateHarnessAsync();
+        IReadOnlyList<string>? args = null;
+        harness.Runner.OnRun = spec =>
+        {
+            var joined = string.Join(' ', spec.ArgumentList);
+            if (IsBindingProbe(joined))
+            {
+                return null;
+            }
+
+            args = spec.ArgumentList.ToArray();
+            return Ok("""{"schemaVersion":1,"classification":"Behind"}""");
+        };
+
+        var result = await harness.Adapter.InspectMigrationStatusAsync(
+            harness.Session,
+            CancellationToken.None);
+        Assert.True(result.IsSuccess);
+        Assert.NotNull(result.MigrationStatus);
+        Assert.Equal(SetupSchemaClassification.Behind, result.MigrationStatus!.Classification);
+        Assert.NotNull(args);
+        Assert.Contains("--status", args!);
+        Assert.DoesNotContain("up", args!);
+    }
+
+    [Fact]
+    public async Task Migration_status_inspection_rejects_an_unknown_classification()
+    {
+        await using var harness = await CreateHarnessAsync();
+        harness.Runner.OnRun = spec =>
+        {
+            if (IsBindingProbe(string.Join(' ', spec.ArgumentList)))
+            {
+                return null;
+            }
+
+            return Ok("""{"schemaVersion":1,"classification":"TotallyMadeUp"}""");
+        };
+
+        var result = await harness.Adapter.InspectMigrationStatusAsync(
+            harness.Session,
+            CancellationToken.None);
+        Assert.Equal(SetupDockerResultCode.OutputMalformed, result.Code);
+        Assert.Null(result.MigrationStatus);
+    }
+
+    [Fact]
+    public async Task Readiness_wait_retries_until_the_healthcheck_passes()
+    {
+        await using var harness = await CreateHarnessAsync();
+        var attempts = 0;
+        harness.Runner.OnRun = spec =>
+        {
+            if (IsBindingProbe(string.Join(' ', spec.ArgumentList)))
+            {
+                return null;
+            }
+
+            attempts++;
+            return attempts < 3
+                ? new HostProcessResult { Outcome = HostProcessOutcome.Completed, ExitCode = 1 }
+                : Ok(string.Empty);
+        };
+
+        var result = await harness.Adapter.AwaitMailerHealthyAsync(harness.Session, CancellationToken.None);
+        Assert.True(result.IsSuccess);
+        Assert.Equal(3, attempts);
     }
 
     [Fact]
@@ -557,7 +742,9 @@ public sealed class SetupHostDockerAdapterTests
         || joinedArguments.Contains("context show", StringComparison.Ordinal)
         || joinedArguments.Contains("compose version", StringComparison.Ordinal);
 
-    private static async Task<Harness> CreateHarnessAsync(bool seedMatchingActive = true)
+    private static async Task<Harness> CreateHarnessAsync(
+        bool seedMatchingActive = true,
+        bool pinInputs = true)
     {
         var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "amane-hd-" + Guid.NewGuid().ToString("N")));
         var fs = new HostSetupFileSystem();
@@ -577,6 +764,7 @@ public sealed class SetupHostDockerAdapterTests
         Directory.CreateDirectory(layout!.ManagedRoot);
         Directory.CreateDirectory(layout.StatePath);
         File.WriteAllText(layout.ExternalEnvPath, "MAILER_DATA_PATH=/tmp/amane-test-data\n");
+        SeedSealingKey(layout);
         SeedActive(layout, matching: seedMatchingActive);
 
         var opsHandler = new ScriptedProcessRunner(spec =>
@@ -623,7 +811,20 @@ public sealed class SetupHostDockerAdapterTests
         Assert.True(sessionResult.IsSuccess);
         Assert.NotNull(session);
 
-        return new Harness(root, layout, adapter, session!, opsHandler);
+        // ACTIVE-dependent operations require pinned inputs, so the harness follows the same pin
+        // order the apply engine uses. The compose pin is where a mismatched ACTIVE is detected,
+        // so its result is surfaced instead of asserted here.
+        var composePin = SetupDockerResult.Ok();
+        if (pinInputs)
+        {
+            var externalPin = await adapter.PinExternalInputsAsync(session!, CancellationToken.None);
+            Assert.True(externalPin.IsSuccess);
+            composePin = await adapter.ComposeCurrentActiveInputAsync(session!, CancellationToken.None);
+            var purge = await adapter.PurgeStaleMountVerifiersAsync(session!, CancellationToken.None);
+            Assert.True(purge.IsSuccess);
+        }
+
+        return new Harness(root, layout, adapter, session!, opsHandler, composePin);
     }
 
     private static TrustedReleaseInventory CreateInventory(bool includeMailpit) =>
@@ -674,6 +875,13 @@ public sealed class SetupHostDockerAdapterTests
         }
         """;
 
+    private static void SeedSealingKey(TrustedSetupHostLayout layout)
+    {
+        var path = SetupBundleLayout.HostSealingKeyPath(layout.ManagedRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        SecureFileCreate.WriteAllBytesCreateNew(path, new byte[SetupIntegritySealer.SealingKeyLength]);
+    }
+
     private static void SeedActive(TrustedSetupHostLayout layout, bool matching)
     {
         const string bundleId = "bundle-test01";
@@ -722,13 +930,15 @@ public sealed class SetupHostDockerAdapterTests
             TrustedSetupHostLayout layout,
             SetupHostDockerAdapter adapter,
             SetupHostDockerSession session,
-            ScriptedProcessRunner runner)
+            ScriptedProcessRunner runner,
+            SetupDockerResult composePin)
         {
             Root = root;
             Layout = layout;
             Adapter = adapter;
             Session = session;
             Runner = runner;
+            ComposePin = composePin;
         }
 
         public string Root { get; }
@@ -736,6 +946,7 @@ public sealed class SetupHostDockerAdapterTests
         public SetupHostDockerAdapter Adapter { get; }
         public SetupHostDockerSession Session { get; }
         public ScriptedProcessRunner Runner { get; }
+        public SetupDockerResult ComposePin { get; }
         public Dictionary<string, string?> LastChildEnv => Runner.LastEnvironment;
 
         public async ValueTask DisposeAsync()

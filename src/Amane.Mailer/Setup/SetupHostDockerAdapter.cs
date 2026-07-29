@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace Amane.Mailer.Setup;
@@ -6,14 +7,27 @@ namespace Amane.Mailer.Setup;
 /// Fixed host Docker adapter. Callers supply sessions and typed documents — never raw paths,
 /// argv, compose files, images, or environment dictionaries.
 /// </summary>
+/// <remarks>
+/// Issue #450 makes every ACTIVE-dependent operation require a pinned compose snapshot so one apply
+/// session cannot straddle two activation generations or two external input revisions.
+/// </remarks>
 public sealed class SetupHostDockerAdapter
 {
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(5);
+
+    /// <summary>Total budget for container readiness after a recreate.</summary>
+    internal static readonly TimeSpan ReadinessOverallTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>Per-attempt budget for one healthcheck exec. Never the 5 minute default.</summary>
+    internal static readonly TimeSpan ReadinessAttemptTimeout = TimeSpan.FromSeconds(10);
+
+    internal static readonly TimeSpan ReadinessRetryDelay = TimeSpan.FromSeconds(2);
 
     private readonly ISetupFileSystem _fileSystem;
     private readonly IHostProcessRunner _runner;
     private readonly DockerEnvironmentProbe _probe;
     private readonly ManagedComposeEnvComposer _envComposer;
+    private readonly TimeProvider _timeProvider;
 
     public SetupHostDockerAdapter(ISetupFileSystem fileSystem)
         : this(fileSystem, new HostProcessRunner(), probe: null, envComposer: null)
@@ -24,12 +38,14 @@ public sealed class SetupHostDockerAdapter
         ISetupFileSystem fileSystem,
         IHostProcessRunner runner,
         DockerEnvironmentProbe? probe = null,
-        ManagedComposeEnvComposer? envComposer = null)
+        ManagedComposeEnvComposer? envComposer = null,
+        TimeProvider? timeProvider = null)
     {
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
         _runner = runner ?? throw new ArgumentNullException(nameof(runner));
         _probe = probe ?? new DockerEnvironmentProbe(_runner);
-        _envComposer = envComposer ?? new ManagedComposeEnvComposer(_fileSystem);
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _envComposer = envComposer ?? new ManagedComposeEnvComposer(_fileSystem, _timeProvider);
     }
 
     public async Task<(SetupDockerResult Result, DockerConnectionBinding? Binding)> CheckDockerAsync(
@@ -114,6 +130,230 @@ public sealed class SetupHostDockerAdapter
         }
     }
 
+    /// <summary>
+    /// Pins the ACTIVE-independent external input layer once for the session. Must run before any
+    /// compose pin or external-drift comparison.
+    /// </summary>
+    public Task<SetupDockerResult> PinExternalInputsAsync(
+        SetupHostDockerSession session,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        session.ThrowIfDisposed();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromResult(Cancelled());
+        }
+
+        SetupExternalInputSnapshot? snapshot = null;
+        try
+        {
+            var pin = TryPinExternal(session.Layout, out snapshot);
+            if (!pin.IsSuccess || snapshot is null)
+            {
+                return Task.FromResult(pin);
+            }
+
+            session.SetExternalInputs(snapshot);
+            snapshot = null;
+            return Task.FromResult(SetupDockerResult.Ok("External inputs pinned."));
+        }
+        finally
+        {
+            snapshot?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Composes and pins the environment for the ACTIVE generation currently on disk.
+    /// </summary>
+    public Task<SetupDockerResult> ComposeCurrentActiveInputAsync(
+        SetupHostDockerSession session,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        session.ThrowIfDisposed();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromResult(Cancelled());
+        }
+
+        var external = session.ExternalInputs;
+        if (external is null)
+        {
+            return Task.FromResult(ExternalNotPinned());
+        }
+
+        try
+        {
+            if (!_envComposer.TryReadActivePointer(session.Layout, out var active, out var activeResult)
+                || active is null)
+            {
+                return Task.FromResult(activeResult);
+            }
+
+            return Task.FromResult(ComposeForPointer(session, external, active));
+        }
+        catch (IOException)
+        {
+            return Task.FromResult(AdapterIoFailure());
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Task.FromResult(AdapterIoFailure());
+        }
+    }
+
+    /// <summary>
+    /// Composes and pins the environment for an explicitly expected ACTIVE generation, refusing when
+    /// the on-disk pointer no longer matches.
+    /// </summary>
+    public Task<SetupDockerResult> ComposeExpectedActiveInputAsync(
+        SetupHostDockerSession session,
+        SetupActivePointer expected,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(expected);
+        session.ThrowIfDisposed();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromResult(Cancelled());
+        }
+
+        var external = session.ExternalInputs;
+        if (external is null)
+        {
+            return Task.FromResult(ExternalNotPinned());
+        }
+
+        try
+        {
+            var match = VerifyOnDiskActiveMatches(session.Layout, expected.BundleId, expected.ActivationGeneration);
+            if (!match.IsSuccess)
+            {
+                return Task.FromResult(match);
+            }
+
+            return Task.FromResult(ComposeForPointer(session, external, expected));
+        }
+        catch (IOException)
+        {
+            return Task.FromResult(AdapterIoFailure());
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Task.FromResult(AdapterIoFailure());
+        }
+    }
+
+    /// <summary>
+    /// Re-reads the external layer and compares the canonical digest against the session pin.
+    /// Values are never returned; only match/no-match is observable.
+    /// </summary>
+    public Task<SetupDockerResult> VerifyExternalInputsUnchangedAsync(
+        SetupHostDockerSession session,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        session.ThrowIfDisposed();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromResult(Cancelled());
+        }
+
+        var pinned = session.ExternalInputs;
+        if (pinned is null)
+        {
+            return Task.FromResult(ExternalNotPinned());
+        }
+
+        SetupExternalInputSnapshot? current = null;
+        try
+        {
+            var repin = TryPinExternal(session.Layout, out current);
+            if (!repin.IsSuccess || current is null)
+            {
+                return Task.FromResult(repin);
+            }
+
+            if (!string.Equals(current.ExternalInputDigest, pinned.ExternalInputDigest, StringComparison.Ordinal))
+            {
+                return Task.FromResult(SetupDockerResult.Fail(
+                    SetupDockerResultCode.ExternalInputChanged,
+                    "Allowlisted external input changed during the apply session."));
+            }
+
+            return Task.FromResult(SetupDockerResult.Ok("External inputs unchanged."));
+        }
+        finally
+        {
+            current?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Removes stale ephemeral mount verifiers from <c>managed/tmp</c> and fails closed on any other
+    /// residue. Effective inspection refuses to run until this succeeds.
+    /// </summary>
+    public Task<SetupDockerResult> PurgeStaleMountVerifiersAsync(
+        SetupHostDockerSession session,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        session.ThrowIfDisposed();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromResult(Cancelled());
+        }
+
+        var tempDir = Path.GetFullPath(session.Layout.VerifierTempDir);
+        try
+        {
+            if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
+                    _fileSystem, session.Layout.ManagedRoot, tempDir, out _, out _))
+            {
+                return Task.FromResult(SetupDockerResult.Fail(
+                    SetupDockerResultCode.UnsafePath,
+                    "Verifier temp directory path rejected."));
+            }
+
+            if (!_fileSystem.DirectoryExists(tempDir))
+            {
+                session.MarkStaleVerifiersPurged();
+                return Task.FromResult(SetupDockerResult.Ok("No verifier temp directory to purge."));
+            }
+
+            foreach (var entry in _fileSystem.EnumerateFileSystemEntries(tempDir))
+            {
+                var fullEntry = Path.GetFullPath(entry);
+                var fileName = Path.GetFileName(fullEntry);
+                if (_fileSystem.DirectoryExists(fullEntry)
+                    || !SetupBundleLayout.IsMountVerifierFileName(fileName)
+                    || SetupPathGuard.IsUnsafeLink(_fileSystem.InspectSymlinkOrReparsePoint(fullEntry)))
+                {
+                    return Task.FromResult(SetupDockerResult.Fail(
+                        SetupDockerResultCode.UnsafePath,
+                        "Unexpected residue exists in the managed verifier temp directory."));
+                }
+
+                _fileSystem.DeleteFile(fullEntry);
+            }
+
+            _fileSystem.FlushDirectory(tempDir);
+            session.MarkStaleVerifiersPurged();
+            return Task.FromResult(SetupDockerResult.Ok("Stale mount verifiers purged."));
+        }
+        catch (IOException)
+        {
+            return Task.FromResult(AdapterIoFailure());
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Task.FromResult(AdapterIoFailure());
+        }
+    }
+
     public Task<SetupDockerResult> ValidateComposeAsync(
         SetupHostDockerSession session,
         CancellationToken cancellationToken) =>
@@ -126,6 +366,7 @@ public sealed class SetupHostDockerAdapter
         SetupHostDockerSession session,
         CancellationToken cancellationToken)
     {
+        // ACTIVE-independent: the pinned digest comes from the trusted release inventory only.
         session.ThrowIfDisposed();
         var image = session.Layout.ReleaseInventory.PinnedMailerImageReference;
         var args = PrefixedDockerArgs(session, ["pull", image]);
@@ -141,6 +382,26 @@ public sealed class SetupHostDockerAdapter
                 SetupDockerInventory.ServiceMailerMigrate])
             .ToArray();
         return RunComposeOperationAsync(session, args, cancellationToken);
+    }
+
+    /// <summary>
+    /// Read-only schema classification via the ops profile. Fixed argv; never applies migrations.
+    /// </summary>
+    public async Task<SetupDockerResult> InspectMigrationStatusAsync(
+        SetupHostDockerSession session,
+        CancellationToken cancellationToken)
+    {
+        var args = BuildComposeArgPrefix(session)
+            .Concat(["--profile", SetupDockerInventory.ProfileOps, "run", "--rm", "--pull", "never",
+                SetupDockerInventory.ServiceMailerMigrate,
+                "db", "migrate", "--status", "--format", "json"])
+            .ToArray();
+
+        return await RunComposeOperationAsync(
+            session,
+            args,
+            cancellationToken,
+            deserializeMigrationStatus: true);
     }
 
     public Task<SetupDockerResult> StartOrRecreateMailerAsync(
@@ -164,6 +425,79 @@ public sealed class SetupHostDockerAdapter
         return RunComposeOperationAsync(session, args, cancellationToken);
     }
 
+    /// <summary>
+    /// Polls the in-container healthcheck until it passes or the overall readiness budget expires.
+    /// Uses the pinned compose environment and a short per-attempt timeout, never the default.
+    /// </summary>
+    public async Task<SetupDockerResult> AwaitMailerHealthyAsync(
+        SetupHostDockerSession session,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        session.ThrowIfDisposed();
+
+        var args = BuildComposeArgPrefix(session)
+            .Concat(["exec", "-T", SetupDockerInventory.ServiceMailer,
+                SetupDockerInventory.ContainerMailerEntrypointPath, "healthcheck"])
+            .ToArray();
+
+        var deadline = _timeProvider.GetUtcNow() + ReadinessOverallTimeout;
+        SetupDockerResult last = SetupDockerResult.Fail(
+            SetupDockerResultCode.Timeout,
+            "Mailer readiness did not pass within the allowed budget.");
+
+        while (true)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Cancelled();
+            }
+
+            last = await RunComposeOperationAsync(
+                session,
+                args,
+                cancellationToken,
+                attemptTimeout: ReadinessAttemptTimeout);
+            if (last.IsSuccess)
+            {
+                return SetupDockerResult.Ok(
+                    "Mailer readiness passed.",
+                    session.Binding.EngineKind,
+                    session.Binding.ComposeMajorVersion);
+            }
+
+            // Input drift, pin, and path failures are terminal — retrying cannot fix them.
+            if (last.Code is SetupDockerResultCode.ComposeInputNotPinned
+                or SetupDockerResultCode.ExternalInputNotPinned
+                or SetupDockerResultCode.ExternalInputChanged
+                or SetupDockerResultCode.ActiveGenerationMismatch
+                or SetupDockerResultCode.UnsafePath
+                or SetupDockerResultCode.InvalidBundleInventory
+                or SetupDockerResultCode.RemoteContextRejected
+                or SetupDockerResultCode.RemoteDockerRejected
+                or SetupDockerResultCode.Cancelled)
+            {
+                return last;
+            }
+
+            if (_timeProvider.GetUtcNow() + ReadinessRetryDelay >= deadline)
+            {
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.Timeout,
+                    "Mailer readiness did not pass within the allowed budget.");
+            }
+
+            try
+            {
+                await Task.Delay(ReadinessRetryDelay, _timeProvider, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                return Cancelled();
+            }
+        }
+    }
+
     public async Task<SetupDockerResult> RunEffectiveInspectionAsync(
         SetupHostDockerSession session,
         SetupMountVerifierDocument verifier,
@@ -184,6 +518,19 @@ public sealed class SetupHostDockerAdapter
                 "Mount verifier document is incomplete.");
         }
 
+        if (!session.StaleVerifiersPurged)
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.FailedUnexpected,
+                "Stale mount verifiers were not purged before effective inspection.");
+        }
+
+        var pinned = ResolvePinnedComposeEnvironment(session, out var pinFailure);
+        if (pinned is null)
+        {
+            return pinFailure!;
+        }
+
         byte[]? verifierBytes = null;
         string? hostVerifierPath = null;
         SetupDockerResult? operationResult = null;
@@ -193,14 +540,14 @@ public sealed class SetupHostDockerAdapter
                 verifier,
                 SetupHostDockerJsonContext.Default.SetupMountVerifierDocument);
 
-            var verifierDir = Path.Combine(session.Layout.ManagedRoot, "tmp");
+            var verifierDir = Path.GetFullPath(session.Layout.VerifierTempDir);
             if (!_fileSystem.DirectoryExists(verifierDir))
             {
                 _fileSystem.CreateOwnerOnlyDirectory(verifierDir);
             }
 
             hostVerifierPath = Path.GetFullPath(
-                Path.Combine(verifierDir, $"mount-verifier-{Guid.NewGuid():N}.json"));
+                SetupBundleLayout.MountVerifierPath(session.Layout.ManagedRoot, Guid.NewGuid().ToString("N")));
             if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
                     _fileSystem, session.Layout.ManagedRoot, hostVerifierPath, out _, out _))
             {
@@ -211,16 +558,7 @@ public sealed class SetupHostDockerAdapter
 
             _fileSystem.WriteProtectedFileCreateNew(hostVerifierPath, verifierBytes);
 
-            var composeEnvResult = _envComposer.TryCompose(
-                session.Layout,
-                out var composeEnv,
-                out _);
-            if (!composeEnvResult.IsSuccess)
-            {
-                return composeEnvResult;
-            }
-
-            var env = new Dictionary<string, string>(composeEnv, StringComparer.Ordinal)
+            var env = new Dictionary<string, string>(pinned, StringComparer.Ordinal)
             {
                 [SetupDockerInventory.ContainerVerifierEnvKey] =
                     SetupDockerInventory.ContainerVerifierMountPath,
@@ -339,21 +677,170 @@ public sealed class SetupHostDockerAdapter
         return list.ToArray();
     }
 
+    private SetupDockerResult ComposeForPointer(
+        SetupHostDockerSession session,
+        SetupExternalInputSnapshot external,
+        SetupActivePointer pointer)
+    {
+        SetupComposeInputSnapshot? snapshot = null;
+        try
+        {
+            if (!_envComposer.TryComposeWithActivePointer(
+                    session.Layout,
+                    external,
+                    pointer,
+                    out snapshot,
+                    out var composeResult)
+                || snapshot is null)
+            {
+                return composeResult;
+            }
+
+            session.SetComposeInputs(snapshot);
+            snapshot = null;
+            return SetupDockerResult.Ok("Compose inputs pinned.");
+        }
+        finally
+        {
+            snapshot?.Dispose();
+        }
+    }
+
+    private SetupDockerResult TryPinExternal(
+        TrustedSetupHostLayout layout,
+        out SetupExternalInputSnapshot? snapshot)
+    {
+        snapshot = null;
+        byte[]? sealingKey = null;
+        try
+        {
+            var load = TryLoadSealingKey(layout, out sealingKey);
+            if (!load.IsSuccess || sealingKey is null)
+            {
+                return load;
+            }
+
+            return _envComposer.TryPinExternalLayer(layout, sealingKey, out snapshot, out var pinResult)
+                ? SetupDockerResult.Ok()
+                : pinResult;
+        }
+        catch (IOException)
+        {
+            return AdapterIoFailure();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return AdapterIoFailure();
+        }
+        finally
+        {
+            if (sealingKey is not null)
+            {
+                CryptographicOperations.ZeroMemory(sealingKey);
+            }
+        }
+    }
+
+    private SetupDockerResult TryLoadSealingKey(TrustedSetupHostLayout layout, out byte[]? sealingKey)
+    {
+        sealingKey = null;
+        var path = Path.GetFullPath(SetupBundleLayout.HostSealingKeyPath(layout.ManagedRoot));
+        if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
+                _fileSystem, layout.ManagedRoot, path, out _, out _))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsafePath,
+                "Host sealing key path rejected.");
+        }
+
+        if (!_fileSystem.FileExists(path) || !_fileSystem.IsOwnerOnlyFile(path))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Host sealing key is missing or not owner-only.");
+        }
+
+        var bytes = _fileSystem.ReadAllBytes(path);
+        if (bytes.Length != SetupIntegritySealer.SealingKeyLength)
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Host sealing key is invalid.");
+        }
+
+        sealingKey = bytes;
+        return SetupDockerResult.Ok();
+    }
+
+    private IReadOnlyDictionary<string, string>? ResolvePinnedComposeEnvironment(
+        SetupHostDockerSession session,
+        out SetupDockerResult? failure)
+    {
+        failure = null;
+        if (session.ExternalInputs is null)
+        {
+            failure = ExternalNotPinned();
+            return null;
+        }
+
+        var pinned = session.ComposeInputs;
+        if (pinned is null)
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.ComposeInputNotPinned,
+                "Compose inputs must be pinned for the target activation generation first.");
+            return null;
+        }
+
+        var match = VerifyOnDiskActiveMatches(
+            session.Layout,
+            pinned.ExpectedActiveBundleId,
+            pinned.ExpectedActivationGeneration);
+        if (!match.IsSuccess)
+        {
+            failure = match;
+            return null;
+        }
+
+        return pinned.ComposedEnvironment;
+    }
+
+    private SetupDockerResult VerifyOnDiskActiveMatches(
+        TrustedSetupHostLayout layout,
+        string expectedBundleId,
+        long expectedGeneration)
+    {
+        if (!_envComposer.TryReadActivePointer(layout, out var active, out var activeResult) || active is null)
+        {
+            return activeResult;
+        }
+
+        if (!string.Equals(active.BundleId, expectedBundleId, StringComparison.Ordinal)
+            || active.ActivationGeneration != expectedGeneration)
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.ActiveGenerationMismatch,
+                "On-disk ACTIVE no longer matches the pinned activation generation.");
+        }
+
+        return SetupDockerResult.Ok();
+    }
+
     private async Task<SetupDockerResult> RunComposeOperationAsync(
         SetupHostDockerSession session,
         IReadOnlyList<string> composeArgs,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool deserializeMigrationStatus = false,
+        TimeSpan? attemptTimeout = null)
     {
         session.ThrowIfDisposed();
         try
         {
-            var composeEnvResult = _envComposer.TryCompose(
-                session.Layout,
-                out var composeEnv,
-                out _);
-            if (!composeEnvResult.IsSuccess)
+            var composeEnv = ResolvePinnedComposeEnvironment(session, out var pinFailure);
+            if (composeEnv is null)
             {
-                return composeEnvResult;
+                return pinFailure!;
             }
 
             return await RunDockerAsync(
@@ -361,7 +848,9 @@ public sealed class SetupHostDockerAdapter
                 PrefixedDockerArgs(session, composeArgs),
                 session.Layout.ProjectDirectory,
                 composeEnv,
-                cancellationToken);
+                cancellationToken,
+                deserializeMigrationStatus: deserializeMigrationStatus,
+                attemptTimeout: attemptTimeout);
         }
         catch (OperationCanceledException)
         {
@@ -387,7 +876,9 @@ public sealed class SetupHostDockerAdapter
         string? workingDirectory,
         IReadOnlyDictionary<string, string>? composeEnv,
         CancellationToken cancellationToken,
-        bool deserializeInspection = false)
+        bool deserializeInspection = false,
+        bool deserializeMigrationStatus = false,
+        TimeSpan? attemptTimeout = null)
     {
         SetupDockerResult revalidate;
         try
@@ -447,7 +938,7 @@ public sealed class SetupHostDockerAdapter
             args,
             workingDirectory,
             childEnv,
-            DefaultTimeout);
+            attemptTimeout ?? DefaultTimeout);
 
         HostProcessResult processResult;
         try
@@ -508,6 +999,39 @@ public sealed class SetupHostDockerAdapter
             }
         }
 
+        if (processResult.Outcome == HostProcessOutcome.Completed
+            && processResult.ExitCode == 0
+            && deserializeMigrationStatus)
+        {
+            try
+            {
+                var status = JsonSerializer.Deserialize(
+                    processResult.StandardOutput ?? string.Empty,
+                    SetupApplyJsonContext.Default.SetupMigrationStatusDocument);
+                if (status is null
+                    || status.SchemaVersion != SetupMigrationStatusDocument.CurrentSchemaVersion
+                    || !SetupMigrationStatusDocument.IsKnownClassification(status.Classification))
+                {
+                    return SetupDockerResult.Fail(
+                        SetupDockerResultCode.OutputMalformed,
+                        "Migration status output was malformed.");
+                }
+
+                return SetupDockerResult.Ok(
+                    "Docker operation succeeded.",
+                    session.Binding.EngineKind,
+                    session.Binding.ComposeMajorVersion,
+                    inspection: null,
+                    migrationStatus: status);
+            }
+            catch (JsonException)
+            {
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.OutputMalformed,
+                    "Migration status output was malformed.");
+            }
+        }
+
         return processResult.Outcome switch
         {
             HostProcessOutcome.TimedOut => SetupDockerResult.Fail(
@@ -534,6 +1058,11 @@ public sealed class SetupHostDockerAdapter
                 "Docker operation ended in an unexpected state."),
         };
     }
+
+    private static SetupDockerResult ExternalNotPinned() =>
+        SetupDockerResult.Fail(
+            SetupDockerResultCode.ExternalInputNotPinned,
+            "External inputs must be pinned before this operation.");
 
     private static SetupDockerResult Cancelled() =>
         SetupDockerResult.Fail(

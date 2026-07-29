@@ -136,6 +136,7 @@ public static class MailerCliHost
 
     public static async Task<int> RunDbMigrateAsync(
         IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
         TextWriter output,
         TextWriter error,
         CancellationToken cancellationToken)
@@ -143,7 +144,11 @@ public static class MailerCliHost
         var factory = new SqliteConnectionFactory(configuration);
         var runner = new SqlMigrationRunner(factory);
         var command = new DbMigrateCommand(runner);
-        return await command.ExecuteAsync(["db", "migrate"], output, error, cancellationToken);
+        return await command.ExecuteAsync(
+            FilterConfigurationArgs(commandArgs),
+            output,
+            error,
+            cancellationToken);
     }
 
     public static async Task<int> RunDbCheckpointAsync(
