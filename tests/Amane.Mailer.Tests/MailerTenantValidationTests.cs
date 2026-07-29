@@ -168,6 +168,71 @@ public sealed class MailerTenantValidationTests
             JsonSerializer.Deserialize(json, MailerJsonContext.Default.MailerTenantsFile));
     }
 
+    [Fact]
+    public void Omitted_metadata_max_bytes_deserializes_as_null_then_defaults_to_4096()
+    {
+        const string json = """
+            {
+              "version": 1,
+              "environment": "develop",
+              "tenants": [
+                {
+                  "tenant_id": "00000000-0000-0000-0000-000000000101",
+                  "name": "example-develop",
+                  "source_services": ["example-service"],
+                  "default_from": { "email": "noreply@example.com", "display_name": "Example" },
+                  "token_env": "MAIL_SERVICE_TOKEN",
+                  "provider": "mailpit",
+                  "live_sending": false,
+                  "retry": { "max_attempts": 10, "initial_delay_seconds": 10, "max_delay_seconds": 300 }
+                }
+              ]
+            }
+            """;
+
+        var tenantFile = JsonSerializer.Deserialize(json, MailerJsonContext.Default.MailerTenantsFile);
+        Assert.NotNull(tenantFile);
+        Assert.Null(tenantFile.Tenants[0].MetadataMaxBytes);
+        Assert.Equal(MailerTenant.DefaultMetadataMaxBytes, tenantFile.Tenants[0].EffectiveMetadataMaxBytes);
+
+        tenantFile = tenantFile.WithJsonDefaultsApplied();
+        Assert.Equal(MailerTenant.DefaultMetadataMaxBytes, tenantFile.Tenants[0].MetadataMaxBytes);
+        tenantFile.Validate();
+        tenantFile.Tenants[0].Validate();
+    }
+
+    [Fact]
+    public void Explicit_zero_metadata_max_bytes_is_rejected_after_defaults()
+    {
+        const string json = """
+            {
+              "version": 1,
+              "environment": "develop",
+              "tenants": [
+                {
+                  "tenant_id": "00000000-0000-0000-0000-000000000101",
+                  "name": "example-develop",
+                  "source_services": ["example-service"],
+                  "default_from": { "email": "noreply@example.com", "display_name": "Example" },
+                  "token_env": "MAIL_SERVICE_TOKEN",
+                  "provider": "mailpit",
+                  "live_sending": false,
+                  "metadata_max_bytes": 0,
+                  "retry": { "max_attempts": 10, "initial_delay_seconds": 10, "max_delay_seconds": 300 }
+                }
+              ]
+            }
+            """;
+
+        var tenantFile = JsonSerializer.Deserialize(json, MailerJsonContext.Default.MailerTenantsFile);
+        Assert.NotNull(tenantFile);
+        tenantFile = tenantFile.WithJsonDefaultsApplied();
+        Assert.Equal(0, tenantFile.Tenants[0].MetadataMaxBytes);
+
+        var exception = Assert.Throws<InvalidOperationException>(tenantFile.Tenants[0].Validate);
+        Assert.Contains("metadata_max_bytes", exception.Message, StringComparison.Ordinal);
+    }
+
     private static MailerTenant ValidTenant() => new()
     {
         TenantId = Guid.Parse("00000000-0000-0000-0000-000000000101"),

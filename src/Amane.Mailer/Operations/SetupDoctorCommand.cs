@@ -157,6 +157,7 @@ public sealed class SetupDoctorCommand
                 File.ReadAllText(tenantsPath),
                 MailerJsonContext.Default.MailerTenantsFile)
                 ?? throw new InvalidOperationException("empty");
+            tenantFile = tenantFile.WithJsonDefaultsApplied();
             tenantFile.Validate();
         }
         catch (Exception)
@@ -995,6 +996,7 @@ public sealed class SetupDoctorCommand
             tenantFile = JsonSerializer.Deserialize(
                 File.ReadAllText(tenantsPath),
                 MailerJsonContext.Default.MailerTenantsFile)!;
+            tenantFile = tenantFile.WithJsonDefaultsApplied();
         }
         catch
         {

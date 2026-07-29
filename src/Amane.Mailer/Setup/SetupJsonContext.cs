@@ -12,3 +12,16 @@ namespace Amane.Mailer.Setup;
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     WriteIndented = true)]
 public partial class SetupJsonContext : JsonSerializerContext;
+
+[JsonSerializable(typeof(SetupInspectEffectiveResult))]
+[JsonSerializable(typeof(SetupInspectRecordedSummary))]
+[JsonSerializable(typeof(SetupInspectEffectiveSummary))]
+[JsonSerializable(typeof(SetupInspectAttestationSummary))]
+[JsonSerializable(typeof(SetupMountVerifierDocument))]
+[JsonSerializable(typeof(SetupMountVerifierMember))]
+[JsonSerializable(typeof(SetupRecordedMetadata))]
+[JsonSourceGenerationOptions(
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    WriteIndented = false)]
+public partial class SetupInspectJsonContext : JsonSerializerContext;

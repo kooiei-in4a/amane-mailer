@@ -8,9 +8,11 @@
 
 Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) · 本 Issue: [#424](https://github.com/kooiei-in4a/amane-mailer/issues/424)
 
-### v1.2.0 Easy Setup（設計固定・未実装）
+### v1.2.0 Easy Setup（設計固定・部分実装）
 
-v1.2.0 向け Easy Setup の実行境界・設定正本・Managed／Manual・Admin／Gate 契約は [ADR 0021](../adr/0021-easy-setup-boundaries.md)（[#446](https://github.com/kooiei-in4a/amane-mailer/issues/446)）を Design authority とする。tracking は [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445)。**現行の完遂経路は本ガイドの Manual 導線のまま**である。host assistant／immutable bundle 等の実装は #447 以降であり、本ガイドの mode 手順を置き換えない。
+v1.2.0 向け Easy Setup の実行境界・設定正本・Managed／Manual・Admin／Gate 契約は [ADR 0021](../adr/0021-easy-setup-boundaries.md)（[#446](https://github.com/kooiei-in4a/amane-mailer/issues/446)）を Design authority とする。tracking は [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445)。**現行の完遂経路は本ガイドの Manual 導線のまま**である。
+
+コンテナ one-shot の effective inspection（`Amane.Mailer setup inspect-effective --format json`、[#447](https://github.com/kooiei-in4a/amane-mailer/issues/447)）は実装済みである。stdout は JSON のみ。recorded／effective／mountAttestation を分離し、one-shot 単独では最終 `bundleIntegrity=matched` を主張しない（host at-rest 統合は #450）。host assistant／ACTIVE 適用／Docker 操作は後続 Issue であり、本ガイドの mode 手順を置き換えない。
 
 ## 既存文書の役割（複製しない）
 

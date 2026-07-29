@@ -11,11 +11,22 @@ public static class MailerCliHost
     public static bool IsHealthCheckCommand(IReadOnlyList<string> args) =>
         args.Count == 1 && string.Equals(args[0], "healthcheck", StringComparison.Ordinal);
 
-    public static IConfiguration BuildCliConfiguration(string[] args) =>
-        new ConfigurationBuilder()
+    public static IConfiguration BuildCliConfiguration(string[] args)
+    {
+        // Align with host env + optional appsettings loading used by WebApplication.CreateBuilder
+        // for configuration keys Mailer resolves (ADR 0021 D-05 sameness for one-shot/CLI).
+        var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+            ?? Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
+            ?? "Production";
+
+        return new ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+            .AddJsonFile($"appsettings.{environment}.json", optional: true, reloadOnChange: false)
             .AddEnvironmentVariables()
             .AddCommandLine(args.Where(static arg => arg.Contains('=')).ToArray())
             .Build();
+    }
 
     public static IReadOnlyList<string> FilterConfigurationArgs(IReadOnlyList<string> commandArgs) =>
         commandArgs.Where(static arg => !IsInlineConfigurationArg(arg)).ToArray();
@@ -251,6 +262,29 @@ public static class MailerCliHost
             new AdminProviderTestAcsSendConsole(),
             configuration);
         return command.RunAsync(cancellationToken);
+    }
+
+    public static async Task<int> RunSetupInspectEffectiveAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+        if (!Amane.Mailer.Setup.SetupInspectEffectiveCommand.TryParseArguments(
+                FilterConfigurationArgs(commandArgs),
+                out var usageError))
+        {
+            await error.WriteLineAsync(usageError ?? "Invalid setup inspect-effective arguments.");
+            await error.WriteLineAsync("Usage: setup inspect-effective --format json");
+            return Amane.Mailer.Setup.SetupInspectEffectiveCommand.UsageErrorExitCode;
+        }
+
+        return await Amane.Mailer.Setup.SetupInspectEffectiveCommand.ExecuteAsync(
+            configuration,
+            output,
+            error);
     }
 
     public static async Task<int> RunSetupDoctorAsync(

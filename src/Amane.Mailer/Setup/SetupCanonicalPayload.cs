@@ -16,14 +16,33 @@ public static class SetupCanonicalPayload
         MailerTenantsFile tenants,
         IReadOnlyDictionary<string, string> composeEnv,
         PlatformSenderFile? platformSender,
+        bool adminBootstrapRequested) =>
+        BuildFromWireMode(
+            SetupModeParser.ToWireValue(mode),
+            tenants,
+            composeEnv,
+            platformSender,
+            adminBootstrapRequested);
+
+    /// <summary>
+    /// Same canonical layout as <see cref="Build"/> but accepts a mode wire string so
+    /// effective inspection can fingerprint Manual deployments as <c>not-managed</c>.
+    /// </summary>
+    public static byte[] BuildFromWireMode(
+        string modeWire,
+        MailerTenantsFile tenants,
+        IReadOnlyDictionary<string, string> composeEnv,
+        PlatformSenderFile? platformSender,
         bool adminBootstrapRequested)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modeWire);
+
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = false }))
         {
             writer.WriteStartObject();
             writer.WriteNumber("schemaVersion", SetupBundleLayout.RecordedSchemaVersion);
-            writer.WriteString("mode", SetupModeParser.ToWireValue(mode));
+            writer.WriteString("mode", modeWire);
 
             writer.WritePropertyName("tenants");
             WriteTenants(writer, tenants);
@@ -91,7 +110,7 @@ public static class SetupCanonicalPayload
             writer.WriteString("token_env", tenant.TokenEnv);
             writer.WriteString("provider", tenant.Provider);
             writer.WriteBoolean("live_sending", tenant.LiveSending);
-            writer.WriteNumber("metadata_max_bytes", tenant.MetadataMaxBytes);
+            writer.WriteNumber("metadata_max_bytes", tenant.EffectiveMetadataMaxBytes);
             writer.WritePropertyName("retry");
             writer.WriteStartObject();
             writer.WriteNumber("max_attempts", tenant.Retry.MaxAttempts);

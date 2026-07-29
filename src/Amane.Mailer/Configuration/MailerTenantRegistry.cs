@@ -24,12 +24,13 @@ public sealed class MailerTenantRegistry
         _webhookSecretsByTenantId = webhookSecretsByTenantId;
     }
 
-    public static MailerTenantRegistry Load(IConfiguration configuration)
-    {
-        var tenantsPath = configuration["Mailer:TenantsPath"]
+    public static string ResolveTenantsPath(IConfiguration configuration) =>
+        configuration["Mailer:TenantsPath"]
             ?? configuration["MAILER_TENANTS_PATH"]
             ?? Path.Combine(AppContext.BaseDirectory, "config", "mailer", "tenants.example.json");
 
+    public static MailerTenantsFile LoadTenantsFile(string tenantsPath)
+    {
         if (!File.Exists(tenantsPath))
         {
             throw new InvalidOperationException($"Mailer tenant configuration file does not exist: {tenantsPath}");
@@ -40,16 +41,35 @@ public sealed class MailerTenantRegistry
             MailerJsonContext.Default.MailerTenantsFile)
             ?? throw new InvalidOperationException("Mailer tenant configuration file is empty.");
 
+        tenantFile = tenantFile.WithJsonDefaultsApplied();
         tenantFile.Validate();
+        foreach (var tenant in tenantFile.Tenants)
+        {
+            tenant.Validate();
+        }
 
+        return tenantFile;
+    }
+
+    public static MailerTenantRegistry Load(IConfiguration configuration)
+    {
+        var tenantsPath = ResolveTenantsPath(configuration);
+        var tenantFile = LoadTenantsFile(tenantsPath);
+        return LoadFromTenantsFile(configuration, tenantsPath, tenantFile);
+    }
+
+    public static MailerTenantRegistry LoadFromTenantsFile(
+        IConfiguration configuration,
+        string tenantsPath,
+        MailerTenantsFile tenantFile)
+    {
+        _ = tenantsPath;
         var tenantsById = new Dictionary<Guid, MailerTenant>();
         var tokensByTenantId = new Dictionary<Guid, string>();
         var webhookSecretsByTenantId = new Dictionary<Guid, string>();
 
         foreach (var tenant in tenantFile.Tenants)
         {
-            tenant.Validate();
-
             if (!tenantsById.TryAdd(tenant.TenantId, tenant))
             {
                 throw new InvalidOperationException($"Duplicate tenant_id: {tenant.TenantId}");
@@ -60,7 +80,8 @@ public sealed class MailerTenantRegistry
 
             if (string.IsNullOrWhiteSpace(token))
             {
-                throw new InvalidOperationException(
+                throw new MailerConfigurationLoadException(
+                    MailerConfigurationLoadFailureKind.TokenMissing,
                     $"Environment variable '{tenant.TokenEnv}' must be set for tenant '{tenant.Name}'.");
             }
 
@@ -73,7 +94,8 @@ public sealed class MailerTenantRegistry
 
                 if (string.IsNullOrWhiteSpace(webhookSecret))
                 {
-                    throw new InvalidOperationException(
+                    throw new MailerConfigurationLoadException(
+                        MailerConfigurationLoadFailureKind.WebhookSecretMissing,
                         $"Environment variable '{tenant.Webhook.SecretEnv}' must be set for tenant '{tenant.Name}' webhook delivery.");
                 }
 
