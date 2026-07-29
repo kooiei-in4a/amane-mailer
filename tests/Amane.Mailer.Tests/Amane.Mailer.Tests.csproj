@@ -20,7 +20,30 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Amane.Mailer\Amane.Mailer.csproj" />
     <ProjectReference Include="..\..\src\Amane.Mailer.Contracts\Amane.Mailer.Contracts.csproj" />
+    <ProjectReference Include="..\Amane.Mailer.ProcessFixture\Amane.Mailer.ProcessFixture.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <PrivateAssets>all</PrivateAssets>
+    </ProjectReference>
   </ItemGroup>
+
+  <Target Name="CopyProcessFixtureToOutput" AfterTargets="Build">
+    <PropertyGroup>
+      <_ProcessFixtureOutDir>$(MSBuildThisFileDirectory)..\Amane.Mailer.ProcessFixture\bin\$(Configuration)\$(TargetFramework)\</_ProcessFixtureOutDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_ProcessFixtureCopy Include="$(_ProcessFixtureOutDir)Amane.Mailer.ProcessFixture.dll" />
+      <_ProcessFixtureCopy Include="$(_ProcessFixtureOutDir)Amane.Mailer.ProcessFixture.deps.json" />
+      <_ProcessFixtureCopy Include="$(_ProcessFixtureOutDir)Amane.Mailer.ProcessFixture.runtimeconfig.json" />
+      <_ProcessFixtureCopy Include="$(_ProcessFixtureOutDir)Amane.Mailer.ProcessFixture.exe"
+                           Condition="Exists('$(_ProcessFixtureOutDir)Amane.Mailer.ProcessFixture.exe')" />
+      <_ProcessFixtureCopy Include="$(_ProcessFixtureOutDir)Amane.Mailer.ProcessFixture"
+                           Condition="Exists('$(_ProcessFixtureOutDir)Amane.Mailer.ProcessFixture')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ProcessFixtureCopy)"
+          DestinationFolder="$(TargetDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_ProcessFixtureCopy)' != ''" />
+  </Target>
 
   <ItemGroup>
     <Using Include="Xunit" />

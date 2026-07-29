@@ -482,6 +482,7 @@ public sealed class SetupHostDockerAdapterTests
     }
 
     [Theory]
+    [InlineData(SetupDockerInventory.DeployComposeRelativePath, SetupMode.StagingNoSend, false)]
     [InlineData(SetupDockerInventory.ImageDigestOverlayRelativePath, SetupMode.StagingNoSend, false)]
     [InlineData(SetupDockerInventory.RecordedMetadataOverlayRelativePath, SetupMode.StagingNoSend, false)]
     [InlineData(SetupDockerInventory.MailpitOverlayRelativePath, SetupMode.LocalMailpit, true)]

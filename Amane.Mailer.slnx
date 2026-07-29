@@ -5,6 +5,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Amane.Mailer.Contracts.Tests/Amane.Mailer.Contracts.Tests.csproj" />
+    <Project Path="tests/Amane.Mailer.ProcessFixture/Amane.Mailer.ProcessFixture.csproj" />
     <Project Path="tests/Amane.Mailer.Tests/Amane.Mailer.Tests.csproj" />
   </Folder>
 </Solution>

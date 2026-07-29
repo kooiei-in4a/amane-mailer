@@ -104,7 +104,11 @@ public sealed class HostProcessRunnerLiveTests
         TimeSpan timeout,
         IReadOnlyDictionary<string, string>? extraEnvironment = null)
     {
-        var assemblyPath = typeof(SetupCore).Assembly.Location;
+        var fixtureAssembly = Path.Combine(AppContext.BaseDirectory, "Amane.Mailer.ProcessFixture.dll");
+        Assert.True(
+            File.Exists(fixtureAssembly),
+            "Test-only ProcessFixture assembly was not copied next to the test output.");
+
         var dotnetHost = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
         if (string.IsNullOrWhiteSpace(dotnetHost))
         {
@@ -127,8 +131,8 @@ public sealed class HostProcessRunnerLiveTests
 
         return new HostProcessSpec(
             dotnetHost,
-            ["exec", assemblyPath, "setup", "process-runner-fixture", mode],
-            Path.GetDirectoryName(assemblyPath),
+            ["exec", fixtureAssembly, mode],
+            AppContext.BaseDirectory,
             environment,
             timeout);
     }
