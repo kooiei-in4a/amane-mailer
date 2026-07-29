@@ -20,6 +20,11 @@ public sealed record AdminSetupStatusReadModel
     public const string SendReadyUnavailableReason = "host-send-ready-inputs-not-observable";
     public const string SendReadyAuthorityMismatchReason = "send-ready-authority-not-bound-to-active";
     public const string ObservedIntegrityBlocksReadyReason = "observed-integrity-blocks-send-ready";
+    public const string ObservationInconclusiveReason = "current-observation-inconclusive";
+    public const string CredentialNotLoadedReason = "credential-not-loaded";
+    public const string EffectiveProviderNotAcsReason = "effective-provider-not-acs";
+
+    private const string ProviderAcs = "acs";
 
     public required AdminSetupDeploymentKind DeploymentKind { get; init; }
     public required string MailerVersion { get; init; }
@@ -27,7 +32,7 @@ public sealed record AdminSetupStatusReadModel
     public string? Mode { get; init; }
     public string? ProviderSummary { get; init; }
     public string? SenderEmail { get; init; }
-    public bool PlatformSenderPresent { get; init; }
+    public bool? PlatformSenderPresent { get; init; }
     public required string CredentialStatus { get; init; }
     public bool? LiveSendingEnabled { get; init; }
     public string? RecordedFingerprint { get; init; }
@@ -125,7 +130,9 @@ public sealed record AdminSetupStatusReadModel
             Mode = showManagedFields ? mode : null,
             ProviderSummary = inspection.Effective.ProviderSummary,
             SenderEmail = senderEmail,
-            PlatformSenderPresent = recordedExtra?.PlatformSenderPresent == true,
+            PlatformSenderPresent = showManagedFields
+                ? recordedExtra?.PlatformSenderPresent == true
+                : null,
             CredentialStatus = inspection.Effective.CredentialStatus,
             LiveSendingEnabled = inspection.Effective.LiveSendingEnabled,
             RecordedFingerprint = showManagedFields
@@ -347,6 +354,15 @@ public sealed record AdminSetupStatusReadModel
                 "observed-integrity-mismatch-or-invalid");
         }
 
+        if (DescribeInconclusiveObservation(inspection) is { } inconclusiveObservation)
+        {
+            return FailFreshness(
+                AdminSetupVerificationFreshness.Stale,
+                record,
+                active,
+                inconclusiveObservation);
+        }
+
         if (record.RecordedSchemaVersion is int recordedSchema
             && inspection?.Recorded is { } recorded
             && recorded.SchemaVersion != recordedSchema)
@@ -437,6 +453,9 @@ public sealed record AdminSetupStatusReadModel
             return AdminSetupConfigurationAppliedDisplay.No;
         }
 
+        if (DescribeInconclusiveObservation(inspection) is not null)
+            return AdminSetupConfigurationAppliedDisplay.Unavailable;
+
         if (verification.Freshness is AdminSetupVerificationFreshness.Current
             && verification.DisplayCommittedPass)
         {
@@ -486,6 +505,20 @@ public sealed record AdminSetupStatusReadModel
 
         if (IsObservedIntegrityBlocking(inspection.BundleIntegrity.Result))
             return (AdminSetupSendReadyDisplay.NotReady, ObservedIntegrityBlocksReadyReason);
+
+        if (DescribeInconclusiveObservation(inspection) is { } inconclusiveObservation)
+            return (AdminSetupSendReadyDisplay.NotReady, inconclusiveObservation);
+
+        if (!string.Equals(
+                inspection.Effective.CredentialStatus,
+                SetupInspectCredentialStatus.Loaded,
+                StringComparison.Ordinal))
+        {
+            return (AdminSetupSendReadyDisplay.NotReady, CredentialNotLoadedReason);
+        }
+
+        if (!string.Equals(inspection.Effective.ProviderSummary, ProviderAcs, StringComparison.Ordinal))
+            return (AdminSetupSendReadyDisplay.NotReady, EffectiveProviderNotAcsReason);
 
         if (!string.Equals(
                 hostObservation.Record?.BundleIntegrity,
@@ -657,6 +690,43 @@ public sealed record AdminSetupStatusReadModel
         return inspection.Reason is SetupInspectReason.MetadataMalformed
             or SetupInspectReason.UnsupportedSchemaVersion;
     }
+
+    /// <summary>
+    /// Gate for current committed PASS and Production send-ready (#454 / ADR 0021 D-07): a past
+    /// verification record may only be displayed as current when the container-observable state
+    /// actually confirms the recorded configuration. Returns a fixed reason code when the current
+    /// observation cannot confirm it, or <see langword="null"/> when the observation is conclusive.
+    /// </summary>
+    private static string? DescribeInconclusiveObservation(SetupInspectEffectiveResult? inspection)
+    {
+        if (inspection is null)
+            return ObservationInconclusiveReason;
+
+        if (inspection.Effective.FingerprintsMatchRecorded != true
+            || string.IsNullOrWhiteSpace(inspection.Effective.ConfigurationFingerprint))
+        {
+            return ObservationInconclusiveReason;
+        }
+
+        if (inspection.Effective.CredentialStatus is SetupInspectCredentialStatus.Missing
+            or SetupInspectCredentialStatus.Invalid)
+        {
+            return CredentialNotLoadedReason;
+        }
+
+        return IsConclusiveInspectReason(inspection.Reason) ? null : ObservationInconclusiveReason;
+    }
+
+    /// <summary>
+    /// Only reasons that leave the effective comparison itself intact may keep a current PASS.
+    /// Every other reason code (terminal configuration failure, credential failure, metadata or
+    /// verifier failure) is treated as an unusable observation.
+    /// </summary>
+    private static bool IsConclusiveInspectReason(string? reason) =>
+        string.IsNullOrWhiteSpace(reason)
+        || reason is SetupInspectReason.MetadataMissing
+            or SetupInspectReason.VerifierMissing
+            or SetupInspectReason.HostAtRestPending;
 
     private static bool IsObservedIntegrityBlocking(string? observedIntegrity) =>
         string.Equals(observedIntegrity, SetupInspectIntegrityResult.Mismatch, StringComparison.Ordinal)

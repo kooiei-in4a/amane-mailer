@@ -35,6 +35,8 @@ public sealed class AdminSetupStatusReadModelTests
         Assert.Equal(AdminSetupConfigurationAppliedDisplay.No, model.ConfigurationApplied);
         Assert.Equal(AdminSetupSendReadyDisplay.NotReady, model.SendReady);
         Assert.False(model.DisplayVerificationCommittedPass);
+        Assert.Null(model.PlatformSenderPresent);
+        Assert.Null(model.RecordedFingerprint);
     }
 
     [Fact]
@@ -99,6 +101,119 @@ public sealed class AdminSetupStatusReadModelTests
         Assert.True(model.DisplayVerificationCommittedPass);
         Assert.Equal(AdminSetupConfigurationAppliedDisplay.Yes, model.ConfigurationApplied);
         Assert.Equal(AdminSetupSendReadyDisplay.Ready, model.SendReady);
+    }
+
+    [Theory]
+    [InlineData(SetupInspectCredentialStatus.Missing, SetupInspectReason.CredentialMissing)]
+    [InlineData(SetupInspectCredentialStatus.Invalid, SetupInspectReason.CredentialInvalid)]
+    public void Credential_failure_blocks_current_pass_and_send_ready(string credentialStatus, string inspectReason)
+    {
+        // #447 reports provider and live sending but leaves the fingerprint comparison unset
+        // when the ACS credential is missing or invalid.
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(
+                mode: "production-acs",
+                liveSending: true,
+                fingerprintsMatch: null,
+                integrityReason: inspectReason,
+                credentialStatus: credentialStatus,
+                effectiveFingerprint: null,
+                inspectReason: inspectReason),
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: true));
+
+        Assert.Equal(AdminSetupVerificationFreshness.Stale, model.VerificationFreshness);
+        Assert.False(model.DisplayVerificationCommittedPass);
+        Assert.Equal(AdminSetupConfigurationAppliedDisplay.Unavailable, model.ConfigurationApplied);
+        Assert.NotEqual(AdminSetupSendReadyDisplay.Ready, model.SendReady);
+        Assert.Equal(AdminSetupSendReadyDisplay.NotReady, model.SendReady);
+    }
+
+    [Fact]
+    public void Unknown_fingerprint_comparison_blocks_current_pass_and_send_ready()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(mode: "production-acs", liveSending: true, fingerprintsMatch: null),
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: true));
+
+        Assert.Null(model.FingerprintsMatchRecorded);
+        Assert.Equal(AdminSetupVerificationFreshness.Stale, model.VerificationFreshness);
+        Assert.Equal(
+            AdminSetupStatusReadModel.ObservationInconclusiveReason,
+            model.VerificationReason);
+        Assert.False(model.DisplayVerificationCommittedPass);
+        Assert.Equal(AdminSetupConfigurationAppliedDisplay.Unavailable, model.ConfigurationApplied);
+        Assert.Equal(AdminSetupSendReadyDisplay.NotReady, model.SendReady);
+    }
+
+    [Fact]
+    public void Missing_effective_fingerprint_blocks_current_pass_and_send_ready()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(
+                mode: "production-acs",
+                liveSending: true,
+                fingerprintsMatch: null,
+                effectiveFingerprint: null),
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: true));
+
+        Assert.Null(model.EffectiveFingerprint);
+        Assert.Equal(AdminSetupVerificationFreshness.Stale, model.VerificationFreshness);
+        Assert.False(model.DisplayVerificationCommittedPass);
+        Assert.NotEqual(AdminSetupSendReadyDisplay.Ready, model.SendReady);
+    }
+
+    [Fact]
+    public void Terminal_inspection_failure_blocks_current_pass_and_send_ready()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(
+                mode: "production-acs",
+                liveSending: true,
+                fingerprintsMatch: null,
+                integrityReason: SetupInspectReason.ProviderInvalid,
+                credentialStatus: SetupInspectCredentialStatus.NotApplicable,
+                effectiveFingerprint: null,
+                providerSummary: null,
+                inspectReason: SetupInspectReason.ProviderInvalid),
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: true));
+
+        Assert.Equal(AdminSetupVerificationFreshness.Stale, model.VerificationFreshness);
+        Assert.False(model.DisplayVerificationCommittedPass);
+        Assert.Equal(AdminSetupConfigurationAppliedDisplay.Unavailable, model.ConfigurationApplied);
+        Assert.Equal(AdminSetupSendReadyDisplay.NotReady, model.SendReady);
+    }
+
+    [Fact]
+    public void Send_ready_requires_loaded_credential_even_when_verification_is_current()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(
+                mode: "production-acs",
+                liveSending: true,
+                fingerprintsMatch: true,
+                credentialStatus: SetupInspectCredentialStatus.NotApplicable),
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: true));
+
+        Assert.Equal(AdminSetupVerificationFreshness.Current, model.VerificationFreshness);
+        Assert.Equal(AdminSetupSendReadyDisplay.NotReady, model.SendReady);
+        Assert.Equal(AdminSetupStatusReadModel.CredentialNotLoadedReason, model.SendReadyReasonCode);
+    }
+
+    [Fact]
+    public void Send_ready_requires_effective_provider_acs()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(
+                mode: "production-acs",
+                liveSending: true,
+                fingerprintsMatch: true,
+                providerSummary: "acs+mailpit"),
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: true));
+
+        Assert.Equal(AdminSetupSendReadyDisplay.NotReady, model.SendReady);
+        Assert.Equal(
+            AdminSetupStatusReadModel.EffectiveProviderNotAcsReason,
+            model.SendReadyReasonCode);
     }
 
     [Fact]
@@ -320,9 +435,13 @@ public sealed class AdminSetupStatusReadModelTests
     private static SetupInspectEffectiveResult ManagedInspection(
         string mode = "local-mailpit",
         bool liveSending = false,
-        bool fingerprintsMatch = true,
+        bool? fingerprintsMatch = true,
         string integrity = SetupInspectIntegrityResult.NotVerified,
-        string? integrityReason = SetupInspectReason.HostAtRestPending) =>
+        string? integrityReason = SetupInspectReason.HostAtRestPending,
+        string credentialStatus = SetupInspectCredentialStatus.Loaded,
+        string? effectiveFingerprint = Fingerprint,
+        string? providerSummary = "acs",
+        string? inspectReason = null) =>
         new()
         {
             MailerVersion = "1.2.0-test",
@@ -336,12 +455,13 @@ public sealed class AdminSetupStatusReadModelTests
             },
             Effective = new SetupInspectEffectiveSummary
             {
-                ConfigurationFingerprint = Fingerprint,
-                ProviderSummary = "acs",
+                ConfigurationFingerprint = effectiveFingerprint,
+                ProviderSummary = providerSummary,
                 LiveSendingEnabled = liveSending,
-                CredentialStatus = SetupInspectCredentialStatus.Loaded,
+                CredentialStatus = credentialStatus,
                 FingerprintsMatchRecorded = fingerprintsMatch,
             },
+            Reason = inspectReason,
             MountAttestation = new SetupInspectAttestationSummary
             {
                 Result = integrity,

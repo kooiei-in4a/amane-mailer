@@ -16,6 +16,8 @@ public static class AdminSetupStatusPage
     public const string OperationalVerificationMessageJa =
         "Easy Setupでは記録していません。通常Mailer経路によるManual verificationが必要です。";
 
+    internal const string InvalidMetadataValue = "n/a (invalid metadata)";
+
     public static async Task<IResult> RenderAsync(
         HttpContext context,
         MailerAdminOptions options,
@@ -100,7 +102,7 @@ public static class AdminSetupStatusPage
         else if (model.DeploymentKind == AdminSetupDeploymentKind.InvalidManagedMetadata)
         {
             AppendDefinition(html, "Easy Setup", "Managed metadata invalid");
-            AppendDefinition(html, "Setup bundle ID", "n/a (invalid metadata)");
+            AppendDefinition(html, "Setup bundle ID", InvalidMetadataValue);
             AppendDefinition(html, "Image reference", "n/a");
             AppendDefinition(html, "Compose identity", "n/a");
             AppendDefinition(html, "Environment / mode", "n/a");
@@ -129,10 +131,15 @@ public static class AdminSetupStatusPage
             AppendDefinition(html, "Recorded fingerprint", "n/a (Easy Setup管理外)");
             AppendDefinition(html, "Platform sender present", "n/a");
         }
+        else if (model.DeploymentKind == AdminSetupDeploymentKind.InvalidManagedMetadata)
+        {
+            AppendDefinition(html, "Recorded fingerprint", InvalidMetadataValue);
+            AppendDefinition(html, "Platform sender present", InvalidMetadataValue);
+        }
         else
         {
             AppendDefinition(html, "Recorded fingerprint", NullAsNa(model.RecordedFingerprint));
-            AppendDefinition(html, "Platform sender present", FormatBool(model.PlatformSenderPresent));
+            AppendDefinition(html, "Platform sender present", FormatNullableBool(model.PlatformSenderPresent));
         }
 
         html.AppendLine("                  </dl>");
@@ -166,6 +173,10 @@ public static class AdminSetupStatusPage
         if (model.DeploymentKind == AdminSetupDeploymentKind.Manual)
         {
             AppendDefinition(html, "Configuration fingerprint", "n/a (Easy Setup管理外)");
+        }
+        else if (model.DeploymentKind == AdminSetupDeploymentKind.InvalidManagedMetadata)
+        {
+            AppendDefinition(html, "Configuration fingerprint", InvalidMetadataValue);
         }
         else if (model.FingerprintsMatchRecorded == true)
         {
@@ -392,7 +403,7 @@ public static class AdminSetupStatusPage
     {
         if (string.IsNullOrWhiteSpace(model.SenderEmail))
         {
-            return model.PlatformSenderPresent ? "present (address unavailable)" : "n/a";
+            return model.PlatformSenderPresent == true ? "present (address unavailable)" : "n/a";
         }
 
         return AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii)
@@ -406,8 +417,6 @@ public static class AdminSetupStatusPage
         var right = activeGeneration?.ToString(CultureInfo.InvariantCulture) ?? "n/a";
         return left + " / " + right;
     }
-
-    private static string FormatBool(bool value) => value ? "yes" : "no";
 
     private static string FormatNullableBool(bool? value) =>
         value switch

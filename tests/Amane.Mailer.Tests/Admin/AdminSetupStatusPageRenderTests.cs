@@ -39,6 +39,33 @@ public sealed class AdminSetupStatusPageRenderTests
     }
 
     [Fact]
+    public void Invalid_managed_metadata_does_not_infer_recorded_values()
+    {
+        var model = ManagedUnavailableModel() with
+        {
+            DeploymentKind = AdminSetupDeploymentKind.InvalidManagedMetadata,
+            SetupBundleId = null,
+            RecordedFingerprint = null,
+            PlatformSenderPresent = null,
+            FingerprintsMatchRecorded = null,
+            BundleIntegrityResult = SetupInspectIntegrityResult.InvalidMetadata,
+            BundleIntegrityReason = SetupInspectReason.MetadataMalformed,
+            VerificationFreshness = AdminSetupVerificationFreshness.Invalid,
+            ConfigurationApplied = AdminSetupConfigurationAppliedDisplay.No,
+            SendReady = AdminSetupSendReadyDisplay.NotReady,
+            SendReadyReasonCode = SetupInspectReason.MetadataMalformed,
+        };
+
+        var html = Render(model);
+
+        Assert.Contains("Managed metadata invalid", html, StringComparison.Ordinal);
+        Assert.Contains("Platform sender present", html, StringComparison.Ordinal);
+        Assert.Contains(AdminSetupStatusPage.InvalidMetadataValue, html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Platform sender present</dt>\n                    <dd>no", html, StringComparison.Ordinal);
+        Assert.DoesNotContain(Html("Easy Setup管理外"), html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Stale_verification_does_not_render_as_current_pass()
     {
         var model = ManagedUnavailableModel() with
