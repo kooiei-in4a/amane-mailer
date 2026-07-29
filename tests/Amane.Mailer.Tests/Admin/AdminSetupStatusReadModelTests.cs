@@ -23,6 +23,21 @@ public sealed class AdminSetupStatusReadModelTests
     }
 
     [Fact]
+    public void Invalid_managed_metadata_is_not_classified_as_manual_deployment()
+    {
+        var inspection = InvalidMetadataInspection();
+
+        var model = AdminSetupStatusReadModel.FromInspection(inspection);
+
+        Assert.Equal(AdminSetupDeploymentKind.InvalidManagedMetadata, model.DeploymentKind);
+        Assert.Null(model.SetupBundleId);
+        Assert.Equal(AdminSetupVerificationFreshness.Invalid, model.VerificationFreshness);
+        Assert.Equal(AdminSetupConfigurationAppliedDisplay.No, model.ConfigurationApplied);
+        Assert.Equal(AdminSetupSendReadyDisplay.NotReady, model.SendReady);
+        Assert.False(model.DisplayVerificationCommittedPass);
+    }
+
+    [Fact]
     public void Managed_runtime_without_host_observation_marks_verification_and_send_ready_unavailable()
     {
         var model = AdminSetupStatusReadModel.FromInspection(ManagedInspection());
@@ -40,21 +55,9 @@ public sealed class AdminSetupStatusReadModelTests
     [Fact]
     public void Active_generation_mismatch_marks_verification_stale_and_hides_past_pass()
     {
-        var record = CommittedRecord(activationGeneration: 1);
-        var active = new SetupActivePointer
-        {
-            SchemaVersion = 1,
-            BundleId = BundleId,
-            ActivationGeneration = 2,
-        };
-
         var model = AdminSetupStatusReadModel.FromInspection(
             ManagedInspection(),
-            hostObservation: new AdminSetupHostObservation
-            {
-                Active = active,
-                Record = record,
-            });
+            hostObservation: CurrentHostObservation(activationGeneration: 2, recordGeneration: 1));
 
         Assert.Equal(AdminSetupVerificationFreshness.Stale, model.VerificationFreshness);
         Assert.False(model.DisplayVerificationCommittedPass);
@@ -63,74 +66,63 @@ public sealed class AdminSetupStatusReadModelTests
     }
 
     [Fact]
-    public void Missing_and_invalid_and_pending_verification_are_distinct()
+    public void Observed_integrity_mismatch_blocks_current_pass_and_send_ready()
     {
-        var active = new SetupActivePointer
-        {
-            SchemaVersion = 1,
-            BundleId = BundleId,
-            ActivationGeneration = 1,
-        };
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(
+                mode: "production-acs",
+                liveSending: true,
+                fingerprintsMatch: true,
+                integrity: SetupInspectIntegrityResult.Mismatch,
+                integrityReason: SetupInspectReason.MountMismatch),
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: true));
 
-        var missing = AdminSetupStatusReadModel.EvaluateVerificationFreshness(
-            managed: true,
-            active,
-            record: null,
-            transactionInProgress: false);
-        Assert.Equal(AdminSetupVerificationFreshness.Missing, missing.Freshness);
-
-        var invalidRecord = CommittedRecord();
-        invalidRecord = new SetupVerificationRecord
-        {
-            SchemaVersion = invalidRecord.SchemaVersion,
-            Status = SetupVerificationRecord.StatusInvalidated,
-            BundleId = invalidRecord.BundleId,
-            ActivationGeneration = invalidRecord.ActivationGeneration,
-            FingerprintComparison = invalidRecord.FingerprintComparison,
-            HostAtRest = invalidRecord.HostAtRest,
-            MountAttestation = invalidRecord.MountAttestation,
-            BundleIntegrity = invalidRecord.BundleIntegrity,
-            RuntimeIdentityBinding = invalidRecord.RuntimeIdentityBinding,
-            Readiness = invalidRecord.Readiness,
-            SendReadyEvaluation = invalidRecord.SendReadyEvaluation,
-            CommittedAt = invalidRecord.CommittedAt,
-            RecordedSchemaVersion = invalidRecord.RecordedSchemaVersion,
-            ObservedBundleId = invalidRecord.ObservedBundleId,
-        };
-        var invalid = AdminSetupStatusReadModel.EvaluateVerificationFreshness(
-            managed: true,
-            active,
-            record: invalidRecord,
-            transactionInProgress: false);
-        Assert.Equal(AdminSetupVerificationFreshness.Invalid, invalid.Freshness);
-        Assert.False(invalid.DisplayCommittedPass);
-
-        var pending = AdminSetupStatusReadModel.EvaluateVerificationFreshness(
-            managed: true,
-            active,
-            record: CommittedRecord(),
-            transactionInProgress: true);
-        Assert.Equal(AdminSetupVerificationFreshness.Pending, pending.Freshness);
-        Assert.False(pending.DisplayCommittedPass);
+        Assert.Equal(AdminSetupVerificationFreshness.Stale, model.VerificationFreshness);
+        Assert.False(model.DisplayVerificationCommittedPass);
+        Assert.Equal(AdminSetupConfigurationAppliedDisplay.No, model.ConfigurationApplied);
+        Assert.Equal(AdminSetupSendReadyDisplay.NotReady, model.SendReady);
+        Assert.NotEqual(AdminSetupSendReadyDisplay.Ready, model.SendReady);
+        Assert.Equal(SetupInspectIntegrityResult.Mismatch, model.BundleIntegrityResult);
+        Assert.Equal(SetupIntegrityMerger.Matched, model.HostCanonicalBundleIntegrity);
     }
 
     [Fact]
-    public void Current_committed_success_does_not_imply_send_ready_without_full_conditions()
+    public void Provisional_not_verified_keeps_host_canonical_separate_and_can_still_be_send_ready()
     {
         var model = AdminSetupStatusReadModel.FromInspection(
             ManagedInspection(mode: "production-acs", liveSending: true, fingerprintsMatch: true),
-            hostObservation: new AdminSetupHostObservation
-            {
-                Active = new SetupActivePointer
-                {
-                    SchemaVersion = 1,
-                    BundleId = BundleId,
-                    ActivationGeneration = 1,
-                },
-                Record = CommittedRecord(),
-                DoctorPassed = null,
-                ApplySucceededWithCommittedVerification = true,
-            });
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: true));
+
+        Assert.Equal(SetupInspectIntegrityResult.NotVerified, model.BundleIntegrityResult);
+        Assert.Equal(SetupIntegrityMerger.Matched, model.HostCanonicalBundleIntegrity);
+        Assert.Equal(AdminSetupVerificationFreshness.Current, model.VerificationFreshness);
+        Assert.True(model.DisplayVerificationCommittedPass);
+        Assert.Equal(AdminSetupConfigurationAppliedDisplay.Yes, model.ConfigurationApplied);
+        Assert.Equal(AdminSetupSendReadyDisplay.Ready, model.SendReady);
+    }
+
+    [Fact]
+    public void Send_ready_rejects_authority_from_a_previous_bundle_or_generation()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(mode: "production-acs", liveSending: true, fingerprintsMatch: true),
+            hostObservation: CurrentHostObservation(
+                includeSendReadyAuthority: true,
+                authorityBundleId: "20260728-deadbeef",
+                authorityGeneration: 1));
+
+        Assert.Equal(AdminSetupSendReadyDisplay.NotReady, model.SendReady);
+        Assert.Equal(
+            AdminSetupStatusReadModel.SendReadyAuthorityMismatchReason,
+            model.SendReadyReasonCode);
+    }
+
+    [Fact]
+    public void Current_committed_success_does_not_imply_send_ready_without_bound_authority()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(mode: "production-acs", liveSending: true, fingerprintsMatch: true),
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: false));
 
         Assert.Equal(AdminSetupVerificationFreshness.Current, model.VerificationFreshness);
         Assert.True(model.DisplayVerificationCommittedPass);
@@ -140,22 +132,11 @@ public sealed class AdminSetupStatusReadModelTests
     }
 
     [Fact]
-    public void Send_ready_requires_current_verification_live_sending_doctor_and_apply()
+    public void Send_ready_requires_bound_authority_live_sending_doctor_and_apply()
     {
         var model = AdminSetupStatusReadModel.FromInspection(
             ManagedInspection(mode: "production-acs", liveSending: true, fingerprintsMatch: true),
-            hostObservation: new AdminSetupHostObservation
-            {
-                Active = new SetupActivePointer
-                {
-                    SchemaVersion = 1,
-                    BundleId = BundleId,
-                    ActivationGeneration = 1,
-                },
-                Record = CommittedRecord(),
-                DoctorPassed = true,
-                ApplySucceededWithCommittedVerification = true,
-            });
+            hostObservation: CurrentHostObservation(includeSendReadyAuthority: true));
 
         Assert.Equal(AdminSetupSendReadyDisplay.Ready, model.SendReady);
         Assert.Equal(AcsSendReadyEvaluator.SendReadyReady, model.SendReadyReasonCode);
@@ -178,15 +159,7 @@ public sealed class AdminSetupStatusReadModelTests
             ManagedInspection(mode: "production-acs"),
             hostObservation: new AdminSetupHostObservation
             {
-                StagingSummary = new AcsSetupWorkflowResult
-                {
-                    Code = AcsSetupResultCode.StagingVerificationSucceeded,
-                    State = AcsSetupWorkflowState.StagingVerificationSucceeded,
-                    StagingVerificationCode = "ok",
-                    StagingMailboxCheckStatus = "ACTION",
-                    StagingSendRequestAccepted = true,
-                    StagingOperationCompleted = true,
-                },
+                StagingSummary = BoundStagingSummary(),
             });
 
         Assert.False(model.StagingSummaryApplicable);
@@ -205,22 +178,41 @@ public sealed class AdminSetupStatusReadModelTests
     }
 
     [Fact]
-    public void Staging_verification_mode_can_surface_host_summary_without_recipient_raw_values()
+    public void Staging_summary_without_active_binding_is_stale_and_hides_details()
     {
         var model = AdminSetupStatusReadModel.FromInspection(
             ManagedInspection(mode: "staging-verification"),
             hostObservation: new AdminSetupHostObservation
             {
-                StagingSummary = new AcsSetupWorkflowResult
+                Active = new SetupActivePointer
                 {
-                    Code = AcsSetupResultCode.StagingVerificationSucceeded,
-                    State = AcsSetupWorkflowState.StagingVerificationSucceeded,
-                    StagingVerificationCode = "staging_ok",
-                    StagingMailboxCheckStatus = "ACTION",
-                    StagingSendRequestAccepted = true,
-                    StagingOperationCompleted = true,
-                    MaskedRecipientEmail = "a***@e***.com",
+                    SchemaVersion = 1,
+                    BundleId = BundleId,
+                    ActivationGeneration = 2,
                 },
+                StagingSummary = BoundStagingSummary(activationGeneration: 1),
+            });
+
+        Assert.Equal(AdminSetupStagingSummaryAvailability.Stale, model.StagingSummaryAvailability);
+        Assert.Equal(AdminSetupStatusReadModel.StagingStaleReason, model.StagingSummaryReason);
+        Assert.Null(model.StagingVerificationCode);
+        Assert.Null(model.StagingMailboxCheckStatus);
+    }
+
+    [Fact]
+    public void Staging_verification_mode_can_surface_bound_host_summary()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(mode: "staging-verification"),
+            hostObservation: new AdminSetupHostObservation
+            {
+                Active = new SetupActivePointer
+                {
+                    SchemaVersion = 1,
+                    BundleId = BundleId,
+                    ActivationGeneration = 1,
+                },
+                StagingSummary = BoundStagingSummary(),
             });
 
         Assert.Equal(AdminSetupStagingSummaryAvailability.Available, model.StagingSummaryAvailability);
@@ -228,6 +220,77 @@ public sealed class AdminSetupStatusReadModelTests
         Assert.Equal("ACTION", model.StagingMailboxCheckStatus);
     }
 
+    private static AdminSetupHostObservation CurrentHostObservation(
+        long activationGeneration = 1,
+        long recordGeneration = 1,
+        bool includeSendReadyAuthority = false,
+        string? authorityBundleId = null,
+        long? authorityGeneration = null) =>
+        new()
+        {
+            Active = new SetupActivePointer
+            {
+                SchemaVersion = 1,
+                BundleId = BundleId,
+                ActivationGeneration = activationGeneration,
+            },
+            Record = CommittedRecord(recordGeneration),
+            SendReadyAuthority = includeSendReadyAuthority
+                ? new AdminSetupSendReadyAuthority
+                {
+                    BundleId = authorityBundleId ?? BundleId,
+                    ActivationGeneration = authorityGeneration ?? activationGeneration,
+                    ConfigurationFingerprint = Fingerprint,
+                    DoctorPassed = true,
+                    ApplySucceededWithCommittedVerification = true,
+                }
+                : null,
+        };
+
+    private static AcsSetupWorkflowResult BoundStagingSummary(long activationGeneration = 1) =>
+        new()
+        {
+            Code = AcsSetupResultCode.StagingVerificationSucceeded,
+            State = AcsSetupWorkflowState.StagingVerificationSucceeded,
+            BundleId = BundleId,
+            ActivationGeneration = activationGeneration,
+            ConfigurationFingerprint = Fingerprint,
+            StagingVerificationCode = "staging_ok",
+            StagingMailboxCheckStatus = "ACTION",
+            StagingSendRequestAccepted = true,
+            StagingOperationCompleted = true,
+            MaskedRecipientEmail = "a***@e***.com",
+        };
+
+
+    private static SetupInspectEffectiveResult InvalidMetadataInspection() =>
+        new()
+        {
+            MailerVersion = "1.2.0-test",
+            Managed = false,
+            Recorded = null,
+            Effective = new SetupInspectEffectiveSummary
+            {
+                ConfigurationFingerprint = null,
+                ProviderSummary = null,
+                LiveSendingEnabled = null,
+                CredentialStatus = SetupInspectCredentialStatus.NotApplicable,
+                FingerprintsMatchRecorded = null,
+            },
+            MountAttestation = new SetupInspectAttestationSummary
+            {
+                Result = SetupInspectIntegrityResult.InvalidMetadata,
+                Reason = SetupInspectReason.MetadataMalformed,
+            },
+            BundleIntegrity = new SetupInspectAttestationSummary
+            {
+                Result = SetupInspectIntegrityResult.InvalidMetadata,
+                Reason = SetupInspectReason.MetadataMalformed,
+            },
+            TenantConfigurationSource = SetupInspectSourceIds.NotApplicable,
+            CredentialSource = SetupInspectSourceIds.NotApplicable,
+            Reason = SetupInspectReason.MetadataMalformed,
+        };
     private static SetupInspectEffectiveResult ManualInspection() =>
         new()
         {
@@ -281,7 +344,7 @@ public sealed class AdminSetupStatusReadModelTests
             },
             MountAttestation = new SetupInspectAttestationSummary
             {
-                Result = SetupInspectIntegrityResult.NotVerified,
+                Result = integrity,
                 Reason = integrityReason,
             },
             BundleIntegrity = new SetupInspectAttestationSummary
@@ -310,5 +373,6 @@ public sealed class AdminSetupStatusReadModelTests
             CommittedAt = "2026-07-29T12:00:00Z",
             RecordedSchemaVersion = 1,
             ObservedBundleId = BundleId,
+            ComposeIdentity = "compose-identity-test",
         };
 }

@@ -93,13 +93,24 @@ public static class AdminSetupStatusPage
         {
             AppendDefinition(html, "Easy Setup", "Easy Setup管理外");
             AppendDefinition(html, "Setup bundle ID", "n/a");
-            AppendDefinition(html, "Compose bundle version", "n/a");
+            AppendDefinition(html, "Image reference", "n/a");
+            AppendDefinition(html, "Compose identity", "n/a");
             AppendDefinition(html, "Environment / mode", "n/a");
+        }
+        else if (model.DeploymentKind == AdminSetupDeploymentKind.InvalidManagedMetadata)
+        {
+            AppendDefinition(html, "Easy Setup", "Managed metadata invalid");
+            AppendDefinition(html, "Setup bundle ID", "n/a (invalid metadata)");
+            AppendDefinition(html, "Image reference", "n/a");
+            AppendDefinition(html, "Compose identity", "n/a");
+            AppendDefinition(html, "Environment / mode", "n/a");
+            AppendDefinition(html, "Inspect reason", NullAsNa(model.InspectReason));
         }
         else
         {
             AppendDefinition(html, "Setup bundle ID", NullAsNa(model.SetupBundleId));
-            AppendDefinition(html, "Compose bundle version", FormatComposeBundleVersion(model));
+            AppendDefinition(html, "Image reference", FormatImageReference(model));
+            AppendDefinition(html, "Compose identity", NullAsNa(model.ComposeIdentity));
             AppendDefinition(html, "Environment / mode", NullAsNa(model.Mode));
             AppendDefinition(html, "Recorded created at", NullAsNa(model.RecordedCreatedAt));
         }
@@ -184,9 +195,10 @@ public static class AdminSetupStatusPage
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Bundle integrity\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Bundle integrity</h2>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
-        AppendDefinition(html, "Bundle integrity", NullAsNa(model.BundleIntegrityResult));
+        AppendDefinition(html, "Observed bundle integrity", NullAsNa(model.BundleIntegrityResult));
         if (!string.IsNullOrWhiteSpace(model.BundleIntegrityReason))
-            AppendDefinition(html, "Integrity reason", model.BundleIntegrityReason);
+            AppendDefinition(html, "Observed integrity reason", model.BundleIntegrityReason);
+        AppendDefinition(html, "Host canonical bundle integrity", NullAsNa(model.HostCanonicalBundleIntegrity));
 
         if (string.Equals(model.BundleIntegrityResult, SetupInspectIntegrityResult.NotVerified, StringComparison.Ordinal)
             || string.Equals(model.BundleIntegrityResult, SetupInspectIntegrityResult.Mismatch, StringComparison.Ordinal)
@@ -262,7 +274,16 @@ public static class AdminSetupStatusPage
         if (model.StagingSummaryAvailability == AdminSetupStagingSummaryAvailability.Unavailable)
         {
             AppendDefinition(html, "Staging summary", "unavailable");
-            AppendDefinition(html, "Reason", AdminSetupStatusReadModel.StagingUnavailableReason);
+            AppendDefinition(html, "Reason", NullAsNa(model.StagingSummaryReason ?? AdminSetupStatusReadModel.StagingUnavailableReason));
+            html.AppendLine("                  </dl>");
+            html.AppendLine("                </section>");
+            return;
+        }
+
+        if (model.StagingSummaryAvailability == AdminSetupStagingSummaryAvailability.Stale)
+        {
+            AppendDefinition(html, "Staging summary", "stale");
+            AppendDefinition(html, "Reason", NullAsNa(model.StagingSummaryReason ?? AdminSetupStatusReadModel.StagingStaleReason));
             html.AppendLine("                  </dl>");
             html.AppendLine("                </section>");
             return;
@@ -281,10 +302,9 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Deployment operational verification\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Deployment operational verification</h2>");
-        html.AppendLine("                  <dl class=\"ops-dl\">");
-        AppendDefinition(html, "Recorded by Easy Setup", "no");
-        AppendDefinition(html, "Status", OperationalVerificationMessageJa);
-        html.AppendLine("                  </dl>");
+        html.AppendLine("                  <p class=\"ops-meta\">");
+        html.Append(Html(OperationalVerificationMessageJa));
+        html.AppendLine("</p>");
         html.AppendLine("                </section>");
     }
 
@@ -316,10 +336,11 @@ public static class AdminSetupStatusPage
         {
             AdminSetupDeploymentKind.Managed => "Managed Deployment",
             AdminSetupDeploymentKind.Manual => "Manual Deployment",
+            AdminSetupDeploymentKind.InvalidManagedMetadata => "Managed metadata invalid",
             _ => "unknown",
         };
 
-    private static string FormatComposeBundleVersion(AdminSetupStatusReadModel model)
+    private static string FormatImageReference(AdminSetupStatusReadModel model)
     {
         if (!string.IsNullOrWhiteSpace(model.ImageRepository) && !string.IsNullOrWhiteSpace(model.ImageTag))
             return model.ImageRepository + ":" + model.ImageTag;

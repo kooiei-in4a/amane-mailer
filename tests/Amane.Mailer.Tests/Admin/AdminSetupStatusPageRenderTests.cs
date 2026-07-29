@@ -28,6 +28,9 @@ public sealed class AdminSetupStatusPageRenderTests
         var html = Render(ManagedUnavailableModel());
 
         Assert.Contains("Managed Deployment", html, StringComparison.Ordinal);
+        Assert.Contains("Image reference", html, StringComparison.Ordinal);
+        Assert.Contains("Compose identity", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Compose bundle version", html, StringComparison.Ordinal);
         Assert.Contains("unavailable", html, StringComparison.Ordinal);
         Assert.Contains(AdminSetupStatusReadModel.VerificationUnavailableReason, html, StringComparison.Ordinal);
         Assert.Contains("Committed success (current ACTIVE)", html, StringComparison.Ordinal);
@@ -119,6 +122,7 @@ public sealed class AdminSetupStatusPageRenderTests
         Assert.Contains(Html(AdminSetupStatusPage.OperationalVerificationMessageJa), html, StringComparison.Ordinal);
         Assert.DoesNotContain(Html("確認済み"), html, StringComparison.Ordinal);
         Assert.DoesNotContain(">PASS<", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Recorded by Easy Setup", html, StringComparison.Ordinal);
         Assert.DoesNotContain("release qualification", html, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("#456", html, StringComparison.Ordinal);
     }
