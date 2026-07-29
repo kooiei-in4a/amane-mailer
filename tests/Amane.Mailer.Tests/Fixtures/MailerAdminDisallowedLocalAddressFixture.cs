@@ -1,0 +1,50 @@
+using System.Net;
+using Amane.Mailer.Admin;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace Amane.Mailer.Tests.Fixtures;
+
+/// <summary>
+/// Admin enabled with loopback allowlist, but request LocalIpAddress forced to a non-loopback TEST-NET address.
+/// </summary>
+public sealed class MailerAdminDisallowedLocalAddressFixture() : MailerWebApplicationFixtureBase(workerEnabled: false)
+{
+    public const string Username = "admin";
+    public const string Password = "correct horse battery staple";
+
+    public static readonly string PasswordHash = AdminPasswordHasher.Hash(Password);
+
+    protected override IReadOnlyDictionary<string, string?> ExtraConfiguration =>
+        new Dictionary<string, string?>
+        {
+            ["AMANE_ADMIN_ENABLED"] = "true",
+            ["AMANE_ADMIN_USERNAME"] = Username,
+            ["AMANE_ADMIN_PASSWORD_HASH"] = PasswordHash,
+            ["AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS"] = "127.0.0.1",
+            ["AMANE_ADMIN_MASK_RECIPIENTS"] = "true",
+            ["AMANE_ADMIN_MASK_SUBJECTS"] = "true",
+        };
+
+    protected override void ConfigureMailerServices(IServiceCollection services)
+    {
+        services.AddSingleton<IStartupFilter>(
+            new TestLocalAddressStartupFilter(IPAddress.Parse("192.0.2.10")));
+    }
+
+    private sealed class TestLocalAddressStartupFilter(IPAddress localAddress) : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+            app =>
+            {
+                app.Use(async (context, nextMiddleware) =>
+                {
+                    context.Connection.LocalIpAddress = localAddress;
+                    await nextMiddleware();
+                });
+
+                next(app);
+            };
+    }
+}
