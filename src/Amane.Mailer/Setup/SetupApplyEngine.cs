@@ -28,7 +28,7 @@ namespace Amane.Mailer.Setup;
 /// <see cref="SetupApplyResult.SendReadyAsserted"/> as <c>false</c>.
 /// </para>
 /// </remarks>
-public sealed class SetupApplyEngine
+public sealed class SetupApplyEngine : ISetupApplyEngine
 {
     /// <summary>Rollback keeps its own budget so operator cancellation cannot strand a half-applied state.</summary>
     internal static readonly TimeSpan RollbackBudget = TimeSpan.FromSeconds(180);

@@ -64,14 +64,35 @@ public static partial class SetupRequestValidator
             return false;
         }
 
+        var anyLiveSending = false;
         foreach (var tenant in request.Tenants.Tenants)
         {
-            // #451 owns live_sending=true promotion after exact environment confirmation.
             if (tenant.LiveSending)
             {
-                message = "live_sending=true is not accepted by Setup Core; use the ACS approval workflow.";
+                anyLiveSending = true;
+            }
+        }
+
+        if (anyLiveSending)
+        {
+            // #451: live_sending=true only via ACS promotion authorization after exact Production
+            // confirmation and explicit enable approval. Setup Core still rejects unauthenticated requests.
+            if (request.Mode != SetupMode.ProductionAcs)
+            {
+                message = "live_sending=true is only accepted for production-acs mode via the ACS approval workflow.";
                 return false;
             }
+
+            if (request.LiveSendingPromotion is not { IsAuthorized: true })
+            {
+                message = "live_sending=true requires ACS Production confirmation and explicit enable approval.";
+                return false;
+            }
+        }
+        else if (request.LiveSendingPromotion is not null)
+        {
+            message = "LiveSendingPromotion is only valid when promoting live_sending=true.";
+            return false;
         }
 
         foreach (var key in request.PublicEnvOverrides.Keys)

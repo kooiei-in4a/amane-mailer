@@ -1,47 +1,37 @@
-using System.Net.Mail;
-using System.Text.RegularExpressions;
+using Amane.Mailer.Operations.AcsSetup;
 using Amane.Mailer.Operations.AcsTestSend;
 using Microsoft.Extensions.Configuration;
 
 namespace Amane.Mailer.Operations;
 
 /// <summary>
-/// <c>admin provider test-acs-send</c>: one-shot Staging-only ACS live-send verification that
-/// bypasses Mailer API, Worker, Event Grid, Storage Queue, bounce processing, DB, and tenant JSON.
-/// Prefers an existing ACS secret file; falls back to interactive TTY secret entry. Never accepts
-/// connection string, access key, sender, or recipient as command-line arguments.
+/// <c>admin provider test-acs-send</c> TTY adapter over <see cref="AcsStagingVerificationOperation"/>.
+/// Direct CLI does not apply Assistant session limits (#451 non-goal) and has no Managed tenant
+/// context, so the typed sender-match gate compares the operator-entered sender to itself.
 /// </summary>
 public sealed partial class AdminProviderTestAcsSendCommand
 {
-    public const string IntentPhrase = "MAILER-ACS-TEST-SEND";
+    public const string IntentPhrase = AcsStagingVerificationOperation.IntentPhrase;
 
     /// <summary>
     /// Only this exact, capitalized literal is accepted (same Staging gate as register-acs).
     /// </summary>
-    public const string RequiredEnvironmentConfirmation = "Staging";
+    public const string RequiredEnvironmentConfirmation = AcsEnvironmentConfirmation.Staging;
 
-    public const string SyntheticSubject = "Amane Mailer ACS test-send verification";
+    public const string SyntheticSubject = AcsStagingVerificationOperation.SyntheticSubject;
 
-    public const string SyntheticPlainTextBody =
-        "This is a fixed synthetic message from Amane Mailer admin provider test-acs-send. Do not reply.";
+    public const string SyntheticPlainTextBody = AcsStagingVerificationOperation.SyntheticPlainTextBody;
 
     public const int SuccessExitCode = 0;
     public const int FailureExitCode = 1;
     public const int RejectedExitCode = 2;
 
     private const string MessageIdHandoffEnvVar = "MAILER_ACS_TEST_SEND_MESSAGE_ID_FILE";
-    private const int RegexMatchTimeoutMilliseconds = 250;
 
     private readonly IAdminProviderTestAcsSendConsole _console;
     private readonly IConfiguration _configuration;
     private readonly IAcsTestSendClient _acsClient;
     private readonly Func<Guid> _operationIdFactory;
-
-    [GeneratedRegex(
-        @"^(?:endpoint=https://.+;accesskey=.+)$",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
-        RegexMatchTimeoutMilliseconds)]
-    private static partial Regex AcsConnectionStringRegex();
 
     public AdminProviderTestAcsSendCommand(
         IAdminProviderTestAcsSendConsole console,
@@ -97,22 +87,37 @@ public sealed partial class AdminProviderTestAcsSendCommand
             cancellationToken.ThrowIfCancellationRequested();
 
             var operationId = _operationIdFactory();
-            var outcome = await _acsClient.SendAsync(
-                new AcsTestSendRequest
+            var operation = new AcsStagingVerificationOperation(
+                _acsClient,
+                sessionLimiter: null,
+                operationIdFactory: () => operationId);
+
+            var result = await operation.ExecuteAsync(
+                new AcsStagingVerificationRequest
                 {
+                    EnvironmentConfirmation = environmentConfirmation,
+                    IntentConfirmation = intent,
                     ConnectionString = connectionString,
                     SenderEmail = senderEmail,
                     RecipientEmail = recipientEmail,
-                    Subject = SyntheticSubject,
-                    PlainTextBody = SyntheticPlainTextBody,
-                    OperationId = operationId,
+                    // Direct CLI has no Managed tenant bundle; match the entered sender to itself.
+                    ExpectedTenantSenderEmail = senderEmail,
+                    AssistantSessionId = null,
                 },
                 cancellationToken);
 
-            return ReportOutcome(outcome, handoffPath, operationId);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
+            if (!result.IsSuccess)
+            {
+                return MapFailure(result);
+            }
+
+            return ReportSuccess(result, handoffPath, operationId);
         }
-        // Interactive prompt cancel throws SecretOperationException(REJECTED_CANCELLED) even when
-        // CancelKeyPress has already cancelled the shared token — prefer exit 2 over 130.
         catch (SecretOperationException ex)
         {
             return Reject(ex.CanonicalCode);
@@ -136,7 +141,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
         var fromFile = TryReadSecretFile();
         if (!string.IsNullOrEmpty(fromFile))
         {
-            if (!AcsConnectionStringRegex().IsMatch(fromFile))
+            if (!AcsConnectionStringRules.LooksLikeAcsConnectionString(fromFile))
             {
                 throw new SecretOperationException(
                     AdminProviderTestAcsSendResultCodes.RejectedInvalidConnectionString,
@@ -190,7 +195,7 @@ public sealed partial class AdminProviderTestAcsSendCommand
                 "Connection string confirmation did not match.");
         }
 
-        if (!AcsConnectionStringRegex().IsMatch(first))
+        if (!AcsConnectionStringRules.LooksLikeAcsConnectionString(first))
         {
             throw new SecretOperationException(
                 AdminProviderTestAcsSendResultCodes.RejectedInvalidConnectionString,
@@ -202,9 +207,8 @@ public sealed partial class AdminProviderTestAcsSendCommand
 
     private string ReadBareEmail(string prompt, string invalidCode, CancellationToken cancellationToken)
     {
-        // PII: non-echo input so the address does not remain in the PTY transcript.
         var email = _console.ReadHiddenLine(prompt, cancellationToken).Trim();
-        if (!MailAddress.TryCreate(email, out var parsed)
+        if (!System.Net.Mail.MailAddress.TryCreate(email, out var parsed)
             || !string.Equals(parsed.Address, email, StringComparison.Ordinal))
         {
             throw new SecretOperationException(invalidCode, "Email must be a bare email address.");
@@ -238,7 +242,6 @@ public sealed partial class AdminProviderTestAcsSendCommand
                 "Message ID handoff path must be a fully qualified absolute path.");
         }
 
-        // Fail closed before any ACS call so a previous UUID cannot be mistaken for this run.
         if (File.Exists(path))
         {
             throw new SecretOperationException(
@@ -249,56 +252,29 @@ public sealed partial class AdminProviderTestAcsSendCommand
         return path;
     }
 
-    private int ReportOutcome(AcsTestSendOutcome outcome, string handoffPath, Guid expectedOperationId)
+    private int ReportSuccess(AcsStagingVerificationResult result, string handoffPath, Guid expectedOperationId)
     {
-        switch (outcome.AuthenticationState)
+        if (result.AuthenticationState == AcsEvaluationState.Succeeded)
         {
-            case AcsEvaluationState.Succeeded:
-                _console.WriteLine("[PASS] ACS authentication");
-                break;
-            case AcsEvaluationState.Failed:
-                return Fail(
-                    outcome.CanonicalFailureCode ?? AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication,
-                    stageFailLine: "[FAIL] ACS authentication");
-            case AcsEvaluationState.NotEvaluated:
-                if (string.Equals(
-                        outcome.CanonicalFailureCode,
-                        AdminProviderTestAcsSendResultCodes.FailedAcsNetwork,
-                        StringComparison.Ordinal))
-                {
-                    return Fail(
-                        AdminProviderTestAcsSendResultCodes.FailedAcsNetwork,
-                        stageFailLine: "[FAIL] ACS network reachability");
-                }
-
-                // Auth was not judged; do not claim PASS or FAIL for authentication.
-                break;
+            _console.WriteLine("[PASS] ACS authentication");
         }
 
-        if (outcome.SendRequestAccepted)
+        if (result.SendRequestAccepted)
         {
             _console.WriteLine("[PASS] Send request accepted");
         }
-        else
-        {
-            return Fail(
-                outcome.CanonicalFailureCode ?? AdminProviderTestAcsSendResultCodes.FailedAcsSendRequest,
-                stageFailLine: "[FAIL] Send request accepted");
-        }
 
-        if (!outcome.OperationCompleted)
+        if (result.OperationCompleted)
         {
-            return Fail(
-                outcome.CanonicalFailureCode ?? AdminProviderTestAcsSendResultCodes.FailedAcsOperation,
-                stageFailLine: "[FAIL] ACS send operation completed");
+            _console.WriteLine("[PASS] ACS send operation completed");
         }
-
-        _console.WriteLine("[PASS] ACS send operation completed");
 
         string canonicalMessageId;
         try
         {
-            canonicalMessageId = RequireCanonicalMessageId(outcome.ProviderMessageId, expectedOperationId);
+            canonicalMessageId = RequireCanonicalMessageId(
+                result.ProviderMessageIdForHandoff,
+                expectedOperationId);
             WriteMessageIdHandoff(handoffPath, canonicalMessageId);
         }
         catch (SecretOperationException ex)
@@ -319,11 +295,53 @@ public sealed partial class AdminProviderTestAcsSendCommand
         return SuccessExitCode;
     }
 
-    /// <summary>
-    /// Ensures the handoff value is exactly one canonical UUID matching the caller-supplied
-    /// ACS operation id. Rejects <c>NOT_SET</c>, blank, multi-line, and mismatched values
-    /// without writing a file.
-    /// </summary>
+    private int MapFailure(AcsStagingVerificationResult result)
+    {
+        var code = result.Code;
+        if (code is AcsStagingVerificationOperation.RejectedProductionEnvironment
+            or AdminProviderTestAcsSendResultCodes.RejectedEnvironmentMismatch
+            or AdminProviderTestAcsSendResultCodes.RejectedIntentMismatch
+            or AdminProviderTestAcsSendResultCodes.RejectedInvalidConnectionString
+            or AdminProviderTestAcsSendResultCodes.RejectedInvalidSenderEmail
+            or AdminProviderTestAcsSendResultCodes.RejectedInvalidRecipientEmail
+            or AdminProviderTestAcsSendResultCodes.RejectedCancelled
+            or AcsStagingVerificationOperation.RejectedSenderMismatch
+            or AcsStagingVerificationOperation.RejectedSessionLimitExceeded)
+        {
+            return Reject(code);
+        }
+
+        return Fail(code, stageFailLine: MapStageFailLine(result));
+    }
+
+    private static string? MapStageFailLine(AcsStagingVerificationResult result)
+    {
+        if (result.AuthenticationState == AcsEvaluationState.Failed)
+        {
+            return "[FAIL] ACS authentication";
+        }
+
+        if (string.Equals(
+                result.Code,
+                AdminProviderTestAcsSendResultCodes.FailedAcsNetwork,
+                StringComparison.Ordinal))
+        {
+            return "[FAIL] ACS network reachability";
+        }
+
+        if (!result.SendRequestAccepted)
+        {
+            return "[FAIL] Send request accepted";
+        }
+
+        if (!result.OperationCompleted)
+        {
+            return "[FAIL] ACS send operation completed";
+        }
+
+        return null;
+    }
+
     internal static string RequireCanonicalMessageId(string? providerMessageId, Guid expectedOperationId)
     {
         if (string.IsNullOrWhiteSpace(providerMessageId))
@@ -381,7 +399,6 @@ public sealed partial class AdminProviderTestAcsSendCommand
 
         Directory.CreateDirectory(directory);
 
-        // Write UUID only. Never include emails, subject, body, or secrets.
         var tempPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {
@@ -393,7 +410,6 @@ public sealed partial class AdminProviderTestAcsSendCommand
                     UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
 
-            // Never overwrite: freshness of the handoff file is part of the safety contract.
             File.Move(tempPath, path, overwrite: false);
             if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             {

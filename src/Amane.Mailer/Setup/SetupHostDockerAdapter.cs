@@ -651,7 +651,7 @@ public sealed class SetupHostDockerAdapter
 
         return Task.FromResult(SetupDockerResult.Fail(
             SetupDockerResultCode.OperationNotAvailable,
-            "Staging verification is owned by Issue #451 and is not available yet."));
+            "Staging verification is owned by AcsStagingVerificationOperation / AcsSetupWorkflow (#451); it is not a Docker host operation."));
     }
 
     internal static List<string> BuildComposeArgPrefix(SetupHostDockerSession session)

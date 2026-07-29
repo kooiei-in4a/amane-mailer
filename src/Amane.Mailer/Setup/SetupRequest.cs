@@ -6,7 +6,7 @@ namespace Amane.Mailer.Setup;
 /// UI-independent Setup Core request. Adapters supply an already-resolved managed root;
 /// Core rejects unsafe paths and never treats metadata as a runtime send authority.
 /// </summary>
-public sealed class SetupRequest
+public sealed record SetupRequest
 {
     public required SetupMode Mode { get; init; }
 
@@ -67,6 +67,12 @@ public sealed class SetupRequest
     public string? ImageRepository { get; init; }
 
     public string? ImageTag { get; init; }
+
+    /// <summary>
+    /// Required when any tenant has <c>live_sending=true</c>. Set only by the ACS typed workflow
+    /// after exact Production confirmation and explicit enable approval (#451).
+    /// </summary>
+    public SetupLiveSendingPromotionAuthorization? LiveSendingPromotion { get; init; }
 }
 
 public sealed class SetupPlatformSenderInput
@@ -99,7 +105,11 @@ public sealed class SetupRuntimeFileOwnership
     public required uint UnixGroupId { get; init; }
 }
 
-/// <summary>ACS workflow typed input surface for #451 (no network / exact confirmation here).</summary>
+/// <summary>
+/// ACS workflow typed input surface for adapters that prepare ACS material before calling
+/// <see cref="AcsSetupWorkflow"/>. Exact confirmation and network verification live on the
+/// typed operations under <c>Amane.Mailer.Operations.AcsSetup</c>.
+/// </summary>
 public sealed class SetupAcsWorkflowInput
 {
     public string? ConnectionString { get; init; }
