@@ -11,6 +11,16 @@ public interface ISetupApplyEngine
         string candidateBundleId,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Applies a candidate only when the expected verified ACTIVE remains current under the
+    /// existing #450 apply lock.
+    /// </summary>
+    Task<SetupApplyResult> ApplyAfterVerifiedAsync(
+        TrustedSetupHostLayout layout,
+        string candidateBundleId,
+        SetupExpectedActiveAuthority expectedActive,
+        CancellationToken cancellationToken);
+
     Task<SetupApplyResult> RecoverAsync(
         TrustedSetupHostLayout layout,
         CancellationToken cancellationToken);

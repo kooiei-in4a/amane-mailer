@@ -7,7 +7,14 @@ public static partial class SetupRequestValidator
 {
     private const int RegexMatchTimeoutMilliseconds = 250;
 
-    public static bool TryValidate(SetupRequest request, out string failureCode, out string message)
+    public static bool TryValidate(SetupRequest request, out string failureCode, out string message) =>
+        TryValidate(request, allowLiveSendingPromotion: false, out failureCode, out message);
+
+    internal static bool TryValidate(
+        SetupRequest request,
+        bool allowLiveSendingPromotion,
+        out string failureCode,
+        out string message)
     {
         failureCode = SetupResultCode.RejectedValidation;
         message = "Request validation failed.";
@@ -83,16 +90,11 @@ public static partial class SetupRequestValidator
                 return false;
             }
 
-            if (request.LiveSendingPromotion is not { IsAuthorized: true })
+            if (!allowLiveSendingPromotion)
             {
-                message = "live_sending=true requires ACS Production confirmation and explicit enable approval.";
+                message = "live_sending=true requires the internal ACS promotion workflow.";
                 return false;
             }
-        }
-        else if (request.LiveSendingPromotion is not null)
-        {
-            message = "LiveSendingPromotion is only valid when promoting live_sending=true.";
-            return false;
         }
 
         foreach (var key in request.PublicEnvOverrides.Keys)

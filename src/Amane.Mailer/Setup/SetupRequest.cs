@@ -68,11 +68,6 @@ public sealed record SetupRequest
 
     public string? ImageTag { get; init; }
 
-    /// <summary>
-    /// Required when any tenant has <c>live_sending=true</c>. Set only by the ACS typed workflow
-    /// after exact Production confirmation and explicit enable approval (#451).
-    /// </summary>
-    public SetupLiveSendingPromotionAuthorization? LiveSendingPromotion { get; init; }
 }
 
 public sealed class SetupPlatformSenderInput

@@ -2,147 +2,32 @@ using Amane.Mailer.Operations;
 using Amane.Mailer.Operations.AcsSetup;
 using Amane.Mailer.Operations.AcsTestSend;
 using Amane.Mailer.Setup;
-using Amane.Mailer.Tests.TestSupport;
 
 namespace Amane.Mailer.Tests.Setup;
 
 public sealed class AcsSetupWorkflowTests
 {
-    private const string ValidConnectionString =
-        "endpoint=https://synthetic.example.communication.azure.com/;accesskey=SYNTHETICACCESSKEY000000000000000000000000000000=";
-
-    [Fact]
-    public void AcsRegisterOperation_runs_without_console()
-    {
-        using var scratch = new RegisterScratch();
-        var result = new AcsRegisterOperation().Execute(new AcsRegisterRequest
-        {
-            EnvironmentConfirmation = AcsEnvironmentConfirmation.Staging,
-            IntentConfirmation = AcsRegisterOperation.IntentPhrase,
-            ConnectionString = ValidConnectionString,
-            ConnectionStringConfirmation = ValidConnectionString,
-            SenderEmail = "sender@example.com",
-            SenderDisplayName = "Sender",
-            AcsSecretDirectory = scratch.AcsDir,
-            PlatformSenderDirectory = scratch.SenderDir,
-        });
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal("staging", result.InternalEnvironment);
-        Assert.DoesNotContain("sender@example.com", result.MaskedSenderEmail!, StringComparison.Ordinal);
-        Assert.Equal(ValidConnectionString, File.ReadAllText(scratch.AcsFilePath));
-    }
-
     [Theory]
     [InlineData("Staging", true)]
     [InlineData("Production", true)]
     [InlineData("staging", false)]
     [InlineData("PRODUCTION", false)]
     [InlineData(" Staging", false)]
-    [InlineData("Staging ", false)]
-    public void AcsEnvironmentConfirmation_is_exact_ordinal(string value, bool expected)
+    [InlineData("Production ", false)]
+    public void Environment_confirmation_is_exact(string value, bool expected)
     {
         Assert.Equal(expected, AcsEnvironmentConfirmation.TryMap(value, out _));
     }
 
     [Fact]
-    public async Task Staging_verification_rejects_Production_confirmation()
-    {
-        var op = new AcsStagingVerificationOperation(new FakeAcsClient());
-        var result = await op.ExecuteAsync(
-            BaseStagingRequest() with { EnvironmentConfirmation = AcsEnvironmentConfirmation.Production },
-            CancellationToken.None);
-
-        Assert.Equal(AcsStagingVerificationOperation.RejectedProductionEnvironment, result.Code);
-    }
-
-    [Fact]
-    public async Task Staging_verification_rejects_case_and_whitespace_variants()
-    {
-        var op = new AcsStagingVerificationOperation(new FakeAcsClient());
-        foreach (var bad in new[] { "staging", "STAGING", " Staging", "Staging " })
-        {
-            var result = await op.ExecuteAsync(
-                BaseStagingRequest() with { EnvironmentConfirmation = bad },
-                CancellationToken.None);
-            Assert.Equal(AdminProviderTestAcsSendResultCodes.RejectedEnvironmentMismatch, result.Code);
-        }
-    }
-
-    [Fact]
-    public async Task Staging_verification_requires_tenant_sender_match()
-    {
-        var op = new AcsStagingVerificationOperation(new FakeAcsClient());
-        var result = await op.ExecuteAsync(
-            BaseStagingRequest() with
-            {
-                SenderEmail = "other@example.com",
-                ExpectedTenantSenderEmail = "noreply@example.com",
-            },
-            CancellationToken.None);
-
-        Assert.Equal(AcsStagingVerificationOperation.RejectedSenderMismatch, result.Code);
-    }
-
-    [Fact]
-    public async Task Staging_verification_succeeds_with_matching_sender_and_separates_mailbox_ACTION()
-    {
-        var op = new AcsStagingVerificationOperation(new FakeAcsClient());
-        var result = await op.ExecuteAsync(BaseStagingRequest(), CancellationToken.None);
-
-        Assert.True(result.IsSuccess);
-        Assert.True(result.SendRequestAccepted);
-        Assert.True(result.OperationCompleted);
-        Assert.Equal(AcsStagingVerificationResult.MailboxCheckActionRequired, result.MailboxCheckStatus);
-        Assert.DoesNotContain("noreply@example.com", result.MaskedSenderEmail!, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Staging_verification_enforces_session_limit()
-    {
-        var limiter = new AcsSessionTestSendLimiter(maxAttemptsPerSession: 2);
-        var op = new AcsStagingVerificationOperation(new FakeAcsClient(), limiter);
-        var request = BaseStagingRequest() with { AssistantSessionId = "session-a" };
-
-        Assert.True((await op.ExecuteAsync(request, CancellationToken.None)).IsSuccess);
-        Assert.True((await op.ExecuteAsync(request, CancellationToken.None)).IsSuccess);
-        var limited = await op.ExecuteAsync(request, CancellationToken.None);
-        Assert.Equal(AcsStagingVerificationOperation.RejectedSessionLimitExceeded, limited.Code);
-    }
-
-    [Fact]
-    public async Task Staging_verification_does_not_limit_cli_without_session_id()
-    {
-        var limiter = new AcsSessionTestSendLimiter(maxAttemptsPerSession: 1);
-        var op = new AcsStagingVerificationOperation(new FakeAcsClient(), limiter);
-        var request = BaseStagingRequest() with { AssistantSessionId = null };
-
-        Assert.True((await op.ExecuteAsync(request, CancellationToken.None)).IsSuccess);
-        Assert.True((await op.ExecuteAsync(request, CancellationToken.None)).IsSuccess);
-    }
-
-    [Fact]
-    public async Task Staging_verification_maps_provider_failures_without_leaking_raw_error()
-    {
-        var op = new AcsStagingVerificationOperation(new FakeAcsClient(
-            AcsTestSendOutcome.Failed(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication)));
-        var result = await op.ExecuteAsync(BaseStagingRequest(), CancellationToken.None);
-
-        Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication, result.Code);
-        Assert.Null(result.ProviderMessageIdForHandoff);
-    }
-
-    [Fact]
-    public void SetupCore_rejects_live_sending_true_without_promotion_authorization()
+    public void Public_SetupCore_rejects_live_sending_true()
     {
         var root = SetupTestFixtures.CreateManagedRoot();
         try
         {
-            var request = SetupTestFixtures.ProductionAcsRequest(root, dryRun: true, liveSending: true) with
-            {
-                LiveSendingPromotion = null,
-            };
-            var result = new SetupCore().GenerateBundle(request);
+            var result = new SetupCore().GenerateBundle(
+                SetupTestFixtures.ProductionAcsRequest(root, dryRun: true, liveSending: true));
+
             Assert.False(result.IsSuccess);
             Assert.Contains("live_sending", result.Message!, StringComparison.Ordinal);
         }
@@ -153,58 +38,44 @@ public sealed class AcsSetupWorkflowTests
     }
 
     [Fact]
-    public void SetupCore_accepts_live_sending_true_with_promotion_authorization_as_separate_fingerprint()
+    public void Applied_proof_has_no_public_constructor()
     {
-        var root = SetupTestFixtures.CreateManagedRoot();
-        try
-        {
-            var disabled = SetupTestFixtures.ProductionAcsRequest(root, dryRun: true, liveSending: false);
-            var enabled = SetupTestFixtures.ProductionAcsRequest(root, dryRun: true, liveSending: true);
-            var core = new SetupCore(bundleIdFactory: () => "bundle-dry-run");
-            var first = core.GenerateBundle(disabled);
-            var second = core.GenerateBundle(enabled);
-
-            Assert.True(first.IsSuccess);
-            Assert.True(second.IsSuccess);
-            Assert.NotEqual(first.ConfigurationFingerprint, second.ConfigurationFingerprint);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
+        Assert.Empty(typeof(AcsConfigurationAppliedProof).GetConstructors());
     }
 
     [Fact]
-    public async Task EnableLiveSending_rejects_Staging_confirmation_and_missing_approval()
+    public async Task Apply_requires_shared_typed_registration_validation()
     {
-        var workflow = new AcsSetupWorkflow();
         var root = SetupTestFixtures.CreateManagedRoot();
         try
         {
+            var workflow = new AcsSetupWorkflow();
             var request = SetupTestFixtures.ProductionAcsRequest(root, dryRun: true);
-            TrustedSetupHostLayout layout = null!;
-            var apply = new FakeApplyEngine(SetupApplyResult.Create(
-                SetupApplyResultCode.ApplySucceeded,
-                SetupManagedDeploymentState.Active));
+            var apply = new FakeApplyEngine(SuccessResult());
 
-            var stagingConfirm = await workflow.EnableLiveSendingAsync(
+            var rejected = await workflow.ApplyConfigurationAsync(
                 request,
-                AcsEnvironmentConfirmation.Staging,
-                AcsLiveSendingApproval.EnablePhrase,
-                layout,
+                "production",
+                AcsRegisterOperation.IntentPhrase,
+                request.AcsConnectionString!,
+                null!,
                 apply,
                 CancellationToken.None);
-            Assert.Equal(AcsSetupResultCode.ProductionConfirmationRejected, stagingConfirm.Code);
+            Assert.Equal(
+                AdminProviderRegisterAcsResultCodes.RejectedEnvironmentMismatch,
+                rejected.Code);
 
-            var missingApproval = await workflow.EnableLiveSendingAsync(
+            var accepted = await workflow.ApplyConfigurationAsync(
                 request,
                 AcsEnvironmentConfirmation.Production,
-                "WRONG",
-                layout,
+                AcsRegisterOperation.IntentPhrase,
+                request.AcsConnectionString!,
+                null!,
                 apply,
                 CancellationToken.None);
-            Assert.Equal(AcsSetupResultCode.RejectedLiveSendingWithoutConfirmation, missingApproval.Code);
-            Assert.Null(apply.LastBundleId);
+            Assert.Equal(AcsSetupResultCode.ConfigurationApplied, accepted.Code);
+            Assert.NotNull(accepted.ConfigurationAppliedProof);
+            Assert.False(accepted.DeploymentSendReady);
         }
         finally
         {
@@ -213,176 +84,321 @@ public sealed class AcsSetupWorkflowTests
     }
 
     [Fact]
-    public void SendReady_evaluator_separates_operational_verification()
+    public async Task Production_promotion_uses_prior_authority_under_apply_lock()
     {
-        var apply = SetupApplyResult.Create(
+        var root = SetupTestFixtures.CreateManagedRoot();
+        try
+        {
+            var ids = new Queue<string>(["bundle-disabled", "bundle-enabled"]);
+            var workflow = new AcsSetupWorkflow(
+                new SetupCore(bundleIdFactory: ids.Dequeue));
+            var engine = new FakeApplyEngine(SuccessResult());
+            var request = SetupTestFixtures.ProductionAcsRequest(root, dryRun: true);
+
+            var first = await ApplyAsync(workflow, request, engine);
+            var promoted = await workflow.EnableLiveSendingAsync(
+                first.ConfigurationAppliedProof!,
+                AcsEnvironmentConfirmation.Production,
+                AcsLiveSendingApproval.EnablePhrase,
+                null!,
+                engine,
+                CancellationToken.None);
+
+            Assert.Equal(AcsSetupResultCode.DeploymentSendReady, promoted.Code);
+            Assert.True(promoted.DeploymentSendReady);
+            Assert.Equal("bundle-disabled", engine.ExpectedActive!.BundleId);
+            Assert.Equal(first.ConfigurationFingerprint, engine.ExpectedActive.ConfigurationFingerprint);
+            Assert.Equal(first.ActivationGeneration, engine.ExpectedActive.ActivationGeneration);
+            Assert.Equal("bundle-enabled", engine.LastBundleId);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Production_promotion_rejects_phrase_and_stale_authority()
+    {
+        var root = SetupTestFixtures.CreateManagedRoot();
+        try
+        {
+            var workflow = new AcsSetupWorkflow();
+            var firstEngine = new FakeApplyEngine(SuccessResult());
+            var first = await ApplyAsync(
+                workflow,
+                SetupTestFixtures.ProductionAcsRequest(root, dryRun: true),
+                firstEngine);
+
+            var phraseRejected = await workflow.EnableLiveSendingAsync(
+                first.ConfigurationAppliedProof!,
+                "Staging",
+                AcsLiveSendingApproval.EnablePhrase,
+                null!,
+                firstEngine,
+                CancellationToken.None);
+            Assert.Equal(AcsSetupResultCode.ProductionConfirmationRejected, phraseRejected.Code);
+
+            var staleEngine = new FakeApplyEngine(SetupApplyResult.Create(
+                SetupApplyResultCode.IneligibleExistingActive,
+                SetupManagedDeploymentState.Active,
+                reasonCode: "expected_active_authority_mismatch"));
+            var stale = await workflow.EnableLiveSendingAsync(
+                first.ConfigurationAppliedProof!,
+                AcsEnvironmentConfirmation.Production,
+                AcsLiveSendingApproval.EnablePhrase,
+                null!,
+                staleEngine,
+                CancellationToken.None);
+            Assert.Equal(AcsSetupResultCode.LiveSendingEnableApplyFailed, stale.Code);
+            Assert.False(stale.DeploymentSendReady);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Send_ready_requires_typed_doctor_pass()
+    {
+        var apply = SuccessResult();
+        var pending = AcsSendReadyEvaluator.Evaluate(
+            SetupMode.ProductionAcs,
+            apply,
+            effectiveLiveSendingEnabled: true,
+            AcsSetupDoctorResult.Fail("doctor_checks_pending"));
+        Assert.False(pending.SendReadyAsserted);
+        Assert.Equal("doctor_checks_pending", pending.ReasonCode);
+
+        var passed = AcsSendReadyEvaluator.Evaluate(
+            SetupMode.ProductionAcs,
+            apply,
+            effectiveLiveSendingEnabled: true,
+            AcsSetupDoctorResult.Pass());
+        Assert.True(passed.SendReadyAsserted);
+        Assert.Null(passed.ReasonCode);
+    }
+
+    [Fact]
+    public void Doctor_evaluates_post_apply_effective_observations()
+    {
+        var doctor = new AcsSetupDoctorOperation();
+
+        Assert.Equal(
+            "doctor_effective_provider_not_acs",
+            doctor.EvaluateProduction(
+                WithEffective(SuccessResult(), "mailpit", liveSending: true)).ReasonCode);
+        Assert.Equal(
+            "doctor_effective_live_sending_disabled",
+            doctor.EvaluateProduction(
+                WithEffective(SuccessResult(), "acs", liveSending: false)).ReasonCode);
+        Assert.True(doctor.EvaluateProduction(SuccessResult()).Passed);
+
+        static SetupApplyResult WithEffective(
+            SetupApplyResult source,
+            string provider,
+            bool liveSending) =>
+            SetupApplyResult.Create(
+                source.Code,
+                source.DeploymentState,
+                source.Message,
+                source.ActionCode,
+                source.ReasonCode,
+                source.BundleId,
+                source.ActivationGeneration,
+                source.ConfigurationApplied,
+                source.VerificationCommitted,
+                source.ConfigRollbackStatus,
+                source.PersistentSideEffectMayRemain,
+                source.PersistentSideEffectKind,
+                provider,
+                liveSending);
+    }
+
+    [Fact]
+    public async Task Staging_sender_is_derived_from_selected_applied_tenant()
+    {
+        var root = SetupTestFixtures.CreateManagedRoot();
+        try
+        {
+            var capture = new FakeAcsClient();
+            var workflow = new AcsSetupWorkflow(
+                stagingVerification: new AcsStagingVerificationOperation(capture));
+            var request = SetupTestFixtures.StagingAcsRequest(root, dryRun: true);
+            var applied = await ApplyAsync(workflow, request, new FakeApplyEngine(SuccessResult()));
+
+            var result = await workflow.VerifyStagingAsync(
+                StagingRequest(request.Tenants.Tenants.Single().TenantId),
+                applied.ConfigurationAppliedProof!,
+                CancellationToken.None);
+
+            Assert.Equal(AcsSetupResultCode.StagingVerificationSucceeded, result.Code);
+            Assert.Equal(
+                request.Tenants.Tenants.Single().DefaultFrom.Email,
+                capture.LastRequest!.SenderEmail);
+            Assert.Equal(AcsStagingVerificationOperation.SyntheticSubject, capture.LastRequest.Subject);
+            Assert.Equal(AcsStagingVerificationOperation.SyntheticPlainTextBody, capture.LastRequest.PlainTextBody);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Staging_rejects_unknown_tenant_without_send()
+    {
+        var root = SetupTestFixtures.CreateManagedRoot();
+        try
+        {
+            var capture = new FakeAcsClient();
+            var workflow = new AcsSetupWorkflow(
+                stagingVerification: new AcsStagingVerificationOperation(capture));
+            var request = SetupTestFixtures.StagingAcsRequest(root, dryRun: true);
+            var applied = await ApplyAsync(workflow, request, new FakeApplyEngine(SuccessResult()));
+
+            var result = await workflow.VerifyStagingAsync(
+                StagingRequest(Guid.NewGuid()),
+                applied.ConfigurationAppliedProof!,
+                CancellationToken.None);
+
+            Assert.Equal(AcsSetupResultCode.StagingVerificationFailed, result.Code);
+            Assert.Equal(
+                AcsStagingVerificationOperation.RejectedTenantNotFound,
+                result.StagingVerificationCode);
+            Assert.Null(capture.LastRequest);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Session_limit_is_shared_across_operation_instances()
+    {
+        var root = SetupTestFixtures.CreateManagedRoot();
+        try
+        {
+            var request = SetupTestFixtures.StagingAcsRequest(root, dryRun: true);
+            var applied = await ApplyAsync(
+                new AcsSetupWorkflow(),
+                request,
+                new FakeApplyEngine(SuccessResult()));
+            var sessionId = "test-" + Guid.NewGuid().ToString("N");
+            var first = new AcsStagingVerificationOperation(new FakeAcsClient());
+            var second = new AcsStagingVerificationOperation(new FakeAcsClient());
+
+            for (var index = 0; index < AcsSessionTestSendLimiter.DefaultMaxAttemptsPerSession; index++)
+            {
+                var operation = index % 2 == 0 ? first : second;
+                var result = await operation.ExecuteAsync(
+                    StagingRequest(request.Tenants.Tenants.Single().TenantId, sessionId),
+                    applied.ConfigurationAppliedProof!,
+                    CancellationToken.None);
+                Assert.True(result.IsSuccess);
+            }
+
+            var limited = await second.ExecuteAsync(
+                StagingRequest(request.Tenants.Tenants.Single().TenantId, sessionId),
+                applied.ConfigurationAppliedProof!,
+                CancellationToken.None);
+            Assert.Equal(
+                AcsStagingVerificationOperation.RejectedSessionLimitExceeded,
+                limited.Code);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Provider_failure_is_canonical_and_sanitized()
+    {
+        var root = SetupTestFixtures.CreateManagedRoot();
+        try
+        {
+            var request = SetupTestFixtures.StagingAcsRequest(root, dryRun: true);
+            var applied = await ApplyAsync(
+                new AcsSetupWorkflow(),
+                request,
+                new FakeApplyEngine(SuccessResult()));
+            var operation = new AcsStagingVerificationOperation(
+                new FakeAcsClient(AcsTestSendOutcome.Failed(
+                    AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication)));
+
+            var result = await operation.ExecuteAsync(
+                StagingRequest(request.Tenants.Tenants.Single().TenantId),
+                applied.ConfigurationAppliedProof!,
+                CancellationToken.None);
+
+            Assert.Equal(AdminProviderTestAcsSendResultCodes.FailedAcsAuthentication, result.Code);
+            Assert.Null(result.ProviderMessageIdForHandoff);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static Task<AcsSetupWorkflowResult> ApplyAsync(
+        AcsSetupWorkflow workflow,
+        SetupRequest request,
+        ISetupApplyEngine engine) =>
+        workflow.ApplyConfigurationAsync(
+            request,
+            request.Mode == SetupMode.ProductionAcs
+                ? AcsEnvironmentConfirmation.Production
+                : AcsEnvironmentConfirmation.Staging,
+            AcsRegisterOperation.IntentPhrase,
+            request.AcsConnectionString!,
+            null!,
+            engine,
+            CancellationToken.None);
+
+    private static AcsStagingVerificationRequest StagingRequest(
+        Guid tenantId,
+        string? sessionId = null) =>
+        new()
+        {
+            EnvironmentConfirmation = AcsEnvironmentConfirmation.Staging,
+            IntentConfirmation = AcsStagingVerificationOperation.IntentPhrase,
+            TenantId = tenantId,
+            RecipientEmail = "recipient@example.com",
+            AssistantSessionId = sessionId,
+        };
+
+    private static SetupApplyResult SuccessResult() =>
+        SetupApplyResult.Create(
             SetupApplyResultCode.ApplySucceeded,
             SetupManagedDeploymentState.Active,
+            bundleId: "ignored",
+            activationGeneration: 7,
             configurationApplied: true,
-            verificationCommitted: true);
-
-        var ready = AcsSendReadyEvaluator.Evaluate(SetupMode.ProductionAcs, apply, effectiveLiveSendingEnabled: true);
-        Assert.True(ready.SendReadyAsserted);
-        Assert.Equal(AcsSendReadyEvaluator.SendReadyReady, ready.SendReadyEvaluation);
-
-        var disabled = AcsSendReadyEvaluator.Evaluate(SetupMode.ProductionAcs, apply, effectiveLiveSendingEnabled: false);
-        Assert.False(disabled.SendReadyAsserted);
-
-        var result = new AcsSetupWorkflowResult
-        {
-            Code = AcsSetupResultCode.DeploymentSendReady,
-            State = AcsSetupWorkflowState.DeploymentSendReady,
-            DeploymentSendReady = true,
-            ConfigurationApplied = true,
-        };
-        Assert.False(result.OperationalVerificationRecorded);
-    }
-
-    [Fact]
-    public async Task Workflow_maps_apply_failure_and_external_side_effect()
-    {
-        var root = SetupTestFixtures.CreateManagedRoot();
-        try
-        {
-            var request = SetupTestFixtures.ProductionAcsRequest(root);
-            var workflow = new AcsSetupWorkflow();
-            var applyEngine = new FakeApplyEngine(SetupApplyResult.Create(
-                SetupApplyResultCode.ApplyFailedRollbackSucceeded,
-                SetupManagedDeploymentState.Active,
-                configRollbackStatus: SetupConfigRollbackStatus.Succeeded,
-                persistentSideEffectMayRemain: true,
-                persistentSideEffectKind: SetupPersistentSideEffectKind.None));
-
-            var result = await workflow.EnableLiveSendingAsync(
-                request,
-                AcsEnvironmentConfirmation.Production,
-                AcsLiveSendingApproval.EnablePhrase,
-                null!,
-                applyEngine,
-                CancellationToken.None);
-
-            Assert.Equal(AcsSetupResultCode.ExternalSideEffectMayRemain, result.Code);
-            Assert.True(result.PersistentSideEffectMayRemain);
-            Assert.False(result.DeploymentSendReady);
-            Assert.False(result.OperationalVerificationRecorded);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task Workflow_configuration_apply_success_is_not_send_ready()
-    {
-        var root = SetupTestFixtures.CreateManagedRoot();
-        try
-        {
-            var request = SetupTestFixtures.StagingAcsRequest(root);
-            var workflow = new AcsSetupWorkflow();
-            var applyEngine = new FakeApplyEngine(SetupApplyResult.Create(
-                SetupApplyResultCode.ApplySucceeded,
-                SetupManagedDeploymentState.Active,
-                configurationApplied: true,
-                verificationCommitted: true,
-                bundleId: "applied-bundle"));
-
-            var result = await workflow.ApplyConfigurationAsync(
-                request,
-                null!,
-                applyEngine,
-                CancellationToken.None);
-
-            Assert.Equal(AcsSetupResultCode.ConfigurationApplied, result.Code);
-            Assert.True(result.ConfigurationApplied);
-            Assert.False(result.DeploymentSendReady);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task Workflow_live_sending_success_asserts_send_ready_only()
-    {
-        var root = SetupTestFixtures.CreateManagedRoot();
-        try
-        {
-            var request = SetupTestFixtures.ProductionAcsRequest(root);
-            var workflow = new AcsSetupWorkflow();
-            var applyEngine = new FakeApplyEngine(SetupApplyResult.Create(
-                SetupApplyResultCode.ApplySucceeded,
-                SetupManagedDeploymentState.Active,
-                configurationApplied: true,
-                verificationCommitted: true,
-                bundleId: "live-bundle"));
-
-            var result = await workflow.EnableLiveSendingAsync(
-                request,
-                AcsEnvironmentConfirmation.Production,
-                AcsLiveSendingApproval.EnablePhrase,
-                null!,
-                applyEngine,
-                CancellationToken.None);
-
-            Assert.Equal(AcsSetupResultCode.DeploymentSendReady, result.Code);
-            Assert.True(result.DeploymentSendReady);
-            Assert.False(result.OperationalVerificationRecorded);
-            Assert.NotNull(applyEngine.LastBundleId);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void Live_sending_promotion_creates_distinct_bundle_ids_and_fingerprints()
-    {
-        var root = SetupTestFixtures.CreateManagedRoot();
-        try
-        {
-            var ids = new Queue<string>(["bundle-a", "bundle-b"]);
-            var core = new SetupCore(bundleIdFactory: () => ids.Dequeue());
-            var first = core.GenerateBundle(SetupTestFixtures.ProductionAcsRequest(root));
-            var second = core.GenerateBundle(SetupTestFixtures.ProductionAcsRequest(root, liveSending: true));
-
-            Assert.True(first.IsSuccess);
-            Assert.True(second.IsSuccess);
-            Assert.Equal("bundle-a", first.BundleId);
-            Assert.Equal("bundle-b", second.BundleId);
-            Assert.NotEqual(first.ConfigurationFingerprint, second.ConfigurationFingerprint);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    private static AcsStagingVerificationRequest BaseStagingRequest() => new()
-    {
-        EnvironmentConfirmation = AcsEnvironmentConfirmation.Staging,
-        IntentConfirmation = AcsStagingVerificationOperation.IntentPhrase,
-        ConnectionString = ValidConnectionString,
-        SenderEmail = "noreply@example.com",
-        RecipientEmail = "recipient@example.com",
-        ExpectedTenantSenderEmail = "noreply@example.com",
-    };
+            verificationCommitted: true,
+            effectiveProviderSummary: "acs",
+            effectiveLiveSendingEnabled: true);
 
     private sealed class FakeAcsClient(AcsTestSendOutcome? outcome = null) : IAcsTestSendClient
     {
-        public Task<AcsTestSendOutcome> SendAsync(AcsTestSendRequest request, CancellationToken cancellationToken)
+        public AcsTestSendRequest? LastRequest { get; private set; }
+
+        public Task<AcsTestSendOutcome> SendAsync(
+            AcsTestSendRequest request,
+            CancellationToken cancellationToken)
         {
-            Assert.Equal(AcsStagingVerificationOperation.SyntheticSubject, request.Subject);
-            Assert.Equal(AcsStagingVerificationOperation.SyntheticPlainTextBody, request.PlainTextBody);
-            return Task.FromResult(outcome ?? AcsTestSendOutcome.Succeeded(request.OperationId.ToString("D")));
+            LastRequest = request;
+            return Task.FromResult(
+                outcome ?? AcsTestSendOutcome.Succeeded(request.OperationId.ToString("D")));
         }
     }
 
     private sealed class FakeApplyEngine(SetupApplyResult result) : ISetupApplyEngine
     {
         public string? LastBundleId { get; private set; }
+        public SetupExpectedActiveAuthority? ExpectedActive { get; private set; }
 
         public Task<SetupApplyResult> ApplyAsync(
             TrustedSetupHostLayout layout,
@@ -390,51 +406,41 @@ public sealed class AcsSetupWorkflowTests
             CancellationToken cancellationToken)
         {
             LastBundleId = candidateBundleId;
-            return Task.FromResult(SetupApplyResult.Create(
-                result.Code,
-                result.DeploymentState,
-                result.Message,
-                result.ActionCode,
-                result.ReasonCode,
-                candidateBundleId,
-                result.ActivationGeneration,
-                result.ConfigurationApplied,
-                result.VerificationCommitted,
-                result.ConfigRollbackStatus,
-                result.PersistentSideEffectMayRemain,
-                result.PersistentSideEffectKind));
+            return Task.FromResult(WithCandidate(result, candidateBundleId));
+        }
+
+        public Task<SetupApplyResult> ApplyAfterVerifiedAsync(
+            TrustedSetupHostLayout layout,
+            string candidateBundleId,
+            SetupExpectedActiveAuthority expectedActive,
+            CancellationToken cancellationToken)
+        {
+            ExpectedActive = expectedActive;
+            return ApplyAsync(layout, candidateBundleId, cancellationToken);
         }
 
         public Task<SetupApplyResult> RecoverAsync(
             TrustedSetupHostLayout layout,
             CancellationToken cancellationToken) =>
             Task.FromResult(result);
-    }
 
-    private sealed class RegisterScratch : IDisposable
-    {
-        public string Root { get; } = Path.Combine(
-            Path.GetTempPath(), "amane-acs-register-" + Guid.NewGuid().ToString("N"));
-
-        public string AcsDir { get; }
-        public string SenderDir { get; }
-        public string AcsFilePath { get; }
-
-        public RegisterScratch()
-        {
-            AcsDir = Path.Combine(Root, "secrets", "acs");
-            SenderDir = Path.Combine(Root, "config", "platform-sender");
-            TestSecretDirectory.CreateSecure(AcsDir);
-            TestSecretDirectory.CreateSecure(SenderDir);
-            AcsFilePath = Path.Combine(AcsDir, AcsSecretFileNames.CanonicalFileName);
-        }
-
-        public void Dispose()
-        {
-            if (Directory.Exists(Root))
-            {
-                Directory.Delete(Root, recursive: true);
-            }
-        }
+        private static SetupApplyResult WithCandidate(
+            SetupApplyResult source,
+            string candidateBundleId) =>
+            SetupApplyResult.Create(
+                source.Code,
+                source.DeploymentState,
+                source.Message,
+                source.ActionCode,
+                source.ReasonCode,
+                candidateBundleId,
+                source.ActivationGeneration,
+                source.ConfigurationApplied,
+                source.VerificationCommitted,
+                source.ConfigRollbackStatus,
+                source.PersistentSideEffectMayRemain,
+                source.PersistentSideEffectKind,
+                source.EffectiveProviderSummary,
+                source.EffectiveLiveSendingEnabled);
     }
 }

@@ -1,55 +1,33 @@
 using System.Net.Mail;
 using Amane.Mailer.Operations.AcsTestSend;
+using Amane.Mailer.Setup;
 
 namespace Amane.Mailer.Operations.AcsSetup;
 
 /// <summary>
-/// Console-independent Staging verification request. Subject, body, and headers are fixed by the
-/// operation and cannot be supplied by adapters.
+/// Adapter-facing Staging verification request. The sender is intentionally absent: Managed
+/// verification derives it from the opaque configuration-applied proof and selected tenant.
 /// </summary>
 public sealed record AcsStagingVerificationRequest
 {
     public required string EnvironmentConfirmation { get; init; }
     public required string IntentConfirmation { get; init; }
-    public required string ConnectionString { get; init; }
-    public required string SenderEmail { get; init; }
+    public required Guid TenantId { get; init; }
     public required string RecipientEmail { get; init; }
-
-    /// <summary>
-    /// Sender email from the generated tenant configuration (default_from). Must match
-    /// <see cref="SenderEmail"/> exactly (ordinal).
-    /// </summary>
-    public required string ExpectedTenantSenderEmail { get; init; }
-
-    /// <summary>
-    /// When set, Assistant session rate limiting applies. Omit for direct CLI (non-goal for limits).
-    /// </summary>
     public string? AssistantSessionId { get; init; }
 }
 
-/// <summary>
-/// Public Staging verification result. Distinguishes provider accepted / completed / mailbox ACTION.
-/// Never carries secret, unmasked addresses beyond optional masks, or provider raw errors.
-/// </summary>
 public sealed class AcsStagingVerificationResult
 {
     public required string Code { get; init; }
     public AcsEvaluationState AuthenticationState { get; init; } = AcsEvaluationState.NotEvaluated;
     public bool SendRequestAccepted { get; init; }
     public bool OperationCompleted { get; init; }
-
-    /// <summary>
-    /// Mailbox arrival is never auto-PASS. Always an ACTION for the operator when send completed.
-    /// </summary>
     public string MailboxCheckStatus { get; init; } = MailboxCheckActionRequired;
-
     public string? MaskedSenderEmail { get; init; }
     public string? MaskedRecipientEmail { get; init; }
 
-    /// <summary>
-    /// Provider message id for in-process / TTY handoff only. Adapters must not persist this into
-    /// setup metadata, browser storage, logs, or verification records.
-    /// </summary>
+    /// <summary>In-process TTY handoff only; adapters must never persist this value.</summary>
     public string? ProviderMessageIdForHandoff { get; init; }
 
     public const string MailboxCheckActionRequired = "ACTION";
@@ -58,13 +36,9 @@ public sealed class AcsStagingVerificationResult
     public bool IsSuccess => Code == AdminProviderTestAcsSendResultCodes.Success;
 
     public static AcsStagingVerificationResult Reject(string code) =>
-        new()
-        {
-            Code = code,
-            MailboxCheckStatus = MailboxCheckNotEvaluated,
-        };
+        new() { Code = code, MailboxCheckStatus = MailboxCheckNotEvaluated };
 
-    public static AcsStagingVerificationResult FromOutcome(
+    internal static AcsStagingVerificationResult FromOutcome(
         AcsTestSendOutcome outcome,
         string maskedSender,
         string maskedRecipient)
@@ -98,9 +72,6 @@ public sealed class AcsStagingVerificationResult
     }
 }
 
-/// <summary>
-/// Staging-only ACS synthetic test send Application Service. Production is always rejected.
-/// </summary>
 public sealed class AcsStagingVerificationOperation
 {
     public const string IntentPhrase = "MAILER-ACS-TEST-SEND";
@@ -110,8 +81,8 @@ public sealed class AcsStagingVerificationOperation
 
     public const string RejectedProductionEnvironment = "REJECTED_PRODUCTION_ENVIRONMENT";
     public const string RejectedSenderMismatch = "REJECTED_SENDER_MISMATCH";
+    public const string RejectedTenantNotFound = "REJECTED_TENANT_NOT_FOUND";
     public const string RejectedSessionLimitExceeded = "REJECTED_SESSION_LIMIT_EXCEEDED";
-    public const string RejectedArbitraryContent = "REJECTED_ARBITRARY_CONTENT";
 
     private readonly IAcsTestSendClient _acsClient;
     private readonly AcsSessionTestSendLimiter _sessionLimiter;
@@ -123,87 +94,153 @@ public sealed class AcsStagingVerificationOperation
         Func<Guid>? operationIdFactory = null)
     {
         _acsClient = acsClient ?? new AzureAcsTestSendClient();
-        _sessionLimiter = sessionLimiter ?? new AcsSessionTestSendLimiter();
-        _operationIdFactory = operationIdFactory ?? (() => Guid.NewGuid());
+        _sessionLimiter = sessionLimiter ?? AcsSessionTestSendLimiter.Shared;
+        _operationIdFactory = operationIdFactory ?? Guid.NewGuid;
     }
 
-    public async Task<AcsStagingVerificationResult> ExecuteAsync(
+    public Task<AcsStagingVerificationResult> ExecuteAsync(
         AcsStagingVerificationRequest request,
+        AcsConfigurationAppliedProof appliedProof,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(appliedProof);
+
+        if (appliedProof.Mode is not (
+                SetupMode.StagingNoSend
+                or SetupMode.StagingVerification))
+        {
+            return Task.FromResult(
+                AcsStagingVerificationResult.Reject(RejectedProductionEnvironment));
+        }
+
+        var tenant = appliedProof.AppliedRequest.Tenants.Tenants.SingleOrDefault(
+            tenant => tenant.TenantId == request.TenantId);
+        if (tenant is null)
+        {
+            return Task.FromResult(
+                AcsStagingVerificationResult.Reject(RejectedTenantNotFound));
+        }
+
+        if (!string.Equals(tenant.Provider, "acs", StringComparison.Ordinal)
+            || tenant.LiveSending)
+        {
+            return Task.FromResult(
+                AcsStagingVerificationResult.Reject(RejectedSenderMismatch));
+        }
+
+        var connectionString = appliedProof.AppliedRequest.AcsConnectionString;
+        if (connectionString is null)
+        {
+            return Task.FromResult(
+                AcsStagingVerificationResult.Reject(
+                    AdminProviderTestAcsSendResultCodes.RejectedInvalidConnectionString));
+        }
+
+        return ExecuteCoreAsync(
+            request.EnvironmentConfirmation,
+            request.IntentConfirmation,
+            connectionString,
+            tenant.DefaultFrom.Email,
+            request.RecipientEmail,
+            request.AssistantSessionId,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Existing direct CLI path has no Managed tenant context. It still uses the same typed
+    /// validation/send core but intentionally has no Assistant session limit.
+    /// </summary>
+    internal Task<AcsStagingVerificationResult> ExecuteDirectCliAsync(
+        string environmentConfirmation,
+        string intentConfirmation,
+        string connectionString,
+        string senderEmail,
+        string recipientEmail,
+        CancellationToken cancellationToken) =>
+        ExecuteCoreAsync(
+            environmentConfirmation,
+            intentConfirmation,
+            connectionString,
+            senderEmail,
+            recipientEmail,
+            assistantSessionId: null,
+            cancellationToken);
+
+    private async Task<AcsStagingVerificationResult> ExecuteCoreAsync(
+        string environmentConfirmation,
+        string intentConfirmation,
+        string connectionString,
+        string senderEmail,
+        string recipientEmail,
+        string? assistantSessionId,
         CancellationToken cancellationToken)
     {
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (AcsEnvironmentConfirmation.IsExactProduction(request.EnvironmentConfirmation))
+            if (AcsEnvironmentConfirmation.IsExactProduction(environmentConfirmation))
             {
                 return AcsStagingVerificationResult.Reject(RejectedProductionEnvironment);
             }
 
-            if (!AcsEnvironmentConfirmation.IsExactStaging(request.EnvironmentConfirmation))
+            if (!AcsEnvironmentConfirmation.IsExactStaging(environmentConfirmation))
             {
                 return AcsStagingVerificationResult.Reject(
                     AdminProviderTestAcsSendResultCodes.RejectedEnvironmentMismatch);
             }
 
-            if (!string.Equals(request.IntentConfirmation, IntentPhrase, StringComparison.Ordinal))
+            if (AcsConfigurationValidator.ValidateIntent(intentConfirmation, IntentPhrase) is { } intentError)
             {
-                return AcsStagingVerificationResult.Reject(
-                    AdminProviderTestAcsSendResultCodes.RejectedIntentMismatch);
+                return AcsStagingVerificationResult.Reject(intentError);
             }
 
-            if (!AcsConnectionStringRules.LooksLikeAcsConnectionString(request.ConnectionString))
+            if (AcsConfigurationValidator.ValidateConnectionStrings(
+                    connectionString,
+                    connectionString) is { } connectionError)
             {
-                return AcsStagingVerificationResult.Reject(
-                    AdminProviderTestAcsSendResultCodes.RejectedInvalidConnectionString);
+                return AcsStagingVerificationResult.Reject(connectionError);
             }
 
-            if (!TryValidateBareEmail(request.SenderEmail))
+            if (!IsBareEmail(senderEmail))
             {
                 return AcsStagingVerificationResult.Reject(
                     AdminProviderTestAcsSendResultCodes.RejectedInvalidSenderEmail);
             }
 
-            if (!TryValidateBareEmail(request.RecipientEmail))
+            if (!IsBareEmail(recipientEmail))
             {
                 return AcsStagingVerificationResult.Reject(
                     AdminProviderTestAcsSendResultCodes.RejectedInvalidRecipientEmail);
             }
 
-            if (!string.Equals(
-                    request.SenderEmail,
-                    request.ExpectedTenantSenderEmail,
-                    StringComparison.Ordinal))
-            {
-                return AcsStagingVerificationResult.Reject(RejectedSenderMismatch);
-            }
-
-            if (!string.IsNullOrEmpty(request.AssistantSessionId)
-                && !_sessionLimiter.TryAcquire(request.AssistantSessionId))
+            if (!string.IsNullOrEmpty(assistantSessionId)
+                && !_sessionLimiter.TryAcquire(assistantSessionId))
             {
                 return AcsStagingVerificationResult.Reject(RejectedSessionLimitExceeded);
             }
 
-            var maskedSender = AcsAddressMask.MaskEmail(request.SenderEmail);
-            var maskedRecipient = AcsAddressMask.MaskEmail(request.RecipientEmail);
-
             var outcome = await _acsClient.SendAsync(
                 new AcsTestSendRequest
                 {
-                    ConnectionString = request.ConnectionString,
-                    SenderEmail = request.SenderEmail,
-                    RecipientEmail = request.RecipientEmail,
+                    ConnectionString = connectionString,
+                    SenderEmail = senderEmail,
+                    RecipientEmail = recipientEmail,
                     Subject = SyntheticSubject,
                     PlainTextBody = SyntheticPlainTextBody,
                     OperationId = _operationIdFactory(),
                 },
                 cancellationToken);
 
-            return AcsStagingVerificationResult.FromOutcome(outcome, maskedSender, maskedRecipient);
+            return AcsStagingVerificationResult.FromOutcome(
+                outcome,
+                AcsAddressMask.MaskEmail(senderEmail),
+                AcsAddressMask.MaskEmail(recipientEmail));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return AcsStagingVerificationResult.Reject(AdminProviderTestAcsSendResultCodes.RejectedCancelled);
+            return AcsStagingVerificationResult.Reject(
+                AdminProviderTestAcsSendResultCodes.RejectedCancelled);
         }
         catch (SecretOperationException ex)
         {
@@ -211,11 +248,12 @@ public sealed class AcsStagingVerificationOperation
         }
         catch (Exception)
         {
-            return AcsStagingVerificationResult.Reject(AdminProviderTestAcsSendResultCodes.FailedUnexpected);
+            return AcsStagingVerificationResult.Reject(
+                AdminProviderTestAcsSendResultCodes.FailedUnexpected);
         }
     }
 
-    private static bool TryValidateBareEmail(string email) =>
+    private static bool IsBareEmail(string email) =>
         MailAddress.TryCreate(email, out var parsed)
         && string.Equals(parsed.Address, email, StringComparison.Ordinal);
 }

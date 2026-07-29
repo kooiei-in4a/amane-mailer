@@ -71,42 +71,36 @@ public sealed partial class AdminProviderRegisterAcsCommand(
             }
 
             var environmentConfirmation = console.ReadLine("Confirm target environment (exact match): ");
-            if (!AcsEnvironmentConfirmation.TryMap(environmentConfirmation, out _))
+            if (AcsConfigurationValidator.ValidateEnvironment(environmentConfirmation) is { } environmentError)
             {
-                return Reject("register_acs", AdminProviderRegisterAcsResultCodes.RejectedEnvironmentMismatch);
+                return Reject("register_acs", environmentError);
             }
 
             var intent = console.ReadLine($"Type {IntentPhrase} to confirm intent: ");
-            if (!string.Equals(intent, IntentPhrase, StringComparison.Ordinal))
+            if (AcsConfigurationValidator.ValidateIntent(intent, IntentPhrase) is { } intentError)
             {
-                return Reject("register_acs", AdminProviderRegisterAcsResultCodes.RejectedIntentMismatch);
+                return Reject("register_acs", intentError);
             }
 
             var connectionString = console.ReadSecret("ACS connection string: ");
             var connectionStringConfirmation = console.ReadSecret("Re-enter ACS connection string: ");
-            if (!string.Equals(connectionString, connectionStringConfirmation, StringComparison.Ordinal))
+            if (AcsConfigurationValidator.ValidateConnectionStrings(
+                    connectionString,
+                    connectionStringConfirmation) is { } connectionError)
             {
-                return Reject("register_acs", AdminProviderRegisterAcsResultCodes.RejectedSecretMismatch);
-            }
-
-            if (!AcsConnectionStringRules.LooksLikeAcsConnectionString(connectionString))
-            {
-                return Reject("register_acs", AdminProviderRegisterAcsResultCodes.RejectedInvalidConnectionString);
+                return Reject("register_acs", connectionError);
             }
 
             var senderEmail = console.ReadLine("Sender email: ").Trim();
-            if (!System.Net.Mail.MailAddress.TryCreate(senderEmail, out var parsed)
-                || !string.Equals(parsed.Address, senderEmail, StringComparison.Ordinal))
+            if (AcsConfigurationValidator.ValidateSenderEmail(senderEmail) is { } senderEmailError)
             {
-                return Reject("register_acs", AdminProviderRegisterAcsResultCodes.RejectedInvalidSenderEmail);
+                return Reject("register_acs", senderEmailError);
             }
 
             var senderDisplayName = console.ReadLine("Sender display name: ");
-            if (string.IsNullOrEmpty(senderDisplayName)
-                || senderDisplayName.Length > 200
-                || senderDisplayName.Any(char.IsControl))
+            if (AcsConfigurationValidator.ValidateDisplayName(senderDisplayName) is { } senderError)
             {
-                return Reject("register_acs", AdminProviderRegisterAcsResultCodes.RejectedInvalidDisplayName);
+                return Reject("register_acs", senderError);
             }
 
             var result = _operation.Execute(new AcsRegisterRequest

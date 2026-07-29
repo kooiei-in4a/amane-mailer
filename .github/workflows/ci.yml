@@ -60,6 +60,9 @@ jobs:
       - name: PTY smoke (ACS test-acs-send interactive paths)
         run: python3 scripts/pty-smoke-test-acs-send.py
 
+      - name: PTY smoke (ACS register-acs interactive paths)
+        run: python3 scripts/pty-smoke-register-acs.py
+
   sdk-tests:
     name: Consumer SDK tests
     runs-on: ubuntu-24.04

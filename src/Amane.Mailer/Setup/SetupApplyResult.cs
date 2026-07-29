@@ -76,6 +76,8 @@ public sealed class SetupApplyResult
     public string ConfigRollbackStatus { get; init; } = SetupConfigRollbackStatus.NotApplicable;
     public bool PersistentSideEffectMayRemain { get; init; }
     public string PersistentSideEffectKind { get; init; } = SetupPersistentSideEffectKind.None;
+    public string? EffectiveProviderSummary { get; init; }
+    public bool? EffectiveLiveSendingEnabled { get; init; }
 
     public bool IsSuccess => Code == SetupApplyResultCode.ApplySucceeded
         || Code == SetupApplyResultCode.RollbackSucceeded;
@@ -92,7 +94,9 @@ public sealed class SetupApplyResult
         bool verificationCommitted = false,
         string configRollbackStatus = SetupConfigRollbackStatus.NotApplicable,
         bool persistentSideEffectMayRemain = false,
-        string persistentSideEffectKind = SetupPersistentSideEffectKind.None) =>
+        string persistentSideEffectKind = SetupPersistentSideEffectKind.None,
+        string? effectiveProviderSummary = null,
+        bool? effectiveLiveSendingEnabled = null) =>
         new()
         {
             Code = code,
@@ -110,5 +114,7 @@ public sealed class SetupApplyResult
             ConfigRollbackStatus = configRollbackStatus,
             PersistentSideEffectMayRemain = persistentSideEffectMayRemain,
             PersistentSideEffectKind = persistentSideEffectKind,
+            EffectiveProviderSummary = effectiveProviderSummary,
+            EffectiveLiveSendingEnabled = effectiveLiveSendingEnabled,
         };
 }

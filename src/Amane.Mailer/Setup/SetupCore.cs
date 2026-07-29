@@ -27,11 +27,21 @@ public sealed class SetupCore
         _bundleIdFactory = bundleIdFactory ?? CreateDefaultBundleId;
     }
 
-    public SetupResult GenerateBundle(SetupRequest request)
+    public SetupResult GenerateBundle(SetupRequest request) =>
+        GenerateBundle(request, allowLiveSendingPromotion: false);
+
+    internal SetupResult GenerateLiveSendingPromotionBundle(SetupRequest request) =>
+        GenerateBundle(request, allowLiveSendingPromotion: true);
+
+    private SetupResult GenerateBundle(SetupRequest request, bool allowLiveSendingPromotion)
     {
         try
         {
-            if (!SetupRequestValidator.TryValidate(request, out var validationCode, out var validationMessage))
+            if (!SetupRequestValidator.TryValidate(
+                    request,
+                    allowLiveSendingPromotion,
+                    out var validationCode,
+                    out var validationMessage))
             {
                 return SetupResult.Fail(validationCode, validationMessage);
             }

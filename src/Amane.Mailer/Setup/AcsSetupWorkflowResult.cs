@@ -1,11 +1,8 @@
+using System.Text.Json.Serialization;
 using Amane.Mailer.Operations.AcsSetup;
 
 namespace Amane.Mailer.Setup;
 
-/// <summary>
-/// Public ACS Easy Setup workflow result for Web / terminal / TTY adapters.
-/// Never carries secrets, sender/recipient plaintext, provider raw errors, or release qualification evidence.
-/// </summary>
 public sealed class AcsSetupWorkflowResult
 {
     public required string Code { get; init; }
@@ -14,6 +11,7 @@ public sealed class AcsSetupWorkflowResult
     public bool DeploymentSendReady { get; init; }
     public string? BundleId { get; init; }
     public string? ConfigurationFingerprint { get; init; }
+    public long? ActivationGeneration { get; init; }
     public string? ApplyResultCode { get; init; }
     public string? ConfigRollbackStatus { get; init; }
     public bool PersistentSideEffectMayRemain { get; init; }
@@ -27,9 +25,10 @@ public sealed class AcsSetupWorkflowResult
     public string? MaskedSenderEmail { get; init; }
     public string? MaskedRecipientEmail { get; init; }
 
-    /// <summary>
-    /// Always false: this workflow never records deployment operational verification or release qualification.
-    /// </summary>
+    /// <summary>Server-side session capability; never serialize or persist it.</summary>
+    [JsonIgnore]
+    public AcsConfigurationAppliedProof? ConfigurationAppliedProof { get; init; }
+
     public bool OperationalVerificationRecorded => false;
 
     public bool IsSuccess =>

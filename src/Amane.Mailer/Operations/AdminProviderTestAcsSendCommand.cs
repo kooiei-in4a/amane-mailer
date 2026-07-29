@@ -1,13 +1,14 @@
 using Amane.Mailer.Operations.AcsSetup;
 using Amane.Mailer.Operations.AcsTestSend;
+using Amane.Mailer.Setup;
 using Microsoft.Extensions.Configuration;
 
 namespace Amane.Mailer.Operations;
 
 /// <summary>
 /// <c>admin provider test-acs-send</c> TTY adapter over <see cref="AcsStagingVerificationOperation"/>.
-/// Direct CLI does not apply Assistant session limits (#451 non-goal) and has no Managed tenant
-/// context, so the typed sender-match gate compares the operator-entered sender to itself.
+/// Direct CLI does not apply Assistant session limits (#451 non-goal); Managed sender authority
+/// is enforced by the workflow overload that requires an opaque applied proof.
 /// </summary>
 public sealed partial class AdminProviderTestAcsSendCommand
 {
@@ -60,17 +61,19 @@ public sealed partial class AdminProviderTestAcsSendCommand
             var environmentConfirmation = _console.ReadVisibleLine(
                 "Confirm target environment (exact match): ",
                 cancellationToken);
-            if (!string.Equals(environmentConfirmation, RequiredEnvironmentConfirmation, StringComparison.Ordinal))
+            if (AcsConfigurationValidator.ValidateEnvironment(
+                    environmentConfirmation,
+                    SetupMode.StagingVerification) is { } environmentError)
             {
-                return Reject(AdminProviderTestAcsSendResultCodes.RejectedEnvironmentMismatch);
+                return Reject(environmentError);
             }
 
             var intent = _console.ReadVisibleLine(
                 $"Type {IntentPhrase} to confirm intent: ",
                 cancellationToken);
-            if (!string.Equals(intent, IntentPhrase, StringComparison.Ordinal))
+            if (AcsConfigurationValidator.ValidateIntent(intent, IntentPhrase) is { } intentError)
             {
-                return Reject(AdminProviderTestAcsSendResultCodes.RejectedIntentMismatch);
+                return Reject(intentError);
             }
 
             var connectionString = ResolveConnectionString(cancellationToken);
@@ -92,18 +95,12 @@ public sealed partial class AdminProviderTestAcsSendCommand
                 sessionLimiter: null,
                 operationIdFactory: () => operationId);
 
-            var result = await operation.ExecuteAsync(
-                new AcsStagingVerificationRequest
-                {
-                    EnvironmentConfirmation = environmentConfirmation,
-                    IntentConfirmation = intent,
-                    ConnectionString = connectionString,
-                    SenderEmail = senderEmail,
-                    RecipientEmail = recipientEmail,
-                    // Direct CLI has no Managed tenant bundle; match the entered sender to itself.
-                    ExpectedTenantSenderEmail = senderEmail,
-                    AssistantSessionId = null,
-                },
+            var result = await operation.ExecuteDirectCliAsync(
+                environmentConfirmation,
+                intent,
+                connectionString,
+                senderEmail,
+                recipientEmail,
                 cancellationToken);
 
             if (cancellationToken.IsCancellationRequested)
@@ -141,13 +138,6 @@ public sealed partial class AdminProviderTestAcsSendCommand
         var fromFile = TryReadSecretFile();
         if (!string.IsNullOrEmpty(fromFile))
         {
-            if (!AcsConnectionStringRules.LooksLikeAcsConnectionString(fromFile))
-            {
-                throw new SecretOperationException(
-                    AdminProviderTestAcsSendResultCodes.RejectedInvalidConnectionString,
-                    "Connection string file does not look like an ACS endpoint/accesskey value.");
-            }
-
             _console.WriteLine("Using ACS connection string from configured secret file.");
             return fromFile;
         }
@@ -188,18 +178,11 @@ public sealed partial class AdminProviderTestAcsSendCommand
     {
         var first = _console.ReadSecret("ACS connection string: ", cancellationToken);
         var second = _console.ReadSecret("Re-enter ACS connection string: ", cancellationToken);
-        if (!string.Equals(first, second, StringComparison.Ordinal))
+        if (AcsConfigurationValidator.ValidateConnectionStrings(first, second) is { } connectionError)
         {
             throw new SecretOperationException(
-                AdminProviderTestAcsSendResultCodes.RejectedSecretMismatch,
-                "Connection string confirmation did not match.");
-        }
-
-        if (!AcsConnectionStringRules.LooksLikeAcsConnectionString(first))
-        {
-            throw new SecretOperationException(
-                AdminProviderTestAcsSendResultCodes.RejectedInvalidConnectionString,
-                "Connection string does not look like an ACS endpoint/accesskey value.");
+                connectionError,
+                "Connection string input was rejected.");
         }
 
         return first;
@@ -207,14 +190,8 @@ public sealed partial class AdminProviderTestAcsSendCommand
 
     private string ReadBareEmail(string prompt, string invalidCode, CancellationToken cancellationToken)
     {
-        var email = _console.ReadHiddenLine(prompt, cancellationToken).Trim();
-        if (!System.Net.Mail.MailAddress.TryCreate(email, out var parsed)
-            || !string.Equals(parsed.Address, email, StringComparison.Ordinal))
-        {
-            throw new SecretOperationException(invalidCode, "Email must be a bare email address.");
-        }
-
-        return email;
+        _ = invalidCode;
+        return _console.ReadHiddenLine(prompt, cancellationToken).Trim();
     }
 
     private string ResolveMessageIdHandoffPath(CancellationToken cancellationToken)

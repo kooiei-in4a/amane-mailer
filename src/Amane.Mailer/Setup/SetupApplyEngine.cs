@@ -75,6 +75,34 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
         }
     }
 
+    public async Task<SetupApplyResult> ApplyAfterVerifiedAsync(
+        TrustedSetupHostLayout layout,
+        string candidateBundleId,
+        SetupExpectedActiveAuthority expectedActive,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(expectedActive);
+
+        try
+        {
+            return await ApplyCoreAsync(layout, candidateBundleId, cancellationToken, expectedActive);
+        }
+        catch (OperationCanceledException)
+        {
+            return CancelledBeforeActivation();
+        }
+        catch (Exception)
+        {
+            return Fail(
+                SetupApplyResultCode.FailedUnexpected,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "Conditional apply failed unexpectedly.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: "unexpected");
+        }
+    }
+
     public async Task<SetupApplyResult> RecoverAsync(
         TrustedSetupHostLayout layout,
         CancellationToken cancellationToken)
@@ -109,7 +137,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
     private async Task<SetupApplyResult> ApplyCoreAsync(
         TrustedSetupHostLayout layout,
         string candidateBundleId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SetupExpectedActiveAuthority? expectedActive = null)
     {
         if (!SetupActivePointer.IsSafeBundleId(candidateBundleId))
         {
@@ -148,7 +177,12 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
 
         await using (session)
         {
-            return await ApplyUnderLockAsync(layout, session, candidateBundleId, cancellationToken);
+            return await ApplyUnderLockAsync(
+                layout,
+                session,
+                candidateBundleId,
+                cancellationToken,
+                expectedActive);
         }
     }
 
@@ -156,7 +190,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
         TrustedSetupHostLayout layout,
         SetupHostDockerSession session,
         string candidateBundleId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SetupExpectedActiveAuthority? expectedActive)
     {
         // Step 2. Durable state is read only now: anything observed before the lock could already
         // belong to a transaction that finished while this call was waiting.
@@ -188,6 +223,10 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
         }
 
         var isFresh = state.Active is null;
+        if (expectedActive is not null && isFresh)
+        {
+            return ExpectedAuthorityMismatch();
+        }
         var preFailureCode = isFresh
             ? SetupApplyResultCode.FreshApplyFailed
             : SetupApplyResultCode.IneligibleExistingActive;
@@ -278,6 +317,21 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
                 return ineligible;
             }
 
+            if (expectedActive is not null
+                && (!string.Equals(
+                        state.Active!.BundleId,
+                        expectedActive.BundleId,
+                        StringComparison.Ordinal)
+                    || state.Active.ActivationGeneration != expectedActive.ActivationGeneration
+                    || activeRecorded is null
+                    || !string.Equals(
+                        activeRecorded.ConfigurationFingerprint,
+                        expectedActive.ConfigurationFingerprint,
+                        StringComparison.Ordinal)))
+            {
+                return ExpectedAuthorityMismatch();
+            }
+
             var currentCompose = await _adapter.ComposeCurrentActiveInputAsync(session, cancellationToken);
             if (!currentCompose.IsSuccess)
             {
@@ -306,6 +360,18 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
                 ImageReference(candidateRecorded));
             previousPointer = state.Active;
         }
+
+        SetupApplyResult ExpectedAuthorityMismatch() =>
+            Fail(
+                SetupApplyResultCode.IneligibleExistingActive,
+                state.Active is null
+                    ? SetupManagedDeploymentState.NoManaged
+                    : SetupManagedDeploymentState.Active,
+                "The expected verified ACTIVE no longer matches the current deployment.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: "expected_active_authority_mismatch",
+                bundleId: state.Active?.BundleId,
+                activationGeneration: state.Active?.ActivationGeneration);
 
         var refusal = MapMigrationDecision(decision, preFailureState);
         if (refusal is not null)
@@ -630,7 +696,9 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
             persistentSideEffectMayRemain: migrationAttempted,
             persistentSideEffectKind: migrationAttempted
                 ? SetupPersistentSideEffectKind.DatabaseMigration
-                : SetupPersistentSideEffectKind.None);
+                : SetupPersistentSideEffectKind.None,
+            effectiveProviderSummary: verification.EffectiveProviderSummary,
+            effectiveLiveSendingEnabled: verification.EffectiveLiveSendingEnabled);
     }
 
     // ------------------------------------------------------------- rollback
@@ -1994,6 +2062,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
             ObservedBundleId = runtime?.SetupBundleId,
             ObservedMailerVersion = document.MailerVersion,
             ObservedSchemaVersion = runtime?.SchemaVersion,
+            EffectiveProviderSummary = document.Effective.ProviderSummary,
+            EffectiveLiveSendingEnabled = document.Effective.LiveSendingEnabled,
         };
     }
 
@@ -2761,6 +2831,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
         public string? ObservedBundleId { get; init; }
         public string? ObservedMailerVersion { get; init; }
         public int? ObservedSchemaVersion { get; init; }
+        public string? EffectiveProviderSummary { get; init; }
+        public bool? EffectiveLiveSendingEnabled { get; init; }
 
         public static GenerationVerification Failed(string reasonCode) => new()
         {

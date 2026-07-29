@@ -37,6 +37,8 @@ public sealed class SetupApplyEngineTests
         Assert.Equal(1, result.ActivationGeneration);
         Assert.True(result.ConfigurationApplied);
         Assert.True(result.VerificationCommitted);
+        Assert.Equal("mailpit", result.EffectiveProviderSummary);
+        Assert.False(result.EffectiveLiveSendingEnabled);
         Assert.Equal(CandidateBundleId, harness.ReadActive()!.BundleId);
         Assert.False(File.Exists(harness.Layout.TransactionStampPath));
         Assert.False(File.Exists(harness.Layout.PreviousPointerPath));
@@ -46,6 +48,50 @@ public sealed class SetupApplyEngineTests
         Assert.NotNull(record);
         Assert.True(record!.IsCommittedSuccess);
         Assert.Equal(SetupIntegrityMerger.Matched, record.BundleIntegrity);
+    }
+
+    [Fact]
+    public async Task Conditional_apply_rejects_stale_expected_active_authority_under_lock()
+    {
+        using var harness = ApplyHarness.Create();
+        await harness.SeedActiveDeploymentAsync(ActiveBundleId);
+        harness.SeedBundle(CandidateBundleId);
+
+        var result = await harness.ApplyAfterVerifiedAsync(
+            CandidateBundleId,
+            new SetupExpectedActiveAuthority
+            {
+                BundleId = ActiveBundleId,
+                ActivationGeneration = 1,
+                ConfigurationFingerprint = new string('0', 64),
+            });
+
+        Assert.Equal(SetupApplyResultCode.IneligibleExistingActive, result.Code);
+        Assert.Equal("expected_active_authority_mismatch", result.ReasonCode);
+        Assert.Equal(ActiveBundleId, harness.ReadActive()!.BundleId);
+        Assert.False(File.Exists(harness.Layout.PreviousPointerPath));
+        Assert.False(File.Exists(harness.Layout.TransactionStampPath));
+    }
+
+    [Fact]
+    public async Task Conditional_apply_on_fresh_host_reports_no_managed_deployment()
+    {
+        using var harness = ApplyHarness.Create();
+        harness.SeedBundle(CandidateBundleId);
+
+        var result = await harness.ApplyAfterVerifiedAsync(
+            CandidateBundleId,
+            new SetupExpectedActiveAuthority
+            {
+                BundleId = ActiveBundleId,
+                ActivationGeneration = 1,
+                ConfigurationFingerprint = new string('0', 64),
+            });
+
+        Assert.Equal(SetupApplyResultCode.IneligibleExistingActive, result.Code);
+        Assert.Equal(SetupManagedDeploymentState.NoManaged, result.DeploymentState);
+        Assert.Null(result.BundleId);
+        Assert.Null(result.ActivationGeneration);
     }
 
     [Fact]
@@ -1666,6 +1712,15 @@ public sealed class SetupApplyEngineTests
         public Task<SetupApplyResult> ApplyAsync(string bundleId) =>
             Engine.ApplyAsync(Layout, bundleId, TestContext.Current.CancellationToken);
 
+        public Task<SetupApplyResult> ApplyAfterVerifiedAsync(
+            string bundleId,
+            SetupExpectedActiveAuthority expectedActive) =>
+            Engine.ApplyAfterVerifiedAsync(
+                Layout,
+                bundleId,
+                expectedActive,
+                TestContext.Current.CancellationToken);
+
         public Task<SetupApplyResult> RecoverAsync() =>
             Engine.RecoverAsync(Layout, TestContext.Current.CancellationToken);
 
@@ -2032,6 +2087,8 @@ public sealed class SetupApplyEngineTests
         public string? RecordedBundleIdOverride { get; set; }
         public string? RecordedFingerprintOverride { get; set; }
         public int? RecordedSchemaVersionOverride { get; set; }
+        public string ProviderSummary { get; set; } = "mailpit";
+        public bool LiveSendingEnabled { get; set; }
         public bool LeakCanaries { get; set; }
 
         public IReadOnlyList<IReadOnlyList<string>> OperationInvocations => _operations.ToArray();
@@ -2050,6 +2107,8 @@ public sealed class SetupApplyEngineTests
             RecordedBundleIdOverride = null;
             RecordedFingerprintOverride = null;
             RecordedSchemaVersionOverride = null;
+            ProviderSummary = "mailpit";
+            LiveSendingEnabled = false;
 
             // A seeded deployment has already migrated, so the schema is current from now on.
             MigrationClassification = SetupSchemaClassification.Current;
@@ -2133,6 +2192,8 @@ public sealed class SetupApplyEngineTests
             {{recordedJson}}
               "effective": {
                 "credentialStatus": "loaded",
+                "providerSummary": "{{ProviderSummary}}",
+                "liveSendingEnabled": {{(LiveSendingEnabled ? "true" : "false")}},
                 "fingerprintsMatchRecorded": {{(FingerprintsMatchRecorded ? "true" : "false")}}
               },
               "mountAttestation": {

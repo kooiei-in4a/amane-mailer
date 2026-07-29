@@ -173,13 +173,6 @@ internal static class SetupTestFixtures
         ImageRepository = dryRun ? null : SetupImageDefaults.DefaultRepository,
         ImageTag = dryRun ? null : "test-synthetic-image-tag",
         RuntimeFileOwnership = dryRun ? null : LinuxRuntimeOwnershipOrNull(),
-        LiveSendingPromotion = liveSending
-            ? new SetupLiveSendingPromotionAuthorization
-            {
-                ProductionEnvironmentConfirmed = true,
-                LiveSendingEnableApproved = true,
-            }
-            : null,
     };
 
     public static string CreateManagedRoot()

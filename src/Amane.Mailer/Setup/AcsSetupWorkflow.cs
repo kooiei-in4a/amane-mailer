@@ -1,32 +1,32 @@
-using Amane.Mailer.Configuration;
 using Amane.Mailer.Operations.AcsSetup;
 
 namespace Amane.Mailer.Setup;
 
 /// <summary>
-/// Easy Setup ACS workflow Application Service (#451).
-/// Orchestrates bundle generation (#448), apply/verify/rollback (#450), Staging verification,
-/// and Production live_sending two-step promotion. Console-independent.
+/// Console-independent Easy Setup ACS workflow. #450 remains the sole apply, verification,
+/// ACTIVE, Docker, and rollback authority.
 /// </summary>
 public sealed class AcsSetupWorkflow
 {
     private readonly SetupCore _setupCore;
     private readonly AcsStagingVerificationOperation _stagingVerification;
+    private readonly AcsSetupDoctorOperation _doctor;
 
     public AcsSetupWorkflow(
         SetupCore? setupCore = null,
-        AcsStagingVerificationOperation? stagingVerification = null)
+        AcsStagingVerificationOperation? stagingVerification = null,
+        AcsSetupDoctorOperation? doctor = null)
     {
         _setupCore = setupCore ?? new SetupCore();
         _stagingVerification = stagingVerification ?? new AcsStagingVerificationOperation();
+        _doctor = doctor ?? new AcsSetupDoctorOperation();
     }
 
-    /// <summary>
-    /// Generates a <c>live_sending=false</c> ACS bundle and applies it via #450.
-    /// Reaches Configuration applied (not send-ready).
-    /// </summary>
     public async Task<AcsSetupWorkflowResult> ApplyConfigurationAsync(
         SetupRequest request,
+        string environmentConfirmation,
+        string intentConfirmation,
+        string connectionStringConfirmation,
         TrustedSetupHostLayout layout,
         ISetupApplyEngine applyEngine,
         CancellationToken cancellationToken)
@@ -46,28 +46,44 @@ public sealed class AcsSetupWorkflow
                     "ACS configuration apply requires an ACS Setup mode.");
             }
 
-            if (request.Tenants.Tenants.Any(t => t.LiveSending))
+            var validationError = AcsConfigurationValidator.ValidateManagedRequest(
+                request,
+                environmentConfirmation,
+                intentConfirmation,
+                connectionStringConfirmation);
+            if (validationError is not null)
+            {
+                return Fail(
+                    validationError,
+                    AcsSetupWorkflowState.NotStarted,
+                    "ACS configuration input was rejected.");
+            }
+
+            if (request.Tenants.Tenants.Any(static tenant => tenant.LiveSending))
             {
                 return Fail(
                     AcsSetupResultCode.RejectedLiveSendingWithoutConfirmation,
                     AcsSetupWorkflowState.NotStarted,
-                    "Initial ACS apply must use live_sending=false; enable live sending in a separate step.");
+                    "Initial ACS apply must use live_sending=false.");
             }
 
-            var generate = _setupCore.GenerateBundle(request);
-            if (!generate.IsSuccess || string.IsNullOrEmpty(generate.BundleId))
+            var generated = _setupCore.GenerateBundle(request);
+            if (!generated.IsSuccess || string.IsNullOrEmpty(generated.BundleId))
             {
                 return new AcsSetupWorkflowResult
                 {
                     Code = AcsSetupResultCode.BundleGenerationFailed,
                     State = AcsSetupWorkflowState.BundleGenerationFailed,
                     Message = "Bundle generation failed.",
-                    ConfigurationFingerprint = generate.ConfigurationFingerprint,
+                    ConfigurationFingerprint = generated.ConfigurationFingerprint,
                 };
             }
 
-            var apply = await applyEngine.ApplyAsync(layout, generate.BundleId, cancellationToken);
-            return MapApplyToConfigurationResult(apply, generate.ConfigurationFingerprint);
+            var apply = await applyEngine.ApplyAsync(
+                layout,
+                generated.BundleId,
+                cancellationToken);
+            return MapConfigurationApply(apply, generated.ConfigurationFingerprint, request);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -85,45 +101,39 @@ public sealed class AcsSetupWorkflow
         }
     }
 
-    /// <summary>
-    /// Staging-only verification against the generated tenant sender. Session limits apply when
-    /// <see cref="AcsStagingVerificationRequest.AssistantSessionId"/> is set.
-    /// </summary>
-    public Task<AcsSetupWorkflowResult> VerifyStagingAsync(
+    public async Task<AcsSetupWorkflowResult> VerifyStagingAsync(
         AcsStagingVerificationRequest request,
-        CancellationToken cancellationToken) =>
-        VerifyStagingCoreAsync(request, cancellationToken);
-
-    private async Task<AcsSetupWorkflowResult> VerifyStagingCoreAsync(
-        AcsStagingVerificationRequest request,
+        AcsConfigurationAppliedProof appliedProof,
         CancellationToken cancellationToken)
     {
-        var staging = await _stagingVerification.ExecuteAsync(request, cancellationToken);
-        return AcsSetupWorkflowResult.FromStaging(staging);
+        var result = await _stagingVerification.ExecuteAsync(
+            request,
+            appliedProof,
+            cancellationToken);
+        return AcsSetupWorkflowResult.FromStaging(result);
     }
 
-    /// <summary>
-    /// Production step 2: exact Production confirmation + explicit approval → new live_sending=true
-    /// bundle → #450 re-apply → Deployment send-ready evaluation.
-    /// </summary>
     public async Task<AcsSetupWorkflowResult> EnableLiveSendingAsync(
-        SetupRequest baseRequest,
+        AcsConfigurationAppliedProof configurationAppliedProof,
         string productionEnvironmentConfirmation,
         string liveSendingEnableApproval,
         TrustedSetupHostLayout layout,
         ISetupApplyEngine applyEngine,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(configurationAppliedProof);
         ArgumentNullException.ThrowIfNull(applyEngine);
 
         try
         {
-            if (baseRequest.Mode != SetupMode.ProductionAcs)
+            var baseRequest = configurationAppliedProof.AppliedRequest;
+            if (configurationAppliedProof.Mode != SetupMode.ProductionAcs
+                || baseRequest.Tenants.Tenants.Any(static tenant => tenant.LiveSending))
             {
                 return Fail(
                     AcsSetupResultCode.RejectedInvalidMode,
                     AcsSetupWorkflowState.ProductionConfirmationPending,
-                    "live_sending enable requires production-acs mode.");
+                    "Promotion requires a Production live_sending=false applied proof.");
             }
 
             if (!AcsEnvironmentConfirmation.IsExactProduction(productionEnvironmentConfirmation))
@@ -131,7 +141,7 @@ public sealed class AcsSetupWorkflow
                 return Fail(
                     AcsSetupResultCode.ProductionConfirmationRejected,
                     AcsSetupWorkflowState.ProductionConfirmationRejected,
-                    "Exact Production confirmation is required to enable live sending.");
+                    "Exact Production confirmation is required.");
             }
 
             if (!string.Equals(
@@ -145,30 +155,28 @@ public sealed class AcsSetupWorkflow
                     "Explicit live_sending enable approval is required.");
             }
 
-            var promotedTenants = WithLiveSendingEnabled(baseRequest.Tenants);
-            var promotionRequest = CloneRequest(
-                baseRequest,
-                promotedTenants,
-                new SetupLiveSendingPromotionAuthorization
-                {
-                    ProductionEnvironmentConfirmed = true,
-                    LiveSendingEnableApproved = true,
-                });
-
-            var generate = _setupCore.GenerateBundle(promotionRequest);
-            if (!generate.IsSuccess || string.IsNullOrEmpty(generate.BundleId))
+            var promotedRequest = CloneWithLiveSendingEnabled(baseRequest);
+            var generated = _setupCore.GenerateLiveSendingPromotionBundle(promotedRequest);
+            if (!generated.IsSuccess || string.IsNullOrEmpty(generated.BundleId))
             {
                 return new AcsSetupWorkflowResult
                 {
                     Code = AcsSetupResultCode.BundleGenerationFailed,
                     State = AcsSetupWorkflowState.BundleGenerationFailed,
                     Message = "live_sending=true bundle generation failed.",
-                    ConfigurationFingerprint = generate.ConfigurationFingerprint,
+                    ConfigurationFingerprint = generated.ConfigurationFingerprint,
                 };
             }
 
-            var apply = await applyEngine.ApplyAsync(layout, generate.BundleId, cancellationToken);
-            return MapApplyToLiveSendingResult(apply, generate.ConfigurationFingerprint);
+            var apply = await applyEngine.ApplyAfterVerifiedAsync(
+                layout,
+                generated.BundleId,
+                configurationAppliedProof.ToExpectedAuthority(),
+                cancellationToken);
+            return MapPromotionApply(
+                apply,
+                generated.ConfigurationFingerprint,
+                _doctor.EvaluateProduction(apply));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -186,38 +194,18 @@ public sealed class AcsSetupWorkflow
         }
     }
 
-    /// <summary>
-    /// Builds a Production promotion request from an existing configuration-applied request,
-    /// forcing tenant live_sending=true under the promotion authorization gate.
-    /// </summary>
-    public static SetupRequest CreateLiveSendingPromotionRequest(
-        SetupRequest baseRequest,
-        SetupLiveSendingPromotionAuthorization authorization)
-    {
-        if (!authorization.IsAuthorized)
-        {
-            throw new InvalidOperationException("Live sending promotion authorization is incomplete.");
-        }
-
-        return CloneRequest(baseRequest, WithLiveSendingEnabled(baseRequest.Tenants), authorization);
-    }
-
-    public static MailerTenantsFile WithLiveSendingEnabled(MailerTenantsFile source) =>
-        source with
-        {
-            Tenants = source.Tenants.Select(static t => t with { LiveSending = true }).ToArray(),
-        };
-
-    private static SetupRequest CloneRequest(
-        SetupRequest source,
-        MailerTenantsFile tenants,
-        SetupLiveSendingPromotionAuthorization? authorization) =>
+    private static SetupRequest CloneWithLiveSendingEnabled(SetupRequest source) =>
         new()
         {
             Mode = source.Mode,
             ManagedRootPath = source.ManagedRootPath,
             DryRun = source.DryRun,
-            Tenants = tenants,
+            Tenants = source.Tenants with
+            {
+                Tenants = source.Tenants.Tenants
+                    .Select(static tenant => tenant with { LiveSending = true })
+                    .ToArray(),
+            },
             TokenSecrets = source.TokenSecrets,
             WebhookSecrets = source.WebhookSecrets,
             MetricsBearerToken = source.MetricsBearerToken,
@@ -228,46 +216,55 @@ public sealed class AcsSetupWorkflow
             RuntimeFileOwnership = source.RuntimeFileOwnership,
             ImageRepository = source.ImageRepository,
             ImageTag = source.ImageTag,
-            LiveSendingPromotion = authorization,
         };
 
-    private static AcsSetupWorkflowResult MapApplyToConfigurationResult(
+    private static AcsSetupWorkflowResult MapConfigurationApply(
         SetupApplyResult apply,
-        string? fingerprint)
+        string? fingerprint,
+        SetupRequest request)
     {
-        if (apply.Code == SetupApplyResultCode.ApplySucceeded && apply.ConfigurationApplied)
+        if (apply.Code == SetupApplyResultCode.ApplySucceeded
+            && apply.ConfigurationApplied
+            && apply.VerificationCommitted
+            && apply.BundleId is not null
+            && apply.ActivationGeneration is { } generation
+            && fingerprint is not null)
         {
             return new AcsSetupWorkflowResult
             {
                 Code = AcsSetupResultCode.ConfigurationApplied,
                 State = AcsSetupWorkflowState.ConfigurationApplied,
                 ConfigurationApplied = true,
-                DeploymentSendReady = false,
                 BundleId = apply.BundleId,
                 ConfigurationFingerprint = fingerprint,
+                ActivationGeneration = generation,
                 ApplyResultCode = apply.Code,
                 ConfigRollbackStatus = apply.ConfigRollbackStatus,
-                PersistentSideEffectMayRemain = apply.PersistentSideEffectMayRemain,
-                PersistentSideEffectKind = apply.PersistentSideEffectKind,
                 ActionCode = apply.ActionCode,
                 Message = "Configuration applied. Deployment send-ready is not asserted.",
+                ConfigurationAppliedProof = new AcsConfigurationAppliedProof(
+                    apply.BundleId,
+                    fingerprint,
+                    generation,
+                    SnapshotRequest(request)),
             };
         }
 
         return MapFailedApply(apply, fingerprint, liveSendingStep: false);
     }
 
-    private static AcsSetupWorkflowResult MapApplyToLiveSendingResult(
+    private static AcsSetupWorkflowResult MapPromotionApply(
         SetupApplyResult apply,
-        string? fingerprint)
+        string? fingerprint,
+        AcsSetupDoctorResult doctor)
     {
         if (apply.Code == SetupApplyResultCode.ApplySucceeded && apply.ConfigurationApplied)
         {
             var sendReady = AcsSendReadyEvaluator.Evaluate(
                 SetupMode.ProductionAcs,
                 apply,
-                effectiveLiveSendingEnabled: true);
-
+                effectiveLiveSendingEnabled: apply.EffectiveLiveSendingEnabled is true,
+                doctor);
             return new AcsSetupWorkflowResult
             {
                 Code = sendReady.SendReadyAsserted
@@ -280,14 +277,17 @@ public sealed class AcsSetupWorkflow
                 DeploymentSendReady = sendReady.SendReadyAsserted,
                 BundleId = apply.BundleId,
                 ConfigurationFingerprint = fingerprint,
+                ActivationGeneration = apply.ActivationGeneration,
                 ApplyResultCode = apply.Code,
                 ConfigRollbackStatus = apply.ConfigRollbackStatus,
                 PersistentSideEffectMayRemain = apply.PersistentSideEffectMayRemain,
                 PersistentSideEffectKind = apply.PersistentSideEffectKind,
-                ActionCode = apply.ActionCode ?? sendReady.ReasonCode,
+                ActionCode = sendReady.SendReadyAsserted
+                    ? apply.ActionCode
+                    : sendReady.ReasonCode ?? apply.ActionCode,
                 Message = sendReady.SendReadyAsserted
                     ? "Deployment send-ready. Operational verification is not recorded."
-                    : "live_sending bundle applied but send-ready gates were not met.",
+                    : "Configuration applied; send-ready doctor gate did not pass.",
             };
         }
 
@@ -301,21 +301,12 @@ public sealed class AcsSetupWorkflow
     {
         var (code, state) = apply.Code switch
         {
-            SetupApplyResultCode.ApplyFailedRollbackSucceeded => (
-                AcsSetupResultCode.ConfigRollbackSucceeded,
-                AcsSetupWorkflowState.RollbackSucceeded),
-            SetupApplyResultCode.RollbackSucceeded => (
-                AcsSetupResultCode.ConfigRollbackSucceeded,
-                AcsSetupWorkflowState.RollbackSucceeded),
-            SetupApplyResultCode.ApplyFailedRollbackFailed => (
-                AcsSetupResultCode.ConfigRollbackFailed,
-                AcsSetupWorkflowState.RollbackFailed),
-            SetupApplyResultCode.NeedsIntervention => (
-                AcsSetupResultCode.ManualActionRequired,
-                AcsSetupWorkflowState.NeedsIntervention),
-            SetupApplyResultCode.RecoveryRequired => (
-                AcsSetupResultCode.ManualActionRequired,
-                AcsSetupWorkflowState.NeedsIntervention),
+            SetupApplyResultCode.ApplyFailedRollbackSucceeded or SetupApplyResultCode.RollbackSucceeded =>
+                (AcsSetupResultCode.ConfigRollbackSucceeded, AcsSetupWorkflowState.RollbackSucceeded),
+            SetupApplyResultCode.ApplyFailedRollbackFailed =>
+                (AcsSetupResultCode.ConfigRollbackFailed, AcsSetupWorkflowState.RollbackFailed),
+            SetupApplyResultCode.NeedsIntervention or SetupApplyResultCode.RecoveryRequired =>
+                (AcsSetupResultCode.ManualActionRequired, AcsSetupWorkflowState.NeedsIntervention),
             _ => (
                 liveSendingStep
                     ? AcsSetupResultCode.LiveSendingEnableApplyFailed
@@ -334,9 +325,9 @@ public sealed class AcsSetupWorkflow
             Code = code,
             State = state,
             ConfigurationApplied = apply.ConfigurationApplied,
-            DeploymentSendReady = false,
             BundleId = apply.BundleId,
             ConfigurationFingerprint = fingerprint,
+            ActivationGeneration = apply.ActivationGeneration,
             ApplyResultCode = apply.Code,
             ConfigRollbackStatus = apply.ConfigRollbackStatus,
             PersistentSideEffectMayRemain = apply.PersistentSideEffectMayRemain,
@@ -352,11 +343,33 @@ public sealed class AcsSetupWorkflow
         string code,
         AcsSetupWorkflowState state,
         string message) =>
+        new() { Code = code, State = state, Message = message };
+
+    private static SetupRequest SnapshotRequest(SetupRequest source) =>
         new()
         {
-            Code = code,
-            State = state,
-            Message = message,
-            DeploymentSendReady = false,
+            Mode = source.Mode,
+            ManagedRootPath = source.ManagedRootPath,
+            DryRun = source.DryRun,
+            Tenants = source.Tenants with
+            {
+                Tenants = source.Tenants.Tenants.ToArray(),
+            },
+            TokenSecrets = new Dictionary<string, string>(
+                source.TokenSecrets,
+                StringComparer.Ordinal),
+            WebhookSecrets = new Dictionary<string, string>(
+                source.WebhookSecrets,
+                StringComparer.Ordinal),
+            MetricsBearerToken = source.MetricsBearerToken,
+            AcsConnectionString = source.AcsConnectionString,
+            PlatformSender = source.PlatformSender,
+            PublicEnvOverrides = new Dictionary<string, string>(
+                source.PublicEnvOverrides,
+                StringComparer.Ordinal),
+            Admin = source.Admin,
+            RuntimeFileOwnership = source.RuntimeFileOwnership,
+            ImageRepository = source.ImageRepository,
+            ImageTag = source.ImageTag,
         };
 }
