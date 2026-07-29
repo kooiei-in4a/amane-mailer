@@ -122,6 +122,59 @@ internal static class SetupTestFixtures
         RuntimeFileOwnership = dryRun ? null : LinuxRuntimeOwnershipOrNull(),
     };
 
+    public static MailerTenantsFile AcsProductionTenants(bool liveSending = false) => new()
+    {
+        Version = 1,
+        Environment = "production",
+        Tenants =
+        [
+            new MailerTenant
+            {
+                TenantId = Guid.Parse("00000000-0000-0000-0000-000000000301"),
+                Name = "example-production",
+                SourceServices = ["example-service"],
+                DefaultFrom = new MailerAddress
+                {
+                    Email = "noreply@example.com",
+                    DisplayName = "Example Service",
+                },
+                TokenEnv = "MAIL_SERVICE_TOKEN_PRODUCTION",
+                Provider = "acs",
+                LiveSending = liveSending,
+                Retry = new MailerRetryOptions
+                {
+                    MaxAttempts = 10,
+                    InitialDelaySeconds = 10,
+                    MaxDelaySeconds = 300,
+                },
+            },
+        ],
+    };
+
+    public static SetupRequest ProductionAcsRequest(string managedRoot, bool dryRun = false, bool liveSending = false) => new()
+    {
+        Mode = SetupMode.ProductionAcs,
+        ManagedRootPath = managedRoot,
+        DryRun = dryRun,
+        Tenants = AcsProductionTenants(liveSending),
+        TokenSecrets = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["MAIL_SERVICE_TOKEN_PRODUCTION"] = "synthetic-production-token-not-real",
+        },
+        MetricsBearerToken = "synthetic-metrics-token-not-real",
+        AcsConnectionString =
+            "endpoint=https://synthetic.example.communication.azure.com/;accesskey=SYNTHETICACCESSKEY000000000000000000000000000000=",
+        PlatformSender = new SetupPlatformSenderInput
+        {
+            Environment = "production",
+            Email = "platform@example.com",
+            DisplayName = "Platform Sender",
+        },
+        ImageRepository = dryRun ? null : SetupImageDefaults.DefaultRepository,
+        ImageTag = dryRun ? null : "test-synthetic-image-tag",
+        RuntimeFileOwnership = dryRun ? null : LinuxRuntimeOwnershipOrNull(),
+    };
+
     public static string CreateManagedRoot()
     {
         var path = Path.Combine(Path.GetTempPath(), "amane-setup-core-" + Guid.NewGuid().ToString("N"));

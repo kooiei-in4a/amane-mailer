@@ -7,7 +7,14 @@ public static partial class SetupRequestValidator
 {
     private const int RegexMatchTimeoutMilliseconds = 250;
 
-    public static bool TryValidate(SetupRequest request, out string failureCode, out string message)
+    public static bool TryValidate(SetupRequest request, out string failureCode, out string message) =>
+        TryValidate(request, allowLiveSendingPromotion: false, out failureCode, out message);
+
+    internal static bool TryValidate(
+        SetupRequest request,
+        bool allowLiveSendingPromotion,
+        out string failureCode,
+        out string message)
     {
         failureCode = SetupResultCode.RejectedValidation;
         message = "Request validation failed.";
@@ -64,12 +71,28 @@ public static partial class SetupRequestValidator
             return false;
         }
 
+        var anyLiveSending = false;
         foreach (var tenant in request.Tenants.Tenants)
         {
-            // #451 owns live_sending=true promotion after exact environment confirmation.
             if (tenant.LiveSending)
             {
-                message = "live_sending=true is not accepted by Setup Core; use the ACS approval workflow.";
+                anyLiveSending = true;
+            }
+        }
+
+        if (anyLiveSending)
+        {
+            // #451: live_sending=true only via ACS promotion authorization after exact Production
+            // confirmation and explicit enable approval. Setup Core still rejects unauthenticated requests.
+            if (request.Mode != SetupMode.ProductionAcs)
+            {
+                message = "live_sending=true is only accepted for production-acs mode via the ACS approval workflow.";
+                return false;
+            }
+
+            if (!allowLiveSendingPromotion)
+            {
+                message = "live_sending=true requires the internal ACS promotion workflow.";
                 return false;
             }
         }

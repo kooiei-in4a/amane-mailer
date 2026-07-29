@@ -17,8 +17,14 @@ public sealed class SetupVerificationRecord
     public const string ReadinessFailed = "failed";
     public const string ReadinessNotEvaluated = "not-evaluated";
 
-    /// <summary>Apply never asserts outbound send readiness, so this is the only value it records.</summary>
+    /// <summary>Apply never asserts outbound send readiness by itself.</summary>
     public const string SendReadyNotEvaluated = "not-evaluated";
+
+    /// <summary>Deployment send-ready after ACS live_sending promotion (#451). Not operational verification.</summary>
+    public const string SendReadyReady = AcsSendReadyEvaluator.SendReadyReady;
+
+    /// <summary>Send-ready evaluated and not met.</summary>
+    public const string SendReadyNotReady = AcsSendReadyEvaluator.SendReadyNotReady;
 
     public required int SchemaVersion { get; init; }
     public required string Status { get; init; }
