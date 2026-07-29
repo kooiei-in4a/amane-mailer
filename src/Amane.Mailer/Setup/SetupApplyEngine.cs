@@ -171,6 +171,22 @@ public sealed class SetupApplyEngine
             return TransactionPresentResult(state.TransactionStamp);
         }
 
+        // Plan §3 / §5 step 2: ACTIVE 無しでも orphan PREVIOUS / record / binding は fresh ではない。
+        // apply が未収束 state を無視して開始しないよう、先に recovery を要求する。
+        if (state.Active is null
+            && (state.Previous is not null
+                || state.VerificationRecord is not null
+                || state.RuntimeIdentityBinding is not null
+                || state.RecordUnreadable
+                || state.BindingUnreadable))
+        {
+            return Fail(
+                SetupApplyResultCode.RecoveryRequired,
+                SetupManagedDeploymentState.RecoveryRequired,
+                "Orphaned Managed state must be recovered before a fresh apply can start.",
+                reasonCode: "orphan_managed_state");
+        }
+
         var isFresh = state.Active is null;
         var preFailureCode = isFresh
             ? SetupApplyResultCode.FreshApplyFailed
@@ -365,7 +381,19 @@ public sealed class SetupApplyEngine
         if (!invalidate.IsSuccess)
         {
             // The record write is atomic, so the previous committed record is still intact.
-            _ = DeleteStamp(layout);
+            // Stamp delete must not be ignored: a leftover TX with a FreshApplyFailed/NoManaged
+            // outcome would let the next apply skip recovery.
+            var stampDelete = DeleteStamp(layout);
+            if (!stampDelete.IsSuccess)
+            {
+                return Fail(
+                    SetupApplyResultCode.NeedsIntervention,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "Verification record could not be invalidated and the transaction stamp remains.",
+                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                    reasonCode: stampDelete.Code ?? "durable_write_failed");
+            }
+
             var cleanup = DiscardPreviousPointer(layout, previousPointer);
             return cleanup ?? Fail(
                 preFailureCode,
@@ -658,15 +686,28 @@ public sealed class SetupApplyEngine
             return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, invalidate.Code);
         }
 
-        // Stop the candidate while a compose pin for its generation is still obtainable.
-        if (!ComposeMatches(session, context.Candidate))
+        // ACTIVE must still be the failed candidate. An unexpected or missing ACTIVE is not a
+        // signal to invent a previous generation on top of it.
+        var activeMatch = EnsureOnDiskActiveMatches(layout, context.Candidate);
+        if (!activeMatch.IsSuccess)
         {
-            _ = await _adapter.ComposeExpectedActiveInputAsync(session, context.Candidate, token);
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, activeMatch.Code);
         }
 
-        if (ComposeMatches(session, context.Candidate))
+        // Stop the candidate only while a compose pin for its generation is still obtainable.
+        if (!ComposeMatches(session, context.Candidate))
         {
-            _ = await _adapter.StopFailedMailerAsync(session, token);
+            var compose = await _adapter.ComposeExpectedActiveInputAsync(session, context.Candidate, token);
+            if (!compose.IsSuccess)
+            {
+                return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, compose.Code);
+            }
+        }
+
+        var stop = await _adapter.StopFailedMailerAsync(session, token);
+        if (!stop.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, stop.Code);
         }
 
         return context.Previous is null
@@ -711,10 +752,16 @@ public sealed class SetupApplyEngine
                 persistentSideEffectKind: sideEffectKind);
         }
 
-        var bindingDelete = DeleteBindingForGeneration(layout, context.Candidate);
+        var bindingDelete = _writer.TryDurableDelete(layout.ManagedRoot, layout.RuntimeIdentityBindPath);
         if (!bindingDelete.IsSuccess)
         {
             return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, bindingDelete.Code);
+        }
+
+        var recordDelete = _writer.TryDurableDelete(layout.ManagedRoot, layout.LastRecordPath);
+        if (!recordDelete.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, recordDelete.Code);
         }
 
         var activeDelete = _writer.TryDurableDelete(layout.ManagedRoot, layout.ActivePointerPath);
@@ -795,7 +842,13 @@ public sealed class SetupApplyEngine
             return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, stampWrite.Code);
         }
 
-        // 5.
+        // 5. Re-check immediately before the replace: ACTIVE must still be the failed candidate.
+        var stillCandidate = EnsureOnDiskActiveMatches(layout, context.Candidate);
+        if (!stillCandidate.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, stillCandidate.Code);
+        }
+
         var restore = WritePointer(layout, layout.ActivePointerPath, restored);
         if (!restore.IsSuccess)
         {
@@ -1121,14 +1174,14 @@ public sealed class SetupApplyEngine
         }
 
         var active = state.Active;
-        if (!IsCommittedFor(state.VerificationRecord, active))
+        if (!IsCurrentCommittedAuthority(state.VerificationRecord, active, layout))
         {
             return Fail(
                 SetupApplyResultCode.NeedsIntervention,
                 SetupManagedDeploymentState.NeedsIntervention,
-                "ACTIVE is set but no committed verification record matches it.",
+                "ACTIVE is set but no current committed verification record matches it.",
                 actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                reasonCode: "verification_record_missing",
+                reasonCode: ClassifyRecordAuthorityReason(state.VerificationRecord, active, layout),
                 bundleId: active.BundleId,
                 activationGeneration: active.ActivationGeneration,
                 configurationApplied: true);
@@ -1252,7 +1305,19 @@ public sealed class SetupApplyEngine
 
             case SetupTransactionPhase.BindingPending:
             case SetupTransactionPhase.VerificationPending:
-                return await ReverifyCandidateAsync(layout, session, state, context, sideEffect, cancellationToken);
+                if (state.Active is not null && SamePointer(state.Active, candidate))
+                {
+                    return await ReverifyCandidateAsync(layout, session, state, context, sideEffect, cancellationToken);
+                }
+
+                // A retargeted or interrupted "restore previous" commit lands here with ACTIVE still
+                // on previous while the stamp once pointed at the abandoned candidate.
+                if (previous is not null && state.Active is not null && SamePointer(state.Active, previous))
+                {
+                    return await RestoreOldActiveAsync(layout, session, context, previous, cancellationToken);
+                }
+
+                return RecoveryIntervention(stamp, "active_pointer_unexpected");
 
             case SetupTransactionPhase.VerificationCommitted:
                 return FinishCommittedTransaction(layout, session, state, stamp);
@@ -1315,6 +1380,25 @@ public sealed class SetupApplyEngine
         if (!drift.IsSuccess)
         {
             return RecoveryStillRequired(context.Stamp, drift.Code);
+        }
+
+        // Persist the recovery target as previous before binding/record commit. Otherwise a crash
+        // after those commits leave TX.Candidate on the abandoned apply candidate and the next
+        // recovery cannot auto-finish an already consistent previous generation.
+        context.Candidate = previous;
+        context.Stamp = context.Stamp with
+        {
+            Kind = SetupTransactionKind.Rollback,
+            CandidateBundleId = previous.BundleId,
+            TargetActivationGeneration = previous.ActivationGeneration,
+            Phase = SetupTransactionPhase.BindingPending,
+            PreviousBundleId = previous.BundleId,
+            PreviousActivationGeneration = previous.ActivationGeneration,
+        };
+        var retarget = WriteStamp(layout, context.Stamp);
+        if (!retarget.IsSuccess)
+        {
+            return RecoveryStillRequired(context.Stamp, retarget.Code);
         }
 
         var commit = await CommitGenerationAsync(
@@ -1426,9 +1510,9 @@ public sealed class SetupApplyEngine
             return RecoveryIntervention(stamp, "active_pointer_missing");
         }
 
-        if (!IsCommittedFor(state.VerificationRecord, active))
+        if (!IsCurrentCommittedAuthority(state.VerificationRecord, active, layout))
         {
-            return RecoveryIntervention(stamp, "verification_record_missing");
+            return RecoveryIntervention(stamp, ClassifyRecordAuthorityReason(state.VerificationRecord, active, layout));
         }
 
         if (!BindingMatches(state.RuntimeIdentityBinding, active, session.ExternalInputs!))
@@ -1582,9 +1666,9 @@ public sealed class SetupApplyEngine
             return Ineligible("previous_pointer_orphan");
         }
 
-        if (!IsCommittedFor(state.VerificationRecord, active))
+        if (!IsCurrentCommittedAuthority(state.VerificationRecord, active, layout))
         {
-            return Ineligible("verification_record_missing");
+            return Ineligible(ClassifyRecordAuthorityReason(state.VerificationRecord, active, layout));
         }
 
         if (state.RuntimeIdentityBinding is null)
@@ -1910,12 +1994,19 @@ public sealed class SetupApplyEngine
             return null;
         }
 
+        if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(_fileSystem, layout.ManagedRoot, path, out _, out _)
+            || SetupPathGuard.IsUnsafeLink(_fileSystem.InspectSymlinkOrReparsePoint(path)))
+        {
+            unreadable = true;
+            return null;
+        }
+
         try
         {
             var record = JsonSerializer.Deserialize(
                 _fileSystem.ReadAllBytes(path),
                 SetupApplyJsonContext.Default.SetupVerificationRecord);
-            if (record is null || record.SchemaVersion != SetupVerificationRecord.CurrentSchemaVersion)
+            if (record is null || !IsStrictValidRecordDocument(record))
             {
                 unreadable = true;
                 return null;
@@ -1941,12 +2032,20 @@ public sealed class SetupApplyEngine
             return null;
         }
 
+        if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(_fileSystem, layout.ManagedRoot, path, out _, out _)
+            || SetupPathGuard.IsUnsafeLink(_fileSystem.InspectSymlinkOrReparsePoint(path))
+            || !_fileSystem.IsOwnerOnlyFile(path))
+        {
+            unreadable = true;
+            return null;
+        }
+
         try
         {
             var stamp = JsonSerializer.Deserialize(
                 _fileSystem.ReadAllBytes(path),
                 SetupApplyJsonContext.Default.SetupRuntimeIdentityBindingStamp);
-            if (stamp is null || stamp.SchemaVersion != SetupRuntimeIdentityBindingStamp.CurrentSchemaVersion)
+            if (stamp is null || !IsStrictValidBindingDocument(stamp))
             {
                 unreadable = true;
                 return null;
@@ -1961,22 +2060,197 @@ public sealed class SetupApplyEngine
         }
     }
 
+    private static bool IsStrictValidRecordDocument(SetupVerificationRecord record)
+    {
+        if (record.SchemaVersion != SetupVerificationRecord.CurrentSchemaVersion
+            || !SetupActivePointer.IsSafeBundleId(record.BundleId)
+            || record.ActivationGeneration < 1)
+        {
+            return false;
+        }
+
+        if (!string.Equals(record.Status, SetupVerificationRecord.StatusCommitted, StringComparison.Ordinal)
+            && !string.Equals(record.Status, SetupVerificationRecord.StatusInvalidated, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!IsKnownFingerprintComparison(record.FingerprintComparison)
+            || !IsKnownIntegrity(record.HostAtRest)
+            || !IsKnownIntegrity(record.MountAttestation)
+            || !IsKnownIntegrity(record.BundleIntegrity)
+            || !IsKnownRuntimeIdentityBinding(record.RuntimeIdentityBinding)
+            || !IsKnownReadiness(record.Readiness)
+            || !string.Equals(
+                record.SendReadyEvaluation,
+                SetupVerificationRecord.SendReadyNotEvaluated,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (string.Equals(record.Status, SetupVerificationRecord.StatusCommitted, StringComparison.Ordinal))
+        {
+            return record.IsCommittedSuccess
+                && !string.IsNullOrWhiteSpace(record.ImageReference)
+                && !string.IsNullOrWhiteSpace(record.ComposeIdentity)
+                && !string.IsNullOrWhiteSpace(record.ObservedBundleId)
+                && !string.IsNullOrWhiteSpace(record.ObservedMailerVersion)
+                && record.RecordedSchemaVersion is not null;
+        }
+
+        // invalidated records must not claim a commit timestamp.
+        return string.IsNullOrWhiteSpace(record.CommittedAt);
+    }
+
+    private static bool IsStrictValidBindingDocument(SetupRuntimeIdentityBindingStamp stamp) =>
+        stamp.SchemaVersion == SetupRuntimeIdentityBindingStamp.CurrentSchemaVersion
+        && SetupActivePointer.IsSafeBundleId(stamp.BundleId)
+        && stamp.ActivationGeneration >= 1
+        && IsSha256Hex(stamp.BindingMac);
+
+    private static bool IsSha256Hex(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length != 64)
+        {
+            return false;
+        }
+
+        foreach (var c in value)
+        {
+            var isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            if (!isHex)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsKnownFingerprintComparison(string value) =>
+        string.Equals(value, SetupVerificationRecord.FingerprintMatched, StringComparison.Ordinal)
+        || string.Equals(value, SetupVerificationRecord.FingerprintMismatch, StringComparison.Ordinal)
+        || string.Equals(value, SetupVerificationRecord.FingerprintNotEvaluated, StringComparison.Ordinal);
+
+    private static bool IsKnownIntegrity(string value) =>
+        string.Equals(value, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
+        || string.Equals(value, SetupIntegrityMerger.Mismatch, StringComparison.Ordinal)
+        || string.Equals(value, SetupIntegrityMerger.NotVerified, StringComparison.Ordinal)
+        || string.Equals(value, SetupIntegrityMerger.NotManaged, StringComparison.Ordinal);
+
+    private static bool IsKnownRuntimeIdentityBinding(string value) =>
+        string.Equals(value, SetupRuntimeIdentityBindingResult.Matched, StringComparison.Ordinal)
+        || string.Equals(value, SetupRuntimeIdentityBindingResult.Mismatch, StringComparison.Ordinal)
+        || string.Equals(value, SetupRuntimeIdentityBindingResult.Missing, StringComparison.Ordinal);
+
+    private static bool IsKnownReadiness(string value) =>
+        string.Equals(value, SetupVerificationRecord.ReadinessPassed, StringComparison.Ordinal)
+        || string.Equals(value, SetupVerificationRecord.ReadinessFailed, StringComparison.Ordinal)
+        || string.Equals(value, SetupVerificationRecord.ReadinessNotEvaluated, StringComparison.Ordinal);
+
     private static bool IsCommittedFor(SetupVerificationRecord? record, SetupActivePointer active) =>
         record is not null
         && record.IsCommittedSuccess
         && string.Equals(record.BundleId, active.BundleId, StringComparison.Ordinal)
         && record.ActivationGeneration == active.ActivationGeneration;
 
+    /// <summary>
+    /// Success-authority check used for Active eligibility, recovery finish, and existing apply
+    /// gates. A record that is merely schema-valid and committed is not enough once inventory or
+    /// observed identity has drifted.
+    /// </summary>
+    private static bool IsCurrentCommittedAuthority(
+        SetupVerificationRecord? record,
+        SetupActivePointer active,
+        TrustedSetupHostLayout layout)
+    {
+        if (!IsCommittedFor(record, active) || record is null)
+        {
+            return false;
+        }
+
+        if (!string.Equals(record.ObservedBundleId, record.BundleId, StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(record.ObservedMailerVersion)
+            || record.RecordedSchemaVersion != SetupBundleLayout.RecordedSchemaVersion)
+        {
+            return false;
+        }
+
+        if (!string.Equals(record.HostAtRest, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
+            || !string.Equals(record.MountAttestation, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
+            || !string.Equals(
+                record.BundleIntegrity,
+                SetupIntegrityMerger.Merge(record.HostAtRest, record.MountAttestation),
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!string.Equals(
+                record.ImageReference,
+                layout.ReleaseInventory.PinnedMailerImageReference,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                record.ComposeIdentity,
+                SetupBundleStaticValidator.ComputeComposeIdentity(layout.ReleaseInventory),
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string ClassifyRecordAuthorityReason(
+        SetupVerificationRecord? record,
+        SetupActivePointer active,
+        TrustedSetupHostLayout layout)
+    {
+        if (!IsCommittedFor(record, active) || record is null)
+        {
+            return "verification_record_missing";
+        }
+
+        if (!string.Equals(
+                record.ImageReference,
+                layout.ReleaseInventory.PinnedMailerImageReference,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                record.ComposeIdentity,
+                SetupBundleStaticValidator.ComputeComposeIdentity(layout.ReleaseInventory),
+                StringComparison.Ordinal))
+        {
+            return "verification_record_stale";
+        }
+
+        return "verification_record_incomplete";
+    }
+
     private static bool BindingMatches(
         SetupRuntimeIdentityBindingStamp? binding,
         SetupActivePointer active,
-        SetupExternalInputSnapshot external) =>
-        binding is not null
-        && string.Equals(binding.BundleId, active.BundleId, StringComparison.Ordinal)
-        && binding.ActivationGeneration == active.ActivationGeneration
-        && CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(binding.BindingMac),
-            Encoding.UTF8.GetBytes(external.BindingMac));
+        SetupExternalInputSnapshot external)
+    {
+        if (binding is null
+            || !string.Equals(binding.BundleId, active.BundleId, StringComparison.Ordinal)
+            || binding.ActivationGeneration != active.ActivationGeneration)
+        {
+            return false;
+        }
+
+        var left = Encoding.UTF8.GetBytes(binding.BindingMac);
+        var right = Encoding.UTF8.GetBytes(external.BindingMac);
+        try
+        {
+            return CryptographicOperations.FixedTimeEquals(left, right);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(left);
+            CryptographicOperations.ZeroMemory(right);
+        }
+    }
 
     private static bool SamePointer(SetupActivePointer left, SetupActivePointer right) =>
         string.Equals(left.BundleId, right.BundleId, StringComparison.Ordinal)
@@ -1986,6 +2260,27 @@ public sealed class SetupApplyEngine
         session.ComposeInputs is not null
         && string.Equals(session.ComposeInputs.ExpectedActiveBundleId, pointer.BundleId, StringComparison.Ordinal)
         && session.ComposeInputs.ExpectedActivationGeneration == pointer.ActivationGeneration;
+
+    private SetupDockerResult EnsureOnDiskActiveMatches(
+        TrustedSetupHostLayout layout,
+        SetupActivePointer expected)
+    {
+        if (!TryReadPointer(layout, layout.ActivePointerPath, out var active, out var failure))
+        {
+            return SetupDockerResult.Fail(
+                failure?.ReasonCode ?? SetupDockerResultCode.UnsafePath,
+                "On-disk ACTIVE could not be read before compensating for a failed apply.");
+        }
+
+        if (active is null || !SamePointer(active, expected))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.ActiveGenerationMismatch,
+                "On-disk ACTIVE no longer matches the failed candidate generation.");
+        }
+
+        return SetupDockerResult.Ok();
+    }
 
     // ------------------------------------------------------ durable writes
 
@@ -2062,15 +2357,26 @@ public sealed class SetupApplyEngine
                 activationGeneration: context.Previous.ActivationGeneration);
         }
 
-        var stampDelete = DeleteStamp(context.Layout);
-        if (!stampDelete.IsSuccess)
+        // NoManaged requires TX, ACTIVE, PREVIOUS, record, and binding all absent.
+        foreach (var path in new[]
+                 {
+                     context.Layout.LastRecordPath,
+                     context.Layout.RuntimeIdentityBindPath,
+                     context.Layout.PreviousPointerPath,
+                     context.Layout.ActivePointerPath,
+                     context.Layout.TransactionStampPath,
+                 })
         {
-            return Fail(
-                SetupApplyResultCode.NeedsIntervention,
-                SetupManagedDeploymentState.NeedsIntervention,
-                "The abandoned transaction stamp could not be cleared.",
-                actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                reasonCode: stampDelete.Code);
+            var delete = _writer.TryDurableDelete(context.Layout.ManagedRoot, path);
+            if (!delete.IsSuccess)
+            {
+                return Fail(
+                    SetupApplyResultCode.NeedsIntervention,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "The abandoned fresh apply state could not be cleared.",
+                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                    reasonCode: delete.Code);
+            }
         }
 
         return Fail(
@@ -2228,22 +2534,6 @@ public sealed class SetupApplyEngine
             SetupApplyJsonContext.Default.SetupRuntimeIdentityBindingStamp);
     }
 
-    private SetupDockerResult DeleteBindingForGeneration(
-        TrustedSetupHostLayout layout,
-        SetupActivePointer pointer)
-    {
-        var existing = ReadRuntimeIdentityBinding(layout, out var unreadable);
-        if (!unreadable
-            && (existing is null
-                || !string.Equals(existing.BundleId, pointer.BundleId, StringComparison.Ordinal)
-                || existing.ActivationGeneration != pointer.ActivationGeneration))
-        {
-            return SetupDockerResult.Ok();
-        }
-
-        return _writer.TryDurableDelete(layout.ManagedRoot, layout.RuntimeIdentityBindPath);
-    }
-
     private string Timestamp() =>
         _timeProvider.GetUtcNow().ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
 
@@ -2338,7 +2628,7 @@ public sealed class SetupApplyEngine
         public TrustedSetupHostLayout Layout { get; }
         public SetupHostDockerSession Session { get; }
         public SetupTransactionStamp Stamp { get; set; }
-        public SetupActivePointer Candidate { get; }
+        public SetupActivePointer Candidate { get; set; }
         public SetupActivePointer? Previous { get; }
         public string CandidateHostAtRest { get; }
         public SetupRecordedMetadata? CandidateRecorded { get; }

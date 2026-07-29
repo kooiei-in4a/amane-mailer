@@ -420,6 +420,8 @@ public sealed class SetupApplyEngineTests
         Assert.Equal("external_input_changed_before_activation", result.ReasonCode);
         Assert.Null(harness.ReadActive());
         Assert.False(File.Exists(harness.Layout.TransactionStampPath));
+        Assert.False(File.Exists(harness.Layout.LastRecordPath));
+        Assert.False(File.Exists(harness.Layout.RuntimeIdentityBindPath));
     }
 
     [Fact]
@@ -732,6 +734,8 @@ public sealed class SetupApplyEngineTests
         Assert.False(result.PersistentSideEffectMayRemain);
         Assert.Null(harness.ReadActive());
         Assert.False(File.Exists(harness.Layout.TransactionStampPath));
+        Assert.False(File.Exists(harness.Layout.LastRecordPath));
+        Assert.False(File.Exists(harness.Layout.RuntimeIdentityBindPath));
     }
 
     [Fact]
@@ -1154,6 +1158,8 @@ public sealed class SetupApplyEngineTests
         Assert.Equal(SetupManagedDeploymentState.NoManaged, result.DeploymentState);
         Assert.Null(harness.ReadActive());
         Assert.False(File.Exists(harness.Layout.TransactionStampPath));
+        Assert.False(File.Exists(harness.Layout.LastRecordPath));
+        Assert.False(File.Exists(harness.Layout.RuntimeIdentityBindPath));
     }
 
     [Fact]
@@ -1205,6 +1211,171 @@ public sealed class SetupApplyEngineTests
         var second = await harness.RecoverAsync();
         Assert.Equal(SetupApplyResultCode.RollbackSucceeded, second.Code);
         Assert.Equal(SetupManagedDeploymentState.NoManaged, second.DeploymentState);
+    }
+
+    // ------------------------------------------ Agent B re-review regressions
+
+    [Fact]
+    public async Task Fresh_apply_refuses_when_an_orphaned_verification_record_remains()
+    {
+        using var harness = ApplyHarness.Create();
+        harness.SeedBundle(CandidateBundleId);
+        harness.WriteInvalidatedRecord(CandidateBundleId, generation: 1);
+
+        var result = await harness.ApplyAsync(CandidateBundleId);
+
+        Assert.Equal(SetupApplyResultCode.RecoveryRequired, result.Code);
+        Assert.Equal(SetupManagedDeploymentState.RecoveryRequired, result.DeploymentState);
+        Assert.Equal("orphan_managed_state", result.ReasonCode);
+        Assert.True(File.Exists(harness.Layout.LastRecordPath));
+        Assert.Empty(harness.Invocations);
+    }
+
+    [Fact]
+    public async Task Rollback_stops_when_active_no_longer_matches_the_failed_candidate()
+    {
+        using var harness = ApplyHarness.Create();
+        await harness.SeedActiveDeploymentAsync(ActiveBundleId);
+        harness.SeedBundle(CandidateBundleId);
+        harness.AdvanceClock();
+
+        harness.Runner.FailWhen = IsHealthCheck;
+        harness.FileSystem.OnCommit = (path, content) =>
+        {
+            if (IsStamp(harness, path)
+                && content.Contains("\"kind\":\"Rollback\"", StringComparison.Ordinal)
+                && content.Contains(Phase(SetupTransactionPhase.RollbackPending), StringComparison.Ordinal))
+            {
+                // Simulate an out-of-band ACTIVE change after the candidate failed.
+                harness.WriteActive("bundle-unexpected01", generation: 99);
+            }
+        };
+
+        var result = await harness.ApplyAsync(CandidateBundleId);
+
+        Assert.Equal(SetupApplyResultCode.ApplyFailedRollbackFailed, result.Code);
+        Assert.Equal(SetupManagedDeploymentState.NeedsIntervention, result.DeploymentState);
+        Assert.Equal(SetupConfigRollbackStatus.Failed, result.ConfigRollbackStatus);
+        Assert.Equal(SetupDockerResultCode.ActiveGenerationMismatch, harness.ReadStamp()!.ReasonCode);
+        Assert.Equal("bundle-unexpected01", harness.ReadActive()!.BundleId);
+        Assert.NotEqual(ActiveBundleId, harness.ReadActive()!.BundleId);
+    }
+
+    [Fact]
+    public async Task A_stale_compose_identity_is_not_treated_as_an_active_authority()
+    {
+        using var harness = ApplyHarness.Create();
+        await harness.SeedActiveDeploymentAsync(ActiveBundleId);
+        harness.SeedBundle(CandidateBundleId);
+
+        var record = harness.ReadRecord()!;
+        var stale = new SetupVerificationRecord
+        {
+            SchemaVersion = record.SchemaVersion,
+            Status = record.Status,
+            BundleId = record.BundleId,
+            ActivationGeneration = record.ActivationGeneration,
+            FingerprintComparison = record.FingerprintComparison,
+            HostAtRest = record.HostAtRest,
+            MountAttestation = record.MountAttestation,
+            BundleIntegrity = record.BundleIntegrity,
+            ImageReference = record.ImageReference,
+            ComposeIdentity = "stale-compose-identity",
+            ObservedBundleId = record.ObservedBundleId,
+            ObservedMailerVersion = record.ObservedMailerVersion,
+            RecordedSchemaVersion = record.RecordedSchemaVersion,
+            RuntimeIdentityBinding = record.RuntimeIdentityBinding,
+            Readiness = record.Readiness,
+            SendReadyEvaluation = record.SendReadyEvaluation,
+            CommittedAt = record.CommittedAt,
+        };
+        File.WriteAllText(
+            harness.Layout.LastRecordPath,
+            JsonSerializer.Serialize(stale, SetupApplyJsonContext.Default.SetupVerificationRecord));
+
+        var recover = await harness.RecoverAsync();
+        Assert.Equal(SetupApplyResultCode.NeedsIntervention, recover.Code);
+        Assert.Equal("verification_record_stale", recover.ReasonCode);
+
+        var apply = await harness.ApplyAsync(CandidateBundleId);
+        Assert.Equal(SetupApplyResultCode.IneligibleExistingActive, apply.Code);
+        Assert.Equal("verification_record_stale", apply.ReasonCode);
+    }
+
+    [Fact]
+    public async Task A_binding_that_is_not_owner_only_needs_intervention()
+    {
+        using var harness = ApplyHarness.Create();
+        await harness.SeedActiveDeploymentAsync(ActiveBundleId);
+        harness.FileSystem.OwnerOnlyOverride = path =>
+            SamePath(path, harness.Layout.RuntimeIdentityBindPath) ? false : null;
+
+        var result = await harness.RecoverAsync();
+
+        Assert.Equal(SetupApplyResultCode.NeedsIntervention, result.Code);
+        Assert.Equal("durable_state_unreadable", result.ReasonCode);
+    }
+
+    [Fact]
+    public async Task Recovery_retargets_previous_so_a_failed_committed_phase_write_can_still_finish()
+    {
+        using var harness = ApplyHarness.Create();
+        await harness.SeedActiveDeploymentAsync(ActiveBundleId);
+        harness.SeedBundle(CandidateBundleId);
+        harness.WritePrevious(ActiveBundleId, generation: 1);
+        harness.WriteInvalidatedRecord(CandidateBundleId, generation: 2);
+        harness.WriteStamp(
+            SetupTransactionPhase.Prepared,
+            terminal: false,
+            previousBundleId: ActiveBundleId,
+            previousGeneration: 1,
+            targetGeneration: 2);
+
+        var blockCommittedPhase = true;
+        harness.FileSystem.FailCommitWhen = (path, content) =>
+            blockCommittedPhase
+            && IsStamp(harness, path)
+            && content.Contains(Phase(SetupTransactionPhase.VerificationCommitted), StringComparison.Ordinal);
+
+        var first = await harness.RecoverAsync();
+
+        Assert.Equal(SetupApplyResultCode.NeedsIntervention, first.Code);
+        Assert.True(first.VerificationCommitted);
+        Assert.Equal(ActiveBundleId, harness.ReadActive()!.BundleId);
+        Assert.True(harness.ReadRecord()!.IsCommittedSuccess);
+        Assert.Equal(ActiveBundleId, harness.ReadRecord()!.BundleId);
+        Assert.Equal(ActiveBundleId, harness.ReadStamp()!.CandidateBundleId);
+        Assert.True(File.Exists(harness.Layout.TransactionStampPath));
+
+        blockCommittedPhase = false;
+        harness.FileSystem.Reset();
+
+        var second = await harness.RecoverAsync();
+
+        Assert.True(
+            second.Code is SetupApplyResultCode.ApplySucceeded or SetupApplyResultCode.RollbackSucceeded);
+        Assert.Equal(SetupManagedDeploymentState.Active, second.DeploymentState);
+        Assert.False(File.Exists(harness.Layout.TransactionStampPath));
+        Assert.Equal(ActiveBundleId, harness.ReadActive()!.BundleId);
+        Assert.True(harness.ReadRecord()!.IsCommittedSuccess);
+    }
+
+    [Fact]
+    public async Task An_invalidation_failure_that_cannot_clear_the_stamp_needs_intervention()
+    {
+        using var harness = ApplyHarness.Create();
+        await harness.SeedActiveDeploymentAsync(ActiveBundleId);
+        harness.SeedBundle(CandidateBundleId);
+        harness.FileSystem.FailCommitWhen = (path, _) => IsRecord(harness, path);
+        harness.FileSystem.FailDeleteWhen = path => SamePath(path, harness.Layout.TransactionStampPath);
+
+        var result = await harness.ApplyAsync(CandidateBundleId);
+
+        Assert.Equal(SetupApplyResultCode.NeedsIntervention, result.Code);
+        Assert.Equal(SetupManagedDeploymentState.NeedsIntervention, result.DeploymentState);
+        Assert.NotEqual(SetupManagedDeploymentState.NoManaged, result.DeploymentState);
+        Assert.True(File.Exists(harness.Layout.TransactionStampPath));
+        Assert.Equal(ActiveBundleId, harness.ReadActive()!.BundleId);
     }
 
     // --------------------------------------------------------------- helpers
@@ -1469,6 +1640,13 @@ public sealed class SetupApplyEngineTests
                     SetupApplyJsonContext.Default.SetupVerificationRecord)
                 : null;
 
+        public SetupTransactionStamp? ReadStamp() =>
+            File.Exists(Layout.TransactionStampPath)
+                ? JsonSerializer.Deserialize(
+                    File.ReadAllBytes(Layout.TransactionStampPath),
+                    SetupApplyJsonContext.Default.SetupTransactionStamp)
+                : null;
+
         public SetupRuntimeIdentityBindingStamp? ReadBinding() =>
             File.Exists(Layout.RuntimeIdentityBindPath)
                 ? JsonSerializer.Deserialize(
@@ -1592,12 +1770,16 @@ public sealed class SetupApplyEngineTests
         private readonly Dictionary<string, string> _staged = new(StringComparer.OrdinalIgnoreCase);
 
         public Func<string, string, bool>? FailCommitWhen { get; set; }
+        public Func<string, bool>? FailDeleteWhen { get; set; }
+        public Func<string, bool?>? OwnerOnlyOverride { get; set; }
         public Action<string, string>? OnCommit { get; set; }
         public Action<string>? OnOpenExclusiveGenerationLock { get; set; }
 
         public void Reset()
         {
             FailCommitWhen = null;
+            FailDeleteWhen = null;
+            OwnerOnlyOverride = null;
             OnCommit = null;
             OnOpenExclusiveGenerationLock = null;
             _staged.Clear();
@@ -1643,7 +1825,16 @@ public sealed class SetupApplyEngineTests
             inner.EnumerateFileSystemEntries(path);
         public void CreateOwnerOnlyDirectory(string path) => inner.CreateOwnerOnlyDirectory(path);
         public byte[] ReadAllBytes(string path) => inner.ReadAllBytes(path);
-        public void DeleteFile(string path) => inner.DeleteFile(path);
+        public void DeleteFile(string path)
+        {
+            if (FailDeleteWhen?.Invoke(path) == true)
+            {
+                throw new IOException("Injected durable delete failure.");
+            }
+
+            inner.DeleteFile(path);
+        }
+
         public void DeleteDirectoryRecursive(string path) => inner.DeleteDirectoryRecursive(path);
         public void FlushDirectory(string path) => inner.FlushDirectory(path);
         public void FlushFile(string path) => inner.FlushFile(path);
@@ -1653,7 +1844,8 @@ public sealed class SetupApplyEngineTests
             inner.SetUnixFileModeOwnerOnly(path, executableDirectory);
         public bool TryGetUnixFileMode(string path, out UnixFileMode mode) =>
             inner.TryGetUnixFileMode(path, out mode);
-        public bool IsOwnerOnlyFile(string path) => inner.IsOwnerOnlyFile(path);
+        public bool IsOwnerOnlyFile(string path) =>
+            OwnerOnlyOverride?.Invoke(path) ?? inner.IsOwnerOnlyFile(path);
         public uint? GetEffectiveUnixUserId() => inner.GetEffectiveUnixUserId();
 
         private void Stage(string path, string content) => _staged[Path.GetFullPath(path)] = content;
