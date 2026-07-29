@@ -380,26 +380,16 @@ public sealed class SetupApplyEngine
         var invalidate = InvalidateVerificationRecord(layout, candidateBundleId, targetGeneration);
         if (!invalidate.IsSuccess)
         {
-            // The record write is atomic, so the previous committed record is still intact.
-            // Stamp delete must not be ignored: a leftover TX with a FreshApplyFailed/NoManaged
-            // outcome would let the next apply skip recovery.
-            var stampDelete = DeleteStamp(layout);
-            if (!stampDelete.IsSuccess)
-            {
-                return Fail(
-                    SetupApplyResultCode.NeedsIntervention,
-                    SetupManagedDeploymentState.NeedsIntervention,
-                    "Verification record could not be invalidated and the transaction stamp remains.",
-                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                    reasonCode: stampDelete.Code ?? "durable_write_failed");
-            }
-
-            var cleanup = DiscardPreviousPointer(layout, previousPointer);
-            return cleanup ?? Fail(
-                preFailureCode,
-                preFailureState,
-                "Verification record could not be invalidated.",
-                reasonCode: invalidate.Code);
+            // MoveReplace may have landed even when the following parent flush failed. The record's
+            // outcome is therefore unknown: retain TX/PREVIOUS so recovery can classify and
+            // re-verify rather than claiming the old authority survived or returning NoManaged.
+            return Fail(
+                SetupApplyResultCode.RecoveryRequired,
+                SetupManagedDeploymentState.RecoveryRequired,
+                "Verification invalidation has an unknown durable outcome; recovery is required.",
+                reasonCode: "verification_invalidation_outcome_unknown",
+                bundleId: previousPointer?.BundleId,
+                activationGeneration: previousPointer?.ActivationGeneration);
         }
 
         var context = new ApplyContext(
@@ -668,6 +658,10 @@ public sealed class SetupApplyEngine
             Phase = SetupTransactionPhase.RollbackPending,
             Terminal = false,
             ReasonCode = reasonCode,
+            CandidateBundleId = context.Candidate.BundleId,
+            TargetActivationGeneration = context.Candidate.ActivationGeneration,
+            RollbackBundleId = null,
+            RollbackActivationGeneration = null,
             PersistentSideEffectMayRemain = migrationAttempted,
             PersistentSideEffectKind = sideEffectKind,
         };
@@ -835,7 +829,11 @@ public sealed class SetupApplyEngine
             ActivationGeneration = restoredGeneration,
         };
 
-        context.Stamp = context.Stamp with { TargetActivationGeneration = restoredGeneration };
+        context.Stamp = context.Stamp with
+        {
+            RollbackBundleId = restored.BundleId,
+            RollbackActivationGeneration = restoredGeneration,
+        };
         var stampWrite = WriteStamp(layout, context.Stamp);
         if (!stampWrite.IsSuccess)
         {
@@ -1152,6 +1150,16 @@ public sealed class SetupApplyEngine
 
         if (state.Active is null)
         {
+            if (state.Previous is not null)
+            {
+                return Fail(
+                    SetupApplyResultCode.NeedsIntervention,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "PREVIOUS remains but ACTIVE is missing; the last successful deployment cannot be inferred.",
+                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                    reasonCode: "previous_pointer_without_active");
+            }
+
             foreach (var orphan in new[] { layout.PreviousPointerPath, layout.LastRecordPath, layout.RuntimeIdentityBindPath })
             {
                 var delete = _writer.TryDurableDelete(layout.ManagedRoot, orphan);
@@ -1271,6 +1279,19 @@ public sealed class SetupApplyEngine
             recorded: null,
             migrationRequired: false);
 
+        if (string.Equals(stamp.Kind, SetupTransactionKind.Rollback, StringComparison.Ordinal))
+        {
+            return await RecoverRollbackPhaseAsync(
+                layout,
+                session,
+                state,
+                context,
+                candidate,
+                previous,
+                sideEffect,
+                cancellationToken);
+        }
+
         switch (stamp.Phase)
         {
             case SetupTransactionPhase.Prepared:
@@ -1326,6 +1347,150 @@ public sealed class SetupApplyEngine
                 return RecoveryIntervention(stamp, "transaction_phase_unknown");
         }
     }
+
+    private async Task<SetupApplyResult> RecoverRollbackPhaseAsync(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        DurableState state,
+        ApplyContext context,
+        SetupActivePointer failedCandidate,
+        SetupActivePointer? previous,
+        bool sideEffect,
+        CancellationToken cancellationToken)
+    {
+        if (previous is null || state.Active is null)
+        {
+            return RecoveryIntervention(context.Stamp, "rollback_state_incomplete");
+        }
+
+        var hasRollbackBundle = context.Stamp.RollbackBundleId is not null;
+        var hasRollbackGeneration = context.Stamp.RollbackActivationGeneration is not null;
+        if (hasRollbackBundle != hasRollbackGeneration)
+        {
+            return RecoveryIntervention(context.Stamp, "rollback_target_incomplete");
+        }
+
+        // Before the target is persisted, or after it is persisted but before ACTIVE moves, restart
+        // the idempotent rollback from the still-observed failed candidate.
+        if (SamePointer(state.Active, failedCandidate))
+        {
+            return MapRecoveryResult(
+                await RollbackAsync(context, RecoveryReason(context.Stamp), sideEffect));
+        }
+
+        if (!hasRollbackBundle
+            || !SetupActivePointer.IsSafeBundleId(context.Stamp.RollbackBundleId)
+            || context.Stamp.RollbackActivationGeneration is null
+            || context.Stamp.RollbackActivationGeneration < 1)
+        {
+            return RecoveryIntervention(context.Stamp, "rollback_target_missing");
+        }
+
+        var rollbackTarget = new SetupActivePointer
+        {
+            SchemaVersion = SetupActivePointer.CurrentSchemaVersion,
+            BundleId = context.Stamp.RollbackBundleId!,
+            ActivationGeneration = context.Stamp.RollbackActivationGeneration.Value,
+        };
+        if (!SamePointer(state.Active, rollbackTarget))
+        {
+            return RecoveryIntervention(context.Stamp, "active_pointer_unexpected");
+        }
+
+        var targetContext = new ApplyContext(
+            layout,
+            session,
+            context.Stamp,
+            rollbackTarget,
+            previous,
+            SetupIntegrityMerger.NotVerified,
+            recorded: null,
+            migrationRequired: false);
+
+        if (string.Equals(
+                context.Stamp.Phase,
+                SetupTransactionPhase.VerificationCommitted,
+                StringComparison.Ordinal))
+        {
+            var finished = FinishCommittedTransaction(layout, session, state, context.Stamp);
+            return string.Equals(finished.Code, SetupApplyResultCode.ApplySucceeded, StringComparison.Ordinal)
+                ? MapSuccessfulRollbackRecovery(finished, rollbackTarget, context.Stamp, sideEffect)
+                : finished;
+        }
+
+        if (context.Stamp.Phase is not (
+                SetupTransactionPhase.RollbackPending
+                or SetupTransactionPhase.Recreating
+                or SetupTransactionPhase.Inspecting
+                or SetupTransactionPhase.ReadinessChecking
+                or SetupTransactionPhase.BindingPending
+                or SetupTransactionPhase.VerificationPending))
+        {
+            return RecoveryIntervention(context.Stamp, "rollback_phase_unknown");
+        }
+
+        // Recreating is idempotent and closes both crash windows: target ACTIVE written before the
+        // phase stamp, and Recreating stamped before compose up completed.
+        if (string.Equals(context.Stamp.Phase, SetupTransactionPhase.RollbackPending, StringComparison.Ordinal)
+            || string.Equals(context.Stamp.Phase, SetupTransactionPhase.Recreating, StringComparison.Ordinal))
+        {
+            var compose = await _adapter.ComposeExpectedActiveInputAsync(
+                session,
+                rollbackTarget,
+                cancellationToken);
+            if (!compose.IsSuccess)
+            {
+                return RecoveryStillRequired(context.Stamp, compose.Code);
+            }
+
+            var recreating = AdvanceRollbackPhase(targetContext, SetupTransactionPhase.Recreating);
+            if (!recreating.IsSuccess)
+            {
+                return RecoveryStillRequired(targetContext.Stamp, recreating.Code);
+            }
+
+            var recreate = await _adapter.StartOrRecreateMailerAsync(session, cancellationToken);
+            if (!recreate.IsSuccess)
+            {
+                return RecoveryStillRequired(targetContext.Stamp, recreate.Code);
+            }
+        }
+
+        var reverified = await ReverifyCandidateAsync(
+            layout,
+            session,
+            state,
+            targetContext,
+            sideEffect,
+            cancellationToken);
+        if (!string.Equals(reverified.Code, SetupApplyResultCode.ApplySucceeded, StringComparison.Ordinal))
+        {
+            return MapRecoveryResult(reverified);
+        }
+
+        return MapSuccessfulRollbackRecovery(reverified, rollbackTarget, context.Stamp, sideEffect);
+    }
+
+    private static SetupApplyResult MapSuccessfulRollbackRecovery(
+        SetupApplyResult successful,
+        SetupActivePointer rollbackTarget,
+        SetupTransactionStamp stamp,
+        bool sideEffect) =>
+        sideEffect
+            ? Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "Rollback recovery completed, but a database migration may have persisted.",
+                actionCode: SetupApplyActionCode.ReviewDatabaseSchema,
+                reasonCode: RecoveryReason(stamp),
+                bundleId: rollbackTarget.BundleId,
+                activationGeneration: rollbackTarget.ActivationGeneration,
+                configurationApplied: true,
+                verificationCommitted: true,
+                configRollbackStatus: SetupConfigRollbackStatus.Succeeded,
+                persistentSideEffectMayRemain: true,
+                persistentSideEffectKind: SetupPersistentSideEffectKind.DatabaseMigration)
+            : Rewrite(successful, SetupApplyResultCode.RollbackSucceeded, successful.DeploymentState);
 
     /// <summary>
     /// The interrupted apply never moved ACTIVE, so the previous generation is still the running one.
@@ -1388,7 +1553,6 @@ public sealed class SetupApplyEngine
         context.Candidate = previous;
         context.Stamp = context.Stamp with
         {
-            Kind = SetupTransactionKind.Rollback,
             CandidateBundleId = previous.BundleId,
             TargetActivationGeneration = previous.ActivationGeneration,
             Phase = SetupTransactionPhase.BindingPending,
@@ -1957,7 +2121,12 @@ public sealed class SetupApplyEngine
                 SetupApplyJsonContext.Default.SetupTransactionStamp);
             if (stamp is null
                 || stamp.SchemaVersion != SetupTransactionStamp.CurrentSchemaVersion
-                || !SetupActivePointer.IsSafeBundleId(stamp.CandidateBundleId))
+                || !SetupActivePointer.IsSafeBundleId(stamp.CandidateBundleId)
+                || stamp.TargetActivationGeneration < 1
+                || ((stamp.RollbackBundleId is null) != (stamp.RollbackActivationGeneration is null))
+                || (stamp.RollbackBundleId is not null
+                    && (!SetupActivePointer.IsSafeBundleId(stamp.RollbackBundleId)
+                        || stamp.RollbackActivationGeneration!.Value < 1)))
             {
                 return UnreadableStamp();
             }

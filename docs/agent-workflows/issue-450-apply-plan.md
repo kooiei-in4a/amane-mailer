@@ -197,11 +197,17 @@ managed/tmp/                      （#449 所有の ephemeral verifier 置き場
   "targetActivationGeneration": 8,
   "previousBundleId": null,
   "previousActivationGeneration": null,
+  "rollbackBundleId": null,
+  "rollbackActivationGeneration": null,
   "persistentSideEffectMayRemain": false,
   "persistentSideEffectKind": "none|database-migration",
   "startedAt": "…"
 }
 ```
+
+`kind=Rollback` では failed candidate を `candidate*` に保持し、復元先を
+`rollbackBundleId` / `rollbackActivationGeneration` に分離して write-ahead する。
+これにより ACTIVE 復元の前後いずれで停止しても recovery が両世代を混同しない。
 
 **verification/last-record.json**（secret／HMAC／salt／session key／private path なし）
 

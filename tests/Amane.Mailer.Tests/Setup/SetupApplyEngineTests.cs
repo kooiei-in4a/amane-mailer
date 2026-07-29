@@ -1361,21 +1361,163 @@ public sealed class SetupApplyEngineTests
     }
 
     [Fact]
-    public async Task An_invalidation_failure_that_cannot_clear_the_stamp_needs_intervention()
+    public async Task An_invalidation_failure_retains_the_transaction_for_recovery()
     {
         using var harness = ApplyHarness.Create();
         await harness.SeedActiveDeploymentAsync(ActiveBundleId);
         harness.SeedBundle(CandidateBundleId);
         harness.FileSystem.FailCommitWhen = (path, _) => IsRecord(harness, path);
-        harness.FileSystem.FailDeleteWhen = path => SamePath(path, harness.Layout.TransactionStampPath);
 
         var result = await harness.ApplyAsync(CandidateBundleId);
 
-        Assert.Equal(SetupApplyResultCode.NeedsIntervention, result.Code);
-        Assert.Equal(SetupManagedDeploymentState.NeedsIntervention, result.DeploymentState);
+        Assert.Equal(SetupApplyResultCode.RecoveryRequired, result.Code);
+        Assert.Equal(SetupManagedDeploymentState.RecoveryRequired, result.DeploymentState);
         Assert.NotEqual(SetupManagedDeploymentState.NoManaged, result.DeploymentState);
         Assert.True(File.Exists(harness.Layout.TransactionStampPath));
+        Assert.True(File.Exists(harness.Layout.PreviousPointerPath));
         Assert.Equal(ActiveBundleId, harness.ReadActive()!.BundleId);
+    }
+
+    [Fact]
+    public async Task Post_replace_invalidation_flush_failure_keeps_fresh_transaction_recoverable()
+    {
+        using var harness = ApplyHarness.Create();
+        harness.SeedBundle(CandidateBundleId);
+        var invalidationMoved = false;
+        harness.FileSystem.OnCommit = (path, _) =>
+        {
+            if (IsRecord(harness, path))
+            {
+                invalidationMoved = true;
+            }
+        };
+        harness.FileSystem.FailFlushDirectoryWhen = path =>
+            invalidationMoved && SamePath(path, harness.Layout.VerificationDir);
+
+        var result = await harness.ApplyAsync(CandidateBundleId);
+
+        Assert.Equal(SetupApplyResultCode.RecoveryRequired, result.Code);
+        Assert.Equal(SetupManagedDeploymentState.RecoveryRequired, result.DeploymentState);
+        Assert.True(File.Exists(harness.Layout.TransactionStampPath));
+        Assert.Equal(SetupVerificationRecord.StatusInvalidated, harness.ReadRecord()!.Status);
+        Assert.Null(harness.ReadActive());
+
+        harness.FileSystem.Reset();
+        var recovered = await harness.RecoverAsync();
+        Assert.Equal(SetupApplyResultCode.RollbackSucceeded, recovered.Code);
+        Assert.Equal(SetupManagedDeploymentState.NoManaged, recovered.DeploymentState);
+        Assert.False(File.Exists(harness.Layout.TransactionStampPath));
+        Assert.False(File.Exists(harness.Layout.LastRecordPath));
+    }
+
+    [Fact]
+    public async Task Post_replace_invalidation_flush_failure_reverifies_existing_active()
+    {
+        using var harness = ApplyHarness.Create();
+        await harness.SeedActiveDeploymentAsync(ActiveBundleId);
+        harness.SeedBundle(CandidateBundleId);
+        var invalidationMoved = false;
+        harness.FileSystem.OnCommit = (path, _) =>
+        {
+            if (IsRecord(harness, path))
+            {
+                invalidationMoved = true;
+            }
+        };
+        harness.FileSystem.FailFlushDirectoryWhen = path =>
+            invalidationMoved && SamePath(path, harness.Layout.VerificationDir);
+
+        var result = await harness.ApplyAsync(CandidateBundleId);
+
+        Assert.Equal(SetupApplyResultCode.RecoveryRequired, result.Code);
+        Assert.True(File.Exists(harness.Layout.TransactionStampPath));
+        Assert.True(File.Exists(harness.Layout.PreviousPointerPath));
+        Assert.Equal(SetupVerificationRecord.StatusInvalidated, harness.ReadRecord()!.Status);
+        Assert.Equal(ActiveBundleId, harness.ReadActive()!.BundleId);
+
+        harness.FileSystem.Reset();
+        var recovered = await harness.RecoverAsync();
+        Assert.Equal(SetupApplyResultCode.RollbackSucceeded, recovered.Code);
+        Assert.Equal(SetupManagedDeploymentState.Active, recovered.DeploymentState);
+        Assert.True(harness.ReadRecord()!.IsCommittedSuccess);
+        Assert.Equal(ActiveBundleId, harness.ReadRecord()!.BundleId);
+    }
+
+    [Fact]
+    public async Task Recovery_does_not_delete_previous_when_active_is_missing()
+    {
+        using var harness = ApplyHarness.Create();
+        harness.SeedBundle(ActiveBundleId);
+        harness.WritePrevious(ActiveBundleId, generation: 1);
+
+        var result = await harness.RecoverAsync();
+
+        Assert.Equal(SetupApplyResultCode.NeedsIntervention, result.Code);
+        Assert.Equal(SetupManagedDeploymentState.NeedsIntervention, result.DeploymentState);
+        Assert.Equal("previous_pointer_without_active", result.ReasonCode);
+        Assert.True(File.Exists(harness.Layout.PreviousPointerPath));
+    }
+
+    [Fact]
+    public async Task Rollback_recovery_before_active_restore_uses_durable_target()
+    {
+        using var harness = ApplyHarness.Create();
+        await harness.SeedActiveDeploymentAsync(ActiveBundleId);
+        harness.SeedBundle(CandidateBundleId);
+        harness.WritePrevious(ActiveBundleId, generation: 1);
+        harness.WriteActive(CandidateBundleId, generation: 2);
+        harness.WriteInvalidatedRecord(CandidateBundleId, generation: 2);
+        harness.WriteStamp(
+            SetupTransactionPhase.RollbackPending,
+            terminal: false,
+            kind: SetupTransactionKind.Rollback,
+            previousBundleId: ActiveBundleId,
+            previousGeneration: 1,
+            targetGeneration: 2,
+            rollbackBundleId: ActiveBundleId,
+            rollbackGeneration: 3);
+
+        var result = await harness.RecoverAsync();
+
+        Assert.Equal(SetupApplyResultCode.RollbackSucceeded, result.Code);
+        Assert.Equal(SetupManagedDeploymentState.Active, result.DeploymentState);
+        Assert.Equal(ActiveBundleId, harness.ReadActive()!.BundleId);
+        Assert.Equal(3, harness.ReadActive()!.ActivationGeneration);
+        Assert.True(harness.ReadRecord()!.IsCommittedSuccess);
+        Assert.False(File.Exists(harness.Layout.TransactionStampPath));
+    }
+
+    [Theory]
+    [InlineData(SetupTransactionPhase.Recreating)]
+    [InlineData(SetupTransactionPhase.Inspecting)]
+    [InlineData(SetupTransactionPhase.ReadinessChecking)]
+    public async Task Rollback_recovery_after_active_restore_converges_for_each_phase(string phase)
+    {
+        using var harness = ApplyHarness.Create();
+        await harness.SeedActiveDeploymentAsync(ActiveBundleId);
+        harness.SeedBundle(CandidateBundleId);
+        harness.WritePrevious(ActiveBundleId, generation: 1);
+        harness.WriteActive(ActiveBundleId, generation: 3);
+        harness.WriteInvalidatedRecord(CandidateBundleId, generation: 2);
+        harness.WriteStamp(
+            phase,
+            terminal: false,
+            kind: SetupTransactionKind.Rollback,
+            previousBundleId: ActiveBundleId,
+            previousGeneration: 1,
+            targetGeneration: 2,
+            rollbackBundleId: ActiveBundleId,
+            rollbackGeneration: 3);
+
+        var result = await harness.RecoverAsync();
+
+        Assert.Equal(SetupApplyResultCode.RollbackSucceeded, result.Code);
+        Assert.Equal(SetupManagedDeploymentState.Active, result.DeploymentState);
+        Assert.Equal(ActiveBundleId, harness.ReadActive()!.BundleId);
+        Assert.Equal(3, harness.ReadActive()!.ActivationGeneration);
+        Assert.True(harness.ReadRecord()!.IsCommittedSuccess);
+        Assert.Equal(3, harness.ReadRecord()!.ActivationGeneration);
+        Assert.False(File.Exists(harness.Layout.TransactionStampPath));
     }
 
     // --------------------------------------------------------------- helpers
@@ -1603,18 +1745,23 @@ public sealed class SetupApplyEngineTests
             string? candidateBundleId = null,
             string? previousBundleId = null,
             long? previousGeneration = null,
-            long targetGeneration = 1)
+            long targetGeneration = 1,
+            string kind = SetupTransactionKind.Apply,
+            string? rollbackBundleId = null,
+            long? rollbackGeneration = null)
         {
             var stamp = new SetupTransactionStamp
             {
                 SchemaVersion = SetupTransactionStamp.CurrentSchemaVersion,
-                Kind = SetupTransactionKind.Apply,
+                Kind = kind,
                 Phase = phase,
                 Terminal = terminal,
                 CandidateBundleId = candidateBundleId ?? CandidateBundleId,
                 TargetActivationGeneration = targetGeneration,
                 PreviousBundleId = previousBundleId,
                 PreviousActivationGeneration = previousGeneration,
+                RollbackBundleId = rollbackBundleId,
+                RollbackActivationGeneration = rollbackGeneration,
                 PersistentSideEffectMayRemain = migrationSideEffect,
                 PersistentSideEffectKind = migrationSideEffect
                     ? SetupPersistentSideEffectKind.DatabaseMigration
@@ -1771,6 +1918,7 @@ public sealed class SetupApplyEngineTests
 
         public Func<string, string, bool>? FailCommitWhen { get; set; }
         public Func<string, bool>? FailDeleteWhen { get; set; }
+        public Func<string, bool>? FailFlushDirectoryWhen { get; set; }
         public Func<string, bool?>? OwnerOnlyOverride { get; set; }
         public Action<string, string>? OnCommit { get; set; }
         public Action<string>? OnOpenExclusiveGenerationLock { get; set; }
@@ -1779,6 +1927,7 @@ public sealed class SetupApplyEngineTests
         {
             FailCommitWhen = null;
             FailDeleteWhen = null;
+            FailFlushDirectoryWhen = null;
             OwnerOnlyOverride = null;
             OnCommit = null;
             OnOpenExclusiveGenerationLock = null;
@@ -1836,7 +1985,16 @@ public sealed class SetupApplyEngineTests
         }
 
         public void DeleteDirectoryRecursive(string path) => inner.DeleteDirectoryRecursive(path);
-        public void FlushDirectory(string path) => inner.FlushDirectory(path);
+        public void FlushDirectory(string path)
+        {
+            if (FailFlushDirectoryWhen?.Invoke(path) == true)
+            {
+                throw new IOException("Injected directory flush failure.");
+            }
+
+            inner.FlushDirectory(path);
+        }
+
         public void FlushFile(string path) => inner.FlushFile(path);
         public void SetUnixOwnership(string path, uint userId, uint groupId) =>
             inner.SetUnixOwnership(path, userId, groupId);

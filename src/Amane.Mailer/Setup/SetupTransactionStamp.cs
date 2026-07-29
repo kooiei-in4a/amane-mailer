@@ -17,6 +17,8 @@ public sealed record SetupTransactionStamp
     public required long TargetActivationGeneration { get; init; }
     public string? PreviousBundleId { get; init; }
     public long? PreviousActivationGeneration { get; init; }
+    public string? RollbackBundleId { get; init; }
+    public long? RollbackActivationGeneration { get; init; }
     public required bool PersistentSideEffectMayRemain { get; init; }
     public required string PersistentSideEffectKind { get; init; }
     public required string StartedAt { get; init; }
