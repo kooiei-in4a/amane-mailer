@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -9,12 +10,13 @@ namespace Amane.Mailer.Setup;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The engine owns one ordering rule: everything that can refuse an apply happens before the ACTIVE
-/// pointer moves, and everything after the switch is covered by a rollback that restores the previous
-/// generation. Durable markers (<c>ACTIVE</c>, <c>PREVIOUS</c>, <c>TX.stamp</c>, the verification
-/// record, and the runtime-identity binding) are written through
-/// <see cref="SetupDurableAtomicWriter"/> so a crash at any point leaves a state that
-/// <see cref="RecoverAsync"/> can classify.
+/// Three rules shape this type. Durable state is only ever read while <c>APPLY.lock</c> is held, so a
+/// transaction can never be planned against a generation another apply has already replaced.
+/// Every durable marker (<c>ACTIVE</c>, <c>PREVIOUS</c>, <c>TX.stamp</c>, the verification record, and
+/// the runtime-identity binding) is written through <see cref="SetupDurableAtomicWriter"/> before the
+/// side effect it describes, and a failed write stops the operation instead of being ignored. Finally,
+/// a generation is only called applied after the running container itself has been proven to resolve
+/// that bundle, fingerprint, and recorded schema.
 /// </para>
 /// <para>
 /// Activation generations are monotonic. A rollback restores the previous bundle id under a new,
@@ -60,11 +62,7 @@ public sealed class SetupApplyEngine
         }
         catch (OperationCanceledException)
         {
-            return Fail(
-                SetupApplyResultCode.CancelledBeforeActivation,
-                SetupManagedDeploymentState.NoManaged,
-                "Apply was cancelled before activation.",
-                reasonCode: "cancelled");
+            return CancelledBeforeActivation();
         }
         catch (Exception)
         {
@@ -117,13 +115,51 @@ public sealed class SetupApplyEngine
         {
             return Fail(
                 SetupApplyResultCode.FailedUnexpected,
-                SetupManagedDeploymentState.NoManaged,
+                SetupManagedDeploymentState.NotInspected,
                 "Candidate bundle id is invalid.",
                 reasonCode: "candidate_bundle_id_invalid");
         }
 
-        // Step 1: durable state is read before any Docker work so a pending transaction is never
-        // overwritten by a fresh apply.
+        var (probeResult, binding) = await _adapter.CheckDockerAsync(cancellationToken);
+        if (!probeResult.IsSuccess || binding is null)
+        {
+            return Fail(
+                SetupApplyResultCode.PreflightFailed,
+                SetupManagedDeploymentState.NotInspected,
+                "Docker preflight failed before Managed state was inspected.",
+                reasonCode: probeResult.Code);
+        }
+
+        var (sessionResult, session) = await _adapter.AcquireSessionAsync(layout, binding, cancellationToken);
+        if (!sessionResult.IsSuccess || session is null)
+        {
+            return sessionResult.Code == SetupDockerResultCode.ConcurrentSetupRejected
+                ? Fail(
+                    SetupApplyResultCode.ConcurrentApplyRejected,
+                    SetupManagedDeploymentState.NotInspected,
+                    "Another setup apply session is already running.",
+                    reasonCode: sessionResult.Code)
+                : Fail(
+                    SetupApplyResultCode.PreflightFailed,
+                    SetupManagedDeploymentState.NotInspected,
+                    "Setup apply session could not be acquired.",
+                    reasonCode: sessionResult.Code);
+        }
+
+        await using (session)
+        {
+            return await ApplyUnderLockAsync(layout, session, candidateBundleId, cancellationToken);
+        }
+    }
+
+    private async Task<SetupApplyResult> ApplyUnderLockAsync(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        string candidateBundleId,
+        CancellationToken cancellationToken)
+    {
+        // Step 2. Durable state is read only now: anything observed before the lock could already
+        // belong to a transaction that finished while this call was waiting.
         var stateRead = ReadDurableState(layout, out var state);
         if (stateRead is not null)
         {
@@ -132,22 +168,7 @@ public sealed class SetupApplyEngine
 
         if (state.TransactionStamp is not null)
         {
-            return state.TransactionStamp.Terminal
-                ? Fail(
-                    SetupApplyResultCode.NeedsIntervention,
-                    SetupManagedDeploymentState.NeedsIntervention,
-                    "A previous apply ended in a terminal state that requires operator review.",
-                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                    reasonCode: state.TransactionStamp.ReasonCode ?? "terminal_transaction_present",
-                    persistentSideEffectMayRemain: state.TransactionStamp.PersistentSideEffectMayRemain,
-                    persistentSideEffectKind: state.TransactionStamp.PersistentSideEffectKind)
-                : Fail(
-                    SetupApplyResultCode.RecoveryRequired,
-                    SetupManagedDeploymentState.RecoveryRequired,
-                    "An interrupted apply transaction must be recovered before applying again.",
-                    reasonCode: "transaction_in_progress",
-                    persistentSideEffectMayRemain: state.TransactionStamp.PersistentSideEffectMayRemain,
-                    persistentSideEffectKind: state.TransactionStamp.PersistentSideEffectKind);
+            return TransactionPresentResult(state.TransactionStamp);
         }
 
         var isFresh = state.Active is null;
@@ -158,7 +179,36 @@ public sealed class SetupApplyEngine
             ? SetupManagedDeploymentState.NoManaged
             : SetupManagedDeploymentState.Active;
 
-        // Step 2: candidate host at-rest integrity (no Docker, no ACTIVE change).
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return CancelledBeforeActivation();
+        }
+
+        // Step 3. No inspection may run until managed/tmp is proven clean (plan §10).
+        var purge = await _adapter.PurgeStaleMountVerifiersAsync(session, cancellationToken);
+        if (!purge.IsSuccess)
+        {
+            // A cancelled purge proves nothing about residue, so it is not reported as residue.
+            return cancellationToken.IsCancellationRequested
+                ? CancelledBeforeActivation()
+                : Fail(
+                    SetupApplyResultCode.NeedsIntervention,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "Managed verifier temp directory is not in a safe state.",
+                    actionCode: SetupApplyActionCode.UnsafeVerifierResidue,
+                    reasonCode: "unsafe_verifier_residue");
+        }
+
+        // Step 4. Pin the ACTIVE-independent external layer once for the whole transaction.
+        var pin = await _adapter.PinExternalInputsAsync(session, cancellationToken);
+        if (!pin.IsSuccess || session.ExternalInputs is null)
+        {
+            return Fail(preFailureCode, preFailureState, "External inputs could not be pinned.", reasonCode: pin.Code);
+        }
+
+        var external = session.ExternalInputs;
+
+        // Step 5. Candidate host at-rest integrity. No Docker, no ACTIVE change.
         var candidateValidation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
             _fileSystem,
             layout,
@@ -174,164 +224,188 @@ public sealed class SetupApplyEngine
                 reasonCode: candidateValidation.Code);
         }
 
+        // Step 6. Image compatibility is decided before anything moves.
+        var incompatibleReason = ClassifyImageCompatibility(layout, candidateRecorded);
+        if (incompatibleReason is not null)
+        {
+            return Fail(
+                SetupApplyResultCode.UpgradeRequired,
+                preFailureState,
+                "Candidate bundle is not compatible with the trusted release inventory.",
+                reasonCode: incompatibleReason);
+        }
+
         if (cancellationToken.IsCancellationRequested)
         {
             return CancelledBeforeActivation();
         }
 
-        // Step 3: Docker preflight and the single APPLY.lock session for the whole transaction.
-        var (probeResult, binding) = await _adapter.CheckDockerAsync(cancellationToken);
-        if (!probeResult.IsSuccess || binding is null)
+        // Step 7.
+        var image = await _adapter.EnsurePinnedImageAvailableAsync(session, cancellationToken);
+        if (!image.IsSuccess)
         {
-            return Fail(preFailureCode, preFailureState, "Docker preflight failed.", reasonCode: probeResult.Code);
+            return Fail(preFailureCode, preFailureState, "Pinned image is not available.", reasonCode: image.Code);
         }
 
-        var (sessionResult, session) = await _adapter.AcquireSessionAsync(layout, binding, cancellationToken);
-        if (!sessionResult.IsSuccess || session is null)
+        // Step 8. Migration route depends on whether a verified ACTIVE exists.
+        SetupActivePointer? previousPointer = null;
+        SetupMigrationDecision decision;
+        if (isFresh)
         {
-            return sessionResult.Code == SetupDockerResultCode.ConcurrentSetupRejected
-                ? Fail(
-                    SetupApplyResultCode.ConcurrentApplyRejected,
-                    preFailureState,
-                    "Another setup apply session is already running.",
-                    reasonCode: sessionResult.Code)
-                : Fail(preFailureCode, preFailureState, "Setup apply session could not be acquired.", reasonCode: sessionResult.Code);
+            decision = SetupDatabaseFileProbe.ClassifyFreshHostDatabase(_fileSystem, external);
         }
-
-        await using (session)
+        else
         {
-            // Step 4: pin external inputs once (checkpoint 1) and clear verifier residue.
-            var pin = await _adapter.PinExternalInputsAsync(session, cancellationToken);
-            if (!pin.IsSuccess || session.ExternalInputs is null)
+            var ineligible = ClassifyExistingActive(layout, state, external, out var activeRecorded);
+            if (ineligible is not null)
             {
-                return Fail(preFailureCode, preFailureState, "External inputs could not be pinned.", reasonCode: pin.Code);
+                return ineligible;
             }
 
-            var purge = await _adapter.PurgeStaleMountVerifiersAsync(session, cancellationToken);
-            if (!purge.IsSuccess)
+            var currentCompose = await _adapter.ComposeCurrentActiveInputAsync(session, cancellationToken);
+            if (!currentCompose.IsSuccess)
             {
                 return Fail(
-                    preFailureCode,
-                    preFailureState,
-                    "Managed verifier temp directory is not in a safe state.",
-                    actionCode: SetupApplyActionCode.UnsafeVerifierResidue,
-                    reasonCode: purge.Code);
+                    SetupApplyResultCode.NeedsIntervention,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "The existing ACTIVE environment could not be composed for inspection.",
+                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                    reasonCode: currentCompose.Code);
             }
 
-            var image = await _adapter.EnsurePinnedImageAvailableAsync(session, cancellationToken);
-            if (!image.IsSuccess)
+            var status = await _adapter.InspectMigrationStatusAsync(session, cancellationToken);
+            if (!status.IsSuccess || status.MigrationStatus is null)
             {
-                return Fail(preFailureCode, preFailureState, "Pinned image is not available.", reasonCode: image.Code);
+                return Fail(
+                    SetupApplyResultCode.NeedsIntervention,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "Existing Managed deployment schema could not be classified safely.",
+                    actionCode: SetupApplyActionCode.ReviewDatabaseSchema,
+                    reasonCode: status.Code);
             }
 
-            // Step 5: migration decision before activation.
-            var decision = await DecideMigrationAsync(
-                layout,
-                session,
-                state.Active,
-                candidateRecorded,
-                cancellationToken);
-            switch (decision.Kind)
-            {
-                case SetupMigrationDecisionKind.UpgradeRequired:
-                    return Fail(
-                        SetupApplyResultCode.UpgradeRequired,
-                        preFailureState,
-                        decision.Message,
-                        decision.ActionCode,
-                        decision.ReasonCode);
-                case SetupMigrationDecisionKind.NeedsIntervention:
-                    return Fail(
-                        SetupApplyResultCode.NeedsIntervention,
-                        SetupManagedDeploymentState.NeedsIntervention,
-                        decision.Message,
-                        decision.ActionCode ?? SetupApplyActionCode.ManualInterventionRequired,
-                        decision.ReasonCode);
-            }
-
-            var migrationRequired = decision.Kind == SetupMigrationDecisionKind.MigrationRequired;
-
-            var targetGeneration = (state.Active?.ActivationGeneration ?? 0) + 1;
-            var candidatePointer = new SetupActivePointer
-            {
-                SchemaVersion = SetupActivePointer.CurrentSchemaVersion,
-                BundleId = candidateBundleId,
-                ActivationGeneration = targetGeneration,
-            };
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return CancelledBeforeActivation();
-            }
-
-            // Step 6: durable Prepared stamp. Recovery treats Prepared as "no ACTIVE change yet".
-            var stamp = new SetupTransactionStamp
-            {
-                SchemaVersion = SetupTransactionStamp.CurrentSchemaVersion,
-                Kind = SetupTransactionKind.Apply,
-                Phase = SetupTransactionPhase.Prepared,
-                Terminal = false,
-                CandidateBundleId = candidateBundleId,
-                TargetActivationGeneration = targetGeneration,
-                PreviousBundleId = state.Active?.BundleId,
-                PreviousActivationGeneration = state.Active?.ActivationGeneration,
-                PersistentSideEffectMayRemain = false,
-                PersistentSideEffectKind = SetupPersistentSideEffectKind.None,
-                StartedAt = Timestamp(),
-            };
-            var stampWrite = WriteStamp(layout, stamp);
-            if (!stampWrite.IsSuccess)
-            {
-                return Fail(preFailureCode, preFailureState, "Transaction stamp could not be written.", reasonCode: stampWrite.Code);
-            }
-
-            if (cancellationToken.IsCancellationRequested)
-            {
-                _ = DeleteStamp(layout);
-                return CancelledBeforeActivation();
-            }
-
-            // Step 7: activation. PREVIOUS is durable before ACTIVE so rollback always has a target.
-            stamp = stamp with { Phase = SetupTransactionPhase.ActiveSwitchPending };
-            var switchStamp = WriteStamp(layout, stamp);
-            if (!switchStamp.IsSuccess)
-            {
-                _ = DeleteStamp(layout);
-                return Fail(preFailureCode, preFailureState, "Transaction stamp could not be advanced.", reasonCode: switchStamp.Code);
-            }
-
-            if (state.Active is not null)
-            {
-                var previousWrite = WritePointer(layout, layout.PreviousPointerPath, state.Active);
-                if (!previousWrite.IsSuccess)
-                {
-                    _ = DeleteStamp(layout);
-                    return Fail(preFailureCode, preFailureState, "Previous pointer could not be written.", reasonCode: previousWrite.Code);
-                }
-            }
-
-            var activeWrite = WritePointer(layout, layout.ActivePointerPath, candidatePointer);
-            if (!activeWrite.IsSuccess)
-            {
-                _ = DeleteStamp(layout);
-                return Fail(preFailureCode, preFailureState, "ACTIVE pointer could not be switched.", reasonCode: activeWrite.Code);
-            }
-
-            // Any committed verification now describes a generation that is no longer ACTIVE.
-            _ = InvalidateVerificationRecord(layout, candidateBundleId, targetGeneration);
-
-            var context = new ApplyContext(
-                layout,
-                session,
-                stamp,
-                candidatePointer,
-                state.Active,
-                candidateHostAtRest,
-                candidateRecorded,
-                migrationRequired);
-
-            return await RunPostActivationAsync(context, cancellationToken);
+            decision = SetupDatabaseFileProbe.ClassifyExistingFromStatus(
+                status.MigrationStatus.Classification,
+                ImageReference(activeRecorded!),
+                ImageReference(candidateRecorded));
+            previousPointer = state.Active;
         }
+
+        var refusal = MapMigrationDecision(decision, preFailureState);
+        if (refusal is not null)
+        {
+            return refusal;
+        }
+
+        var migrationRequired = decision.Kind == SetupMigrationDecisionKind.MigrationRequired;
+        var targetGeneration = (state.Active?.ActivationGeneration ?? 0) + 1;
+        var candidatePointer = new SetupActivePointer
+        {
+            SchemaVersion = SetupActivePointer.CurrentSchemaVersion,
+            BundleId = candidateBundleId,
+            ActivationGeneration = targetGeneration,
+        };
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return CancelledBeforeActivation();
+        }
+
+        // Step 9. PREVIOUS is durable before the transaction exists, so a crash here leaves an
+        // orphan that recovery can classify rather than a rollback without a target.
+        if (previousPointer is not null)
+        {
+            var previousWrite = WritePointer(layout, layout.PreviousPointerPath, previousPointer);
+            if (!previousWrite.IsSuccess)
+            {
+                return Fail(preFailureCode, preFailureState, "Previous pointer could not be written.", reasonCode: previousWrite.Code);
+            }
+        }
+
+        // Step 10. Checkpoint 1: external inputs must be unchanged before the transaction exists.
+        var checkpoint1 = await _adapter.VerifyExternalInputsUnchangedAsync(session, cancellationToken);
+        if (!checkpoint1.IsSuccess)
+        {
+            var cleanup = DiscardPreviousPointer(layout, previousPointer);
+            return cleanup ?? Fail(
+                preFailureCode,
+                preFailureState,
+                "Allowlisted external input changed before the transaction was created.",
+                reasonCode: "external_input_changed_before_transaction");
+        }
+
+        // Step 11. Write-ahead: from here a crash is visible to recovery.
+        var stamp = new SetupTransactionStamp
+        {
+            SchemaVersion = SetupTransactionStamp.CurrentSchemaVersion,
+            Kind = SetupTransactionKind.Apply,
+            Phase = SetupTransactionPhase.Prepared,
+            Terminal = false,
+            CandidateBundleId = candidateBundleId,
+            TargetActivationGeneration = targetGeneration,
+            PreviousBundleId = previousPointer?.BundleId,
+            PreviousActivationGeneration = previousPointer?.ActivationGeneration,
+            PersistentSideEffectMayRemain = false,
+            PersistentSideEffectKind = SetupPersistentSideEffectKind.None,
+            StartedAt = Timestamp(),
+        };
+        var stampWrite = WriteStamp(layout, stamp);
+        if (!stampWrite.IsSuccess)
+        {
+            var cleanup = DiscardPreviousPointer(layout, previousPointer);
+            return cleanup ?? Fail(
+                preFailureCode,
+                preFailureState,
+                "Transaction stamp could not be written.",
+                reasonCode: stampWrite.Code);
+        }
+
+        // Step 12. Any committed verification now describes a generation that is being replaced.
+        var invalidate = InvalidateVerificationRecord(layout, candidateBundleId, targetGeneration);
+        if (!invalidate.IsSuccess)
+        {
+            // The record write is atomic, so the previous committed record is still intact.
+            _ = DeleteStamp(layout);
+            var cleanup = DiscardPreviousPointer(layout, previousPointer);
+            return cleanup ?? Fail(
+                preFailureCode,
+                preFailureState,
+                "Verification record could not be invalidated.",
+                reasonCode: invalidate.Code);
+        }
+
+        var context = new ApplyContext(
+            layout,
+            session,
+            stamp,
+            candidatePointer,
+            previousPointer,
+            candidateHostAtRest,
+            candidateRecorded,
+            migrationRequired);
+
+        // Step 13.
+        var switchPending = AdvancePhase(context, SetupTransactionPhase.ActiveSwitchPending, persistentSideEffect: false);
+        if (!switchPending.IsSuccess)
+        {
+            return AbortBeforeActivation(context, "durable_write_failed");
+        }
+
+        // Step 14. Checkpoint 2: last comparison before ACTIVE is replaced.
+        var checkpoint2 = await _adapter.VerifyExternalInputsUnchangedAsync(session, cancellationToken);
+        if (!checkpoint2.IsSuccess)
+        {
+            return AbortBeforeActivation(context, "external_input_changed_before_activation");
+        }
+
+        // Step 15.
+        var activeWrite = WritePointer(layout, layout.ActivePointerPath, candidatePointer);
+        if (!activeWrite.IsSuccess)
+        {
+            return AbortBeforeActivation(context, activeWrite.Code ?? "active_pointer_write_failed");
+        }
+
+        return await RunPostActivationAsync(context, cancellationToken);
     }
 
     private async Task<SetupApplyResult> RunPostActivationAsync(
@@ -341,31 +415,42 @@ public sealed class SetupApplyEngine
         var layout = context.Layout;
         var session = context.Session;
 
-        // Checkpoint 2: external inputs must still be the ones this generation was planned against.
-        var checkpoint2 = await _adapter.VerifyExternalInputsUnchangedAsync(session, cancellationToken);
-        if (!checkpoint2.IsSuccess)
-        {
-            return await RollbackAsync(context, "external_input_changed_after_activation", migrationAttempted: false);
-        }
-
+        // Step 16. A concurrent ACTIVE change is detected here, before anything is started.
         var compose = await _adapter.ComposeExpectedActiveInputAsync(session, context.Candidate, cancellationToken);
         if (!compose.IsSuccess)
         {
             return await RollbackAsync(context, "compose_pin_failed", migrationAttempted: false);
         }
 
-        _ = AdvancePhase(context, SetupTransactionPhase.CandidateComposeValidating, persistentSideEffect: false);
+        // Step 17.
+        var gate = await GateAsync(context, SetupTransactionPhase.CandidateComposeValidating, false, false);
+        if (gate is not null)
+        {
+            return gate;
+        }
+
         var validate = await _adapter.ValidateComposeAsync(session, cancellationToken);
         if (!validate.IsSuccess)
         {
             return await RollbackAsync(context, "compose_validation_failed", migrationAttempted: false);
         }
 
+        // Step 18. The side effect is durable before it happens, never after.
         var migrationAttempted = false;
         if (context.MigrationRequired)
         {
-            _ = AdvancePhase(context, SetupTransactionPhase.MigrationPending, persistentSideEffect: false);
-            _ = AdvancePhase(context, SetupTransactionPhase.Migrating, persistentSideEffect: true);
+            gate = await GateAsync(context, SetupTransactionPhase.MigrationPending, false, false);
+            if (gate is not null)
+            {
+                return gate;
+            }
+
+            gate = await GateAsync(context, SetupTransactionPhase.Migrating, true, false);
+            if (gate is not null)
+            {
+                return gate;
+            }
+
             migrationAttempted = true;
             var migrate = await _adapter.RunMigrationAsync(session, cancellationToken);
             if (!migrate.IsSuccess)
@@ -374,132 +459,160 @@ public sealed class SetupApplyEngine
             }
         }
 
-        _ = AdvancePhase(context, SetupTransactionPhase.Recreating, migrationAttempted);
+        // Step 19.
+        gate = await GateAsync(context, SetupTransactionPhase.Recreating, migrationAttempted, migrationAttempted);
+        if (gate is not null)
+        {
+            return gate;
+        }
+
         var recreate = await _adapter.StartOrRecreateMailerAsync(session, cancellationToken);
         if (!recreate.IsSuccess)
         {
             return await RollbackAsync(context, "recreate_failed", migrationAttempted);
         }
 
-        _ = AdvancePhase(context, SetupTransactionPhase.ReadinessChecking, migrationAttempted);
+        // Step 20. The running container must prove it resolved this bundle before anything is committed.
+        gate = await GateAsync(context, SetupTransactionPhase.Inspecting, migrationAttempted, migrationAttempted);
+        if (gate is not null)
+        {
+            return gate;
+        }
+
+        var verification = await VerifyGenerationAsync(
+            layout,
+            session,
+            context.Candidate,
+            context.CandidateRecorded!,
+            context.CandidateHostAtRest,
+            cancellationToken);
+        if (!verification.IsSuccess)
+        {
+            _ = WriteVerificationRecord(
+                layout,
+                context.Candidate,
+                SetupVerificationRecord.StatusInvalidated,
+                verification,
+                context.CandidateHostAtRest,
+                SetupVerificationRecord.ReadinessNotEvaluated,
+                SetupRuntimeIdentityBindingResult.Missing,
+                committedAt: null);
+            return await RollbackAsync(context, verification.ReasonCode!, migrationAttempted);
+        }
+
+        // Step 21.
+        gate = await GateAsync(context, SetupTransactionPhase.ReadinessChecking, migrationAttempted, migrationAttempted);
+        if (gate is not null)
+        {
+            return gate;
+        }
+
         var readiness = await _adapter.AwaitMailerHealthyAsync(session, cancellationToken);
         if (!readiness.IsSuccess)
         {
             return await RollbackAsync(context, "readiness_failed", migrationAttempted);
         }
 
-        // Checkpoint 3: last external comparison before the verification record is committed.
+        // Step 22. Checkpoint 3: last comparison before the verification record is committed.
         var checkpoint3 = await _adapter.VerifyExternalInputsUnchangedAsync(session, cancellationToken);
         if (!checkpoint3.IsSuccess)
         {
             return await RollbackAsync(context, "external_input_changed_before_verification", migrationAttempted);
         }
 
-        _ = AdvancePhase(context, SetupTransactionPhase.Inspecting, migrationAttempted);
-        if (!SetupMountVerifierFactory.TryCreate(
-                _fileSystem,
-                layout,
-                context.Candidate.BundleId,
-                _timeProvider.GetUtcNow(),
-                out var verifier,
-                out var verifierResult)
-            || verifier is null)
+        // Steps 23-25. Binding first, record second: the record is the final success authority.
+        return await CommitGenerationAsync(
+            context,
+            context.Candidate,
+            verification,
+            context.CandidateHostAtRest,
+            migrationAttempted,
+            SetupApplyResultCode.ApplySucceeded,
+            "Managed configuration applied and verification committed.");
+    }
+
+    /// <summary>
+    /// Commits the runtime-identity binding, then the verification record, then clears the
+    /// transaction. Used by apply, rollback, and re-verifying recovery so all three reach
+    /// "applied" through exactly the same durable sequence.
+    /// </summary>
+    private async Task<SetupApplyResult> CommitGenerationAsync(
+        ApplyContext context,
+        SetupActivePointer pointer,
+        GenerationVerification verification,
+        string hostAtRest,
+        bool migrationAttempted,
+        string successCode,
+        string successMessage)
+    {
+        var layout = context.Layout;
+
+        var gate = await GateAsync(context, SetupTransactionPhase.BindingPending, migrationAttempted, migrationAttempted);
+        if (gate is not null)
         {
-            _ = verifierResult;
-            return await RollbackAsync(context, "mount_verifier_unavailable", migrationAttempted);
+            return gate;
         }
 
-        var inspection = await _adapter.RunEffectiveInspectionAsync(session, verifier, cancellationToken);
-        if (!inspection.IsSuccess || inspection.Inspection is null)
-        {
-            return await RollbackAsync(context, "effective_inspection_failed", migrationAttempted);
-        }
-
-        var mountAttestation = MapAttestation(inspection.Inspection.MountAttestation.Result);
-        var bundleIntegrity = SetupIntegrityMerger.Merge(context.CandidateHostAtRest, mountAttestation);
-        var fingerprintComparison = inspection.Inspection.Effective.FingerprintsMatchRecorded switch
-        {
-            true => SetupVerificationRecord.FingerprintMatched,
-            false => SetupVerificationRecord.FingerprintMismatch,
-            _ => SetupVerificationRecord.FingerprintNotEvaluated,
-        };
-
-        if (!string.Equals(bundleIntegrity, SetupIntegrityMerger.Matched, StringComparison.Ordinal))
-        {
-            _ = WriteVerificationRecord(
-                context,
-                SetupVerificationRecord.StatusInvalidated,
-                fingerprintComparison,
-                mountAttestation,
-                bundleIntegrity,
-                readiness: SetupVerificationRecord.ReadinessPassed,
-                runtimeIdentityBinding: SetupRuntimeIdentityBindingResult.Missing,
-                committedAt: null);
-            return await RollbackAsync(context, "bundle_integrity_mismatch", migrationAttempted);
-        }
-
-        if (!string.Equals(fingerprintComparison, SetupVerificationRecord.FingerprintMatched, StringComparison.Ordinal))
-        {
-            _ = WriteVerificationRecord(
-                context,
-                SetupVerificationRecord.StatusInvalidated,
-                fingerprintComparison,
-                mountAttestation,
-                bundleIntegrity,
-                readiness: SetupVerificationRecord.ReadinessPassed,
-                runtimeIdentityBinding: SetupRuntimeIdentityBindingResult.Missing,
-                committedAt: null);
-            return await RollbackAsync(context, "fingerprint_mismatch", migrationAttempted);
-        }
-
-        _ = AdvancePhase(context, SetupTransactionPhase.BindingPending, migrationAttempted);
-        var bindingWrite = WriteRuntimeIdentityBinding(context);
+        var bindingWrite = WriteRuntimeIdentityBinding(layout, context.Session, pointer);
         if (!bindingWrite.IsSuccess)
         {
             return await RollbackAsync(context, "runtime_identity_binding_failed", migrationAttempted);
         }
 
-        _ = AdvancePhase(context, SetupTransactionPhase.VerificationPending, migrationAttempted);
+        gate = await GateAsync(context, SetupTransactionPhase.VerificationPending, migrationAttempted, migrationAttempted);
+        if (gate is not null)
+        {
+            return gate;
+        }
+
         var recordWrite = WriteVerificationRecord(
-            context,
+            layout,
+            pointer,
             SetupVerificationRecord.StatusCommitted,
-            fingerprintComparison,
-            mountAttestation,
-            bundleIntegrity,
-            readiness: SetupVerificationRecord.ReadinessPassed,
-            runtimeIdentityBinding: SetupRuntimeIdentityBindingResult.Matched,
-            committedAt: Timestamp());
+            verification,
+            hostAtRest,
+            SetupVerificationRecord.ReadinessPassed,
+            SetupRuntimeIdentityBindingResult.Matched,
+            Timestamp());
         if (!recordWrite.IsSuccess)
         {
             return await RollbackAsync(context, "verification_record_failed", migrationAttempted);
         }
 
-        _ = AdvancePhase(context, SetupTransactionPhase.VerificationCommitted, migrationAttempted);
+        // Past this point the deployment is verified, so a durable failure asks for a human instead
+        // of undoing a generation that is already the committed truth.
+        var committed = AdvancePhase(context, SetupTransactionPhase.VerificationCommitted, migrationAttempted);
+        if (!committed.IsSuccess)
+        {
+            return CommittedButUnfinished(pointer, committed.Code, migrationAttempted);
+        }
+
+        var previousDelete = _writer.TryDurableDelete(layout.ManagedRoot, layout.PreviousPointerPath);
+        if (!previousDelete.IsSuccess)
+        {
+            return CommittedButUnfinished(pointer, previousDelete.Code, migrationAttempted);
+        }
+
         var stampDelete = DeleteStamp(layout);
         if (!stampDelete.IsSuccess)
         {
-            return Fail(
-                SetupApplyResultCode.NeedsIntervention,
-                SetupManagedDeploymentState.NeedsIntervention,
-                "Apply completed but the transaction stamp could not be cleared.",
-                actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                reasonCode: stampDelete.Code,
-                bundleId: context.Candidate.BundleId,
-                activationGeneration: context.Candidate.ActivationGeneration,
-                configurationApplied: true,
-                verificationCommitted: true);
+            return CommittedButUnfinished(pointer, stampDelete.Code, migrationAttempted);
         }
 
         return SetupApplyResult.Create(
-            SetupApplyResultCode.ApplySucceeded,
+            successCode,
             SetupManagedDeploymentState.Active,
-            "Managed configuration applied and verification committed.",
+            successMessage,
             actionCode: SetupApplyActionCode.CompleteSendReadyEvaluation,
             reasonCode: null,
-            bundleId: context.Candidate.BundleId,
-            activationGeneration: context.Candidate.ActivationGeneration,
+            bundleId: pointer.BundleId,
+            activationGeneration: pointer.ActivationGeneration,
             configurationApplied: true,
-            verificationCommitted: true);
+            verificationCommitted: true,
+            persistentSideEffectMayRemain: migrationAttempted,
+            persistentSideEffectKind: migrationAttempted
+                ? SetupPersistentSideEffectKind.DatabaseMigration
+                : SetupPersistentSideEffectKind.None);
     }
 
     // ------------------------------------------------------------- rollback
@@ -512,7 +625,7 @@ public sealed class SetupApplyEngine
         // Rollback never inherits operator cancellation: it gets its own bounded budget so a Ctrl+C
         // after activation cannot leave ACTIVE pointing at an unverified generation.
         using var rollbackCts = new CancellationTokenSource(RollbackBudget);
-        var rollbackToken = rollbackCts.Token;
+        var token = rollbackCts.Token;
 
         var layout = context.Layout;
         var session = context.Session;
@@ -520,7 +633,8 @@ public sealed class SetupApplyEngine
             ? SetupPersistentSideEffectKind.DatabaseMigration
             : SetupPersistentSideEffectKind.None;
 
-        var stamp = context.Stamp with
+        // 1. Announce the rollback before doing any of it.
+        context.Stamp = context.Stamp with
         {
             Kind = SetupTransactionKind.Rollback,
             Phase = SetupTransactionPhase.RollbackPending,
@@ -529,81 +643,276 @@ public sealed class SetupApplyEngine
             PersistentSideEffectMayRemain = migrationAttempted,
             PersistentSideEffectKind = sideEffectKind,
         };
-        context.Stamp = stamp;
-        _ = WriteStamp(layout, stamp);
-
-        // 1. Invalidate any verification claim for the candidate generation.
-        _ = InvalidateVerificationRecord(layout, context.Candidate.BundleId, context.Candidate.ActivationGeneration);
-
-        // 2. Stop the candidate container while its compose pin is still valid.
-        if (session.ComposeInputs is not null)
+        var stampWrite = WriteStamp(layout, context.Stamp);
+        if (!stampWrite.IsSuccess)
         {
-            _ = await _adapter.StopFailedMailerAsync(session, rollbackToken);
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, stampWrite.Code);
         }
 
-        // 3. Restore ACTIVE. Fresh applies remove it; existing deployments get the previous bundle
-        //    under a new, higher generation so generations stay monotonic.
-        if (context.Previous is null)
+        var invalidate = InvalidateVerificationRecord(
+            layout,
+            context.Candidate.BundleId,
+            context.Candidate.ActivationGeneration);
+        if (!invalidate.IsSuccess)
         {
-            var remove = _writer.TryDurableDelete(layout.ManagedRoot, layout.ActivePointerPath);
-            if (!remove.IsSuccess)
-            {
-                return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, remove.Code);
-            }
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, invalidate.Code);
+        }
 
-            var freshStampDelete = DeleteStamp(layout);
-            if (!freshStampDelete.IsSuccess)
+        // Stop the candidate while a compose pin for its generation is still obtainable.
+        if (!ComposeMatches(session, context.Candidate))
+        {
+            _ = await _adapter.ComposeExpectedActiveInputAsync(session, context.Candidate, token);
+        }
+
+        if (ComposeMatches(session, context.Candidate))
+        {
+            _ = await _adapter.StopFailedMailerAsync(session, token);
+        }
+
+        return context.Previous is null
+            ? RollbackFresh(context, reasonCode, migrationAttempted, sideEffectKind)
+            : await RollbackToPreviousAsync(context, reasonCode, migrationAttempted, sideEffectKind, token);
+    }
+
+    /// <summary>
+    /// A fresh apply has nothing to restore. Removing ACTIVE is only honest while no persistent side
+    /// effect happened; a migration that already ran is not undone by a pointer, so that case stops
+    /// for review instead of reporting a clean rollback.
+    /// </summary>
+    private SetupApplyResult RollbackFresh(
+        ApplyContext context,
+        string reasonCode,
+        bool migrationAttempted,
+        string sideEffectKind)
+    {
+        var layout = context.Layout;
+
+        if (migrationAttempted)
+        {
+            context.Stamp = context.Stamp with
             {
-                return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, freshStampDelete.Code);
-            }
+                Terminal = true,
+                ReasonCode = reasonCode,
+                PersistentSideEffectMayRemain = true,
+                PersistentSideEffectKind = sideEffectKind,
+            };
+            _ = WriteStamp(layout, context.Stamp);
 
             return Fail(
-                SetupApplyResultCode.FreshApplyFailed,
-                SetupManagedDeploymentState.NoManaged,
-                "Fresh Managed apply failed; no Managed deployment is active.",
-                actionCode: migrationAttempted ? SetupApplyActionCode.ReviewDatabaseFiles : null,
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "Fresh Managed apply failed after a database migration had already run.",
+                actionCode: SetupApplyActionCode.ReviewDatabaseSchema,
                 reasonCode: reasonCode,
-                configRollbackStatus: SetupConfigRollbackStatus.Succeeded,
-                persistentSideEffectMayRemain: migrationAttempted,
+                bundleId: context.Candidate.BundleId,
+                activationGeneration: context.Candidate.ActivationGeneration,
+                configRollbackStatus: SetupConfigRollbackStatus.NotApplicable,
+                persistentSideEffectMayRemain: true,
                 persistentSideEffectKind: sideEffectKind);
         }
 
-        var restoredPointer = new SetupActivePointer
+        var bindingDelete = DeleteBindingForGeneration(layout, context.Candidate);
+        if (!bindingDelete.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, bindingDelete.Code);
+        }
+
+        var activeDelete = _writer.TryDurableDelete(layout.ManagedRoot, layout.ActivePointerPath);
+        if (!activeDelete.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, activeDelete.Code);
+        }
+
+        var previousDelete = _writer.TryDurableDelete(layout.ManagedRoot, layout.PreviousPointerPath);
+        if (!previousDelete.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, previousDelete.Code);
+        }
+
+        var stampDelete = DeleteStamp(layout);
+        if (!stampDelete.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, stampDelete.Code);
+        }
+
+        return Fail(
+            SetupApplyResultCode.FreshApplyFailed,
+            SetupManagedDeploymentState.NoManaged,
+            "Fresh Managed apply failed; no Managed deployment is active.",
+            reasonCode: reasonCode,
+            configRollbackStatus: SetupConfigRollbackStatus.Succeeded);
+    }
+
+    /// <summary>
+    /// Restores the previous bundle under a new generation and re-earns the verification record for
+    /// it. Restoring the pointer alone is not a rollback: the record stays the only success authority.
+    /// </summary>
+    private async Task<SetupApplyResult> RollbackToPreviousAsync(
+        ApplyContext context,
+        string reasonCode,
+        bool migrationAttempted,
+        string sideEffectKind,
+        CancellationToken token)
+    {
+        var layout = context.Layout;
+        var session = context.Session;
+        var previous = context.Previous!;
+
+        // 2. The bundle we are about to activate must still be intact.
+        var validation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+            _fileSystem,
+            layout,
+            previous.BundleId,
+            out var previousRecorded,
+            out var previousHostAtRest);
+        if (!validation.IsSuccess || previousRecorded is null)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, validation.Code);
+        }
+
+        // 3.
+        var drift = await _adapter.VerifyExternalInputsUnchangedAsync(session, token);
+        if (!drift.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, drift.Code);
+        }
+
+        // 4. Generations never move backwards, so a stale pin can never look current.
+        var restoredGeneration = Math.Max(
+            context.Candidate.ActivationGeneration,
+            previous.ActivationGeneration) + 1;
+        var restored = new SetupActivePointer
         {
             SchemaVersion = SetupActivePointer.CurrentSchemaVersion,
-            BundleId = context.Previous.BundleId,
-            ActivationGeneration = context.Candidate.ActivationGeneration + 1,
+            BundleId = previous.BundleId,
+            ActivationGeneration = restoredGeneration,
         };
 
-        var restore = WritePointer(layout, layout.ActivePointerPath, restoredPointer);
+        context.Stamp = context.Stamp with { TargetActivationGeneration = restoredGeneration };
+        var stampWrite = WriteStamp(layout, context.Stamp);
+        if (!stampWrite.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, stampWrite.Code);
+        }
+
+        // 5.
+        var restore = WritePointer(layout, layout.ActivePointerPath, restored);
         if (!restore.IsSuccess)
         {
             return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, restore.Code);
         }
 
-        // 4. Recompose for the restored generation and bring the previous container back.
-        var recompose = await _adapter.ComposeExpectedActiveInputAsync(session, restoredPointer, rollbackToken);
+        // 6.
+        var recompose = await _adapter.ComposeExpectedActiveInputAsync(session, restored, token);
         if (!recompose.IsSuccess)
         {
             return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, recompose.Code);
         }
 
-        var validate = await _adapter.ValidateComposeAsync(session, rollbackToken);
-        if (!validate.IsSuccess)
+        // 8. Rollback never runs a migration.
+        var recreatePhase = AdvanceRollbackPhase(context, SetupTransactionPhase.Recreating);
+        if (!recreatePhase.IsSuccess)
         {
-            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, validate.Code);
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, recreatePhase.Code);
         }
 
-        var recreate = await _adapter.StartOrRecreateMailerAsync(session, rollbackToken);
+        var recreate = await _adapter.StartOrRecreateMailerAsync(session, token);
         if (!recreate.IsSuccess)
         {
             return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, recreate.Code);
         }
 
-        var readiness = await _adapter.AwaitMailerHealthyAsync(session, rollbackToken);
+        // 9.
+        var inspectPhase = AdvanceRollbackPhase(context, SetupTransactionPhase.Inspecting);
+        if (!inspectPhase.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, inspectPhase.Code);
+        }
+
+        var verification = await VerifyGenerationAsync(
+            layout,
+            session,
+            restored,
+            previousRecorded,
+            previousHostAtRest,
+            token);
+        if (!verification.IsSuccess)
+        {
+            _ = WriteVerificationRecord(
+                layout,
+                restored,
+                SetupVerificationRecord.StatusInvalidated,
+                verification,
+                previousHostAtRest,
+                SetupVerificationRecord.ReadinessNotEvaluated,
+                SetupRuntimeIdentityBindingResult.Missing,
+                committedAt: null);
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, verification.ReasonCode);
+        }
+
+        // 10.
+        var readinessPhase = AdvanceRollbackPhase(context, SetupTransactionPhase.ReadinessChecking);
+        if (!readinessPhase.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, readinessPhase.Code);
+        }
+
+        var readiness = await _adapter.AwaitMailerHealthyAsync(session, token);
         if (!readiness.IsSuccess)
         {
             return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, readiness.Code);
+        }
+
+        // 11.
+        var commitDrift = await _adapter.VerifyExternalInputsUnchangedAsync(session, token);
+        if (!commitDrift.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, commitDrift.Code);
+        }
+
+        // 12-15. Binding first, record second: the record stays the final success authority.
+        var bindingPhase = AdvanceRollbackPhase(context, SetupTransactionPhase.BindingPending);
+        if (!bindingPhase.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, bindingPhase.Code);
+        }
+
+        var bindingWrite = WriteRuntimeIdentityBinding(layout, session, restored);
+        if (!bindingWrite.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, bindingWrite.Code);
+        }
+
+        var pendingPhase = AdvanceRollbackPhase(context, SetupTransactionPhase.VerificationPending);
+        if (!pendingPhase.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, pendingPhase.Code);
+        }
+
+        var recordWrite = WriteVerificationRecord(
+            layout,
+            restored,
+            SetupVerificationRecord.StatusCommitted,
+            verification,
+            previousHostAtRest,
+            SetupVerificationRecord.ReadinessPassed,
+            SetupRuntimeIdentityBindingResult.Matched,
+            Timestamp());
+        if (!recordWrite.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, recordWrite.Code);
+        }
+
+        var committedPhase = AdvanceRollbackPhase(context, SetupTransactionPhase.VerificationCommitted);
+        if (!committedPhase.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, committedPhase.Code);
+        }
+
+        var previousDelete = _writer.TryDurableDelete(layout.ManagedRoot, layout.PreviousPointerPath);
+        if (!previousDelete.IsSuccess)
+        {
+            return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, previousDelete.Code);
         }
 
         var stampDelete = DeleteStamp(layout);
@@ -613,29 +922,26 @@ public sealed class SetupApplyEngine
         }
 
         // A migration that already ran is not undone by restoring the pointer.
-        if (migrationAttempted)
-        {
-            return Fail(
+        return migrationAttempted
+            ? Fail(
                 SetupApplyResultCode.ApplyFailedRollbackSucceeded,
                 SetupManagedDeploymentState.NeedsIntervention,
                 "Apply failed and configuration rolled back, but a database migration may have persisted.",
                 actionCode: SetupApplyActionCode.ReviewDatabaseSchema,
                 reasonCode: reasonCode,
-                bundleId: restoredPointer.BundleId,
-                activationGeneration: restoredPointer.ActivationGeneration,
+                bundleId: restored.BundleId,
+                activationGeneration: restoredGeneration,
                 configRollbackStatus: SetupConfigRollbackStatus.Succeeded,
                 persistentSideEffectMayRemain: true,
-                persistentSideEffectKind: sideEffectKind);
-        }
-
-        return Fail(
-            SetupApplyResultCode.ApplyFailedRollbackSucceeded,
-            SetupManagedDeploymentState.Active,
-            "Apply failed and the previous Managed configuration was restored.",
-            reasonCode: reasonCode,
-            bundleId: restoredPointer.BundleId,
-            activationGeneration: restoredPointer.ActivationGeneration,
-            configRollbackStatus: SetupConfigRollbackStatus.Succeeded);
+                persistentSideEffectKind: sideEffectKind)
+            : Fail(
+                SetupApplyResultCode.ApplyFailedRollbackSucceeded,
+                SetupManagedDeploymentState.Active,
+                "Apply failed and the previous Managed configuration was restored and re-verified.",
+                reasonCode: reasonCode,
+                bundleId: restored.BundleId,
+                activationGeneration: restoredGeneration,
+                configRollbackStatus: SetupConfigRollbackStatus.Succeeded);
     }
 
     private SetupApplyResult TerminalRollbackFailure(
@@ -645,8 +951,9 @@ public sealed class SetupApplyEngine
         string sideEffectKind,
         string? rollbackFailureCode)
     {
-        // Leave a terminal stamp so a later apply refuses and recovery reports intervention.
-        var terminal = context.Stamp with
+        // Leave a terminal stamp so a later apply refuses and recovery reports intervention. Which
+        // generation is effective is deliberately not guessed.
+        context.Stamp = context.Stamp with
         {
             Kind = SetupTransactionKind.Rollback,
             Phase = SetupTransactionPhase.RollbackPending,
@@ -655,8 +962,7 @@ public sealed class SetupApplyEngine
             PersistentSideEffectMayRemain = migrationAttempted,
             PersistentSideEffectKind = sideEffectKind,
         };
-        context.Stamp = terminal;
-        _ = WriteStamp(context.Layout, terminal);
+        _ = WriteStamp(context.Layout, context.Stamp);
 
         return Fail(
             SetupApplyResultCode.ApplyFailedRollbackFailed,
@@ -675,6 +981,43 @@ public sealed class SetupApplyEngine
         TrustedSetupHostLayout layout,
         CancellationToken cancellationToken)
     {
+        var (probeResult, binding) = await _adapter.CheckDockerAsync(cancellationToken);
+        if (!probeResult.IsSuccess || binding is null)
+        {
+            return Fail(
+                SetupApplyResultCode.RecoveryRequired,
+                SetupManagedDeploymentState.NotInspected,
+                "Docker preflight failed; Managed state was not inspected.",
+                reasonCode: probeResult.Code);
+        }
+
+        var (sessionResult, session) = await _adapter.AcquireSessionAsync(layout, binding, cancellationToken);
+        if (!sessionResult.IsSuccess || session is null)
+        {
+            return sessionResult.Code == SetupDockerResultCode.ConcurrentSetupRejected
+                ? Fail(
+                    SetupApplyResultCode.ConcurrentApplyRejected,
+                    SetupManagedDeploymentState.NotInspected,
+                    "Another setup apply session is already running.",
+                    reasonCode: sessionResult.Code)
+                : Fail(
+                    SetupApplyResultCode.RecoveryRequired,
+                    SetupManagedDeploymentState.NotInspected,
+                    "Setup apply session could not be acquired; recovery is still required.",
+                    reasonCode: sessionResult.Code);
+        }
+
+        await using (session)
+        {
+            return await RecoverUnderLockAsync(layout, session, cancellationToken);
+        }
+    }
+
+    private async Task<SetupApplyResult> RecoverUnderLockAsync(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        CancellationToken cancellationToken)
+    {
         var stateRead = ReadDurableState(layout, out var state);
         if (stateRead is not null)
         {
@@ -682,49 +1025,7 @@ public sealed class SetupApplyEngine
         }
 
         var stamp = state.TransactionStamp;
-
-        // Phase A: nothing in flight  Eclassify the durable state only.
-        if (stamp is null)
-        {
-            if (state.Active is null)
-            {
-                return Fail(
-                    SetupApplyResultCode.RollbackSucceeded,
-                    SetupManagedDeploymentState.NoManaged,
-                    "No Managed deployment is active and no transaction is in flight.",
-                    configRollbackStatus: SetupConfigRollbackStatus.NotApplicable);
-            }
-
-            var record = state.VerificationRecord;
-            if (record is not null
-                && record.IsCommittedSuccess
-                && string.Equals(record.BundleId, state.Active.BundleId, StringComparison.Ordinal)
-                && record.ActivationGeneration == state.Active.ActivationGeneration)
-            {
-                return SetupApplyResult.Create(
-                    SetupApplyResultCode.ApplySucceeded,
-                    SetupManagedDeploymentState.Active,
-                    "Managed deployment state is consistent and verification is committed.",
-                    actionCode: SetupApplyActionCode.CompleteSendReadyEvaluation,
-                    bundleId: state.Active.BundleId,
-                    activationGeneration: state.Active.ActivationGeneration,
-                    configurationApplied: true,
-                    verificationCommitted: true);
-            }
-
-            return Fail(
-                SetupApplyResultCode.NeedsIntervention,
-                SetupManagedDeploymentState.NeedsIntervention,
-                "ACTIVE is set but no committed verification record matches it.",
-                actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                reasonCode: "verification_record_missing",
-                bundleId: state.Active.BundleId,
-                activationGeneration: state.Active.ActivationGeneration,
-                configurationApplied: true);
-        }
-
-        // Phase B: a terminal stamp always requires a human.
-        if (stamp.Terminal)
+        if (stamp is not null && stamp.Terminal)
         {
             return Fail(
                 SetupApplyResultCode.NeedsIntervention,
@@ -737,163 +1038,450 @@ public sealed class SetupApplyEngine
                 persistentSideEffectKind: stamp.PersistentSideEffectKind);
         }
 
-        // Phase C: crash before the ACTIVE switch  Edrop the stamp and keep the current state.
-        if (string.Equals(stamp.Phase, SetupTransactionPhase.Prepared, StringComparison.Ordinal))
+        var purge = await _adapter.PurgeStaleMountVerifiersAsync(session, cancellationToken);
+        if (!purge.IsSuccess)
         {
-            var delete = DeleteStamp(layout);
-            if (!delete.IsSuccess)
+            if (stamp is not null)
             {
-                return Fail(
-                    SetupApplyResultCode.NeedsIntervention,
-                    SetupManagedDeploymentState.NeedsIntervention,
-                    "Prepared transaction stamp could not be cleared.",
-                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                    reasonCode: delete.Code);
+                _ = WriteStamp(layout, stamp with { Terminal = true, ReasonCode = "unsafe_verifier_residue" });
             }
 
             return Fail(
-                SetupApplyResultCode.RollbackSucceeded,
-                state.Active is null
-                    ? SetupManagedDeploymentState.NoManaged
-                    : SetupManagedDeploymentState.Active,
-                "Interrupted apply had not activated; no configuration change was applied.",
-                reasonCode: stamp.ReasonCode,
-                bundleId: state.Active?.BundleId,
-                activationGeneration: state.Active?.ActivationGeneration,
-                configRollbackStatus: SetupConfigRollbackStatus.NotApplicable);
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "Managed verifier temp directory is not in a safe state.",
+                actionCode: SetupApplyActionCode.UnsafeVerifierResidue,
+                reasonCode: "unsafe_verifier_residue",
+                persistentSideEffectMayRemain: stamp?.PersistentSideEffectMayRemain ?? false,
+                persistentSideEffectKind: stamp?.PersistentSideEffectKind ?? SetupPersistentSideEffectKind.None);
         }
 
-        // Phase D: crash after verification was committed  Ethe apply actually finished.
-        if (string.Equals(stamp.Phase, SetupTransactionPhase.VerificationCommitted, StringComparison.Ordinal))
-        {
-            var delete = DeleteStamp(layout);
-            if (!delete.IsSuccess)
-            {
-                return Fail(
-                    SetupApplyResultCode.NeedsIntervention,
-                    SetupManagedDeploymentState.NeedsIntervention,
-                    "Completed transaction stamp could not be cleared.",
-                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                    reasonCode: delete.Code);
-            }
-
-            return SetupApplyResult.Create(
-                SetupApplyResultCode.ApplySucceeded,
-                SetupManagedDeploymentState.Active,
-                "Interrupted apply had already committed verification.",
-                actionCode: SetupApplyActionCode.CompleteSendReadyEvaluation,
-                bundleId: state.Active?.BundleId,
-                activationGeneration: state.Active?.ActivationGeneration,
-                configurationApplied: true,
-                verificationCommitted: true);
-        }
-
-        // Phase E: crash between activation and verification  Eroll the configuration back.
-        return await RecoverRollbackAsync(layout, state, stamp, cancellationToken);
-    }
-
-    private async Task<SetupApplyResult> RecoverRollbackAsync(
-        TrustedSetupHostLayout layout,
-        DurableState state,
-        SetupTransactionStamp stamp,
-        CancellationToken cancellationToken)
-    {
-        var (probeResult, binding) = await _adapter.CheckDockerAsync(cancellationToken);
-        if (!probeResult.IsSuccess || binding is null)
-        {
-            return Fail(
-                SetupApplyResultCode.RecoveryRequired,
-                SetupManagedDeploymentState.RecoveryRequired,
-                "Docker preflight failed; recovery is still required.",
-                reasonCode: probeResult.Code,
-                persistentSideEffectMayRemain: stamp.PersistentSideEffectMayRemain,
-                persistentSideEffectKind: stamp.PersistentSideEffectKind);
-        }
-
-        var (sessionResult, session) = await _adapter.AcquireSessionAsync(layout, binding, cancellationToken);
-        if (!sessionResult.IsSuccess || session is null)
-        {
-            return sessionResult.Code == SetupDockerResultCode.ConcurrentSetupRejected
-                ? Fail(
-                    SetupApplyResultCode.ConcurrentApplyRejected,
-                    SetupManagedDeploymentState.RecoveryRequired,
-                    "Another setup apply session is already running.",
-                    reasonCode: sessionResult.Code)
-                : Fail(
-                    SetupApplyResultCode.RecoveryRequired,
-                    SetupManagedDeploymentState.RecoveryRequired,
-                    "Setup apply session could not be acquired; recovery is still required.",
-                    reasonCode: sessionResult.Code);
-        }
-
-        await using (session)
+        // Nothing to compare external inputs against when neither a transaction nor ACTIVE exists,
+        // and pinning would need bundle material that a never-applied host does not have yet.
+        if (stamp is not null || state.Active is not null)
         {
             var pin = await _adapter.PinExternalInputsAsync(session, cancellationToken);
-            if (!pin.IsSuccess)
+            if (!pin.IsSuccess || session.ExternalInputs is null)
             {
                 return Fail(
                     SetupApplyResultCode.RecoveryRequired,
                     SetupManagedDeploymentState.RecoveryRequired,
                     "External inputs could not be pinned; recovery is still required.",
                     reasonCode: pin.Code,
-                    persistentSideEffectMayRemain: stamp.PersistentSideEffectMayRemain,
-                    persistentSideEffectKind: stamp.PersistentSideEffectKind);
+                    persistentSideEffectMayRemain: stamp?.PersistentSideEffectMayRemain ?? false,
+                    persistentSideEffectKind: stamp?.PersistentSideEffectKind ?? SetupPersistentSideEffectKind.None);
             }
+        }
 
-            _ = await _adapter.PurgeStaleMountVerifiersAsync(session, cancellationToken);
+        return stamp is null
+            ? RecoverWithoutTransaction(layout, session, state)
+            : await RecoverPhaseAsync(layout, session, state, stamp, cancellationToken);
+    }
 
-            var candidatePointer = new SetupActivePointer
+    /// <summary>
+    /// No transaction is in flight, so recovery only classifies what is on disk and clears orphans
+    /// it can prove are orphans. Nothing is inferred from an unobserved runtime.
+    /// </summary>
+    private SetupApplyResult RecoverWithoutTransaction(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        DurableState state)
+    {
+        if (state.RecordUnreadable || state.BindingUnreadable)
+        {
+            return Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "Durable verification state could not be read.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: "durable_state_unreadable");
+        }
+
+        if (state.Active is null)
+        {
+            foreach (var orphan in new[] { layout.PreviousPointerPath, layout.LastRecordPath, layout.RuntimeIdentityBindPath })
             {
-                SchemaVersion = SetupActivePointer.CurrentSchemaVersion,
-                BundleId = stamp.CandidateBundleId,
-                ActivationGeneration = stamp.TargetActivationGeneration,
-            };
-
-            // The interrupted candidate may still be running; stop it when it is what ACTIVE names.
-            if (state.Active is not null
-                && string.Equals(state.Active.BundleId, stamp.CandidateBundleId, StringComparison.Ordinal)
-                && state.Active.ActivationGeneration == stamp.TargetActivationGeneration)
-            {
-                var candidateCompose = await _adapter.ComposeExpectedActiveInputAsync(
-                    session,
-                    candidatePointer,
-                    cancellationToken);
-                if (candidateCompose.IsSuccess)
+                var delete = _writer.TryDurableDelete(layout.ManagedRoot, orphan);
+                if (!delete.IsSuccess)
                 {
-                    _ = await _adapter.StopFailedMailerAsync(session, cancellationToken);
+                    return Fail(
+                        SetupApplyResultCode.NeedsIntervention,
+                        SetupManagedDeploymentState.NeedsIntervention,
+                        "Orphaned Managed state could not be cleared.",
+                        actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                        reasonCode: delete.Code);
                 }
             }
 
-            var previous = state.Previous;
-            if (previous is null && stamp.PreviousBundleId is not null)
+            return Fail(
+                SetupApplyResultCode.RollbackSucceeded,
+                SetupManagedDeploymentState.NoManaged,
+                "No Managed deployment is active and no transaction is in flight.",
+                configRollbackStatus: SetupConfigRollbackStatus.NotApplicable);
+        }
+
+        var active = state.Active;
+        if (!IsCommittedFor(state.VerificationRecord, active))
+        {
+            return Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "ACTIVE is set but no committed verification record matches it.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: "verification_record_missing",
+                bundleId: active.BundleId,
+                activationGeneration: active.ActivationGeneration,
+                configurationApplied: true);
+        }
+
+        if (!BindingMatches(state.RuntimeIdentityBinding, active, session.ExternalInputs!))
+        {
+            return Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "ACTIVE is set but the runtime-identity binding does not match it.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: "runtime_identity_binding_mismatch",
+                bundleId: active.BundleId,
+                activationGeneration: active.ActivationGeneration,
+                configurationApplied: true);
+        }
+
+        if (state.Previous is not null)
+        {
+            var delete = _writer.TryDurableDelete(layout.ManagedRoot, layout.PreviousPointerPath);
+            if (!delete.IsSuccess)
             {
                 return Fail(
                     SetupApplyResultCode.NeedsIntervention,
                     SetupManagedDeploymentState.NeedsIntervention,
-                    "The interrupted transaction expected a previous generation that is not recorded.",
+                    "The orphaned previous pointer could not be cleared.",
                     actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                    reasonCode: "previous_pointer_missing",
-                    persistentSideEffectMayRemain: stamp.PersistentSideEffectMayRemain,
-                    persistentSideEffectKind: stamp.PersistentSideEffectKind);
+                    reasonCode: delete.Code,
+                    bundleId: active.BundleId,
+                    activationGeneration: active.ActivationGeneration);
+            }
+        }
+
+        return SetupApplyResult.Create(
+            SetupApplyResultCode.ApplySucceeded,
+            SetupManagedDeploymentState.Active,
+            "Managed deployment state is consistent and verification is committed.",
+            actionCode: SetupApplyActionCode.CompleteSendReadyEvaluation,
+            bundleId: active.BundleId,
+            activationGeneration: active.ActivationGeneration,
+            configurationApplied: true,
+            verificationCommitted: true);
+    }
+
+    private async Task<SetupApplyResult> RecoverPhaseAsync(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        DurableState state,
+        SetupTransactionStamp stamp,
+        CancellationToken cancellationToken)
+    {
+        var candidate = new SetupActivePointer
+        {
+            SchemaVersion = SetupActivePointer.CurrentSchemaVersion,
+            BundleId = stamp.CandidateBundleId,
+            ActivationGeneration = stamp.TargetActivationGeneration,
+        };
+
+        var previous = state.Previous;
+        if (stamp.PreviousBundleId is not null)
+        {
+            if (previous is null)
+            {
+                return RecoveryIntervention(stamp, "previous_pointer_missing");
             }
 
-            var context = new ApplyContext(
-                layout,
-                session,
-                stamp,
-                candidatePointer,
-                previous,
-                SetupIntegrityMerger.NotVerified,
-                recorded: null,
-                migrationRequired: false);
-
-            var rollback = await RollbackAsync(
-                context,
-                stamp.ReasonCode ?? "recovered_interrupted_apply",
-                stamp.PersistentSideEffectMayRemain);
-
-            return MapRecoveryResult(rollback);
+            if (!string.Equals(previous.BundleId, stamp.PreviousBundleId, StringComparison.Ordinal)
+                || previous.ActivationGeneration != stamp.PreviousActivationGeneration)
+            {
+                return RecoveryIntervention(stamp, "previous_pointer_mismatch");
+            }
         }
+        else
+        {
+            previous = null;
+        }
+
+        var sideEffect = stamp.PersistentSideEffectMayRemain;
+        var context = new ApplyContext(
+            layout,
+            session,
+            stamp,
+            candidate,
+            previous,
+            SetupIntegrityMerger.NotVerified,
+            recorded: null,
+            migrationRequired: false);
+
+        switch (stamp.Phase)
+        {
+            case SetupTransactionPhase.Prepared:
+            case SetupTransactionPhase.ActiveSwitchPending:
+                if (state.Active is null)
+                {
+                    return previous is null
+                        ? DiscardFreshTransaction(layout)
+                        : RecoveryIntervention(stamp, "active_pointer_missing");
+                }
+
+                if (SamePointer(state.Active, candidate))
+                {
+                    return MapRecoveryResult(await RollbackAsync(context, RecoveryReason(stamp), sideEffect));
+                }
+
+                if (previous is not null && SamePointer(state.Active, previous))
+                {
+                    return await RestoreOldActiveAsync(layout, session, context, previous, cancellationToken);
+                }
+
+                return RecoveryIntervention(stamp, "active_pointer_unexpected");
+
+            case SetupTransactionPhase.CandidateComposeValidating:
+            case SetupTransactionPhase.MigrationPending:
+            case SetupTransactionPhase.Migrating:
+            case SetupTransactionPhase.Recreating:
+            case SetupTransactionPhase.Inspecting:
+            case SetupTransactionPhase.ReadinessChecking:
+            case SetupTransactionPhase.RollbackPending:
+                return MapRecoveryResult(await RollbackAsync(context, RecoveryReason(stamp), sideEffect));
+
+            case SetupTransactionPhase.BindingPending:
+            case SetupTransactionPhase.VerificationPending:
+                return await ReverifyCandidateAsync(layout, session, state, context, sideEffect, cancellationToken);
+
+            case SetupTransactionPhase.VerificationCommitted:
+                return FinishCommittedTransaction(layout, session, state, stamp);
+
+            default:
+                return RecoveryIntervention(stamp, "transaction_phase_unknown");
+        }
+    }
+
+    /// <summary>
+    /// The interrupted apply never moved ACTIVE, so the previous generation is still the running one.
+    /// Its verification record was already invalidated, so it has to be re-earned rather than assumed.
+    /// </summary>
+    private async Task<SetupApplyResult> RestoreOldActiveAsync(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        ApplyContext context,
+        SetupActivePointer previous,
+        CancellationToken cancellationToken)
+    {
+        var validation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+            _fileSystem,
+            layout,
+            previous.BundleId,
+            out var recorded,
+            out var hostAtRest);
+        if (!validation.IsSuccess || recorded is null)
+        {
+            return RecoveryIntervention(context.Stamp, validation.Code ?? "previous_bundle_invalid");
+        }
+
+        var compose = await _adapter.ComposeExpectedActiveInputAsync(session, previous, cancellationToken);
+        if (!compose.IsSuccess)
+        {
+            return RecoveryStillRequired(context.Stamp, compose.Code);
+        }
+
+        var verification = await VerifyGenerationAsync(layout, session, previous, recorded, hostAtRest, cancellationToken);
+        if (!verification.IsSuccess)
+        {
+            _ = WriteVerificationRecord(
+                layout,
+                previous,
+                SetupVerificationRecord.StatusInvalidated,
+                verification,
+                hostAtRest,
+                SetupVerificationRecord.ReadinessNotEvaluated,
+                SetupRuntimeIdentityBindingResult.Missing,
+                committedAt: null);
+            return RecoveryIntervention(context.Stamp, verification.ReasonCode!);
+        }
+
+        var readiness = await _adapter.AwaitMailerHealthyAsync(session, cancellationToken);
+        if (!readiness.IsSuccess)
+        {
+            return RecoveryStillRequired(context.Stamp, "readiness_failed");
+        }
+
+        var drift = await _adapter.VerifyExternalInputsUnchangedAsync(session, cancellationToken);
+        if (!drift.IsSuccess)
+        {
+            return RecoveryStillRequired(context.Stamp, drift.Code);
+        }
+
+        var commit = await CommitGenerationAsync(
+            context,
+            previous,
+            verification,
+            hostAtRest,
+            migrationAttempted: false,
+            SetupApplyResultCode.RollbackSucceeded,
+            "The interrupted apply never activated; the previous generation was re-verified.");
+        return commit;
+    }
+
+    /// <summary>
+    /// The crash happened between readiness and the record commit, so the candidate may well be
+    /// healthy. It is proven again from scratch instead of trusting the half-written transaction.
+    /// </summary>
+    private async Task<SetupApplyResult> ReverifyCandidateAsync(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        DurableState state,
+        ApplyContext context,
+        bool sideEffect,
+        CancellationToken cancellationToken)
+    {
+        if (state.Active is null || !SamePointer(state.Active, context.Candidate))
+        {
+            return RecoveryIntervention(context.Stamp, "active_pointer_unexpected");
+        }
+
+        var validation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+            _fileSystem,
+            layout,
+            context.Candidate.BundleId,
+            out var recorded,
+            out var hostAtRest);
+        if (!validation.IsSuccess || recorded is null)
+        {
+            return MapRecoveryResult(await RollbackAsync(context, validation.Code ?? "candidate_bundle_invalid", sideEffect));
+        }
+
+        var compose = await _adapter.ComposeExpectedActiveInputAsync(session, context.Candidate, cancellationToken);
+        if (!compose.IsSuccess)
+        {
+            return MapRecoveryResult(await RollbackAsync(context, compose.Code ?? "compose_pin_failed", sideEffect));
+        }
+
+        var verification = await VerifyGenerationAsync(
+            layout,
+            session,
+            context.Candidate,
+            recorded,
+            hostAtRest,
+            cancellationToken);
+        if (!verification.IsSuccess)
+        {
+            _ = WriteVerificationRecord(
+                layout,
+                context.Candidate,
+                SetupVerificationRecord.StatusInvalidated,
+                verification,
+                hostAtRest,
+                SetupVerificationRecord.ReadinessNotEvaluated,
+                SetupRuntimeIdentityBindingResult.Missing,
+                committedAt: null);
+            return MapRecoveryResult(await RollbackAsync(context, verification.ReasonCode!, sideEffect));
+        }
+
+        var readiness = await _adapter.AwaitMailerHealthyAsync(session, cancellationToken);
+        if (!readiness.IsSuccess)
+        {
+            return MapRecoveryResult(await RollbackAsync(context, "readiness_failed", sideEffect));
+        }
+
+        var drift = await _adapter.VerifyExternalInputsUnchangedAsync(session, cancellationToken);
+        if (!drift.IsSuccess)
+        {
+            return MapRecoveryResult(await RollbackAsync(context, "external_input_changed_before_verification", sideEffect));
+        }
+
+        return await CommitGenerationAsync(
+            context,
+            context.Candidate,
+            verification,
+            hostAtRest,
+            sideEffect,
+            SetupApplyResultCode.ApplySucceeded,
+            "The interrupted apply was re-verified and verification is committed.");
+    }
+
+    /// <summary>
+    /// The record was already committed before the crash, so the transaction only has to be closed.
+    /// ACTIVE, the record, and the binding must still agree; nothing is assumed from the stamp alone.
+    /// </summary>
+    private SetupApplyResult FinishCommittedTransaction(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        DurableState state,
+        SetupTransactionStamp stamp)
+    {
+        if (state.RecordUnreadable || state.BindingUnreadable)
+        {
+            return RecoveryIntervention(stamp, "durable_state_unreadable");
+        }
+
+        var active = state.Active;
+        if (active is null)
+        {
+            return RecoveryIntervention(stamp, "active_pointer_missing");
+        }
+
+        if (!IsCommittedFor(state.VerificationRecord, active))
+        {
+            return RecoveryIntervention(stamp, "verification_record_missing");
+        }
+
+        if (!BindingMatches(state.RuntimeIdentityBinding, active, session.ExternalInputs!))
+        {
+            return RecoveryIntervention(stamp, "runtime_identity_binding_mismatch");
+        }
+
+        var previousDelete = _writer.TryDurableDelete(layout.ManagedRoot, layout.PreviousPointerPath);
+        if (!previousDelete.IsSuccess)
+        {
+            return RecoveryIntervention(stamp, previousDelete.Code ?? "previous_pointer_delete_failed");
+        }
+
+        var stampDelete = DeleteStamp(layout);
+        if (!stampDelete.IsSuccess)
+        {
+            return RecoveryIntervention(stamp, stampDelete.Code ?? "transaction_stamp_delete_failed");
+        }
+
+        return SetupApplyResult.Create(
+            SetupApplyResultCode.ApplySucceeded,
+            SetupManagedDeploymentState.Active,
+            "The interrupted apply had already committed verification.",
+            actionCode: SetupApplyActionCode.CompleteSendReadyEvaluation,
+            bundleId: active.BundleId,
+            activationGeneration: active.ActivationGeneration,
+            configurationApplied: true,
+            verificationCommitted: true,
+            persistentSideEffectMayRemain: stamp.PersistentSideEffectMayRemain,
+            persistentSideEffectKind: stamp.PersistentSideEffectKind);
+    }
+
+    private SetupApplyResult DiscardFreshTransaction(TrustedSetupHostLayout layout)
+    {
+        foreach (var path in new[] { layout.LastRecordPath, layout.RuntimeIdentityBindPath, layout.TransactionStampPath })
+        {
+            var delete = _writer.TryDurableDelete(layout.ManagedRoot, path);
+            if (!delete.IsSuccess)
+            {
+                return Fail(
+                    SetupApplyResultCode.NeedsIntervention,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "Interrupted fresh apply state could not be cleared.",
+                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                    reasonCode: delete.Code);
+            }
+        }
+
+        return Fail(
+            SetupApplyResultCode.RollbackSucceeded,
+            SetupManagedDeploymentState.NoManaged,
+            "The interrupted fresh apply had not activated; no Managed deployment is active.",
+            configRollbackStatus: SetupConfigRollbackStatus.NotApplicable);
     }
 
     private static SetupApplyResult MapRecoveryResult(SetupApplyResult rollback) => rollback.Code switch
@@ -927,69 +1515,239 @@ public sealed class SetupApplyEngine
             source.PersistentSideEffectMayRemain,
             source.PersistentSideEffectKind);
 
+    private static string RecoveryReason(SetupTransactionStamp stamp) =>
+        stamp.ReasonCode ?? "recovered_interrupted_apply";
+
+    private static SetupApplyResult RecoveryIntervention(SetupTransactionStamp stamp, string reasonCode) =>
+        Fail(
+            SetupApplyResultCode.NeedsIntervention,
+            SetupManagedDeploymentState.NeedsIntervention,
+            "The interrupted transaction could not be converged automatically.",
+            actionCode: stamp.PersistentSideEffectMayRemain
+                ? SetupApplyActionCode.ReviewDatabaseSchema
+                : SetupApplyActionCode.ManualInterventionRequired,
+            reasonCode: reasonCode,
+            persistentSideEffectMayRemain: stamp.PersistentSideEffectMayRemain,
+            persistentSideEffectKind: stamp.PersistentSideEffectKind);
+
+    private static SetupApplyResult RecoveryStillRequired(SetupTransactionStamp stamp, string? reasonCode) =>
+        Fail(
+            SetupApplyResultCode.RecoveryRequired,
+            SetupManagedDeploymentState.RecoveryRequired,
+            "Recovery could not complete; the transaction is still in flight.",
+            reasonCode: reasonCode,
+            persistentSideEffectMayRemain: stamp.PersistentSideEffectMayRemain,
+            persistentSideEffectKind: stamp.PersistentSideEffectKind);
+
     // ------------------------------------------------------------ decisions
 
-    private async Task<SetupMigrationDecision> DecideMigrationAsync(
+    private static SetupApplyResult TransactionPresentResult(SetupTransactionStamp stamp) =>
+        stamp.Terminal
+            ? Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "A previous apply ended in a terminal state that requires operator review.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: stamp.ReasonCode ?? "terminal_transaction_present",
+                persistentSideEffectMayRemain: stamp.PersistentSideEffectMayRemain,
+                persistentSideEffectKind: stamp.PersistentSideEffectKind)
+            : Fail(
+                SetupApplyResultCode.RecoveryRequired,
+                SetupManagedDeploymentState.RecoveryRequired,
+                "An interrupted apply transaction must be recovered before applying again.",
+                reasonCode: "transaction_in_progress",
+                persistentSideEffectMayRemain: stamp.PersistentSideEffectMayRemain,
+                persistentSideEffectKind: stamp.PersistentSideEffectKind);
+
+    /// <summary>
+    /// Decides whether the existing ACTIVE generation is a legitimate rollback target. An ACTIVE we
+    /// could not roll back to is a reason to refuse the apply, never a reason to switch anyway.
+    /// </summary>
+    private SetupApplyResult? ClassifyExistingActive(
         TrustedSetupHostLayout layout,
-        SetupHostDockerSession session,
-        SetupActivePointer? active,
-        SetupRecordedMetadata candidateRecorded,
-        CancellationToken cancellationToken)
+        DurableState state,
+        SetupExternalInputSnapshot external,
+        out SetupRecordedMetadata? activeRecorded)
     {
-        if (active is null)
+        activeRecorded = null;
+        var active = state.Active!;
+
+        if (state.RecordUnreadable || state.BindingUnreadable)
         {
-            return SetupDatabaseFileProbe.ClassifyFreshHostDatabase(_fileSystem, session.ExternalInputs!);
+            return Ineligible("durable_state_unreadable");
         }
 
-        var activeValidation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+        if (state.Previous is not null)
+        {
+            return Ineligible("previous_pointer_orphan");
+        }
+
+        if (!IsCommittedFor(state.VerificationRecord, active))
+        {
+            return Ineligible("verification_record_missing");
+        }
+
+        if (state.RuntimeIdentityBinding is null)
+        {
+            return Ineligible("runtime_identity_binding_missing");
+        }
+
+        if (!BindingMatches(state.RuntimeIdentityBinding, active, external))
+        {
+            return Ineligible("runtime_identity_binding_mismatch");
+        }
+
+        var validation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
             _fileSystem,
             layout,
             active.BundleId,
-            out var activeRecorded,
+            out activeRecorded,
             out _);
-        if (!activeValidation.IsSuccess || activeRecorded is null)
+        if (!validation.IsSuccess || activeRecorded is null)
         {
-            return new SetupMigrationDecision
-            {
-                Kind = SetupMigrationDecisionKind.NeedsIntervention,
-                ActionCode = SetupApplyActionCode.ManualInterventionRequired,
-                ReasonCode = "active_bundle_invalid",
-                Message = "The existing ACTIVE bundle failed host at-rest validation.",
-            };
+            return Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "The existing ACTIVE bundle failed host at-rest validation.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: "active_bundle_invalid",
+                bundleId: active.BundleId,
+                activationGeneration: active.ActivationGeneration);
         }
 
-        var compose = await _adapter.ComposeCurrentActiveInputAsync(session, cancellationToken);
-        if (!compose.IsSuccess)
+        return null;
+
+        SetupApplyResult Ineligible(string reasonCode) => Fail(
+            SetupApplyResultCode.IneligibleExistingActive,
+            SetupManagedDeploymentState.RecoveryRequired,
+            "The existing Managed deployment must be recovered before another apply can start.",
+            reasonCode: reasonCode,
+            bundleId: active.BundleId,
+            activationGeneration: active.ActivationGeneration);
+    }
+
+    private static SetupApplyResult? MapMigrationDecision(
+        SetupMigrationDecision decision,
+        SetupManagedDeploymentState preFailureState) => decision.Kind switch
         {
-            return new SetupMigrationDecision
-            {
-                Kind = SetupMigrationDecisionKind.NeedsIntervention,
-                ActionCode = SetupApplyActionCode.ManualInterventionRequired,
-                ReasonCode = compose.Code,
-                Message = "The existing ACTIVE environment could not be composed for inspection.",
-            };
+            SetupMigrationDecisionKind.UpgradeRequired => Fail(
+                SetupApplyResultCode.UpgradeRequired,
+                preFailureState,
+                decision.Message,
+                decision.ActionCode,
+                decision.ReasonCode),
+            SetupMigrationDecisionKind.NeedsIntervention => Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                decision.Message,
+                decision.ActionCode ?? SetupApplyActionCode.ManualInterventionRequired,
+                decision.ReasonCode),
+            _ => null,
+        };
+
+    private static string? ClassifyImageCompatibility(
+        TrustedSetupHostLayout layout,
+        SetupRecordedMetadata candidateRecorded)
+    {
+        var allowed = layout.ReleaseInventory.AllowedImageRepository;
+        var recorded = candidateRecorded.ImageRepository;
+        if (string.IsNullOrWhiteSpace(recorded) || string.IsNullOrWhiteSpace(allowed))
+        {
+            return "image_repository_unknown";
         }
 
-        var status = await _adapter.InspectMigrationStatusAsync(session, cancellationToken);
-        if (!status.IsSuccess || status.MigrationStatus is null)
-        {
-            return new SetupMigrationDecision
-            {
-                Kind = SetupMigrationDecisionKind.NeedsIntervention,
-                ActionCode = SetupApplyActionCode.ReviewDatabaseSchema,
-                ReasonCode = status.Code,
-                Message = "Existing Managed deployment schema could not be classified safely.",
-            };
-        }
-
-        return SetupDatabaseFileProbe.ClassifyExistingFromStatus(
-            status.MigrationStatus.Classification,
-            ImageReference(activeRecorded),
-            ImageReference(candidateRecorded));
+        return string.Equals(recorded, allowed, StringComparison.Ordinal)
+            ? null
+            : "image_repository_mismatch";
     }
 
     private static string ImageReference(SetupRecordedMetadata recorded) =>
         (recorded.ImageRepository ?? string.Empty) + ":" + (recorded.ImageTag ?? string.Empty);
+
+    // -------------------------------------------------------- verification
+
+    /// <summary>
+    /// Proves that the container the compose pin just started is really running this bundle. Host
+    /// at-rest integrity, mount attestation, and the fingerprint comparison are merged with the
+    /// runtime's own recorded identity, so a healthy container serving a different bundle, a
+    /// different configuration, or an unsupported recorded schema cannot be committed as applied.
+    /// </summary>
+    private async Task<GenerationVerification> VerifyGenerationAsync(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        SetupActivePointer pointer,
+        SetupRecordedMetadata expected,
+        string hostAtRest,
+        CancellationToken cancellationToken)
+    {
+        if (!session.StaleVerifiersPurged)
+        {
+            return GenerationVerification.Failed("verifier_purge_not_asserted");
+        }
+
+        if (!SetupMountVerifierFactory.TryCreate(
+                _fileSystem,
+                layout,
+                pointer.BundleId,
+                _timeProvider.GetUtcNow(),
+                out var verifier,
+                out _)
+            || verifier is null)
+        {
+            return GenerationVerification.Failed("mount_verifier_unavailable");
+        }
+
+        var inspection = await _adapter.RunEffectiveInspectionAsync(session, verifier, cancellationToken);
+        if (!inspection.IsSuccess || inspection.Inspection is null)
+        {
+            return GenerationVerification.Failed("effective_inspection_failed");
+        }
+
+        var document = inspection.Inspection;
+        var mountAttestation = MapAttestation(document.MountAttestation.Result);
+        var bundleIntegrity = SetupIntegrityMerger.Merge(hostAtRest, mountAttestation);
+        var fingerprintComparison = document.Effective.FingerprintsMatchRecorded switch
+        {
+            true => SetupVerificationRecord.FingerprintMatched,
+            false => SetupVerificationRecord.FingerprintMismatch,
+            _ => SetupVerificationRecord.FingerprintNotEvaluated,
+        };
+
+        var runtime = document.Recorded;
+        var reasonCode = document switch
+        {
+            { Managed: false } => "runtime_not_managed",
+            _ when runtime is null => "runtime_bundle_identity_missing",
+            _ when !string.Equals(runtime.SetupBundleId, pointer.BundleId, StringComparison.Ordinal) =>
+                "runtime_bundle_identity_mismatch",
+            _ when !string.Equals(
+                runtime.ConfigurationFingerprint,
+                expected.ConfigurationFingerprint,
+                StringComparison.Ordinal) => "runtime_configuration_fingerprint_mismatch",
+            _ when runtime.SchemaVersion != SetupBundleLayout.RecordedSchemaVersion =>
+                "runtime_schema_unsupported",
+            _ when string.IsNullOrWhiteSpace(document.MailerVersion) => "runtime_version_unknown",
+            _ when !string.Equals(bundleIntegrity, SetupIntegrityMerger.Matched, StringComparison.Ordinal) =>
+                "bundle_integrity_mismatch",
+            _ when !string.Equals(
+                fingerprintComparison,
+                SetupVerificationRecord.FingerprintMatched,
+                StringComparison.Ordinal) => "fingerprint_mismatch",
+            _ => null,
+        };
+
+        return new GenerationVerification
+        {
+            IsSuccess = reasonCode is null,
+            ReasonCode = reasonCode,
+            FingerprintComparison = fingerprintComparison,
+            MountAttestation = mountAttestation,
+            BundleIntegrity = bundleIntegrity,
+            ObservedBundleId = runtime?.SetupBundleId,
+            ObservedMailerVersion = document.MailerVersion,
+            ObservedSchemaVersion = runtime?.SchemaVersion,
+        };
+    }
 
     private static string MapAttestation(string? result) => result switch
     {
@@ -1026,33 +1784,36 @@ public sealed class SetupApplyEngine
                 return previousFailure;
             }
 
+            var record = ReadVerificationRecord(layout, out var recordUnreadable);
+            var bindingStamp = ReadRuntimeIdentityBinding(layout, out var bindingUnreadable);
+
             state = new DurableState
             {
                 Active = active,
                 Previous = previous,
                 TransactionStamp = ReadStamp(layout),
-                VerificationRecord = ReadVerificationRecord(layout),
+                VerificationRecord = record,
+                RecordUnreadable = recordUnreadable,
+                RuntimeIdentityBinding = bindingStamp,
+                BindingUnreadable = bindingUnreadable,
             };
             return null;
         }
         catch (IOException)
         {
-            return Fail(
-                SetupApplyResultCode.FailedUnexpected,
-                SetupManagedDeploymentState.NeedsIntervention,
-                "Durable Managed state could not be read.",
-                actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                reasonCode: "state_read_failed");
+            return StateReadFailure();
         }
         catch (UnauthorizedAccessException)
         {
-            return Fail(
-                SetupApplyResultCode.FailedUnexpected,
-                SetupManagedDeploymentState.NeedsIntervention,
-                "Durable Managed state could not be read.",
-                actionCode: SetupApplyActionCode.ManualInterventionRequired,
-                reasonCode: "state_read_failed");
+            return StateReadFailure();
         }
+
+        static SetupApplyResult StateReadFailure() => Fail(
+            SetupApplyResultCode.FailedUnexpected,
+            SetupManagedDeploymentState.NeedsIntervention,
+            "Durable Managed state could not be read.",
+            actionCode: SetupApplyActionCode.ManualInterventionRequired,
+            reasonCode: "state_read_failed");
     }
 
     private bool TryReadPointer(
@@ -1140,8 +1901,9 @@ public sealed class SetupApplyEngine
         };
     }
 
-    private SetupVerificationRecord? ReadVerificationRecord(TrustedSetupHostLayout layout)
+    private SetupVerificationRecord? ReadVerificationRecord(TrustedSetupHostLayout layout, out bool unreadable)
     {
+        unreadable = false;
         var path = layout.LastRecordPath;
         if (!_fileSystem.FileExists(path))
         {
@@ -1153,15 +1915,79 @@ public sealed class SetupApplyEngine
             var record = JsonSerializer.Deserialize(
                 _fileSystem.ReadAllBytes(path),
                 SetupApplyJsonContext.Default.SetupVerificationRecord);
-            return record is null || record.SchemaVersion != SetupVerificationRecord.CurrentSchemaVersion
-                ? null
-                : record;
+            if (record is null || record.SchemaVersion != SetupVerificationRecord.CurrentSchemaVersion)
+            {
+                unreadable = true;
+                return null;
+            }
+
+            return record;
         }
         catch (JsonException)
         {
+            unreadable = true;
             return null;
         }
     }
+
+    private SetupRuntimeIdentityBindingStamp? ReadRuntimeIdentityBinding(
+        TrustedSetupHostLayout layout,
+        out bool unreadable)
+    {
+        unreadable = false;
+        var path = layout.RuntimeIdentityBindPath;
+        if (!_fileSystem.FileExists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            var stamp = JsonSerializer.Deserialize(
+                _fileSystem.ReadAllBytes(path),
+                SetupApplyJsonContext.Default.SetupRuntimeIdentityBindingStamp);
+            if (stamp is null || stamp.SchemaVersion != SetupRuntimeIdentityBindingStamp.CurrentSchemaVersion)
+            {
+                unreadable = true;
+                return null;
+            }
+
+            return stamp;
+        }
+        catch (JsonException)
+        {
+            unreadable = true;
+            return null;
+        }
+    }
+
+    private static bool IsCommittedFor(SetupVerificationRecord? record, SetupActivePointer active) =>
+        record is not null
+        && record.IsCommittedSuccess
+        && string.Equals(record.BundleId, active.BundleId, StringComparison.Ordinal)
+        && record.ActivationGeneration == active.ActivationGeneration;
+
+    private static bool BindingMatches(
+        SetupRuntimeIdentityBindingStamp? binding,
+        SetupActivePointer active,
+        SetupExternalInputSnapshot external) =>
+        binding is not null
+        && string.Equals(binding.BundleId, active.BundleId, StringComparison.Ordinal)
+        && binding.ActivationGeneration == active.ActivationGeneration
+        && CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(binding.BindingMac),
+            Encoding.UTF8.GetBytes(external.BindingMac));
+
+    private static bool SamePointer(SetupActivePointer left, SetupActivePointer right) =>
+        string.Equals(left.BundleId, right.BundleId, StringComparison.Ordinal)
+        && left.ActivationGeneration == right.ActivationGeneration;
+
+    private static bool ComposeMatches(SetupHostDockerSession session, SetupActivePointer pointer) =>
+        session.ComposeInputs is not null
+        && string.Equals(session.ComposeInputs.ExpectedActiveBundleId, pointer.BundleId, StringComparison.Ordinal)
+        && session.ComposeInputs.ExpectedActivationGeneration == pointer.ActivationGeneration;
+
+    // ------------------------------------------------------ durable writes
 
     private SetupDockerResult WritePointer(
         TrustedSetupHostLayout layout,
@@ -1185,17 +2011,114 @@ public sealed class SetupApplyEngine
 
     private SetupDockerResult AdvancePhase(ApplyContext context, string phase, bool persistentSideEffect)
     {
-        var kind = persistentSideEffect
-            ? SetupPersistentSideEffectKind.DatabaseMigration
-            : SetupPersistentSideEffectKind.None;
         context.Stamp = context.Stamp with
         {
             Phase = phase,
             PersistentSideEffectMayRemain = persistentSideEffect,
-            PersistentSideEffectKind = kind,
+            PersistentSideEffectKind = persistentSideEffect
+                ? SetupPersistentSideEffectKind.DatabaseMigration
+                : SetupPersistentSideEffectKind.None,
         };
         return WriteStamp(context.Layout, context.Stamp);
     }
+
+    private SetupDockerResult AdvanceRollbackPhase(ApplyContext context, string phase)
+    {
+        context.Stamp = context.Stamp with { Phase = phase };
+        return WriteStamp(context.Layout, context.Stamp);
+    }
+
+    /// <summary>
+    /// Advances the transaction phase and turns a failed write into a rollback. A side effect whose
+    /// write-ahead record did not land must not happen, so the caller never continues past this.
+    /// </summary>
+    private async Task<SetupApplyResult?> GateAsync(
+        ApplyContext context,
+        string phase,
+        bool persistentSideEffect,
+        bool migrationAttempted)
+    {
+        var write = AdvancePhase(context, phase, persistentSideEffect);
+        return write.IsSuccess
+            ? null
+            : await RollbackAsync(context, "durable_write_failed", migrationAttempted);
+    }
+
+    /// <summary>
+    /// A pre-activation failure after the verification record was invalidated. ACTIVE has not moved,
+    /// but its record no longer vouches for it, so the transaction stays for recovery instead of
+    /// being silently dropped.
+    /// </summary>
+    private SetupApplyResult AbortBeforeActivation(ApplyContext context, string reasonCode)
+    {
+        if (context.Previous is not null)
+        {
+            return Fail(
+                SetupApplyResultCode.RecoveryRequired,
+                SetupManagedDeploymentState.RecoveryRequired,
+                "The apply stopped before activation; the existing generation must be re-verified.",
+                reasonCode: reasonCode,
+                bundleId: context.Previous.BundleId,
+                activationGeneration: context.Previous.ActivationGeneration);
+        }
+
+        var stampDelete = DeleteStamp(context.Layout);
+        if (!stampDelete.IsSuccess)
+        {
+            return Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "The abandoned transaction stamp could not be cleared.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: stampDelete.Code);
+        }
+
+        return Fail(
+            SetupApplyResultCode.FreshApplyFailed,
+            SetupManagedDeploymentState.NoManaged,
+            "Fresh Managed apply stopped before activation.",
+            reasonCode: reasonCode,
+            configRollbackStatus: SetupConfigRollbackStatus.NotApplicable);
+    }
+
+    private SetupApplyResult? DiscardPreviousPointer(
+        TrustedSetupHostLayout layout,
+        SetupActivePointer? previousPointer)
+    {
+        if (previousPointer is null)
+        {
+            return null;
+        }
+
+        var delete = _writer.TryDurableDelete(layout.ManagedRoot, layout.PreviousPointerPath);
+        return delete.IsSuccess
+            ? null
+            : Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "The previous pointer written for an abandoned transaction could not be cleared.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: delete.Code);
+    }
+
+    private static SetupApplyResult CommittedButUnfinished(
+        SetupActivePointer pointer,
+        string? reasonCode,
+        bool migrationAttempted) =>
+        Fail(
+            SetupApplyResultCode.NeedsIntervention,
+            SetupManagedDeploymentState.NeedsIntervention,
+            "Verification was committed but the transaction could not be finalized.",
+            actionCode: SetupApplyActionCode.ManualInterventionRequired,
+            reasonCode: reasonCode,
+            bundleId: pointer.BundleId,
+            activationGeneration: pointer.ActivationGeneration,
+            configurationApplied: true,
+            verificationCommitted: true,
+            persistentSideEffectMayRemain: migrationAttempted,
+            persistentSideEffectKind: migrationAttempted
+                ? SetupPersistentSideEffectKind.DatabaseMigration
+                : SetupPersistentSideEffectKind.None);
 
     /// <summary>
     /// Drops any verification claim for <paramref name="activationGeneration"/> by writing a
@@ -1208,7 +2131,7 @@ public sealed class SetupApplyEngine
         string bundleId,
         long activationGeneration)
     {
-        var existing = ReadVerificationRecord(layout);
+        var existing = ReadVerificationRecord(layout, out _);
         if (existing is not null
             && string.Equals(existing.Status, SetupVerificationRecord.StatusInvalidated, StringComparison.Ordinal)
             && string.Equals(existing.BundleId, bundleId, StringComparison.Ordinal)
@@ -1240,11 +2163,11 @@ public sealed class SetupApplyEngine
     }
 
     private SetupDockerResult WriteVerificationRecord(
-        ApplyContext context,
+        TrustedSetupHostLayout layout,
+        SetupActivePointer pointer,
         string status,
-        string fingerprintComparison,
-        string mountAttestation,
-        string bundleIntegrity,
+        GenerationVerification verification,
+        string hostAtRest,
         string readiness,
         string runtimeIdentityBinding,
         string? committedAt)
@@ -1253,15 +2176,17 @@ public sealed class SetupApplyEngine
         {
             SchemaVersion = SetupVerificationRecord.CurrentSchemaVersion,
             Status = status,
-            BundleId = context.Candidate.BundleId,
-            ActivationGeneration = context.Candidate.ActivationGeneration,
-            FingerprintComparison = fingerprintComparison,
-            HostAtRest = context.CandidateHostAtRest,
-            MountAttestation = mountAttestation,
-            BundleIntegrity = bundleIntegrity,
-            ImageReference = context.Layout.ReleaseInventory.PinnedMailerImageReference,
-            ComposeIdentity = SetupBundleStaticValidator.ComputeComposeIdentity(context.Layout.ReleaseInventory),
-            RecordedSchemaVersion = context.Recorded?.SchemaVersion,
+            BundleId = pointer.BundleId,
+            ActivationGeneration = pointer.ActivationGeneration,
+            FingerprintComparison = verification.FingerprintComparison,
+            HostAtRest = hostAtRest,
+            MountAttestation = verification.MountAttestation,
+            BundleIntegrity = verification.BundleIntegrity,
+            ImageReference = layout.ReleaseInventory.PinnedMailerImageReference,
+            ComposeIdentity = SetupBundleStaticValidator.ComputeComposeIdentity(layout.ReleaseInventory),
+            ObservedBundleId = verification.ObservedBundleId,
+            ObservedMailerVersion = verification.ObservedMailerVersion,
+            RecordedSchemaVersion = verification.ObservedSchemaVersion,
             RuntimeIdentityBinding = runtimeIdentityBinding,
             Readiness = readiness,
             SendReadyEvaluation = SetupVerificationRecord.SendReadyNotEvaluated,
@@ -1269,15 +2194,18 @@ public sealed class SetupApplyEngine
         };
 
         return _writer.TryAtomicReplaceJson(
-            context.Layout.ManagedRoot,
-            context.Layout.LastRecordPath,
+            layout.ManagedRoot,
+            layout.LastRecordPath,
             record,
             SetupApplyJsonContext.Default.SetupVerificationRecord);
     }
 
-    private SetupDockerResult WriteRuntimeIdentityBinding(ApplyContext context)
+    private SetupDockerResult WriteRuntimeIdentityBinding(
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        SetupActivePointer pointer)
     {
-        var external = context.Session.ExternalInputs;
+        var external = session.ExternalInputs;
         if (external is null)
         {
             return SetupDockerResult.Fail(
@@ -1288,16 +2216,32 @@ public sealed class SetupApplyEngine
         var stampDocument = new SetupRuntimeIdentityBindingStamp
         {
             SchemaVersion = SetupRuntimeIdentityBindingStamp.CurrentSchemaVersion,
-            BundleId = context.Candidate.BundleId,
-            ActivationGeneration = context.Candidate.ActivationGeneration,
+            BundleId = pointer.BundleId,
+            ActivationGeneration = pointer.ActivationGeneration,
             BindingMac = external.BindingMac,
         };
 
         return _writer.TryAtomicReplaceJson(
-            context.Layout.ManagedRoot,
-            context.Layout.RuntimeIdentityBindPath,
+            layout.ManagedRoot,
+            layout.RuntimeIdentityBindPath,
             stampDocument,
             SetupApplyJsonContext.Default.SetupRuntimeIdentityBindingStamp);
+    }
+
+    private SetupDockerResult DeleteBindingForGeneration(
+        TrustedSetupHostLayout layout,
+        SetupActivePointer pointer)
+    {
+        var existing = ReadRuntimeIdentityBinding(layout, out var unreadable);
+        if (!unreadable
+            && (existing is null
+                || !string.Equals(existing.BundleId, pointer.BundleId, StringComparison.Ordinal)
+                || existing.ActivationGeneration != pointer.ActivationGeneration))
+        {
+            return SetupDockerResult.Ok();
+        }
+
+        return _writer.TryDurableDelete(layout.ManagedRoot, layout.RuntimeIdentityBindPath);
     }
 
     private string Timestamp() =>
@@ -1306,7 +2250,7 @@ public sealed class SetupApplyEngine
     private static SetupApplyResult CancelledBeforeActivation() =>
         SetupApplyResult.Create(
             SetupApplyResultCode.CancelledBeforeActivation,
-            SetupManagedDeploymentState.NoManaged,
+            SetupManagedDeploymentState.NotInspected,
             "Apply was cancelled before the ACTIVE pointer changed.",
             reasonCode: "cancelled");
 
@@ -1343,6 +2287,30 @@ public sealed class SetupApplyEngine
         public SetupActivePointer? Previous { get; init; }
         public SetupTransactionStamp? TransactionStamp { get; init; }
         public SetupVerificationRecord? VerificationRecord { get; init; }
+        public bool RecordUnreadable { get; init; }
+        public SetupRuntimeIdentityBindingStamp? RuntimeIdentityBinding { get; init; }
+        public bool BindingUnreadable { get; init; }
+    }
+
+    private sealed record GenerationVerification
+    {
+        public required bool IsSuccess { get; init; }
+        public string? ReasonCode { get; init; }
+        public required string FingerprintComparison { get; init; }
+        public required string MountAttestation { get; init; }
+        public required string BundleIntegrity { get; init; }
+        public string? ObservedBundleId { get; init; }
+        public string? ObservedMailerVersion { get; init; }
+        public int? ObservedSchemaVersion { get; init; }
+
+        public static GenerationVerification Failed(string reasonCode) => new()
+        {
+            IsSuccess = false,
+            ReasonCode = reasonCode,
+            FingerprintComparison = SetupVerificationRecord.FingerprintNotEvaluated,
+            MountAttestation = SetupIntegrityMerger.NotVerified,
+            BundleIntegrity = SetupIntegrityMerger.NotVerified,
+        };
     }
 
     private sealed class ApplyContext
@@ -1363,7 +2331,7 @@ public sealed class SetupApplyEngine
             Candidate = candidate;
             Previous = previous;
             CandidateHostAtRest = candidateHostAtRest;
-            Recorded = recorded;
+            CandidateRecorded = recorded;
             MigrationRequired = migrationRequired;
         }
 
@@ -1373,7 +2341,7 @@ public sealed class SetupApplyEngine
         public SetupActivePointer Candidate { get; }
         public SetupActivePointer? Previous { get; }
         public string CandidateHostAtRest { get; }
-        public SetupRecordedMetadata? Recorded { get; }
+        public SetupRecordedMetadata? CandidateRecorded { get; }
         public bool MigrationRequired { get; }
     }
 }

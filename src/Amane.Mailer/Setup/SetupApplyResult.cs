@@ -10,6 +10,12 @@ public enum SetupManagedDeploymentState
     TransactionInProgress = 2,
     RecoveryRequired = 3,
     NeedsIntervention = 4,
+
+    /// <summary>
+    /// Durable state was never read because the operation stopped before APPLY.lock was held.
+    /// Reported instead of guessing a state that was not observed.
+    /// </summary>
+    NotInspected = 5,
 }
 
 /// <summary>
@@ -28,6 +34,9 @@ public static class SetupApplyResultCode
     public const string RecoveryRequired = "setup.apply.recovery_required";
     public const string NeedsIntervention = "setup.apply.needs_intervention";
     public const string IneligibleExistingActive = "setup.apply.ineligible_existing_active";
+
+    /// <summary>Docker preflight or lock acquisition failed before durable state was inspected.</summary>
+    public const string PreflightFailed = "setup.apply.preflight_failed";
     public const string FailedUnexpected = "setup.apply.failed_unexpected";
 }
 

@@ -30,6 +30,14 @@ public sealed class SetupVerificationRecord
     public required string BundleIntegrity { get; init; }
     public string? ImageReference { get; init; }
     public string? ComposeIdentity { get; init; }
+
+    /// <summary>Bundle id the running container resolved, as reported by effective inspection.</summary>
+    public string? ObservedBundleId { get; init; }
+
+    /// <summary>Mailer version the running container reported.</summary>
+    public string? ObservedMailerVersion { get; init; }
+
+    /// <summary>Recorded-metadata schema version observed in the container, not the host expectation.</summary>
     public int? RecordedSchemaVersion { get; init; }
     public required string RuntimeIdentityBinding { get; init; }
     public required string Readiness { get; init; }
