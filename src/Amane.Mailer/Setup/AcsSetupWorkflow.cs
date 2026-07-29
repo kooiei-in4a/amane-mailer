@@ -283,7 +283,7 @@ public sealed class AcsSetupWorkflow
                 PersistentSideEffectMayRemain = apply.PersistentSideEffectMayRemain,
                 PersistentSideEffectKind = apply.PersistentSideEffectKind,
                 ActionCode = sendReady.SendReadyAsserted
-                    ? apply.ActionCode
+                    ? ClearCompletedSendReadyHandoff(apply.ActionCode)
                     : sendReady.ReasonCode ?? apply.ActionCode,
                 Message = sendReady.SendReadyAsserted
                     ? "Deployment send-ready. Operational verification is not recorded."
@@ -293,6 +293,18 @@ public sealed class AcsSetupWorkflow
 
         return MapFailedApply(apply, fingerprint, liveSendingStep: true);
     }
+
+    /// <summary>
+    /// #450 hands the send-ready evaluation to #451 via an ACTION. Once the typed doctor gate
+    /// asserts send-ready, that handoff is complete and must not stay in the canonical result.
+    /// </summary>
+    private static string? ClearCompletedSendReadyHandoff(string? applyActionCode) =>
+        string.Equals(
+            applyActionCode,
+            SetupApplyActionCode.CompleteSendReadyEvaluation,
+            StringComparison.Ordinal)
+            ? null
+            : applyActionCode;
 
     private static AcsSetupWorkflowResult MapFailedApply(
         SetupApplyResult apply,

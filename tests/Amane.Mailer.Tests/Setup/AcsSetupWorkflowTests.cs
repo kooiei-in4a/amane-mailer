@@ -106,6 +106,7 @@ public sealed class AcsSetupWorkflowTests
 
             Assert.Equal(AcsSetupResultCode.DeploymentSendReady, promoted.Code);
             Assert.True(promoted.DeploymentSendReady);
+            Assert.Null(promoted.ActionCode);
             Assert.Equal("bundle-disabled", engine.ExpectedActive!.BundleId);
             Assert.Equal(first.ConfigurationFingerprint, engine.ExpectedActive.ConfigurationFingerprint);
             Assert.Equal(first.ActivationGeneration, engine.ExpectedActive.ActivationGeneration);
