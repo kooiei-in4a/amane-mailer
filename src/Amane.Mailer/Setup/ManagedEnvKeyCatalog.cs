@@ -51,6 +51,7 @@ public static class ManagedEnvKeyCatalog
         "AMANE_ADMIN_ALLOW_HTTP",
         "AMANE_ADMIN_PII_LIST_MODE",
         "MAILER_SETUP_RECORDED_METADATA_PATH",
+        "MAILER_SETUP_RECORDED_METADATA_HOST_PATH",
     };
 
     /// <summary>

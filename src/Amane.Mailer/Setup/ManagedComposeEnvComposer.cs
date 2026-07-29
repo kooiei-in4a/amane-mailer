@@ -233,6 +233,7 @@ public sealed class ManagedComposeEnvComposer
         merged["MAILER_TENANTS_HOST_PATH"] = tenantsPath;
         merged["MAILER_ACS_SECRET_HOST_PATH"] = secretsPath;
         merged["MAILER_PLATFORM_SENDER_HOST_PATH"] = configPath;
+        merged["MAILER_SETUP_RECORDED_METADATA_HOST_PATH"] = recordedPath;
         if (merged.ContainsKey("MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH"))
         {
             var bounceSecretsPath = Path.GetFullPath(Path.Combine(secretsPath, "bounce-queue"));

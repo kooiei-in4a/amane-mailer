@@ -92,6 +92,9 @@ public static class TrustedSetupHostLayoutResolver
                 AllowedDisplayTag = document.ImageTag ?? string.Empty,
                 ComposeBundleVersion = document.ComposeBundleVersion ?? string.Empty,
                 ComposeSha256 = document.ComposeSha256,
+                ComposeImageDigestSha256 = document.ComposeImageDigestSha256,
+                ComposeRecordedMetadataSha256 = document.ComposeRecordedMetadataSha256,
+                ComposeMailpitSha256 = document.ComposeMailpitSha256,
                 LauncherVersionMin = document.LauncherVersionMin ?? string.Empty,
                 LauncherVersionMax = document.LauncherVersionMax ?? string.Empty,
                 ProjectNamePrefix = document.ProjectNamePrefix ?? "amane",
@@ -118,10 +121,7 @@ public static class TrustedSetupHostLayoutResolver
             return composeFailure!;
         }
 
-        var expectedComposeSha256 = "sha256:"
-            + Convert.ToHexString(SHA256.HashData(fileSystem.ReadAllBytes(deployCompose))).ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(inventory.ComposeSha256)
-            || !string.Equals(inventory.ComposeSha256, expectedComposeSha256, StringComparison.Ordinal))
+        if (!DigestMatches(fileSystem, deployCompose, inventory.ComposeSha256))
         {
             return SetupDockerResult.Fail(
                 SetupDockerResultCode.InvalidBundleInventory,
@@ -156,7 +156,30 @@ public static class TrustedSetupHostLayoutResolver
             return composeFailure!;
         }
 
+        if (!DigestMatches(fileSystem, digestOverlay, inventory.ComposeImageDigestSha256))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Trusted image-digest Compose overlay digest does not match the release inventory.");
+        }
+
         composePaths.Add(digestOverlay);
+
+        var recordedMetadataOverlay = Path.GetFullPath(
+            Path.Combine(rootFull, SetupDockerInventory.RecordedMetadataOverlayRelativePath));
+        if (!TryValidateComposeFile(fileSystem, rootFull, recordedMetadataOverlay, out composeFailure))
+        {
+            return composeFailure!;
+        }
+
+        if (!DigestMatches(fileSystem, recordedMetadataOverlay, inventory.ComposeRecordedMetadataSha256))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Trusted recorded-metadata Compose overlay digest does not match the release inventory.");
+        }
+
+        composePaths.Add(recordedMetadataOverlay);
 
         if (topology == SetupComposeTopology.DeployWithMailpit)
         {
@@ -165,6 +188,13 @@ public static class TrustedSetupHostLayoutResolver
             if (!TryValidateComposeFile(fileSystem, rootFull, overlay, out composeFailure))
             {
                 return composeFailure!;
+            }
+
+            if (!DigestMatches(fileSystem, overlay, inventory.ComposeMailpitSha256))
+            {
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Trusted Mailpit Compose overlay digest does not match the release inventory.");
             }
 
             composePaths.Add(overlay);
@@ -249,18 +279,47 @@ public static class TrustedSetupHostLayoutResolver
         out TrustedSetupHostLayout? layout)
     {
         layout = null;
-        var shapeFailure = inventory.ValidateShape();
-        if (shapeFailure is not null)
-        {
-            return shapeFailure;
-        }
-
         var rootFull = Path.GetFullPath(scratchRoot);
         Directory.CreateDirectory(rootFull);
 
         var composeBytes = Encoding.UTF8.GetBytes(deployComposeContents);
         var composeSha256 = "sha256:"
             + Convert.ToHexString(SHA256.HashData(composeBytes)).ToLowerInvariant();
+        const string imageDigestOverlayContents =
+            """
+            services:
+              mailer-migrate:
+                image: ${MAILER_IMAGE_REFERENCE}
+              mailer:
+                image: ${MAILER_IMAGE_REFERENCE}
+              mailer-acs-admin:
+                image: ${MAILER_IMAGE_REFERENCE}
+            """;
+        const string recordedMetadataOverlayContents =
+            """
+            services:
+              mailer:
+                environment:
+                  MAILER_SETUP_RECORDED_METADATA_PATH: /run/amane/setup/recorded.json
+                volumes:
+                  - ${MAILER_SETUP_RECORDED_METADATA_HOST_PATH}:/run/amane/setup/recorded.json:ro
+            """;
+        var imageDigestOverlaySha256 = ComputeDigest(imageDigestOverlayContents);
+        var recordedMetadataOverlaySha256 = ComputeDigest(recordedMetadataOverlayContents);
+        var topology = SetupComposeTopologySelector.ForMode(mode);
+        string? mailpitOverlaySha256 = null;
+        if (topology == SetupComposeTopology.DeployWithMailpit)
+        {
+            if (string.IsNullOrWhiteSpace(mailpitOverlayContents))
+            {
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Mode 1 test layout requires a Mailpit overlay.");
+            }
+
+            mailpitOverlaySha256 = ComputeDigest(mailpitOverlayContents);
+        }
+
         if (!TryGetLauncherVersion(out var launcherVersion))
         {
             return SetupDockerResult.Fail(
@@ -279,6 +338,9 @@ public static class TrustedSetupHostLayoutResolver
             ImageTag = inventory.AllowedDisplayTag,
             ComposeBundleVersion = inventory.ComposeBundleVersion,
             ComposeSha256 = composeSha256,
+            ComposeImageDigestSha256 = imageDigestOverlaySha256,
+            ComposeRecordedMetadataSha256 = recordedMetadataOverlaySha256,
+            ComposeMailpitSha256 = mailpitOverlaySha256,
             LauncherVersionMin = launcherVersionText,
             LauncherVersionMax = launcherVersionText,
             ProjectNamePrefix = inventory.ProjectNamePrefix,
@@ -294,32 +356,22 @@ public static class TrustedSetupHostLayoutResolver
             deployComposeContents);
         File.WriteAllText(
             Path.Combine(rootFull, SetupDockerInventory.ImageDigestOverlayRelativePath),
-            """
-            services:
-              mailer-migrate:
-                image: ${MAILER_IMAGE_REFERENCE}
-              mailer:
-                image: ${MAILER_IMAGE_REFERENCE}
-              mailer-acs-admin:
-                image: ${MAILER_IMAGE_REFERENCE}
-            """);
+            imageDigestOverlayContents);
+        File.WriteAllText(
+            Path.Combine(rootFull, SetupDockerInventory.RecordedMetadataOverlayRelativePath),
+            recordedMetadataOverlayContents);
 
-        var topology = SetupComposeTopologySelector.ForMode(mode);
         if (topology == SetupComposeTopology.DeployWithMailpit)
         {
-            if (string.IsNullOrWhiteSpace(mailpitOverlayContents))
-            {
-                return SetupDockerResult.Fail(
-                    SetupDockerResultCode.InvalidBundleInventory,
-                    "Mode 1 test layout requires a Mailpit overlay.");
-            }
-
             File.WriteAllText(
                 Path.Combine(rootFull, SetupDockerInventory.MailpitOverlayRelativePath),
-                mailpitOverlayContents);
+                mailpitOverlayContents!);
         }
 
         return TryResolve(fileSystem, rootFull, mode, deploymentIdentity, out layout);
+
+        static string ComputeDigest(string contents) =>
+            "sha256:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(contents))).ToLowerInvariant();
     }
 
     private static bool TryGetLauncherVersion(out Version version)
@@ -396,5 +448,20 @@ public static class TrustedSetupHostLayoutResolver
         }
 
         return true;
+    }
+
+    private static bool DigestMatches(
+        ISetupFileSystem fileSystem,
+        string path,
+        string? expectedDigest)
+    {
+        if (string.IsNullOrWhiteSpace(expectedDigest))
+        {
+            return false;
+        }
+
+        var actual = "sha256:"
+            + Convert.ToHexString(SHA256.HashData(fileSystem.ReadAllBytes(path))).ToLowerInvariant();
+        return string.Equals(expectedDigest, actual, StringComparison.Ordinal);
     }
 }

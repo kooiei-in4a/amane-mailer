@@ -306,6 +306,8 @@
           "src/Amane.Mailer/Setup/SetupApplyLock.cs",
           "src/Amane.Mailer/Setup/HostProcessRunner.cs",
           "src/Amane.Mailer/Operations/SecureFileCreate.cs",
+          "infra/deploy/compose.image-digest.yml",
+          "infra/deploy/compose.recorded-metadata.yml",
           "infra/deploy/compose.mailpit.yml",
           "docs/adr/0021-easy-setup-boundaries.md"
         ],

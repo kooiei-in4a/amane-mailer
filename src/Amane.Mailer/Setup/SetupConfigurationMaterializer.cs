@@ -42,12 +42,8 @@ public static class SetupConfigurationMaterializer
         compose["MAILER_TENANTS_HOST_PATH"] = $"bundles/{bundleId}/config/{SetupBundleLayout.TenantsFileName}";
         compose["MAILER_TENANTS_CONTAINER_PATH"] = SetupBundleLayout.ContainerTenantsPath;
         compose["MAILER_SETUP_RECORDED_METADATA_PATH"] = SetupBundleLayout.ContainerRecordedMetadataPath;
-
-        if (request.Mode != SetupMode.LocalMailpit)
-        {
-            compose["MAILER_ACS_SECRET_HOST_PATH"] = $"bundles/{bundleId}/secrets";
-            compose["MAILER_PLATFORM_SENDER_HOST_PATH"] = $"bundles/{bundleId}/config";
-        }
+        compose["MAILER_ACS_SECRET_HOST_PATH"] = $"bundles/{bundleId}/secrets";
+        compose["MAILER_PLATFORM_SENDER_HOST_PATH"] = $"bundles/{bundleId}/config";
 
         ApplyAdminRepresentation(compose, request.Admin);
 
@@ -168,7 +164,7 @@ public static class SetupConfigurationMaterializer
             ["MAILER_PROVIDER"] = string.Empty,
             ["MAILER_BOUNCE_INGESTION"] = "off",
             ["MAILER_BOUNCE_QUEUE_NAME"] = string.Empty,
-            ["MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH"] = "./secrets/bounce-queue",
+            ["MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH"] = $"bundles/{bundleId}/secrets/bounce-queue",
             ["MAILER_RETENTION_DAYS"] = "90",
             ["MAILER_RETENTION_SWEEP_INTERVAL_HOURS"] = "24",
             ["MAILER_METRICS_ENABLED"] = "true",
@@ -179,7 +175,6 @@ public static class SetupConfigurationMaterializer
             ["AMANE_ADMIN_PII_LIST_MODE"] = "masked",
         };
 
-        _ = bundleId;
         return compose;
     }
 

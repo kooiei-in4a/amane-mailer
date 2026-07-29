@@ -187,6 +187,12 @@ public static class SetupHostDockerSelfCheckCommand
                 "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             AllowedDisplayTag = "sha-selfcheck",
             ComposeBundleVersion = "1",
+            ComposeSha256 =
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ComposeImageDigestSha256 =
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ComposeRecordedMetadataSha256 =
+                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             LauncherVersionMin = "1.2.0",
             LauncherVersionMax = "1.2.0",
             ProjectNamePrefix = "amane",

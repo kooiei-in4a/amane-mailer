@@ -214,17 +214,10 @@ public sealed class SetupHostDockerAdapter
             var composeEnvResult = _envComposer.TryCompose(
                 session.Layout,
                 out var composeEnv,
-                out var recordedMetadataHostPath);
+                out _);
             if (!composeEnvResult.IsSuccess)
             {
                 return composeEnvResult;
-            }
-
-            if (recordedMetadataHostPath is null)
-            {
-                return SetupDockerResult.Fail(
-                    SetupDockerResultCode.InvalidBundleInventory,
-                    "ACTIVE recorded metadata path is unavailable.");
             }
 
             var env = new Dictionary<string, string>(composeEnv, StringComparer.Ordinal)
@@ -233,13 +226,13 @@ public sealed class SetupHostDockerAdapter
                     SetupDockerInventory.ContainerVerifierMountPath,
             };
 
+            // Recorded metadata mount/env come from compose.recorded-metadata.yml (same as
+            // normal mailer). One-shot delta is the ephemeral verifier mount/env only.
             var args = BuildComposeArgPrefix(session)
                 .Concat([
                     "run", "--rm", "--no-deps", "--pull", "never",
                     "-v", $"{hostVerifierPath}:{SetupDockerInventory.ContainerVerifierMountPath}:ro",
-                    "-v", $"{recordedMetadataHostPath}:{SetupBundleLayout.ContainerRecordedMetadataPath}:ro",
                     "-e", SetupDockerInventory.ContainerVerifierEnvKey,
-                    "-e", "MAILER_SETUP_RECORDED_METADATA_PATH",
                     SetupDockerInventory.ServiceMailer,
                     "setup", "inspect-effective", "--format", "json",
                 ])

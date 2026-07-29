@@ -22,6 +22,9 @@ public sealed class TrustedReleaseInventory
     public required string AllowedDisplayTag { get; init; }
     public required string ComposeBundleVersion { get; init; }
     public string? ComposeSha256 { get; init; }
+    public string? ComposeImageDigestSha256 { get; init; }
+    public string? ComposeRecordedMetadataSha256 { get; init; }
+    public string? ComposeMailpitSha256 { get; init; }
     public required string LauncherVersionMin { get; init; }
     public required string LauncherVersionMax { get; init; }
     public required string ProjectNamePrefix { get; init; }
@@ -63,6 +66,16 @@ public sealed class TrustedReleaseInventory
             return SetupDockerResult.Fail(
                 SetupDockerResultCode.InvalidBundleInventory,
                 "Trusted release inventory display tag is forbidden.");
+        }
+
+        if (!IsValidDigest(ComposeSha256)
+            || !IsValidDigest(ComposeImageDigestSha256)
+            || !IsValidDigest(ComposeRecordedMetadataSha256)
+            || (ComposeMailpitSha256 is not null && !IsValidDigest(ComposeMailpitSha256)))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Trusted Compose file digest is invalid.");
         }
 
         if (string.IsNullOrWhiteSpace(ProjectNamePrefix)
@@ -110,6 +123,15 @@ public sealed class ReleaseBundleManifestDocument
 
     [JsonPropertyName("composeSha256")]
     public string? ComposeSha256 { get; init; }
+
+    [JsonPropertyName("composeImageDigestSha256")]
+    public string? ComposeImageDigestSha256 { get; init; }
+
+    [JsonPropertyName("composeRecordedMetadataSha256")]
+    public string? ComposeRecordedMetadataSha256 { get; init; }
+
+    [JsonPropertyName("composeMailpitSha256")]
+    public string? ComposeMailpitSha256 { get; init; }
 
     [JsonPropertyName("launcherVersionMin")]
     public string? LauncherVersionMin { get; init; }

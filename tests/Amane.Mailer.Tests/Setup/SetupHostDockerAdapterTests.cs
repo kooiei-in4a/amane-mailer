@@ -380,14 +380,23 @@ public sealed class SetupHostDockerAdapterTests
         Assert.True(result.IsSuccess);
         Assert.NotNull(result.Inspection);
         Assert.NotNull(inspectionArgs);
-        Assert.Contains(
+        Assert.DoesNotContain(
             inspectionArgs!,
             a => a.EndsWith(
                 ":" + SetupBundleLayout.ContainerRecordedMetadataPath + ":ro",
                 StringComparison.Ordinal));
+        Assert.Contains(
+            inspectionArgs!,
+            a => a.EndsWith(
+                ":" + SetupDockerInventory.ContainerVerifierMountPath + ":ro",
+                StringComparison.Ordinal));
         Assert.Equal(
             SetupBundleLayout.ContainerRecordedMetadataPath,
             harness.LastChildEnv["MAILER_SETUP_RECORDED_METADATA_PATH"]);
+        Assert.EndsWith(
+            Path.Combine("metadata", SetupBundleLayout.RecordedMetadataFileName),
+            harness.LastChildEnv["MAILER_SETUP_RECORDED_METADATA_HOST_PATH"],
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -461,11 +470,67 @@ public sealed class SetupHostDockerAdapterTests
             out var layout);
         Assert.True(result.IsSuccess);
         Assert.NotNull(layout);
-        Assert.Equal(3, layout!.ComposeFilePaths.Count);
+        Assert.Equal(4, layout!.ComposeFilePaths.Count);
         Assert.EndsWith(
             SetupDockerInventory.ImageDigestOverlayRelativePath,
             layout.ComposeFilePaths[1],
             StringComparison.Ordinal);
+        Assert.EndsWith(
+            SetupDockerInventory.RecordedMetadataOverlayRelativePath,
+            layout.ComposeFilePaths[2],
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(SetupDockerInventory.ImageDigestOverlayRelativePath, SetupMode.StagingNoSend, false)]
+    [InlineData(SetupDockerInventory.RecordedMetadataOverlayRelativePath, SetupMode.StagingNoSend, false)]
+    [InlineData(SetupDockerInventory.MailpitOverlayRelativePath, SetupMode.LocalMailpit, true)]
+    public void Trusted_layout_rejects_one_byte_modified_compose_overlay(
+        string overlayRelativePath,
+        SetupMode mode,
+        bool includeMailpit)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "amane-overlay-digest-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var fs = new HostSetupFileSystem();
+            var created = TrustedSetupHostLayoutResolver.CreateLayoutForTests(
+                fs,
+                root,
+                mode,
+                CreateInventory(includeMailpit),
+                "dep1",
+                MinimalCompose,
+                mailpitOverlayContents: includeMailpit
+                    ? "services:\n  mailpit:\n    image: ${MAILPIT_IMAGE}\n"
+                    : null,
+                out _);
+            Assert.True(created.IsSuccess);
+
+            var overlayPath = Path.Combine(root, overlayRelativePath);
+            var bytes = File.ReadAllBytes(overlayPath);
+            bytes[^1] ^= 1;
+            File.WriteAllBytes(overlayPath, bytes);
+
+            var resolved = TrustedSetupHostLayoutResolver.TryResolve(
+                fs,
+                root,
+                mode,
+                "dep1",
+                out _);
+            Assert.Equal(SetupDockerResultCode.InvalidBundleInventory, resolved.Code);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch
+            {
+                // Best effort.
+            }
+        }
     }
 
     [Fact]

@@ -254,10 +254,9 @@ public sealed class SetupCore
             EnsureDirectory(managedRootFull, SetupBundleLayout.ConfigDir(bundleRoot), createdDirs, ownership);
             EnsureDirectory(managedRootFull, SetupBundleLayout.EnvDir(bundleRoot), createdDirs, ownership);
             EnsureDirectory(managedRootFull, SetupBundleLayout.MetadataDir(bundleRoot), createdDirs, ownership);
-            if (materialized.AcsConnectionStringBytes is not null)
-            {
-                EnsureDirectory(managedRootFull, SetupBundleLayout.SecretsDir(bundleRoot), createdDirs, ownership);
-            }
+            var secretsDir = SetupBundleLayout.SecretsDir(bundleRoot);
+            EnsureDirectory(managedRootFull, secretsDir, createdDirs, ownership);
+            EnsureDirectory(managedRootFull, Path.Combine(secretsDir, "bounce-queue"), createdDirs, ownership);
 
             var composeEnvText = SetupConfigurationMaterializer.FormatEnvFile(materialized.ComposeEnv);
             var secretsEnvText = SetupConfigurationMaterializer.FormatEnvFile(materialized.SecretsEnv);
@@ -337,10 +336,8 @@ public sealed class SetupCore
                 _fileSystem.FlushDirectory(SetupBundleLayout.ConfigDir(bundleRoot));
                 _fileSystem.FlushDirectory(SetupBundleLayout.EnvDir(bundleRoot));
                 _fileSystem.FlushDirectory(SetupBundleLayout.MetadataDir(bundleRoot));
-                if (materialized.AcsConnectionStringBytes is not null)
-                {
-                    _fileSystem.FlushDirectory(SetupBundleLayout.SecretsDir(bundleRoot));
-                }
+                _fileSystem.FlushDirectory(Path.Combine(secretsDir, "bounce-queue"));
+                _fileSystem.FlushDirectory(secretsDir);
 
                 _fileSystem.FlushDirectory(bundleRoot);
                 _fileSystem.FlushDirectory(bundlesDir);
