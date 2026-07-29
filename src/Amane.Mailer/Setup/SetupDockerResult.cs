@@ -18,13 +18,17 @@ public sealed class SetupDockerResult
 
     public SetupInspectEffectiveResult? Inspection { get; init; }
 
+    /// <summary>Read-only schema classification when the caller asked for migration status.</summary>
+    public SetupMigrationStatusDocument? MigrationStatus { get; init; }
+
     public bool IsSuccess => Code == SetupDockerResultCode.Succeeded;
 
     public static SetupDockerResult Ok(
         string? message = null,
         DockerEngineKind? engineKind = null,
         int? composeMajorVersion = null,
-        SetupInspectEffectiveResult? inspection = null) =>
+        SetupInspectEffectiveResult? inspection = null,
+        SetupMigrationStatusDocument? migrationStatus = null) =>
         new()
         {
             Code = SetupDockerResultCode.Succeeded,
@@ -32,6 +36,7 @@ public sealed class SetupDockerResult
             EngineKind = engineKind,
             ComposeMajorVersion = composeMajorVersion,
             Inspection = inspection,
+            MigrationStatus = migrationStatus,
         };
 
     public static SetupDockerResult Fail(string code, string message) =>

@@ -1,3 +1,6 @@
+using Amane.Mailer.Operations;
+using System.Text.Json;
+
 namespace Amane.Mailer.Setup;
 
 /// <summary>
@@ -83,6 +86,7 @@ public static class SetupHostDockerSelfCheckCommand
                 File.WriteAllText(
                     layout.ExternalEnvPath,
                     "MAILER_DATA_PATH=/tmp/amane-self-check-data\n");
+                SeedSealingKey(layout);
                 SeedActiveBundle(layout);
 
                 var (sessionResult, session) = await adapter.AcquireSessionAsync(
@@ -102,6 +106,22 @@ public static class SetupHostDockerSelfCheckCommand
                         || prefix.Contains("--volumes", StringComparer.Ordinal))
                     {
                         error.WriteLine("setup host-docker-self-check failed: destructive tokens in compose prefix.");
+                        return FailureExitCode;
+                    }
+
+                    // ACTIVE-dependent operations require the pinned input snapshots, so the
+                    // self-check exercises the same pin order the apply engine uses.
+                    var pinExternal = await adapter.PinExternalInputsAsync(session, CancellationToken.None);
+                    if (!pinExternal.IsSuccess)
+                    {
+                        error.WriteLine("setup host-docker-self-check failed: external input pin failed.");
+                        return FailureExitCode;
+                    }
+
+                    var pinCompose = await adapter.ComposeCurrentActiveInputAsync(session, CancellationToken.None);
+                    if (!pinCompose.IsSuccess)
+                    {
+                        error.WriteLine("setup host-docker-self-check failed: compose input pin failed.");
                         return FailureExitCode;
                     }
 
@@ -213,6 +233,19 @@ public static class SetupHostDockerSelfCheckCommand
             profiles: [acs-admin]
         """;
 
+    /// <summary>
+    /// Writes a synthetic owner-only sealing key. Self-check never seals a real bundle, so this key
+    /// only has to satisfy the owner-only length check on the pin path.
+    /// </summary>
+    private static void SeedSealingKey(TrustedSetupHostLayout layout)
+    {
+        var path = SetupBundleLayout.HostSealingKeyPath(layout.ManagedRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        SecureFileCreate.WriteAllBytesCreateNew(
+            path,
+            new byte[SetupIntegritySealer.SealingKeyLength]);
+    }
+
     private static void SeedActiveBundle(TrustedSetupHostLayout layout)
     {
         const string bundleId = "bundle-selfcheck01";
@@ -238,7 +271,15 @@ public static class SetupHostDockerSelfCheckCommand
         File.WriteAllText(
             Path.Combine(bundleRoot, SetupBundleLayout.FinalizedMarkerFileName),
             string.Empty);
-        File.WriteAllText(layout.ActivePointerPath, $"{{\"bundleId\":\"{bundleId}\",\"activationGeneration\":1,\"schemaVersion\":1}}\n");
+        var active = new SetupActivePointer
+        {
+            SchemaVersion = SetupActivePointer.CurrentSchemaVersion,
+            BundleId = bundleId,
+            ActivationGeneration = 1,
+        };
+        File.WriteAllText(
+            layout.ActivePointerPath,
+            JsonSerializer.Serialize(active, SetupApplyJsonContext.Default.SetupActivePointer) + "\n");
     }
 
     private sealed class SelfCheckProcessRunner : IHostProcessRunner

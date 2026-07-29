@@ -291,7 +291,7 @@
         "0013",
         "0019"
       ],
-      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR #448 Setup Core; #447 inspect-effective; #449 host Docker adapter) → evidence updates (#450–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. Does not change public HTTP contract, DB schema, or Manual Deployment source of truth.",
+      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR #448 Setup Core; #447 inspect-effective; #449 host Docker adapter) → evidence updates (#450–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. #450 adds durable apply/rollback/recovery orchestration (ACTIVE/PREVIOUS pointers, transaction stamp, verification record, pinned external and Compose inputs). Does not change public HTTP contract, DB schema, or Manual Deployment source of truth.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Setup/SetupCore.cs",
@@ -300,6 +300,16 @@
           "src/Amane.Mailer/Setup/SetupInspectEffectiveEngine.cs",
           "src/Amane.Mailer/Setup/SetupMountAttestation.cs",
           "src/Amane.Mailer/Setup/SetupHostDockerAdapter.cs",
+          "src/Amane.Mailer/Setup/SetupApplyEngine.cs",
+          "src/Amane.Mailer/Setup/SetupActivePointer.cs",
+          "src/Amane.Mailer/Setup/SetupTransactionStamp.cs",
+          "src/Amane.Mailer/Setup/SetupVerificationRecord.cs",
+          "src/Amane.Mailer/Setup/SetupDurableAtomicWriter.cs",
+          "src/Amane.Mailer/Setup/SetupDatabaseFileProbe.cs",
+          "src/Amane.Mailer/Setup/SetupMountVerifierFactory.cs",
+          "src/Amane.Mailer/Setup/SetupExternalInputSnapshot.cs",
+          "src/Amane.Mailer/Setup/ManagedComposeEnvComposer.cs",
+          "src/Amane.Mailer/Setup/SetupApplyJsonContext.cs",
           "src/Amane.Mailer/Setup/TrustedReleaseInventory.cs",
           "src/Amane.Mailer/Setup/TrustedSetupHostLayout.cs",
           "src/Amane.Mailer/Setup/DockerEnvironmentProbe.cs",
@@ -320,6 +330,16 @@
           "Amane.Mailer.Setup.SetupInspectEffectiveEngine",
           "Amane.Mailer.Setup.SetupMountAttestation",
           "Amane.Mailer.Setup.SetupHostDockerAdapter",
+          "Amane.Mailer.Setup.SetupApplyEngine",
+          "Amane.Mailer.Setup.SetupApplyResult",
+          "Amane.Mailer.Setup.SetupActivePointer",
+          "Amane.Mailer.Setup.SetupTransactionStamp",
+          "Amane.Mailer.Setup.SetupVerificationRecord",
+          "Amane.Mailer.Setup.SetupDurableAtomicWriter",
+          "Amane.Mailer.Setup.SetupMountVerifierFactory",
+          "Amane.Mailer.Setup.SetupMigrationStatusDocument",
+          "Amane.Mailer.Setup.SetupExternalInputSnapshot",
+          "Amane.Mailer.Setup.SetupComposeInputSnapshot",
           "Amane.Mailer.Setup.TrustedReleaseInventory",
           "Amane.Mailer.Setup.SetupHostDockerSession",
           "Amane.Mailer.Setup.DockerConnectionBinding"
@@ -332,6 +352,8 @@
           "tests/Amane.Mailer.Tests/Setup/SetupValidationAndRedactionTests.cs",
           "tests/Amane.Mailer.Tests/Setup/SetupInspectEffectiveTests.cs",
           "tests/Amane.Mailer.Tests/Setup/SetupHostDockerAdapterTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupApplyEngineTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupDurableAtomicWriterHostTests.cs",
           "tests/Amane.Mailer.Tests/Setup/SetupCoreHostDockerIntegrationTests.cs",
           "tests/Amane.Mailer.Tests/Setup/HostProcessRunnerLiveTests.cs"
         ]

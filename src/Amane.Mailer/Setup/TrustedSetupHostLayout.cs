@@ -41,6 +41,20 @@ public sealed class TrustedSetupHostLayout
     public string ActivePointerPath =>
         Path.Combine(StatePath, SetupBundleLayout.ActivePointerFileName);
 
+    public string PreviousPointerPath =>
+        Path.Combine(StatePath, SetupBundleLayout.PreviousPointerFileName);
+
+    public string TransactionStampPath =>
+        Path.Combine(StatePath, SetupBundleLayout.TransactionStampFileName);
+
+    public string VerificationDir => SetupBundleLayout.VerificationDir(ManagedRoot);
+
+    public string LastRecordPath => SetupBundleLayout.LastRecordPath(ManagedRoot);
+
+    public string RuntimeIdentityBindPath => SetupBundleLayout.RuntimeIdentityBindPath(ManagedRoot);
+
+    public string VerifierTempDir => SetupBundleLayout.VerifierTempDir(ManagedRoot);
+
     public string ApplyLockPath =>
         Path.Combine(StatePath, SetupApplyLock.LockFileName);
 
