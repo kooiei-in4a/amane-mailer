@@ -18,7 +18,12 @@ public sealed class DockerEnvironmentProbe
     private readonly Func<string?> _getDockerContextEnv;
     private readonly Func<string?> _resolveDockerExecutable;
 
-    public DockerEnvironmentProbe(
+    public DockerEnvironmentProbe()
+        : this(new HostProcessRunner())
+    {
+    }
+
+    internal DockerEnvironmentProbe(
         IHostProcessRunner runner,
         Func<string?>? getDockerHost = null,
         Func<string?>? getDockerContextEnv = null,
@@ -158,7 +163,7 @@ public sealed class DockerEnvironmentProbe
 
         var binding = new DockerConnectionBinding(
             contextName,
-            endpoint,
+            NormalizeEndpoint(endpoint),
             endpointKind,
             engineKind,
             serverVersion,
@@ -172,8 +177,12 @@ public sealed class DockerEnvironmentProbe
             composeMajor), binding);
     }
 
-    /// <summary>Re-check that the binding still matches ambient DOCKER_HOST / context constraints.</summary>
-    public SetupDockerResult RevalidateBinding(DockerConnectionBinding binding)
+    /// <summary>
+    /// Re-check ambient overrides and re-inspect the pinned context endpoint before mutate.
+    /// </summary>
+    public async Task<SetupDockerResult> RevalidateBindingAsync(
+        DockerConnectionBinding binding,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(binding);
 
@@ -192,6 +201,54 @@ public sealed class DockerEnvironmentProbe
                 "Docker connection binding drifted from DOCKER_CONTEXT.");
         }
 
+        var inspect = await RunDockerAsync(
+            binding.DockerExecutablePath,
+            ["--context", binding.ContextName, "context", "inspect", binding.ContextName, "--format", "{{json .}}"],
+            cancellationToken);
+        if (inspect.Outcome != HostProcessOutcome.Completed || inspect.ExitCode != 0)
+        {
+            return MapProcessFailure(inspect, SetupDockerResultCode.UnsupportedDockerEnvironment);
+        }
+
+        if (!TryParseContextEndpoint(inspect.StandardOutput, out var endpoint, out var parseFailure))
+        {
+            return parseFailure!;
+        }
+
+        var normalized = NormalizeEndpoint(endpoint);
+        var kind = ClassifyEndpoint(normalized);
+        if (kind == DockerEndpointKind.RemoteRejected)
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.RemoteContextRejected,
+                "Docker context endpoint became remote after preflight.");
+        }
+
+        if (kind != binding.EndpointKind
+            || !string.Equals(normalized, binding.Endpoint, StringComparison.OrdinalIgnoreCase))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsupportedDockerEnvironment,
+                "Docker connection binding endpoint drifted after preflight.");
+        }
+
+        var version = await RunDockerAsync(
+            binding.DockerExecutablePath,
+            ["--context", binding.ContextName, "version", "--format", "{{.Server.Version}}"],
+            cancellationToken);
+        if (version.Outcome != HostProcessOutcome.Completed || version.ExitCode != 0)
+        {
+            return MapProcessFailure(version, SetupDockerResultCode.DockerUnavailable);
+        }
+
+        var serverVersion = (version.StandardOutput ?? string.Empty).Trim();
+        if (!string.Equals(serverVersion, binding.EngineIdentity, StringComparison.Ordinal))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsupportedDockerEnvironment,
+                "Docker Engine identity drifted after preflight.");
+        }
+
         return SetupDockerResult.Ok();
     }
 
@@ -202,20 +259,17 @@ public sealed class DockerEnvironmentProbe
             return SetupDockerResult.Ok();
         }
 
-        var value = dockerHost.Trim();
-        if (IsLocalNamedPipe(value) || IsLocalUnixSocket(value))
-        {
-            return SetupDockerResult.Ok();
-        }
-
-        if (value.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        var value = NormalizeEndpoint(dockerHost);
+        if (IsRemoteScheme(value))
         {
             return SetupDockerResult.Fail(
                 SetupDockerResultCode.RemoteDockerRejected,
                 "DOCKER_HOST points at a remote Docker daemon.");
+        }
+
+        if (MatchesAllowedWindowsNamedPipeShape(value) || IsLocalUnixSocket(value))
+        {
+            return SetupDockerResult.Ok();
         }
 
         return SetupDockerResult.Fail(
@@ -223,13 +277,64 @@ public sealed class DockerEnvironmentProbe
             "DOCKER_HOST could not be classified as a local Docker endpoint.");
     }
 
-    internal static bool IsLocalNamedPipe(string value) =>
-        value.Equals("npipe:////./pipe/docker_engine", StringComparison.OrdinalIgnoreCase)
-        || value.Equals("npipe:////./pipe/docker_engine/", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// Exact allowlist of local Windows Docker named pipes (Desktop Linux/Windows engines + classic).
+    /// Remote host names inside npipe URIs are never accepted.
+    /// </summary>
+    internal static readonly string[] AllowedWindowsNamedPipes =
+    [
+        "npipe:////./pipe/docker_engine",
+        "npipe:////./pipe/dockerDesktopLinuxEngine",
+        "npipe:////./pipe/dockerDesktopWindowsEngine",
+    ];
 
-    internal static bool IsLocalUnixSocket(string value) =>
-        value.Equals("unix:///var/run/docker.sock", StringComparison.Ordinal)
-        || value.Equals("unix:///run/docker.sock", StringComparison.Ordinal);
+    internal static string NormalizeEndpoint(string endpoint)
+    {
+        var value = endpoint.Trim();
+        while (value.EndsWith('/') && !value.EndsWith("://", StringComparison.Ordinal))
+        {
+            value = value[..^1];
+        }
+
+        return value;
+    }
+
+    internal static bool IsRemoteScheme(string value) =>
+        value.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool MatchesAllowedWindowsNamedPipeShape(string value)
+    {
+        if (value.Contains('%', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var normalized = NormalizeEndpoint(value);
+        foreach (var allowed in AllowedWindowsNamedPipes)
+        {
+            if (string.Equals(normalized, allowed, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static bool IsAllowedWindowsNamedPipe(string value) =>
+        OperatingSystem.IsWindows() && MatchesAllowedWindowsNamedPipeShape(value);
+
+    internal static bool IsLocalUnixSocket(string value)
+    {
+        var normalized = NormalizeEndpoint(value);
+        return normalized.Equals("unix:///var/run/docker.sock", StringComparison.Ordinal)
+            || normalized.Equals("unix:///run/docker.sock", StringComparison.Ordinal)
+            || normalized.Equals("/var/run/docker.sock", StringComparison.Ordinal)
+            || normalized.Equals("/run/docker.sock", StringComparison.Ordinal);
+    }
 
     internal static DockerEndpointKind ClassifyEndpoint(string endpoint)
     {
@@ -238,30 +343,92 @@ public sealed class DockerEnvironmentProbe
             return DockerEndpointKind.Unknown;
         }
 
-        var value = endpoint.Trim();
-        if (IsLocalNamedPipe(value) || value.Contains("pipe/docker_engine", StringComparison.OrdinalIgnoreCase))
-        {
-            return DockerEndpointKind.WindowsNamedPipe;
-        }
+        var value = NormalizeEndpoint(endpoint);
 
-        if (IsLocalUnixSocket(value)
-            || value.Equals("unix:///var/run/docker.sock", StringComparison.Ordinal)
-            || value.Equals("/var/run/docker.sock", StringComparison.Ordinal)
-            || value.Equals("unix:///run/docker.sock", StringComparison.Ordinal))
-        {
-            return DockerEndpointKind.UnixSocket;
-        }
-
-        if (value.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        // Scheme-first: remote schemes are always rejected regardless of path content.
+        if (IsRemoteScheme(value))
         {
             return DockerEndpointKind.RemoteRejected;
         }
 
+        if (value.Contains('%', StringComparison.Ordinal))
+        {
+            return DockerEndpointKind.Unknown;
+        }
+
+        if (IsAllowedWindowsNamedPipe(value))
+        {
+            return DockerEndpointKind.WindowsNamedPipe;
+        }
+
+        if (MatchesAllowedWindowsNamedPipeShape(value))
+        {
+            // Exact local pipe shape observed on a non-Windows host — fail closed.
+            return DockerEndpointKind.Unknown;
+        }
+
+        // npipe that is not on the exact local allowlist is fail-closed (includes remote hosts).
+        if (value.StartsWith("npipe:", StringComparison.OrdinalIgnoreCase))
+        {
+            return DockerEndpointKind.RemoteRejected;
+        }
+
+        if (IsLocalUnixSocket(value))
+        {
+            return DockerEndpointKind.UnixSocket;
+        }
+
         return DockerEndpointKind.Unknown;
     }
+
+    internal static DockerEndpointKind ClassifyEndpointForTests(string endpoint, bool pretendWindows)
+    {
+        // Test helper to evaluate Windows named-pipe allowlist without depending on host OS.
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            return DockerEndpointKind.Unknown;
+        }
+
+        var value = NormalizeEndpoint(endpoint);
+        if (IsRemoteScheme(value))
+        {
+            return DockerEndpointKind.RemoteRejected;
+        }
+
+        if (value.Contains('%', StringComparison.Ordinal))
+        {
+            return DockerEndpointKind.Unknown;
+        }
+
+        if (pretendWindows)
+        {
+            foreach (var allowed in AllowedWindowsNamedPipes)
+            {
+                if (string.Equals(value, allowed, StringComparison.OrdinalIgnoreCase))
+                {
+                    return DockerEndpointKind.WindowsNamedPipe;
+                }
+            }
+
+            if (value.StartsWith("npipe:", StringComparison.OrdinalIgnoreCase))
+            {
+                return DockerEndpointKind.RemoteRejected;
+            }
+        }
+        else if (value.StartsWith("npipe:", StringComparison.OrdinalIgnoreCase))
+        {
+            return DockerEndpointKind.Unknown;
+        }
+
+        if (IsLocalUnixSocket(value))
+        {
+            return DockerEndpointKind.UnixSocket;
+        }
+
+        return DockerEndpointKind.Unknown;
+    }
+
+    internal static bool IsLocalNamedPipe(string value) => IsAllowedWindowsNamedPipe(value);
 
     internal static DockerEngineKind ClassifyEngineKind(DockerEndpointKind endpointKind, string contextName)
     {
@@ -272,12 +439,10 @@ public sealed class DockerEnvironmentProbe
 
         if (endpointKind == DockerEndpointKind.UnixSocket)
         {
-            if (contextName.Contains("desktop", StringComparison.OrdinalIgnoreCase))
+            if (contextName.Contains("desktop", StringComparison.OrdinalIgnoreCase)
+                && OperatingSystem.IsWindows())
             {
-                // Docker Desktop on Linux/macOS or WSL integration — treat Desktop as supported host class.
-                return OperatingSystem.IsWindows()
-                    ? DockerEngineKind.WindowsDockerDesktop
-                    : DockerEngineKind.LinuxDockerEngine;
+                return DockerEngineKind.WindowsDockerDesktop;
             }
 
             return DockerEngineKind.LinuxDockerEngine;
@@ -354,7 +519,6 @@ public sealed class DockerEnvironmentProbe
         try
         {
             var trimmed = json.Trim();
-            // docker may return a JSON array for inspect.
             if (trimmed.StartsWith('['))
             {
                 var array = JsonSerializer.Deserialize(

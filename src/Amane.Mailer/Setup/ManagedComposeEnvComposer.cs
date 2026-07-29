@@ -39,9 +39,11 @@ public sealed class ManagedComposeEnvComposer
 
     public SetupDockerResult TryCompose(
         TrustedSetupHostLayout layout,
-        out IReadOnlyDictionary<string, string> environment)
+        out IReadOnlyDictionary<string, string> environment,
+        out string? recordedMetadataHostPath)
     {
         environment = new Dictionary<string, string>(StringComparer.Ordinal);
+        recordedMetadataHostPath = null;
         ArgumentNullException.ThrowIfNull(layout);
 
         var merged = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -50,6 +52,7 @@ public sealed class ManagedComposeEnvComposer
         merged["COMPOSE_PROJECT_NAME"] = layout.ProjectName;
         merged["MAILER_IMAGE_REPOSITORY"] = layout.ReleaseInventory.AllowedImageRepository;
         merged["MAILER_IMAGE_TAG"] = layout.ReleaseInventory.AllowedDisplayTag;
+        merged["MAILER_IMAGE_REFERENCE"] = layout.ReleaseInventory.PinnedMailerImageReference;
         merged["MAILER_PULL_POLICY"] = "never";
         merged["MAILER_SETUP_RECORDED_METADATA_PATH"] =
             SetupBundleLayout.ContainerRecordedMetadataPath;
@@ -107,7 +110,11 @@ public sealed class ManagedComposeEnvComposer
         }
 
         // Layers 3-4: ACTIVE compose.env + secrets.env
-        if (!TryReadActiveBundleEnv(layout, merged, out var activeFailure))
+        if (!TryReadActiveBundleEnv(
+                layout,
+                merged,
+                out recordedMetadataHostPath,
+                out var activeFailure))
         {
             return activeFailure!;
         }
@@ -126,6 +133,7 @@ public sealed class ManagedComposeEnvComposer
         merged["COMPOSE_PROJECT_NAME"] = layout.ProjectName;
         merged["MAILER_IMAGE_REPOSITORY"] = layout.ReleaseInventory.AllowedImageRepository;
         merged["MAILER_IMAGE_TAG"] = layout.ReleaseInventory.AllowedDisplayTag;
+        merged["MAILER_IMAGE_REFERENCE"] = layout.ReleaseInventory.PinnedMailerImageReference;
         merged["MAILER_PULL_POLICY"] = "never";
 
         foreach (var pair in merged)
@@ -143,8 +151,10 @@ public sealed class ManagedComposeEnvComposer
     private bool TryReadActiveBundleEnv(
         TrustedSetupHostLayout layout,
         Dictionary<string, string> merged,
+        out string? recordedMetadataHostPath,
         out SetupDockerResult? failure)
     {
+        recordedMetadataHostPath = null;
         failure = null;
         var activePath = layout.ActivePointerPath;
         if (!_fileSystem.FileExists(activePath))
@@ -191,6 +201,24 @@ public sealed class ManagedComposeEnvComposer
             return false;
         }
 
+        var finalizedPath = Path.GetFullPath(
+            Path.Combine(bundleRoot, SetupBundleLayout.FinalizedMarkerFileName));
+        var tenantsPath = Path.GetFullPath(
+            Path.Combine(SetupBundleLayout.ConfigDir(bundleRoot), SetupBundleLayout.TenantsFileName));
+        var secretsPath = Path.GetFullPath(SetupBundleLayout.SecretsDir(bundleRoot));
+        var configPath = Path.GetFullPath(SetupBundleLayout.ConfigDir(bundleRoot));
+        var recordedPath = Path.GetFullPath(
+            Path.Combine(SetupBundleLayout.MetadataDir(bundleRoot), SetupBundleLayout.RecordedMetadataFileName));
+
+        if (!TryValidateActivePath(layout, finalizedPath, expectDirectory: false, out failure)
+            || !TryValidateActivePath(layout, tenantsPath, expectDirectory: false, out failure)
+            || !TryValidateActivePath(layout, secretsPath, expectDirectory: true, out failure)
+            || !TryValidateActivePath(layout, configPath, expectDirectory: true, out failure)
+            || !TryValidateActivePath(layout, recordedPath, expectDirectory: false, out failure))
+        {
+            return false;
+        }
+
         var composeEnvPath = Path.GetFullPath(
             Path.Combine(SetupBundleLayout.EnvDir(bundleRoot), SetupBundleLayout.ComposeEnvFileName));
         var secretsEnvPath = Path.GetFullPath(
@@ -202,6 +230,22 @@ public sealed class ManagedComposeEnvComposer
             return false;
         }
 
+        merged["MAILER_TENANTS_HOST_PATH"] = tenantsPath;
+        merged["MAILER_ACS_SECRET_HOST_PATH"] = secretsPath;
+        merged["MAILER_PLATFORM_SENDER_HOST_PATH"] = configPath;
+        if (merged.ContainsKey("MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH"))
+        {
+            var bounceSecretsPath = Path.GetFullPath(Path.Combine(secretsPath, "bounce-queue"));
+            if (!TryValidateActivePath(layout, bounceSecretsPath, expectDirectory: true, out failure))
+            {
+                return false;
+            }
+
+            merged["MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH"] = bounceSecretsPath;
+        }
+
+        recordedMetadataHostPath = recordedPath;
+
         // ACTIVE image fields must agree with trusted inventory before we overwrite.
         if (merged.TryGetValue("MAILER_IMAGE_REPOSITORY", out var repo)
             && merged.TryGetValue("MAILER_IMAGE_TAG", out var tag)
@@ -210,6 +254,36 @@ public sealed class ManagedComposeEnvComposer
             failure = SetupDockerResult.Fail(
                 SetupDockerResultCode.InvalidBundleInventory,
                 "ACTIVE image does not match the trusted release inventory.");
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryValidateActivePath(
+        TrustedSetupHostLayout layout,
+        string path,
+        bool expectDirectory,
+        out SetupDockerResult? failure)
+    {
+        failure = null;
+        if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
+                _fileSystem, layout.ManagedRoot, path, out _, out _))
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsafePath,
+                "ACTIVE bundle path rejected.");
+            return false;
+        }
+
+        var exists = expectDirectory
+            ? _fileSystem.DirectoryExists(path)
+            : _fileSystem.FileExists(path);
+        if (!exists)
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "ACTIVE bundle is incomplete.");
             return false;
         }
 
@@ -422,6 +496,14 @@ public sealed class ManagedComposeEnvComposer
                 break;
             case "MAILER_IMAGE_TAG":
                 if (TrustedReleaseInventory.IsForbiddenDisplayTag(value))
+                {
+                    failure = RejectValue();
+                    return false;
+                }
+
+                break;
+            case "MAILER_IMAGE_REFERENCE":
+                if (!value.Contains("@sha256:", StringComparison.Ordinal))
                 {
                     failure = RejectValue();
                     return false;

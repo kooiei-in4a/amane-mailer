@@ -15,21 +15,47 @@ public sealed class SetupHostDockerAdapter
     private readonly DockerEnvironmentProbe _probe;
     private readonly ManagedComposeEnvComposer _envComposer;
 
-    public SetupHostDockerAdapter(
+    public SetupHostDockerAdapter(ISetupFileSystem fileSystem)
+        : this(fileSystem, new HostProcessRunner(), probe: null, envComposer: null)
+    {
+    }
+
+    internal SetupHostDockerAdapter(
         ISetupFileSystem fileSystem,
-        IHostProcessRunner? runner = null,
+        IHostProcessRunner runner,
         DockerEnvironmentProbe? probe = null,
         ManagedComposeEnvComposer? envComposer = null)
     {
         _fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
-        _runner = runner ?? new HostProcessRunner();
+        _runner = runner ?? throw new ArgumentNullException(nameof(runner));
         _probe = probe ?? new DockerEnvironmentProbe(_runner);
         _envComposer = envComposer ?? new ManagedComposeEnvComposer(_fileSystem);
     }
 
-    public Task<(SetupDockerResult Result, DockerConnectionBinding? Binding)> CheckDockerAsync(
-        CancellationToken cancellationToken) =>
-        _probe.ProbeAsync(cancellationToken);
+    public async Task<(SetupDockerResult Result, DockerConnectionBinding? Binding)> CheckDockerAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _probe.ProbeAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return (Cancelled(), null);
+        }
+        catch (IOException)
+        {
+            return (AdapterIoFailure(), null);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return (AdapterIoFailure(), null);
+        }
+        catch (JsonException)
+        {
+            return (AdapterDataFailure(), null);
+        }
+    }
 
     public async Task<(SetupDockerResult Result, SetupHostDockerSession? Session)> AcquireSessionAsync(
         TrustedSetupHostLayout layout,
@@ -38,16 +64,14 @@ public sealed class SetupHostDockerAdapter
     {
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentNullException.ThrowIfNull(binding);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var revalidate = _probe.RevalidateBinding(binding);
-        if (!revalidate.IsSuccess)
-        {
-            return (revalidate, null);
-        }
-
         try
         {
+            var revalidate = await _probe.RevalidateBindingAsync(binding, cancellationToken);
+            if (!revalidate.IsSuccess)
+            {
+                return (revalidate, null);
+            }
+
             if (!_fileSystem.DirectoryExists(layout.ManagedRoot))
             {
                 _fileSystem.CreateOwnerOnlyDirectory(layout.ManagedRoot);
@@ -65,6 +89,22 @@ public sealed class SetupHostDockerAdapter
         catch (SetupDockerException ex)
         {
             return (ex.ToResult(), null);
+        }
+        catch (OperationCanceledException)
+        {
+            return (Cancelled(), null);
+        }
+        catch (IOException)
+        {
+            return (AdapterIoFailure(), null);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return (AdapterIoFailure(), null);
+        }
+        catch (JsonException)
+        {
+            return (AdapterDataFailure(), null);
         }
         catch
         {
@@ -171,10 +211,20 @@ public sealed class SetupHostDockerAdapter
 
             _fileSystem.WriteProtectedFileCreateNew(hostVerifierPath, verifierBytes);
 
-            var composeEnvResult = _envComposer.TryCompose(session.Layout, out var composeEnv);
+            var composeEnvResult = _envComposer.TryCompose(
+                session.Layout,
+                out var composeEnv,
+                out var recordedMetadataHostPath);
             if (!composeEnvResult.IsSuccess)
             {
                 return composeEnvResult;
+            }
+
+            if (recordedMetadataHostPath is null)
+            {
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "ACTIVE recorded metadata path is unavailable.");
             }
 
             var env = new Dictionary<string, string>(composeEnv, StringComparer.Ordinal)
@@ -187,7 +237,9 @@ public sealed class SetupHostDockerAdapter
                 .Concat([
                     "run", "--rm", "--no-deps", "--pull", "never",
                     "-v", $"{hostVerifierPath}:{SetupDockerInventory.ContainerVerifierMountPath}:ro",
+                    "-v", $"{recordedMetadataHostPath}:{SetupBundleLayout.ContainerRecordedMetadataPath}:ro",
                     "-e", SetupDockerInventory.ContainerVerifierEnvKey,
+                    "-e", "MAILER_SETUP_RECORDED_METADATA_PATH",
                     SetupDockerInventory.ServiceMailer,
                     "setup", "inspect-effective", "--format", "json",
                 ])
@@ -198,27 +250,48 @@ public sealed class SetupHostDockerAdapter
                 PrefixedDockerArgs(session, args),
                 session.Layout.ProjectDirectory,
                 env,
-                cancellationToken);
+                cancellationToken,
+                deserializeInspection: true);
+        }
+        catch (OperationCanceledException)
+        {
+            operationResult = Cancelled();
+        }
+        catch (IOException)
+        {
+            operationResult = AdapterIoFailure();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            operationResult = AdapterIoFailure();
+        }
+        catch (JsonException)
+        {
+            operationResult = AdapterDataFailure();
         }
         finally
         {
             DockerOutputSanitizer.ZeroBuffer(verifierBytes);
             var deleteFailed = false;
-            if (hostVerifierPath is not null && _fileSystem.FileExists(hostVerifierPath))
+            try
             {
-                try
+                if (hostVerifierPath is not null && _fileSystem.FileExists(hostVerifierPath))
                 {
                     _fileSystem.DeleteFile(hostVerifierPath);
-                }
-                catch
-                {
-                    deleteFailed = true;
-                }
 
-                if (!deleteFailed && _fileSystem.FileExists(hostVerifierPath))
-                {
-                    deleteFailed = true;
+                    if (_fileSystem.FileExists(hostVerifierPath))
+                    {
+                        deleteFailed = true;
+                    }
                 }
+            }
+            catch (IOException)
+            {
+                deleteFailed = true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                deleteFailed = true;
             }
 
             if (deleteFailed && operationResult is { IsSuccess: true })
@@ -240,7 +313,11 @@ public sealed class SetupHostDockerAdapter
         CancellationToken cancellationToken)
     {
         session.ThrowIfDisposed();
-        cancellationToken.ThrowIfCancellationRequested();
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromResult(Cancelled());
+        }
+
         return Task.FromResult(SetupDockerResult.Fail(
             SetupDockerResultCode.OperationNotAvailable,
             "Staging verification is owned by Issue #451 and is not available yet."));
@@ -275,18 +352,40 @@ public sealed class SetupHostDockerAdapter
         CancellationToken cancellationToken)
     {
         session.ThrowIfDisposed();
-        var composeEnvResult = _envComposer.TryCompose(session.Layout, out var composeEnv);
-        if (!composeEnvResult.IsSuccess)
+        try
         {
-            return composeEnvResult;
-        }
+            var composeEnvResult = _envComposer.TryCompose(
+                session.Layout,
+                out var composeEnv,
+                out _);
+            if (!composeEnvResult.IsSuccess)
+            {
+                return composeEnvResult;
+            }
 
-        return await RunDockerAsync(
-            session,
-            PrefixedDockerArgs(session, composeArgs),
-            session.Layout.ProjectDirectory,
-            composeEnv,
-            cancellationToken);
+            return await RunDockerAsync(
+                session,
+                PrefixedDockerArgs(session, composeArgs),
+                session.Layout.ProjectDirectory,
+                composeEnv,
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return Cancelled();
+        }
+        catch (IOException)
+        {
+            return AdapterIoFailure();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return AdapterIoFailure();
+        }
+        catch (JsonException)
+        {
+            return AdapterDataFailure();
+        }
     }
 
     private async Task<SetupDockerResult> RunDockerAsync(
@@ -294,9 +393,31 @@ public sealed class SetupHostDockerAdapter
         IReadOnlyList<string> args,
         string? workingDirectory,
         IReadOnlyDictionary<string, string>? composeEnv,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool deserializeInspection = false)
     {
-        var revalidate = _probe.RevalidateBinding(session.Binding);
+        SetupDockerResult revalidate;
+        try
+        {
+            revalidate = await _probe.RevalidateBindingAsync(session.Binding, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return Cancelled();
+        }
+        catch (IOException)
+        {
+            return AdapterIoFailure();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return AdapterIoFailure();
+        }
+        catch (JsonException)
+        {
+            return AdapterDataFailure();
+        }
+
         if (!revalidate.IsSuccess)
         {
             return revalidate;
@@ -340,6 +461,22 @@ public sealed class SetupHostDockerAdapter
         {
             processResult = await _runner.RunAsync(spec, cancellationToken);
         }
+        catch (OperationCanceledException)
+        {
+            return Cancelled();
+        }
+        catch (IOException)
+        {
+            return AdapterIoFailure();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return AdapterIoFailure();
+        }
+        catch (JsonException)
+        {
+            return AdapterDataFailure();
+        }
         catch
         {
             return SetupDockerResult.Fail(
@@ -350,6 +487,33 @@ public sealed class SetupHostDockerAdapter
         // Sanitize internally; never return raw streams.
         _ = DockerOutputSanitizer.SanitizeForInternalUse(processResult.StandardOutput);
         _ = DockerOutputSanitizer.SanitizeForInternalUse(processResult.StandardError);
+
+        if (processResult.Outcome == HostProcessOutcome.Completed
+            && processResult.ExitCode == 0
+            && deserializeInspection)
+        {
+            try
+            {
+                var inspection = JsonSerializer.Deserialize(
+                    processResult.StandardOutput ?? string.Empty,
+                    SetupHostDockerJsonContext.Default.SetupInspectEffectiveResult);
+                return inspection is null
+                    ? SetupDockerResult.Fail(
+                        SetupDockerResultCode.OutputMalformed,
+                        "Effective inspection output was malformed.")
+                    : SetupDockerResult.Ok(
+                        "Docker operation succeeded.",
+                        session.Binding.EngineKind,
+                        session.Binding.ComposeMajorVersion,
+                        inspection);
+            }
+            catch (JsonException)
+            {
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.OutputMalformed,
+                    "Effective inspection output was malformed.");
+            }
+        }
 
         return processResult.Outcome switch
         {
@@ -377,4 +541,19 @@ public sealed class SetupHostDockerAdapter
                 "Docker operation ended in an unexpected state."),
         };
     }
+
+    private static SetupDockerResult Cancelled() =>
+        SetupDockerResult.Fail(
+            SetupDockerResultCode.Cancelled,
+            "Docker operation was cancelled.");
+
+    private static SetupDockerResult AdapterIoFailure() =>
+        SetupDockerResult.Fail(
+            SetupDockerResultCode.FailedUnexpected,
+            "Docker adapter file access failed.");
+
+    private static SetupDockerResult AdapterDataFailure() =>
+        SetupDockerResult.Fail(
+            SetupDockerResultCode.OutputMalformed,
+            "Docker adapter data was malformed.");
 }

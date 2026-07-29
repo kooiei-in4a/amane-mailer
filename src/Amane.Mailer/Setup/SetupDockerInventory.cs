@@ -7,6 +7,7 @@ namespace Amane.Mailer.Setup;
 public static class SetupDockerInventory
 {
     public const string DeployComposeRelativePath = "compose.yml";
+    public const string ImageDigestOverlayRelativePath = "compose.image-digest.yml";
     public const string MailpitOverlayRelativePath = "compose.mailpit.yml";
     public const string ReleaseManifestRelativePath = TrustedReleaseInventory.ManifestFileName;
 

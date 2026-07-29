@@ -9,6 +9,10 @@ namespace Amane.Mailer.Setup;
 [JsonSerializable(typeof(DockerContextInspectEndpoint))]
 [JsonSerializable(typeof(SetupMountVerifierDocument))]
 [JsonSerializable(typeof(SetupMountVerifierMember))]
+[JsonSerializable(typeof(SetupInspectEffectiveResult))]
+[JsonSerializable(typeof(SetupInspectRecordedSummary))]
+[JsonSerializable(typeof(SetupInspectEffectiveSummary))]
+[JsonSerializable(typeof(SetupInspectAttestationSummary))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,

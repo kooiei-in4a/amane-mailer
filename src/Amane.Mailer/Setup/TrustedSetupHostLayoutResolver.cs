@@ -1,3 +1,6 @@
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace Amane.Mailer.Setup;
@@ -15,7 +18,7 @@ public static class TrustedSetupHostLayoutResolver
     /// Resolves layout by locating <see cref="TrustedReleaseInventory.ManifestFileName"/> under
     /// <paramref name="releaseBundleRoot"/> (already product-owned, not operator UI input).
     /// </summary>
-    public static SetupDockerResult TryResolve(
+    internal static SetupDockerResult TryResolve(
         ISetupFileSystem fileSystem,
         string releaseBundleRoot,
         SetupMode mode,
@@ -108,6 +111,34 @@ public static class TrustedSetupHostLayoutResolver
             return shapeFailure;
         }
 
+        var deployCompose = Path.GetFullPath(
+            Path.Combine(rootFull, SetupDockerInventory.DeployComposeRelativePath));
+        if (!TryValidateComposeFile(fileSystem, rootFull, deployCompose, out var composeFailure))
+        {
+            return composeFailure!;
+        }
+
+        var expectedComposeSha256 = "sha256:"
+            + Convert.ToHexString(SHA256.HashData(fileSystem.ReadAllBytes(deployCompose))).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(inventory.ComposeSha256)
+            || !string.Equals(inventory.ComposeSha256, expectedComposeSha256, StringComparison.Ordinal))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Trusted Compose digest does not match the release inventory.");
+        }
+
+        if (!TryGetLauncherVersion(out var launcherVersion)
+            || !TryParseVersion(inventory.LauncherVersionMin, out var launcherMin)
+            || !TryParseVersion(inventory.LauncherVersionMax, out var launcherMax)
+            || launcherVersion < launcherMin
+            || launcherVersion > launcherMax)
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Launcher version is outside the trusted release inventory range.");
+        }
+
         var topology = SetupComposeTopologySelector.ForMode(mode);
         if (topology == SetupComposeTopology.DeployWithMailpit
             && string.IsNullOrWhiteSpace(inventory.MailpitImageReference))
@@ -117,15 +148,15 @@ public static class TrustedSetupHostLayoutResolver
                 "Mode 1 requires a digest-pinned Mailpit image in the release inventory.");
         }
 
-        var composePaths = new List<string>();
-        var deployCompose = Path.GetFullPath(
-            Path.Combine(rootFull, SetupDockerInventory.DeployComposeRelativePath));
-        if (!TryValidateComposeFile(fileSystem, rootFull, deployCompose, out var composeFailure))
+        var composePaths = new List<string> { deployCompose };
+        var digestOverlay = Path.GetFullPath(
+            Path.Combine(rootFull, SetupDockerInventory.ImageDigestOverlayRelativePath));
+        if (!TryValidateComposeFile(fileSystem, rootFull, digestOverlay, out composeFailure))
         {
             return composeFailure!;
         }
 
-        composePaths.Add(deployCompose);
+        composePaths.Add(digestOverlay);
 
         if (topology == SetupComposeTopology.DeployWithMailpit)
         {
@@ -177,6 +208,32 @@ public static class TrustedSetupHostLayoutResolver
         return SetupDockerResult.Ok("Trusted host layout resolved.");
     }
 
+    public static SetupDockerResult TryResolveInstalled(
+        ISetupFileSystem fileSystem,
+        SetupMode mode,
+        string deploymentIdentity,
+        out TrustedSetupHostLayout? layout)
+    {
+        layout = null;
+        ArgumentNullException.ThrowIfNull(fileSystem);
+
+        var candidate = new DirectoryInfo(AppContext.BaseDirectory);
+        while (candidate is not null)
+        {
+            var manifestPath = Path.Combine(candidate.FullName, TrustedReleaseInventory.ManifestFileName);
+            if (fileSystem.FileExists(manifestPath))
+            {
+                return TryResolve(fileSystem, candidate.FullName, mode, deploymentIdentity, out layout);
+            }
+
+            candidate = candidate.Parent;
+        }
+
+        return SetupDockerResult.Fail(
+            SetupDockerResultCode.InvalidBundleInventory,
+            "Installed trusted release manifest was not found.");
+    }
+
     /// <summary>
     /// Test-only factory that materializes a release-bundle-shaped directory tree.
     /// Not callable from Web/terminal operator input paths.
@@ -201,6 +258,18 @@ public static class TrustedSetupHostLayoutResolver
         var rootFull = Path.GetFullPath(scratchRoot);
         Directory.CreateDirectory(rootFull);
 
+        var composeBytes = Encoding.UTF8.GetBytes(deployComposeContents);
+        var composeSha256 = "sha256:"
+            + Convert.ToHexString(SHA256.HashData(composeBytes)).ToLowerInvariant();
+        if (!TryGetLauncherVersion(out var launcherVersion))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Current launcher version could not be determined.");
+        }
+
+        var launcherVersionText =
+            $"{launcherVersion.Major}.{launcherVersion.Minor}.{launcherVersion.Build}";
         var manifestPath = Path.Combine(rootFull, TrustedReleaseInventory.ManifestFileName);
         var manifest = new ReleaseBundleManifestDocument
         {
@@ -209,9 +278,9 @@ public static class TrustedSetupHostLayoutResolver
             ImageDigest = inventory.RequiredImageDigest,
             ImageTag = inventory.AllowedDisplayTag,
             ComposeBundleVersion = inventory.ComposeBundleVersion,
-            ComposeSha256 = inventory.ComposeSha256,
-            LauncherVersionMin = inventory.LauncherVersionMin,
-            LauncherVersionMax = inventory.LauncherVersionMax,
+            ComposeSha256 = composeSha256,
+            LauncherVersionMin = launcherVersionText,
+            LauncherVersionMax = launcherVersionText,
             ProjectNamePrefix = inventory.ProjectNamePrefix,
             MailpitImageReference = inventory.MailpitImageReference,
         };
@@ -223,6 +292,17 @@ public static class TrustedSetupHostLayoutResolver
         File.WriteAllText(
             Path.Combine(rootFull, SetupDockerInventory.DeployComposeRelativePath),
             deployComposeContents);
+        File.WriteAllText(
+            Path.Combine(rootFull, SetupDockerInventory.ImageDigestOverlayRelativePath),
+            """
+            services:
+              mailer-migrate:
+                image: ${MAILER_IMAGE_REFERENCE}
+              mailer:
+                image: ${MAILER_IMAGE_REFERENCE}
+              mailer-acs-admin:
+                image: ${MAILER_IMAGE_REFERENCE}
+            """);
 
         var topology = SetupComposeTopologySelector.ForMode(mode);
         if (topology == SetupComposeTopology.DeployWithMailpit)
@@ -240,6 +320,56 @@ public static class TrustedSetupHostLayoutResolver
         }
 
         return TryResolve(fileSystem, rootFull, mode, deploymentIdentity, out layout);
+    }
+
+    private static bool TryGetLauncherVersion(out Version version)
+    {
+        var assembly = typeof(TrustedSetupHostLayoutResolver).Assembly;
+        var informational = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+        if (TryParseVersion(informational, out version))
+        {
+            return true;
+        }
+
+        var assemblyVersion = assembly.GetName().Version;
+        if (assemblyVersion is not null)
+        {
+            version = new Version(
+                assemblyVersion.Major,
+                assemblyVersion.Minor,
+                Math.Max(assemblyVersion.Build, 0));
+            return true;
+        }
+
+        version = new Version(0, 0, 0);
+        return false;
+    }
+
+    private static bool TryParseVersion(string? value, out Version version)
+    {
+        version = new Version(0, 0, 0);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var core = value.Split(['+', '-'], 2)[0];
+        var parts = core.Split('.');
+        if (parts.Length != 3
+            || !int.TryParse(parts[0], out var major)
+            || !int.TryParse(parts[1], out var minor)
+            || !int.TryParse(parts[2], out var patch)
+            || major < 0
+            || minor < 0
+            || patch < 0)
+        {
+            return false;
+        }
+
+        version = new Version(major, minor, patch);
+        return true;
     }
 
     private static bool TryValidateComposeFile(

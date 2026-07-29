@@ -112,6 +112,16 @@ public static class SetupHostDockerSelfCheckCommand
                         return FailureExitCode;
                     }
 
+                    if (!fake.LastEnvironment.TryGetValue("MAILER_IMAGE_REFERENCE", out var imageReference)
+                        || !string.Equals(
+                            imageReference,
+                            layout.ReleaseInventory.PinnedMailerImageReference,
+                            StringComparison.Ordinal))
+                    {
+                        error.WriteLine("setup host-docker-self-check failed: digest image reference missing.");
+                        return FailureExitCode;
+                    }
+
                     var staging = await adapter.ExecuteStagingVerificationAsync(
                         session,
                         CancellationToken.None);
@@ -202,6 +212,15 @@ public static class SetupHostDockerSelfCheckCommand
         const string bundleId = "bundle-selfcheck01";
         var bundleRoot = SetupBundleLayout.BundleRoot(layout.ManagedRoot, bundleId);
         Directory.CreateDirectory(SetupBundleLayout.EnvDir(bundleRoot));
+        Directory.CreateDirectory(SetupBundleLayout.ConfigDir(bundleRoot));
+        Directory.CreateDirectory(SetupBundleLayout.SecretsDir(bundleRoot));
+        Directory.CreateDirectory(SetupBundleLayout.MetadataDir(bundleRoot));
+        File.WriteAllText(
+            Path.Combine(SetupBundleLayout.ConfigDir(bundleRoot), SetupBundleLayout.TenantsFileName),
+            "{}");
+        File.WriteAllText(
+            Path.Combine(SetupBundleLayout.MetadataDir(bundleRoot), SetupBundleLayout.RecordedMetadataFileName),
+            "{}");
         File.WriteAllText(
             Path.Combine(SetupBundleLayout.EnvDir(bundleRoot), SetupBundleLayout.ComposeEnvFileName),
             $"MAILER_IMAGE_REPOSITORY={layout.ReleaseInventory.AllowedImageRepository}\n"
@@ -210,13 +229,20 @@ public static class SetupHostDockerSelfCheckCommand
         File.WriteAllText(
             Path.Combine(SetupBundleLayout.EnvDir(bundleRoot), SetupBundleLayout.SecretsEnvFileName),
             "MAIL_SERVICE_TOKEN=synthetic-self-check-token-not-real\n");
+        File.WriteAllText(
+            Path.Combine(bundleRoot, SetupBundleLayout.FinalizedMarkerFileName),
+            string.Empty);
         File.WriteAllText(layout.ActivePointerPath, $"{{\"bundleId\":\"{bundleId}\",\"activationGeneration\":1,\"schemaVersion\":1}}\n");
     }
 
     private sealed class SelfCheckProcessRunner : IHostProcessRunner
     {
+        public IReadOnlyDictionary<string, string?> LastEnvironment { get; private set; } =
+            new Dictionary<string, string?>(StringComparer.Ordinal);
+
         public Task<HostProcessResult> RunAsync(HostProcessSpec spec, CancellationToken cancellationToken)
         {
+            LastEnvironment = new Dictionary<string, string?>(spec.Environment, StringComparer.Ordinal);
             var args = string.Join(' ', spec.ArgumentList);
             if (args.Contains("context show", StringComparison.Ordinal))
             {

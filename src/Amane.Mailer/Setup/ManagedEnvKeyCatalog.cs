@@ -19,6 +19,7 @@ public static class ManagedEnvKeyCatalog
         "COMPOSE_PROJECT_NAME",
         "MAILER_IMAGE_REPOSITORY",
         "MAILER_IMAGE_TAG",
+        "MAILER_IMAGE_REFERENCE",
         "MAILER_PULL_POLICY",
         "MAILER_MEM_LIMIT",
         "MAILER_CPUS",

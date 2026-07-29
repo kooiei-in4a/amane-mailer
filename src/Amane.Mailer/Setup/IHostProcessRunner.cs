@@ -2,8 +2,9 @@ namespace Amane.Mailer.Setup;
 
 /// <summary>
 /// Spec for a host process invocation. Callers never supply shell strings — only argv arrays.
+/// Internal-only: public surface is typed SetupHostDockerAdapter operations.
 /// </summary>
-public sealed class HostProcessSpec
+internal sealed class HostProcessSpec
 {
     public HostProcessSpec(
         string fileName,
@@ -32,7 +33,7 @@ public sealed class HostProcessSpec
     public int MaxStderrBytes { get; }
 }
 
-public enum HostProcessOutcome
+internal enum HostProcessOutcome
 {
     Completed = 0,
     FailedToStart = 1,
@@ -44,7 +45,7 @@ public enum HostProcessOutcome
 /// <summary>
 /// Internal process result. Must not be exposed on public SetupDockerResult.
 /// </summary>
-public sealed class HostProcessResult
+internal sealed class HostProcessResult
 {
     public required HostProcessOutcome Outcome { get; init; }
     public int ExitCode { get; init; } = -1;
@@ -52,7 +53,7 @@ public sealed class HostProcessResult
     public string? StandardError { get; init; }
 }
 
-public interface IHostProcessRunner
+internal interface IHostProcessRunner
 {
     Task<HostProcessResult> RunAsync(HostProcessSpec spec, CancellationToken cancellationToken);
 }

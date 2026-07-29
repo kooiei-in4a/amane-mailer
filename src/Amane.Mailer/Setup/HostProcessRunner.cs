@@ -6,7 +6,7 @@ namespace Amane.Mailer.Setup;
 /// <summary>
 /// ArgumentList-only process runner with concurrent stream drain, byte caps, and kill+await.
 /// </summary>
-public sealed class HostProcessRunner : IHostProcessRunner
+internal sealed class HostProcessRunner : IHostProcessRunner
 {
     public const int DefaultMaxStreamBytes = 256 * 1024;
 
@@ -44,38 +44,35 @@ public sealed class HostProcessRunner : IHostProcessRunner
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(spec.Timeout);
 
-            var stdoutTask = ReadStreamAsync(process.StandardOutput.BaseStream, spec.MaxStdoutBytes, timeoutCts.Token);
-            var stderrTask = ReadStreamAsync(process.StandardError.BaseStream, spec.MaxStderrBytes, timeoutCts.Token);
+            var limitHit = 0;
+            void OnLimitExceeded()
+            {
+                if (Interlocked.Exchange(ref limitHit, 1) == 0)
+                {
+                    TryKill(process);
+                }
+            }
+
+            var stdoutTask = ReadStreamAsync(
+                process.StandardOutput.BaseStream,
+                spec.MaxStdoutBytes,
+                OnLimitExceeded,
+                timeoutCts.Token);
+            var stderrTask = ReadStreamAsync(
+                process.StandardError.BaseStream,
+                spec.MaxStderrBytes,
+                OnLimitExceeded,
+                timeoutCts.Token);
 
             try
             {
                 await process.WaitForExitAsync(timeoutCts.Token);
-                var stdout = await stdoutTask;
-                var stderr = await stderrTask;
-
-                if (stdout.LimitExceeded || stderr.LimitExceeded)
-                {
-                    TryKill(process);
-                    await WaitForExitIgnoreCancelAsync(process);
-                    return new HostProcessResult
-                    {
-                        Outcome = HostProcessOutcome.OutputLimitExceeded,
-                        ExitCode = process.HasExited ? process.ExitCode : -1,
-                    };
-                }
-
-                return new HostProcessResult
-                {
-                    Outcome = HostProcessOutcome.Completed,
-                    ExitCode = process.ExitCode,
-                    StandardOutput = stdout.Text,
-                    StandardError = stderr.Text,
-                };
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 TryKill(process);
                 await WaitForExitIgnoreCancelAsync(process);
+                await DrainIgnoreErrorsAsync(stdoutTask, stderrTask);
                 return new HostProcessResult
                 {
                     Outcome = HostProcessOutcome.Cancelled,
@@ -86,12 +83,36 @@ public sealed class HostProcessRunner : IHostProcessRunner
             {
                 TryKill(process);
                 await WaitForExitIgnoreCancelAsync(process);
+                await DrainIgnoreErrorsAsync(stdoutTask, stderrTask);
                 return new HostProcessResult
                 {
                     Outcome = HostProcessOutcome.TimedOut,
                     ExitCode = process.HasExited ? process.ExitCode : -1,
                 };
             }
+
+            // Always await both streams after exit/kill so ownership is complete.
+            var stdout = await SafeAwaitStreamAsync(stdoutTask);
+            var stderr = await SafeAwaitStreamAsync(stderrTask);
+
+            if (limitHit != 0 || stdout.LimitExceeded || stderr.LimitExceeded)
+            {
+                TryKill(process);
+                await WaitForExitIgnoreCancelAsync(process);
+                return new HostProcessResult
+                {
+                    Outcome = HostProcessOutcome.OutputLimitExceeded,
+                    ExitCode = process.HasExited ? process.ExitCode : -1,
+                };
+            }
+
+            return new HostProcessResult
+            {
+                Outcome = HostProcessOutcome.Completed,
+                ExitCode = process.ExitCode,
+                StandardOutput = stdout.Text,
+                StandardError = stderr.Text,
+            };
         }
     }
 
@@ -119,7 +140,6 @@ public sealed class HostProcessRunner : IHostProcessRunner
             startInfo.ArgumentList.Add(arg);
         }
 
-        // Start from a cleared environment and apply only allowlisted entries.
         startInfo.Environment.Clear();
         foreach (var pair in spec.Environment)
         {
@@ -134,7 +154,7 @@ public sealed class HostProcessRunner : IHostProcessRunner
         return startInfo;
     }
 
-    public static string? TryResolveDockerExecutable()
+    internal static string? TryResolveDockerExecutable()
     {
         var fileName = OperatingSystem.IsWindows() ? "docker.exe" : "docker";
         var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
@@ -156,14 +176,11 @@ public sealed class HostProcessRunner : IHostProcessRunner
         return null;
     }
 
-    /// <summary>
-    /// Minimal environment for Docker CLI discovery. Clears DOCKER_HOST / DOCKER_CONTEXT /
-    /// COMPOSE_* so the pinned --context binding is authoritative.
-    /// </summary>
-    public static Dictionary<string, string?> CreateMinimalDockerChildEnvironment(
+    internal static Dictionary<string, string?> CreateMinimalDockerChildEnvironment(
         bool clearDockerOverrides,
         IReadOnlyDictionary<string, string?>? extra = null)
     {
+        _ = clearDockerOverrides;
         var env = new Dictionary<string, string?>(StringComparer.Ordinal)
         {
             ["PATH"] = Environment.GetEnvironmentVariable("PATH"),
@@ -177,12 +194,6 @@ public sealed class HostProcessRunner : IHostProcessRunner
             ["COMPOSE_DISABLE_ENV_FILE"] = "1",
         };
 
-        if (clearDockerOverrides)
-        {
-            // Intentionally omit DOCKER_HOST, DOCKER_CONTEXT, COMPOSE_ENV_FILES, COMPOSE_FILE,
-            // and COMPOSE_PROFILES so the pinned --context binding is authoritative.
-        }
-
         if (extra is not null)
         {
             foreach (var pair in extra)
@@ -194,7 +205,6 @@ public sealed class HostProcessRunner : IHostProcessRunner
             }
         }
 
-        // Drop null placeholders from discovery keys.
         foreach (var key in env.Keys.ToArray())
         {
             if (env[key] is null)
@@ -209,27 +219,47 @@ public sealed class HostProcessRunner : IHostProcessRunner
     private static async Task<StreamReadResult> ReadStreamAsync(
         Stream stream,
         int maxBytes,
+        Action onLimitExceeded,
         CancellationToken cancellationToken)
     {
         var buffer = new byte[8192];
         using var memory = new MemoryStream();
+        var limitExceeded = false;
         while (true)
         {
-            var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            int read;
+            try
+            {
+                read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+            }
+            catch (OperationCanceledException) when (limitExceeded)
+            {
+                // Process was killed due to limit; treat as drained.
+                break;
+            }
+
             if (read == 0)
             {
                 break;
             }
 
-            if (memory.Length + read > maxBytes)
+            if (!limitExceeded && memory.Length + read > maxBytes)
             {
-                return new StreamReadResult(string.Empty, LimitExceeded: true);
+                limitExceeded = true;
+                onLimitExceeded();
+                // Discard remaining bytes until EOF so the child is not blocked on a full pipe.
+                continue;
             }
 
-            await memory.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            if (!limitExceeded)
+            {
+                await memory.WriteAsync(buffer.AsMemory(0, read), CancellationToken.None);
+            }
         }
 
-        return new StreamReadResult(Encoding.UTF8.GetString(memory.ToArray()), LimitExceeded: false);
+        return limitExceeded
+            ? new StreamReadResult(string.Empty, LimitExceeded: true)
+            : new StreamReadResult(Encoding.UTF8.GetString(memory.ToArray()), LimitExceeded: false);
     }
 
     private static void TryKill(Process process)
@@ -243,7 +273,7 @@ public sealed class HostProcessRunner : IHostProcessRunner
         }
         catch
         {
-            // Best-effort kill; caller still awaits exit.
+            // Best-effort kill; caller still awaits exit and streams.
         }
     }
 
@@ -257,6 +287,26 @@ public sealed class HostProcessRunner : IHostProcessRunner
         catch
         {
             // Ignore — process may already be gone.
+        }
+    }
+
+    private static async Task DrainIgnoreErrorsAsync(
+        Task<StreamReadResult> stdoutTask,
+        Task<StreamReadResult> stderrTask)
+    {
+        await SafeAwaitStreamAsync(stdoutTask);
+        await SafeAwaitStreamAsync(stderrTask);
+    }
+
+    private static async Task<StreamReadResult> SafeAwaitStreamAsync(Task<StreamReadResult> task)
+    {
+        try
+        {
+            return await task;
+        }
+        catch
+        {
+            return new StreamReadResult(string.Empty, LimitExceeded: false);
         }
     }
 

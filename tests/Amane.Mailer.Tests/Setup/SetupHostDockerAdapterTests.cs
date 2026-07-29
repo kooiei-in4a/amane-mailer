@@ -28,6 +28,51 @@ public sealed class SetupHostDockerAdapterTests
             "unix:///var/run/docker.sock").IsSuccess);
     }
 
+    [Theory]
+    [InlineData("ssh://remote-host/pipe/docker_engine")]
+    [InlineData("tcp://remote-host/pipe/docker_engine")]
+    [InlineData("SSH://remote-host/pipe/docker_engine")]
+    [InlineData("npipe:////remote-host/pipe/docker_engine")]
+    [InlineData("npipe:////./pipe/docker_engine%2f../evil")]
+    public void ClassifyEndpoint_rejects_adversarial_remote_pipe_shapes(string endpoint)
+    {
+        var kind = DockerEnvironmentProbe.ClassifyEndpointForTests(endpoint, pretendWindows: true);
+        Assert.True(
+            kind is DockerEndpointKind.RemoteRejected or DockerEndpointKind.Unknown,
+            $"Expected fail-closed for {endpoint}, got {kind}");
+    }
+
+    [Theory]
+    [InlineData("npipe:////./pipe/docker_engine")]
+    [InlineData("npipe:////./pipe/docker_engine/")]
+    [InlineData("npipe:////./pipe/dockerDesktopLinuxEngine")]
+    [InlineData("npipe:////./pipe/dockerDesktopWindowsEngine")]
+    [InlineData("NPIPE:////./pipe/dockerDesktopLinuxEngine")]
+    public void ClassifyEndpoint_allows_exact_local_windows_pipes(string endpoint)
+    {
+        Assert.Equal(
+            DockerEndpointKind.WindowsNamedPipe,
+            DockerEnvironmentProbe.ClassifyEndpointForTests(endpoint, pretendWindows: true));
+    }
+
+    [Fact]
+    public void TryResolve_is_not_public_raw_root_api()
+    {
+        var publicMethods = typeof(TrustedSetupHostLayoutResolver)
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+        Assert.DoesNotContain(publicMethods, m => m.Name == "TryResolve");
+        Assert.Contains(publicMethods, m => m.Name == nameof(TrustedSetupHostLayoutResolver.TryResolveInstalled));
+    }
+
+    [Fact]
+    public void HostProcessRunner_types_are_internal()
+    {
+        Assert.False(typeof(HostProcessSpec).IsPublic);
+        Assert.False(typeof(HostProcessRunner).IsPublic);
+        Assert.False(typeof(IHostProcessRunner).IsPublic);
+        Assert.False(typeof(HostProcessResult).IsPublic);
+    }
+
     [Fact]
     public async Task Probe_rejects_remote_context_endpoint()
     {
@@ -91,6 +136,12 @@ public sealed class SetupHostDockerAdapterTests
         var recorded = new ConcurrentQueue<IReadOnlyList<string>>();
         harness.Runner.OnRun = spec =>
         {
+            var joined = string.Join(' ', spec.ArgumentList);
+            if (IsBindingProbe(joined))
+            {
+                return null;
+            }
+
             recorded.Enqueue(spec.ArgumentList.ToArray());
             return Ok(string.Empty);
         };
@@ -105,8 +156,45 @@ public sealed class SetupHostDockerAdapterTests
         Assert.DoesNotContain("down", args);
         Assert.DoesNotContain("--volumes", args);
         Assert.Equal("1", harness.LastChildEnv["COMPOSE_DISABLE_ENV_FILE"]);
+        Assert.Equal(
+            harness.Layout.ReleaseInventory.PinnedMailerImageReference,
+            harness.LastChildEnv["MAILER_IMAGE_REFERENCE"]);
+        Assert.Contains(
+            $"{Path.DirectorySeparatorChar}managed{Path.DirectorySeparatorChar}bundles{Path.DirectorySeparatorChar}",
+            harness.LastChildEnv["MAILER_TENANTS_HOST_PATH"]!
+                .Replace('/', Path.DirectorySeparatorChar)
+                .Replace('\\', Path.DirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            args,
+            a => a.EndsWith(SetupDockerInventory.ImageDigestOverlayRelativePath, StringComparison.OrdinalIgnoreCase)
+                || a.Contains(SetupDockerInventory.ImageDigestOverlayRelativePath, StringComparison.OrdinalIgnoreCase));
         Assert.False(harness.LastChildEnv.ContainsKey("COMPOSE_FILE"));
         Assert.False(harness.LastChildEnv.ContainsKey("DOCKER_HOST"));
+    }
+
+    [Fact]
+    public async Task Revalidate_detects_context_endpoint_drift_to_remote()
+    {
+        await using var harness = await CreateHarnessAsync();
+        harness.Runner.OnRun = spec =>
+        {
+            var joined = string.Join(' ', spec.ArgumentList);
+            if (joined.Contains("context inspect", StringComparison.Ordinal))
+            {
+                return Ok("""{"Endpoints":{"docker":{"Host":"ssh://evil.example"}}}""");
+            }
+
+            if (joined.Contains("version --format", StringComparison.Ordinal))
+            {
+                return Ok((harness.Session.Binding.EngineIdentity ?? "27.0.0") + "\n");
+            }
+
+            return Ok(string.Empty);
+        };
+
+        var result = await harness.Adapter.ValidateComposeAsync(harness.Session, CancellationToken.None);
+        Assert.Equal(SetupDockerResultCode.RemoteContextRejected, result.Code);
     }
 
     [Fact]
@@ -116,6 +204,12 @@ public sealed class SetupHostDockerAdapterTests
         IReadOnlyList<string>? args = null;
         harness.Runner.OnRun = spec =>
         {
+            var joined = string.Join(' ', spec.ArgumentList);
+            if (IsBindingProbe(joined))
+            {
+                return null;
+            }
+
             args = spec.ArgumentList.ToArray();
             return Ok(string.Empty);
         };
@@ -137,6 +231,12 @@ public sealed class SetupHostDockerAdapterTests
         IReadOnlyList<string>? args = null;
         harness.Runner.OnRun = spec =>
         {
+            var joined = string.Join(' ', spec.ArgumentList);
+            if (IsBindingProbe(joined))
+            {
+                return null;
+            }
+
             args = spec.ArgumentList.ToArray();
             return Ok(string.Empty);
         };
@@ -168,30 +268,54 @@ public sealed class SetupHostDockerAdapterTests
     {
         await using var harness = await CreateHarnessAsync();
 
-        harness.Runner.OnRun = _ => new HostProcessResult
+        harness.Runner.OnRun = spec =>
         {
-            Outcome = HostProcessOutcome.TimedOut,
-            ExitCode = -1,
+            if (IsBindingProbe(string.Join(' ', spec.ArgumentList)))
+            {
+                return null;
+            }
+
+            return new HostProcessResult
+            {
+                Outcome = HostProcessOutcome.TimedOut,
+                ExitCode = -1,
+            };
         };
         Assert.Equal(
             SetupDockerResultCode.Timeout,
             (await harness.Adapter.ValidateComposeAsync(harness.Session, CancellationToken.None)).Code);
 
-        harness.Runner.OnRun = _ => new HostProcessResult
+        harness.Runner.OnRun = spec =>
         {
-            Outcome = HostProcessOutcome.Cancelled,
-            ExitCode = -1,
+            if (IsBindingProbe(string.Join(' ', spec.ArgumentList)))
+            {
+                return null;
+            }
+
+            return new HostProcessResult
+            {
+                Outcome = HostProcessOutcome.Cancelled,
+                ExitCode = -1,
+            };
         };
         Assert.Equal(
             SetupDockerResultCode.Cancelled,
             (await harness.Adapter.ValidateComposeAsync(harness.Session, CancellationToken.None)).Code);
 
-        harness.Runner.OnRun = _ => new HostProcessResult
+        harness.Runner.OnRun = spec =>
         {
-            Outcome = HostProcessOutcome.Completed,
-            ExitCode = 17,
-            StandardOutput = "secret=canary-token-value",
-            StandardError = "path=/private/secret/dir",
+            if (IsBindingProbe(string.Join(' ', spec.ArgumentList)))
+            {
+                return null;
+            }
+
+            return new HostProcessResult
+            {
+                Outcome = HostProcessOutcome.Completed,
+                ExitCode = 17,
+                StandardOutput = "secret=canary-token-value",
+                StandardError = "path=/private/secret/dir",
+            };
         };
         var failed = await harness.Adapter.ValidateComposeAsync(harness.Session, CancellationToken.None);
         Assert.Equal(SetupDockerResultCode.ProcessFailed, failed.Code);
@@ -221,7 +345,18 @@ public sealed class SetupHostDockerAdapterTests
         Assert.Equal(typeof(SetupMountVerifierDocument), parameters[1].ParameterType);
         Assert.DoesNotContain(parameters, p => p.ParameterType == typeof(string));
 
-        harness.Runner.OnRun = _ => Ok("{}");
+        IReadOnlyList<string>? inspectionArgs = null;
+        harness.Runner.OnRun = spec =>
+        {
+            var joined = string.Join(' ', spec.ArgumentList);
+            if (IsBindingProbe(joined))
+            {
+                return null;
+            }
+
+            inspectionArgs = spec.ArgumentList.ToArray();
+            return Ok(ValidInspectionJson);
+        };
         var verifier = new SetupMountVerifierDocument
         {
             BundleId = "bundle-test",
@@ -243,6 +378,16 @@ public sealed class SetupHostDockerAdapterTests
             verifier,
             CancellationToken.None);
         Assert.True(result.IsSuccess);
+        Assert.NotNull(result.Inspection);
+        Assert.NotNull(inspectionArgs);
+        Assert.Contains(
+            inspectionArgs!,
+            a => a.EndsWith(
+                ":" + SetupBundleLayout.ContainerRecordedMetadataPath + ":ro",
+                StringComparison.Ordinal));
+        Assert.Equal(
+            SetupBundleLayout.ContainerRecordedMetadataPath,
+            harness.LastChildEnv["MAILER_SETUP_RECORDED_METADATA_PATH"]);
     }
 
     [Fact]
@@ -316,7 +461,11 @@ public sealed class SetupHostDockerAdapterTests
             out var layout);
         Assert.True(result.IsSuccess);
         Assert.NotNull(layout);
-        Assert.Equal(2, layout!.ComposeFilePaths.Count);
+        Assert.Equal(3, layout!.ComposeFilePaths.Count);
+        Assert.EndsWith(
+            SetupDockerInventory.ImageDigestOverlayRelativePath,
+            layout.ComposeFilePaths[1],
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -335,6 +484,12 @@ public sealed class SetupHostDockerAdapterTests
         Assert.False(psi.Environment.ContainsKey("DOCKER_HOST"));
         Assert.False(psi.Environment.ContainsKey("COMPOSE_FILE"));
     }
+
+    private static bool IsBindingProbe(string joinedArguments) =>
+        joinedArguments.Contains("context inspect", StringComparison.Ordinal)
+        || joinedArguments.Contains("version --format", StringComparison.Ordinal)
+        || joinedArguments.Contains("context show", StringComparison.Ordinal)
+        || joinedArguments.Contains("compose version", StringComparison.Ordinal);
 
     private static async Task<Harness> CreateHarnessAsync(bool seedMatchingActive = true)
     {
@@ -358,9 +513,7 @@ public sealed class SetupHostDockerAdapterTests
         File.WriteAllText(layout.ExternalEnvPath, "MAILER_DATA_PATH=/tmp/amane-test-data\n");
         SeedActive(layout, matching: seedMatchingActive);
 
-        var runner = new ScriptedProcessRunner(_ => Ok(string.Empty));
-        runner.CaptureEnvironment = true;
-        var probeRunner = new ScriptedProcessRunner(spec =>
+        var opsHandler = new ScriptedProcessRunner(spec =>
         {
             var joined = string.Join(' ', spec.ArgumentList);
             if (joined.Contains("context show", StringComparison.Ordinal))
@@ -388,25 +541,23 @@ public sealed class SetupHostDockerAdapterTests
 
             return Ok(string.Empty);
         });
+        opsHandler.CaptureEnvironment = true;
 
-        // Share the scripted runner used after session for compose ops.
-        var multiplex = new MultiplexRunner(probeRunner, runner);
         var probe = new DockerEnvironmentProbe(
-            multiplex,
+            opsHandler,
             getDockerHost: static () => null,
             getDockerContextEnv: static () => null,
             resolveDockerExecutable: static () => "docker");
-        var adapter = new SetupHostDockerAdapter(fs, multiplex, probe);
+        var adapter = new SetupHostDockerAdapter(fs, opsHandler, probe);
         var (probeResult, binding) = await adapter.CheckDockerAsync(CancellationToken.None);
         Assert.True(probeResult.IsSuccess);
         Assert.NotNull(binding);
 
-        multiplex.UseSecondary = true;
         var (sessionResult, session) = await adapter.AcquireSessionAsync(layout, binding!, CancellationToken.None);
         Assert.True(sessionResult.IsSuccess);
         Assert.NotNull(session);
 
-        return new Harness(root, layout, adapter, session!, runner);
+        return new Harness(root, layout, adapter, session!, opsHandler);
     }
 
     private static TrustedReleaseInventory CreateInventory(bool includeMailpit) =>
@@ -437,11 +588,40 @@ public sealed class SetupHostDockerAdapterTests
             profiles: [acs-admin]
         """;
 
+    private const string ValidInspectionJson =
+        """
+        {
+          "schemaVersion": 1,
+          "mailerVersion": "1.0.0",
+          "managed": true,
+          "effective": {
+            "credentialStatus": "configured"
+          },
+          "mountAttestation": {
+            "result": "matched"
+          },
+          "bundleIntegrity": {
+            "result": "not-evaluated"
+          },
+          "tenantConfigurationSource": "managed",
+          "credentialSource": "file"
+        }
+        """;
+
     private static void SeedActive(TrustedSetupHostLayout layout, bool matching)
     {
         const string bundleId = "bundle-test01";
         var bundleRoot = SetupBundleLayout.BundleRoot(layout.ManagedRoot, bundleId);
         Directory.CreateDirectory(SetupBundleLayout.EnvDir(bundleRoot));
+        Directory.CreateDirectory(SetupBundleLayout.ConfigDir(bundleRoot));
+        Directory.CreateDirectory(SetupBundleLayout.SecretsDir(bundleRoot));
+        Directory.CreateDirectory(SetupBundleLayout.MetadataDir(bundleRoot));
+        File.WriteAllText(
+            Path.Combine(SetupBundleLayout.ConfigDir(bundleRoot), SetupBundleLayout.TenantsFileName),
+            "{}");
+        File.WriteAllText(
+            Path.Combine(SetupBundleLayout.MetadataDir(bundleRoot), SetupBundleLayout.RecordedMetadataFileName),
+            "{}");
         var repo = matching
             ? layout.ReleaseInventory.AllowedImageRepository
             : "evil.example/other";
@@ -452,6 +632,9 @@ public sealed class SetupHostDockerAdapterTests
         File.WriteAllText(
             Path.Combine(SetupBundleLayout.EnvDir(bundleRoot), SetupBundleLayout.SecretsEnvFileName),
             "MAIL_SERVICE_TOKEN=synthetic-test-token-not-real\n");
+        File.WriteAllText(
+            Path.Combine(bundleRoot, SetupBundleLayout.FinalizedMarkerFileName),
+            string.Empty);
         File.WriteAllText(
             layout.ActivePointerPath,
             $"{{\"bundleId\":\"{bundleId}\",\"activationGeneration\":1,\"schemaVersion\":1}}\n");
@@ -510,7 +693,7 @@ public sealed class SetupHostDockerAdapterTests
         public ScriptedProcessRunner(Func<HostProcessSpec, HostProcessResult> defaultHandler) =>
             _default = defaultHandler;
 
-        public Func<HostProcessSpec, HostProcessResult>? OnRun { get; set; }
+        public Func<HostProcessSpec, HostProcessResult?>? OnRun { get; set; }
         public bool CaptureEnvironment { get; set; }
         public Dictionary<string, string?> LastEnvironment { get; private set; } = new(StringComparer.Ordinal);
 
@@ -521,7 +704,16 @@ public sealed class SetupHostDockerAdapterTests
                 LastEnvironment = new Dictionary<string, string?>(spec.Environment, StringComparer.Ordinal);
             }
 
-            return Task.FromResult((OnRun ?? _default)(spec));
+            if (OnRun is not null)
+            {
+                var custom = OnRun(spec);
+                if (custom is not null)
+                {
+                    return Task.FromResult(custom);
+                }
+            }
+
+            return Task.FromResult(_default(spec));
         }
     }
 
@@ -538,7 +730,14 @@ public sealed class SetupHostDockerAdapterTests
 
         public bool UseSecondary { get; set; }
 
-        public Task<HostProcessResult> RunAsync(HostProcessSpec spec, CancellationToken cancellationToken) =>
-            (UseSecondary ? _secondary : _primary).RunAsync(spec, cancellationToken);
+        public Task<HostProcessResult> RunAsync(HostProcessSpec spec, CancellationToken cancellationToken)
+        {
+            var joined = string.Join(' ', spec.ArgumentList);
+            var isBindingRevalidation =
+                joined.Contains("context inspect", StringComparison.Ordinal)
+                || joined.Contains("version --format", StringComparison.Ordinal);
+            return (UseSecondary && !isBindingRevalidation ? _secondary : _primary)
+                .RunAsync(spec, cancellationToken);
+        }
     }
 }
