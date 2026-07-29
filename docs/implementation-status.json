@@ -285,13 +285,13 @@
       "id": "easy-setup",
       "status": "partial",
       "trackingIssue": 445,
-      "lastVerified": "2026-07-29",
+      "lastVerified": "2026-07-30",
       "relatedAdrs": [
         "0021",
         "0013",
         "0019"
       ],
-      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR #448 Setup Core; #447 inspect-effective; #449 host Docker adapter; #450 apply/rollback; #451 typed ACS workflow) → evidence updates (#452–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. #451 extracts console-independent ACS register / Staging verification / Production live_sending two-step promotion over #448 generate + #450 apply. Does not change public HTTP contract, DB schema, or Manual Deployment source of truth.",
+      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR #448 Setup Core; #447 inspect-effective; #449 host Docker adapter; #450 apply/rollback; #451 typed ACS workflow; #454 Admin read-only /admin/setup-status) → evidence updates (#452–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. #451 extracts console-independent ACS register / Staging verification / Production live_sending two-step promotion over #448 generate + #450 apply. #454 reuses Admin auth/session/local-address and aggregates #447 inspection plus runtime-visible recorded metadata; host ACTIVE/verification/Staging summary are unavailable from container runtime (ADR 0021 D-04) and must not be guessed. Deployment operational verification is never recorded or shown as confirmed in v1.2.0 Easy Setup. Does not change public HTTP contract, DB schema, or Manual Deployment source of truth.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Setup/SetupCore.cs",
@@ -330,7 +330,11 @@
           "src/Amane.Mailer/Operations/AcsSetup/AcsConfigurationValidator.cs",
           "src/Amane.Mailer/Operations/AcsSetup/AcsStagingVerificationOperation.cs",
           "src/Amane.Mailer/Operations/AcsSetup/AcsEnvironmentConfirmation.cs",
-          "src/Amane.Mailer/Operations/AcsSetup/AcsSessionTestSendLimiter.cs"
+          "src/Amane.Mailer/Operations/AcsSetup/AcsSessionTestSendLimiter.cs",
+          "src/Amane.Mailer/Admin/AdminSetupStatusPage.cs",
+          "src/Amane.Mailer/Admin/AdminSetupStatusReadModel.cs",
+          "src/Amane.Mailer/Admin/AdminEndpointMapping.cs",
+          "src/Amane.Mailer/Admin/AdminLayout.cs"
         ],
         "types": [
           "Amane.Mailer.Setup.SetupCore",
@@ -364,7 +368,9 @@
           "Amane.Mailer.Operations.AcsSetup.AcsRegisterOperation",
           "Amane.Mailer.Operations.AcsSetup.AcsConfigurationValidator",
           "Amane.Mailer.Operations.AcsSetup.AcsStagingVerificationOperation",
-          "Amane.Mailer.Operations.AcsSetup.AcsSessionTestSendLimiter"
+          "Amane.Mailer.Operations.AcsSetup.AcsSessionTestSendLimiter",
+          "Amane.Mailer.Admin.AdminSetupStatusPage",
+          "Amane.Mailer.Admin.AdminSetupStatusReadModel"
         ],
         "tests": [
           "tests/Amane.Mailer.Tests/Setup/SetupCanonicalPayloadTests.cs",
@@ -378,7 +384,11 @@
           "tests/Amane.Mailer.Tests/Setup/SetupDurableAtomicWriterHostTests.cs",
           "tests/Amane.Mailer.Tests/Setup/SetupCoreHostDockerIntegrationTests.cs",
           "tests/Amane.Mailer.Tests/Setup/HostProcessRunnerLiveTests.cs",
-          "tests/Amane.Mailer.Tests/Setup/AcsSetupWorkflowTests.cs"
+          "tests/Amane.Mailer.Tests/Setup/AcsSetupWorkflowTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminSetupStatusReadModelTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminSetupStatusPageRenderTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminSetupStatusPageXssTests.cs",
+          "tests/Amane.Mailer.Tests/MailerAdminTests.cs"
         ]
       }
     }

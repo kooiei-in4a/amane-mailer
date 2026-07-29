@@ -413,6 +413,77 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     }
 
     [Fact]
+    public async Task Unauthenticated_setup_status_redirects_to_login()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(fixture.Factory);
+
+        using var response = await client.GetAsync("/admin/setup-status", ct);
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Contains("/admin/login", response.Headers.Location?.OriginalString, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Authenticated_setup_status_returns_ok_read_only_page()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync("/admin/setup-status", ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Contains("Setup status", html, StringComparison.Ordinal);
+        Assert.Contains(
+            System.Text.Encodings.Web.HtmlEncoder.Default.Encode(AdminSetupStatusPage.OperationalVerificationMessageJa),
+            html,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("method=\"post\"", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("href=\"/admin/setup-status\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Disabled_admin_does_not_expose_setup_status_route()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var disabledFixture = new MailerApiFixture();
+        await disabledFixture.InitializeAsync();
+        using var client = CreateClient(disabledFixture.Factory);
+
+        using var response = await client.GetAsync("/admin/setup-status", ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Setup_status_local_address_policy_rejects_non_allowed_admin_paths()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var localFixture = new MailerAdminDisallowedLocalAddressFixture();
+        await localFixture.InitializeAsync();
+        using var client = CreateClient(localFixture.Factory);
+
+        // AllowAnonymous login still goes through the Admin local-address branch.
+        using var login = await client.GetAsync("/admin/login", ct);
+        Assert.Equal(HttpStatusCode.NotFound, login.StatusCode);
+
+        // RequireAuthorization may challenge before the local-address branch; either way the
+        // path remains under the same /admin policy and must not render setup-status HTML.
+        using var setupStatus = await client.GetAsync("/admin/setup-status", ct);
+        Assert.True(
+            setupStatus.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Found or HttpStatusCode.Redirect,
+            $"Unexpected status: {setupStatus.StatusCode}");
+        if (setupStatus.StatusCode == HttpStatusCode.OK)
+        {
+            var html = await setupStatus.Content.ReadAsStringAsync(ct);
+            Assert.DoesNotContain("Setup status", html, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public async Task Login_accepts_hash_password_and_redirects_to_admin_home()
     {
         var ct = TestContext.Current.CancellationToken;

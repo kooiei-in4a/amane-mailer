@@ -10,6 +10,7 @@ public enum AdminNavItem
     Suppressions,
     AuditLog,
     Ops,
+    SetupStatus,
 }
 
 public static class AdminLayout
@@ -63,6 +64,7 @@ public static class AdminLayout
         AppendNavItem(html, "/admin/suppressions", "抑制リスト", activeNav == AdminNavItem.Suppressions, badgeCount: null);
         AppendNavItem(html, "/admin/audit-log", "監査ログ", activeNav == AdminNavItem.AuditLog, badgeCount: null);
         AppendNavItem(html, "/admin/ops", "運用状況", activeNav == AdminNavItem.Ops, badgeCount: null);
+        AppendNavItem(html, "/admin/setup-status", "Setup status", activeNav == AdminNavItem.SetupStatus, badgeCount: null);
         html.AppendLine("      </ul>");
         html.AppendLine("    </nav>");
     }
