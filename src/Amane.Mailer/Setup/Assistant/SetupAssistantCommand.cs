@@ -34,6 +34,7 @@ public static class SetupAssistantCommand
         var options = new SetupAssistantOptions { Port = port };
         using var sessions = new SetupAssistantSessionManager(options);
 
+        var listening = false;
         try
         {
             await using var host = await SetupAssistantHost.StartAsync(
@@ -41,6 +42,7 @@ public static class SetupAssistantCommand
                 sessions,
                 new SetupAssistantOperations(),
                 cancellationToken);
+            listening = true;
 
             output.WriteLine("Amane Mailer Easy Setup Assistant");
             output.WriteLine($"  URL:   {host.BaseAddress}");
@@ -52,12 +54,19 @@ public static class SetupAssistantCommand
             output.WriteLine($"setup assistant: stopped ({DescribeReason(reason)}).");
             return SuccessExitCode;
         }
+        catch (OperationCanceledException)
+        {
+            output.WriteLine("setup assistant: stopped (interrupted).");
+            return SuccessExitCode;
+        }
         catch (Exception)
         {
-            // A bind failure is terminal. The assistant never retries on 0.0.0.0, on a LAN
-            // address, or on any other interface.
-            error.WriteLine(
-                "setup assistant: could not bind the loopback listener. No other interface is used.");
+            // A bind failure is terminal: the assistant never retries on 0.0.0.0, on a LAN address,
+            // or on any other interface. A failure after the listener is up is a different fault,
+            // and neither is reported with the exception body, which can carry a path or a secret.
+            error.WriteLine(listening
+                ? "setup assistant: stopped after an unexpected error while serving the assistant."
+                : "setup assistant: could not bind the loopback listener. No other interface is used.");
             return FailureExitCode;
         }
     }

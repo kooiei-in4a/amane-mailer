@@ -11,6 +11,29 @@ namespace Amane.Mailer.Setup.Assistant;
 internal static partial class SetupAssistantInputs
 {
     internal const int MinSecretLength = 16;
+
+    internal const string LocalDevelopmentProfileValue = "local-development";
+    internal const string ProductionHttpsProfileValue = "production-https";
+
+    /// <summary>
+    /// Only the two offered profiles are accepted. An unrecognised value is rejected rather than
+    /// silently treated as Local Development.
+    /// </summary>
+    internal static bool TryParseAdminProfile(string? raw, out SetupAssistantAdminProfile profile)
+    {
+        switch (raw)
+        {
+            case LocalDevelopmentProfileValue:
+                profile = SetupAssistantAdminProfile.LocalDevelopment;
+                return true;
+            case ProductionHttpsProfileValue:
+                profile = SetupAssistantAdminProfile.ProductionHttps;
+                return true;
+            default:
+                profile = SetupAssistantAdminProfile.LocalDevelopment;
+                return false;
+        }
+    }
     internal const int MaxFieldLength = 320;
 
     /// <summary>Every mode the assistant can drive. Mode 5 is deliberately absent.</summary>

@@ -7,6 +7,8 @@ namespace Amane.Mailer.Setup.Assistant;
 /// adapter (#449), apply/verify/rollback (#450), the typed ACS workflow (#451), and Admin
 /// bootstrap (#459). The assistant owns no configuration, Docker, ACS, or Admin logic of its
 /// own; every member here delegates to an existing typed operation and returns canonical codes.
+/// Unexpected exceptions are not part of the contract: the Web adapter catches them and ends the
+/// session as a manual-intervention fault rather than leaving the operator with an HTTP 500 to retry.
 /// </summary>
 internal interface ISetupAssistantOperations
 {

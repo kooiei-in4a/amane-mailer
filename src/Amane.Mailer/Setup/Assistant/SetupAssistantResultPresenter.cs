@@ -162,6 +162,10 @@ internal static partial class SetupAssistantResultPresenter
             "この操作は現在の段階では実行できません。",
         SetupAssistantRejection.AdminRequiresMainSetup =>
             "Admin bootstrap は Main setup の成功後にのみ開始できます。",
+        SetupAssistantRejection.AdminProfileNotSelectable =>
+            "選択できない access profile です。",
+        SetupAssistantRejection.StaleRequest =>
+            "画面の内容が古くなっています。設定は変更していません。現在の段階からやり直してください。",
         SetupAssistantRejection.InvalidOrigin =>
             "Admin の接続先 URL が正しくありません。",
         _ => "入力を確認してください。",
@@ -238,4 +242,6 @@ internal static class SetupAssistantRejection
     internal const string StepNotAvailable = "step_not_available";
     internal const string AdminRequiresMainSetup = "admin_requires_main_setup";
     internal const string InvalidOrigin = "invalid_origin";
+    internal const string AdminProfileNotSelectable = "admin_profile_not_selectable";
+    internal const string StaleRequest = "stale_request";
 }

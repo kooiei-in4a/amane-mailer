@@ -131,6 +131,11 @@ jobs:
           test -x artifacts/publish/aot-linux-x64/Amane.Mailer
           artifacts/publish/aot-linux-x64/Amane.Mailer --help
 
+      # Easy Setup Web Assistant startup / bind / HTTP security smoke (#452).
+      # Uses the stubbed assistant-self-check path; no Docker, ACS, or Admin side effects.
+      - name: Native AOT setup assistant self-check
+        run: artifacts/publish/aot-linux-x64/Amane.Mailer setup assistant-self-check
+
       # Low-frequency Native AOT paths (Admin / webhook HTTPS tenant / db backup).
       # Complements release-smoke (core API + Mailpit on the GHCR image). See #286.
       - name: Native AOT low-frequency path smoke

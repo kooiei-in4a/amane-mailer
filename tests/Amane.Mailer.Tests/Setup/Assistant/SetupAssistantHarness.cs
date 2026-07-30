@@ -238,12 +238,26 @@ internal sealed class FakeSetupAssistantOperations : ISetupAssistantOperations
         return Task.FromResult(DockerPreflight);
     }
 
-    public Task<SetupAssistantMainSetupOutcome> ApplyMainSetupAsync(
+    /// <summary>
+    /// When set, <see cref="ApplyMainSetupAsync"/> waits for the task before returning. Used to
+    /// keep a typed operation in flight across idle-deadline evaluations.
+    /// </summary>
+    internal TaskCompletionSource? ApplyHold { get; set; }
+
+    internal int ApplyCalls { get; private set; }
+
+    public async Task<SetupAssistantMainSetupOutcome> ApplyMainSetupAsync(
         SetupAssistantMainSetupInput input,
         CancellationToken cancellationToken)
     {
+        ApplyCalls++;
         LastMainSetupInput = input;
-        return Task.FromResult(MainSetup);
+        if (ApplyHold is { } hold)
+        {
+            await hold.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return MainSetup;
     }
 
     public Task<SetupAssistantStagingOutcome> VerifyStagingAsync(
@@ -279,22 +293,29 @@ internal sealed class FakeSetupAssistantOperations : ISetupAssistantOperations
         AccessProfile = "local-development",
         ConfigRollback = "not-applicable",
         AdminDatabaseState = "bootstrapped",
-        AdminExposure = "loopback-only",
+        AdminExposure = "enabled",
         LoginVerification = "verified",
         SetupStatusVerification = "verified",
         VerificationSessionCleanup = "revoked",
     };
 
-    internal static SetupAssistantAdminBootstrapOutcome FailedAdmin(string code) => new()
-    {
-        Code = code,
-        Kind = SetupAssistantOutcomeKind.Failed,
-        AccessProfile = "local-development",
-        ConfigRollback = "rolled-back",
-        AdminDatabaseState = "unchanged",
-        AdminExposure = "disabled",
-        LoginVerification = "not-attempted",
-        SetupStatusVerification = "not-attempted",
-        VerificationSessionCleanup = "not-attempted",
-    };
+    internal static SetupAssistantAdminBootstrapOutcome FailedAdmin(
+        string code,
+        string adminExposure = "disabled",
+        string configRollback = "rolled-back",
+        bool manualActionRequired = false) => new()
+        {
+            Code = code,
+            Kind = manualActionRequired
+            ? SetupAssistantOutcomeKind.ManualInterventionRequired
+            : SetupAssistantOutcomeKind.Failed,
+            AccessProfile = "local-development",
+            ConfigRollback = configRollback,
+            AdminDatabaseState = "unchanged",
+            AdminExposure = adminExposure,
+            LoginVerification = "not-attempted",
+            SetupStatusVerification = "not-attempted",
+            VerificationSessionCleanup = "not-attempted",
+            ManualActionRequired = manualActionRequired,
+        };
 }

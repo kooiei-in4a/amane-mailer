@@ -59,7 +59,12 @@ internal static class SetupAssistantPages
         return Document("Amane Mailer Easy Setup", null, rejectionText, body.ToString());
     }
 
-    internal static string Render(SetupAssistantSession session)
+    /// <summary>
+    /// Renders the current screen. <paramref name="notice"/> lets a rejected request explain itself
+    /// without writing anything to the session, which is what keeps a refused stale submit free of
+    /// side effects.
+    /// </summary>
+    internal static string Render(SetupAssistantSession session, string? notice = null)
     {
         var body = session.Step switch
         {
@@ -89,7 +94,7 @@ internal static class SetupAssistantPages
         return Document(
             SetupAssistantStepInfo.Title(session.Step),
             session.Step,
-            SetupAssistantResultPresenter.DescribeRejection(session.InputRejectionKey),
+            SetupAssistantResultPresenter.DescribeRejection(notice ?? session.InputRejectionKey),
             body);
     }
 
@@ -279,6 +284,13 @@ internal static class SetupAssistantPages
         var mode = session.Mode ?? SetupMode.LocalMailpit;
         var body = new StringBuilder();
 
+        if (session.LiveSending is { } liveSending
+            && liveSending.Kind != SetupAssistantOutcomeKind.Succeeded)
+        {
+            body.Append(ApplyOutcomeCard(liveSending));
+            body.AppendLine("<div class=\"card note\">live_sending の有効化は完了していません。Main setup の適用結果はそのまま維持されています。</div>");
+        }
+
         if (session.Staging is { } staging)
         {
             body.Append(StateCard(
@@ -292,7 +304,20 @@ internal static class SetupAssistantPages
                     ("送信元（マスク表示）", staging.MaskedSenderEmail ?? "-"),
                     ("宛先（マスク表示）", staging.MaskedRecipientEmail ?? "-"),
                 }));
-            body.Append(Form(session, "/verify", "Main setup 完了へ進む", hidden: ("action", "finish")));
+            if (staging.Kind == SetupAssistantOutcomeKind.Succeeded)
+            {
+                body.Append(Form(session, "/verify", "Main setup 完了へ進む", hidden: ("action", "finish")));
+            }
+            else
+            {
+                body.Append(Form(
+                    session,
+                    "/verify",
+                    "テスト送信をやり直す",
+                    secondary: true,
+                    hidden: ("action", "staging-retry")));
+            }
+
             return body.ToString();
         }
 
@@ -353,10 +378,10 @@ internal static class SetupAssistantPages
             "Main setup は完了しました。",
             new (string, string)[]
             {
-                ("Main setup", "成功"),
+                ("Main setup", session.MainSetupSucceeded ? "成功" : "未完了"),
                 ("設定の適用", outcome?.ConfigurationApplied == true ? "適用済み" : "未適用"),
                 ("Staging verification", DescribeStagingState(session)),
-                ("Deployment send-ready", outcome?.DeploymentSendReady == true ? "到達" : "未到達"),
+                ("Deployment send-ready", session.DeploymentSendReady ? "到達" : "未到達"),
                 ("実送信による運用確認", "記録していません。必要な場合は Manual verification を実施してください。"),
             }));
         body.AppendLine("<div class=\"card note\">Production mode の通常完了はここまでです。実送信による運用確認や、リリース判定に必要な確認は、この Assistant では行っておらず、記録もしていません。</div>");
@@ -389,7 +414,7 @@ internal static class SetupAssistantPages
             body.Append(StateCard(
                 preflight.Satisfied ? SetupAssistantOutcomeKind.Succeeded : SetupAssistantOutcomeKind.Rejected,
                 preflight.Satisfied
-                    ? "Admin access profile の形式確認に成功しました。最終的な判定は bootstrap 実行時に行われます。"
+                    ? "Admin access profile の事前条件を満たしています。host と Admin データベースの状態に依存する残りの判定は bootstrap 実行時に行われます。"
                     : "Admin access profile の条件を満たしていません。Admin は無効のまま維持します。",
                 new (string, string)[]
                 {
@@ -468,15 +493,42 @@ internal static class SetupAssistantPages
     private static string RenderFinalGuidance(SetupAssistantSession session)
     {
         var body = new StringBuilder();
+        var admin = session.AdminBootstrap;
+        var stagingFailed = session.Staging is { } staging
+            && staging.Kind != SetupAssistantOutcomeKind.Succeeded;
+        var adminUnresolved = admin is not null
+            && admin.Kind != SetupAssistantOutcomeKind.Succeeded;
+        var manualAction = admin is { ManualActionRequired: true };
+
+        // The closing card is only a success card when nothing is left outstanding. Admin failure,
+        // a failed staging send, and manual intervention each downgrade it.
+        var kind = !session.MainSetupSucceeded
+            ? SetupAssistantOutcomeKind.Failed
+            : manualAction
+                ? SetupAssistantOutcomeKind.ManualInterventionRequired
+                : adminUnresolved || stagingFailed
+                    ? SetupAssistantOutcomeKind.ActionRequired
+                    : SetupAssistantOutcomeKind.Succeeded;
+
         body.Append(StateCard(
-            SetupAssistantOutcomeKind.Succeeded,
-            "Easy Setup を終了します。",
+            kind,
+            kind == SetupAssistantOutcomeKind.Succeeded
+                ? "Easy Setup を終了します。"
+                : "Easy Setup を終了しますが、未完了または手動対応が必要な項目があります。",
             new (string, string)[]
             {
                 ("Main setup", session.MainSetupSucceeded ? "成功" : "未完了"),
                 ("Staging verification", DescribeStagingState(session)),
-                ("Deployment send-ready", session.MainSetup?.DeploymentSendReady == true ? "到達" : "未到達"),
+                ("Deployment send-ready", session.DeploymentSendReady ? "到達" : "未到達"),
                 ("Admin bootstrap", DescribeAdminState(session)),
+                ("Admin 到達性", DescribeAdminExposure(session)),
+                ("Admin の設定巻き戻し", admin is null
+                    ? "-"
+                    : SetupAssistantResultPresenter.SafeCode(admin.ConfigRollback)),
+                ("Admin データベース状態", admin is null
+                    ? "-"
+                    : SetupAssistantResultPresenter.SafeCode(admin.AdminDatabaseState)),
+                ("手動対応", admin is null ? "-" : manualAction ? "必要" : "不要"),
                 ("実送信による運用確認", "記録していません"),
             }));
         body.AppendLine("<div class=\"card\">");
@@ -526,7 +578,27 @@ internal static class SetupAssistantPages
 
         return session.AdminBootstrap is null
             ? "未実施"
-            : session.AdminBootstrap.Kind == SetupAssistantOutcomeKind.Succeeded ? "成功" : "失敗（Admin は無効のまま）";
+            : session.AdminBootstrap.Kind == SetupAssistantOutcomeKind.Succeeded ? "成功" : "失敗";
+    }
+
+    /// <summary>
+    /// Reports the exposure #459 actually observed. A failed bootstrap does not imply Admin ended
+    /// up disabled: a rollback onto an Admin-enabled bundle leaves it enabled, and a state that
+    /// could not be confirmed stays unknown.
+    /// </summary>
+    private static string DescribeAdminExposure(SetupAssistantSession session)
+    {
+        if (session.AdminBootstrap is not { } outcome)
+        {
+            return session.AdminSkipped ? "変更していません" : "-";
+        }
+
+        return SetupAssistantResultPresenter.SafeCode(outcome.AdminExposure) switch
+        {
+            "disabled" => "無効（disabled）",
+            "enabled" => "有効（enabled）",
+            _ => "不明（unknown）。Admin の状態画面または runbook で現在の構成を確認してください。",
+        };
     }
 
     private static string ApplyOutcomeCard(SetupAssistantMainSetupOutcome outcome)

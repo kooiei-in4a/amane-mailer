@@ -20,6 +20,7 @@ internal enum SetupAssistantShutdownReason
     IdleTimeout = 3,
     AbsoluteTimeout = 4,
     UnclaimedTokenExpired = 5,
+    OperationFault = 6,
 }
 
 /// <summary>
@@ -36,9 +37,13 @@ internal sealed class SetupAssistantSessionManager : IDisposable
     private readonly byte[] _oneTimeToken;
     private readonly DateTimeOffset _tokenIssuedAt;
 
+    private readonly SemaphoreSlim _stepGate = new(1, 1);
+
     private SetupAssistantSession? _session;
     private bool _tokenRedeemed;
     private bool _disposed;
+    private int _inFlight;
+    private bool _disposeWhenIdle;
 
     internal SetupAssistantSessionManager(
         SetupAssistantOptions options,
@@ -133,6 +138,69 @@ internal sealed class SetupAssistantSessionManager : IDisposable
     }
 
     /// <summary>
+    /// Takes the single step slot and marks the session busy until <see cref="EndStep"/> runs. Two
+    /// requests can therefore never mutate the session at the same time, and a typed operation that
+    /// takes minutes is never mistaken for an idle operator.
+    /// </summary>
+    internal async Task<SetupAssistantSession?> TryBeginStepAsync(
+        string? presentedSessionId,
+        CancellationToken cancellationToken)
+    {
+        await _stepGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        var session = TryResolve(presentedSessionId);
+        if (session is null)
+        {
+            _stepGate.Release();
+            return null;
+        }
+
+        lock (_gate)
+        {
+            if (_disposed || _shutdown.IsCancellationRequested)
+            {
+                _stepGate.Release();
+                return null;
+            }
+
+            _inFlight++;
+        }
+
+        return session;
+    }
+
+    /// <summary>
+    /// Releases the step slot, restarts the idle clock, and performs any session disposal that was
+    /// deferred because an operation was still running.
+    /// </summary>
+    internal void EndStep()
+    {
+        SetupAssistantSession? deferred = null;
+
+        lock (_gate)
+        {
+            _inFlight--;
+            if (_inFlight > 0)
+            {
+                // Defensive: the gate admits one step at a time.
+            }
+            else if (_disposeWhenIdle)
+            {
+                deferred = _session;
+                _session = null;
+                _disposeWhenIdle = false;
+            }
+            else
+            {
+                _session?.Touch(_timeProvider.GetUtcNow());
+            }
+        }
+
+        deferred?.Dispose();
+        _stepGate.Release();
+    }
+
+    /// <summary>
     /// Enforces idle, absolute, and unclaimed-token deadlines without requiring a request. The
     /// host calls this on a timer so an abandoned browser still terminates the local server.
     /// </summary>
@@ -168,6 +236,8 @@ internal sealed class SetupAssistantSessionManager : IDisposable
 
     internal void Stop(SetupAssistantShutdownReason reason)
     {
+        SetupAssistantSession? expired = null;
+
         lock (_gate)
         {
             if (_shutdown.IsCancellationRequested)
@@ -176,10 +246,21 @@ internal sealed class SetupAssistantSessionManager : IDisposable
             }
 
             ShutdownReason = reason;
-            _session?.Dispose();
-            _session = null;
+
+            // A running typed operation still holds this session. Cancellation is signalled now,
+            // but the secrets are not cleared underneath the operation; disposal waits for it.
+            if (_inFlight > 0)
+            {
+                _disposeWhenIdle = true;
+            }
+            else
+            {
+                expired = _session;
+                _session = null;
+            }
         }
 
+        expired?.Dispose();
         _shutdown.Cancel();
     }
 
@@ -190,6 +271,13 @@ internal sealed class SetupAssistantSessionManager : IDisposable
         if (now - session.CreatedAt >= _options.AbsoluteLifetime)
         {
             return SetupAssistantShutdownReason.AbsoluteTimeout;
+        }
+
+        // A step that is still running is not an idle browser, so the idle clock only applies
+        // between requests.
+        if (_inFlight > 0)
+        {
+            return SetupAssistantShutdownReason.None;
         }
 
         return now - session.LastSeenAt >= _options.IdleTimeout
@@ -257,6 +345,7 @@ internal sealed class SetupAssistantSessionManager : IDisposable
         }
 
         _shutdown.Dispose();
+        _stepGate.Dispose();
         _oneTimeToken.AsSpan().Clear();
     }
 }

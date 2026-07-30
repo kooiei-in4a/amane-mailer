@@ -1215,6 +1215,53 @@ internal sealed class AdminBootstrapWorkflow
         && actual.AdminUserCredentialEpoch == expected.AdminUserCredentialEpoch
         && string.Equals(actual.ScopeFingerprint, expected.ScopeFingerprint, StringComparison.Ordinal);
 
+    /// <summary>
+    /// The credential-free half of the bootstrap preflight: the access-profile policy itself. It is
+    /// exposed so a caller can report this verdict before collecting a password, while the
+    /// authoritative run still evaluates it again together with the host and database preconditions.
+    /// </summary>
+    internal static bool TryValidateAccessProfile(
+        AdminAccessProfile profile,
+        string environmentName,
+        string allowedLocalAddress,
+        bool allowHttp,
+        bool loopbackOnlyPublished,
+        bool approvedReverseProxy,
+        bool serverLocalAddressConfirmed,
+        out string reasonCode)
+    {
+        reasonCode = "preflight_rejected";
+        if (!IPAddress.TryParse(allowedLocalAddress, out var localAddress))
+        {
+            return false;
+        }
+
+        if (profile == AdminAccessProfile.LocalDevelopment)
+        {
+            if (!string.Equals(environmentName, "Development", StringComparison.Ordinal)
+                || !loopbackOnlyPublished
+                || !allowHttp
+                || !IPAddress.IsLoopback(localAddress))
+            {
+                reasonCode = "local_profile_precondition_failed";
+                return false;
+            }
+        }
+        else if (allowHttp
+                 || !approvedReverseProxy
+                 || !serverLocalAddressConfirmed
+                 || environmentName is not ("Production" or "Staging"))
+        {
+            reasonCode = "production_profile_precondition_failed";
+            return false;
+        }
+
+        reasonCode = AccessProfileAccepted;
+        return true;
+    }
+
+    internal const string AccessProfileAccepted = "access_profile_accepted";
+
     private static bool TryValidateRequest(
         AdminBootstrapRequest request,
         out string reasonCode)
@@ -1222,33 +1269,20 @@ internal sealed class AdminBootstrapWorkflow
         reasonCode = "preflight_rejected";
         if (!request.Interactive
             || string.IsNullOrWhiteSpace(request.Username)
-            || !IPAddress.TryParse(request.AllowedLocalAddress, out _)
             || request.VerificationBudget <= TimeSpan.Zero)
         {
             return false;
         }
 
-        if (request.AccessEndpoint.Profile == AdminAccessProfile.LocalDevelopment)
-        {
-            if (!string.Equals(request.EnvironmentName, "Development", StringComparison.Ordinal)
-                || !request.LoopbackOnlyPublished
-                || !request.AllowHttp
-                || !IPAddress.IsLoopback(IPAddress.Parse(request.AllowedLocalAddress)))
-            {
-                reasonCode = "local_profile_precondition_failed";
-                return false;
-            }
-        }
-        else if (request.AllowHttp
-                 || !request.ApprovedReverseProxy
-                 || !request.ServerLocalAddressConfirmed
-                 || request.EnvironmentName is not ("Production" or "Staging"))
-        {
-            reasonCode = "production_profile_precondition_failed";
-            return false;
-        }
-
-        return true;
+        return TryValidateAccessProfile(
+            request.AccessEndpoint.Profile,
+            request.EnvironmentName,
+            request.AllowedLocalAddress,
+            request.AllowHttp,
+            request.LoopbackOnlyPublished,
+            request.ApprovedReverseProxy,
+            request.ServerLocalAddressConfirmed,
+            out reasonCode);
     }
 
     private static AdminBootstrapWorkflowResult PreflightFailed(

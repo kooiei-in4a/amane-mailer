@@ -189,14 +189,16 @@ public sealed class SetupAssistantWorkflowTests
         await using var harness = await SetupAssistantHarness.StartAsync();
         await RedeemAndReachModeAsync(harness);
 
-        await harness.PostStepAsync("/admin-choice", ("action", "open"));
-        var afterChoice = await harness.ReadCurrentPageAsync();
+        using var afterChoice = await harness.PostStepAsync("/admin-choice", ("action", "open"));
+        using var afterBootstrap = await harness.PostStepAsync("/admin-bootstrap", ("action", "open"));
 
-        await harness.PostStepAsync("/admin-bootstrap", ("action", "open"));
-        var afterBootstrap = await harness.ReadCurrentPageAsync();
-
-        Assert.Contains("Main setup の成功後にのみ開始できます", afterChoice, StringComparison.Ordinal);
-        Assert.Contains("Main setup の成功後にのみ開始できます", afterBootstrap, StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.Conflict, afterChoice.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, afterBootstrap.StatusCode);
+        Assert.Contains(
+            "画面の内容が古くなっています",
+            await afterChoice.Content.ReadAsStringAsync(TestContext.Current.CancellationToken),
+            StringComparison.Ordinal);
+        Assert.Contains("Setup mode 選択", await harness.ReadCurrentPageAsync(), StringComparison.Ordinal);
         Assert.Null(harness.Operations.LastAdminBootstrapInput);
     }
 
@@ -243,8 +245,10 @@ public sealed class SetupAssistantWorkflowTests
 
         await harness.PostStepAsync("/finish", ("action", "continue"));
         var finalPage = await harness.ReadCurrentPageAsync();
-        Assert.Contains("失敗（Admin は無効のまま）", finalPage, StringComparison.Ordinal);
+        Assert.Contains("<dd>失敗</dd>", finalPage, StringComparison.Ordinal);
+        Assert.Contains("無効（disabled）", finalPage, StringComparison.Ordinal);
         Assert.Contains("<dd>成功</dd>", finalPage, StringComparison.Ordinal);
+        Assert.DoesNotContain("Admin は無効のまま", finalPage, StringComparison.Ordinal);
     }
 
     [Fact]

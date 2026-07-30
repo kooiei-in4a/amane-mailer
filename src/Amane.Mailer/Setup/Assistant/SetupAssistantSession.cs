@@ -5,6 +5,11 @@ namespace Amane.Mailer.Setup.Assistant;
 /// here, in process memory, for the lifetime of the session. Nothing in this type is serialized,
 /// written to disk, echoed into a URL, or placed in a cookie.
 /// </summary>
+/// <remarks>
+/// Clearing is best-effort. Form values arrive as immutable strings and the typed operations take
+/// strings, so copies owned by the runtime cannot be overwritten; only the buffers this session
+/// owns are zeroed, and process exit stays the final memory boundary.
+/// </remarks>
 internal sealed class SetupAssistantSession : IDisposable
 {
     private readonly List<IDisposable> _secrets = [];
@@ -71,6 +76,12 @@ internal sealed class SetupAssistantSession : IDisposable
 
     internal SetupAssistantStagingOutcome? Staging { get; private set; }
 
+    /// <summary>
+    /// The #451 live-sending enablement result. It is kept apart from <see cref="MainSetup"/> so a
+    /// failed enablement cannot erase the successful apply that came before it.
+    /// </summary>
+    internal SetupAssistantMainSetupOutcome? LiveSending { get; private set; }
+
     internal SetupAssistantAdminPreflightOutcome? AdminPreflight { get; private set; }
 
     internal SetupAssistantAdminBootstrapOutcome? AdminBootstrap { get; private set; }
@@ -81,6 +92,10 @@ internal sealed class SetupAssistantSession : IDisposable
     /// <summary>True once the main setup transaction reached a canonical success state.</summary>
     internal bool MainSetupSucceeded =>
         MainSetup is { Kind: SetupAssistantOutcomeKind.Succeeded, ConfigurationApplied: true };
+
+    /// <summary>True only when #451 reported the deployment as send-ready. Never inferred.</summary>
+    internal bool DeploymentSendReady =>
+        LiveSending is { Kind: SetupAssistantOutcomeKind.Succeeded, DeploymentSendReady: true };
 
     internal bool AdminSkipped { get; private set; }
 
@@ -131,6 +146,15 @@ internal sealed class SetupAssistantSession : IDisposable
 
     internal void SetStaging(SetupAssistantStagingOutcome outcome) => Staging = outcome;
 
+    /// <summary>Drops a finished staging attempt so the operator can run the test send again.</summary>
+    internal void ClearStaging()
+    {
+        Staging = null;
+        StagingRecipientEmail = string.Empty;
+    }
+
+    internal void SetLiveSending(SetupAssistantMainSetupOutcome outcome) => LiveSending = outcome;
+
     internal void SetAdminAccessInput(
         SetupAssistantAdminProfile profile,
         string originText,
@@ -169,17 +193,38 @@ internal sealed class SetupAssistantSession : IDisposable
     /// </summary>
     internal void DiscardAdminPassword()
     {
-        AdminPassword?.Dispose();
+        Release(AdminPassword);
         AdminPassword = null;
+    }
+
+    /// <summary>
+    /// Releases the provider and ACS material once the apply has succeeded. Every later stage works
+    /// from the #451 applied proof, so the assistant has no reason to keep credentials reachable.
+    /// </summary>
+    internal void DiscardApplySecrets()
+    {
+        Release(ServiceToken);
+        Release(AcsConnectionString);
+        Release(AcsConnectionStringConfirmation);
+        ServiceToken = null;
+        AcsConnectionString = null;
+        AcsConnectionStringConfirmation = null;
+    }
+
+    private void Release(SetupAssistantSecret? secret)
+    {
+        if (secret is null)
+        {
+            return;
+        }
+
+        secret.Dispose();
+        _secrets.Remove(secret);
     }
 
     private SetupAssistantSecret Replace(SetupAssistantSecret? existing, string value)
     {
-        if (existing is not null)
-        {
-            existing.Dispose();
-            _secrets.Remove(existing);
-        }
+        Release(existing);
 
         var captured = SetupAssistantSecret.Capture(value);
         _secrets.Add(captured);

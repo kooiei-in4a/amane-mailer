@@ -146,13 +146,33 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Shape-level preflight only. The authoritative access-profile policy lives in #459 and
-        // is reported through the bootstrap result, so it is never duplicated here.
-        var satisfied = TryCreateAccessEndpoint(input, out _);
+        // Both the endpoint shape and the access-profile policy are decided by #459; the assistant
+        // only surfaces the canonical verdict. The preconditions that depend on host and database
+        // state are still evaluated by the bootstrap run itself.
+        if (!TryCreateAccessEndpoint(input, out var endpoint) || endpoint is null)
+        {
+            return Task.FromResult(new SetupAssistantAdminPreflightOutcome
+            {
+                Satisfied = false,
+                ReasonCode = "access_endpoint_rejected",
+                Profile = input.Profile,
+            });
+        }
+
+        var satisfied = AdminBootstrapWorkflow.TryValidateAccessProfile(
+            endpoint.Profile,
+            input.EnvironmentName,
+            input.AllowedLocalAddress,
+            input.AllowHttp,
+            input.LoopbackOnlyPublished,
+            input.ApprovedReverseProxy,
+            input.ServerLocalAddressConfirmed,
+            out var reasonCode);
+
         return Task.FromResult(new SetupAssistantAdminPreflightOutcome
         {
             Satisfied = satisfied,
-            ReasonCode = satisfied ? "access_endpoint_accepted" : "access_endpoint_rejected",
+            ReasonCode = reasonCode,
             Profile = input.Profile,
         });
     }

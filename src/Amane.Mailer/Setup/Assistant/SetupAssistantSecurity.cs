@@ -55,33 +55,37 @@ internal static class SetupAssistantSecurity
     }
 
     /// <summary>
-    /// State-changing requests must carry an Origin that exactly matches one of the loopback
-    /// authorities. A missing Origin is rejected rather than tolerated, so a cross-origin form
-    /// post or a fetch from another local page cannot drive the workflow.
+    /// State-changing requests must carry an Origin that is the very authority the request was
+    /// addressed to, not merely some entry of the loopback allowlist. A missing Origin, a
+    /// credentialed one, or one carrying a path, query, or fragment is rejected rather than
+    /// tolerated, so a cross-origin form post cannot drive the workflow.
     /// </summary>
     internal static bool IsAllowedOrigin(HttpRequest request, IReadOnlyList<string> allowedHosts)
     {
         var origin = request.Headers.Origin.ToString();
         if (string.IsNullOrEmpty(origin)
             || !Uri.TryCreate(origin, UriKind.Absolute, out var parsed)
-            || parsed.Scheme != Uri.UriSchemeHttp)
+            || parsed.Scheme != Uri.UriSchemeHttp
+            || !string.IsNullOrEmpty(parsed.UserInfo)
+            || !string.IsNullOrEmpty(parsed.Query)
+            || !string.IsNullOrEmpty(parsed.Fragment)
+            || parsed.AbsolutePath != "/")
         {
             return false;
         }
 
-        var authority = parsed.IsDefaultPort
-            ? parsed.Host
-            : $"{parsed.Host}:{parsed.Port}";
-        foreach (var allowed in allowedHosts)
-        {
-            if (string.Equals(authority, allowed, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        var authority = CanonicalAuthority(
+            parsed.IsDefaultPort ? parsed.Host : $"{parsed.Host}:{parsed.Port}");
+        return IsAllowedHost(request, allowedHosts)
+            && string.Equals(
+                authority,
+                CanonicalAuthority(request.Headers.Host.ToString()),
+                StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>Treats <c>host</c> and <c>host:80</c> as the same http authority.</summary>
+    private static string CanonicalAuthority(string value) =>
+        value.EndsWith(":80", StringComparison.Ordinal) ? value[..^3] : value;
 
     internal static bool IsStateChangingMethod(string method) =>
         !HttpMethods.IsGet(method) && !HttpMethods.IsHead(method);

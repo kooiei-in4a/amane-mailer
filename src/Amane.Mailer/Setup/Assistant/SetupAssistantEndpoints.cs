@@ -26,20 +26,28 @@ internal static class SetupAssistantEndpoints
         });
 
         routes.MapPost("/token", context => RedeemTokenAsync(context, sessions));
-        routes.MapPost("/welcome", context => StepAsync(context, sessions, operations, Sync(Welcome)));
-        routes.MapPost("/preflight", context => StepAsync(context, sessions, operations, PreflightAsync));
-        routes.MapPost("/mode", context => StepAsync(context, sessions, operations, Sync(SelectMode)));
-        routes.MapPost("/tenant", context => StepAsync(context, sessions, operations, Sync(TenantBasics)));
-        routes.MapPost("/provider", context => StepAsync(context, sessions, operations, Sync(ProviderSettings)));
-        routes.MapPost("/acs", context => StepAsync(context, sessions, operations, Sync(AcsSettings)));
-        routes.MapPost("/confirm", context => StepAsync(context, sessions, operations, ConfirmAsync));
-        routes.MapPost("/verify", context => StepAsync(context, sessions, operations, VerifyAsync));
-        routes.MapPost("/admin-choice", context => StepAsync(context, sessions, operations, Sync(AdminChoice)));
-        routes.MapPost("/admin-preflight", context => StepAsync(context, sessions, operations, AdminPreflightAsync));
-        routes.MapPost("/admin-bootstrap", context => StepAsync(context, sessions, operations, AdminBootstrapAsync));
-        routes.MapPost("/finish", context => StepAsync(context, sessions, operations, Sync(Finish)));
+        Step(routes, sessions, operations, "/welcome", Sync(Welcome));
+        Step(routes, sessions, operations, "/preflight", PreflightAsync);
+        Step(routes, sessions, operations, "/mode", Sync(SelectMode));
+        Step(routes, sessions, operations, "/tenant", Sync(TenantBasics));
+        Step(routes, sessions, operations, "/provider", Sync(ProviderSettings));
+        Step(routes, sessions, operations, "/acs", Sync(AcsSettings));
+        Step(routes, sessions, operations, "/confirm", ConfirmAsync);
+        Step(routes, sessions, operations, "/verify", VerifyAsync);
+        Step(routes, sessions, operations, "/admin-choice", Sync(AdminChoice));
+        Step(routes, sessions, operations, "/admin-preflight", AdminPreflightAsync);
+        Step(routes, sessions, operations, "/admin-bootstrap", AdminBootstrapAsync);
+        Step(routes, sessions, operations, "/finish", Sync(Finish));
         routes.MapPost("/cancel", context => CancelAsync(context, sessions));
     }
+
+    private static void Step(
+        IEndpointRouteBuilder routes,
+        SetupAssistantSessionManager sessions,
+        ISetupAssistantOperations operations,
+        string route,
+        Func<SetupAssistantStepContext, Task> handler) =>
+        routes.MapPost(route, context => StepAsync(context, sessions, operations, route, handler));
 
     private static Func<SetupAssistantStepContext, Task> Sync(Action<SetupAssistantStepContext> handler) =>
         step =>
@@ -87,11 +95,15 @@ internal static class SetupAssistantEndpoints
             return;
         }
 
+        // Cancelling discards the session, not the work already carried out. Claiming that nothing
+        // changed is only true while no typed operation has produced a result.
+        var sideEffectsStarted = session.MainSetup is not null || session.AdminBootstrap is not null;
         SetupAssistantSecurity.ClearSessionCookie(context.Response);
         await WriteHtmlAsync(
             context,
-            SetupAssistantPages.RenderTerminated(
-                "Assistant を中止しました。ローカルサーバーを停止します。設定は変更されていません。"));
+            SetupAssistantPages.RenderTerminated(sideEffectsStarted
+                ? "Assistant を中止しました。入力内容と session memory は破棄しますが、すでに実行した適用や Admin の変更は取り消していません。現在の構成は Admin の状態画面または runbook で確認してください。"
+                : "Assistant を中止しました。入力内容と session memory を破棄します。設定は変更していません。"));
         sessions.Stop(SetupAssistantShutdownReason.Cancelled);
     }
 
@@ -99,9 +111,14 @@ internal static class SetupAssistantEndpoints
         HttpContext context,
         SetupAssistantSessionManager sessions,
         ISetupAssistantOperations operations,
+        string route,
         Func<SetupAssistantStepContext, Task> handler)
     {
-        var session = sessions.TryResolve(SetupAssistantSecurity.ReadSessionCookie(context.Request));
+        // Taking the step slot also marks the session busy, so two submits cannot interleave and a
+        // slow typed operation is not counted as operator idleness.
+        var session = await sessions.TryBeginStepAsync(
+            SetupAssistantSecurity.ReadSessionCookie(context.Request),
+            context.RequestAborted);
         if (session is null)
         {
             SetupAssistantSecurity.ClearSessionCookie(context.Response);
@@ -112,17 +129,54 @@ internal static class SetupAssistantEndpoints
             return;
         }
 
-        var form = await ReadFormAsync(context);
-        if (form is null || !SetupAssistantSecurity.ValidateCsrf(session, form))
+        try
         {
-            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            var form = await ReadFormAsync(context);
+            if (form is null || !SetupAssistantSecurity.ValidateCsrf(session, form))
+            {
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                await WriteHtmlAsync(
+                    context,
+                    SetupAssistantPages.RenderTerminated("要求を検証できませんでした。画面を開き直してください。"));
+                return;
+            }
+
+            // Linking the shutdown signal lets an absolute-lifetime stop reach the typed operation
+            // rather than being noticed only once it returns.
+            using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
+                context.RequestAborted,
+                sessions.ShutdownToken);
+            var step = new SetupAssistantStepContext(session, form, sessions, operations, lifetime.Token);
+
+            if (!SetupAssistantTransitions.IsAllowed(session, route, step.Action))
+            {
+                // A stale tab, a back button, or a replayed submit. Nothing is mutated and no typed
+                // operation runs.
+                context.Response.StatusCode = StatusCodes.Status409Conflict;
+                await WriteHtmlAsync(
+                    context,
+                    SetupAssistantPages.Render(session, SetupAssistantRejection.StaleRequest));
+                return;
+            }
+
+            await handler(step);
+        }
+        catch (Exception fault) when (fault is not OperationCanceledException)
+        {
+            // A throwing operation leaves the side-effect state undetermined. That is reported as
+            // a terminal manual-intervention state instead of a 500 the operator might retry.
+            sessions.Stop(SetupAssistantShutdownReason.OperationFault);
+            SetupAssistantSecurity.ClearSessionCookie(context.Response);
             await WriteHtmlAsync(
                 context,
-                SetupAssistantPages.RenderTerminated("要求を検証できませんでした。画面を開き直してください。"));
+                SetupAssistantPages.RenderTerminated(
+                    DescribeShutdown(SetupAssistantShutdownReason.OperationFault)));
             return;
         }
-
-        await handler(new SetupAssistantStepContext(session, form, sessions, operations, context.RequestAborted));
+        finally
+        {
+            sessions.EndStep();
+        }
 
         // A step may finish the run or hit a deadline. Redirecting would send the browser to a
         // server that is already stopping, so the farewell page is written on this response.
@@ -146,6 +200,8 @@ internal static class SetupAssistantEndpoints
             "操作がないまま時間が経過したため、session を破棄してローカルサーバーを停止しました。",
         SetupAssistantShutdownReason.AbsoluteTimeout =>
             "session の上限時間に達したため、session を破棄してローカルサーバーを停止しました。",
+        SetupAssistantShutdownReason.OperationFault =>
+            "処理中に想定外のエラーが発生したため、Assistant を終了しました。副作用が残っている可能性があります。現在の構成を Admin の状態画面または runbook で確認してください。",
         _ => "Assistant を終了しました。ローカルサーバーは停止済みです。",
     };
 
@@ -315,6 +371,13 @@ internal static class SetupAssistantEndpoints
             BuildMainSetupInput(session, mode, environmentConfirmation, intentConfirmation),
             step.CancellationToken);
         session.SetMainSetup(outcome);
+        if (outcome.Kind == SetupAssistantOutcomeKind.Succeeded)
+        {
+            // Every later stage works from the #451 applied proof, so the provider and ACS material
+            // is released here instead of lingering for the rest of the session.
+            session.DiscardApplySecrets();
+        }
+
         session.MoveTo(SetupAssistantStep.ApplyOutcome);
     }
 
@@ -339,6 +402,11 @@ internal static class SetupAssistantEndpoints
 
             case "staging" when mode == SetupMode.StagingVerification:
                 await RunStagingAsync(step, session);
+                return;
+
+            case "staging-retry" when mode == SetupMode.StagingVerification:
+                session.ClearStaging();
+                session.MoveTo(SetupAssistantStep.DeploymentVerification);
                 return;
 
             case "production" when mode == SetupMode.ProductionAcs:
@@ -411,11 +479,13 @@ internal static class SetupAssistantEndpoints
                 AppliedProof = proof,
             },
             step.CancellationToken);
-        session.SetMainSetup(outcome);
+        // Recorded apart from the apply result: a failed enablement is a live-sending failure, not
+        // a retraction of the main setup that already succeeded.
+        session.SetLiveSending(outcome);
         session.MoveTo(
             outcome.Kind == SetupAssistantOutcomeKind.Succeeded
                 ? SetupAssistantStep.MainSetupComplete
-                : SetupAssistantStep.ApplyOutcome);
+                : SetupAssistantStep.DeploymentVerification);
     }
 
     private static void AdminChoice(SetupAssistantStepContext step)
@@ -444,9 +514,12 @@ internal static class SetupAssistantEndpoints
             return;
         }
 
-        var profile = step.Field("profile") == "production-https"
-            ? SetupAssistantAdminProfile.ProductionHttps
-            : SetupAssistantAdminProfile.LocalDevelopment;
+        if (!SetupAssistantInputs.TryParseAdminProfile(step.Field("profile"), out var profile))
+        {
+            session.Reject(SetupAssistantRejection.AdminProfileNotSelectable);
+            return;
+        }
+
         var origin = step.Field("origin");
         var environmentName = step.Field("environment_name");
         var allowedLocalAddress = step.Field("allowed_local_address");
