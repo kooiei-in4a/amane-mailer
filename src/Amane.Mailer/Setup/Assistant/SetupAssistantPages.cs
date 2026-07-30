@@ -558,7 +558,7 @@ internal static class SetupAssistantPages
                 ("Admin データベース状態", admin is null
                     ? "-"
                     : SetupAssistantResultPresenter.SafeCode(admin.AdminDatabaseState)),
-                ("手動対応", admin is null ? "-" : manualAction ? "必要" : "不要"),
+                ("手動対応", manualAction ? "必要" : "不要"),
                 ("実送信による運用確認", "記録していません"),
             }));
         body.AppendLine("<div class=\"card\">");

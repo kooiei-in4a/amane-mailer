@@ -134,6 +134,56 @@ public sealed class SetupAssistantStateMachineTests
     }
 
     [Fact]
+    public async Task Final_guidance_reports_main_setup_manual_action_without_admin()
+    {
+        await using var harness = await SetupAssistantHarness.StartAsync();
+        harness.Operations.MainSetup = new SetupAssistantMainSetupOutcome
+        {
+            Code = SetupApplyResultCode.RecoveryRequired,
+            Kind = SetupAssistantOutcomeKind.ManualInterventionRequired,
+            ConfigurationApplied = false,
+            PersistentSideEffectMayRemain = true,
+            PersistentSideEffectKind = "managed-state",
+        };
+
+        await ReachApplyOutcomeAsync(harness, SetupMode.LocalMailpit);
+        await harness.PostStepAsync("/finish", ("action", "incomplete"));
+
+        var page = await harness.ReadCurrentPageAsync();
+        Assert.Contains("[手動対応が必要]", page, StringComparison.Ordinal);
+        Assert.Matches("<dt>手動対応</dt>\\s*<dd>必要</dd>", page);
+    }
+
+    [Fact]
+    public async Task Final_guidance_reports_production_manual_action_without_admin()
+    {
+        await using var harness = await SetupAssistantHarness.StartAsync();
+        harness.Operations.Production = new SetupAssistantMainSetupOutcome
+        {
+            Code = AcsSetupResultCode.ManualActionRequired,
+            Kind = SetupAssistantOutcomeKind.ManualInterventionRequired,
+            ConfigurationApplied = true,
+            DeploymentSendReady = false,
+            PersistentSideEffectMayRemain = true,
+            PersistentSideEffectKind = "managed-state",
+            ActionCode = SetupApplyActionCode.ManualInterventionRequired,
+        };
+
+        await ReachApplyOutcomeAsync(harness, SetupMode.ProductionAcs);
+        await harness.PostStepAsync("/verify", ("action", "continue"));
+        await harness.PostStepAsync(
+            "/verify",
+            ("action", "production"),
+            ("environment_confirmation", AcsEnvironmentConfirmation.Production),
+            ("live_sending_approval", AcsLiveSendingApproval.EnablePhrase));
+        await harness.PostStepAsync("/finish", ("action", "incomplete"));
+
+        var page = await harness.ReadCurrentPageAsync();
+        Assert.Contains("[手動対応が必要]", page, StringComparison.Ordinal);
+        Assert.Matches("<dt>手動対応</dt>\\s*<dd>必要</dd>", page);
+    }
+
+    [Fact]
     public async Task Final_guidance_reports_enabled_admin_exposure_after_a_failed_bootstrap()
     {
         await using var harness = await SetupAssistantHarness.StartAsync();
