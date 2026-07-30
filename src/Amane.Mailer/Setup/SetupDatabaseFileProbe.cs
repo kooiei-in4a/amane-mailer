@@ -1,3 +1,4 @@
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Operations;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -236,76 +237,92 @@ public static class SetupDatabaseFileProbe
 /// </summary>
 public static class SetupBundleStaticValidator
 {
+    internal static string? ClassifyImageCompatibility(
+        TrustedSetupHostLayout layout,
+        SetupRecordedMetadata candidateRecorded)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(candidateRecorded);
+
+        var allowed = layout.ReleaseInventory.AllowedImageRepository;
+        var recorded = candidateRecorded.ImageRepository;
+        if (string.IsNullOrWhiteSpace(recorded) || string.IsNullOrWhiteSpace(allowed))
+            return "image_repository_unknown";
+
+        return string.Equals(recorded, allowed, StringComparison.Ordinal)
+            ? null
+            : "image_repository_mismatch";
+    }
+
     public static SetupDockerResult TryValidateFinalizedBundle(
         ISetupFileSystem fileSystem,
         TrustedSetupHostLayout layout,
         string bundleId,
         out SetupRecordedMetadata? recorded,
-        out string hostAtRest)
+        out string hostAtRest) =>
+        TryValidateFinalizedBundleCore(
+            fileSystem,
+            layout,
+            bundleId,
+            requirePublicAuthority: false,
+            out recorded,
+            out hostAtRest,
+            out _,
+            out _);
+
+    /// <summary>
+    /// Validates a finalized bundle using one secrets.env snapshot for both seal verification and
+    /// credential authority parsing, then recomputes the configuration fingerprint from the public
+    /// compose/tenants/(optional) platform-sender snapshot. Returns the parsed compose/secrets from
+    /// that same verification pass so callers never re-read seal members.
+    /// </summary>
+    internal static SetupDockerResult TryValidateFinalizedBundleAuthority(
+        ISetupFileSystem fileSystem,
+        TrustedSetupHostLayout layout,
+        string bundleId,
+        out SetupRecordedMetadata? recorded,
+        out string hostAtRest,
+        out IReadOnlyDictionary<string, string>? compose,
+        out IReadOnlyDictionary<string, string>? secrets) =>
+        TryValidateFinalizedBundleCore(
+            fileSystem,
+            layout,
+            bundleId,
+            requirePublicAuthority: true,
+            out recorded,
+            out hostAtRest,
+            out compose,
+            out secrets);
+
+    private static SetupDockerResult TryValidateFinalizedBundleCore(
+        ISetupFileSystem fileSystem,
+        TrustedSetupHostLayout layout,
+        string bundleId,
+        bool requirePublicAuthority,
+        out SetupRecordedMetadata? recorded,
+        out string hostAtRest,
+        out IReadOnlyDictionary<string, string>? compose,
+        out IReadOnlyDictionary<string, string>? secrets)
     {
         recorded = null;
         hostAtRest = SetupIntegrityMerger.NotVerified;
+        compose = null;
+        secrets = null;
 
-        if (!SetupActivePointer.IsSafeBundleId(bundleId))
+        if (!TryPrepareFinalizedBundle(
+                fileSystem,
+                layout,
+                bundleId,
+                out recorded,
+                out var bundleRoot,
+                out var failure))
         {
-            return SetupDockerResult.Fail(
-                SetupDockerResultCode.InvalidBundleInventory,
-                "Bundle id is invalid.");
-        }
-
-        var bundleRoot = Path.GetFullPath(SetupBundleLayout.BundleRoot(layout.ManagedRoot, bundleId));
-        if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
-                fileSystem, layout.ManagedRoot, bundleRoot, out _, out _))
-        {
-            return SetupDockerResult.Fail(
-                SetupDockerResultCode.UnsafePath,
-                "Bundle path rejected.");
-        }
-
-        var finalized = Path.Combine(bundleRoot, SetupBundleLayout.FinalizedMarkerFileName);
-        if (!fileSystem.FileExists(finalized))
-        {
-            return SetupDockerResult.Fail(
-                SetupDockerResultCode.InvalidBundleInventory,
-                "Bundle is not finalized.");
-        }
-
-        var recordedPath = Path.Combine(
-            SetupBundleLayout.MetadataDir(bundleRoot),
-            SetupBundleLayout.RecordedMetadataFileName);
-        if (!fileSystem.FileExists(recordedPath))
-        {
-            return SetupDockerResult.Fail(
-                SetupDockerResultCode.InvalidBundleInventory,
-                "Recorded metadata is missing.");
-        }
-
-        try
-        {
-            recorded = JsonSerializer.Deserialize(
-                fileSystem.ReadAllBytes(recordedPath),
-                SetupJsonContext.Default.SetupRecordedMetadata);
-        }
-        catch (JsonException)
-        {
-            return SetupDockerResult.Fail(
-                SetupDockerResultCode.OutputMalformed,
-                "Recorded metadata is malformed.");
-        }
-
-        if (recorded is null
-            || recorded.SchemaVersion != SetupBundleLayout.RecordedSchemaVersion
-            || !string.Equals(recorded.BundleId, bundleId, StringComparison.Ordinal))
-        {
-            return SetupDockerResult.Fail(
-                SetupDockerResultCode.InvalidBundleInventory,
-                "Recorded metadata does not match the bundle.");
+            return failure!;
         }
 
         var sealingKeyPath = SetupBundleLayout.HostSealingKeyPath(layout.ManagedRoot);
         if (!fileSystem.FileExists(sealingKeyPath) || !fileSystem.IsOwnerOnlyFile(sealingKeyPath))
         {
-            hostAtRest = SetupIntegrityMerger.NotVerified;
             return SetupDockerResult.Fail(
                 SetupDockerResultCode.InvalidBundleInventory,
                 "Host sealing key is missing or not owner-only.");
@@ -316,7 +333,6 @@ public static class SetupBundleStaticValidator
             SetupBundleLayout.IntegritySealFileName);
         if (!fileSystem.FileExists(sealPath))
         {
-            hostAtRest = SetupIntegrityMerger.NotVerified;
             return SetupDockerResult.Fail(
                 SetupDockerResultCode.InvalidBundleInventory,
                 "Integrity seal is missing.");
@@ -331,7 +347,6 @@ public static class SetupBundleStaticValidator
             seal = fileSystem.ReadAllBytes(sealPath);
             if (!TryLoadSecretMembers(fileSystem, bundleRoot, out members))
             {
-                hostAtRest = SetupIntegrityMerger.NotVerified;
                 return SetupDockerResult.Fail(
                     SetupDockerResultCode.InvalidBundleInventory,
                     "Secret members could not be loaded for seal verification.");
@@ -341,7 +356,7 @@ public static class SetupBundleStaticValidator
                 sealingKey,
                 seal,
                 bundleId,
-                recorded.ConfigurationFingerprint,
+                recorded!.ConfigurationFingerprint,
                 recorded.SchemaVersion,
                 members);
             hostAtRest = matched ? SetupIntegrityMerger.Matched : SetupIntegrityMerger.Mismatch;
@@ -352,28 +367,281 @@ public static class SetupBundleStaticValidator
                     "Host at-rest integrity seal mismatch.");
             }
 
+            if (!requirePublicAuthority)
+                return SetupDockerResult.Ok();
+
+            SetupDockerResult? secretsFailure = null;
+            if (!TryGetSecretsEnvBytes(members, out var secretsEnvBytes)
+                || !ManagedComposeEnvComposer.TryParseEnvFile(
+                    secretsEnvBytes,
+                    out var parsedSecrets,
+                    out secretsFailure))
+            {
+                hostAtRest = SetupIntegrityMerger.NotVerified;
+                return secretsFailure
+                    ?? SetupDockerResult.Fail(
+                        SetupDockerResultCode.InvalidBundleInventory,
+                        "Sealed secrets.env could not be parsed.");
+            }
+
+            if (!TryLoadPublicConfigSnapshot(
+                    fileSystem,
+                    layout,
+                    recorded,
+                    sealedSecrets: parsedSecrets,
+                    out var parsedCompose,
+                    out var tenants,
+                    out var platformSender,
+                    out var loadFailure))
+            {
+                hostAtRest = SetupIntegrityMerger.NotVerified;
+                return loadFailure!;
+            }
+
+            if (!SetupModeParser.TryParse(recorded.Mode, out var mode))
+            {
+                hostAtRest = SetupIntegrityMerger.NotVerified;
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Recorded mode is invalid.");
+            }
+
+            var fingerprintCompose = new SortedDictionary<string, string>(
+                parsedCompose,
+                StringComparer.Ordinal);
+            foreach (var key in fingerprintCompose.Keys.ToArray())
+            {
+                fingerprintCompose[key] = fingerprintCompose[key].Replace(
+                    $"bundles/{recorded.BundleId}/",
+                    "bundles/<bundle-id>/",
+                    StringComparison.Ordinal);
+            }
+
+            var recomputed = SetupCanonicalPayload.FingerprintSha256(
+                SetupCanonicalPayload.BuildForRecordedSchema(
+                    mode,
+                    tenants,
+                    fingerprintCompose,
+                    platformSender,
+                    recorded.AdminBootstrapRequested,
+                    recorded.SchemaVersion));
+            if (!string.Equals(
+                    recomputed,
+                    recorded.ConfigurationFingerprint,
+                    StringComparison.Ordinal))
+            {
+                hostAtRest = SetupIntegrityMerger.Mismatch;
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Public configuration fingerprint mismatch.");
+            }
+
+            compose = parsedCompose;
+            secrets = parsedSecrets;
             return SetupDockerResult.Ok();
         }
         finally
         {
             if (sealingKey is not null)
-            {
                 CryptographicOperations.ZeroMemory(sealingKey);
-            }
 
             if (seal is not null)
-            {
                 CryptographicOperations.ZeroMemory(seal);
-            }
 
             if (members is not null)
             {
                 foreach (var member in members)
-                {
                     CryptographicOperations.ZeroMemory(member.Content);
-                }
             }
         }
+    }
+
+    private static bool TryPrepareFinalizedBundle(
+        ISetupFileSystem fileSystem,
+        TrustedSetupHostLayout layout,
+        string bundleId,
+        out SetupRecordedMetadata? recorded,
+        out string bundleRoot,
+        out SetupDockerResult? failure)
+    {
+        recorded = null;
+        bundleRoot = string.Empty;
+        failure = null;
+
+        if (!SetupActivePointer.IsSafeBundleId(bundleId))
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Bundle id is invalid.");
+            return false;
+        }
+
+        bundleRoot = Path.GetFullPath(SetupBundleLayout.BundleRoot(layout.ManagedRoot, bundleId));
+        if (!SetupPathGuard.TryEnsurePathSafeUnderRoot(
+                fileSystem, layout.ManagedRoot, bundleRoot, out _, out _))
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsafePath,
+                "Bundle path rejected.");
+            return false;
+        }
+
+        var finalized = Path.Combine(bundleRoot, SetupBundleLayout.FinalizedMarkerFileName);
+        if (!fileSystem.FileExists(finalized))
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Bundle is not finalized.");
+            return false;
+        }
+
+        var recordedPath = Path.Combine(
+            SetupBundleLayout.MetadataDir(bundleRoot),
+            SetupBundleLayout.RecordedMetadataFileName);
+        if (!fileSystem.FileExists(recordedPath))
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Recorded metadata is missing.");
+            return false;
+        }
+
+        try
+        {
+            recorded = JsonSerializer.Deserialize(
+                fileSystem.ReadAllBytes(recordedPath),
+                SetupJsonContext.Default.SetupRecordedMetadata);
+        }
+        catch (JsonException)
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.OutputMalformed,
+                "Recorded metadata is malformed.");
+            return false;
+        }
+
+        if (recorded is null
+            || !SetupBundleLayout.IsSupportedRecordedSchemaVersion(recorded.SchemaVersion)
+            || !string.Equals(recorded.BundleId, bundleId, StringComparison.Ordinal)
+            || (recorded.SchemaVersion == 1 && recorded.AdminBootstrapExpectation is not null)
+            || (recorded.AdminBootstrapRequested && recorded.AdminBootstrapExpectation is null))
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Recorded metadata does not match the bundle.");
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryLoadPublicConfigSnapshot(
+        ISetupFileSystem fileSystem,
+        TrustedSetupHostLayout layout,
+        SetupRecordedMetadata recorded,
+        IReadOnlyDictionary<string, string> sealedSecrets,
+        out Dictionary<string, string> compose,
+        out MailerTenantsFile tenants,
+        out PlatformSenderFile? platformSender,
+        out SetupDockerResult? failure)
+    {
+        // sealedSecrets is accepted so callers cannot accidentally re-read secrets.env here.
+        _ = sealedSecrets;
+        compose = new Dictionary<string, string>(StringComparer.Ordinal);
+        tenants = null!;
+        platformSender = null;
+        failure = null;
+
+        var bundleRoot = Path.GetFullPath(
+            SetupBundleLayout.BundleRoot(layout.ManagedRoot, recorded.BundleId));
+        var composePath = Path.Combine(
+            SetupBundleLayout.EnvDir(bundleRoot),
+            SetupBundleLayout.ComposeEnvFileName);
+        var tenantsPath = Path.Combine(
+            SetupBundleLayout.ConfigDir(bundleRoot),
+            SetupBundleLayout.TenantsFileName);
+        SetupDockerResult? composeFailure = null;
+        if (!fileSystem.FileExists(composePath)
+            || !fileSystem.FileExists(tenantsPath)
+            || !ManagedComposeEnvComposer.TryParseEnvFile(
+                fileSystem.ReadAllBytes(composePath),
+                out compose,
+                out composeFailure))
+        {
+            failure = composeFailure
+                ?? SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Bundle public configuration members are missing.");
+            return false;
+        }
+
+        try
+        {
+            var parsedTenants = JsonSerializer.Deserialize(
+                fileSystem.ReadAllBytes(tenantsPath),
+                SetupJsonContext.Default.MailerTenantsFile);
+            if (parsedTenants is null)
+            {
+                failure = SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Bundle tenants.json is malformed.");
+                return false;
+            }
+
+            tenants = parsedTenants;
+            if (recorded.PlatformSenderPresent)
+            {
+                var platformPath = Path.Combine(
+                    SetupBundleLayout.ConfigDir(bundleRoot),
+                    PlatformSenderFile.CanonicalFileName);
+                if (!fileSystem.FileExists(platformPath))
+                {
+                    failure = SetupDockerResult.Fail(
+                        SetupDockerResultCode.InvalidBundleInventory,
+                        "Bundle platform-sender.json is missing.");
+                    return false;
+                }
+
+                platformSender = JsonSerializer.Deserialize(
+                    fileSystem.ReadAllBytes(platformPath),
+                    SetupJsonContext.Default.PlatformSenderFile);
+                if (platformSender is null)
+                {
+                    failure = SetupDockerResult.Fail(
+                        SetupDockerResultCode.InvalidBundleInventory,
+                        "Bundle platform-sender.json is malformed.");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (JsonException)
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.OutputMalformed,
+                "Bundle public configuration JSON is malformed.");
+            return false;
+        }
+    }
+
+    private static bool TryGetSecretsEnvBytes(
+        List<(string RelativePath, byte[] Content)> members,
+        out byte[] secretsEnvBytes)
+    {
+        var relative =
+            $"{SetupBundleLayout.EnvDirectoryName}/{SetupBundleLayout.SecretsEnvFileName}";
+        foreach (var member in members)
+        {
+            if (string.Equals(member.RelativePath, relative, StringComparison.Ordinal))
+            {
+                secretsEnvBytes = member.Content;
+                return true;
+            }
+        }
+
+        secretsEnvBytes = [];
+        return false;
     }
 
     /// <summary>

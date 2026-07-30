@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Amane.Mailer.Admin;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Operations;
 
@@ -32,6 +33,131 @@ public sealed class SetupCore
 
     internal SetupResult GenerateLiveSendingPromotionBundle(SetupRequest request) =>
         GenerateBundle(request, allowLiveSendingPromotion: true);
+
+    internal SetupResult GenerateAdminDerivedBundle(
+        TrustedSetupHostLayout layout,
+        string sourceBundleId,
+        SourceAdminDisposition disposition,
+        SetupRuntimeFileOwnership? runtimeFileOwnership,
+        SetupAdminBundleDelta delta)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceBundleId);
+        ArgumentNullException.ThrowIfNull(delta);
+
+        try
+        {
+            if (disposition == SourceAdminDisposition.Unknown
+                || !AdminBootstrapOperationId.TryParse(delta.Expectation.OperationId, out _)
+                || !AdminPasswordHasher.IsSupportedHash(delta.PasswordHash))
+            {
+                return SetupResult.Fail(
+                    SetupResultCode.RejectedValidation,
+                    "Admin derived bundle input was rejected.");
+            }
+
+            var validation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+                _fileSystem,
+                layout,
+                sourceBundleId,
+                out var sourceRecorded,
+                out _);
+            if (!validation.IsSuccess
+                || sourceRecorded is null
+                || !string.Equals(sourceRecorded.BundleId, sourceBundleId, StringComparison.Ordinal))
+            {
+                return SetupResult.Fail(
+                    SetupResultCode.RejectedValidation,
+                    "Verified source bundle is no longer current.");
+            }
+
+            var sourceRoot = SetupBundleLayout.BundleRoot(layout.ManagedRoot, sourceBundleId);
+            if (!TryReadAdminDerivedSource(
+                    sourceRoot,
+                    sourceRecorded,
+                    out var sourceCompose,
+                    out var sourceSecrets,
+                    out var tenants,
+                    out var tenantsJson,
+                    out var platformSender,
+                    out var platformSenderJson,
+                    out var acsBytes))
+            {
+                return SetupResult.Fail(
+                    SetupResultCode.RejectedValidation,
+                    "Verified source bundle could not be read.");
+            }
+
+            var bundleId = _bundleIdFactory();
+            using var generationLock = SetupGenerationLock.Acquire(_fileSystem, layout.ManagedRoot);
+            if (!SetupConflictDetector.TryDetectConflicts(
+                    _fileSystem,
+                    layout.ManagedRoot,
+                    bundleId,
+                    out var conflictCode,
+                    out var conflictMessage))
+            {
+                return SetupResult.Fail(conflictCode, conflictMessage);
+            }
+
+            if (!TryValidateSealingKeyPreflight(
+                    layout.ManagedRoot,
+                    out var sealCode,
+                    out var sealMessage))
+            {
+                return SetupResult.Fail(sealCode, sealMessage);
+            }
+
+            var materialized = SetupConfigurationMaterializer.MaterializeAdminDerived(
+                sourceRecorded,
+                sourceCompose,
+                sourceSecrets,
+                tenants!,
+                tenantsJson!,
+                platformSender,
+                platformSenderJson,
+                acsBytes,
+                bundleId,
+                _timeProvider.GetUtcNow(),
+                delta);
+            if (!AdminDerivedBundleDiff.TryValidate(
+                    sourceBundleId,
+                    bundleId,
+                    sourceCompose,
+                    sourceSecrets,
+                    materialized.ComposeEnv,
+                    materialized.SecretsEnv,
+                    tenantsJson!,
+                    materialized.TenantsJson,
+                    platformSenderJson,
+                    materialized.PlatformSenderJson,
+                    acsBytes,
+                    materialized.AcsConnectionStringBytes,
+                    out _))
+            {
+                return SetupResult.Fail(
+                    SetupResultCode.RejectedValidation,
+                    "Admin derived bundle changed disallowed fields.");
+            }
+
+            var plan = BuildPlan(
+                SetupModeParser.TryParse(sourceRecorded.Mode, out var mode)
+                    ? mode
+                    : throw new InvalidOperationException("Source mode is invalid."),
+                materialized);
+            return WriteBundle(layout.ManagedRoot, runtimeFileOwnership, materialized, plan);
+        }
+        catch (SetupCoreException ex)
+        {
+            return SetupResult.Fail(ex.Code, ex.SafeMessage);
+        }
+        catch
+        {
+            return SetupResult.Fail(
+                SetupResultCode.FailedUnexpected,
+                "Admin derived bundle generation failed unexpectedly.");
+        }
+    }
 
     private SetupResult GenerateBundle(SetupRequest request, bool allowLiveSendingPromotion)
     {
@@ -218,6 +344,100 @@ public sealed class SetupCore
         }
 
         return true;
+    }
+
+    private bool TryReadAdminDerivedSource(
+        string sourceRoot,
+        SetupRecordedMetadata recorded,
+        out IReadOnlyDictionary<string, string> compose,
+        out IReadOnlyDictionary<string, string> secrets,
+        out MailerTenantsFile? tenants,
+        out string? tenantsJson,
+        out PlatformSenderFile? platformSender,
+        out string? platformSenderJson,
+        out byte[]? acsBytes)
+    {
+        compose = new Dictionary<string, string>(StringComparer.Ordinal);
+        secrets = new Dictionary<string, string>(StringComparer.Ordinal);
+        tenants = null;
+        tenantsJson = null;
+        platformSender = null;
+        platformSenderJson = null;
+        acsBytes = null;
+
+        try
+        {
+            var composePath = Path.Combine(
+                SetupBundleLayout.EnvDir(sourceRoot),
+                SetupBundleLayout.ComposeEnvFileName);
+            var secretsPath = Path.Combine(
+                SetupBundleLayout.EnvDir(sourceRoot),
+                SetupBundleLayout.SecretsEnvFileName);
+            var tenantsPath = Path.Combine(
+                SetupBundleLayout.ConfigDir(sourceRoot),
+                SetupBundleLayout.TenantsFileName);
+            if (!_fileSystem.FileExists(composePath)
+                || !_fileSystem.FileExists(secretsPath)
+                || !_fileSystem.FileExists(tenantsPath)
+                || !ManagedComposeEnvComposer.TryParseEnvFile(
+                    _fileSystem.ReadAllBytes(composePath),
+                    out var parsedCompose,
+                    out _)
+                || !ManagedComposeEnvComposer.TryParseEnvFile(
+                    _fileSystem.ReadAllBytes(secretsPath),
+                    out var parsedSecrets,
+                    out _))
+            {
+                return false;
+            }
+
+            var tenantsBytes = _fileSystem.ReadAllBytes(tenantsPath);
+            tenants = JsonSerializer.Deserialize(
+                tenantsBytes,
+                SetupJsonContext.Default.MailerTenantsFile);
+            tenantsJson = Encoding.UTF8.GetString(tenantsBytes);
+            if (tenants is null)
+                return false;
+
+            if (recorded.PlatformSenderPresent)
+            {
+                var platformPath = Path.Combine(
+                    SetupBundleLayout.ConfigDir(sourceRoot),
+                    PlatformSenderFile.CanonicalFileName);
+                if (!_fileSystem.FileExists(platformPath))
+                    return false;
+
+                var platformBytes = _fileSystem.ReadAllBytes(platformPath);
+                platformSender = JsonSerializer.Deserialize(
+                    platformBytes,
+                    SetupJsonContext.Default.PlatformSenderFile);
+                platformSenderJson = Encoding.UTF8.GetString(platformBytes);
+                if (platformSender is null)
+                    return false;
+            }
+
+            var acsPath = Path.Combine(
+                SetupBundleLayout.SecretsDir(sourceRoot),
+                AcsSecretFileNames.CanonicalFileName);
+            if (_fileSystem.FileExists(acsPath))
+                acsBytes = _fileSystem.ReadAllBytes(acsPath);
+
+            compose = parsedCompose;
+            secrets = parsedSecrets;
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private SetupResult WriteBundle(

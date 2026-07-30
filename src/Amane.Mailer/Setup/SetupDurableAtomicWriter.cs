@@ -106,6 +106,61 @@ public sealed class SetupDurableAtomicWriter
         return TryAtomicReplaceText(managedRoot, destinationPath, json);
     }
 
+    /// <summary>
+    /// Atomically claims a destination by creating that destination itself with create-new
+    /// semantics, then durably flushes the file and parent directory. It never replaces an
+    /// existing destination.
+    /// </summary>
+    public SetupDockerResult TryCreateNewJson<T>(
+        string managedRoot,
+        string destinationPath,
+        T value,
+        System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(managedRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+        if (!TryNormalizeUnderRoot(managedRoot, destinationPath, out destinationPath))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsafePath,
+                "Destination path rejected.");
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrEmpty(directory))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsafePath,
+                "Destination path rejected.");
+        }
+
+        try
+        {
+            if (!_fileSystem.DirectoryExists(directory))
+                _fileSystem.CreateOwnerOnlyDirectory(directory);
+
+            var json = JsonSerializer.Serialize(value, typeInfo);
+            _fileSystem.WriteProtectedFileCreateNew(destinationPath, json);
+            _fileSystem.FlushFile(destinationPath);
+            _fileSystem.FlushDirectory(directory);
+            return SetupDockerResult.Ok();
+        }
+        catch (IOException)
+        {
+            // The destination may now exist even when a durability flush failed. Keep it as a
+            // recovery claim; callers must inspect pending rather than retrying or replacing it.
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Durable create-new failed or the destination already exists.");
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.FailedUnexpected,
+                "Durable create-new failed.");
+        }
+    }
+
     public SetupDockerResult TryDurableDelete(string managedRoot, string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(managedRoot);

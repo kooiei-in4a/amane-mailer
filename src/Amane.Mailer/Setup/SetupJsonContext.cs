@@ -4,6 +4,8 @@ using Amane.Mailer.Configuration;
 namespace Amane.Mailer.Setup;
 
 [JsonSerializable(typeof(SetupRecordedMetadata))]
+[JsonSerializable(typeof(SetupAdminBootstrapExpectation))]
+[JsonSerializable(typeof(SetupAdminDatabaseExpectationState))]
 [JsonSerializable(typeof(MailerTenantsFile))]
 [JsonSerializable(typeof(PlatformSenderFile))]
 [JsonSerializable(typeof(PlatformSenderAddress))]
@@ -19,7 +21,6 @@ public partial class SetupJsonContext : JsonSerializerContext;
 [JsonSerializable(typeof(SetupInspectAttestationSummary))]
 [JsonSerializable(typeof(SetupMountVerifierDocument))]
 [JsonSerializable(typeof(SetupMountVerifierMember))]
-[JsonSerializable(typeof(SetupRecordedMetadata))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,

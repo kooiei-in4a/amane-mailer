@@ -22,7 +22,23 @@ public static class SetupCanonicalPayload
             tenants,
             composeEnv,
             platformSender,
-            adminBootstrapRequested);
+            adminBootstrapRequested,
+            SetupBundleLayout.RecordedSchemaVersion);
+
+    internal static byte[] BuildForRecordedSchema(
+        SetupMode mode,
+        MailerTenantsFile tenants,
+        IReadOnlyDictionary<string, string> composeEnv,
+        PlatformSenderFile? platformSender,
+        bool adminBootstrapRequested,
+        int recordedSchemaVersion) =>
+        BuildFromWireMode(
+            SetupModeParser.ToWireValue(mode),
+            tenants,
+            composeEnv,
+            platformSender,
+            adminBootstrapRequested,
+            recordedSchemaVersion);
 
     /// <summary>
     /// Same canonical layout as <see cref="Build"/> but accepts a mode wire string so
@@ -33,7 +49,8 @@ public static class SetupCanonicalPayload
         MailerTenantsFile tenants,
         IReadOnlyDictionary<string, string> composeEnv,
         PlatformSenderFile? platformSender,
-        bool adminBootstrapRequested)
+        bool adminBootstrapRequested,
+        int recordedSchemaVersion = SetupBundleLayout.RecordedSchemaVersion)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(modeWire);
 
@@ -41,7 +58,7 @@ public static class SetupCanonicalPayload
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = false }))
         {
             writer.WriteStartObject();
-            writer.WriteNumber("schemaVersion", SetupBundleLayout.RecordedSchemaVersion);
+            writer.WriteNumber("schemaVersion", recordedSchemaVersion);
             writer.WriteString("mode", modeWire);
 
             writer.WritePropertyName("tenants");

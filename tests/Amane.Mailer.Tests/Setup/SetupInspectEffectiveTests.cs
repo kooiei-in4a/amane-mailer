@@ -728,6 +728,7 @@ public sealed class SetupInspectEffectiveTests
             ImageTag = recorded.ImageTag,
             PlatformSenderPresent = recorded.PlatformSenderPresent,
             AdminBootstrapRequested = recorded.AdminBootstrapRequested,
+            AdminBootstrapExpectation = recorded.AdminBootstrapExpectation,
         };
         File.WriteAllText(
             metadataPath,

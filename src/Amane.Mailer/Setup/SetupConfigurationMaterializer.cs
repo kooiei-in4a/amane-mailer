@@ -123,6 +123,90 @@ public static class SetupConfigurationMaterializer
         };
     }
 
+    internal static MaterializedBundleContent MaterializeAdminDerived(
+        SetupRecordedMetadata sourceRecorded,
+        IReadOnlyDictionary<string, string> sourceComposeEnv,
+        IReadOnlyDictionary<string, string> sourceSecretsEnv,
+        MailerTenantsFile tenants,
+        string tenantsJson,
+        PlatformSenderFile? platformSender,
+        string? platformSenderJson,
+        byte[]? acsConnectionStringBytes,
+        string bundleId,
+        DateTimeOffset createdAt,
+        SetupAdminBundleDelta delta)
+    {
+        if (!SetupModeParser.TryParse(sourceRecorded.Mode, out var mode))
+            throw new InvalidOperationException("Source Setup mode is invalid.");
+
+        var compose = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        foreach (var pair in sourceComposeEnv)
+            compose.Add(pair.Key, pair.Value);
+
+        var secrets = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        foreach (var pair in sourceSecretsEnv)
+            secrets.Add(pair.Key, pair.Value);
+        foreach (var key in compose.Keys.ToArray())
+        {
+            compose[key] = compose[key].Replace(
+                $"bundles/{sourceRecorded.BundleId}/",
+                $"bundles/{bundleId}/",
+                StringComparison.Ordinal);
+        }
+
+        compose["AMANE_ADMIN_ENABLED"] = "true";
+        compose["AMANE_ADMIN_USERNAME"] = delta.Username;
+        compose["AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS"] = delta.AllowedLocalAddress;
+        compose["AMANE_ADMIN_ALLOW_HTTP"] = delta.AllowHttp ? "true" : "false";
+        secrets["AMANE_ADMIN_PASSWORD_HASH"] = delta.PasswordHash;
+
+        var fingerprintCompose = new SortedDictionary<string, string>(compose, StringComparer.Ordinal);
+        foreach (var key in fingerprintCompose.Keys.ToArray())
+        {
+            fingerprintCompose[key] = fingerprintCompose[key].Replace(
+                $"bundles/{bundleId}/",
+                "bundles/<bundle-id>/",
+                StringComparison.Ordinal);
+        }
+
+        var canonical = SetupCanonicalPayload.Build(
+            mode,
+            tenants,
+            fingerprintCompose,
+            platformSender,
+            adminBootstrapRequested: true);
+        var fingerprint = SetupCanonicalPayload.FingerprintSha256(canonical);
+        var recorded = new SetupRecordedMetadata
+        {
+            SchemaVersion = SetupBundleLayout.RecordedSchemaVersion,
+            BundleId = bundleId,
+            ConfigurationFingerprint = fingerprint,
+            Mode = sourceRecorded.Mode,
+            CreatedAt = createdAt.UtcDateTime.ToString("o"),
+            ImageRepository = sourceRecorded.ImageRepository,
+            ImageTag = sourceRecorded.ImageTag,
+            PlatformSenderPresent = sourceRecorded.PlatformSenderPresent,
+            AdminBootstrapRequested = true,
+            AdminBootstrapExpectation = delta.Expectation,
+        };
+
+        return new MaterializedBundleContent
+        {
+            BundleId = bundleId,
+            CreatedAt = createdAt,
+            ComposeEnv = compose,
+            SecretsEnv = secrets,
+            TenantsJson = tenantsJson,
+            PlatformSenderJson = platformSenderJson,
+            PlatformSender = platformSender,
+            AcsConnectionStringBytes = acsConnectionStringBytes,
+            ConfigurationFingerprint = fingerprint,
+            CanonicalPayload = canonical,
+            Recorded = recorded,
+            AdminBootstrapRequested = true,
+        };
+    }
+
     public static string FormatEnvFile(IReadOnlyDictionary<string, string> values)
     {
         var sb = new StringBuilder();
