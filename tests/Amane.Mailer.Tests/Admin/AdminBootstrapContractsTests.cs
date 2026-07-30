@@ -1309,6 +1309,200 @@ public sealed class AdminBootstrapContractsTests
     }
 
     [Fact]
+    public void Residual_candidate_authority_reads_secrets_env_once_for_seal_and_credential()
+    {
+        var root = TempRoot();
+        Directory.CreateDirectory(root);
+        try
+        {
+            var hostFs = new HostSetupFileSystem();
+            var core = new SetupCore(hostFs);
+            var layout = CreateLayout(root);
+            var source = core.GenerateBundle(SetupTestFixtures.LocalMailpitRequest(root));
+            Assert.Equal(SetupResultCode.Succeeded, source.Code);
+
+            var operationId = AdminBootstrapOperationId.Create();
+            var hash = AdminPasswordHasher.Hash("managed-password");
+            var expectation = new SetupAdminBootstrapExpectation
+            {
+                OperationId = operationId.Value,
+                Before = FreshState(),
+                After = FreshState(),
+            };
+            var derived = core.GenerateAdminDerivedBundle(
+                layout,
+                source.BundleId!,
+                SourceAdminDisposition.DisabledMain,
+                runtimeFileOwnership: null,
+                new SetupAdminBundleDelta
+                {
+                    Username = "admin",
+                    PasswordHash = hash,
+                    AllowedLocalAddress = "127.0.0.1",
+                    AllowHttp = true,
+                    Expectation = expectation,
+                });
+            Assert.Equal(SetupResultCode.Succeeded, derived.Code);
+
+            var secretsPath = Path.Combine(
+                SetupBundleLayout.EnvDir(SetupBundleLayout.BundleRoot(root, derived.BundleId!)),
+                SetupBundleLayout.SecretsEnvFileName);
+            var sealedBytes = File.ReadAllBytes(secretsPath);
+            var tamperedHash = AdminPasswordHasher.Hash("tampered-password");
+            var tamperedText = System.Text.Encoding.UTF8.GetString(sealedBytes)
+                .Replace(hash, tamperedHash, StringComparison.Ordinal);
+            Assert.False(
+                string.Equals(
+                    System.Text.Encoding.UTF8.GetString(sealedBytes),
+                    tamperedText,
+                    StringComparison.Ordinal),
+                "Tampered secrets snapshot must differ from the sealed bytes.");
+
+            var countingFs = new AlternatingSecretsFileSystem(
+                hostFs,
+                secretsPath,
+                firstRead: sealedBytes,
+                secondRead: System.Text.Encoding.UTF8.GetBytes(tamperedText));
+            var classifier = new AdminBootstrapSourceClassifier(
+                countingFs,
+                new AdminBootstrapOwnershipStore(countingFs));
+            var residual = Ownership(
+                operationId,
+                AdminBootstrapOwnershipState.ResidualAfterConfigRollback,
+                derived.BundleId!) with
+            {
+                Candidate = new AdminBootstrapCandidateAuthority
+                {
+                    BundleId = derived.BundleId!,
+                    ExpectedActivationGeneration = 2,
+                    ConfigurationFingerprint = derived.ConfigurationFingerprint!,
+                },
+                ExpectedDatabase = expectation,
+            };
+
+            Assert.True(
+                classifier.TryReadVerifiedCandidateAdminAuthority(
+                    layout,
+                    residual,
+                    out _,
+                    out var username,
+                    out var candidateHash));
+            Assert.Equal(1, countingFs.SecretsReadCount);
+            Assert.Equal("admin", username);
+            Assert.Equal(hash, candidateHash);
+            Assert.NotEqual(tamperedHash, candidateHash);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Recover_session_cleaned_requires_access_probe_before_promotion()
+    {
+        var (root, factory) = await CreateMigratedDatabaseAsync();
+        try
+        {
+            var fileSystem = new HostSetupFileSystem();
+            var core = new SetupCore(fileSystem);
+            var layout = CreateLayout(root);
+            var source = core.GenerateBundle(SetupTestFixtures.LocalMailpitRequest(root));
+            Assert.Equal(SetupResultCode.Succeeded, source.Code);
+
+            var operationId = AdminBootstrapOperationId.Create();
+            var hash = AdminPasswordHasher.Hash("managed-password");
+            var expectation = new SetupAdminBootstrapExpectation
+            {
+                OperationId = operationId.Value,
+                Before = FreshState(),
+                After = new SetupAdminDatabaseExpectationState
+                {
+                    Classification = AdminBootstrapDatabaseClassification.ManagedSameUser,
+                    AdminConfigCount = 1,
+                    AdminUserCount = 1,
+                    AdminConfigCredentialEpoch = 0,
+                    AdminUserCredentialEpoch = 0,
+                    ScopeFingerprint = AdminBootstrapScopeFingerprint.Compute(
+                        [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")]),
+                    FreshHasAnyAdminSessionRows = null,
+                },
+            };
+            var derived = core.GenerateAdminDerivedBundle(
+                layout,
+                source.BundleId!,
+                SourceAdminDisposition.DisabledMain,
+                runtimeFileOwnership: null,
+                new SetupAdminBundleDelta
+                {
+                    Username = "admin",
+                    PasswordHash = hash,
+                    AllowedLocalAddress = "127.0.0.1",
+                    AllowHttp = true,
+                    Expectation = expectation,
+                });
+            Assert.Equal(SetupResultCode.Succeeded, derived.Code);
+
+            var pending = Ownership(
+                operationId,
+                AdminBootstrapOwnershipState.SessionCleaned,
+                derived.BundleId!) with
+            {
+                Candidate = new AdminBootstrapCandidateAuthority
+                {
+                    BundleId = derived.BundleId!,
+                    ExpectedActivationGeneration = 2,
+                    ConfigurationFingerprint = derived.ConfigurationFingerprint!,
+                },
+                ExpectedDatabase = expectation,
+            };
+            var store = new AdminBootstrapOwnershipStore(fileSystem);
+            Assert.True(store.WritePending(root, pending).IsSuccess);
+
+            var rollbackCount = 0;
+            var applyEngine = new FakeVerifiedWorkflowApplyEngine(
+                SetupApplyResult.Create(
+                    SetupApplyResultCode.RollbackSucceeded,
+                    SetupManagedDeploymentState.Active,
+                    configRollbackStatus: SetupConfigRollbackStatus.Succeeded),
+                onRollback: () => Interlocked.Increment(ref rollbackCount));
+            var workflow = CreateRecoveryWorkflow(
+                root,
+                factory,
+                store,
+                applyEngine,
+                () => new StaticResponseHandler(HttpStatusCode.ServiceUnavailable),
+                _ => Task.FromResult(AppliedSnapshot(hash)));
+            Assert.True(
+                TrustedAdminAccessEndpoint.TryCreate(
+                    AdminAccessProfile.LocalDevelopment,
+                    new Uri("http://127.0.0.1:8080/"),
+                    out var endpoint));
+
+            var result = await workflow.RecoverAsync(
+                layout,
+                endpoint!,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.ManualActionRequired);
+            Assert.Equal("admin_exposure_unknown", result.ReasonCode);
+            Assert.Equal("unknown", result.AdminExposure);
+            Assert.Equal(1, rollbackCount);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Missing, store.ReadCurrent(root).Kind);
+            var retained = store.ReadPending(root);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Valid, retained.Kind);
+            Assert.Equal(AdminBootstrapOwnershipState.NeedsIntervention, retained.Document!.State);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Production_rollback_accepts_session_cleaned_pending_state()
     {
         var root = TempRoot();
@@ -2141,7 +2335,8 @@ public sealed class AdminBootstrapContractsTests
     private sealed class FakeVerifiedWorkflowApplyEngine(
         SetupApplyResult recoveryResult,
         SetupAuthorityCheckResult? candidateAuthority = null,
-        Action<FakeRecoveryLease>? onLeaseAcquired = null)
+        Action<FakeRecoveryLease>? onLeaseAcquired = null,
+        Action? onRollback = null)
         : ISetupVerifiedWorkflowApplyEngine
     {
         internal FakeRecoveryLease? LastRecoveryLease { get; private set; }
@@ -2169,6 +2364,7 @@ public sealed class AdminBootstrapContractsTests
                     or AdminBootstrapOwnershipState.AccessVerified
                     or AdminBootstrapOwnershipState.SessionCleaned,
                 "Production SetupApplyEngine rejects unknown pending rollback states.");
+            onRollback?.Invoke();
             return Task.FromResult(recoveryResult);
         }
 
@@ -2305,6 +2501,62 @@ public sealed class AdminBootstrapContractsTests
             inner.DeleteFile(path);
         }
 
+        public void DeleteDirectoryRecursive(string path) => inner.DeleteDirectoryRecursive(path);
+        public void MoveReplace(string sourcePath, string destinationPath) =>
+            inner.MoveReplace(sourcePath, destinationPath);
+        public void FlushDirectory(string path) => inner.FlushDirectory(path);
+        public void FlushFile(string path) => inner.FlushFile(path);
+        public FileStream OpenExclusiveGenerationLock(string path) =>
+            inner.OpenExclusiveGenerationLock(path);
+        public void SetUnixOwnership(string path, uint userId, uint groupId) =>
+            inner.SetUnixOwnership(path, userId, groupId);
+        public void SetUnixFileModeOwnerOnly(string path, bool executableDirectory) =>
+            inner.SetUnixFileModeOwnerOnly(path, executableDirectory);
+        public bool TryGetUnixFileMode(string path, out UnixFileMode mode) =>
+            inner.TryGetUnixFileMode(path, out mode);
+        public bool IsOwnerOnlyFile(string path) => inner.IsOwnerOnlyFile(path);
+        public uint? GetEffectiveUnixUserId() => inner.GetEffectiveUnixUserId();
+    }
+
+    private sealed class AlternatingSecretsFileSystem(
+        ISetupFileSystem inner,
+        string secretsPath,
+        byte[] firstRead,
+        byte[] secondRead) : ISetupFileSystem
+    {
+        internal int SecretsReadCount { get; private set; }
+
+        public bool DirectoryExists(string path) => inner.DirectoryExists(path);
+        public bool FileExists(string path) => inner.FileExists(path);
+        public SetupLinkInspectionResult InspectSymlinkOrReparsePoint(string path) =>
+            inner.InspectSymlinkOrReparsePoint(path);
+        public IEnumerable<string> EnumerateFileSystemEntries(string path) =>
+            inner.EnumerateFileSystemEntries(path);
+        public void CreateOwnerOnlyDirectory(string path) => inner.CreateOwnerOnlyDirectory(path);
+        public void WriteProtectedFileCreateNew(string path, ReadOnlySpan<byte> content) =>
+            inner.WriteProtectedFileCreateNew(path, content);
+        public void WriteProtectedFileCreateNew(string path, string content) =>
+            inner.WriteProtectedFileCreateNew(path, content);
+
+        public byte[] ReadAllBytes(string path)
+        {
+            if (string.Equals(
+                    Path.GetFullPath(path),
+                    Path.GetFullPath(secretsPath),
+                    OperatingSystem.IsWindows()
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal))
+            {
+                SecretsReadCount++;
+                return SecretsReadCount == 1
+                    ? firstRead.ToArray()
+                    : secondRead.ToArray();
+            }
+
+            return inner.ReadAllBytes(path);
+        }
+
+        public void DeleteFile(string path) => inner.DeleteFile(path);
         public void DeleteDirectoryRecursive(string path) => inner.DeleteDirectoryRecursive(path);
         public void MoveReplace(string sourcePath, string destinationPath) =>
             inner.MoveReplace(sourcePath, destinationPath);

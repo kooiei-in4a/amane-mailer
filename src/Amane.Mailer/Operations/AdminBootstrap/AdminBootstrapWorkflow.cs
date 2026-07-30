@@ -280,6 +280,7 @@ internal sealed class AdminBootstrapWorkflow
                 StringComparison.Ordinal))
         {
             AdminDatabaseAuthorityCheck authority;
+            string? exposureFailure = null;
             await using (var recoveryLease = await HoldRecoveryAuthorityAsync(
                 layout,
                 pending,
@@ -288,28 +289,41 @@ internal sealed class AdminBootstrapWorkflow
                 authority = recoveryLease.Authority;
                 if (authority.IsCurrent)
                 {
-                    var promote = _ownership.PromotePendingToCurrent(
-                        layout.ManagedRoot,
-                        pending with
-                        {
-                            State = AdminBootstrapOwnershipState.Succeeded,
-                            LastTransitionAt = Timestamp(),
-                        });
-                    return RecoveryResult(
-                        profile,
-                        promote.CurrentCommitted
-                            ? AdminBootstrapResultCode.Succeeded
-                            : AdminBootstrapResultCode.ManualActionRequired,
-                        promote.IsFullySucceeded
-                            ? "pending_promotion_completed"
-                            : promote.CurrentCommitted
-                                ? "pending_cleanup_required"
-                                : "ownership_promotion_failed",
-                        adminExposure: promote.CurrentCommitted ? "enabled" : "unknown",
-                        loginVerification: "succeeded",
-                        setupStatusVerification: "succeeded",
-                        sessionCleanup: "succeeded",
-                        manualActionRequired: !promote.IsFullySucceeded);
+                    // Access reachability is part of succeeded authority. Probe while APPLY.lock is
+                    // still held, then promote only after LoginPageReached is confirmed.
+                    var exposure = await ProbeExposureAfterRollbackAsync(
+                        accessEndpoint,
+                        SourceAdminDisposition.EnabledManagedSameUser,
+                        rollbackSucceeded: true);
+                    if (exposure != "enabled")
+                    {
+                        exposureFailure = "admin_exposure_unknown";
+                    }
+                    else
+                    {
+                        var promote = _ownership.PromotePendingToCurrent(
+                            layout.ManagedRoot,
+                            pending with
+                            {
+                                State = AdminBootstrapOwnershipState.Succeeded,
+                                LastTransitionAt = Timestamp(),
+                            });
+                        return RecoveryResult(
+                            profile,
+                            promote.CurrentCommitted
+                                ? AdminBootstrapResultCode.Succeeded
+                                : AdminBootstrapResultCode.ManualActionRequired,
+                            promote.IsFullySucceeded
+                                ? "pending_promotion_completed"
+                                : promote.CurrentCommitted
+                                    ? "pending_cleanup_required"
+                                    : "ownership_promotion_failed",
+                            adminExposure: promote.CurrentCommitted ? "enabled" : "unknown",
+                            loginVerification: "succeeded",
+                            setupStatusVerification: "succeeded",
+                            sessionCleanup: "succeeded",
+                            manualActionRequired: !promote.IsFullySucceeded);
+                    }
                 }
             }
 
@@ -327,8 +341,9 @@ internal sealed class AdminBootstrapWorkflow
             return RecoveryResult(
                 profile,
                 AdminBootstrapResultCode.ManualActionRequired,
-                authority.ReasonCode,
+                exposureFailure ?? authority.ReasonCode,
                 configRollback: rollbackAfterAuthorityLoss.ConfigRollbackStatus,
+                adminExposure: "unknown",
                 sessionCleanup: "succeeded",
                 manualActionRequired: true);
         }
