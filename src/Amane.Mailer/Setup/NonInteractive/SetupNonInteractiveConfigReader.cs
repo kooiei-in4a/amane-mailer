@@ -7,11 +7,21 @@ namespace Amane.Mailer.Setup.NonInteractive;
 
 /// <summary>
 /// TOCTOU-safe owner-only config read for non-interactive setup (issue #453).
-/// Opens with no-follow, revalidates on the handle, then reads up to 256 KiB.
+/// Linux uses <c>statx(AT_EMPTY_PATH)</c> on an open handle; Windows uses handle metadata.
+/// macOS and other platforms fail closed without path-based metadata fallback.
 /// </summary>
-internal static class SetupNonInteractiveConfigReader
+internal static partial class SetupNonInteractiveConfigReader
 {
     internal const int MaxConfigBytes = 256 * 1024;
+
+    internal const uint StatxType = 0x0000_0001u;
+    internal const uint StatxMode = 0x0000_0002u;
+    internal const uint StatxUid = 0x0000_0008u;
+    internal const uint StatxSize = 0x0000_0200u;
+    internal const uint StatxRequiredMask = StatxType | StatxMode | StatxUid | StatxSize;
+    internal const uint StatxBasicStats = 0x0000_07ffu;
+    internal const int AtEmptyPath = 0x1000;
+    internal const int LinuxStatxSize = 256;
 
     internal sealed class ReadOutcome
     {
@@ -39,9 +49,9 @@ internal static class SetupNonInteractiveConfigReader
 
         try
         {
-            if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+            if (OperatingSystem.IsLinux())
             {
-                return ReadUnix(fileSystem, fullPath);
+                return ReadLinux(fileSystem, fullPath);
             }
 
             if (OperatingSystem.IsWindows())
@@ -49,7 +59,16 @@ internal static class SetupNonInteractiveConfigReader
                 return ReadWindows(fileSystem, fullPath);
             }
 
-            return ReadFallback(fileSystem, fullPath);
+            // macOS and any other host: no fstat / path-based metadata fallback.
+            return Fail(SetupNonInteractiveResultCode.UnsupportedPlatform);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return Fail(SetupNonInteractiveResultCode.UnsupportedPlatform);
+        }
+        catch (DllNotFoundException)
+        {
+            return Fail(SetupNonInteractiveResultCode.UnsupportedPlatform);
         }
         catch (UnauthorizedAccessException)
         {
@@ -73,29 +92,21 @@ internal static class SetupNonInteractiveConfigReader
         return Path.IsPathRooted(fullPath);
     }
 
-    private static ReadOutcome ReadFallback(ISetupFileSystem fileSystem, string fullPath)
-    {
-        if (SetupPathGuard.IsUnsafeLink(fileSystem.InspectSymlinkOrReparsePoint(fullPath))
-            || !fileSystem.IsOwnerOnlyFile(fullPath))
-        {
-            return Fail(SetupNonInteractiveResultCode.ConfigPermissionsRejected);
-        }
-
-        var bytes = fileSystem.ReadAllBytes(fullPath);
-        return ValidateSize(bytes);
-    }
-
     [SupportedOSPlatform("linux")]
-    [SupportedOSPlatform("macos")]
-    private static ReadOutcome ReadUnix(ISetupFileSystem fileSystem, string fullPath)
+    private static ReadOutcome ReadLinux(ISetupFileSystem fileSystem, string fullPath)
     {
         const int oRdOnly = 0;
-        var noFollow = OperatingSystem.IsMacOS() ? 0x100 : 0x20000;
-        var cloExec = OperatingSystem.IsMacOS() ? 0x1000000 : 0x80000;
-        var fd = Open3(fullPath, oRdOnly | noFollow | cloExec, 0);
+        const int oNoFollow = 0x20000;
+        const int oCloExec = 0x80000;
+        var fd = Open3(fullPath, oRdOnly | oNoFollow | oCloExec, 0);
         if (fd < 0)
         {
             var errno = Marshal.GetLastPInvokeError();
+            if (errno == 38) // ENOSYS
+            {
+                return Fail(SetupNonInteractiveResultCode.UnsupportedPlatform);
+            }
+
             return errno is 2 or 20
                 ? Fail(SetupNonInteractiveResultCode.ConfigNotFound)
                 : Fail(SetupNonInteractiveResultCode.ConfigPathUnsafe);
@@ -107,17 +118,22 @@ internal static class SetupNonInteractiveConfigReader
             handle = new SafeFileHandle((IntPtr)fd, ownsHandle: true);
             fd = -1;
 
-            if (!IsRegularFileUnix(handle))
+            if (!TryStatx(handle, out var beforeStat, out var statxFailure))
+            {
+                return Fail(statxFailure);
+            }
+
+            if (!IsRegularFile(beforeStat))
             {
                 return Fail(SetupNonInteractiveResultCode.ConfigNotRegularFile);
             }
 
-            if (!IsOwnerOnlyHandleUnix(handle, fullPath, fileSystem))
+            if (!IsOwnerOnly(beforeStat, fileSystem, out var ownerFailure))
             {
-                return Fail(SetupNonInteractiveResultCode.ConfigPermissionsRejected);
+                return Fail(ownerFailure);
             }
 
-            var length = GetLengthUnix(handle);
+            var length = (long)beforeStat.Size;
             if (length < 0 || length > MaxConfigBytes)
             {
                 return Fail(SetupNonInteractiveResultCode.ConfigTooLarge);
@@ -126,8 +142,24 @@ internal static class SetupNonInteractiveConfigReader
             using var stream = new FileStream(handle, FileAccess.Read);
             handle = null;
             var buffer = new byte[length];
-            var read = stream.Read(buffer, 0, buffer.Length);
-            if (read != length)
+            if (!TryReadExact(stream, buffer))
+            {
+                return Fail(SetupNonInteractiveResultCode.ConfigPathUnsafe);
+            }
+
+            // Reject post-open growth: one extra byte must not be available.
+            Span<byte> growthProbe = stackalloc byte[1];
+            if (stream.Read(growthProbe) != 0)
+            {
+                return Fail(SetupNonInteractiveResultCode.ConfigPathUnsafe);
+            }
+
+            if (!TryStatx(stream.SafeFileHandle, out var afterStat, out var afterFailure))
+            {
+                return Fail(afterFailure);
+            }
+
+            if (!SameFileIdentity(beforeStat, afterStat) || afterStat.Size != beforeStat.Size)
             {
                 return Fail(SetupNonInteractiveResultCode.ConfigPathUnsafe);
             }
@@ -194,8 +226,27 @@ internal static class SetupNonInteractiveConfigReader
 
         using var stream = new FileStream(handle, FileAccess.Read);
         var buffer = new byte[length];
-        var read = stream.Read(buffer, 0, buffer.Length);
-        if (read != length)
+        if (!TryReadExact(stream, buffer))
+        {
+            return Fail(SetupNonInteractiveResultCode.ConfigPathUnsafe);
+        }
+
+        Span<byte> growthProbe = stackalloc byte[1];
+        if (stream.Read(growthProbe) != 0)
+        {
+            return Fail(SetupNonInteractiveResultCode.ConfigPathUnsafe);
+        }
+
+        if (!GetFileInformationByHandle(handle, out var after))
+        {
+            return Fail(SetupNonInteractiveResultCode.ConfigPathUnsafe);
+        }
+
+        var afterLength = (long)after.FileSizeHigh << 32 | after.FileSizeLow;
+        if (after.VolumeSerialNumber != info.VolumeSerialNumber
+            || after.FileIndexHigh != info.FileIndexHigh
+            || after.FileIndexLow != info.FileIndexLow
+            || afterLength != length)
         {
             return Fail(SetupNonInteractiveResultCode.ConfigPathUnsafe);
         }
@@ -227,86 +278,197 @@ internal static class SetupNonInteractiveConfigReader
         }
     }
 
-    private static ReadOutcome ValidateSize(byte[] bytes) =>
-        bytes.Length > MaxConfigBytes
-            ? Fail(SetupNonInteractiveResultCode.ConfigTooLarge)
-            : new ReadOutcome { Succeeded = true, Content = bytes };
+    internal static bool TryReadExact(Stream stream, Span<byte> buffer)
+    {
+        var offset = 0;
+        while (offset < buffer.Length)
+        {
+            var read = stream.Read(buffer[offset..]);
+            if (read == 0)
+            {
+                return false;
+            }
 
-    private static ReadOutcome Fail(string code) =>
-        new() { Succeeded = false, FailureCode = code };
+            offset += read;
+        }
+
+        return true;
+    }
 
     [SupportedOSPlatform("linux")]
-    [SupportedOSPlatform("macos")]
-    private static bool IsRegularFileUnix(SafeFileHandle handle)
+    private static bool TryStatx(
+        SafeFileHandle handle,
+        out LinuxStatxView view,
+        out string failureCode)
     {
-        if (FStat(handle.DangerousGetHandle().ToInt32(), out var stat) != 0)
+        view = default;
+        failureCode = SetupNonInteractiveResultCode.UnsupportedPlatform;
+        LinuxStatxBuffer buffer = default;
+        int rc;
+        try
+        {
+            rc = Statx(
+                handle.DangerousGetHandle().ToInt32(),
+                string.Empty,
+                AtEmptyPath,
+                StatxBasicStats,
+                ref buffer);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+        catch (DllNotFoundException)
         {
             return false;
         }
 
+        if (rc != 0)
+        {
+            var errno = Marshal.GetLastPInvokeError();
+            failureCode = errno == 38 // ENOSYS
+                ? SetupNonInteractiveResultCode.UnsupportedPlatform
+                : SetupNonInteractiveResultCode.ConfigPathUnsafe;
+            return false;
+        }
+
+        if ((buffer.Mask & StatxRequiredMask) != StatxRequiredMask)
+        {
+            failureCode = SetupNonInteractiveResultCode.ConfigPathUnsafe;
+            return false;
+        }
+
+        view = new LinuxStatxView(
+            buffer.Mask,
+            buffer.Mode,
+            buffer.Uid,
+            buffer.Size,
+            buffer.Ino,
+            buffer.DevMajor,
+            buffer.DevMinor);
+        failureCode = string.Empty;
+        return true;
+    }
+
+    private static bool IsRegularFile(LinuxStatxView stat)
+    {
         const int sIfmt = 0xF000;
         const int sIfreg = 0x8000;
-        return (stat.st_mode & sIfmt) == sIfreg;
+        return (stat.Mode & sIfmt) == sIfreg;
     }
 
-    [SupportedOSPlatform("linux")]
-    [SupportedOSPlatform("macos")]
-    private static long GetLengthUnix(SafeFileHandle handle)
+    private static bool IsOwnerOnly(
+        LinuxStatxView stat,
+        ISetupFileSystem fileSystem,
+        out string failureCode)
     {
-        if (FStat(handle.DangerousGetHandle().ToInt32(), out var stat) != 0)
-        {
-            return -1;
-        }
-
-        return stat.st_size;
-    }
-
-    [SupportedOSPlatform("linux")]
-    [SupportedOSPlatform("macos")]
-    private static bool IsOwnerOnlyHandleUnix(
-        SafeFileHandle handle,
-        string path,
-        ISetupFileSystem fileSystem)
-    {
-        if (FStat(handle.DangerousGetHandle().ToInt32(), out var stat) != 0)
-        {
-            return false;
-        }
-
         const int sIrwxg = 0x0038;
         const int sIrwxo = 0x0007;
-        if ((stat.st_mode & (sIrwxg | sIrwxo)) != 0)
+        if ((stat.Mode & (sIrwxg | sIrwxo)) != 0)
         {
+            failureCode = SetupNonInteractiveResultCode.ConfigPermissionsRejected;
             return false;
         }
 
         var userId = fileSystem.GetEffectiveUnixUserId();
-        return userId is null || stat.st_uid == userId.Value;
+        if (userId is null)
+        {
+            // Fail closed: never treat missing euid as "owner verified".
+            failureCode = SetupNonInteractiveResultCode.ConfigPermissionsRejected;
+            return false;
+        }
+
+        if (stat.Uid != userId.Value)
+        {
+            failureCode = SetupNonInteractiveResultCode.ConfigPermissionsRejected;
+            return false;
+        }
+
+        failureCode = string.Empty;
+        return true;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Stat
+    private static bool SameFileIdentity(LinuxStatxView before, LinuxStatxView after) =>
+        before.Ino == after.Ino
+        && before.DevMajor == after.DevMajor
+        && before.DevMinor == after.DevMinor;
+
+    private static ReadOutcome Fail(string code) =>
+        new() { Succeeded = false, FailureCode = code };
+
+    internal readonly struct LinuxStatxView
     {
-        public long st_dev;
-        public long st_ino;
-        public int st_mode;
-        public int st_nlink;
-        public int st_uid;
-        public int st_gid;
-        public long st_rdev;
-        public long st_size;
+        internal LinuxStatxView(
+            uint mask,
+            ushort mode,
+            uint uid,
+            ulong size,
+            ulong ino,
+            uint devMajor,
+            uint devMinor)
+        {
+            Mask = mask;
+            Mode = mode;
+            Uid = uid;
+            Size = size;
+            Ino = ino;
+            DevMajor = devMajor;
+            DevMinor = devMinor;
+        }
+
+        internal uint Mask { get; }
+        internal ushort Mode { get; }
+        internal uint Uid { get; }
+        internal ulong Size { get; }
+        internal ulong Ino { get; }
+        internal uint DevMajor { get; }
+        internal uint DevMinor { get; }
     }
 
-    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
-    private static extern int Open3(string pathname, int flags, int mode);
+    /// <summary>
+    /// Linux UAPI <c>struct statx</c> (size 0x100). Field offsets follow
+    /// <c>include/uapi/linux/stat.h</c>, including reserved trailing space.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = LinuxStatxSize)]
+    internal struct LinuxStatxBuffer
+    {
+        [FieldOffset(0)] public uint Mask;
+        [FieldOffset(4)] public uint Blksize;
+        [FieldOffset(8)] public ulong Attributes;
+        [FieldOffset(16)] public uint Nlink;
+        [FieldOffset(20)] public uint Uid;
+        [FieldOffset(24)] public uint Gid;
+        [FieldOffset(28)] public ushort Mode;
+        [FieldOffset(32)] public ulong Ino;
+        [FieldOffset(40)] public ulong Size;
+        [FieldOffset(48)] public ulong Blocks;
+        [FieldOffset(56)] public ulong AttributesMask;
+        // Timestamps and device ids occupy later offsets; only the fields above are read.
+        [FieldOffset(128)] public uint RdevMajor;
+        [FieldOffset(132)] public uint RdevMinor;
+        [FieldOffset(136)] public uint DevMajor;
+        [FieldOffset(140)] public uint DevMinor;
+    }
 
-    [DllImport("libc", EntryPoint = "close", SetLastError = true)]
-    private static extern int Close(int fd);
+    [LibraryImport("libc", EntryPoint = "open", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    [SupportedOSPlatform("linux")]
+    private static partial int Open3(string pathname, int flags, int mode);
 
-    [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
-    private static extern int FStat(int fd, out Stat stat);
+    [LibraryImport("libc", EntryPoint = "close", SetLastError = true)]
+    [SupportedOSPlatform("linux")]
+    private static partial int Close(int fd);
+
+    [LibraryImport("libc", EntryPoint = "statx", SetLastError = true, StringMarshalling = StringMarshalling.Utf8)]
+    [SupportedOSPlatform("linux")]
+    private static partial int Statx(
+        int dirfd,
+        string pathname,
+        int flags,
+        uint mask,
+        ref LinuxStatxBuffer statxbuf);
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [SupportedOSPlatform("windows")]
     private static extern SafeFileHandle CreateFileW(
         string lpFileName,
         uint dwDesiredAccess,
@@ -335,6 +497,7 @@ internal static class SetupNonInteractiveConfigReader
     }
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    [SupportedOSPlatform("windows")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle hFile,

@@ -231,6 +231,12 @@ internal sealed class FakeSetupAssistantOperations : ISetupAssistantOperations
 
     internal int DockerPreflightCalls { get; private set; }
 
+    /// <summary>When set, BootstrapAdminAsync throws this exception after recording the call.</summary>
+    internal Exception? BootstrapThrows { get; set; }
+
+    /// <summary>When true, BootstrapAdminAsync throws OperationCanceledException.</summary>
+    internal bool BootstrapCancels { get; set; }
+
     public Task<SetupAssistantDockerPreflightOutcome> CheckDockerAsync(
         CancellationToken cancellationToken)
     {
@@ -283,6 +289,16 @@ internal sealed class FakeSetupAssistantOperations : ISetupAssistantOperations
         CancellationToken cancellationToken)
     {
         LastAdminBootstrapInput = input;
+        if (BootstrapCancels)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+
+        if (BootstrapThrows is { } ex)
+        {
+            throw ex;
+        }
+
         return Task.FromResult(AdminBootstrap);
     }
 

@@ -53,9 +53,7 @@ public sealed class SetupNonInteractiveInputValidatorTests
     [Fact]
     public void Malformed_json_is_rejected()
     {
-        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(
-            Path.Combine(Path.GetTempPath(), "amane-bad-" + Guid.NewGuid().ToString("N") + ".json"),
-            "{not-json");
+        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost("{not-json");
         var outcome = SetupNonInteractiveInputParser.Parse(new HostSetupFileSystem(), configPath);
         Assert.False(outcome.Succeeded);
         Assert.Equal(SetupNonInteractiveResultCode.InvalidJson, outcome.FailureCode);

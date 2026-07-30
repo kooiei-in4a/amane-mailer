@@ -72,15 +72,21 @@ internal sealed class SetupAssistantSession : IDisposable
 
     internal SetupAssistantDockerPreflightOutcome? DockerPreflight { get; private set; }
 
-    internal SetupAssistantMainSetupOutcome? MainSetup { get; private set; }
+    /// <summary>
+    /// Service-issued Main workflow authority. Outcomes below are mirrored from this state for
+    /// existing presenters and transition gates.
+    /// </summary>
+    internal SetupAssistantMainWorkflowState? MainWorkflow { get; private set; }
 
-    internal SetupAssistantStagingOutcome? Staging { get; private set; }
+    internal SetupAssistantMainSetupOutcome? MainSetup => MainWorkflow?.MainSetup;
+
+    internal SetupAssistantStagingOutcome? Staging => MainWorkflow?.Staging;
 
     /// <summary>
     /// The #451 live-sending enablement result. It is kept apart from <see cref="MainSetup"/> so a
     /// failed enablement cannot erase the successful apply that came before it.
     /// </summary>
-    internal SetupAssistantMainSetupOutcome? LiveSending { get; private set; }
+    internal SetupAssistantMainSetupOutcome? LiveSending => MainWorkflow?.LiveSending;
 
     internal SetupAssistantAdminPreflightOutcome? AdminPreflight { get; private set; }
 
@@ -102,20 +108,13 @@ internal sealed class SetupAssistantSession : IDisposable
     /// <summary>Non-null when the last transition was rejected. Always a fixed catalog key.</summary>
     internal string? InputRejectionKey { get; private set; }
 
-    /// <summary>
-    /// True when #450/#451 committed the configuration stage. The send-ready evaluation action is
-    /// an internal Assistant handoff, not outstanding operator work.
-    /// </summary>
     internal bool ConfigurationStageSucceeded =>
-        MainSetup is { ConfigurationApplied: true } outcome
-        && (outcome.Kind == SetupAssistantOutcomeKind.Succeeded
-            || outcome.ActionCode == SetupApplyActionCode.CompleteSendReadyEvaluation);
+        MainWorkflow?.ConfigurationStageSucceeded == true;
 
     internal bool MainSetupSucceeded => ConfigurationStageSucceeded;
 
     /// <summary>True only when #451 reported the deployment as send-ready. Never inferred.</summary>
-    internal bool DeploymentSendReady =>
-        LiveSending is { Kind: SetupAssistantOutcomeKind.Succeeded, DeploymentSendReady: true };
+    internal bool DeploymentSendReady => MainWorkflow?.DeploymentSendReady == true;
 
     internal bool AdminSkipped { get; private set; }
 
@@ -162,6 +161,22 @@ internal sealed class SetupAssistantSession : IDisposable
     internal void SetDockerPreflight(SetupAssistantDockerPreflightOutcome outcome) =>
         DockerPreflight = outcome;
 
+    internal void EnsureMainWorkflow(SetupMode mode)
+    {
+        if (MainWorkflow is null || MainWorkflow.Mode != mode)
+        {
+            MainWorkflow = SetupAssistantMainWorkflowState.CreateInitial(
+                mode,
+                skipDockerPreflight: DockerPreflight is { Passed: true });
+        }
+        else if (DockerPreflight is { Passed: true } && !MainWorkflow.SkipDockerPreflight)
+        {
+            MainWorkflow = MainWorkflow.WithSkipDockerPreflight(true);
+        }
+    }
+
+    internal void ApplyMainWorkflow(SetupAssistantMainWorkflowState state) => MainWorkflow = state;
+
     internal void MarkApplyStarted() => ApplyStarted = true;
 
     internal void MarkStagingSendStarted() => StagingSendStarted = true;
@@ -170,18 +185,21 @@ internal sealed class SetupAssistantSession : IDisposable
 
     internal void MarkAdminBootstrapStarted() => AdminBootstrapStarted = true;
 
-    internal void SetMainSetup(SetupAssistantMainSetupOutcome outcome) => MainSetup = outcome;
-
-    internal void SetStaging(SetupAssistantStagingOutcome outcome) => Staging = outcome;
-
-    /// <summary>Drops a finished staging attempt so the operator can run the test send again.</summary>
-    internal void ClearStaging()
+    internal void ClearStagingForRetry()
     {
-        Staging = null;
         StagingRecipientEmail = string.Empty;
-    }
+        if (MainWorkflow is null || MainWorkflow.Staging is null)
+        {
+            return;
+        }
 
-    internal void SetLiveSending(SetupAssistantMainSetupOutcome outcome) => LiveSending = outcome;
+        // Drop staging outcome while preserving applied proof via service-issued reconstruction.
+        MainWorkflow = SetupAssistantMainWorkflowState.FromApplyResult(
+            MainWorkflow.Mode,
+            MainWorkflow.SkipDockerPreflight,
+            MainWorkflow.MainSetup
+                ?? throw new InvalidOperationException("Staging retry requires Main setup."));
+    }
 
     internal void SetAdminAccessInput(
         SetupAssistantAdminProfile profile,

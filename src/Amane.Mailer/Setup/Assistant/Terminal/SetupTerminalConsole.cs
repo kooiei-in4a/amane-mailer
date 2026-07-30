@@ -64,7 +64,7 @@ internal sealed class SetupTerminalConsole : ISetupTerminalConsole
                 return true;
             }
 
-            WriteError("y または n で入뿯劽してください。");
+            WriteError("y または n で入力してください。");
         }
     }
 

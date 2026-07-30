@@ -136,9 +136,10 @@ public static class SetupApplyNonInteractiveCommand
         var wireMode = SetupModeParser.ToWireValue(input.Mode);
         try
         {
-            var run = await SetupAssistantMainSetupOrchestrator.RunAsync(
+            var run = await SetupAssistantMainSetupOrchestrator.RunToCompletionAsync(
                 operations,
-                SetupNonInteractiveOrchestratorAdapter.BuildRunRequest(input),
+                SetupNonInteractiveOrchestratorAdapter.BuildInitialState(input),
+                SetupNonInteractiveOrchestratorAdapter.BuildCollectedInput(input),
                 cancellationToken);
             var result = SetupNonInteractiveOrchestratorAdapter.FromOrchestrator(input.Mode, run);
             await WriteResultAsync(output, result);

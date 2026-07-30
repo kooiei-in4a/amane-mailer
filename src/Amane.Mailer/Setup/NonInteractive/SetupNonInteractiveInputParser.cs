@@ -51,11 +51,12 @@ internal static class SetupNonInteractiveInputParser
 
 internal static class SetupNonInteractiveOrchestratorAdapter
 {
-    internal static SetupAssistantMainSetupRunRequest BuildRunRequest(SetupNonInteractiveInput input) =>
+    internal static SetupAssistantMainWorkflowState BuildInitialState(SetupNonInteractiveInput input) =>
+        SetupAssistantMainWorkflowState.CreateInitial(input.Mode);
+
+    internal static SetupAssistantMainCollectedInput BuildCollectedInput(SetupNonInteractiveInput input) =>
         new()
         {
-            Mode = input.Mode,
-            Phase = SetupAssistantMainSetupRunPhase.Full,
             MainSetupInput = BuildMainSetupInput(input),
             TenantId = input.TenantId,
             StagingRecipientEmail = input.StagingRecipientEmail,
@@ -68,21 +69,21 @@ internal static class SetupNonInteractiveOrchestratorAdapter
 
     internal static SetupNonInteractiveResult FromOrchestrator(
         SetupMode mode,
-        SetupAssistantMainSetupRunResult result)
+        SetupAssistantMainWorkflowTransition result)
     {
         var wireMode = SetupModeParser.ToWireValue(mode);
         return new SetupNonInteractiveResult
         {
-            Ok = result.Succeeded,
+            Ok = result.State.IsComplete,
             Code = SetupAssistantResultPresenter.SafeCode(result.Code),
             Kind = SetupNonInteractiveKindWire.FromAssistantKind(result.Kind),
             Mode = wireMode,
-            ConfigurationApplied = result.ConfigurationApplied,
-            DeploymentSendReady = result.DeploymentSendReady,
+            ConfigurationApplied = result.State.ConfigurationStageSucceeded,
+            DeploymentSendReady = result.State.DeploymentSendReady,
             AdminBootstrapPerformed = false,
-            BundleId = result.BundleId,
+            BundleId = result.BundleId ?? result.State.MainSetup?.BundleId,
             ActionCode = string.IsNullOrEmpty(result.ActionCode) ? null : result.ActionCode,
-            MainSetupStatus = result.Succeeded ? "succeeded" : "failed",
+            MainSetupStatus = result.State.IsComplete ? "succeeded" : "failed",
         };
     }
 

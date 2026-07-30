@@ -37,9 +37,7 @@ public sealed class SetupApplyNonInteractiveCommandTests
     public async Task Happy_path_emits_json_with_adminBootstrapPerformed_false()
     {
         var operations = new FakeSetupAssistantOperations();
-        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(
-            Path.Combine(Path.GetTempPath(), "amane-ni-" + Guid.NewGuid().ToString("N"), "config.json"),
-            SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
+        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
 
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();
@@ -65,9 +63,7 @@ public sealed class SetupApplyNonInteractiveCommandTests
         var operations = new GuardSetupAssistantOperations();
         var json = SetupNonInteractiveTestSupport.BuildLocalMailpitJson()
             .Replace("\"tenant\":", "\"tenantX\":", StringComparison.Ordinal);
-        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(
-            Path.Combine(Path.GetTempPath(), "amane-ni-" + Guid.NewGuid().ToString("N"), "config.json"),
-            json);
+        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(json);
 
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();
@@ -92,9 +88,7 @@ public sealed class SetupApplyNonInteractiveCommandTests
         }
 
         var operations = new GuardSetupAssistantOperations();
-        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(
-            Path.Combine(Path.GetTempPath(), "amane-ni-" + Guid.NewGuid().ToString("N"), "config.json"),
-            SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
+        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
         WeakenWindowsAcl(configPath);
 
         using var stdout = new StringWriter();
@@ -147,9 +141,7 @@ public sealed class SetupApplyNonInteractiveCommandTests
     public async Task Secrets_do_not_appear_on_stdout_or_stderr()
     {
         var operations = new FakeSetupAssistantOperations();
-        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(
-            Path.Combine(Path.GetTempPath(), "amane-ni-" + Guid.NewGuid().ToString("N"), "config.json"),
-            SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
+        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
 
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();
@@ -173,9 +165,7 @@ public sealed class SetupApplyNonInteractiveCommandTests
         {
             ApplyHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
         };
-        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(
-            Path.Combine(Path.GetTempPath(), "amane-ni-" + Guid.NewGuid().ToString("N"), "config.json"),
-            SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
+        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
 
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();
@@ -213,9 +203,7 @@ public sealed class SetupApplyNonInteractiveCommandTests
                 ConfigurationApplied = false,
             },
         };
-        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(
-            Path.Combine(Path.GetTempPath(), "amane-ni-" + Guid.NewGuid().ToString("N"), "config.json"),
-            SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
+        var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
 
         using var stdout = new StringWriter();
         using var stderr = new StringWriter();

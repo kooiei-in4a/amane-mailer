@@ -31,11 +31,10 @@ internal sealed class SetupTerminalWizard
     private SetupAssistantSecret? _acsConnectionStringConfirmation;
     private SetupAssistantSecret? _adminPassword;
     private SetupAssistantDockerPreflightOutcome? _dockerPreflight;
-    private SetupAssistantMainSetupOutcome? _mainSetup;
-    private SetupAssistantStagingOutcome? _staging;
-    private SetupAssistantMainSetupOutcome? _liveSending;
+    private SetupAssistantMainWorkflowState? _workflow;
     private SetupAssistantAdminPreflightOutcome? _adminPreflight;
     private SetupAssistantAdminBootstrapOutcome? _adminBootstrap;
+    private bool _adminUnexpectedFailure;
     private SetupAssistantAdminProfile _adminProfile;
     private string _adminOriginText = string.Empty;
     private string _adminEnvironmentName = string.Empty;
@@ -45,10 +44,8 @@ internal sealed class SetupTerminalWizard
     private bool _adminServerLocalAddressConfirmed;
     private string _adminUsername = string.Empty;
 
-    private bool _applyStarted;
-    private bool _stagingSendStarted;
-    private bool _liveSendingPromotionStarted;
-    private bool _adminBootstrapStarted;
+    private bool _mainSideEffectsStarted;
+    private bool _adminSideEffectsStarted;
     private SetupTerminalMainSetupStatus _mainSetupStatus = SetupTerminalMainSetupStatus.NotStarted;
     private SetupTerminalAdminBootstrapStatus _adminBootstrapStatus =
         SetupTerminalAdminBootstrapStatus.NotRequested;
@@ -477,17 +474,12 @@ internal sealed class SetupTerminalWizard
                 }
             }
 
-            _applyStarted = true;
-            if (_mode == SetupMode.StagingVerification)
-            {
-                _stagingSendStarted = true;
-            }
-            else if (_mode == SetupMode.ProductionAcs)
-            {
-                _liveSendingPromotionStarted = true;
-            }
+            _mainSideEffectsStarted = true;
 
-            var request = BuildFullRunRequest(
+            var initial = SetupAssistantMainWorkflowState.CreateInitial(
+                _mode!.Value,
+                skipDockerPreflight: _dockerPreflight is { Passed: true });
+            var collected = BuildCollectedInput(
                 environmentConfirmation,
                 intentConfirmation,
                 stagingRecipient,
@@ -501,12 +493,13 @@ internal sealed class SetupTerminalWizard
             _output.WriteLine("bundle の生成・適用と mode 固有の follow-up を実行します。");
 
             _lifetime.BeginOperation();
-            SetupAssistantMainSetupRunResult result;
+            SetupAssistantMainWorkflowTransition result;
             try
             {
-                result = await SetupAssistantMainSetupOrchestrator.RunAsync(
+                result = await SetupAssistantMainSetupOrchestrator.RunToCompletionAsync(
                     _operations,
-                    request,
+                    initial,
+                    collected,
                     cancellationToken);
             }
             finally
@@ -514,9 +507,7 @@ internal sealed class SetupTerminalWizard
                 _lifetime.EndOperation();
             }
 
-            _mainSetup = result.MainSetup;
-            _staging = result.Staging;
-            _liveSending = result.LiveSending;
+            _workflow = result.State;
 
             _output.WriteLine();
             SetupTerminalPresenter.WriteMainSetupResult(_output, result);
@@ -531,7 +522,7 @@ internal sealed class SetupTerminalWizard
                 return true;
             }
 
-            if (_mainSetup is { } mainSetup && CanRetryMainApply(mainSetup))
+            if (_workflow.CanRetryApply)
             {
                 if (PromptRetryOrCancel("適用をやり直しますか？ [y/n/cancel]: "))
                 {
@@ -558,20 +549,18 @@ internal sealed class SetupTerminalWizard
 
     private void ResetMainSetupState()
     {
-        _applyStarted = false;
-        _stagingSendStarted = false;
-        _liveSendingPromotionStarted = false;
-        _mainSetup = null;
-        _staging = null;
-        _liveSending = null;
+        _mainSideEffectsStarted = false;
+        _workflow = null;
     }
 
     private async Task<bool> TryRetryFollowUpAsync(CancellationToken cancellationToken)
     {
-        if (_mode == SetupMode.StagingVerification
-            && ConfigurationStageSucceeded
-            && _staging is { Kind: not SetupAssistantOutcomeKind.Succeeded }
-            && CanRetryStaging(_staging))
+        if (_workflow is null)
+        {
+            return false;
+        }
+
+        if (_mode == SetupMode.StagingVerification && _workflow.CanRetryStaging)
         {
             if (!PromptRetryOrCancel("Staging verification をやり直しますか？ [y/n/cancel]: "))
             {
@@ -594,10 +583,7 @@ internal sealed class SetupTerminalWizard
                 cancellationToken);
         }
 
-        if (_mode == SetupMode.ProductionAcs
-            && ConfigurationStageSucceeded
-            && _liveSending is { Kind: not SetupAssistantOutcomeKind.Succeeded, DeploymentSendReady: false }
-            && CanRunLiveSending(_liveSending))
+        if (_mode == SetupMode.ProductionAcs && _workflow.CanRunLiveSending)
         {
             if (!PromptRetryOrCancel("live_sending 有効化をやり直しますか？ [y/n/cancel]: "))
             {
@@ -627,22 +613,20 @@ internal sealed class SetupTerminalWizard
         string intentConfirmation,
         CancellationToken cancellationToken)
     {
-        if (_mainSetup?.AppliedProof is not { } proof)
+        if (_workflow is null)
         {
             return false;
         }
 
-        _stagingSendStarted = true;
+        _mainSideEffectsStarted = true;
         _lifetime.BeginOperation();
         try
         {
-            var result = await SetupAssistantMainSetupOrchestrator.RunAsync(
+            var result = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
                 _operations,
-                new SetupAssistantMainSetupRunRequest
+                _workflow,
+                new SetupAssistantMainCollectedInput
                 {
-                    Mode = SetupMode.StagingVerification,
-                    Phase = SetupAssistantMainSetupRunPhase.StagingVerification,
-                    ExistingAppliedProof = proof,
                     TenantId = _tenantId,
                     StagingRecipientEmail = recipient,
                     StagingEnvironmentConfirmation = environmentConfirmation,
@@ -650,14 +634,19 @@ internal sealed class SetupTerminalWizard
                     AssistantSessionId = _sessionId,
                 },
                 cancellationToken);
-            _staging = result.Staging;
+            if (result.Rejected)
+            {
+                return false;
+            }
+
+            _workflow = result.State;
             _output.WriteLine();
-            if (result.Staging is { } staging)
+            if (result.State.Staging is { } staging)
             {
                 SetupTerminalPresenter.WriteStagingOutcome(_output, staging);
             }
 
-            return result.Staging is { Kind: SetupAssistantOutcomeKind.Succeeded };
+            return result.State.IsComplete;
         }
         finally
         {
@@ -670,36 +659,38 @@ internal sealed class SetupTerminalWizard
         string liveSendingApproval,
         CancellationToken cancellationToken)
     {
-        if (_mainSetup?.AppliedProof is not { } proof)
+        if (_workflow is null)
         {
             return false;
         }
 
-        _liveSendingPromotionStarted = true;
+        _mainSideEffectsStarted = true;
         _lifetime.BeginOperation();
         try
         {
-            var result = await SetupAssistantMainSetupOrchestrator.RunAsync(
+            var result = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
                 _operations,
-                new SetupAssistantMainSetupRunRequest
+                _workflow,
+                new SetupAssistantMainCollectedInput
                 {
-                    Mode = SetupMode.ProductionAcs,
-                    Phase = SetupAssistantMainSetupRunPhase.LiveSendingEnablement,
-                    ExistingAppliedProof = proof,
                     TenantId = _tenantId,
                     ProductionEnvironmentConfirmation = productionEnvironmentConfirmation,
                     LiveSendingEnableApproval = liveSendingApproval,
                 },
                 cancellationToken);
-            _liveSending = result.LiveSending;
+            if (result.Rejected)
+            {
+                return false;
+            }
+
+            _workflow = result.State;
             _output.WriteLine();
-            if (result.LiveSending is { } liveSending)
+            if (result.State.LiveSending is { } liveSending)
             {
                 SetupTerminalPresenter.WriteMainSetupOutcome(_output, liveSending);
             }
 
-            return result.LiveSending is
-            { Kind: SetupAssistantOutcomeKind.Succeeded, DeploymentSendReady: true };
+            return result.State.IsComplete;
         }
         finally
         {
@@ -849,7 +840,7 @@ internal sealed class SetupTerminalWizard
         return true;
     }
 
-    private SetupAssistantMainSetupRunRequest BuildFullRunRequest(
+    private SetupAssistantMainCollectedInput BuildCollectedInput(
         string environmentConfirmation,
         string intentConfirmation,
         string? stagingRecipient,
@@ -859,9 +850,6 @@ internal sealed class SetupTerminalWizard
         string? liveSendingApproval) =>
         new()
         {
-            Mode = _mode!.Value,
-            Phase = SetupAssistantMainSetupRunPhase.Full,
-            SkipDockerPreflight = _dockerPreflight is { Passed: true },
             MainSetupInput = BuildMainSetupInput(environmentConfirmation, intentConfirmation),
             TenantId = _tenantId,
             StagingRecipientEmail = stagingRecipient,
@@ -951,73 +939,105 @@ internal sealed class SetupTerminalWizard
         _output.WriteLine("Admin は既定で無効です。有効化は Main setup とは独立した任意の transaction です。");
         _output.WriteLine("Admin bootstrap が失敗しても Main setup の成功は取り消されません。");
 
-        if (!PromptYesNoOrCancel("Admin を有効化しますか？ [y/n/cancel]: ", out var enableAdmin))
-        {
-            return false;
-        }
-
-        if (!enableAdmin)
-        {
-            _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Declined;
-            return true;
-        }
-
-        if (!CollectAdminAccessPreflight(cancellationToken))
-        {
-            return false;
-        }
-
-        _lifetime.BeginOperation();
         try
         {
-            _adminPreflight = await _operations.CheckAdminAccessProfileAsync(
-                BuildAdminAccessInput(),
-                cancellationToken);
-        }
-        finally
-        {
-            _lifetime.EndOperation();
-        }
+            if (!PromptYesNoOrCancel("Admin を有効化しますか？ [y/n/cancel]: ", out var enableAdmin))
+            {
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+                return true;
+            }
 
-        _output.WriteLine();
-        SetupTerminalPresenter.WriteAdminPreflight(_output, _adminPreflight!);
-        if (_adminPreflight is not { Satisfied: true })
-        {
-            _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Failed;
+            if (!enableAdmin)
+            {
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Declined;
+                return true;
+            }
+
+            if (!CollectAdminAccessPreflight(cancellationToken))
+            {
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+                return true;
+            }
+
+            _lifetime.BeginOperation();
+            try
+            {
+                _adminPreflight = await _operations.CheckAdminAccessProfileAsync(
+                    BuildAdminAccessInput(),
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+                return true;
+            }
+            finally
+            {
+                _lifetime.EndOperation();
+            }
+
+            _output.WriteLine();
+            SetupTerminalPresenter.WriteAdminPreflight(_output, _adminPreflight!);
+            if (_adminPreflight is not { Satisfied: true })
+            {
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Failed;
+                return true;
+            }
+
+            if (!CollectAdminCredentials(cancellationToken))
+            {
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+                return true;
+            }
+
+            _adminSideEffectsStarted = true;
+            _lifetime.BeginOperation();
+            try
+            {
+                _adminBootstrap = await _operations.BootstrapAdminAsync(
+                    new SetupAssistantAdminBootstrapInput
+                    {
+                        Access = BuildAdminAccessInput(),
+                        Username = _adminUsername,
+                        Password = _adminPassword!,
+                        TenantIds = [_tenantId],
+                    },
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Prefer leaving Main succeeded; Admin cancel after side effects started is Admin-only.
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+                return true;
+            }
+            catch (Exception)
+            {
+                _adminUnexpectedFailure = true;
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Failed;
+                SetupTerminalPresenter.WriteAdminUnexpectedFailure(_output);
+                return true;
+            }
+            finally
+            {
+                _lifetime.EndOperation();
+                DiscardAdminPassword();
+            }
+
+            _output.WriteLine();
+            SetupTerminalPresenter.WriteAdminBootstrapOutcome(_output, _adminBootstrap!);
+            _adminBootstrapStatus = _adminBootstrap!.Kind == SetupAssistantOutcomeKind.Succeeded
+                ? SetupTerminalAdminBootstrapStatus.Succeeded
+                : SetupTerminalAdminBootstrapStatus.Failed;
             return true;
         }
-
-        if (!CollectAdminCredentials(cancellationToken))
+        catch (SecretOperationException) when (
+            _mainSetupStatus == SetupTerminalMainSetupStatus.Succeeded
+            || ConfigurationStageSucceeded)
         {
-            return false;
+            // Input cancel after Main success is Admin-only.
+            _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+            return true;
         }
-
-        _adminBootstrapStarted = true;
-        _lifetime.BeginOperation();
-        try
-        {
-            _adminBootstrap = await _operations.BootstrapAdminAsync(
-                new SetupAssistantAdminBootstrapInput
-                {
-                    Access = BuildAdminAccessInput(),
-                    Username = _adminUsername,
-                    Password = _adminPassword!,
-                    TenantIds = [_tenantId],
-                },
-                cancellationToken);
-        }
-        finally
-        {
-            _lifetime.EndOperation();
-            DiscardAdminPassword();
-        }
-
-        _output.WriteLine();
-        SetupTerminalPresenter.WriteAdminBootstrapOutcome(_output, _adminBootstrap!);
-        _adminBootstrapStatus = _adminBootstrap!.Kind == SetupAssistantOutcomeKind.Succeeded
-            ? SetupTerminalAdminBootstrapStatus.Succeeded
-            : SetupTerminalAdminBootstrapStatus.Failed;
-        return true;
     }
 
     private bool CollectAdminAccessPreflight(CancellationToken cancellationToken)
@@ -1182,13 +1202,23 @@ internal sealed class SetupTerminalWizard
                 AdminBootstrapStatus = _adminBootstrapStatus,
                 MainSetupSucceeded = ConfigurationStageSucceeded && IsMainSetupCompleatable(),
                 DeploymentSendReady = DeploymentSendReady,
-                Staging = _staging,
+                Staging = _workflow?.Staging,
+                AdminUnexpectedFailure = _adminUnexpectedFailure,
             });
     }
 
     private int MapExitCode()
     {
-        if (_mainSetupStatus == SetupTerminalMainSetupStatus.Cancelled && SideEffectsStarted)
+        // After Main success, Admin cancel/failure never becomes a non-zero process exit.
+        if (_mainSetupStatus == SetupTerminalMainSetupStatus.Succeeded
+            || (_mainSetupStatus != SetupTerminalMainSetupStatus.Failed
+                && ConfigurationStageSucceeded
+                && IsMainSetupCompleatable()))
+        {
+            return SetupAssistantCommand.SuccessExitCode;
+        }
+
+        if (_mainSetupStatus == SetupTerminalMainSetupStatus.Cancelled && _mainSideEffectsStarted)
         {
             return SetupTerminalAssistant.CancelledMidOperationExitCode;
         }
@@ -1203,10 +1233,28 @@ internal sealed class SetupTerminalWizard
 
     private int HandleOperatorCancel()
     {
-        if (SideEffectsStarted)
+        if (_mainSetupStatus == SetupTerminalMainSetupStatus.Succeeded
+            || (ConfigurationStageSucceeded && IsMainSetupCompleatable()))
+        {
+            // Main already succeeded: Admin-only cancel.
+            _mainSetupStatus = SetupTerminalMainSetupStatus.Succeeded;
+            if (_adminBootstrapStatus == SetupTerminalAdminBootstrapStatus.NotRequested)
+            {
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+            }
+
+            _error.WriteLine(_lifetime.StopReason == SetupAssistantShutdownReason.None
+                ? "setup assistant: cancelled."
+                : $"setup assistant: {_lifetime.DescribeStopReason()}");
+            WriteFinalSummary();
+            return SetupAssistantCommand.SuccessExitCode;
+        }
+
+        if (_mainSideEffectsStarted)
         {
             _mainSetupStatus = SetupTerminalMainSetupStatus.Cancelled;
-            if (_adminBootstrapStarted && _adminBootstrapStatus == SetupTerminalAdminBootstrapStatus.NotRequested)
+            if (_adminSideEffectsStarted
+                && _adminBootstrapStatus == SetupTerminalAdminBootstrapStatus.NotRequested)
             {
                 _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
             }
@@ -1225,7 +1273,20 @@ internal sealed class SetupTerminalWizard
 
     private int HandleTimeoutCancel()
     {
-        if (SideEffectsStarted)
+        if (_mainSetupStatus == SetupTerminalMainSetupStatus.Succeeded
+            || (ConfigurationStageSucceeded && IsMainSetupCompleatable()))
+        {
+            _mainSetupStatus = SetupTerminalMainSetupStatus.Succeeded;
+            if (_adminBootstrapStatus == SetupTerminalAdminBootstrapStatus.NotRequested)
+            {
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+            }
+
+            WriteFinalSummary();
+            return SetupAssistantCommand.SuccessExitCode;
+        }
+
+        if (_mainSideEffectsStarted)
         {
             _mainSetupStatus = SetupTerminalMainSetupStatus.Cancelled;
         }
@@ -1239,51 +1300,18 @@ internal sealed class SetupTerminalWizard
     }
 
     private bool ConfigurationStageSucceeded =>
-        _mainSetup is { ConfigurationApplied: true } outcome
-        && (outcome.Kind == SetupAssistantOutcomeKind.Succeeded
-            || outcome.ActionCode == SetupApplyActionCode.CompleteSendReadyEvaluation);
+        _workflow?.ConfigurationStageSucceeded == true;
 
     private bool DeploymentSendReady =>
-        _liveSending is { Kind: SetupAssistantOutcomeKind.Succeeded, DeploymentSendReady: true };
-
-    private bool SideEffectsStarted =>
-        _applyStarted || _stagingSendStarted || _liveSendingPromotionStarted || _adminBootstrapStarted;
+        _workflow?.DeploymentSendReady == true;
 
     private bool IsMainSetupCompleatable() =>
-        ConfigurationStageSucceeded
-        && SetupAssistantMainSetupOrchestrator.IsMainSetupCompletableForMode(
-            _mainSetup,
-            _mode!.Value,
-            _staging,
-            _liveSending);
-
-    private static bool CanRetryMainApply(SetupAssistantMainSetupOutcome outcome) =>
-        !outcome.ConfigurationApplied
-        && !outcome.PersistentSideEffectMayRemain
-        && outcome.ConfigRollbackStatus != SetupConfigRollbackStatus.Failed
-        && outcome.Kind is SetupAssistantOutcomeKind.Rejected or SetupAssistantOutcomeKind.Failed
-        && outcome.Code is not (SetupApplyResultCode.RecoveryRequired
-            or SetupApplyResultCode.NeedsIntervention
-            or SetupApplyResultCode.ApplyFailedRollbackFailed
-            or AcsSetupResultCode.ConfigRollbackFailed
-            or AcsSetupResultCode.ManualActionRequired)
-        && outcome.ActionCode is not (SetupApplyActionCode.ManualInterventionRequired
-            or SetupApplyActionCode.UnsafeVerifierResidue);
-
-    private static bool CanRetryStaging(SetupAssistantStagingOutcome staging) =>
-        staging is
-        {
-            SendRequestAccepted: false,
-            Kind: SetupAssistantOutcomeKind.Rejected or SetupAssistantOutcomeKind.Failed,
-        };
-
-    private static bool CanRunLiveSending(SetupAssistantMainSetupOutcome? liveSending) =>
-        liveSending is null || CanRetryMainApply(liveSending);
+        _workflow?.IsComplete == true;
 
     private string DescribeStagingState() =>
-        _staging is null
+        _workflow?.Staging is null
             ? "未実施"
-            : _staging.Kind == SetupAssistantOutcomeKind.Succeeded ? "送信要求受理" : "失敗";
+            : _workflow.Staging.Kind == SetupAssistantOutcomeKind.Succeeded ? "送信要求受理" : "失敗";
 
     private void Touch()
     {

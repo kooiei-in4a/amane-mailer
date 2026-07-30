@@ -3,147 +3,213 @@ using Amane.Mailer.Operations.AcsSetup;
 namespace Amane.Mailer.Setup.Assistant;
 
 /// <summary>
-/// Sequences Docker preflight, main apply, and mode-specific follow-up for every host adapter.
-/// Web, terminal, and non-interactive paths call this type instead of invoking
-/// <see cref="ISetupAssistantOperations"/> members directly for the main setup transaction.
+/// Shared Main setup application service. Owns operation ordering, AppliedProof continuity,
+/// completion gates, and retry eligibility. Adapters submit only a service-issued
+/// <see cref="SetupAssistantMainWorkflowState"/> plus newly collected operator input.
 /// </summary>
 internal static class SetupAssistantMainSetupOrchestrator
 {
-    internal static async Task<SetupAssistantMainSetupRunResult> RunAsync(
+    internal static async Task<SetupAssistantMainWorkflowTransition> AdvanceAsync(
         ISetupAssistantOperations operations,
-        SetupAssistantMainSetupRunRequest request,
+        SetupAssistantMainWorkflowState state,
+        SetupAssistantMainCollectedInput input,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(operations);
-        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(input);
 
-        return request.Phase switch
+        return state.Stage switch
         {
-            SetupAssistantMainSetupRunPhase.Apply =>
-                await RunApplyAsync(operations, request, cancellationToken),
-            SetupAssistantMainSetupRunPhase.StagingVerification =>
-                await RunStagingVerificationAsync(operations, request, cancellationToken),
-            SetupAssistantMainSetupRunPhase.LiveSendingEnablement =>
-                await RunLiveSendingEnablementAsync(operations, request, cancellationToken),
-            SetupAssistantMainSetupRunPhase.Full =>
-                await RunFullAsync(operations, request, cancellationToken),
-            _ => throw new ArgumentOutOfRangeException(nameof(request), request.Phase, null),
+            SetupAssistantMainWorkflowStage.AwaitingApply =>
+                await AdvanceApplyAsync(operations, state, input, cancellationToken),
+            SetupAssistantMainWorkflowStage.AwaitingStagingVerification =>
+                await AdvanceStagingAsync(operations, state, input, cancellationToken),
+            SetupAssistantMainWorkflowStage.AwaitingLiveSendingEnablement =>
+                await AdvanceLiveSendingAsync(operations, state, input, cancellationToken),
+            SetupAssistantMainWorkflowStage.Completed =>
+                Rejected(state, SetupAssistantRejection.StepNotAvailable),
+            _ => throw new ArgumentOutOfRangeException(nameof(state), state.Stage, null),
         };
     }
 
-    private static async Task<SetupAssistantMainSetupRunResult> RunApplyAsync(
+    /// <summary>
+    /// Terminal and non-interactive driver: apply then mode-specific follow-up using one collected
+    /// input set. Retry loops remain in the adapter; each retry calls AdvanceAsync or this method
+    /// again with a fresh or cleared service-issued state.
+    /// </summary>
+    internal static async Task<SetupAssistantMainWorkflowTransition> RunToCompletionAsync(
         ISetupAssistantOperations operations,
-        SetupAssistantMainSetupRunRequest request,
+        SetupAssistantMainWorkflowState initialState,
+        SetupAssistantMainCollectedInput input,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(initialState);
+        if (initialState.Stage != SetupAssistantMainWorkflowStage.AwaitingApply
+            || initialState.MainSetup is not null)
+        {
+            return Rejected(initialState, SetupAssistantRejection.StepNotAvailable);
+        }
+
+        var apply = await AdvanceAsync(operations, initialState, input, cancellationToken);
+        if (!apply.State.ConfigurationStageSucceeded
+            || apply.State.Stage == SetupAssistantMainWorkflowStage.Completed)
+        {
+            return apply;
+        }
+
+        // Follow-up stages reuse the same collected input; the service decides which operation
+        // runs from State.Stage and ignores fields that are not required for that stage.
+        return await AdvanceAsync(operations, apply.State, input, cancellationToken);
+    }
+
+    private static async Task<SetupAssistantMainWorkflowTransition> AdvanceApplyAsync(
+        ISetupAssistantOperations operations,
+        SetupAssistantMainWorkflowState state,
+        SetupAssistantMainCollectedInput input,
+        CancellationToken cancellationToken)
+    {
+        if (state.MainSetup is not null && !state.CanRetryApply)
+        {
+            return Rejected(state, SetupAssistantRejection.StepNotAvailable);
+        }
+
+        if (input.MainSetupInput is not { } mainSetupInput)
+        {
+            return Rejected(state, SetupAssistantRejection.MissingRequiredField);
+        }
+
+        var working = state.MainSetup is not null ? state.ClearedForApplyRetry() : state;
+
         var preflight = await RunDockerPreflightIfNeededAsync(
             operations,
-            request.SkipDockerPreflight,
+            working.SkipDockerPreflight,
             cancellationToken);
         if (preflight is not null)
         {
-            return FromDockerPreflightFailure(preflight);
-        }
-
-        if (request.MainSetupInput is not { } mainSetupInput)
-        {
-            return Rejected(AcsSetupResultCode.RejectedInvalidMode);
+            var failedMain = new SetupAssistantMainSetupOutcome
+            {
+                Code = preflight.Code,
+                Kind = SetupAssistantOutcomeKind.Failed,
+                ConfigurationApplied = false,
+            };
+            var failed = SetupAssistantMainWorkflowState.FromApplyResult(
+                working.Mode,
+                working.SkipDockerPreflight,
+                failedMain);
+            return TransitionFromState(
+                failed,
+                succeeded: false,
+                code: preflight.Code,
+                kind: SetupAssistantOutcomeKind.Failed,
+                failedStep: SetupAssistantMainSetupFailedStep.DockerPreflight);
         }
 
         var mainSetup = await operations.ApplyMainSetupAsync(mainSetupInput, cancellationToken);
-        return FromMainSetupOnly(mainSetup, request.Mode);
+        var next = SetupAssistantMainWorkflowState.FromApplyResult(
+            working.Mode,
+            working.SkipDockerPreflight,
+            mainSetup);
+        return TransitionFromState(
+            next,
+            succeeded: next.IsComplete || next.ConfigurationStageSucceeded,
+            code: mainSetup.Code,
+            kind: mainSetup.Kind,
+            configurationApplied: mainSetup.ConfigurationApplied,
+            deploymentSendReady: next.DeploymentSendReady,
+            bundleId: mainSetup.BundleId,
+            actionCode: mainSetup.ActionCode,
+            failedStep: next.ConfigurationStageSucceeded
+                ? SetupAssistantMainSetupFailedStep.None
+                : SetupAssistantMainSetupFailedStep.MainApply);
     }
 
-    private static async Task<SetupAssistantMainSetupRunResult> RunStagingVerificationAsync(
+    private static async Task<SetupAssistantMainWorkflowTransition> AdvanceStagingAsync(
         ISetupAssistantOperations operations,
-        SetupAssistantMainSetupRunRequest request,
+        SetupAssistantMainWorkflowState state,
+        SetupAssistantMainCollectedInput input,
         CancellationToken cancellationToken)
     {
-        if (request.ExistingAppliedProof is null
-            || string.IsNullOrEmpty(request.StagingRecipientEmail)
-            || string.IsNullOrEmpty(request.StagingEnvironmentConfirmation)
-            || string.IsNullOrEmpty(request.StagingIntentConfirmation)
-            || string.IsNullOrEmpty(request.AssistantSessionId))
+        if (state.AppliedProof is null
+            || !state.ConfigurationStageSucceeded
+            || (state.Staging is not null && !state.CanRetryStaging))
         {
-            return Rejected(AcsSetupResultCode.RejectedInvalidMode);
+            return Rejected(state, SetupAssistantRejection.StepNotAvailable);
+        }
+
+        if (string.IsNullOrEmpty(input.StagingRecipientEmail)
+            || string.IsNullOrEmpty(input.StagingEnvironmentConfirmation)
+            || string.IsNullOrEmpty(input.StagingIntentConfirmation)
+            || string.IsNullOrEmpty(input.AssistantSessionId))
+        {
+            return Rejected(state, SetupAssistantRejection.MissingRequiredField);
         }
 
         var staging = await operations.VerifyStagingAsync(
             new SetupAssistantStagingInput
             {
-                TenantId = request.TenantId,
-                RecipientEmail = request.StagingRecipientEmail,
-                EnvironmentConfirmation = request.StagingEnvironmentConfirmation,
-                IntentConfirmation = request.StagingIntentConfirmation,
-                AssistantSessionId = request.AssistantSessionId,
-                AppliedProof = request.ExistingAppliedProof,
+                TenantId = input.TenantId,
+                RecipientEmail = input.StagingRecipientEmail,
+                EnvironmentConfirmation = input.StagingEnvironmentConfirmation,
+                IntentConfirmation = input.StagingIntentConfirmation,
+                AssistantSessionId = input.AssistantSessionId,
+                AppliedProof = state.AppliedProof,
             },
             cancellationToken);
 
-        return FromStagingOnly(staging);
+        var next = state.WithStaging(staging);
+        return TransitionFromState(
+            next,
+            succeeded: next.IsComplete,
+            code: staging.Code,
+            kind: staging.Kind,
+            configurationApplied: next.ConfigurationStageSucceeded,
+            failedStep: staging.Kind == SetupAssistantOutcomeKind.Succeeded
+                ? SetupAssistantMainSetupFailedStep.None
+                : SetupAssistantMainSetupFailedStep.StagingVerification);
     }
 
-    private static async Task<SetupAssistantMainSetupRunResult> RunLiveSendingEnablementAsync(
+    private static async Task<SetupAssistantMainWorkflowTransition> AdvanceLiveSendingAsync(
         ISetupAssistantOperations operations,
-        SetupAssistantMainSetupRunRequest request,
+        SetupAssistantMainWorkflowState state,
+        SetupAssistantMainCollectedInput input,
         CancellationToken cancellationToken)
     {
-        if (request.ExistingAppliedProof is null
-            || string.IsNullOrEmpty(request.ProductionEnvironmentConfirmation)
-            || string.IsNullOrEmpty(request.LiveSendingEnableApproval))
+        if (state.AppliedProof is null
+            || !state.ConfigurationStageSucceeded
+            || !state.CanRunLiveSending)
         {
-            return Rejected(AcsSetupResultCode.RejectedInvalidMode);
+            return Rejected(state, SetupAssistantRejection.StepNotAvailable);
+        }
+
+        if (string.IsNullOrEmpty(input.ProductionEnvironmentConfirmation)
+            || string.IsNullOrEmpty(input.LiveSendingEnableApproval))
+        {
+            return Rejected(state, SetupAssistantRejection.MissingRequiredField);
         }
 
         var liveSending = await operations.EnableLiveSendingAsync(
             new SetupAssistantProductionInput
             {
-                EnvironmentConfirmation = request.ProductionEnvironmentConfirmation,
-                LiveSendingEnableApproval = request.LiveSendingEnableApproval,
-                AppliedProof = request.ExistingAppliedProof,
+                EnvironmentConfirmation = input.ProductionEnvironmentConfirmation,
+                LiveSendingEnableApproval = input.LiveSendingEnableApproval,
+                AppliedProof = state.AppliedProof,
             },
             cancellationToken);
 
-        return FromLiveSendingOnly(liveSending);
-    }
-
-    private static async Task<SetupAssistantMainSetupRunResult> RunFullAsync(
-        ISetupAssistantOperations operations,
-        SetupAssistantMainSetupRunRequest request,
-        CancellationToken cancellationToken)
-    {
-        var applyResult = await RunApplyAsync(operations, request, cancellationToken);
-        if (!IsConfigurationStageSucceeded(applyResult.MainSetup))
-        {
-            return applyResult;
-        }
-
-        return request.Mode switch
-        {
-            SetupMode.StagingVerification when HasStagingInputs(request) =>
-                MergeApplyWithFollowUp(
-                    applyResult,
-                    await RunStagingVerificationAsync(
-                        operations,
-                        WithAppliedProof(
-                            request,
-                            applyResult.AppliedProof,
-                            SetupAssistantMainSetupRunPhase.StagingVerification),
-                        cancellationToken),
-                    request.Mode),
-            SetupMode.ProductionAcs when HasLiveSendingInputs(request) =>
-                MergeApplyWithFollowUp(
-                    applyResult,
-                    await RunLiveSendingEnablementAsync(
-                        operations,
-                        WithAppliedProof(
-                            request,
-                            applyResult.AppliedProof,
-                            SetupAssistantMainSetupRunPhase.LiveSendingEnablement),
-                        cancellationToken),
-                    request.Mode),
-            _ => applyResult,
-        };
+        var next = state.WithLiveSending(liveSending);
+        return TransitionFromState(
+            next,
+            succeeded: next.IsComplete,
+            code: liveSending.Code,
+            kind: liveSending.Kind,
+            configurationApplied: liveSending.ConfigurationApplied,
+            deploymentSendReady: next.DeploymentSendReady,
+            bundleId: liveSending.BundleId,
+            actionCode: liveSending.ActionCode,
+            failedStep: next.IsComplete
+                ? SetupAssistantMainSetupFailedStep.None
+                : SetupAssistantMainSetupFailedStep.LiveSendingEnablement);
     }
 
     private static async Task<SetupAssistantDockerPreflightOutcome?> RunDockerPreflightIfNeededAsync(
@@ -160,147 +226,54 @@ internal static class SetupAssistantMainSetupOrchestrator
         return preflight.Passed ? null : preflight;
     }
 
-    private static SetupAssistantMainSetupRunResult FromDockerPreflightFailure(
-        SetupAssistantDockerPreflightOutcome preflight) =>
+    private static SetupAssistantMainWorkflowTransition Rejected(
+        SetupAssistantMainWorkflowState state,
+        string rejectionKey) =>
         new()
         {
+            State = state,
             Succeeded = false,
-            Code = preflight.Code,
-            Kind = SetupAssistantOutcomeKind.Failed,
-            FailedStep = SetupAssistantMainSetupFailedStep.DockerPreflight,
-        };
-
-    private static SetupAssistantMainSetupRunResult FromMainSetupOnly(
-        SetupAssistantMainSetupOutcome mainSetup,
-        SetupMode mode) =>
-        new()
-        {
-            Succeeded = IsMainSetupCompletableForMode(mainSetup, mode, staging: null, liveSending: null),
-            Code = mainSetup.Code,
-            Kind = mainSetup.Kind,
-            ConfigurationApplied = mainSetup.ConfigurationApplied,
-            DeploymentSendReady = mainSetup.DeploymentSendReady,
-            BundleId = mainSetup.BundleId,
-            ActionCode = mainSetup.ActionCode,
-            AppliedProof = mainSetup.AppliedProof,
-            MainSetup = mainSetup,
-            FailedStep = IsConfigurationStageSucceeded(mainSetup)
-                ? SetupAssistantMainSetupFailedStep.None
-                : SetupAssistantMainSetupFailedStep.MainApply,
-        };
-
-    private static SetupAssistantMainSetupRunResult FromStagingOnly(
-        SetupAssistantStagingOutcome staging) =>
-        new()
-        {
-            Succeeded = staging.Kind == SetupAssistantOutcomeKind.Succeeded,
-            Code = staging.Code,
-            Kind = staging.Kind,
-            Staging = staging,
-            FailedStep = staging.Kind == SetupAssistantOutcomeKind.Succeeded
-                ? SetupAssistantMainSetupFailedStep.None
-                : SetupAssistantMainSetupFailedStep.StagingVerification,
-        };
-
-    private static SetupAssistantMainSetupRunResult FromLiveSendingOnly(
-        SetupAssistantMainSetupOutcome liveSending) =>
-        new()
-        {
-            Succeeded = liveSending.Kind == SetupAssistantOutcomeKind.Succeeded
-                && liveSending.DeploymentSendReady,
-            Code = liveSending.Code,
-            Kind = liveSending.Kind,
-            ConfigurationApplied = liveSending.ConfigurationApplied,
-            DeploymentSendReady = liveSending.DeploymentSendReady,
-            BundleId = liveSending.BundleId,
-            ActionCode = liveSending.ActionCode,
-            AppliedProof = liveSending.AppliedProof,
-            LiveSending = liveSending,
-            FailedStep = liveSending.Kind == SetupAssistantOutcomeKind.Succeeded
-                && liveSending.DeploymentSendReady
-                ? SetupAssistantMainSetupFailedStep.None
-                : SetupAssistantMainSetupFailedStep.LiveSendingEnablement,
-        };
-
-    private static SetupAssistantMainSetupRunResult Rejected(string code) =>
-        new()
-        {
-            Succeeded = false,
-            Code = code,
+            Code = AcsSetupResultCode.RejectedInvalidMode,
             Kind = SetupAssistantOutcomeKind.Rejected,
+            Rejected = true,
+            RejectionKey = rejectionKey,
             FailedStep = SetupAssistantMainSetupFailedStep.None,
         };
 
-    private static bool HasStagingInputs(SetupAssistantMainSetupRunRequest request) =>
-        !string.IsNullOrEmpty(request.StagingRecipientEmail)
-        && !string.IsNullOrEmpty(request.StagingEnvironmentConfirmation)
-        && !string.IsNullOrEmpty(request.StagingIntentConfirmation)
-        && !string.IsNullOrEmpty(request.AssistantSessionId);
-
-    private static bool HasLiveSendingInputs(SetupAssistantMainSetupRunRequest request) =>
-        !string.IsNullOrEmpty(request.ProductionEnvironmentConfirmation)
-        && !string.IsNullOrEmpty(request.LiveSendingEnableApproval);
-
-    private static SetupAssistantMainSetupRunRequest WithAppliedProof(
-        SetupAssistantMainSetupRunRequest request,
-        object? appliedProof,
-        SetupAssistantMainSetupRunPhase phase) =>
+    private static SetupAssistantMainWorkflowTransition TransitionFromState(
+        SetupAssistantMainWorkflowState state,
+        bool succeeded,
+        string code,
+        SetupAssistantOutcomeKind kind,
+        bool configurationApplied = false,
+        bool deploymentSendReady = false,
+        string? bundleId = null,
+        string? actionCode = null,
+        SetupAssistantMainSetupFailedStep failedStep = SetupAssistantMainSetupFailedStep.None) =>
         new()
         {
-            Mode = request.Mode,
-            Phase = phase,
-            SkipDockerPreflight = request.SkipDockerPreflight,
-            MainSetupInput = request.MainSetupInput,
-            ExistingAppliedProof = appliedProof,
-            TenantId = request.TenantId,
-            StagingRecipientEmail = request.StagingRecipientEmail,
-            StagingEnvironmentConfirmation = request.StagingEnvironmentConfirmation,
-            StagingIntentConfirmation = request.StagingIntentConfirmation,
-            AssistantSessionId = request.AssistantSessionId,
-            ProductionEnvironmentConfirmation = request.ProductionEnvironmentConfirmation,
-            LiveSendingEnableApproval = request.LiveSendingEnableApproval,
+            State = state,
+            Succeeded = succeeded && state.IsComplete,
+            Code = code,
+            Kind = kind,
+            ConfigurationApplied = configurationApplied,
+            DeploymentSendReady = deploymentSendReady,
+            BundleId = bundleId,
+            ActionCode = actionCode,
+            FailedStep = failedStep,
         };
-
-    private static SetupAssistantMainSetupRunResult MergeApplyWithFollowUp(
-        SetupAssistantMainSetupRunResult applyResult,
-        SetupAssistantMainSetupRunResult followUp,
-        SetupMode mode) =>
-        new()
-        {
-            Succeeded = IsMainSetupCompletableForMode(
-                applyResult.MainSetup,
-                mode,
-                followUp.Staging,
-                followUp.LiveSending),
-            Code = followUp.Code,
-            Kind = followUp.FailedStep == SetupAssistantMainSetupFailedStep.None
-                ? SetupAssistantOutcomeKind.Succeeded
-                : followUp.Kind,
-            ConfigurationApplied = applyResult.ConfigurationApplied,
-            DeploymentSendReady = followUp.DeploymentSendReady,
-            BundleId = applyResult.BundleId,
-            ActionCode = followUp.ActionCode ?? applyResult.ActionCode,
-            AppliedProof = applyResult.AppliedProof,
-            MainSetup = applyResult.MainSetup,
-            Staging = followUp.Staging,
-            LiveSending = followUp.LiveSending,
-            FailedStep = followUp.FailedStep,
-        };
-
-    private static bool IsConfigurationStageSucceeded(SetupAssistantMainSetupOutcome? mainSetup) =>
-        mainSetup is { ConfigurationApplied: true } outcome
-        && (outcome.Kind == SetupAssistantOutcomeKind.Succeeded
-            || outcome.ActionCode == SetupApplyActionCode.CompleteSendReadyEvaluation);
 
     /// <summary>
-    /// Mirrors <see cref="SetupAssistantTransitions.IsMainSetupCompleatable"/> without session state.
+    /// Mirrors <see cref="SetupAssistantTransitions.IsMainSetupCompletable"/> without session state.
     /// </summary>
     internal static bool IsMainSetupCompletableForMode(
         SetupAssistantMainSetupOutcome? mainSetup,
         SetupMode mode,
         SetupAssistantStagingOutcome? staging,
         SetupAssistantMainSetupOutcome? liveSending) =>
-        IsConfigurationStageSucceeded(mainSetup)
+        mainSetup is { ConfigurationApplied: true } outcome
+        && (outcome.Kind == SetupAssistantOutcomeKind.Succeeded
+            || outcome.ActionCode == SetupApplyActionCode.CompleteSendReadyEvaluation)
         && mode switch
         {
             SetupMode.StagingVerification =>

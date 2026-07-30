@@ -10,6 +10,7 @@ internal static class SetupNonInteractiveResultCode
     internal const string ConfigNotRegularFile = "config_not_regular_file";
     internal const string ConfigPermissionsRejected = "config_permissions_rejected";
     internal const string ConfigTooLarge = "config_too_large";
+    internal const string UnsupportedPlatform = "unsupported_platform";
     internal const string InvalidUtf8 = "invalid_utf8";
     internal const string InvalidJson = "invalid_json";
     internal const string DuplicateProperty = "duplicate_property";

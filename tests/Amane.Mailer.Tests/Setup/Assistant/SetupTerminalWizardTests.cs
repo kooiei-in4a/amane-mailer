@@ -146,6 +146,108 @@ public sealed class SetupTerminalWizardTests
         Assert.Equal(SetupAssistantCommand.SuccessExitCode, exit);
         Assert.Equal(1, operations.ApplyCalls);
         Assert.NotNull(operations.LastAdminBootstrapInput);
+        Assert.Contains("mainSetup.status: succeeded", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Main_success_then_admin_choice_cancel_keeps_exit_0()
+    {
+        var operations = new FakeSetupAssistantOperations();
+        var console = BuildConsoleForMode("1", SetupMode.LocalMailpit);
+        // Replace the trailing "n" with cancel for Admin choice.
+        // BuildConsoleForMode already enqueued "n"; dequeue by using a fresh console.
+        console = BuildConsoleForMode("1", SetupMode.LocalMailpit, enableAdmin: false);
+        // The last enqueued line is "n"; we need "cancel" instead — rebuild.
+        console = new FakeSetupTerminalConsole();
+        console.EnqueueLine("", "y", "1");
+        console.EnqueueLine("example-develop", "example-service", "noreply@example.com", "Example Service");
+        console.EnqueueSecret(ServiceToken, ServiceToken);
+        console.EnqueueLine("y"); // mailpit confirm
+        console.EnqueueLine("cancel"); // admin choice
+
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var exit = await new SetupTerminalWizard(
+            console,
+            operations,
+            output,
+            error,
+            CancellationToken.None).RunAsync();
+
+        Assert.Equal(SetupAssistantCommand.SuccessExitCode, exit);
+        Assert.Equal(1, operations.ApplyCalls);
+        Assert.Null(operations.LastAdminBootstrapInput);
+        Assert.Contains("mainSetup.status: succeeded", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("adminBootstrap.status: cancelled", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Main_success_with_admin_unexpected_exception_keeps_exit_0_and_manual_action()
+    {
+        var operations = new FakeSetupAssistantOperations
+        {
+            BootstrapThrows = new InvalidOperationException("secret-path-or-username must not leak"),
+        };
+        var console = BuildConsoleForMode("1", SetupMode.LocalMailpit, enableAdmin: true);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exit = await new SetupTerminalWizard(
+            console,
+            operations,
+            output,
+            error,
+            CancellationToken.None).RunAsync();
+
+        Assert.Equal(SetupAssistantCommand.SuccessExitCode, exit);
+        var combined = output.ToString() + error.ToString();
+        Assert.Contains("mainSetup.status: succeeded", combined, StringComparison.Ordinal);
+        Assert.Contains("最終状態を確認できませんでした", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-path-or-username", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("local-admin", combined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Main_success_with_admin_operation_canceled_keeps_exit_0()
+    {
+        var operations = new FakeSetupAssistantOperations { BootstrapCancels = true };
+        var console = BuildConsoleForMode("1", SetupMode.LocalMailpit, enableAdmin: true);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exit = await new SetupTerminalWizard(
+            console,
+            operations,
+            output,
+            error,
+            CancellationToken.None).RunAsync();
+
+        Assert.Equal(SetupAssistantCommand.SuccessExitCode, exit);
+        Assert.Contains("mainSetup.status: succeeded", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("adminBootstrap.status: cancelled", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Yes_no_rejection_message_is_valid_japanese()
+    {
+        var sourcePath = Path.Combine(
+            AppContext.BaseDirectory,
+            "..",
+            "..",
+            "..",
+            "..",
+            "..",
+            "src",
+            "Amane.Mailer",
+            "Setup",
+            "Assistant",
+            "Terminal",
+            "SetupTerminalConsole.cs");
+        sourcePath = Path.GetFullPath(sourcePath);
+        Assert.True(File.Exists(sourcePath), sourcePath);
+        var source = File.ReadAllText(sourcePath);
+        Assert.Contains("y または n で入力してください。", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("入뿯劽", source, StringComparison.Ordinal);
     }
 
     [Fact]

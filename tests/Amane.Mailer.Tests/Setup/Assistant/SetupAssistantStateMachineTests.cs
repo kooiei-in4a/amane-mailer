@@ -39,7 +39,11 @@ public sealed class SetupAssistantStateMachineTests
 
         using var session = new SetupAssistantSession("session", "csrf", DateTimeOffset.UtcNow);
         session.SetMode(SetupMode.LocalMailpit);
-        session.SetMainSetup(applyOutcome);
+        session.ApplyMainWorkflow(
+            SetupAssistantMainWorkflowState.FromApplyResult(
+                SetupMode.LocalMailpit,
+                skipDockerPreflight: true,
+                applyOutcome));
         session.MoveTo(SetupAssistantStep.ApplyOutcome);
         Assert.True(session.ConfigurationStageSucceeded);
         Assert.True(SetupAssistantTransitions.IsAllowed(session, "/verify", "continue"));

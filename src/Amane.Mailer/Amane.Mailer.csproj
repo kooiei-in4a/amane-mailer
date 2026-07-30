@@ -17,6 +17,7 @@
     <IlcTreatWarningsAsErrors>true</IlcTreatWarningsAsErrors>
     <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL3050;IL2104</WarningsAsErrors>
     <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>

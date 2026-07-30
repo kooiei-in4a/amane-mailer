@@ -8,9 +8,9 @@ namespace Amane.Mailer.Setup.Assistant.Terminal;
 /// </summary>
 internal static class SetupTerminalPresenter
 {
-    internal static void WriteMainSetupResult(TextWriter output, SetupAssistantMainSetupRunResult result)
+    internal static void WriteMainSetupResult(TextWriter output, SetupAssistantMainWorkflowTransition result)
     {
-        if (result.MainSetup is { } mainSetup)
+        if (result.State.MainSetup is { } mainSetup)
         {
             WriteMainSetupOutcome(output, mainSetup);
         }
@@ -21,13 +21,13 @@ internal static class SetupTerminalPresenter
             WriteCodeRow(output, "結果コード", result.Code);
         }
 
-        if (result.Staging is { } staging)
+        if (result.State.Staging is { } staging)
         {
             output.WriteLine();
             WriteStagingOutcome(output, staging);
         }
 
-        if (result.LiveSending is { } liveSending)
+        if (result.State.LiveSending is { } liveSending)
         {
             output.WriteLine();
             WriteMainSetupOutcome(output, liveSending);
@@ -94,6 +94,15 @@ internal static class SetupTerminalPresenter
         output.WriteLine("Admin bootstrap の結果は Main setup とは独立しています。");
     }
 
+    internal static void WriteAdminUnexpectedFailure(TextWriter output)
+    {
+        output.WriteLine();
+        output.WriteLine("adminBootstrap.status: failed");
+        output.WriteLine("Main setup は成功しています。");
+        output.WriteLine("Admin bootstrap の最終状態を確認できませんでした。");
+        output.WriteLine("Admin の状態画面またはrunbookで確認してください。");
+    }
+
     internal static void WriteDockerPreflight(TextWriter output, SetupAssistantDockerPreflightOutcome preflight)
     {
         WriteOutcomeHeader(
@@ -132,7 +141,13 @@ internal static class SetupTerminalPresenter
         output.WriteLine($"Deployment send-ready: {(summary.DeploymentSendReady ? "到達" : "未到達")}");
         output.WriteLine($"Admin bootstrap: {DescribeAdminBootstrapState(summary)}");
         output.WriteLine("実送信による運用確認: 記録していません。");
-        if (summary.MainSetupSucceeded && summary.AdminBootstrapFailedOrCancelled)
+        if (summary.MainSetupSucceeded && summary.AdminUnexpectedFailure)
+        {
+            output.WriteLine("Main setup は成功しています。");
+            output.WriteLine("Admin bootstrap の最終状態を確認できませんでした。");
+            output.WriteLine("Admin の状態画面またはrunbookで確認してください。");
+        }
+        else if (summary.MainSetupSucceeded && summary.AdminBootstrapFailedOrCancelled)
         {
             output.WriteLine("Main setup は成功しています。Admin bootstrap の結果は Main setup に影響しません。");
         }
@@ -222,6 +237,8 @@ internal sealed class SetupTerminalRunSummary
     internal bool DeploymentSendReady { get; init; }
 
     internal SetupAssistantStagingOutcome? Staging { get; init; }
+
+    internal bool AdminUnexpectedFailure { get; init; }
 
     internal bool AdminBootstrapFailedOrCancelled =>
         AdminBootstrapStatus is SetupTerminalAdminBootstrapStatus.Failed
