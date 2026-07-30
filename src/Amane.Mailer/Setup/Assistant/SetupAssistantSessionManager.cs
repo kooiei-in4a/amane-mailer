@@ -32,6 +32,9 @@ internal sealed class SetupAssistantSessionManager : IDisposable
 {
     private readonly SetupAssistantOptions _options;
     private readonly TimeProvider _timeProvider;
+    // Stop is deliberately two-phase: request cancellation first, then signal shutdown only after
+    // the active typed operation has returned from its rollback/canonical-result path.
+    private readonly CancellationTokenSource _stopRequested = new();
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Lock _gate = new();
     private readonly byte[] _oneTimeToken;
@@ -41,6 +44,7 @@ internal sealed class SetupAssistantSessionManager : IDisposable
 
     private SetupAssistantSession? _session;
     private bool _tokenRedeemed;
+    private bool _stopRequestedFlag;
     private bool _disposed;
     private int _inFlight;
     private bool _disposeWhenIdle;
@@ -61,6 +65,9 @@ internal sealed class SetupAssistantSessionManager : IDisposable
     /// </summary>
     internal string OneTimeTokenText => Base64Url(_oneTimeToken);
 
+    internal CancellationToken OperationCancellationToken => _stopRequested.Token;
+
+    /// <summary>Cancelled only after all in-flight steps have drained and session disposal ran.</summary>
     internal CancellationToken ShutdownToken => _shutdown.Token;
 
     internal SetupAssistantShutdownReason ShutdownReason { get; private set; }
@@ -157,7 +164,7 @@ internal sealed class SetupAssistantSessionManager : IDisposable
 
         lock (_gate)
         {
-            if (_disposed || _shutdown.IsCancellationRequested)
+            if (_disposed || _stopRequestedFlag)
             {
                 _stepGate.Release();
                 return null;
@@ -176,6 +183,7 @@ internal sealed class SetupAssistantSessionManager : IDisposable
     internal void EndStep()
     {
         SetupAssistantSession? deferred = null;
+        var shutdownDrained = false;
 
         lock (_gate)
         {
@@ -189,6 +197,7 @@ internal sealed class SetupAssistantSessionManager : IDisposable
                 deferred = _session;
                 _session = null;
                 _disposeWhenIdle = false;
+                shutdownDrained = true;
             }
             else
             {
@@ -198,6 +207,10 @@ internal sealed class SetupAssistantSessionManager : IDisposable
 
         deferred?.Dispose();
         _stepGate.Release();
+        if (shutdownDrained)
+        {
+            _shutdown.Cancel();
+        }
     }
 
     /// <summary>
@@ -211,7 +224,7 @@ internal sealed class SetupAssistantSessionManager : IDisposable
 
         lock (_gate)
         {
-            if (_disposed || _shutdown.IsCancellationRequested)
+            if (_disposed || _stopRequestedFlag)
             {
                 return;
             }
@@ -237,18 +250,20 @@ internal sealed class SetupAssistantSessionManager : IDisposable
     internal void Stop(SetupAssistantShutdownReason reason)
     {
         SetupAssistantSession? expired = null;
+        var shutdownDrained = false;
 
         lock (_gate)
         {
-            if (_shutdown.IsCancellationRequested)
+            if (_stopRequestedFlag)
             {
                 return;
             }
 
+            _stopRequestedFlag = true;
             ShutdownReason = reason;
 
-            // A running typed operation still holds this session. Cancellation is signalled now,
-            // but the secrets are not cleared underneath the operation; disposal waits for it.
+            // A running typed operation still holds this session. Request cancellation now, but do
+            // not dispose it or let the host exit until #450/#451 has finished rollback/result work.
             if (_inFlight > 0)
             {
                 _disposeWhenIdle = true;
@@ -257,11 +272,16 @@ internal sealed class SetupAssistantSessionManager : IDisposable
             {
                 expired = _session;
                 _session = null;
+                shutdownDrained = true;
             }
         }
 
+        _stopRequested.Cancel();
         expired?.Dispose();
-        _shutdown.Cancel();
+        if (shutdownDrained)
+        {
+            _shutdown.Cancel();
+        }
     }
 
     private SetupAssistantShutdownReason ClassifyExpiry(
@@ -344,6 +364,7 @@ internal sealed class SetupAssistantSessionManager : IDisposable
             _session = null;
         }
 
+        _stopRequested.Dispose();
         _shutdown.Dispose();
         _stepGate.Dispose();
         _oneTimeToken.AsSpan().Clear();

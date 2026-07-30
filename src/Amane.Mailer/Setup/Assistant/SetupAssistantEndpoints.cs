@@ -96,13 +96,13 @@ internal static class SetupAssistantEndpoints
         }
 
         // Cancelling discards the session, not the work already carried out. Claiming that nothing
-        // changed is only true while no typed operation has produced a result.
-        var sideEffectsStarted = session.MainSetup is not null || session.AdminBootstrap is not null;
+        // changed is only true before any side-effecting typed operation has started.
+        var sideEffectsStarted = session.PotentialSideEffectsStarted;
         SetupAssistantSecurity.ClearSessionCookie(context.Response);
         await WriteHtmlAsync(
             context,
             SetupAssistantPages.RenderTerminated(sideEffectsStarted
-                ? "Assistant を中止しました。入力内容と session memory は破棄しますが、すでに実行した適用や Admin の変更は取り消していません。現在の構成は Admin の状態画面または runbook で確認してください。"
+                ? "Assistant を中止しました。設定または外部状態が変更された可能性があり、実行済みの変更は取り消していません。現在の構成は Admin の状態画面または runbook で確認してください。"
                 : "Assistant を中止しました。入力内容と session memory を破棄します。設定は変更していません。"));
         sessions.Stop(SetupAssistantShutdownReason.Cancelled);
     }
@@ -145,7 +145,7 @@ internal static class SetupAssistantEndpoints
             // rather than being noticed only once it returns.
             using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(
                 context.RequestAborted,
-                sessions.ShutdownToken);
+                sessions.OperationCancellationToken);
             var step = new SetupAssistantStepContext(session, form, sessions, operations, lifetime.Token);
 
             if (!SetupAssistantTransitions.IsAllowed(session, route, step.Action))
@@ -367,11 +367,12 @@ internal static class SetupAssistantEndpoints
             return;
         }
 
+        session.MarkApplyStarted();
         var outcome = await step.Operations.ApplyMainSetupAsync(
             BuildMainSetupInput(session, mode, environmentConfirmation, intentConfirmation),
             step.CancellationToken);
         session.SetMainSetup(outcome);
-        if (outcome.Kind == SetupAssistantOutcomeKind.Succeeded)
+        if (session.ConfigurationStageSucceeded)
         {
             // Every later stage works from the #451 applied proof, so the provider and ACS material
             // is released here instead of lingering for the rest of the session.
@@ -437,6 +438,7 @@ internal static class SetupAssistantEndpoints
         }
 
         session.SetStagingRecipient(recipient);
+        session.MarkStagingSendStarted();
         var outcome = await step.Operations.VerifyStagingAsync(
             new SetupAssistantStagingInput
             {
@@ -471,6 +473,7 @@ internal static class SetupAssistantEndpoints
             return;
         }
 
+        session.MarkLiveSendingPromotionStarted();
         var outcome = await step.Operations.EnableLiveSendingAsync(
             new SetupAssistantProductionInput
             {
@@ -590,6 +593,7 @@ internal static class SetupAssistantEndpoints
         }
 
         session.SetAdminCredentials(username, password);
+        session.MarkAdminBootstrapStarted();
         try
         {
             session.SetAdminBootstrap(await step.Operations.BootstrapAdminAsync(

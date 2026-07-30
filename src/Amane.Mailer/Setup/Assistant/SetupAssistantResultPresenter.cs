@@ -212,7 +212,11 @@ internal static partial class SetupAssistantResultPresenter
             or AcsSetupResultCode.DeploymentSendReady
             or SetupApplyResultCode.ApplySucceeded)
         {
+            // #450 uses this action as an internal handoff to the next Assistant stage. It does
+            // not ask the operator to perform an external action, so the configuration stage has
+            // succeeded and must remain navigable.
             return string.IsNullOrEmpty(actionCode)
+                || actionCode == SetupApplyActionCode.CompleteSendReadyEvaluation
                 ? SetupAssistantOutcomeKind.Succeeded
                 : SetupAssistantOutcomeKind.ActionRequired;
         }

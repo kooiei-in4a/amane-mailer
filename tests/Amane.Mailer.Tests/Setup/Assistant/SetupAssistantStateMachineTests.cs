@@ -15,6 +15,72 @@ public sealed class SetupAssistantStateMachineTests
     private const string ServiceToken = "assistant-test-service-token";
 
     [Fact]
+    public void Canonical_apply_handoff_projects_as_a_navigable_configuration_stage()
+    {
+        var apply = SetupApplyResult.Create(
+            SetupApplyResultCode.ApplySucceeded,
+            SetupManagedDeploymentState.Active,
+            actionCode: SetupApplyActionCode.CompleteSendReadyEvaluation,
+            configurationApplied: true,
+            verificationCommitted: true);
+        var applyOutcome = SetupAssistantOperations.FromApply(apply, "fingerprint");
+
+        var acs = new AcsSetupWorkflowResult
+        {
+            Code = AcsSetupResultCode.ConfigurationApplied,
+            State = AcsSetupWorkflowState.ConfigurationApplied,
+            ConfigurationApplied = true,
+            ActionCode = SetupApplyActionCode.CompleteSendReadyEvaluation,
+        };
+        var acsOutcome = SetupAssistantOperations.FromAcsWorkflow(acs);
+
+        Assert.Equal(SetupAssistantOutcomeKind.Succeeded, applyOutcome.Kind);
+        Assert.Equal(SetupAssistantOutcomeKind.Succeeded, acsOutcome.Kind);
+
+        using var session = new SetupAssistantSession("session", "csrf", DateTimeOffset.UtcNow);
+        session.SetMode(SetupMode.LocalMailpit);
+        session.SetMainSetup(applyOutcome);
+        session.MoveTo(SetupAssistantStep.ApplyOutcome);
+        Assert.True(session.ConfigurationStageSucceeded);
+        Assert.True(SetupAssistantTransitions.IsAllowed(session, "/verify", "continue"));
+    }
+
+    [Fact]
+    public async Task Shutdown_waits_for_a_cancelled_step_to_finish_rollback_and_dispose()
+    {
+        var options = new SetupAssistantOptions
+        {
+            IdleTimeout = TimeSpan.FromHours(1),
+            AbsoluteLifetime = TimeSpan.FromMinutes(1),
+        };
+        await using var harness = await SetupAssistantHarness.StartAsync(options: options);
+        Assert.Equal(
+            SetupAssistantTokenExchange.Redeemed,
+            harness.Sessions.TryRedeem(harness.Sessions.OneTimeTokenText, out var session));
+        Assert.NotNull(session);
+        Assert.NotNull(await harness.Sessions.TryBeginStepAsync(
+            session.SessionId,
+            TestContext.Current.CancellationToken));
+
+        var rollbackHold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var rollback = FinishRollbackAfterCancellationAsync(harness.Sessions, rollbackHold.Task);
+        var shutdown = harness.Host.WaitForShutdownAsync(TestContext.Current.CancellationToken);
+
+        harness.Time.Advance(TimeSpan.FromMinutes(2));
+        harness.Sessions.EvaluateDeadlines();
+        await WaitUntilAsync(() => harness.Sessions.OperationCancellationToken.IsCancellationRequested);
+
+        Assert.False(shutdown.IsCompleted);
+        Assert.False(session.IsDisposed);
+
+        rollbackHold.SetResult();
+        await rollback;
+
+        Assert.Equal(SetupAssistantShutdownReason.AbsoluteTimeout, await shutdown);
+        Assert.True(session.IsDisposed);
+    }
+
+    [Fact]
     public async Task Mode_4_cannot_finish_before_send_ready()
     {
         await using var harness = await SetupAssistantHarness.StartAsync();
@@ -114,8 +180,96 @@ public sealed class SetupAssistantStateMachineTests
         using var response = await harness.PostStepAsync("/cancel");
         var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
-        Assert.Contains("すでに実行した適用", body, StringComparison.Ordinal);
+        Assert.Contains("変更された可能性", body, StringComparison.Ordinal);
         Assert.DoesNotContain("設定は変更していません", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Cancel_during_apply_uses_the_conservative_side_effect_warning()
+    {
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await SetupAssistantHarness.StartAsync();
+        harness.Operations.ApplyHold = hold;
+        await ReachApplyConfirmationAsync(harness, SetupMode.LocalMailpit);
+
+        var apply = harness.PostStepAsync("/confirm");
+        await WaitUntilAsync(() => harness.Operations.ApplyCalls == 1);
+
+        using var cancel = await harness.PostStepAsync("/cancel");
+        var body = await cancel.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        Assert.Contains("変更された可能性", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("設定は変更していません", body, StringComparison.Ordinal);
+
+        try
+        {
+            using var ignored = await apply;
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException)
+        {
+        }
+    }
+
+    [Fact]
+    public async Task Accepted_staging_send_is_never_offered_as_an_automatic_retry()
+    {
+        await using var harness = await SetupAssistantHarness.StartAsync();
+        harness.Operations.Staging = new SetupAssistantStagingOutcome
+        {
+            Code = AcsSetupResultCode.StagingVerificationFailed,
+            Kind = SetupAssistantOutcomeKind.ActionRequired,
+            SendRequestAccepted = true,
+        };
+
+        await ReachApplyOutcomeAsync(harness, SetupMode.StagingVerification);
+        await harness.PostStepAsync("/verify", ("action", "continue"));
+        await harness.PostStepAsync(
+            "/verify",
+            ("action", "staging"),
+            ("recipient_email", "ops@example.test"),
+            ("environment_confirmation", AcsEnvironmentConfirmation.Staging),
+            ("intent_confirmation", AcsStagingVerificationOperation.IntentPhrase));
+
+        var page = await harness.ReadCurrentPageAsync();
+        Assert.DoesNotContain("テスト送信をやり直す", page, StringComparison.Ordinal);
+        Assert.Contains("自動再送は行いません", page, StringComparison.Ordinal);
+        Assert.Contains("未完了の結果を確認して終了する", page, StringComparison.Ordinal);
+
+        using var retry = await harness.PostStepAsync("/verify", ("action", "staging-retry"));
+        Assert.Equal(HttpStatusCode.Conflict, retry.StatusCode);
+    }
+
+    [Fact]
+    public async Task Applied_live_sending_result_is_never_offered_as_an_automatic_retry()
+    {
+        await using var harness = await SetupAssistantHarness.StartAsync();
+        harness.Operations.Production = new SetupAssistantMainSetupOutcome
+        {
+            Code = AcsSetupResultCode.ConfigurationApplied,
+            Kind = SetupAssistantOutcomeKind.ActionRequired,
+            ConfigurationApplied = true,
+            DeploymentSendReady = false,
+            ActionCode = SetupApplyActionCode.ReviewDatabaseSchema,
+        };
+
+        await ReachApplyOutcomeAsync(harness, SetupMode.ProductionAcs);
+        await harness.PostStepAsync("/verify", ("action", "continue"));
+        await harness.PostStepAsync(
+            "/verify",
+            ("action", "production"),
+            ("environment_confirmation", AcsEnvironmentConfirmation.Production),
+            ("live_sending_approval", AcsLiveSendingApproval.EnablePhrase));
+
+        var page = await harness.ReadCurrentPageAsync();
+        Assert.DoesNotContain("live_sending を有効化する</button>", page, StringComparison.Ordinal);
+        Assert.Contains("Assistant から再実行しません", page, StringComparison.Ordinal);
+        Assert.Contains("未完了の結果を確認して終了する", page, StringComparison.Ordinal);
+
+        using var retry = await harness.PostStepAsync(
+            "/verify",
+            ("action", "production"),
+            ("environment_confirmation", AcsEnvironmentConfirmation.Production),
+            ("live_sending_approval", AcsLiveSendingApproval.EnablePhrase));
+        Assert.Equal(HttpStatusCode.Conflict, retry.StatusCode);
     }
 
     [Fact]
@@ -254,6 +408,22 @@ public sealed class SetupAssistantStateMachineTests
             ("admin_username", "setup-admin"),
             ("admin_password", "assistant-test-admin-password"),
             ("admin_password_confirm", "assistant-test-admin-password"));
+    }
+
+    private static async Task FinishRollbackAfterCancellationAsync(
+        SetupAssistantSessionManager sessions,
+        Task rollbackHold)
+    {
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, sessions.OperationCancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        await rollbackHold;
+        sessions.EndStep();
     }
 
     private static async Task WaitUntilAsync(Func<bool> predicate)

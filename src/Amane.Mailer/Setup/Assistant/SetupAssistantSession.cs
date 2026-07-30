@@ -86,12 +86,32 @@ internal sealed class SetupAssistantSession : IDisposable
 
     internal SetupAssistantAdminBootstrapOutcome? AdminBootstrap { get; private set; }
 
+    internal bool ApplyStarted { get; private set; }
+
+    internal bool StagingSendStarted { get; private set; }
+
+    internal bool LiveSendingPromotionStarted { get; private set; }
+
+    internal bool AdminBootstrapStarted { get; private set; }
+
+    internal bool PotentialSideEffectsStarted =>
+        ApplyStarted || StagingSendStarted || LiveSendingPromotionStarted || AdminBootstrapStarted;
+
+    internal bool IsDisposed { get; private set; }
+
     /// <summary>Non-null when the last transition was rejected. Always a fixed catalog key.</summary>
     internal string? InputRejectionKey { get; private set; }
 
-    /// <summary>True once the main setup transaction reached a canonical success state.</summary>
-    internal bool MainSetupSucceeded =>
-        MainSetup is { Kind: SetupAssistantOutcomeKind.Succeeded, ConfigurationApplied: true };
+    /// <summary>
+    /// True when #450/#451 committed the configuration stage. The send-ready evaluation action is
+    /// an internal Assistant handoff, not outstanding operator work.
+    /// </summary>
+    internal bool ConfigurationStageSucceeded =>
+        MainSetup is { ConfigurationApplied: true } outcome
+        && (outcome.Kind == SetupAssistantOutcomeKind.Succeeded
+            || outcome.ActionCode == SetupApplyActionCode.CompleteSendReadyEvaluation);
+
+    internal bool MainSetupSucceeded => ConfigurationStageSucceeded;
 
     /// <summary>True only when #451 reported the deployment as send-ready. Never inferred.</summary>
     internal bool DeploymentSendReady =>
@@ -141,6 +161,14 @@ internal sealed class SetupAssistantSession : IDisposable
 
     internal void SetDockerPreflight(SetupAssistantDockerPreflightOutcome outcome) =>
         DockerPreflight = outcome;
+
+    internal void MarkApplyStarted() => ApplyStarted = true;
+
+    internal void MarkStagingSendStarted() => StagingSendStarted = true;
+
+    internal void MarkLiveSendingPromotionStarted() => LiveSendingPromotionStarted = true;
+
+    internal void MarkAdminBootstrapStarted() => AdminBootstrapStarted = true;
 
     internal void SetMainSetup(SetupAssistantMainSetupOutcome outcome) => MainSetup = outcome;
 
@@ -233,6 +261,7 @@ internal sealed class SetupAssistantSession : IDisposable
 
     public void Dispose()
     {
+        IsDisposed = true;
         foreach (var secret in _secrets)
         {
             secret.Dispose();

@@ -168,7 +168,7 @@ public sealed class SetupAssistantWorkflowTests
             Code = SetupApplyResultCode.ApplySucceeded,
             Kind = SetupAssistantOutcomeKind.ActionRequired,
             ConfigurationApplied = true,
-            ActionCode = SetupApplyActionCode.CompleteSendReadyEvaluation,
+            ActionCode = SetupApplyActionCode.ReviewDatabaseSchema,
         };
 
         await RedeemAndReachModeAsync(harness);
@@ -179,7 +179,7 @@ public sealed class SetupAssistantWorkflowTests
 
         var page = await harness.ReadCurrentPageAsync();
         Assert.Contains("[ACTION]", page, StringComparison.Ordinal);
-        Assert.Contains("send-ready 判定が未完了", page, StringComparison.Ordinal);
+        Assert.Contains("データベース schema の確認が必要", page, StringComparison.Ordinal);
         Assert.DoesNotContain("[FAIL]", page, StringComparison.Ordinal);
     }
 

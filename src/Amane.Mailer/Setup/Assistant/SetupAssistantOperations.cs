@@ -365,7 +365,7 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
             ImageTag = layout.ReleaseInventory.AllowedDisplayTag,
         };
 
-    private static SetupAssistantMainSetupOutcome FromAcsWorkflow(AcsSetupWorkflowResult result) =>
+    internal static SetupAssistantMainSetupOutcome FromAcsWorkflow(AcsSetupWorkflowResult result) =>
         new()
         {
             Code = result.Code,
@@ -385,7 +385,7 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
             AppliedProof = result.ConfigurationAppliedProof,
         };
 
-    private static SetupAssistantMainSetupOutcome FromApply(
+    internal static SetupAssistantMainSetupOutcome FromApply(
         SetupApplyResult apply,
         string? fingerprint) =>
         new()

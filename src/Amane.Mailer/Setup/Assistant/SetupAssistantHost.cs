@@ -93,24 +93,24 @@ internal sealed class SetupAssistantHost : IAsyncDisposable
         return host;
     }
 
-    /// <summary>Blocks until the session manager signals completion, cancellation, or timeout.</summary>
+    /// <summary>
+    /// Requests cancellation when the caller stops, then waits until every typed operation has
+    /// completed its cancellation/rollback path and the session has been disposed.
+    /// </summary>
     internal async Task<SetupAssistantShutdownReason> WaitForShutdownAsync(
         CancellationToken cancellationToken)
     {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken,
-            _sessions.ShutdownToken);
+        using var registration = cancellationToken.Register(
+            static state => ((SetupAssistantSessionManager)state!).Stop(
+                SetupAssistantShutdownReason.Cancelled),
+            _sessions);
+
         try
         {
-            await Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
+            await Task.Delay(Timeout.InfiniteTimeSpan, _sessions.ShutdownToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (_sessions.ShutdownToken.IsCancellationRequested)
         {
-        }
-
-        if (!_sessions.ShutdownToken.IsCancellationRequested)
-        {
-            _sessions.Stop(SetupAssistantShutdownReason.Cancelled);
         }
 
         return _sessions.ShutdownReason;

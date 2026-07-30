@@ -267,13 +267,22 @@ internal static class SetupAssistantPages
         }
 
         body.Append(ApplyOutcomeCard(outcome));
-        if (outcome.Kind == SetupAssistantOutcomeKind.Succeeded)
+        if (session.ConfigurationStageSucceeded)
         {
             body.Append(Form(session, "/verify", "次の段階へ進む", hidden: ("action", "continue")));
         }
-        else if (outcome.Kind is SetupAssistantOutcomeKind.Rejected or SetupAssistantOutcomeKind.Failed)
+        else if (SetupAssistantTransitions.CanRetryMainApply(session))
         {
             body.Append(Form(session, "/confirm", "適用をやり直す", secondary: true, hidden: ("action", "retry")));
+        }
+        else
+        {
+            body.AppendLine("<div class=\"card note\">この結果は Assistant から安全に再実行できません。現在の構成を確認し、表示された ACTION または runbook に従ってください。</div>");
+        }
+
+        if (!session.ConfigurationStageSucceeded)
+        {
+            body.Append(Form(session, "/finish", "未完了の結果を確認して終了する", secondary: true, hidden: ("action", "incomplete")));
         }
 
         return body.ToString();
@@ -310,12 +319,21 @@ internal static class SetupAssistantPages
             }
             else
             {
-                body.Append(Form(
-                    session,
-                    "/verify",
-                    "テスト送信をやり直す",
-                    secondary: true,
-                    hidden: ("action", "staging-retry")));
+                if (SetupAssistantTransitions.CanRetryStaging(session))
+                {
+                    body.Append(Form(
+                        session,
+                        "/verify",
+                        "テスト送信をやり直す",
+                        secondary: true,
+                        hidden: ("action", "staging-retry")));
+                }
+                else
+                {
+                    body.AppendLine("<div class=\"card note\">送信要求が受理済み、または手動対応が必要なため、自動再送は行いません。受信箱と provider 状態を確認してください。</div>");
+                }
+
+                body.Append(Form(session, "/finish", "未完了の結果を確認して終了する", secondary: true, hidden: ("action", "incomplete")));
             }
 
             return body.ToString();
@@ -342,20 +360,29 @@ internal static class SetupAssistantPages
                 break;
 
             case SetupMode.ProductionAcs:
-                body.AppendLine("<form method=\"post\" action=\"/verify\" class=\"card\" autocomplete=\"off\">");
-                body.AppendLine(CsrfField(session));
-                body.AppendLine(HiddenField("action", "production"));
-                body.AppendLine("<p>live_sending を有効化します。実送信はこの Assistant では行いません。</p>");
-                body.Append(TextField(
-                    "environment_confirmation",
-                    $"環境確認フレーズ（{AcsEnvironmentConfirmation.Production}）",
-                    null));
-                body.Append(TextField(
-                    "live_sending_approval",
-                    $"有効化承認フレーズ（{AcsLiveSendingApproval.EnablePhrase}）",
-                    null));
-                body.AppendLine("<div class=\"actions\"><button type=\"submit\">live_sending を有効化する</button></div>");
-                body.AppendLine("</form>");
+                if (SetupAssistantTransitions.CanRunLiveSending(session))
+                {
+                    body.AppendLine("<form method=\"post\" action=\"/verify\" class=\"card\" autocomplete=\"off\">");
+                    body.AppendLine(CsrfField(session));
+                    body.AppendLine(HiddenField("action", "production"));
+                    body.AppendLine("<p>live_sending を有効化します。実送信はこの Assistant では行いません。</p>");
+                    body.Append(TextField(
+                        "environment_confirmation",
+                        $"環境確認フレーズ（{AcsEnvironmentConfirmation.Production}）",
+                        null));
+                    body.Append(TextField(
+                        "live_sending_approval",
+                        $"有効化承認フレーズ（{AcsLiveSendingApproval.EnablePhrase}）",
+                        null));
+                    body.AppendLine("<div class=\"actions\"><button type=\"submit\">live_sending を有効化する</button></div>");
+                    body.AppendLine("</form>");
+                }
+                else
+                {
+                    body.AppendLine("<div class=\"card note\">promotion の適用または手動対応が開始済みのため、Assistant から再実行しません。現在の構成を確認し、表示された ACTION または runbook に従ってください。</div>");
+                    body.Append(Form(session, "/finish", "未完了の結果を確認して終了する", secondary: true, hidden: ("action", "incomplete")));
+                }
+
                 break;
 
             default:
@@ -498,17 +525,20 @@ internal static class SetupAssistantPages
             && staging.Kind != SetupAssistantOutcomeKind.Succeeded;
         var adminUnresolved = admin is not null
             && admin.Kind != SetupAssistantOutcomeKind.Succeeded;
-        var manualAction = admin is { ManualActionRequired: true };
+        var mainUnresolved = !session.ConfigurationStageSucceeded
+            || (session.Mode == SetupMode.ProductionAcs && !session.DeploymentSendReady)
+            || stagingFailed;
+        var manualAction = admin is { ManualActionRequired: true }
+            || session.MainSetup is { Kind: SetupAssistantOutcomeKind.ManualInterventionRequired }
+            || session.LiveSending is { Kind: SetupAssistantOutcomeKind.ManualInterventionRequired };
 
-        // The closing card is only a success card when nothing is left outstanding. Admin failure,
-        // a failed staging send, and manual intervention each downgrade it.
-        var kind = !session.MainSetupSucceeded
-            ? SetupAssistantOutcomeKind.Failed
-            : manualAction
-                ? SetupAssistantOutcomeKind.ManualInterventionRequired
-                : adminUnresolved || stagingFailed
-                    ? SetupAssistantOutcomeKind.ActionRequired
-                    : SetupAssistantOutcomeKind.Succeeded;
+        // The closing card is only a success card when nothing is left outstanding. Main setup,
+        // send-ready, Admin failure, and manual intervention each downgrade it.
+        var kind = manualAction
+            ? SetupAssistantOutcomeKind.ManualInterventionRequired
+            : mainUnresolved || adminUnresolved
+                ? SetupAssistantOutcomeKind.ActionRequired
+                : SetupAssistantOutcomeKind.Succeeded;
 
         body.Append(StateCard(
             kind,
