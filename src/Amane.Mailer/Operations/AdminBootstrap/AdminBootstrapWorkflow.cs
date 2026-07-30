@@ -207,7 +207,7 @@ internal sealed class AdminBootstrapWorkflow
                         layout,
                         pending,
                         cancellationToken);
-                _ = ConvergeRecoveredRollback(
+                _ = await ConvergeRecoveredRollbackAsync(
                     layout,
                     pending,
                     rollbackAfterCleanupFailure);
@@ -252,17 +252,19 @@ internal sealed class AdminBootstrapWorkflow
                 });
             return RecoveryResult(
                 profile,
-                promote.IsSuccess
+                promote.CurrentCommitted
                     ? AdminBootstrapResultCode.Succeeded
                     : AdminBootstrapResultCode.ManualActionRequired,
-                promote.IsSuccess
+                promote.IsFullySucceeded
                     ? "pending_promotion_completed"
-                    : "ownership_promotion_failed",
-                adminExposure: promote.IsSuccess ? "enabled" : "unknown",
+                    : promote.CurrentCommitted
+                        ? "pending_cleanup_required"
+                        : "ownership_promotion_failed",
+                adminExposure: promote.CurrentCommitted ? "enabled" : "unknown",
                 loginVerification: "succeeded",
                 setupStatusVerification: "succeeded",
                 sessionCleanup: "succeeded",
-                manualActionRequired: !promote.IsSuccess);
+                manualActionRequired: !promote.IsFullySucceeded);
         }
 
         if (pending.State is AdminBootstrapOwnershipState.Armed
@@ -273,7 +275,7 @@ internal sealed class AdminBootstrapWorkflow
                 layout,
                 pending,
                 cancellationToken);
-            var ownershipConverged = ConvergeRecoveredRollback(layout, pending, rollback);
+            var ownershipConverged = await ConvergeRecoveredRollbackAsync(layout, pending, rollback);
             return RecoveryResult(
                 profile,
                 rollback.ConfigRollbackStatus == SetupConfigRollbackStatus.Succeeded
@@ -303,6 +305,12 @@ internal sealed class AdminBootstrapWorkflow
         {
             if (!TryValidateRequest(request, out var preflightReason))
                 return PreflightFailed(request, preflightReason);
+
+            var existingPending = _ownership.ReadPending(request.Layout.ManagedRoot);
+            if (existingPending.Kind == AdminBootstrapOwnershipReadKind.NeedsIntervention)
+                return PreflightFailed(request, "pending_ownership_unreadable");
+            if (existingPending.Kind != AdminBootstrapOwnershipReadKind.Missing)
+                return PreflightFailed(request, "pending_operation_requires_recovery");
 
             AdminBootstrapDatabaseSnapshot databaseBefore;
             try
@@ -341,10 +349,24 @@ internal sealed class AdminBootstrapWorkflow
             try
             {
                 password = request.Credential.Materialize();
-                if (disposition == SourceAdminDisposition.EnabledManagedSameUser)
+                var reuseExistingHash = disposition == SourceAdminDisposition.EnabledManagedSameUser
+                    || (disposition == SourceAdminDisposition.DisabledMain
+                        && databaseBefore.Classification
+                            == AdminBootstrapDatabaseClassification.ManagedSameUser);
+                if (reuseExistingHash)
                 {
                     if (databaseBefore.UserPasswordHash is null
-                        || !AdminPasswordHasher.Verify(password, databaseBefore.UserPasswordHash))
+                        || databaseBefore.Username is null
+                        || !string.Equals(
+                            request.Username,
+                            databaseBefore.Username,
+                            StringComparison.Ordinal)
+                        || !AdminPasswordHasher.Verify(password, databaseBefore.UserPasswordHash)
+                        || databaseBefore.AppliedPasswordHash is null
+                        || !string.Equals(
+                            databaseBefore.AppliedPasswordHash,
+                            databaseBefore.UserPasswordHash,
+                            StringComparison.Ordinal))
                     {
                         return PreflightFailed(request, "managed_password_preverification_failed");
                     }
@@ -417,13 +439,15 @@ internal sealed class AdminBootstrapWorkflow
                 ObservedDatabaseClassification = databaseBefore.Classification,
                 LastTransitionAt = Timestamp(),
             };
-            var pendingWrite = _ownership.WritePending(request.Layout.ManagedRoot, pending);
+            var pendingWrite = _ownership.WritePendingPrepared(request.Layout.ManagedRoot, pending);
             if (!pendingWrite.IsSuccess)
             {
                 return Failed(
                     request,
                     AdminBootstrapResultCode.ManualActionRequired,
-                    "ownership_prepared_write_failed",
+                    pendingWrite.Code == SetupDockerResultCode.InvalidBundleInventory
+                        ? "pending_operation_requires_recovery"
+                        : "ownership_prepared_write_failed",
                     databaseBefore.Classification,
                     manualActionRequired: true);
             }
@@ -434,8 +458,15 @@ internal sealed class AdminBootstrapWorkflow
                 cancellationToken);
             if (!leaseResult.IsSuccess || leaseResult.Lease is null)
             {
-                _ = _ownership.DeletePending(request.Layout.ManagedRoot);
-                return PreflightFailed(request, leaseResult.Result.ReasonCode ?? "workflow_lease_failed");
+                var delete = _ownership.DeletePending(request.Layout.ManagedRoot);
+                return Failed(
+                    request,
+                    delete.IsSuccess
+                        ? AdminBootstrapResultCode.PreflightRejected
+                        : AdminBootstrapResultCode.ManualActionRequired,
+                    leaseResult.Result.ReasonCode ?? "workflow_lease_failed",
+                    databaseBefore.Classification,
+                    manualActionRequired: !delete.IsSuccess);
             }
 
             await using var lease = leaseResult.Lease;
@@ -450,8 +481,15 @@ internal sealed class AdminBootstrapWorkflow
                     pending.Source.ConfigurationFingerprint,
                     StringComparison.Ordinal))
             {
-                _ = _ownership.DeletePending(request.Layout.ManagedRoot);
-                return PreflightFailed(request, "source_admin_authority_changed");
+                var delete = _ownership.DeletePending(request.Layout.ManagedRoot);
+                return Failed(
+                    request,
+                    delete.IsSuccess
+                        ? AdminBootstrapResultCode.PreflightRejected
+                        : AdminBootstrapResultCode.ManualActionRequired,
+                    "source_admin_authority_changed",
+                    databaseBefore.Classification,
+                    manualActionRequired: !delete.IsSuccess);
             }
 
             var apply = await lease.ApplyCandidateAsync(
@@ -460,13 +498,12 @@ internal sealed class AdminBootstrapWorkflow
                 cancellationToken);
             if (apply.Code != SetupApplyResultCode.ApplySucceeded)
             {
-                return Failed(
+                return await ConvergeFailedApplyAsync(
                     request,
-                    AdminBootstrapResultCode.ApplyFailed,
-                    apply.ReasonCode ?? "candidate_apply_failed",
-                    databaseBefore.Classification,
-                    configRollback: apply.ConfigRollbackStatus,
-                    manualActionRequired: apply.DeploymentState == SetupManagedDeploymentState.NeedsIntervention);
+                    pending,
+                    disposition,
+                    databaseBefore,
+                    apply);
             }
 
             var databaseAfter = await TryInspectDatabaseAsync();
@@ -609,7 +646,7 @@ internal sealed class AdminBootstrapWorkflow
                     State = AdminBootstrapOwnershipState.Succeeded,
                     LastTransitionAt = Timestamp(),
                 });
-            if (!promote.IsSuccess)
+            if (!promote.CurrentCommitted)
             {
                 return await FailAfterActivationAsync(
                     request,
@@ -633,13 +670,62 @@ internal sealed class AdminBootstrapWorkflow
                 LoginVerification = "succeeded",
                 SetupStatusVerification = "succeeded",
                 VerificationSessionCleanup = "succeeded",
-                ManualActionRequired = false,
+                ManualActionRequired = !promote.IsFullySucceeded,
+                ReasonCode = promote.IsFullySucceeded ? null : "pending_cleanup_required",
             };
         }
         finally
         {
             request.Credential.Dispose();
         }
+    }
+
+    private async Task<AdminBootstrapWorkflowResult> ConvergeFailedApplyAsync(
+        AdminBootstrapRequest request,
+        AdminBootstrapOwnershipDocument pending,
+        SourceAdminDisposition disposition,
+        AdminBootstrapDatabaseSnapshot databaseBefore,
+        SetupApplyResult apply)
+    {
+        var pendingNow = _ownership.ReadPending(request.Layout.ManagedRoot);
+        if (pendingNow.Kind == AdminBootstrapOwnershipReadKind.Valid
+            && pendingNow.Document is { } livePending)
+        {
+            pending = livePending;
+        }
+
+        var databaseAfter = await TryInspectDatabaseAsync() ?? databaseBefore;
+        var rollbackSucceeded = apply.ConfigRollbackStatus == SetupConfigRollbackStatus.Succeeded
+            || string.Equals(apply.ReasonCode, "source_already_active", StringComparison.Ordinal);
+        var ownershipConverged = ConvergeOwnershipAfterConfigRollback(
+            request.Layout,
+            pending,
+            disposition,
+            databaseAfter,
+            apply.ActivationGeneration,
+            rollbackSucceeded,
+            apply.ReasonCode);
+
+        return Failed(
+            request,
+            rollbackSucceeded
+                ? AdminBootstrapResultCode.ConfigRollbackSucceeded
+                : AdminBootstrapResultCode.ApplyFailed,
+            apply.ReasonCode ?? "candidate_apply_failed",
+            databaseAfter.Classification,
+            configRollback: apply.ConfigRollbackStatus,
+            adminExposure: rollbackSucceeded
+                && disposition == SourceAdminDisposition.DisabledMain
+                    ? "disabled"
+                    : rollbackSucceeded
+                        && disposition == SourceAdminDisposition.EnabledManagedSameUser
+                        ? "enabled"
+                        : "unknown",
+            manualActionRequired:
+                !rollbackSucceeded
+                || !ownershipConverged
+                || apply.DeploymentState == SetupManagedDeploymentState.NeedsIntervention
+                || apply.PersistentSideEffectMayRemain);
     }
 
     private async Task<AdminBootstrapWorkflowResult> FailAfterActivationAsync(
@@ -675,37 +761,15 @@ internal sealed class AdminBootstrapWorkflow
             };
         }
 
-        if (rollbackSucceeded && lease.Source.AdminDisposition == SourceAdminDisposition.DisabledMain)
-        {
-            var residual = pending with
-            {
-                State = AdminBootstrapOwnershipState.ResidualAfterConfigRollback,
-                Source = pending.Source with
-                {
-                    ActivationGeneration = rollback.ActivationGeneration
-                        ?? pending.Source.ActivationGeneration,
-                },
-                ObservedDatabaseClassification = database?.Classification,
-                LastTransitionAt = Timestamp(),
-            };
-            _ = _ownership.PromotePendingToCurrent(request.Layout.ManagedRoot, residual);
-        }
-        else if (rollbackSucceeded
-                 && lease.Source.AdminDisposition == SourceAdminDisposition.EnabledManagedSameUser)
-        {
-            _ = _ownership.DeletePending(request.Layout.ManagedRoot);
-        }
-        else
-        {
-            _ = _ownership.WritePending(
-                request.Layout.ManagedRoot,
-                pending with
-                {
-                    State = AdminBootstrapOwnershipState.NeedsIntervention,
-                    ObservedDatabaseClassification = database?.Classification,
-                    LastTransitionAt = Timestamp(),
-                });
-        }
+        var databaseAfter = database ?? await TryInspectDatabaseAsync();
+        var ownershipConverged = ConvergeOwnershipAfterConfigRollback(
+            request.Layout,
+            pending,
+            lease.Source.AdminDisposition,
+            databaseAfter,
+            rollback.ActivationGeneration,
+            rollbackSucceeded,
+            rollback.ReasonCode);
 
         return Failed(
             request,
@@ -713,13 +777,104 @@ internal sealed class AdminBootstrapWorkflow
                 ? AdminBootstrapResultCode.ConfigRollbackSucceeded
                 : AdminBootstrapResultCode.ConfigRollbackFailed,
             reasonCode,
-            database?.Classification ?? "unknown",
+            databaseAfter?.Classification ?? "unknown",
             configRollback: rollback.ConfigRollbackStatus,
             adminExposure: adminExposure,
             loginVerification: loginVerification,
             setupStatusVerification: setupStatusVerification,
             sessionCleanup: cleanup ? "succeeded" : "failed",
-            manualActionRequired: !rollbackSucceeded || !cleanup || adminExposure == "unknown");
+            manualActionRequired:
+                !rollbackSucceeded
+                || !cleanup
+                || !ownershipConverged
+                || adminExposure == "unknown");
+    }
+
+    private bool ConvergeOwnershipAfterConfigRollback(
+        TrustedSetupHostLayout layout,
+        AdminBootstrapOwnershipDocument pending,
+        SourceAdminDisposition disposition,
+        AdminBootstrapDatabaseSnapshot? database,
+        long? activationGeneration,
+        bool rollbackSucceeded,
+        string? reasonCode)
+    {
+        if (!rollbackSucceeded)
+        {
+            return _ownership.WritePending(
+                layout.ManagedRoot,
+                pending with
+                {
+                    State = AdminBootstrapOwnershipState.NeedsIntervention,
+                    ObservedDatabaseClassification = database?.Classification,
+                    LastTransitionAt = Timestamp(),
+                }).IsSuccess;
+        }
+
+        if (disposition == SourceAdminDisposition.EnabledManagedSameUser)
+        {
+            var deleted = _ownership.DeletePending(layout.ManagedRoot).IsSuccess;
+            if (!deleted)
+                return false;
+
+            if (activationGeneration is null)
+                return true;
+
+            var current = _ownership.ReadCurrent(layout.ManagedRoot);
+            if (current.Kind != AdminBootstrapOwnershipReadKind.Valid
+                || current.Document is not { } succeeded
+                || !string.Equals(
+                    succeeded.State,
+                    AdminBootstrapOwnershipState.Succeeded,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return _ownership.TryUpdateSucceededCurrentGeneration(
+                layout.ManagedRoot,
+                succeeded.OperationId,
+                pending.Source.BundleId,
+                activationGeneration.Value).IsSuccess;
+        }
+
+        var residualRequired = database is not null
+            && string.Equals(
+                database.Classification,
+                AdminBootstrapDatabaseClassification.ManagedSameUser,
+                StringComparison.Ordinal);
+        if (residualRequired || disposition == SourceAdminDisposition.DisabledMain)
+        {
+            if (!residualRequired
+                && string.Equals(reasonCode, "source_already_active", StringComparison.Ordinal)
+                && (database is null
+                    || string.Equals(
+                        database.Classification,
+                        AdminBootstrapDatabaseClassification.Fresh,
+                        StringComparison.Ordinal)))
+            {
+                return _ownership.DeletePending(layout.ManagedRoot).IsSuccess;
+            }
+
+            if (!residualRequired)
+                return _ownership.DeletePending(layout.ManagedRoot).IsSuccess;
+
+            var residual = pending with
+            {
+                State = AdminBootstrapOwnershipState.ResidualAfterConfigRollback,
+                Source = pending.Source with
+                {
+                    ActivationGeneration = activationGeneration
+                        ?? pending.Source.ActivationGeneration,
+                },
+                ObservedDatabaseClassification = database?.Classification,
+                LastTransitionAt = Timestamp(),
+            };
+            var promote = _ownership.PromotePendingToCurrent(layout.ManagedRoot, residual);
+            return promote.CurrentCommitted;
+        }
+
+        return _ownership.DeletePending(layout.ManagedRoot).IsSuccess;
     }
 
     private async Task<bool> CleanupSessionAsync(AdminBootstrapOperationId operationId)
@@ -919,41 +1074,29 @@ internal sealed class AdminBootstrapWorkflow
         }
     }
 
-    private bool ConvergeRecoveredRollback(
+    private async Task<bool> ConvergeRecoveredRollbackAsync(
         TrustedSetupHostLayout layout,
         AdminBootstrapOwnershipDocument pending,
         SetupApplyResult rollback)
     {
-        if (rollback.ConfigRollbackStatus != SetupConfigRollbackStatus.Succeeded)
+        AdminBootstrapDatabaseSnapshot? database;
+        try
         {
-            return _ownership.WritePending(
-                layout.ManagedRoot,
-                pending with
-                {
-                    State = AdminBootstrapOwnershipState.NeedsIntervention,
-                    LastTransitionAt = Timestamp(),
-                }).IsSuccess;
+            database = await _database.InspectReadOnlyAsync(CancellationToken.None);
+        }
+        catch
+        {
+            database = null;
         }
 
-        // armed + source already ACTIVE: abort pending and leave current unchanged.
-        if (string.Equals(rollback.ReasonCode, "source_already_active", StringComparison.Ordinal))
-            return _ownership.DeletePending(layout.ManagedRoot).IsSuccess;
-
-        if (pending.Source.AdminDisposition == SourceAdminDisposition.EnabledManagedSameUser)
-            return _ownership.DeletePending(layout.ManagedRoot).IsSuccess;
-
-        return _ownership.PromotePendingToCurrent(
-            layout.ManagedRoot,
-            pending with
-            {
-                State = AdminBootstrapOwnershipState.ResidualAfterConfigRollback,
-                Source = pending.Source with
-                {
-                    ActivationGeneration = rollback.ActivationGeneration
-                        ?? pending.Source.ActivationGeneration,
-                },
-                LastTransitionAt = Timestamp(),
-            }).IsSuccess;
+        return ConvergeOwnershipAfterConfigRollback(
+            layout,
+            pending,
+            pending.Source.AdminDisposition,
+            database,
+            rollback.ActivationGeneration,
+            rollback.ConfigRollbackStatus == SetupConfigRollbackStatus.Succeeded,
+            rollback.ReasonCode);
     }
 
     private static AdminBootstrapWorkflowResult RecoveryResult(

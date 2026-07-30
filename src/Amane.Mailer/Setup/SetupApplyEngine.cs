@@ -854,7 +854,15 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
         }
 
         // Step 19.
-        gate = await GateAsync(context, SetupTransactionPhase.Recreating, migrationAttempted, migrationAttempted);
+        var adminDatabaseSideEffect = context.CandidateRecorded?.AdminBootstrapExpectation is not null;
+        gate = await GateAsync(
+            context,
+            SetupTransactionPhase.Recreating,
+            migrationAttempted || adminDatabaseSideEffect,
+            migrationAttempted,
+            adminDatabaseSideEffect && !migrationAttempted
+                ? SetupPersistentSideEffectKind.AdminDatabase
+                : SetupPersistentSideEffectKind.DatabaseMigration);
         if (gate is not null)
         {
             return gate;
@@ -867,7 +875,14 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
         }
 
         // Step 20. The running container must prove it resolved this bundle before anything is committed.
-        gate = await GateAsync(context, SetupTransactionPhase.Inspecting, migrationAttempted, migrationAttempted);
+        gate = await GateAsync(
+            context,
+            SetupTransactionPhase.Inspecting,
+            migrationAttempted || adminDatabaseSideEffect,
+            migrationAttempted,
+            adminDatabaseSideEffect && !migrationAttempted
+                ? SetupPersistentSideEffectKind.AdminDatabase
+                : SetupPersistentSideEffectKind.DatabaseMigration);
         if (gate is not null)
         {
             return gate;
@@ -1025,9 +1040,12 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
 
         var layout = context.Layout;
         var session = context.Session;
+        var sideEffectMayRemain = migrationAttempted || context.Stamp.PersistentSideEffectMayRemain;
         var sideEffectKind = migrationAttempted
             ? SetupPersistentSideEffectKind.DatabaseMigration
-            : SetupPersistentSideEffectKind.None;
+            : context.Stamp.PersistentSideEffectMayRemain
+                ? context.Stamp.PersistentSideEffectKind
+                : SetupPersistentSideEffectKind.None;
 
         // 1. Announce the rollback before doing any of it.
         context.Stamp = context.Stamp with
@@ -1040,7 +1058,7 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
             TargetActivationGeneration = context.Candidate.ActivationGeneration,
             RollbackBundleId = null,
             RollbackActivationGeneration = null,
-            PersistentSideEffectMayRemain = migrationAttempted,
+            PersistentSideEffectMayRemain = sideEffectMayRemain,
             PersistentSideEffectKind = sideEffectKind,
         };
         var stampWrite = WriteStamp(layout, context.Stamp);
@@ -1350,13 +1368,29 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
             return TerminalRollbackFailure(context, reasonCode, migrationAttempted, sideEffectKind, stampDelete.Code);
         }
 
-        // A migration that already ran is not undone by restoring the pointer.
-        return migrationAttempted
+        // A migration that already ran is not undone by restoring the pointer. Admin bootstrap
+        // recreates may leave SQLite Admin rows even when config rolls back to DisabledMain.
+        var sideEffectMayRemain = migrationAttempted
+            || string.Equals(
+                sideEffectKind,
+                SetupPersistentSideEffectKind.AdminDatabase,
+                StringComparison.Ordinal)
+            || string.Equals(
+                sideEffectKind,
+                SetupPersistentSideEffectKind.DatabaseMigration,
+                StringComparison.Ordinal);
+        return sideEffectMayRemain
             ? Fail(
                 SetupApplyResultCode.ApplyFailedRollbackSucceeded,
-                SetupManagedDeploymentState.NeedsIntervention,
-                "Apply failed and configuration rolled back, but a database migration may have persisted.",
-                actionCode: SetupApplyActionCode.ReviewDatabaseSchema,
+                migrationAttempted
+                    ? SetupManagedDeploymentState.NeedsIntervention
+                    : SetupManagedDeploymentState.Active,
+                migrationAttempted
+                    ? "Apply failed and configuration rolled back, but a database migration may have persisted."
+                    : "Apply failed and configuration rolled back; Admin database side effects may remain.",
+                actionCode: migrationAttempted
+                    ? SetupApplyActionCode.ReviewDatabaseSchema
+                    : null,
                 reasonCode: reasonCode,
                 bundleId: restored.BundleId,
                 activationGeneration: restoredGeneration,
@@ -1380,6 +1414,15 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
         string sideEffectKind,
         string? rollbackFailureCode)
     {
+        var sideEffectMayRemain = migrationAttempted
+            || string.Equals(
+                sideEffectKind,
+                SetupPersistentSideEffectKind.AdminDatabase,
+                StringComparison.Ordinal)
+            || string.Equals(
+                sideEffectKind,
+                SetupPersistentSideEffectKind.DatabaseMigration,
+                StringComparison.Ordinal);
         // Leave a terminal stamp so a later apply refuses and recovery reports intervention. Which
         // generation is effective is deliberately not guessed.
         context.Stamp = context.Stamp with
@@ -1388,7 +1431,7 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
             Phase = SetupTransactionPhase.RollbackPending,
             Terminal = true,
             ReasonCode = rollbackFailureCode ?? reasonCode,
-            PersistentSideEffectMayRemain = migrationAttempted,
+            PersistentSideEffectMayRemain = sideEffectMayRemain,
             PersistentSideEffectKind = sideEffectKind,
         };
         _ = WriteStamp(context.Layout, context.Stamp);
@@ -1400,7 +1443,7 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
             actionCode: SetupApplyActionCode.ManualInterventionRequired,
             reasonCode: reasonCode,
             configRollbackStatus: SetupConfigRollbackStatus.Failed,
-            persistentSideEffectMayRemain: migrationAttempted,
+            persistentSideEffectMayRemain: sideEffectMayRemain,
             persistentSideEffectKind: sideEffectKind);
     }
 
@@ -2858,17 +2901,46 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
     private SetupDockerResult DeleteStamp(TrustedSetupHostLayout layout) =>
         _writer.TryDurableDelete(layout.ManagedRoot, layout.TransactionStampPath);
 
-    private SetupDockerResult AdvancePhase(ApplyContext context, string phase, bool persistentSideEffect)
+    private SetupDockerResult AdvancePhase(
+        ApplyContext context,
+        string phase,
+        bool persistentSideEffect,
+        string? persistentSideEffectKind = null)
     {
+        var previousMayRemain = context.Stamp.PersistentSideEffectMayRemain;
+        var previousKind = previousMayRemain
+            ? context.Stamp.PersistentSideEffectKind
+            : SetupPersistentSideEffectKind.None;
+        var mayRemain = persistentSideEffect || previousMayRemain;
+        var incomingKind = persistentSideEffect
+            ? persistentSideEffectKind ?? SetupPersistentSideEffectKind.DatabaseMigration
+            : SetupPersistentSideEffectKind.None;
         context.Stamp = context.Stamp with
         {
             Phase = phase,
-            PersistentSideEffectMayRemain = persistentSideEffect,
-            PersistentSideEffectKind = persistentSideEffect
-                ? SetupPersistentSideEffectKind.DatabaseMigration
+            PersistentSideEffectMayRemain = mayRemain,
+            PersistentSideEffectKind = mayRemain
+                ? MergePersistentSideEffectKind(previousKind, incomingKind)
                 : SetupPersistentSideEffectKind.None,
         };
         return WriteStamp(context.Layout, context.Stamp);
+    }
+
+    private static string MergePersistentSideEffectKind(string left, string right)
+    {
+        if (string.Equals(left, SetupPersistentSideEffectKind.DatabaseMigration, StringComparison.Ordinal)
+            || string.Equals(right, SetupPersistentSideEffectKind.DatabaseMigration, StringComparison.Ordinal))
+        {
+            return SetupPersistentSideEffectKind.DatabaseMigration;
+        }
+
+        if (string.Equals(left, SetupPersistentSideEffectKind.AdminDatabase, StringComparison.Ordinal)
+            || string.Equals(right, SetupPersistentSideEffectKind.AdminDatabase, StringComparison.Ordinal))
+        {
+            return SetupPersistentSideEffectKind.AdminDatabase;
+        }
+
+        return SetupPersistentSideEffectKind.None;
     }
 
     private SetupDockerResult AdvanceRollbackPhase(ApplyContext context, string phase)
@@ -2885,9 +2957,10 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
         ApplyContext context,
         string phase,
         bool persistentSideEffect,
-        bool migrationAttempted)
+        bool migrationAttempted,
+        string? persistentSideEffectKind = null)
     {
-        var write = AdvancePhase(context, phase, persistentSideEffect);
+        var write = AdvancePhase(context, phase, persistentSideEffect, persistentSideEffectKind);
         return write.IsSuccess
             ? null
             : await RollbackAsync(context, "durable_write_failed", migrationAttempted);

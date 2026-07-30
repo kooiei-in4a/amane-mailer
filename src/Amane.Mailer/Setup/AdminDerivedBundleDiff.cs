@@ -96,14 +96,19 @@ internal static class AdminDerivedBundleDiff
 
         foreach (var key in keys)
         {
-            source.TryGetValue(key, out var sourceValue);
-            candidate.TryGetValue(key, out var candidateValue);
-            sourceValue ??= string.Empty;
-            candidateValue ??= string.Empty;
-
+            var sourcePresent = source.ContainsKey(key);
+            var candidatePresent = candidate.ContainsKey(key);
             if (allowedChangedKeys.Contains(key))
                 continue;
 
+            if (sourcePresent != candidatePresent)
+            {
+                reasonCode = "admin_derived_disallowed_env_diff";
+                return false;
+            }
+
+            var sourceValue = sourcePresent ? source[key] : string.Empty;
+            var candidateValue = candidatePresent ? candidate[key] : string.Empty;
             var normalizedSource = RewriteBundleId(sourceValue, sourceBundleId, candidateBundleId);
             if (!string.Equals(normalizedSource, candidateValue, StringComparison.Ordinal))
             {

@@ -113,6 +113,25 @@ internal readonly record struct AdminBootstrapOwnershipReadResult(
     AdminBootstrapOwnershipReadKind Kind,
     AdminBootstrapOwnershipDocument? Document);
 
+internal enum AdminBootstrapPromotionKind
+{
+    NotCommitted = 0,
+    CurrentCommittedAndPendingDeleted = 1,
+    CurrentCommittedPendingCleanupRequired = 2,
+}
+
+internal readonly record struct AdminBootstrapPromotionResult(
+    AdminBootstrapPromotionKind Kind,
+    string? ReasonCode)
+{
+    internal bool CurrentCommitted =>
+        Kind is AdminBootstrapPromotionKind.CurrentCommittedAndPendingDeleted
+            or AdminBootstrapPromotionKind.CurrentCommittedPendingCleanupRequired;
+
+    internal bool IsFullySucceeded =>
+        Kind == AdminBootstrapPromotionKind.CurrentCommittedAndPendingDeleted;
+}
+
 /// <summary>
 /// Owner-only current/pending state. New attempts never overwrite current until the pending
 /// operation has reached session-cleaned and candidate authority is re-verified.
@@ -139,7 +158,41 @@ internal sealed class AdminBootstrapOwnershipStore
         AdminBootstrapOwnershipDocument document) =>
         Write(managedRoot, SetupBundleLayout.AdminBootstrapPendingPath(managedRoot), document);
 
-    internal SetupDockerResult PromotePendingToCurrent(
+    /// <summary>
+    /// Creates pending ownership only when no pending file exists. Existing pending is fail-closed
+    /// so crash-recovery authority cannot be overwritten by a new operation.
+    /// </summary>
+    internal SetupDockerResult WritePendingPrepared(
+        string managedRoot,
+        AdminBootstrapOwnershipDocument document)
+    {
+        if (!string.Equals(document.State, AdminBootstrapOwnershipState.Prepared, StringComparison.Ordinal))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Prepared ownership state is invalid.");
+        }
+
+        var path = SetupBundleLayout.AdminBootstrapPendingPath(managedRoot);
+        var stateDir = SetupBundleLayout.StateDir(managedRoot);
+        if (!EnsureSafeStateDirectory(managedRoot, stateDir))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.UnsafePath,
+                "Ownership state directory rejected.");
+        }
+
+        if (_fileSystem.FileExists(path))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "An unfinished Admin bootstrap pending operation already exists.");
+        }
+
+        return Write(managedRoot, path, document);
+    }
+
+    internal AdminBootstrapPromotionResult PromotePendingToCurrent(
         string managedRoot,
         AdminBootstrapOwnershipDocument document)
     {
@@ -149,21 +202,67 @@ internal sealed class AdminBootstrapOwnershipStore
                 AdminBootstrapOwnershipState.ResidualAfterConfigRollback,
                 StringComparison.Ordinal))
         {
-            return SetupDockerResult.Fail(
-                SetupDockerResultCode.InvalidBundleInventory,
-                "Ownership promotion state is invalid.");
+            return new(
+                AdminBootstrapPromotionKind.NotCommitted,
+                SetupDockerResultCode.InvalidBundleInventory);
         }
 
         var write = Write(managedRoot, SetupBundleLayout.AdminBootstrapCurrentPath(managedRoot), document);
-        return write.IsSuccess
-            ? DeletePending(managedRoot)
-            : write;
+        if (!write.IsSuccess)
+            return new(AdminBootstrapPromotionKind.NotCommitted, write.Code);
+
+        var delete = DeletePending(managedRoot);
+        return delete.IsSuccess
+            ? new(AdminBootstrapPromotionKind.CurrentCommittedAndPendingDeleted, null)
+            : new(AdminBootstrapPromotionKind.CurrentCommittedPendingCleanupRequired, delete.Code);
     }
 
     internal SetupDockerResult DeletePending(string managedRoot) =>
         _writer.TryDurableDelete(
             managedRoot,
             SetupBundleLayout.AdminBootstrapPendingPath(managedRoot));
+
+    /// <summary>
+    /// Updates the succeeded current ownership candidate generation after a ManagedSameUser
+    /// source rollback that reactivates the same bundle under a newer activation generation.
+    /// </summary>
+    internal SetupDockerResult TryUpdateSucceededCurrentGeneration(
+        string managedRoot,
+        string expectedOperationId,
+        string expectedBundleId,
+        long newActivationGeneration)
+    {
+        var current = ReadCurrent(managedRoot);
+        if (current.Kind != AdminBootstrapOwnershipReadKind.Valid
+            || current.Document is not { } document
+            || !string.Equals(
+                document.State,
+                AdminBootstrapOwnershipState.Succeeded,
+                StringComparison.Ordinal)
+            || !string.Equals(document.OperationId, expectedOperationId, StringComparison.Ordinal)
+            || !string.Equals(document.Candidate.BundleId, expectedBundleId, StringComparison.Ordinal))
+        {
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Current ownership could not be refreshed after source rollback.");
+        }
+
+        return Write(
+            managedRoot,
+            SetupBundleLayout.AdminBootstrapCurrentPath(managedRoot),
+            document with
+            {
+                Candidate = document.Candidate with
+                {
+                    ExpectedActivationGeneration = newActivationGeneration,
+                },
+                Source = document.Source with
+                {
+                    ActivationGeneration = newActivationGeneration,
+                },
+                LastTransitionAt = DateTime.UtcNow.ToString("O"),
+            });
+    }
 
     private SetupDockerResult Write(
         string managedRoot,

@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Http;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Amane.Mailer.Admin;
@@ -151,7 +153,7 @@ public sealed class AdminBootstrapContractsTests
             var store = new AdminBootstrapOwnershipStore(fileSystem);
             var currentOperation = AdminBootstrapOperationId.Create();
             var current = Ownership(currentOperation, AdminBootstrapOwnershipState.Succeeded, "bundle-current");
-            Assert.True(store.PromotePendingToCurrent(root, current).IsSuccess);
+            Assert.True(store.PromotePendingToCurrent(root, current).IsFullySucceeded);
 
             var pendingOperation = AdminBootstrapOperationId.Create();
             var pending = Ownership(pendingOperation, AdminBootstrapOwnershipState.Prepared, "bundle-pending");
@@ -455,6 +457,126 @@ public sealed class AdminBootstrapContractsTests
     }
 
     [Fact]
+    public void Exact_delta_rejects_empty_value_key_presence_changes()
+    {
+        var source = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["MAILER_HTTP_PORT"] = "8080",
+        };
+        var candidate = new Dictionary<string, string>(source, StringComparer.Ordinal)
+        {
+            ["DISALLOWED_KEY"] = "",
+        };
+
+        Assert.False(
+            AdminDerivedBundleDiff.TryValidate(
+                "source",
+                "candidate",
+                source,
+                new Dictionary<string, string>(StringComparer.Ordinal),
+                candidate,
+                new Dictionary<string, string>(StringComparer.Ordinal),
+                "{}",
+                "{}",
+                null,
+                null,
+                null,
+                null,
+                out var reason));
+        Assert.Equal("admin_derived_disallowed_env_diff", reason);
+    }
+
+    [Fact]
+    public void Pending_prepared_write_is_create_only()
+    {
+        var root = TempRoot();
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new AdminBootstrapOwnershipStore(new HostSetupFileSystem());
+            var first = Ownership(
+                AdminBootstrapOperationId.Create(),
+                AdminBootstrapOwnershipState.Prepared,
+                "bundle-a");
+            Assert.True(store.WritePendingPrepared(root, first).IsSuccess);
+            var second = Ownership(
+                AdminBootstrapOperationId.Create(),
+                AdminBootstrapOwnershipState.Prepared,
+                "bundle-b");
+            Assert.False(store.WritePendingPrepared(root, second).IsSuccess);
+            var pending = store.ReadPending(root);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Valid, pending.Kind);
+            Assert.True(
+                string.Equals(first.OperationId, pending.Document!.OperationId, StringComparison.Ordinal),
+                "Existing pending ownership was overwritten.");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Promotion_keeps_current_when_pending_delete_fails_semantics_are_split()
+    {
+        var root = TempRoot();
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new AdminBootstrapOwnershipStore(new HostSetupFileSystem());
+            var pending = Ownership(
+                AdminBootstrapOperationId.Create(),
+                AdminBootstrapOwnershipState.Succeeded,
+                "bundle-candidate");
+            Assert.True(store.WritePending(root, pending).IsSuccess);
+            var promote = store.PromotePendingToCurrent(root, pending);
+            Assert.Equal(
+                AdminBootstrapPromotionKind.CurrentCommittedAndPendingDeleted,
+                promote.Kind);
+            Assert.True(promote.CurrentCommitted);
+            Assert.True(promote.IsFullySucceeded);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Missing, store.ReadPending(root).Kind);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Valid, store.ReadCurrent(root).Kind);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Login_redirect_rejects_cross_origin_absolute_location()
+    {
+        Assert.True(
+            TrustedAdminAccessEndpoint.TryCreate(
+                AdminAccessProfile.LocalDevelopment,
+                new Uri("http://127.0.0.1:8080/"),
+                out var endpoint));
+        using var response = new HttpResponseMessage(HttpStatusCode.Redirect)
+        {
+            Headers = { Location = new Uri("https://evil.example/admin") },
+        };
+        Assert.False(
+            AdminAccessVerifier.IsExpectedSameOriginRedirect(endpoint!, response, "/admin"));
+
+        using var sameOrigin = new HttpResponseMessage(HttpStatusCode.Redirect)
+        {
+            Headers = { Location = new Uri("http://127.0.0.1:8080/admin") },
+        };
+        Assert.True(
+            AdminAccessVerifier.IsExpectedSameOriginRedirect(endpoint!, sameOrigin, "/admin"));
+
+        using var networkPath = new HttpResponseMessage(HttpStatusCode.Redirect)
+        {
+            Headers = { Location = new Uri("//evil.example/admin", UriKind.Relative) },
+        };
+        Assert.False(
+            AdminAccessVerifier.IsExpectedSameOriginRedirect(endpoint!, networkPath, "/admin"));
+    }
+
+    [Fact]
     public void Armed_source_already_active_aborts_pending_without_touching_current()
     {
         var root = TempRoot();
@@ -468,7 +590,7 @@ public sealed class AdminBootstrapContractsTests
                 AdminBootstrapOwnershipState.Succeeded,
                 "bundle-current");
             Assert.True(store.WritePending(root, current).IsSuccess);
-            Assert.True(store.PromotePendingToCurrent(root, current).IsSuccess);
+            Assert.True(store.PromotePendingToCurrent(root, current).IsFullySucceeded);
 
             var pendingOperation = AdminBootstrapOperationId.Create();
             var pending = Ownership(
@@ -477,7 +599,7 @@ public sealed class AdminBootstrapContractsTests
                 "bundle-candidate");
             Assert.True(store.WritePending(root, pending).IsSuccess);
 
-            // Recovery path for armed + source ACTIVE deletes pending and leaves current.
+            // Recovery path for armed + source ACTIVE + Fresh DB deletes pending and leaves current.
             Assert.True(store.DeletePending(root).IsSuccess);
             var currentRead = store.ReadCurrent(root);
             var pendingRead = store.ReadPending(root);
@@ -496,6 +618,75 @@ public sealed class AdminBootstrapContractsTests
             if (Directory.Exists(root))
                 Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void Managed_same_user_generation_refresh_updates_current_authority()
+    {
+        var root = TempRoot();
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new AdminBootstrapOwnershipStore(new HostSetupFileSystem());
+            var operation = AdminBootstrapOperationId.Create();
+            var current = Ownership(
+                operation,
+                AdminBootstrapOwnershipState.Succeeded,
+                "bundle-source");
+            Assert.True(store.WritePending(root, current).IsSuccess);
+            Assert.True(store.PromotePendingToCurrent(root, current).IsFullySucceeded);
+
+            Assert.True(
+                store.TryUpdateSucceededCurrentGeneration(
+                    root,
+                    operation.Value,
+                    "bundle-source",
+                    12).IsSuccess);
+            var refreshed = store.ReadCurrent(root).Document!;
+            Assert.Equal(12, refreshed.Candidate.ExpectedActivationGeneration);
+            Assert.Equal(12, refreshed.Source.ActivationGeneration);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Workflow_canonical_result_projection_omits_operation_and_session_fields()
+    {
+        var result = new AdminBootstrapWorkflowResult
+        {
+            Code = AdminBootstrapResultCode.Succeeded,
+            AccessProfile = "local-development",
+            ConfigRollback = SetupConfigRollbackStatus.NotApplicable,
+            AdminDatabaseState = AdminBootstrapDatabaseClassification.ManagedSameUser,
+            AdminExposure = "enabled",
+            LoginVerification = "succeeded",
+            SetupStatusVerification = "succeeded",
+            VerificationSessionCleanup = "succeeded",
+            ManualActionRequired = false,
+            ReasonCode = null,
+        };
+        var projection = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["code"] = result.Code,
+            ["accessProfile"] = result.AccessProfile,
+            ["configRollback"] = result.ConfigRollback,
+            ["adminDatabaseState"] = result.AdminDatabaseState,
+            ["adminExposure"] = result.AdminExposure,
+            ["loginVerification"] = result.LoginVerification,
+            ["setupStatusVerification"] = result.SetupStatusVerification,
+            ["verificationSessionCleanup"] = result.VerificationSessionCleanup,
+            ["manualActionRequired"] = result.ManualActionRequired,
+            ["reasonCode"] = result.ReasonCode,
+        };
+        var json = JsonSerializer.Serialize(projection);
+        Assert.DoesNotContain("operationId", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sessionId", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("setup-v1:", json, StringComparison.Ordinal);
+        Assert.Contains("admin.bootstrap.succeeded", json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -631,28 +822,6 @@ public sealed class AdminBootstrapContractsTests
             if (Directory.Exists(root))
                 Directory.Delete(root, recursive: true);
         }
-    }
-
-    [Fact]
-    public void Workflow_canonical_result_has_no_operation_or_session_fields()
-    {
-        var result = new AdminBootstrapWorkflowResult
-        {
-            Code = AdminBootstrapResultCode.Succeeded,
-            AccessProfile = "local-development",
-            ConfigRollback = SetupConfigRollbackStatus.NotApplicable,
-            AdminDatabaseState = AdminBootstrapDatabaseClassification.ManagedSameUser,
-            AdminExposure = "enabled",
-            LoginVerification = "succeeded",
-            SetupStatusVerification = "succeeded",
-            VerificationSessionCleanup = "succeeded",
-            ManualActionRequired = false,
-            ReasonCode = null,
-        };
-        var json = JsonSerializer.Serialize(result);
-        Assert.DoesNotContain("operationId", json, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("sessionId", json, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("setup-v1:", json, StringComparison.Ordinal);
     }
 
     private static SetupRecordedMetadata Recorded(AdminBootstrapOperationId operationId) =>

@@ -199,7 +199,7 @@ internal sealed partial class AdminAccessVerifier
                 or HttpStatusCode.TemporaryRedirect;
             if (!sessionMayExist
                 || !IsSameOrigin(endpoint, login.RequestMessage?.RequestUri)
-                || !IsExpectedLocalRedirect(login, "/admin"))
+                || !IsExpectedSameOriginRedirect(endpoint, login, "/admin"))
             {
                 return Failed("login-verification-failed", sessionMayExist, loginPageReached: true);
             }
@@ -265,6 +265,36 @@ internal sealed partial class AdminAccessVerifier
             Code = code,
         };
 
+    internal static bool IsExpectedSameOriginRedirect(
+        TrustedAdminAccessEndpoint endpoint,
+        HttpResponseMessage response,
+        string expectedPath)
+    {
+        var location = response.Headers.Location;
+        if (location is null)
+            return false;
+
+        if (!location.IsAbsoluteUri)
+        {
+            var relative = location.OriginalString;
+            if (string.IsNullOrWhiteSpace(relative)
+                || relative.StartsWith("//", StringComparison.Ordinal)
+                || relative.Contains('?', StringComparison.Ordinal)
+                || relative.Contains('#', StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return string.Equals(relative, expectedPath, StringComparison.Ordinal);
+        }
+
+        return IsSameOrigin(endpoint, location)
+            && string.Equals(location.AbsolutePath, expectedPath, StringComparison.Ordinal)
+            && string.IsNullOrEmpty(location.Query)
+            && string.IsNullOrEmpty(location.Fragment)
+            && string.IsNullOrEmpty(location.UserInfo);
+    }
+
     private static bool IsSameOrigin(TrustedAdminAccessEndpoint endpoint, Uri? uri) =>
         uri is not null
         && string.Equals(endpoint.Origin.Scheme, uri.Scheme, StringComparison.OrdinalIgnoreCase)
@@ -273,17 +303,6 @@ internal sealed partial class AdminAccessVerifier
 
     private static bool IsHtml(MediaTypeHeaderValue? contentType) =>
         string.Equals(contentType?.MediaType, "text/html", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsExpectedLocalRedirect(HttpResponseMessage response, string expectedPath)
-    {
-        var location = response.Headers.Location;
-        if (location is null)
-            return false;
-
-        return location.IsAbsoluteUri
-            ? string.Equals(location.AbsolutePath, expectedPath, StringComparison.Ordinal)
-            : string.Equals(location.OriginalString, expectedPath, StringComparison.Ordinal);
-    }
 
     [GeneratedRegex(
         "name=\"__RequestVerificationToken\"\\s+value=\"([^\"]+)\"",
