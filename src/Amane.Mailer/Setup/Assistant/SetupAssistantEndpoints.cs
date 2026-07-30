@@ -368,10 +368,15 @@ internal static class SetupAssistantEndpoints
         }
 
         session.MarkApplyStarted();
-        var outcome = await step.Operations.ApplyMainSetupAsync(
-            BuildMainSetupInput(session, mode, environmentConfirmation, intentConfirmation),
+        var result = await SetupAssistantMainSetupOrchestrator.RunAsync(
+            step.Operations,
+            BuildApplyRunRequest(
+                session,
+                mode,
+                environmentConfirmation,
+                intentConfirmation),
             step.CancellationToken);
-        session.SetMainSetup(outcome);
+        session.SetMainSetup(result.MainSetup!);
         if (session.ConfigurationStageSucceeded)
         {
             // Every later stage works from the #451 applied proof, so the provider and ACS material
@@ -439,18 +444,21 @@ internal static class SetupAssistantEndpoints
 
         session.SetStagingRecipient(recipient);
         session.MarkStagingSendStarted();
-        var outcome = await step.Operations.VerifyStagingAsync(
-            new SetupAssistantStagingInput
+        var result = await SetupAssistantMainSetupOrchestrator.RunAsync(
+            step.Operations,
+            new SetupAssistantMainSetupRunRequest
             {
+                Mode = SetupMode.StagingVerification,
+                Phase = SetupAssistantMainSetupRunPhase.StagingVerification,
+                ExistingAppliedProof = proof,
                 TenantId = session.TenantId,
-                RecipientEmail = recipient,
-                EnvironmentConfirmation = step.Field("environment_confirmation"),
-                IntentConfirmation = step.Field("intent_confirmation"),
+                StagingRecipientEmail = recipient,
+                StagingEnvironmentConfirmation = step.Field("environment_confirmation"),
+                StagingIntentConfirmation = step.Field("intent_confirmation"),
                 AssistantSessionId = session.SessionId,
-                AppliedProof = proof,
             },
             step.CancellationToken);
-        session.SetStaging(outcome);
+        session.SetStaging(result.Staging!);
         session.MoveTo(SetupAssistantStep.DeploymentVerification);
     }
 
@@ -474,14 +482,19 @@ internal static class SetupAssistantEndpoints
         }
 
         session.MarkLiveSendingPromotionStarted();
-        var outcome = await step.Operations.EnableLiveSendingAsync(
-            new SetupAssistantProductionInput
+        var result = await SetupAssistantMainSetupOrchestrator.RunAsync(
+            step.Operations,
+            new SetupAssistantMainSetupRunRequest
             {
-                EnvironmentConfirmation = environmentConfirmation,
+                Mode = SetupMode.ProductionAcs,
+                Phase = SetupAssistantMainSetupRunPhase.LiveSendingEnablement,
+                ExistingAppliedProof = proof,
+                TenantId = session.TenantId,
+                ProductionEnvironmentConfirmation = environmentConfirmation,
                 LiveSendingEnableApproval = approval,
-                AppliedProof = proof,
             },
             step.CancellationToken);
+        var outcome = result.LiveSending!;
         // Recorded apart from the apply result: a failed enablement is a live-sending failure, not
         // a retraction of the main setup that already succeeded.
         session.SetLiveSending(outcome);
@@ -632,6 +645,23 @@ internal static class SetupAssistantEndpoints
         session.MoveTo(SetupAssistantStep.FinalGuidance);
     }
 
+    private static SetupAssistantMainSetupRunRequest BuildApplyRunRequest(
+        SetupAssistantSession session,
+        SetupMode mode,
+        string environmentConfirmation,
+        string intentConfirmation) =>
+        new()
+        {
+            Mode = mode,
+            Phase = SetupAssistantMainSetupRunPhase.Apply,
+            SkipDockerPreflight = session.DockerPreflight is { Passed: true },
+            MainSetupInput = BuildMainSetupInput(
+                session,
+                mode,
+                environmentConfirmation,
+                intentConfirmation),
+            TenantId = session.TenantId,
+        };
     private static SetupAssistantMainSetupInput BuildMainSetupInput(
         SetupAssistantSession session,
         SetupMode mode,

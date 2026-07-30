@@ -92,4 +92,13 @@ public sealed class SetupAssistantBindTests
         Assert.False(SetupAssistantOptions.TryResolvePort("70000", out _));
         Assert.False(SetupAssistantOptions.TryResolvePort("0.0.0.0", out _));
     }
+
+    [Fact]
+    public void Host_allowlist_includes_only_loopback_authorities()
+    {
+        var allowlist = SetupAssistantOptions.BuildHostAllowlist(5280);
+        Assert.Contains("127.0.0.1:5280", allowlist);
+        Assert.Contains("localhost:5280", allowlist);
+        Assert.DoesNotContain("0.0.0.0", string.Join(',', allowlist), StringComparison.Ordinal);
+    }
 }
