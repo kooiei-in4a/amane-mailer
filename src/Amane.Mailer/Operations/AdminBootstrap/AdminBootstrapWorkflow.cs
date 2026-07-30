@@ -62,13 +62,13 @@ internal sealed class AdminBootstrapWorkflow
 
     private readonly SetupCore _setupCore;
     private readonly ISetupFileSystem _fileSystem;
-    private readonly AdminBootstrapDatabase _database;
     private readonly AdminBootstrapSourceClassifier _sourceClassifier;
     private readonly AdminBootstrapOwnershipStore _ownership;
     private readonly ISetupVerifiedWorkflowApplyEngine _applyEngine;
     private readonly AdminAccessVerifier _accessVerifier;
     private readonly AdminSessionRepository _sessions;
     private readonly TimeProvider _timeProvider;
+    private readonly Func<CancellationToken, Task<AdminBootstrapDatabaseSnapshot>> _inspectDatabase;
 
     internal AdminBootstrapWorkflow(
         SetupCore setupCore,
@@ -79,24 +79,27 @@ internal sealed class AdminBootstrapWorkflow
         ISetupVerifiedWorkflowApplyEngine applyEngine,
         AdminAccessVerifier accessVerifier,
         AdminSessionRepository sessions,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        Func<CancellationToken, Task<AdminBootstrapDatabaseSnapshot>>? inspectDatabase = null)
     {
         _setupCore = setupCore;
         _fileSystem = fileSystem;
-        _database = database;
         _sourceClassifier = sourceClassifier;
         _ownership = ownership;
         _applyEngine = applyEngine;
         _accessVerifier = accessVerifier;
         _sessions = sessions;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _inspectDatabase = inspectDatabase ?? database.InspectReadOnlyAsync;
     }
 
     internal async Task<AdminBootstrapWorkflowResult> RecoverAsync(
         TrustedSetupHostLayout layout,
-        AdminAccessProfile profile,
+        TrustedAdminAccessEndpoint accessEndpoint,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(accessEndpoint);
+        var profile = accessEndpoint.Profile;
         var pendingRead = _ownership.ReadPending(layout.ManagedRoot);
         if (pendingRead.Kind == AdminBootstrapOwnershipReadKind.Missing)
             return RecoveryResult(profile, AdminBootstrapResultCode.PreflightRejected, "no_pending_operation");
@@ -122,16 +125,29 @@ internal sealed class AdminBootstrapWorkflow
                 AdminBootstrapOwnershipState.Succeeded,
                 StringComparison.Ordinal))
         {
-            var delete = _ownership.DeletePending(layout.ManagedRoot);
+            var exposure = await ProbeExposureAfterRollbackAsync(
+                accessEndpoint,
+                SourceAdminDisposition.EnabledManagedSameUser,
+                rollbackSucceeded: true);
+            var delete = exposure == "enabled"
+                ? _ownership.DeletePending(layout.ManagedRoot)
+                : SetupDockerResult.Fail(
+                    SetupDockerResultCode.FailedUnexpected,
+                    "Admin exposure could not be confirmed.");
+            var fullyConverged = exposure == "enabled" && delete.IsSuccess;
             return RecoveryResult(
                 profile,
-                delete.IsSuccess
+                fullyConverged
                     ? AdminBootstrapResultCode.Succeeded
                     : AdminBootstrapResultCode.ManualActionRequired,
-                delete.IsSuccess ? "pending_cleanup_completed" : "pending_cleanup_failed",
-                adminExposure: "enabled",
+                exposure != "enabled"
+                    ? "admin_exposure_unknown"
+                    : delete.IsSuccess
+                        ? "pending_cleanup_completed"
+                        : "pending_cleanup_failed",
+                adminExposure: exposure,
                 sessionCleanup: "succeeded",
-                manualActionRequired: !delete.IsSuccess);
+                manualActionRequired: !fullyConverged);
         }
 
         if (string.Equals(pending.State, AdminBootstrapOwnershipState.Prepared, StringComparison.Ordinal))
@@ -211,6 +227,11 @@ internal sealed class AdminBootstrapWorkflow
                     layout,
                     pending,
                     rollbackAfterCleanupFailure);
+                var exposure = await ProbeExposureAfterRollbackAsync(
+                    accessEndpoint,
+                    pending.Source.AdminDisposition,
+                    rollbackAfterCleanupFailure.ConfigRollbackStatus
+                        == SetupConfigRollbackStatus.Succeeded);
                 return RecoveryResult(
                     profile,
                     rollbackAfterCleanupFailure.ConfigRollbackStatus
@@ -219,6 +240,7 @@ internal sealed class AdminBootstrapWorkflow
                         : AdminBootstrapResultCode.ConfigRollbackFailed,
                     "admin_session_cleanup_failed",
                     configRollback: rollbackAfterCleanupFailure.ConfigRollbackStatus,
+                    adminExposure: exposure,
                     sessionCleanup: "failed",
                     manualActionRequired: true);
             }
@@ -276,6 +298,10 @@ internal sealed class AdminBootstrapWorkflow
                 pending,
                 cancellationToken);
             var ownershipConverged = await ConvergeRecoveredRollbackAsync(layout, pending, rollback);
+            var exposure = await ProbeExposureAfterRollbackAsync(
+                accessEndpoint,
+                pending.Source.AdminDisposition,
+                rollback.ConfigRollbackStatus == SetupConfigRollbackStatus.Succeeded);
             return RecoveryResult(
                 profile,
                 rollback.ConfigRollbackStatus == SetupConfigRollbackStatus.Succeeded
@@ -283,11 +309,13 @@ internal sealed class AdminBootstrapWorkflow
                     : AdminBootstrapResultCode.ConfigRollbackFailed,
                 "crash_recovery_rollback",
                 configRollback: rollback.ConfigRollbackStatus,
+                adminExposure: exposure,
                 sessionCleanup: cleanup ? "succeeded" : "failed",
                 manualActionRequired:
                     rollback.ConfigRollbackStatus != SetupConfigRollbackStatus.Succeeded
                     || !cleanup
-                    || !ownershipConverged);
+                    || !ownershipConverged
+                    || exposure == "unknown");
         }
 
         return RecoveryResult(
@@ -315,7 +343,7 @@ internal sealed class AdminBootstrapWorkflow
             AdminBootstrapDatabaseSnapshot databaseBefore;
             try
             {
-                databaseBefore = await _database.InspectReadOnlyAsync(cancellationToken);
+                databaseBefore = await _inspectDatabase(cancellationToken);
             }
             catch
             {
@@ -502,7 +530,6 @@ internal sealed class AdminBootstrapWorkflow
                     request,
                     pending,
                     disposition,
-                    databaseBefore,
                     apply);
             }
 
@@ -680,11 +707,10 @@ internal sealed class AdminBootstrapWorkflow
         }
     }
 
-    private async Task<AdminBootstrapWorkflowResult> ConvergeFailedApplyAsync(
+    internal async Task<AdminBootstrapWorkflowResult> ConvergeFailedApplyAsync(
         AdminBootstrapRequest request,
         AdminBootstrapOwnershipDocument pending,
         SourceAdminDisposition disposition,
-        AdminBootstrapDatabaseSnapshot databaseBefore,
         SetupApplyResult apply)
     {
         var pendingNow = _ownership.ReadPending(request.Layout.ManagedRoot);
@@ -694,7 +720,7 @@ internal sealed class AdminBootstrapWorkflow
             pending = livePending;
         }
 
-        var databaseAfter = await TryInspectDatabaseAsync() ?? databaseBefore;
+        var databaseAfter = await TryInspectDatabaseAsync();
         var rollbackSucceeded = apply.ConfigRollbackStatus == SetupConfigRollbackStatus.Succeeded
             || string.Equals(apply.ReasonCode, "source_already_active", StringComparison.Ordinal);
         var ownershipConverged = ConvergeOwnershipAfterConfigRollback(
@@ -705,6 +731,10 @@ internal sealed class AdminBootstrapWorkflow
             apply.ActivationGeneration,
             rollbackSucceeded,
             apply.ReasonCode);
+        var adminExposure = await ProbeExposureAfterRollbackAsync(
+            request.AccessEndpoint,
+            disposition,
+            rollbackSucceeded);
 
         return Failed(
             request,
@@ -712,18 +742,14 @@ internal sealed class AdminBootstrapWorkflow
                 ? AdminBootstrapResultCode.ConfigRollbackSucceeded
                 : AdminBootstrapResultCode.ApplyFailed,
             apply.ReasonCode ?? "candidate_apply_failed",
-            databaseAfter.Classification,
+            databaseAfter?.Classification ?? "unknown",
             configRollback: apply.ConfigRollbackStatus,
-            adminExposure: rollbackSucceeded
-                && disposition == SourceAdminDisposition.DisabledMain
-                    ? "disabled"
-                    : rollbackSucceeded
-                        && disposition == SourceAdminDisposition.EnabledManagedSameUser
-                        ? "enabled"
-                        : "unknown",
+            adminExposure: adminExposure,
             manualActionRequired:
                 !rollbackSucceeded
                 || !ownershipConverged
+                || databaseAfter is null
+                || adminExposure == "unknown"
                 || apply.DeploymentState == SetupManagedDeploymentState.NeedsIntervention
                 || apply.PersistentSideEffectMayRemain);
     }
@@ -799,26 +825,46 @@ internal sealed class AdminBootstrapWorkflow
         bool rollbackSucceeded,
         string? reasonCode)
     {
+        if (database is null)
+        {
+            _ = MarkPendingNeedsIntervention(layout, pending, database);
+            return false;
+        }
+
         if (!rollbackSucceeded)
         {
-            return _ownership.WritePending(
-                layout.ManagedRoot,
-                pending with
-                {
-                    State = AdminBootstrapOwnershipState.NeedsIntervention,
-                    ObservedDatabaseClassification = database?.Classification,
-                    LastTransitionAt = Timestamp(),
-                }).IsSuccess;
+            return MarkPendingNeedsIntervention(layout, pending, database).IsSuccess;
+        }
+
+        var managedDatabase = string.Equals(
+            database.Classification,
+            AdminBootstrapDatabaseClassification.ManagedSameUser,
+            StringComparison.Ordinal);
+        if (managedDatabase && !Matches(database, pending.ExpectedDatabase.After))
+        {
+            _ = MarkPendingNeedsIntervention(layout, pending, database);
+            return false;
+        }
+        var freshDatabase = string.Equals(
+            database.Classification,
+            AdminBootstrapDatabaseClassification.Fresh,
+            StringComparison.Ordinal);
+        if (!managedDatabase && !freshDatabase)
+        {
+            _ = MarkPendingNeedsIntervention(layout, pending, database);
+            return false;
         }
 
         if (disposition == SourceAdminDisposition.EnabledManagedSameUser)
         {
-            var deleted = _ownership.DeletePending(layout.ManagedRoot).IsSuccess;
-            if (!deleted)
+            if (!managedDatabase)
+            {
+                _ = MarkPendingNeedsIntervention(layout, pending, database);
                 return false;
+            }
 
             if (activationGeneration is null)
-                return true;
+                return false;
 
             var current = _ownership.ReadCurrent(layout.ManagedRoot);
             if (current.Kind != AdminBootstrapOwnershipReadKind.Valid
@@ -831,18 +877,14 @@ internal sealed class AdminBootstrapWorkflow
                 return false;
             }
 
-            return _ownership.TryUpdateSucceededCurrentGeneration(
+            return _ownership.RefreshSucceededCurrentGenerationAndDeletePending(
                 layout.ManagedRoot,
                 succeeded.OperationId,
                 pending.Source.BundleId,
                 activationGeneration.Value).IsSuccess;
         }
 
-        var residualRequired = database is not null
-            && string.Equals(
-                database.Classification,
-                AdminBootstrapDatabaseClassification.ManagedSameUser,
-                StringComparison.Ordinal);
+        var residualRequired = managedDatabase;
         if (residualRequired || disposition == SourceAdminDisposition.DisabledMain)
         {
             if (!residualRequired
@@ -871,10 +913,46 @@ internal sealed class AdminBootstrapWorkflow
                 LastTransitionAt = Timestamp(),
             };
             var promote = _ownership.PromotePendingToCurrent(layout.ManagedRoot, residual);
-            return promote.CurrentCommitted;
+            return promote.IsFullySucceeded;
         }
 
-        return _ownership.DeletePending(layout.ManagedRoot).IsSuccess;
+        _ = MarkPendingNeedsIntervention(layout, pending, database);
+        return false;
+    }
+
+    private SetupDockerResult MarkPendingNeedsIntervention(
+        TrustedSetupHostLayout layout,
+        AdminBootstrapOwnershipDocument pending,
+        AdminBootstrapDatabaseSnapshot? database) =>
+        _ownership.WritePending(
+            layout.ManagedRoot,
+            pending with
+            {
+                State = AdminBootstrapOwnershipState.NeedsIntervention,
+                ObservedDatabaseClassification = database?.Classification,
+                LastTransitionAt = Timestamp(),
+            });
+
+    private async Task<string> ProbeExposureAfterRollbackAsync(
+        TrustedAdminAccessEndpoint accessEndpoint,
+        SourceAdminDisposition disposition,
+        bool rollbackSucceeded)
+    {
+        if (!rollbackSucceeded)
+            return "unknown";
+
+        var exposure = await _accessVerifier.ProbeExposureAsync(
+            accessEndpoint,
+            CleanupBudget,
+            CancellationToken.None);
+        return disposition switch
+        {
+            SourceAdminDisposition.DisabledMain
+                when exposure == AdminExposureProbeResult.NotFound => "disabled",
+            SourceAdminDisposition.EnabledManagedSameUser
+                when exposure == AdminExposureProbeResult.LoginPageReached => "enabled",
+            _ => "unknown",
+        };
     }
 
     private async Task<bool> CleanupSessionAsync(AdminBootstrapOperationId operationId)
@@ -898,7 +976,7 @@ internal sealed class AdminBootstrapWorkflow
     {
         try
         {
-            return await _database.InspectReadOnlyAsync(CancellationToken.None);
+            return await _inspectDatabase(CancellationToken.None);
         }
         catch
         {
@@ -1082,7 +1160,7 @@ internal sealed class AdminBootstrapWorkflow
         AdminBootstrapDatabaseSnapshot? database;
         try
         {
-            database = await _database.InspectReadOnlyAsync(CancellationToken.None);
+            database = await _inspectDatabase(CancellationToken.None);
         }
         catch
         {

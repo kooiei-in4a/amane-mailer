@@ -54,7 +54,8 @@ internal sealed class AdminBootstrapSourceClassifier(
                         AdminBootstrapOwnershipState.ResidualAfterConfigRollback,
                         StringComparison.Ordinal)
                     && string.Equals(residual.Source.BundleId, active.BundleId, StringComparison.Ordinal)
-                    && residual.Source.ActivationGeneration == active.ActivationGeneration)
+                    && residual.Source.ActivationGeneration == active.ActivationGeneration
+                    && TryValidateResidualAuthority(layout, residual, database))
                 {
                     return SourceAdminDisposition.DisabledMain;
                 }
@@ -107,6 +108,64 @@ internal sealed class AdminBootstrapSourceClassifier(
         }
     }
 
+    private bool TryValidateResidualAuthority(
+        TrustedSetupHostLayout layout,
+        AdminBootstrapOwnershipDocument residual,
+        AdminBootstrapDatabaseSnapshot database)
+    {
+        if (!TryReadBundle(
+                layout,
+                residual.Candidate.BundleId,
+                out var candidateRecorded,
+                out var candidateCompose,
+                out var candidateSecrets)
+            || candidateRecorded is null
+            || candidateRecorded.AdminBootstrapExpectation is not { } candidateExpectation
+            || !candidateCompose.TryGetValue("AMANE_ADMIN_USERNAME", out var username)
+            || !candidateSecrets.TryGetValue("AMANE_ADMIN_PASSWORD_HASH", out var candidateHash)
+            || !MatchesResidualDatabaseAuthority(
+                residual,
+                candidateExpectation,
+                database,
+                username,
+                candidateHash))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    internal static bool MatchesResidualDatabaseAuthority(
+        AdminBootstrapOwnershipDocument residual,
+        SetupAdminBootstrapExpectation candidateExpectation,
+        AdminBootstrapDatabaseSnapshot database,
+        string candidateUsername,
+        string candidateHash) =>
+        string.Equals(
+            residual.OperationId,
+            candidateExpectation.OperationId,
+            StringComparison.Ordinal)
+        && string.Equals(
+            residual.OperationId,
+            residual.ExpectedDatabase.OperationId,
+            StringComparison.Ordinal)
+        && Matches(database, residual.ExpectedDatabase.After)
+        && Matches(database, candidateExpectation.After)
+        && string.Equals(candidateUsername, database.Username, StringComparison.Ordinal)
+        && string.Equals(candidateHash, database.AppliedPasswordHash, StringComparison.Ordinal)
+        && string.Equals(candidateHash, database.UserPasswordHash, StringComparison.Ordinal);
+
+    private static bool Matches(
+        AdminBootstrapDatabaseSnapshot database,
+        SetupAdminDatabaseExpectationState expected) =>
+        string.Equals(database.Classification, expected.Classification, StringComparison.Ordinal)
+        && database.AdminConfigCount == expected.AdminConfigCount
+        && database.AdminUserCount == expected.AdminUserCount
+        && database.AdminConfigCredentialEpoch == expected.AdminConfigCredentialEpoch
+        && database.AdminUserCredentialEpoch == expected.AdminUserCredentialEpoch
+        && string.Equals(database.ScopeFingerprint, expected.ScopeFingerprint, StringComparison.Ordinal);
+
     private bool TryReadSource(
         TrustedSetupHostLayout layout,
         out SetupActivePointer? active,
@@ -128,7 +187,25 @@ internal sealed class AdminBootstrapSourceClassifier(
             return false;
         }
 
-        var bundleRoot = SetupBundleLayout.BundleRoot(layout.ManagedRoot, active.BundleId);
+        if (!TryReadBundle(layout, active.BundleId, out recorded, out compose, out secrets))
+            return false;
+
+        return recorded is not null
+            && string.Equals(recorded.BundleId, active.BundleId, StringComparison.Ordinal);
+    }
+
+    private bool TryReadBundle(
+        TrustedSetupHostLayout layout,
+        string bundleId,
+        out SetupRecordedMetadata? recorded,
+        out IReadOnlyDictionary<string, string> compose,
+        out IReadOnlyDictionary<string, string> secrets)
+    {
+        recorded = null;
+        compose = new Dictionary<string, string>(StringComparer.Ordinal);
+        secrets = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        var bundleRoot = SetupBundleLayout.BundleRoot(layout.ManagedRoot, bundleId);
         var recordedPath = Path.Combine(
             SetupBundleLayout.MetadataDir(bundleRoot),
             SetupBundleLayout.RecordedMetadataFileName);
@@ -149,7 +226,7 @@ internal sealed class AdminBootstrapSourceClassifier(
             fileSystem.ReadAllBytes(recordedPath),
             SetupJsonContext.Default.SetupRecordedMetadata);
         if (recorded is null
-            || !string.Equals(recorded.BundleId, active.BundleId, StringComparison.Ordinal)
+            || !string.Equals(recorded.BundleId, bundleId, StringComparison.Ordinal)
             || !ManagedComposeEnvComposer.TryParseEnvFile(
                 fileSystem.ReadAllBytes(composePath),
                 out var parsedCompose,

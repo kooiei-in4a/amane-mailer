@@ -182,14 +182,18 @@ internal sealed class AdminBootstrapOwnershipStore
                 "Ownership state directory rejected.");
         }
 
-        if (_fileSystem.FileExists(path))
+        if (!IsValid(document))
         {
             return SetupDockerResult.Fail(
                 SetupDockerResultCode.InvalidBundleInventory,
-                "An unfinished Admin bootstrap pending operation already exists.");
+                "Ownership document is invalid.");
         }
 
-        return Write(managedRoot, path, document);
+        return _writer.TryCreateNewJson(
+            managedRoot,
+            path,
+            document,
+            AdminBootstrapOwnershipJsonContext.Default.AdminBootstrapOwnershipDocument);
     }
 
     internal AdminBootstrapPromotionResult PromotePendingToCurrent(
@@ -256,12 +260,24 @@ internal sealed class AdminBootstrapOwnershipStore
                 {
                     ExpectedActivationGeneration = newActivationGeneration,
                 },
-                Source = document.Source with
-                {
-                    ActivationGeneration = newActivationGeneration,
-                },
                 LastTransitionAt = DateTime.UtcNow.ToString("O"),
             });
+    }
+
+    internal SetupDockerResult RefreshSucceededCurrentGenerationAndDeletePending(
+        string managedRoot,
+        string expectedOperationId,
+        string expectedBundleId,
+        long newActivationGeneration)
+    {
+        var update = TryUpdateSucceededCurrentGeneration(
+            managedRoot,
+            expectedOperationId,
+            expectedBundleId,
+            newActivationGeneration);
+        return update.IsSuccess
+            ? DeletePending(managedRoot)
+            : update;
     }
 
     private SetupDockerResult Write(

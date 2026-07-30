@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Setup;
@@ -84,7 +85,17 @@ internal enum AdminExposureProbeResult
 internal sealed partial class AdminAccessVerifier
 {
     internal static readonly TimeSpan DefaultVerificationBudget = TimeSpan.FromSeconds(60);
+    private readonly Func<HttpMessageHandler>? _handlerFactory;
 
+    internal AdminAccessVerifier(Func<HttpMessageHandler>? handlerFactory = null)
+    {
+        _handlerFactory = handlerFactory;
+    }
+
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The selected handler is owned by the using declaration.")]
     internal async Task<AdminExposureProbeResult> ProbeExposureAsync(
         TrustedAdminAccessEndpoint endpoint,
         TimeSpan budget,
@@ -93,7 +104,7 @@ internal sealed partial class AdminAccessVerifier
         using var budgetCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         budgetCts.CancelAfter(budget);
         var token = budgetCts.Token;
-        using var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        using var handler = _handlerFactory?.Invoke() ?? CreateProbeHandler();
         using var client = new HttpClient(handler)
         {
             Timeout = Timeout.InfiniteTimeSpan,
@@ -136,6 +147,10 @@ internal sealed partial class AdminAccessVerifier
         }
     }
 
+    [SuppressMessage(
+        "Reliability",
+        "CA2000:Dispose objects before losing scope",
+        Justification = "The selected handler is owned by the using declaration.")]
     internal async Task<AdminAccessVerificationResult> VerifyAsync(
         TrustedAdminAccessEndpoint endpoint,
         string username,
@@ -148,12 +163,7 @@ internal sealed partial class AdminAccessVerifier
         budgetCts.CancelAfter(budget);
         var token = budgetCts.Token;
         var cookies = new CookieContainer();
-        using var handler = new HttpClientHandler
-        {
-            AllowAutoRedirect = false,
-            CookieContainer = cookies,
-            UseCookies = true,
-        };
+        using var handler = _handlerFactory?.Invoke() ?? CreateVerificationHandler(cookies);
         using var client = new HttpClient(handler)
         {
             Timeout = Timeout.InfiniteTimeSpan,
@@ -303,6 +313,17 @@ internal sealed partial class AdminAccessVerifier
 
     private static bool IsHtml(MediaTypeHeaderValue? contentType) =>
         string.Equals(contentType?.MediaType, "text/html", StringComparison.OrdinalIgnoreCase);
+
+    private static HttpMessageHandler CreateProbeHandler() =>
+        new HttpClientHandler { AllowAutoRedirect = false };
+
+    private static HttpMessageHandler CreateVerificationHandler(CookieContainer cookies) =>
+        new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            CookieContainer = cookies,
+            UseCookies = true,
+        };
 
     [GeneratedRegex(
         "name=\"__RequestVerificationToken\"\\s+value=\"([^\"]+)\"",
