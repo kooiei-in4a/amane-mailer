@@ -1,4 +1,5 @@
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Admin;
 using Microsoft.Data.Sqlite;
 
 namespace Amane.Mailer.Data.Sqlite;
@@ -113,6 +114,78 @@ public sealed class AdminSessionRepository(SqliteConnectionFactory connections)
             await transaction.RollbackAsync(cancellationToken);
             throw;
         }
+    }
+
+    internal async Task<AdminWorkflowSessionCreateResult> CreateWorkflowSessionAsync(
+        AdminWorkflowSessionId workflowSessionId,
+        AdminSessionRow session,
+        int maxConcurrentSessions,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        if (!string.Equals(workflowSessionId.Value, session.SessionId, StringComparison.Ordinal))
+            throw new ArgumentException("Workflow session identifier mismatch.", nameof(session));
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            if (await SessionRowExistsAsync(connection, workflowSessionId.Value, cancellationToken))
+            {
+                await RevokeSessionAsync(
+                    connection,
+                    workflowSessionId.Value,
+                    AdminSessionRevokeReasons.SetupVerificationRecovery,
+                    now,
+                    cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return AdminWorkflowSessionCreateResult.RecoveryRequired;
+            }
+
+            if (maxConcurrentSessions > 0
+                && await CountActiveSessionsAsync(connection, session.Actor, now, cancellationToken)
+                    >= maxConcurrentSessions)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return AdminWorkflowSessionCreateResult.LimitReached;
+            }
+
+            await using var insert = connection.CreateCommand();
+            insert.CommandText = """
+                INSERT INTO admin_sessions (
+                    session_id, actor, issued_at, last_seen_at,
+                    absolute_expires_at, idle_expires_at,
+                    revoked_at, revoke_reason, credential_epoch)
+                VALUES (
+                    @SessionId, @Actor, @IssuedAt, @LastSeenAt,
+                    @AbsoluteExpiresAt, @IdleExpiresAt,
+                    NULL, NULL, @CredentialEpoch);
+                """;
+            BindSessionParameters(insert, session);
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+            return AdminWorkflowSessionCreateResult.Created;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    internal async Task RevokeWorkflowSessionAsync(
+        AdminWorkflowSessionId workflowSessionId,
+        DateTimeOffset revokedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await RevokeSessionAsync(
+            connection,
+            workflowSessionId.Value,
+            AdminSessionRevokeReasons.SetupVerificationComplete,
+            revokedAt,
+            cancellationToken);
     }
 
     public async Task<AdminSessionRow?> GetSessionAsync(
@@ -244,6 +317,58 @@ public sealed class AdminSessionRepository(SqliteConnectionFactory connections)
         return ReadSessionRow(reader);
     }
 
+    private static async Task<bool> SessionRowExistsAsync(
+        SqliteConnection connection,
+        string sessionId,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM admin_sessions WHERE session_id = @SessionId LIMIT 1;";
+        command.Parameters.AddWithValue("@SessionId", sessionId);
+        return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    private static async Task<int> CountActiveSessionsAsync(
+        SqliteConnection connection,
+        string actor,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*)
+            FROM admin_sessions
+            WHERE actor = @Actor
+              AND revoked_at IS NULL
+              AND absolute_expires_at > @Now
+              AND idle_expires_at > @Now;
+            """;
+        command.Parameters.AddWithValue("@Actor", actor);
+        command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static async Task RevokeSessionAsync(
+        SqliteConnection connection,
+        string sessionId,
+        string revokeReason,
+        DateTimeOffset revokedAt,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE admin_sessions
+            SET revoked_at = COALESCE(revoked_at, @RevokedAt),
+                revoke_reason = COALESCE(revoke_reason, @RevokeReason)
+            WHERE session_id = @SessionId;
+            """;
+        command.Parameters.AddWithValue("@SessionId", sessionId);
+        command.Parameters.AddWithValue("@RevokedAt", SqliteTime.ToStorageUtc(revokedAt));
+        command.Parameters.AddWithValue("@RevokeReason", revokeReason);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     private static async Task EnforceConcurrentSessionLimitAsync(
         SqliteConnection connection,
         string actor,
@@ -349,4 +474,13 @@ public static class AdminSessionRevokeReasons
     public const string TenantScopeChanged = "tenant_scope_changed";
     public const string ConcurrentLimit = "concurrent_limit";
     public const string Invalid = "invalid";
+    public const string SetupVerificationComplete = "setup_verification_complete";
+    public const string SetupVerificationRecovery = "setup_verification_recovery";
+}
+
+internal enum AdminWorkflowSessionCreateResult
+{
+    Created = 0,
+    RecoveryRequired = 1,
+    LimitReached = 2,
 }

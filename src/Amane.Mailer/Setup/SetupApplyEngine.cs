@@ -28,7 +28,7 @@ namespace Amane.Mailer.Setup;
 /// <see cref="SetupApplyResult.SendReadyAsserted"/> as <c>false</c>.
 /// </para>
 /// </remarks>
-public sealed class SetupApplyEngine : ISetupApplyEngine
+public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflowApplyEngine
 {
     /// <summary>Rollback keeps its own budget so operator cancellation cannot strand a half-applied state.</summary>
     internal static readonly TimeSpan RollbackBudget = TimeSpan.FromSeconds(180);
@@ -132,6 +132,306 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
         }
     }
 
+    async Task<SetupVerifiedWorkflowLeaseResult>
+        ISetupVerifiedWorkflowApplyEngine.AcquireVerifiedWorkflowLeaseAsync(
+            TrustedSetupHostLayout layout,
+            SourceAdminDisposition sourceDisposition,
+            CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        if (sourceDisposition == SourceAdminDisposition.Unknown)
+        {
+            return LeaseFailure("source_admin_disposition_unknown");
+        }
+
+        var (probeResult, binding) = await _adapter.CheckDockerAsync(cancellationToken);
+        if (!probeResult.IsSuccess || binding is null)
+            return LeaseFailure(probeResult.Code);
+
+        var (sessionResult, session) = await _adapter.AcquireSessionAsync(
+            layout,
+            binding,
+            cancellationToken);
+        if (!sessionResult.IsSuccess || session is null)
+            return LeaseFailure(sessionResult.Code);
+
+        var keepSession = false;
+        try
+        {
+            var stateFailure = ReadDurableState(layout, out var state);
+            if (stateFailure is not null
+                || state.TransactionStamp is not null
+                || state.Active is null
+                || state.VerificationRecord is null
+                || state.RuntimeIdentityBinding is null)
+            {
+                return LeaseFailure("source_authority_unavailable");
+            }
+
+            var purge = await _adapter.PurgeStaleMountVerifiersAsync(session, cancellationToken);
+            if (!purge.IsSuccess)
+                return LeaseFailure(purge.Code);
+
+            var pin = await _adapter.PinExternalInputsAsync(session, cancellationToken);
+            if (!pin.IsSuccess || session.ExternalInputs is null)
+                return LeaseFailure(pin.Code);
+
+            var ineligible = ClassifyExistingActive(layout, state, session.ExternalInputs, out var recorded);
+            if (ineligible is not null || recorded is null)
+                return new SetupVerifiedWorkflowLeaseResult
+                {
+                    Result = ineligible ?? LeaseFailure("source_authority_unavailable").Result,
+                };
+
+            var source = new TrustedVerifiedActiveBundle(
+                state.Active,
+                recorded,
+                state.VerificationRecord,
+                state.RuntimeIdentityBinding,
+                sourceDisposition);
+            var lease = new VerifiedWorkflowLease(this, layout, session, source);
+            keepSession = true;
+            return new SetupVerifiedWorkflowLeaseResult
+            {
+                Result = SetupApplyResult.Create(
+                    SetupApplyResultCode.ApplySucceeded,
+                    SetupManagedDeploymentState.Active,
+                    "Verified workflow lease acquired.",
+                    bundleId: state.Active.BundleId,
+                    activationGeneration: state.Active.ActivationGeneration,
+                    configurationApplied: true,
+                    verificationCommitted: true),
+                Lease = lease,
+            };
+        }
+        finally
+        {
+            if (!keepSession)
+                await session.DisposeAsync();
+        }
+
+        SetupVerifiedWorkflowLeaseResult LeaseFailure(string? reasonCode) =>
+            new()
+            {
+                Result = Fail(
+                    SetupApplyResultCode.IneligibleExistingActive,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "Verified workflow lease could not be acquired.",
+                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                    reasonCode: reasonCode ?? "workflow_lease_failed"),
+            };
+    }
+
+    async Task<SetupApplyResult>
+        ISetupVerifiedWorkflowApplyEngine.RecoverAdminBootstrapRollbackAsync(
+            TrustedSetupHostLayout layout,
+            AdminBootstrapOwnershipDocument pending,
+            CancellationToken cancellationToken)
+    {
+        if (pending.State is not (
+                AdminBootstrapOwnershipState.Armed
+                or AdminBootstrapOwnershipState.DatabaseObserved
+                or AdminBootstrapOwnershipState.AccessVerified)
+            || !AdminBootstrapOperationId.TryParse(pending.OperationId, out _))
+        {
+            return WorkflowRecoveryFailure("pending_rollback_authority_invalid");
+        }
+
+        var (probe, binding) = await _adapter.CheckDockerAsync(cancellationToken);
+        if (!probe.IsSuccess || binding is null)
+            return WorkflowRecoveryFailure(probe.Code);
+
+        var (acquire, session) = await _adapter.AcquireSessionAsync(layout, binding, cancellationToken);
+        if (!acquire.IsSuccess || session is null)
+            return WorkflowRecoveryFailure(acquire.Code);
+
+        await using (session)
+        {
+            var stateFailure = ReadDurableState(layout, out var state);
+            if (stateFailure is not null || state.TransactionStamp is not null || state.Active is null)
+                return WorkflowRecoveryFailure("pending_active_authority_unavailable");
+
+            if (string.Equals(state.Active.BundleId, pending.Source.BundleId, StringComparison.Ordinal))
+            {
+                return SetupApplyResult.Create(
+                    SetupApplyResultCode.RollbackSucceeded,
+                    SetupManagedDeploymentState.Active,
+                    "Admin bootstrap source is already active.",
+                    reasonCode: "source_already_active",
+                    bundleId: state.Active.BundleId,
+                    activationGeneration: state.Active.ActivationGeneration,
+                    configurationApplied: true,
+                    verificationCommitted: true,
+                    configRollbackStatus: SetupConfigRollbackStatus.Succeeded);
+            }
+
+            if (!string.Equals(state.Active.BundleId, pending.Candidate.BundleId, StringComparison.Ordinal)
+                || state.Active.ActivationGeneration
+                    != pending.Candidate.ExpectedActivationGeneration)
+            {
+                return WorkflowRecoveryFailure("pending_active_authority_mismatch");
+            }
+
+            var purge = await _adapter.PurgeStaleMountVerifiersAsync(session, cancellationToken);
+            var pin = purge.IsSuccess
+                ? await _adapter.PinExternalInputsAsync(session, cancellationToken)
+                : purge;
+            if (!purge.IsSuccess || !pin.IsSuccess || session.ExternalInputs is null)
+                return WorkflowRecoveryFailure("pending_external_authority_unavailable");
+
+            if (!IsCurrentCommittedAuthority(state.VerificationRecord, state.Active, layout)
+                || state.RuntimeIdentityBinding is null
+                || !BindingMatches(state.RuntimeIdentityBinding, state.Active, session.ExternalInputs))
+            {
+                return WorkflowRecoveryFailure("pending_candidate_not_verified");
+            }
+
+            var sourceValidation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+                _fileSystem,
+                layout,
+                pending.Source.BundleId,
+                out var sourceRecorded,
+                out var sourceHostAtRest);
+            var candidateValidation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+                _fileSystem,
+                layout,
+                pending.Candidate.BundleId,
+                out var candidateRecorded,
+                out var candidateHostAtRest);
+            if (!sourceValidation.IsSuccess
+                || sourceRecorded is null
+                || !candidateValidation.IsSuccess
+                || candidateRecorded is null
+                || !string.Equals(sourceHostAtRest, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
+                || !string.Equals(candidateHostAtRest, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
+                || !string.Equals(
+                    sourceRecorded.ConfigurationFingerprint,
+                    pending.Source.ConfigurationFingerprint,
+                    StringComparison.Ordinal)
+                || sourceRecorded.SchemaVersion != pending.Source.RecordedSchemaVersion
+                || !string.Equals(
+                    ImageReference(sourceRecorded),
+                    pending.Source.ImageIdentity,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    SetupBundleStaticValidator.ComputeComposeIdentity(layout.ReleaseInventory),
+                    pending.Source.ComposeIdentity,
+                    StringComparison.Ordinal)
+                || !string.Equals(
+                    session.ExternalInputs.BindingMac,
+                    pending.Source.RuntimeIdentityBindingDigest,
+                    StringComparison.Ordinal)
+                || candidateRecorded.AdminBootstrapExpectation is not { } candidateExpectation
+                || !string.Equals(
+                    candidateExpectation.OperationId,
+                    pending.OperationId,
+                    StringComparison.Ordinal))
+            {
+                return WorkflowRecoveryFailure("pending_rollback_authority_mismatch");
+            }
+
+            var previous = new SetupActivePointer
+            {
+                SchemaVersion = SetupActivePointer.CurrentSchemaVersion,
+                BundleId = pending.Source.BundleId,
+                ActivationGeneration = pending.Source.ActivationGeneration,
+            };
+            var previousWrite = WritePointer(layout, layout.PreviousPointerPath, previous);
+            if (!previousWrite.IsSuccess)
+                return WorkflowRecoveryFailure(previousWrite.Code);
+
+            var context = new ApplyContext(
+                layout,
+                session,
+                new SetupTransactionStamp
+                {
+                    SchemaVersion = SetupTransactionStamp.CurrentSchemaVersion,
+                    Kind = SetupTransactionKind.Apply,
+                    Phase = SetupTransactionPhase.VerificationCommitted,
+                    Terminal = false,
+                    CandidateBundleId = state.Active.BundleId,
+                    TargetActivationGeneration = state.Active.ActivationGeneration,
+                    PreviousBundleId = previous.BundleId,
+                    PreviousActivationGeneration = previous.ActivationGeneration,
+                    PersistentSideEffectMayRemain = true,
+                    PersistentSideEffectKind = SetupPersistentSideEffectKind.AdminDatabase,
+                    StartedAt = Timestamp(),
+                },
+                state.Active,
+                previous,
+                candidateHostAtRest,
+                candidateRecorded,
+                migrationRequired: false);
+            return await RollbackAsync(context, "admin_bootstrap_crash_recovery", migrationAttempted: false);
+        }
+
+        SetupApplyResult WorkflowRecoveryFailure(string? reasonCode) =>
+            Fail(
+                SetupApplyResultCode.NeedsIntervention,
+                SetupManagedDeploymentState.NeedsIntervention,
+                "Admin bootstrap recovery requires operator intervention.",
+                actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                reasonCode: reasonCode ?? "admin_bootstrap_recovery_failed",
+                configRollbackStatus: SetupConfigRollbackStatus.Failed,
+                persistentSideEffectMayRemain: true,
+                persistentSideEffectKind: SetupPersistentSideEffectKind.AdminDatabase);
+    }
+
+    async Task<SetupAuthorityCheckResult>
+        ISetupVerifiedWorkflowApplyEngine.VerifyPendingCandidateAsync(
+            TrustedSetupHostLayout layout,
+            AdminBootstrapOwnershipDocument pending,
+            CancellationToken cancellationToken)
+    {
+        var (probe, binding) = await _adapter.CheckDockerAsync(cancellationToken);
+        if (!probe.IsSuccess || binding is null)
+            return SetupAuthorityCheckResult.Failed("candidate_preflight_failed");
+
+        var (acquire, session) = await _adapter.AcquireSessionAsync(layout, binding, cancellationToken);
+        if (!acquire.IsSuccess || session is null)
+            return SetupAuthorityCheckResult.Failed("candidate_lock_unavailable");
+
+        await using (session)
+        {
+            var purge = await _adapter.PurgeStaleMountVerifiersAsync(session, cancellationToken);
+            var pin = purge.IsSuccess
+                ? await _adapter.PinExternalInputsAsync(session, cancellationToken)
+                : purge;
+            var stateFailure = ReadDurableState(layout, out var state);
+            if (!purge.IsSuccess
+                || !pin.IsSuccess
+                || session.ExternalInputs is null
+                || stateFailure is not null
+                || state.TransactionStamp is not null
+                || state.Active is null
+                || !string.Equals(
+                    state.Active.BundleId,
+                    pending.Candidate.BundleId,
+                    StringComparison.Ordinal)
+                || state.Active.ActivationGeneration
+                    != pending.Candidate.ExpectedActivationGeneration
+                || !IsCurrentCommittedAuthority(state.VerificationRecord, state.Active, layout)
+                || state.RuntimeIdentityBinding is null
+                || !BindingMatches(state.RuntimeIdentityBinding, state.Active, session.ExternalInputs))
+            {
+                return SetupAuthorityCheckResult.Failed("candidate_authority_changed");
+            }
+
+            var validation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+                _fileSystem,
+                layout,
+                state.Active.BundleId,
+                out var recorded,
+                out var hostAtRest);
+            return validation.IsSuccess
+                && recorded?.AdminBootstrapExpectation is { } expectation
+                && string.Equals(expectation.OperationId, pending.OperationId, StringComparison.Ordinal)
+                && string.Equals(hostAtRest, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
+                ? SetupAuthorityCheckResult.Current()
+                : SetupAuthorityCheckResult.Failed("candidate_integrity_changed");
+        }
+    }
+
     // ---------------------------------------------------------------- apply
 
     private async Task<SetupApplyResult> ApplyCoreAsync(
@@ -191,7 +491,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
         SetupHostDockerSession session,
         string candidateBundleId,
         CancellationToken cancellationToken,
-        SetupExpectedActiveAuthority? expectedActive)
+        SetupExpectedActiveAuthority? expectedActive,
+        WorkflowApplyState? workflow = null)
     {
         // Step 2. Durable state is read only now: anything observed before the lock could already
         // belong to a transaction that finished while this call was waiting.
@@ -467,6 +768,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
             candidateHostAtRest,
             candidateRecorded,
             migrationRequired);
+        if (workflow is not null)
+            workflow.Context = context;
 
         // Step 13.
         var switchPending = AdvancePhase(context, SetupTransactionPhase.ActiveSwitchPending, persistentSideEffect: false);
@@ -480,6 +783,13 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
         if (!checkpoint2.IsSuccess)
         {
             return AbortBeforeActivation(context, "external_input_changed_before_activation");
+        }
+
+        if (workflow is not null)
+        {
+            var armed = workflow.Arm(candidateRecorded, candidatePointer);
+            if (!armed.IsSuccess)
+                return AbortBeforeActivation(context, "admin_bootstrap_ownership_arm_failed");
         }
 
         // Step 15.
@@ -1931,6 +2241,9 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
                 activationGeneration: active.ActivationGeneration);
         }
 
+        if (state.VerificationRecord?.RecordedSchemaVersion != activeRecorded.SchemaVersion)
+            return Ineligible("recorded_schema_authority_mismatch");
+
         return null;
 
         SetupApplyResult Ineligible(string reasonCode) => Fail(
@@ -2040,7 +2353,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
                 runtime.ConfigurationFingerprint,
                 expected.ConfigurationFingerprint,
                 StringComparison.Ordinal) => "runtime_configuration_fingerprint_mismatch",
-            _ when runtime.SchemaVersion != SetupBundleLayout.RecordedSchemaVersion =>
+            _ when !SetupBundleLayout.IsSupportedRecordedSchemaVersion(runtime.SchemaVersion)
+                || runtime.SchemaVersion != expected.SchemaVersion =>
                 "runtime_schema_unsupported",
             _ when string.IsNullOrWhiteSpace(document.MailerVersion) => "runtime_version_unknown",
             _ when !string.Equals(bundleIntegrity, SetupIntegrityMerger.Matched, StringComparison.Ordinal) =>
@@ -2411,7 +2725,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
 
         if (!string.Equals(record.ObservedBundleId, record.BundleId, StringComparison.Ordinal)
             || string.IsNullOrWhiteSpace(record.ObservedMailerVersion)
-            || record.RecordedSchemaVersion != SetupBundleLayout.RecordedSchemaVersion)
+            || record.RecordedSchemaVersion is not int recordedSchemaVersion
+            || !SetupBundleLayout.IsSupportedRecordedSchemaVersion(recordedSchemaVersion))
         {
             return false;
         }
@@ -2809,6 +3124,196 @@ public sealed class SetupApplyEngine : ISetupApplyEngine
             configRollbackStatus,
             persistentSideEffectMayRemain,
             persistentSideEffectKind);
+
+    private sealed class WorkflowApplyState(
+        SetupApplyEngine engine,
+        TrustedVerifiedActiveBundle source,
+        AdminBootstrapOwnershipDocument pending)
+    {
+        internal ApplyContext? Context { get; set; }
+
+        internal SetupDockerResult Arm(
+            SetupRecordedMetadata candidateRecorded,
+            SetupActivePointer candidate)
+        {
+            if (!string.Equals(pending.State, AdminBootstrapOwnershipState.Prepared, StringComparison.Ordinal)
+                || candidateRecorded.AdminBootstrapExpectation is not { } expectation
+                || !string.Equals(expectation.OperationId, pending.OperationId, StringComparison.Ordinal)
+                || !string.Equals(candidate.BundleId, pending.Candidate.BundleId, StringComparison.Ordinal)
+                || candidate.ActivationGeneration != pending.Candidate.ExpectedActivationGeneration
+                || !string.Equals(source.Active.BundleId, pending.Source.BundleId, StringComparison.Ordinal)
+                || source.Active.ActivationGeneration != pending.Source.ActivationGeneration
+                || !string.Equals(
+                    source.Recorded.ConfigurationFingerprint,
+                    pending.Source.ConfigurationFingerprint,
+                    StringComparison.Ordinal))
+            {
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Admin bootstrap pending authority mismatch.");
+            }
+
+            var durableSource = source.ToDurableSourceAuthority(engine._timeProvider.GetUtcNow());
+            var armed = pending with
+            {
+                State = AdminBootstrapOwnershipState.Armed,
+                Source = durableSource,
+                LastTransitionAt = engine.Timestamp(),
+            };
+            return new AdminBootstrapOwnershipStore(engine._fileSystem)
+                .WritePending(sourceRoot(), armed);
+
+            string sourceRoot() => Context?.Layout.ManagedRoot
+                ?? throw new InvalidOperationException("Workflow apply context is unavailable.");
+        }
+    }
+
+    private sealed class VerifiedWorkflowLease(
+        SetupApplyEngine engine,
+        TrustedSetupHostLayout layout,
+        SetupHostDockerSession session,
+        TrustedVerifiedActiveBundle source) : ISetupVerifiedWorkflowLease
+    {
+        private ApplyContext? _context;
+        private SetupApplyResult? _applyResult;
+        private bool _disposed;
+
+        public TrustedVerifiedActiveBundle Source { get; } = source;
+
+        public async Task<SetupApplyResult> ApplyCandidateAsync(
+            string candidateBundleId,
+            AdminBootstrapOwnershipDocument pending,
+            CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_applyResult is not null)
+            {
+                return Fail(
+                    SetupApplyResultCode.NeedsIntervention,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "Workflow candidate apply was already attempted.",
+                    reasonCode: "workflow_apply_already_attempted");
+            }
+
+            var workflow = new WorkflowApplyState(engine, Source, pending);
+            _applyResult = await engine.ApplyUnderLockAsync(
+                layout,
+                session,
+                candidateBundleId,
+                cancellationToken,
+                Source.ToExpectedActiveAuthority(),
+                workflow);
+            _context = workflow.Context;
+            return _applyResult;
+        }
+
+        public async Task<SetupApplyResult> RollbackToSourceAsync(string reasonCode)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_context is null
+                || _applyResult?.Code != SetupApplyResultCode.ApplySucceeded
+                || !SetupActivePointer.IsSafeBundleId(Source.Active.BundleId))
+            {
+                return Fail(
+                    SetupApplyResultCode.NeedsIntervention,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "Workflow rollback authority is unavailable.",
+                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                    reasonCode: "workflow_rollback_authority_unavailable");
+            }
+
+            var previousWrite = engine.WritePointer(
+                layout,
+                layout.PreviousPointerPath,
+                Source.Active);
+            if (!previousWrite.IsSuccess)
+            {
+                return Fail(
+                    SetupApplyResultCode.ApplyFailedRollbackFailed,
+                    SetupManagedDeploymentState.NeedsIntervention,
+                    "Workflow rollback target could not be armed.",
+                    actionCode: SetupApplyActionCode.ManualInterventionRequired,
+                    reasonCode: previousWrite.Code,
+                    configRollbackStatus: SetupConfigRollbackStatus.Failed);
+            }
+
+            return await engine.RollbackAsync(
+                _context,
+                NormalizeWorkflowReason(reasonCode),
+                migrationAttempted: false);
+        }
+
+        public async Task<SetupAuthorityCheckResult> VerifyCandidateStillCurrentAsync(
+            CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_context is null || _applyResult?.Code != SetupApplyResultCode.ApplySucceeded)
+                return SetupAuthorityCheckResult.Failed("candidate_not_applied");
+
+            var external = await engine._adapter.VerifyExternalInputsUnchangedAsync(
+                session,
+                cancellationToken);
+            if (!external.IsSuccess)
+                return SetupAuthorityCheckResult.Failed("external_input_changed");
+
+            var stateFailure = engine.ReadDurableState(layout, out var state);
+            if (stateFailure is not null
+                || state.TransactionStamp is not null
+                || state.Active is null
+                || !SamePointer(state.Active, _context.Candidate)
+                || state.VerificationRecord is null
+                || state.RuntimeIdentityBinding is null
+                || !IsCurrentCommittedAuthority(state.VerificationRecord, state.Active, layout)
+                || session.ExternalInputs is null
+                || !BindingMatches(state.RuntimeIdentityBinding, state.Active, session.ExternalInputs))
+            {
+                return SetupAuthorityCheckResult.Failed("candidate_authority_changed");
+            }
+
+            var staticValidation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+                engine._fileSystem,
+                layout,
+                state.Active.BundleId,
+                out var recorded,
+                out var hostAtRest);
+            if (!staticValidation.IsSuccess
+                || recorded is null
+                || !string.Equals(hostAtRest, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
+                || !string.Equals(
+                    recorded.ConfigurationFingerprint,
+                    _context.CandidateRecorded?.ConfigurationFingerprint,
+                    StringComparison.Ordinal)
+                || ClassifyImageCompatibility(layout, recorded) is not null
+                || !string.Equals(
+                    state.VerificationRecord.ComposeIdentity,
+                    SetupBundleStaticValidator.ComputeComposeIdentity(layout.ReleaseInventory),
+                    StringComparison.Ordinal))
+            {
+                return SetupAuthorityCheckResult.Failed("candidate_integrity_changed");
+            }
+
+            return SetupAuthorityCheckResult.Current();
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            await session.DisposeAsync();
+        }
+
+        private static string NormalizeWorkflowReason(string reasonCode) =>
+            reasonCode switch
+            {
+                "admin_access_verification_failed" => reasonCode,
+                "admin_verification_timeout" => reasonCode,
+                "admin_verification_cancelled" => reasonCode,
+                "admin_session_cleanup_failed" => reasonCode,
+                _ => "admin_bootstrap_failed",
+            };
+    }
 
     private sealed class DurableState
     {

@@ -1,8 +1,10 @@
 using System.Globalization;
 using System.Security.Claims;
+using System.Text.Json;
 using System.Text.Encodings.Web;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Setup;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 
@@ -10,6 +12,9 @@ namespace Amane.Mailer.Admin;
 
 public static class AdminAuthenticationHandlers
 {
+    internal const string WorkflowSessionAuditTarget = "setup-verification";
+    internal const string WorkflowOperationHeader = "X-Amane-Setup-Operation";
+
     // Keep unknown-user failures on the same PBKDF2 verification path as bad passwords.
     internal const string DummyAdminPasswordHash =
         "pbkdf2:sha256:600000:YW1hbmUtZHVtbXktMTI0IQ==:qMTLpvljgavl6UScZshWUdoApY4JFTGZWhLPJ62+Ui0=";
@@ -66,6 +71,7 @@ public static class AdminAuthenticationHandlers
         HttpContext context,
         IAntiforgery antiforgery,
         MailerAdminOptions options,
+        IConfiguration configuration,
         AdminLoginThrottle throttle,
         AdminAuditRepository auditRepository,
         AdminSessionRepository sessionRepository,
@@ -92,6 +98,16 @@ public static class AdminAuthenticationHandlers
         var password = form["password"].ToString();
         var remoteAddress = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         var normalizedActor = AdminAuditLog.NormalizeActor(username);
+        if (!TryResolveWorkflowSession(
+                context,
+                configuration,
+                out var workflowSession,
+                out var workflowRequested))
+        {
+            return Results.Text(
+                "Setup verification request is not current.",
+                statusCode: StatusCodes.Status409Conflict);
+        }
 
         var (isLocked, retryAfter) = await throttle.IsLockedWithRetryAfterAsync(
             username,
@@ -162,7 +178,9 @@ public static class AdminAuthenticationHandlers
         var now = timeProvider.GetUtcNow();
         var absoluteExpiresAt = now + options.SessionAbsoluteLifetime;
         var idleExpiresAt = now + options.SessionIdleTimeout;
-        var sessionId = AdminSessionIds.CreateNew();
+        var sessionId = workflowRequested
+            ? workflowSession.Value
+            : AdminSessionIds.CreateNew();
         var session = new AdminSessionRow(
             sessionId,
             user.Username,
@@ -174,10 +192,45 @@ public static class AdminAuthenticationHandlers
             null,
             user.CredentialEpoch);
 
-        await sessionRepository.CreateSessionAsync(
-            session,
-            options.MaxConcurrentSessions,
-            cancellationToken);
+        if (workflowRequested)
+        {
+            var create = await sessionRepository.CreateWorkflowSessionAsync(
+                workflowSession,
+                session,
+                options.MaxConcurrentSessions,
+                now,
+                cancellationToken);
+            if (create != AdminWorkflowSessionCreateResult.Created)
+            {
+                await AdminAuditLog.WriteBestEffortAsync(
+                    auditRepository,
+                    auditLogger,
+                    BuildAuthAuditEvent(
+                        context,
+                        options,
+                        timeProvider,
+                        AdminAuditLog.EventTypes.LoginFailed,
+                        AdminAuditLog.Results.Failure,
+                        user.Username,
+                        sessionId),
+                    cancellationToken);
+
+                return create == AdminWorkflowSessionCreateResult.LimitReached
+                    ? Results.Text(
+                        "Setup verification session limit reached.",
+                        statusCode: StatusCodes.Status429TooManyRequests)
+                    : Results.Text(
+                        "Setup verification session recovery is required.",
+                        statusCode: StatusCodes.Status409Conflict);
+            }
+        }
+        else
+        {
+            await sessionRepository.CreateSessionAsync(
+                session,
+                options.MaxConcurrentSessions,
+                cancellationToken);
+        }
 
         var claims = new[]
         {
@@ -301,9 +354,66 @@ public static class AdminAuthenticationHandlers
             SourceIp = options.ResolveAuditSourceIp(AdminAuditLog.ResolveSourceIp(context)),
             UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
             TargetType = AdminAuditLog.TargetTypes.AdminSession,
-            TargetId = sessionId,
+            TargetId = RedactWorkflowSessionAuditTarget(sessionId),
             Result = result,
         };
+
+    private static string? RedactWorkflowSessionAuditTarget(string? sessionId) =>
+        AdminWorkflowSessionId.TryParse(sessionId, out _)
+            ? WorkflowSessionAuditTarget
+            : sessionId;
+
+    private static bool TryResolveWorkflowSession(
+        HttpContext context,
+        IConfiguration configuration,
+        out AdminWorkflowSessionId workflowSession,
+        out bool workflowRequested)
+    {
+        workflowSession = default;
+        workflowRequested = context.Request.Headers.ContainsKey(WorkflowOperationHeader);
+        if (!workflowRequested)
+            return true;
+
+        var operationValues = context.Request.Headers[WorkflowOperationHeader];
+        if (operationValues.Count != 1
+            || !AdminBootstrapOperationId.TryParse(operationValues[0], out var operationId))
+        {
+            return false;
+        }
+
+        var recordedPath = configuration["MAILER_SETUP_RECORDED_METADATA_PATH"]
+            ?? SetupBundleLayout.ContainerRecordedMetadataPath;
+        try
+        {
+            if (!File.Exists(recordedPath))
+                return false;
+
+            var recorded = JsonSerializer.Deserialize(
+                File.ReadAllBytes(recordedPath),
+                SetupJsonContext.Default.SetupRecordedMetadata);
+            if (recorded?.AdminBootstrapExpectation is not { } expectation
+                || !string.Equals(expectation.OperationId, operationId.Value, StringComparison.Ordinal)
+                || !recorded.AdminBootstrapRequested)
+            {
+                return false;
+            }
+
+            workflowSession = AdminWorkflowSessionId.FromOperationId(operationId);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
 
     private static async Task<bool> ValidateAntiforgeryAsync(HttpContext context, IAntiforgery antiforgery)
     {

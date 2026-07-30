@@ -294,8 +294,10 @@ public static class SetupBundleStaticValidator
         }
 
         if (recorded is null
-            || recorded.SchemaVersion != SetupBundleLayout.RecordedSchemaVersion
-            || !string.Equals(recorded.BundleId, bundleId, StringComparison.Ordinal))
+            || !SetupBundleLayout.IsSupportedRecordedSchemaVersion(recorded.SchemaVersion)
+            || !string.Equals(recorded.BundleId, bundleId, StringComparison.Ordinal)
+            || (recorded.SchemaVersion == 1 && recorded.AdminBootstrapExpectation is not null)
+            || (recorded.AdminBootstrapRequested && recorded.AdminBootstrapExpectation is null))
         {
             return SetupDockerResult.Fail(
                 SetupDockerResultCode.InvalidBundleInventory,

@@ -344,12 +344,13 @@ public static partial class SetupInspectEffectiveEngine
                     ConfigurationBooleanReader.Read(configuration, "AMANE_ADMIN_ENABLED", defaultValue: false)));
         }
 
-        var canonical = SetupCanonicalPayload.Build(
+        var canonical = SetupCanonicalPayload.BuildForRecordedSchema(
             mode,
             tenants,
             CollectPublicCompose(configuration, recorded.BundleId),
             TryLoadPlatformSender(tenantsPath),
-            ConfigurationBooleanReader.Read(configuration, "AMANE_ADMIN_ENABLED", defaultValue: false));
+            ConfigurationBooleanReader.Read(configuration, "AMANE_ADMIN_ENABLED", defaultValue: false),
+            recorded.SchemaVersion);
         return SetupCanonicalPayload.FingerprintSha256(canonical);
     }
 
@@ -499,7 +500,7 @@ public static partial class SetupInspectEffectiveEngine
                 return new RecordedLoadResult { Kind = RecordedLoadKind.Malformed };
             }
 
-            var metadata = JsonSerializer.Deserialize(json, SetupInspectJsonContext.Default.SetupRecordedMetadata);
+            var metadata = JsonSerializer.Deserialize(json, SetupJsonContext.Default.SetupRecordedMetadata);
             if (metadata is null
                 || string.IsNullOrWhiteSpace(metadata.BundleId)
                 || string.IsNullOrWhiteSpace(metadata.ConfigurationFingerprint)
@@ -509,7 +510,7 @@ public static partial class SetupInspectEffectiveEngine
                 return new RecordedLoadResult { Kind = RecordedLoadKind.Malformed };
             }
 
-            if (metadata.SchemaVersion < 1)
+            if (metadata.SchemaVersion < SetupBundleLayout.MinimumSupportedRecordedSchemaVersion)
             {
                 return new RecordedLoadResult { Kind = RecordedLoadKind.Malformed };
             }
@@ -517,6 +518,14 @@ public static partial class SetupInspectEffectiveEngine
             if (metadata.SchemaVersion > SetupBundleLayout.RecordedSchemaVersion)
             {
                 return new RecordedLoadResult { Kind = RecordedLoadKind.UnsupportedSchema };
+            }
+
+            if ((metadata.SchemaVersion == 1 && metadata.AdminBootstrapExpectation is not null)
+                || (metadata.AdminBootstrapRequested
+                    && (metadata.AdminBootstrapExpectation is not { } expectation
+                        || !AdminBootstrapOperationId.TryParse(expectation.OperationId, out _))))
+            {
+                return new RecordedLoadResult { Kind = RecordedLoadKind.Malformed };
             }
 
             if (!SetupModeParser.TryParse(metadata.Mode, out _))

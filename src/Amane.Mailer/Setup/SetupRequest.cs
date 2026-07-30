@@ -90,6 +90,15 @@ public sealed class SetupAdminBootstrapRepresentation
     public string PiiListMode { get; init; } = "masked";
 }
 
+internal sealed class SetupAdminBundleDelta
+{
+    internal required string Username { get; init; }
+    internal required string PasswordHash { get; init; }
+    internal required string AllowedLocalAddress { get; init; }
+    internal required bool AllowHttp { get; init; }
+    internal required SetupAdminBootstrapExpectation Expectation { get; init; }
+}
+
 /// <summary>
 /// Connects host-generated files to the Mailer container runtime identity on Linux.
 /// Typical deploy image uses a non-root APP_UID (documented as 1654 for current tags).

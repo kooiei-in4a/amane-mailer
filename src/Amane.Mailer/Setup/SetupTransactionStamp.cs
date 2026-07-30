@@ -50,4 +50,5 @@ public static class SetupPersistentSideEffectKind
 {
     public const string None = "none";
     public const string DatabaseMigration = "database-migration";
+    public const string AdminDatabase = "admin-database";
 }

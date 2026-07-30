@@ -7,7 +7,8 @@ namespace Amane.Mailer.Setup;
 /// </summary>
 public static partial class SetupBundleLayout
 {
-    public const int RecordedSchemaVersion = 1;
+    public const int MinimumSupportedRecordedSchemaVersion = 1;
+    public const int RecordedSchemaVersion = 2;
     public const string BundlesDirectoryName = "bundles";
     public const string StateDirectoryName = "state";
     public const string SealingDirectoryName = "sealing";
@@ -27,6 +28,8 @@ public static partial class SetupBundleLayout
     public const string TransactionStampFileName = "TX.stamp";
     public const string LastRecordFileName = "last-record.json";
     public const string RuntimeIdentityBindFileName = "runtime-identity.bind";
+    public const string AdminBootstrapCurrentFileName = "admin-bootstrap-current.json";
+    public const string AdminBootstrapPendingFileName = "admin-bootstrap-pending.json";
     public const string MountVerifierFileNamePrefix = "mount-verifier-";
     public const string MountVerifierFileNameSuffix = ".json";
     public const string ApplyLockFileName = SetupApplyLock.LockFileName;
@@ -72,6 +75,15 @@ public static partial class SetupBundleLayout
 
     public static string RuntimeIdentityBindPath(string managedRoot) =>
         Path.Combine(VerificationDir(managedRoot), RuntimeIdentityBindFileName);
+
+    public static string AdminBootstrapCurrentPath(string managedRoot) =>
+        Path.Combine(StateDir(managedRoot), AdminBootstrapCurrentFileName);
+
+    public static string AdminBootstrapPendingPath(string managedRoot) =>
+        Path.Combine(StateDir(managedRoot), AdminBootstrapPendingFileName);
+
+    public static bool IsSupportedRecordedSchemaVersion(int schemaVersion) =>
+        schemaVersion is >= MinimumSupportedRecordedSchemaVersion and <= RecordedSchemaVersion;
 
     public static string VerifierTempDir(string managedRoot) =>
         Path.Combine(managedRoot, VerifierTempDirectoryName);

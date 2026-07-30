@@ -31,7 +31,7 @@ internal static class AdminServiceRegistration
         });
         services.AddSingleton<AdminLoginThrottle>();
         services.AddSingleton<AdminSessionExpiredDedupe>();
-        services.AddSingleton<AdminCredentialSync>();
+        services.AddSingleton<AdminBootstrapDatabase>();
         services.AddSingleton<AdminSessionRepository>();
         services.AddSingleton<AdminUserRepository>();
         services.AddSingleton<AdminLoginThrottleRepository>();
@@ -48,6 +48,15 @@ internal static class AdminServiceRegistration
             options.Validate(adminOptions.Enabled, connections);
             return options;
         });
+        // Keep this factory after any .Load( registration body so the startup-inventory
+        // AddSingleton+Load heuristic does not false-positive across adjacent registrations.
+        services.AddSingleton(provider => new AdminCredentialSync(
+            provider.GetRequiredService<AdminSessionRepository>(),
+            provider.GetRequiredService<AdminUserRepository>(),
+            provider.GetRequiredService<MailerTenantRegistry>(),
+            provider.GetRequiredService<MailerAdminOptions>(),
+            provider.GetRequiredService<IConfiguration>(),
+            provider.GetRequiredService<AdminBootstrapDatabase>()));
         services.AddSingleton<AdminDbOpsService>();
 
         // Cookie transport is resolved from IHostEnvironment at options configure time so
