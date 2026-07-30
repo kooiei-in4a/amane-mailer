@@ -291,7 +291,7 @@
         "0013",
         "0019"
       ],
-      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR #448 Setup Core; #447 inspect-effective; #449 host Docker adapter; #450 apply/rollback; #451 typed ACS workflow; #454 Admin read-only /admin/setup-status; #459 typed Admin bootstrap ownership/lease/CAS) → evidence updates (#452–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. #451 extracts console-independent ACS register / Staging verification / Production live_sending two-step promotion over #448 generate + #450 apply. #454 reuses Admin auth/session/local-address and aggregates #447 inspection plus runtime-visible recorded metadata; host ACTIVE/verification/Staging summary are unavailable from container runtime (ADR 0021 D-04) and must not be guessed. #459 adds console-independent Admin bootstrap: exact-delta Admin-derived bundles, current/pending ownership with armed write-ahead, non-reentrant verified workflow lease, guarded Fresh/ManagedSameUser DB CAS without session revoke, and operationId-redacted workflow verification sessions. Web/terminal UI adapters remain #452/#453. Deployment operational verification is never recorded or shown as confirmed in v1.2.0 Easy Setup. Does not change public HTTP contract, DB schema, or Manual Deployment source of truth.",
+      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR #448 Setup Core; #447 inspect-effective; #449 host Docker adapter; #450 apply/rollback; #451 typed ACS workflow; #454 Admin read-only /admin/setup-status; #459 typed Admin bootstrap ownership/lease/CAS) → evidence updates (#452–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. #451 extracts console-independent ACS register / Staging verification / Production live_sending two-step promotion over #448 generate + #450 apply. #454 reuses Admin auth/session/local-address and aggregates #447 inspection plus runtime-visible recorded metadata; host ACTIVE/verification/Staging summary are unavailable from container runtime (ADR 0021 D-04) and must not be guessed. #459 adds console-independent Admin bootstrap: exact-delta Admin-derived bundles, current/pending ownership with armed write-ahead, non-reentrant verified workflow lease, guarded Fresh/ManagedSameUser DB CAS without session revoke, and operationId-redacted workflow verification sessions. #452 adds the localhost-only `setup assistant` Web UI adapter: an isolated Kestrel host bound to 127.0.0.1 only, a one-time token exchanged for a single short-lived session, Host allowlist / Origin / CSRF checks, no-store and CSP hardening, no logging provider, secrets and PII held only in session memory, and no configuration, Docker, ACS, or Admin logic of its own. Terminal UI adapter remains #453. Deployment operational verification is never recorded or shown as confirmed in v1.2.0 Easy Setup. Does not change public HTTP contract, DB schema, or Manual Deployment source of truth.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Setup/SetupCore.cs",
@@ -345,7 +345,21 @@
           "src/Amane.Mailer/Setup/TrustedVerifiedActiveBundle.cs",
           "src/Amane.Mailer/Admin/AdminBootstrapDatabase.cs",
           "src/Amane.Mailer/Admin/AdminWorkflowSessionId.cs",
-          "src/Amane.Mailer/Setup/AdminBootstrapOperationId.cs"
+          "src/Amane.Mailer/Setup/AdminBootstrapOperationId.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantCommand.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantHost.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantOptions.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSecurity.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSessionManager.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSession.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSecret.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantEndpoints.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantPages.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantResultPresenter.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantInputs.cs",
+          "src/Amane.Mailer/Setup/Assistant/ISetupAssistantOperations.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantOperations.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSelfCheckCommand.cs"
         ],
         "types": [
           "Amane.Mailer.Setup.SetupCore",
@@ -386,7 +400,13 @@
           "Amane.Mailer.Setup.AdminBootstrapOwnershipStore",
           "Amane.Mailer.Setup.ISetupVerifiedWorkflowApplyEngine",
           "Amane.Mailer.Setup.TrustedVerifiedActiveBundle",
-          "Amane.Mailer.Admin.AdminBootstrapDatabase"
+          "Amane.Mailer.Admin.AdminBootstrapDatabase",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantCommand",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantHost",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantSessionManager",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantSecurity",
+          "Amane.Mailer.Setup.Assistant.ISetupAssistantOperations",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantSelfCheckCommand"
         ],
         "tests": [
           "tests/Amane.Mailer.Tests/Setup/SetupCanonicalPayloadTests.cs",
@@ -405,7 +425,13 @@
           "tests/Amane.Mailer.Tests/Admin/AdminSetupStatusPageRenderTests.cs",
           "tests/Amane.Mailer.Tests/Admin/AdminSetupStatusPageXssTests.cs",
           "tests/Amane.Mailer.Tests/Admin/AdminBootstrapContractsTests.cs",
-          "tests/Amane.Mailer.Tests/MailerAdminTests.cs"
+          "tests/Amane.Mailer.Tests/MailerAdminTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantBindTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantRuntimeSeparationTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantSessionTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantHttpSecurityTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantRenderingTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantWorkflowTests.cs"
         ]
       }
     }
