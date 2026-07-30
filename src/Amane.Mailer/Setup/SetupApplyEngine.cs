@@ -231,7 +231,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
         if (pending.State is not (
                 AdminBootstrapOwnershipState.Armed
                 or AdminBootstrapOwnershipState.DatabaseObserved
-                or AdminBootstrapOwnershipState.AccessVerified)
+                or AdminBootstrapOwnershipState.AccessVerified
+                or AdminBootstrapOwnershipState.SessionCleaned)
             || !AdminBootstrapOperationId.TryParse(pending.OperationId, out _))
         {
             return WorkflowRecoveryFailure("pending_rollback_authority_invalid");
@@ -377,21 +378,22 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
                 persistentSideEffectKind: SetupPersistentSideEffectKind.AdminDatabase);
     }
 
-    async Task<SetupAuthorityCheckResult>
-        ISetupVerifiedWorkflowApplyEngine.VerifyPendingCandidateAsync(
+    async Task<SetupVerifiedRecoveryLeaseResult>
+        ISetupVerifiedWorkflowApplyEngine.AcquireRecoveryAuthorityLeaseAsync(
             TrustedSetupHostLayout layout,
-            AdminBootstrapOwnershipDocument pending,
+            AdminBootstrapOwnershipDocument document,
             CancellationToken cancellationToken)
     {
         var (probe, binding) = await _adapter.CheckDockerAsync(cancellationToken);
         if (!probe.IsSuccess || binding is null)
-            return SetupAuthorityCheckResult.Failed("candidate_preflight_failed");
+            return RecoveryLeaseFailure("candidate_preflight_failed");
 
         var (acquire, session) = await _adapter.AcquireSessionAsync(layout, binding, cancellationToken);
         if (!acquire.IsSuccess || session is null)
-            return SetupAuthorityCheckResult.Failed("candidate_lock_unavailable");
+            return RecoveryLeaseFailure("candidate_lock_unavailable");
 
-        await using (session)
+        var keepSession = false;
+        try
         {
             var purge = await _adapter.PurgeStaleMountVerifiersAsync(session, cancellationToken);
             var pin = purge.IsSuccess
@@ -406,30 +408,73 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
                 || state.Active is null
                 || !string.Equals(
                     state.Active.BundleId,
-                    pending.Candidate.BundleId,
+                    document.Candidate.BundleId,
                     StringComparison.Ordinal)
                 || state.Active.ActivationGeneration
-                    != pending.Candidate.ExpectedActivationGeneration
+                    != document.Candidate.ExpectedActivationGeneration
                 || !IsCurrentCommittedAuthority(state.VerificationRecord, state.Active, layout)
                 || state.RuntimeIdentityBinding is null
                 || !BindingMatches(state.RuntimeIdentityBinding, state.Active, session.ExternalInputs))
             {
-                return SetupAuthorityCheckResult.Failed("candidate_authority_changed");
+                return RecoveryLeaseFailure("candidate_authority_changed");
             }
 
-            var validation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+            var validation = SetupBundleStaticValidator.TryValidateFinalizedBundleAuthority(
                 _fileSystem,
                 layout,
                 state.Active.BundleId,
                 out var recorded,
-                out var hostAtRest);
-            return validation.IsSuccess
-                && recorded?.AdminBootstrapExpectation is { } expectation
-                && string.Equals(expectation.OperationId, pending.OperationId, StringComparison.Ordinal)
-                && string.Equals(hostAtRest, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
-                ? SetupAuthorityCheckResult.Current()
-                : SetupAuthorityCheckResult.Failed("candidate_integrity_changed");
+                out var hostAtRest,
+                out _,
+                out _);
+            if (!validation.IsSuccess
+                || recorded is null
+                || !string.Equals(hostAtRest, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
+                || !string.Equals(
+                    recorded.ConfigurationFingerprint,
+                    document.Candidate.ConfigurationFingerprint,
+                    StringComparison.Ordinal)
+                || recorded.AdminBootstrapExpectation is not { } expectation
+                || !string.Equals(
+                    expectation.OperationId,
+                    document.OperationId,
+                    StringComparison.Ordinal)
+                || ClassifyImageCompatibility(layout, recorded) is not null)
+            {
+                return RecoveryLeaseFailure("candidate_integrity_changed");
+            }
+
+            keepSession = true;
+            return new SetupVerifiedRecoveryLeaseResult
+            {
+                Authority = SetupAuthorityCheckResult.Current(),
+                Lease = new VerifiedRecoveryLease(session),
+            };
         }
+        finally
+        {
+            if (!keepSession)
+                await session.DisposeAsync();
+        }
+
+        static SetupVerifiedRecoveryLeaseResult RecoveryLeaseFailure(string reasonCode) =>
+            new()
+            {
+                Authority = SetupAuthorityCheckResult.Failed(reasonCode),
+            };
+    }
+
+    async Task<SetupAuthorityCheckResult>
+        ISetupVerifiedWorkflowApplyEngine.VerifyPendingCandidateAsync(
+            TrustedSetupHostLayout layout,
+            AdminBootstrapOwnershipDocument pending,
+            CancellationToken cancellationToken)
+    {
+        var lease = await ((ISetupVerifiedWorkflowApplyEngine)this)
+            .AcquireRecoveryAuthorityLeaseAsync(layout, pending, cancellationToken);
+        if (lease.Lease is not null)
+            await lease.Lease.DisposeAsync();
+        return lease.Authority;
     }
 
     // ---------------------------------------------------------------- apply
@@ -3227,6 +3272,21 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
 
             string sourceRoot() => Context?.Layout.ManagedRoot
                 ?? throw new InvalidOperationException("Workflow apply context is unavailable.");
+        }
+    }
+
+    private sealed class VerifiedRecoveryLease(SetupHostDockerSession session)
+        : ISetupVerifiedRecoveryLease
+    {
+        private bool _disposed;
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            await session.DisposeAsync();
         }
     }
 

@@ -1285,7 +1285,13 @@ public sealed class AdminBootstrapContractsTests
             var composePath = Path.Combine(
                 SetupBundleLayout.EnvDir(SetupBundleLayout.BundleRoot(root, derived.BundleId!)),
                 SetupBundleLayout.ComposeEnvFileName);
-            File.AppendAllText(composePath, "AMANE_ADMIN_USERNAME=manual-admin\n");
+            var composeLines = File.ReadAllLines(composePath).ToList();
+            var usernameIndex = composeLines.FindIndex(static line =>
+                line.StartsWith("AMANE_ADMIN_USERNAME=", StringComparison.Ordinal));
+            Assert.True(usernameIndex >= 0, "Generated compose.env must contain AMANE_ADMIN_USERNAME.");
+            Assert.Equal("AMANE_ADMIN_USERNAME=\"admin\"", composeLines[usernameIndex]);
+            composeLines[usernameIndex] = "AMANE_ADMIN_USERNAME=\"manual-admin\"";
+            File.WriteAllLines(composePath, composeLines);
             Assert.False(
                 classifier.TryReadVerifiedCandidateAdminAuthority(
                     layout,
@@ -1293,10 +1299,183 @@ public sealed class AdminBootstrapContractsTests
                     out _,
                     out _,
                     out _),
-                "A tampered candidate bundle must fail host at-rest integrity.");
+                "A well-formed compose.env username rewrite must fail recomputed fingerprint matching.");
         }
         finally
         {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Production_rollback_accepts_session_cleaned_pending_state()
+    {
+        var root = TempRoot();
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fileSystem = new HostSetupFileSystem();
+            var layout = CreateLayout(root);
+            var runner = new RejectingProcessRunner();
+            var probe = new DockerEnvironmentProbe(
+                runner,
+                getDockerHost: static () => null,
+                getDockerContextEnv: static () => null,
+                resolveDockerExecutable: static () => "docker");
+            var adapter = new SetupHostDockerAdapter(fileSystem, runner, probe);
+            var engine = (ISetupVerifiedWorkflowApplyEngine)new SetupApplyEngine(fileSystem, adapter);
+            var sessionCleaned = Ownership(
+                AdminBootstrapOperationId.Create(),
+                AdminBootstrapOwnershipState.SessionCleaned,
+                "bundle-candidate");
+            var prepared = Ownership(
+                AdminBootstrapOperationId.Create(),
+                AdminBootstrapOwnershipState.Prepared,
+                "bundle-candidate");
+
+            var accepted = await engine.RecoverAdminBootstrapRollbackAsync(
+                layout,
+                sessionCleaned,
+                TestContext.Current.CancellationToken);
+            Assert.NotEqual(
+                "pending_rollback_authority_invalid",
+                accepted.ReasonCode);
+
+            var rejected = await engine.RecoverAdminBootstrapRollbackAsync(
+                layout,
+                prepared,
+                TestContext.Current.CancellationToken);
+            Assert.Equal("pending_rollback_authority_invalid", rejected.ReasonCode);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Recover_same_operation_cleanup_keeps_apply_lock_until_pending_delete()
+    {
+        var (root, factory) = await CreateMigratedDatabaseAsync();
+        try
+        {
+            var fileSystem = new HostSetupFileSystem();
+            var core = new SetupCore(fileSystem);
+            var layout = CreateLayout(root);
+            var source = core.GenerateBundle(SetupTestFixtures.LocalMailpitRequest(root));
+            Assert.Equal(SetupResultCode.Succeeded, source.Code);
+
+            var operationId = AdminBootstrapOperationId.Create();
+            var hash = AdminPasswordHasher.Hash("managed-password");
+            var expectation = new SetupAdminBootstrapExpectation
+            {
+                OperationId = operationId.Value,
+                Before = FreshState(),
+                After = new SetupAdminDatabaseExpectationState
+                {
+                    Classification = AdminBootstrapDatabaseClassification.ManagedSameUser,
+                    AdminConfigCount = 1,
+                    AdminUserCount = 1,
+                    AdminConfigCredentialEpoch = 0,
+                    AdminUserCredentialEpoch = 0,
+                    ScopeFingerprint = AdminBootstrapScopeFingerprint.Compute(
+                        [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")]),
+                    FreshHasAnyAdminSessionRows = null,
+                },
+            };
+            var derived = core.GenerateAdminDerivedBundle(
+                layout,
+                source.BundleId!,
+                SourceAdminDisposition.DisabledMain,
+                runtimeFileOwnership: null,
+                new SetupAdminBundleDelta
+                {
+                    Username = "admin",
+                    PasswordHash = hash,
+                    AllowedLocalAddress = "127.0.0.1",
+                    AllowHttp = true,
+                    Expectation = expectation,
+                });
+            Assert.Equal(SetupResultCode.Succeeded, derived.Code);
+
+            var ownershipDoc = Ownership(
+                operationId,
+                AdminBootstrapOwnershipState.Succeeded,
+                derived.BundleId!) with
+            {
+                Candidate = new AdminBootstrapCandidateAuthority
+                {
+                    BundleId = derived.BundleId!,
+                    ExpectedActivationGeneration = 2,
+                    ConfigurationFingerprint = derived.ConfigurationFingerprint!,
+                },
+                ExpectedDatabase = expectation,
+            };
+
+            FakeRecoveryLease? lease = null;
+            var deleteUnderLease = false;
+            var watchingDeletes = false;
+            var pendingPath = SetupBundleLayout.AdminBootstrapPendingPath(root);
+            var trackingFs = new TrackingDeleteFileSystem(
+                fileSystem,
+                pendingPath,
+                () =>
+                {
+                    if (!watchingDeletes)
+                        return;
+
+                    Assert.NotNull(lease);
+                    Assert.False(lease!.Disposed, "Pending delete must run while APPLY.lock is held.");
+                    deleteUnderLease = true;
+                });
+            var trackingStore = new AdminBootstrapOwnershipStore(trackingFs);
+            // Re-seed ownership through the tracking store so deletes are observed.
+            Assert.True(trackingStore.WritePending(root, ownershipDoc).IsSuccess);
+            Assert.True(trackingStore.PromotePendingToCurrent(root, ownershipDoc).IsFullySucceeded);
+            Assert.True(trackingStore.WritePending(root, ownershipDoc).IsSuccess);
+
+            var applyEngine = new FakeVerifiedWorkflowApplyEngine(
+                SetupApplyResult.Create(
+                    SetupApplyResultCode.RollbackSucceeded,
+                    SetupManagedDeploymentState.Active),
+                onLeaseAcquired: acquired =>
+                {
+                    lease = acquired;
+                    watchingDeletes = true;
+                });
+            var workflow = new AdminBootstrapWorkflow(
+                new SetupCore(trackingFs),
+                trackingFs,
+                new AdminBootstrapDatabase(factory, TimeProvider.System),
+                new AdminBootstrapSourceClassifier(trackingFs, trackingStore),
+                trackingStore,
+                applyEngine,
+                new AdminAccessVerifier(static () => new AdminAccessScriptHandler()),
+                new AdminSessionRepository(factory),
+                TimeProvider.System,
+                _ => Task.FromResult(AppliedSnapshot(hash)));
+            Assert.True(
+                TrustedAdminAccessEndpoint.TryCreate(
+                    AdminAccessProfile.LocalDevelopment,
+                    new Uri("http://127.0.0.1:8080/"),
+                    out var endpoint));
+
+            var result = await workflow.RecoverAsync(
+                layout,
+                endpoint!,
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(AdminBootstrapResultCode.Succeeded, result.Code);
+            Assert.True(deleteUnderLease);
+            Assert.NotNull(lease);
+            Assert.True(lease!.Disposed);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Missing, trackingStore.ReadPending(root).Kind);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
             if (Directory.Exists(root))
                 Directory.Delete(root, recursive: true);
         }
@@ -1892,6 +2071,16 @@ public sealed class AdminBootstrapContractsTests
                 SetupManagedDeploymentState.Active,
                 configRollbackStatus: SetupConfigRollbackStatus.Succeeded));
 
+        public Task<SetupVerifiedRecoveryLeaseResult> AcquireRecoveryAuthorityLeaseAsync(
+            TrustedSetupHostLayout layout,
+            AdminBootstrapOwnershipDocument document,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SetupVerifiedRecoveryLeaseResult
+            {
+                Authority = SetupAuthorityCheckResult.Current(),
+                Lease = new FakeRecoveryLease(),
+            });
+
         public Task<SetupAuthorityCheckResult> VerifyPendingCandidateAsync(
             TrustedSetupHostLayout layout,
             AdminBootstrapOwnershipDocument pending,
@@ -1937,11 +2126,26 @@ public sealed class AdminBootstrapContractsTests
         }
     }
 
+    private sealed class FakeRecoveryLease(Action? onDispose = null) : ISetupVerifiedRecoveryLease
+    {
+        internal bool Disposed { get; private set; }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            onDispose?.Invoke();
+            return ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class FakeVerifiedWorkflowApplyEngine(
         SetupApplyResult recoveryResult,
-        SetupAuthorityCheckResult? candidateAuthority = null)
+        SetupAuthorityCheckResult? candidateAuthority = null,
+        Action<FakeRecoveryLease>? onLeaseAcquired = null)
         : ISetupVerifiedWorkflowApplyEngine
     {
+        internal FakeRecoveryLease? LastRecoveryLease { get; private set; }
+
         public Task<SetupVerifiedWorkflowLeaseResult> AcquireVerifiedWorkflowLeaseAsync(
             TrustedSetupHostLayout layout,
             SourceAdminDisposition sourceDisposition,
@@ -1957,8 +2161,39 @@ public sealed class AdminBootstrapContractsTests
         public Task<SetupApplyResult> RecoverAdminBootstrapRollbackAsync(
             TrustedSetupHostLayout layout,
             AdminBootstrapOwnershipDocument pending,
-            CancellationToken cancellationToken) =>
-            Task.FromResult(recoveryResult);
+            CancellationToken cancellationToken)
+        {
+            Assert.True(
+                pending.State is AdminBootstrapOwnershipState.Armed
+                    or AdminBootstrapOwnershipState.DatabaseObserved
+                    or AdminBootstrapOwnershipState.AccessVerified
+                    or AdminBootstrapOwnershipState.SessionCleaned,
+                "Production SetupApplyEngine rejects unknown pending rollback states.");
+            return Task.FromResult(recoveryResult);
+        }
+
+        public Task<SetupVerifiedRecoveryLeaseResult> AcquireRecoveryAuthorityLeaseAsync(
+            TrustedSetupHostLayout layout,
+            AdminBootstrapOwnershipDocument document,
+            CancellationToken cancellationToken)
+        {
+            var authority = candidateAuthority ?? SetupAuthorityCheckResult.Current();
+            if (!authority.IsCurrent)
+            {
+                return Task.FromResult(new SetupVerifiedRecoveryLeaseResult
+                {
+                    Authority = authority,
+                });
+            }
+
+            LastRecoveryLease = new FakeRecoveryLease();
+            onLeaseAcquired?.Invoke(LastRecoveryLease);
+            return Task.FromResult(new SetupVerifiedRecoveryLeaseResult
+            {
+                Authority = authority,
+                Lease = LastRecoveryLease,
+            });
+        }
 
         public Task<SetupAuthorityCheckResult> VerifyPendingCandidateAsync(
             TrustedSetupHostLayout layout,
@@ -2035,5 +2270,68 @@ public sealed class AdminBootstrapContractsTests
                 OperatingSystem.IsWindows()
                     ? StringComparison.OrdinalIgnoreCase
                     : StringComparison.Ordinal);
+    }
+
+    private sealed class TrackingDeleteFileSystem(
+        ISetupFileSystem inner,
+        string watchDeletePath,
+        Action onWatchedDelete) : ISetupFileSystem
+    {
+        public bool DirectoryExists(string path) => inner.DirectoryExists(path);
+        public bool FileExists(string path) => inner.FileExists(path);
+        public SetupLinkInspectionResult InspectSymlinkOrReparsePoint(string path) =>
+            inner.InspectSymlinkOrReparsePoint(path);
+        public IEnumerable<string> EnumerateFileSystemEntries(string path) =>
+            inner.EnumerateFileSystemEntries(path);
+        public void CreateOwnerOnlyDirectory(string path) => inner.CreateOwnerOnlyDirectory(path);
+        public void WriteProtectedFileCreateNew(string path, ReadOnlySpan<byte> content) =>
+            inner.WriteProtectedFileCreateNew(path, content);
+        public void WriteProtectedFileCreateNew(string path, string content) =>
+            inner.WriteProtectedFileCreateNew(path, content);
+        public byte[] ReadAllBytes(string path) => inner.ReadAllBytes(path);
+
+        public void DeleteFile(string path)
+        {
+            if (string.Equals(
+                    Path.GetFullPath(path),
+                    Path.GetFullPath(watchDeletePath),
+                    OperatingSystem.IsWindows()
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal))
+            {
+                onWatchedDelete();
+            }
+
+            inner.DeleteFile(path);
+        }
+
+        public void DeleteDirectoryRecursive(string path) => inner.DeleteDirectoryRecursive(path);
+        public void MoveReplace(string sourcePath, string destinationPath) =>
+            inner.MoveReplace(sourcePath, destinationPath);
+        public void FlushDirectory(string path) => inner.FlushDirectory(path);
+        public void FlushFile(string path) => inner.FlushFile(path);
+        public FileStream OpenExclusiveGenerationLock(string path) =>
+            inner.OpenExclusiveGenerationLock(path);
+        public void SetUnixOwnership(string path, uint userId, uint groupId) =>
+            inner.SetUnixOwnership(path, userId, groupId);
+        public void SetUnixFileModeOwnerOnly(string path, bool executableDirectory) =>
+            inner.SetUnixFileModeOwnerOnly(path, executableDirectory);
+        public bool TryGetUnixFileMode(string path, out UnixFileMode mode) =>
+            inner.TryGetUnixFileMode(path, out mode);
+        public bool IsOwnerOnlyFile(string path) => inner.IsOwnerOnlyFile(path);
+        public uint? GetEffectiveUnixUserId() => inner.GetEffectiveUnixUserId();
+    }
+
+    private sealed class RejectingProcessRunner : IHostProcessRunner
+    {
+        public Task<HostProcessResult> RunAsync(
+            HostProcessSpec spec,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new HostProcessResult
+            {
+                Outcome = HostProcessOutcome.FailedToStart,
+                ExitCode = -1,
+                StandardError = "docker unavailable for unit test",
+            });
     }
 }

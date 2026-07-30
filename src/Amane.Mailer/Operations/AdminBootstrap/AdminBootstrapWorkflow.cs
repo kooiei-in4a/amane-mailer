@@ -136,18 +136,19 @@ internal sealed class AdminBootstrapWorkflow
                 AdminBootstrapOwnershipState.Succeeded,
                 StringComparison.Ordinal))
         {
-            // A committed current is only authority while ACTIVE, bundle integrity, and SQLite
-            // still prove it; login page reachability alone never justifies dropping pending.
-            var committedAuthority = await VerifyCommittedCurrentAuthorityAsync(
+            // A committed current is only authority while APPLY.lock proves ACTIVE, bundle
+            // integrity, and SQLite still match. Hold the lock through exposure probe and pending
+            // cleanup so another setup apply cannot rewrite ACTIVE underneath ownership mutation.
+            await using var recoveryLease = await HoldRecoveryAuthorityAsync(
                 layout,
                 currentDocument,
                 cancellationToken);
-            if (!committedAuthority.IsCurrent)
+            if (!recoveryLease.Authority.IsCurrent)
             {
                 return RecoveryResult(
                     profile,
                     AdminBootstrapResultCode.ManualActionRequired,
-                    committedAuthority.ReasonCode,
+                    recoveryLease.Authority.ReasonCode,
                     sessionCleanup: "succeeded",
                     manualActionRequired: true);
             }
@@ -278,49 +279,58 @@ internal sealed class AdminBootstrapWorkflow
                 AdminBootstrapOwnershipState.SessionCleaned,
                 StringComparison.Ordinal))
         {
-            var authority = await VerifyCommittedCurrentAuthorityAsync(
+            AdminDatabaseAuthorityCheck authority;
+            await using (var recoveryLease = await HoldRecoveryAuthorityAsync(
                 layout,
                 pending,
-                cancellationToken);
-            if (!authority.IsCurrent)
+                cancellationToken))
             {
-                var rollbackAfterAuthorityLoss =
-                    await _applyEngine.RecoverAdminBootstrapRollbackAsync(
-                        layout,
-                        pending,
-                        cancellationToken);
-                _ = MarkPendingNeedsIntervention(layout, pending, database: null);
-                return RecoveryResult(
-                    profile,
-                    AdminBootstrapResultCode.ManualActionRequired,
-                    authority.ReasonCode,
-                    configRollback: rollbackAfterAuthorityLoss.ConfigRollbackStatus,
-                    sessionCleanup: "succeeded",
-                    manualActionRequired: true);
+                authority = recoveryLease.Authority;
+                if (authority.IsCurrent)
+                {
+                    var promote = _ownership.PromotePendingToCurrent(
+                        layout.ManagedRoot,
+                        pending with
+                        {
+                            State = AdminBootstrapOwnershipState.Succeeded,
+                            LastTransitionAt = Timestamp(),
+                        });
+                    return RecoveryResult(
+                        profile,
+                        promote.CurrentCommitted
+                            ? AdminBootstrapResultCode.Succeeded
+                            : AdminBootstrapResultCode.ManualActionRequired,
+                        promote.IsFullySucceeded
+                            ? "pending_promotion_completed"
+                            : promote.CurrentCommitted
+                                ? "pending_cleanup_required"
+                                : "ownership_promotion_failed",
+                        adminExposure: promote.CurrentCommitted ? "enabled" : "unknown",
+                        loginVerification: "succeeded",
+                        setupStatusVerification: "succeeded",
+                        sessionCleanup: "succeeded",
+                        manualActionRequired: !promote.IsFullySucceeded);
+                }
             }
 
-            var promote = _ownership.PromotePendingToCurrent(
-                layout.ManagedRoot,
-                pending with
-                {
-                    State = AdminBootstrapOwnershipState.Succeeded,
-                    LastTransitionAt = Timestamp(),
-                });
+            // APPLY.lock is released before rollback so RecoverAdminBootstrapRollbackAsync can
+            // acquire it. SessionCleaned is an allowed rollback authority state.
+            var rollbackAfterAuthorityLoss =
+                await _applyEngine.RecoverAdminBootstrapRollbackAsync(
+                    layout,
+                    pending,
+                    cancellationToken);
+            _ = MarkPendingNeedsIntervention(
+                layout,
+                pending,
+                authority.Snapshot);
             return RecoveryResult(
                 profile,
-                promote.CurrentCommitted
-                    ? AdminBootstrapResultCode.Succeeded
-                    : AdminBootstrapResultCode.ManualActionRequired,
-                promote.IsFullySucceeded
-                    ? "pending_promotion_completed"
-                    : promote.CurrentCommitted
-                        ? "pending_cleanup_required"
-                        : "ownership_promotion_failed",
-                adminExposure: promote.CurrentCommitted ? "enabled" : "unknown",
-                loginVerification: "succeeded",
-                setupStatusVerification: "succeeded",
+                AdminBootstrapResultCode.ManualActionRequired,
+                authority.ReasonCode,
+                configRollback: rollbackAfterAuthorityLoss.ConfigRollbackStatus,
                 sessionCleanup: "succeeded",
-                manualActionRequired: !promote.IsFullySucceeded);
+                manualActionRequired: true);
         }
 
         if (pending.State is AdminBootstrapOwnershipState.Armed
@@ -1015,33 +1025,55 @@ internal sealed class AdminBootstrapWorkflow
     }
 
     /// <summary>
-    /// Proves that an ownership document is still the live Easy Setup authority: candidate config
-    /// authority (ACTIVE pointer, generation, verification record, runtime binding, bundle
-    /// integrity), verified candidate credential authority, and the live SQLite after-state.
+    /// Acquires APPLY.lock, proves candidate ACTIVE / verification / binding / bundle integrity,
+    /// then re-reads candidate credentials and SQLite while the lock remains held. Dispose the
+    /// returned scope only after ownership promotion or pending cleanup completes.
     /// </summary>
-    private async Task<AdminDatabaseAuthorityCheck> VerifyCommittedCurrentAuthorityAsync(
+    private async Task<RecoveryAuthorityScope> HoldRecoveryAuthorityAsync(
         TrustedSetupHostLayout layout,
         AdminBootstrapOwnershipDocument document,
         CancellationToken cancellationToken)
     {
-        var authority = await _applyEngine.VerifyPendingCandidateAsync(
+        var leaseResult = await _applyEngine.AcquireRecoveryAuthorityLeaseAsync(
             layout,
             document,
             cancellationToken);
-        if (!authority.IsCurrent)
-            return new(false, authority.ReasonCode ?? "candidate_authority_changed", null);
-
-        if (!_sourceClassifier.TryReadVerifiedCandidateAdminAuthority(
-                layout,
-                document,
-                out _,
-                out var username,
-                out var passwordHash))
+        if (!leaseResult.IsHeld || leaseResult.Lease is null)
         {
-            return new(false, "candidate_integrity_changed", null);
+            return RecoveryAuthorityScope.Failed(
+                leaseResult.Authority.ReasonCode ?? "candidate_authority_changed");
         }
 
-        return await VerifyFinalDatabaseAuthorityAsync(document, username!, passwordHash!);
+        try
+        {
+            if (!_sourceClassifier.TryReadVerifiedCandidateAdminAuthority(
+                    layout,
+                    document,
+                    out _,
+                    out var username,
+                    out var passwordHash))
+            {
+                await leaseResult.Lease.DisposeAsync();
+                return RecoveryAuthorityScope.Failed("candidate_integrity_changed");
+            }
+
+            var database = await VerifyFinalDatabaseAuthorityAsync(
+                document,
+                username!,
+                passwordHash!);
+            if (!database.IsCurrent)
+            {
+                await leaseResult.Lease.DisposeAsync();
+                return new RecoveryAuthorityScope(lease: null, database);
+            }
+
+            return new RecoveryAuthorityScope(leaseResult.Lease, database);
+        }
+        catch
+        {
+            await leaseResult.Lease.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>
@@ -1064,6 +1096,19 @@ internal sealed class AdminBootstrapWorkflow
             && string.Equals(snapshot.UserPasswordHash, expectedPasswordHash, StringComparison.Ordinal)
             ? new(true, "ok", snapshot)
             : new AdminDatabaseAuthorityCheck(false, "database_authority_changed", snapshot);
+    }
+
+    private sealed class RecoveryAuthorityScope(
+        ISetupVerifiedRecoveryLease? lease,
+        AdminDatabaseAuthorityCheck authority) : IAsyncDisposable
+    {
+        internal AdminDatabaseAuthorityCheck Authority { get; } = authority;
+
+        internal static RecoveryAuthorityScope Failed(string reasonCode) =>
+            new(null, new AdminDatabaseAuthorityCheck(false, reasonCode, null));
+
+        public ValueTask DisposeAsync() =>
+            lease?.DisposeAsync() ?? ValueTask.CompletedTask;
     }
 
     private async Task<bool> CleanupSessionAsync(AdminBootstrapOperationId operationId)

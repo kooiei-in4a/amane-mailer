@@ -16,6 +16,16 @@ internal interface ISetupVerifiedWorkflowApplyEngine
         AdminBootstrapOwnershipDocument pending,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Holds APPLY.lock for Admin bootstrap recovery while ACTIVE / verification / binding /
+    /// candidate integrity remain current. Ownership promotion and pending cleanup must complete
+    /// before the returned lease is disposed; releasing the lease early reopens the ACTIVE race.
+    /// </summary>
+    Task<SetupVerifiedRecoveryLeaseResult> AcquireRecoveryAuthorityLeaseAsync(
+        TrustedSetupHostLayout layout,
+        AdminBootstrapOwnershipDocument document,
+        CancellationToken cancellationToken);
+
     Task<SetupAuthorityCheckResult> VerifyPendingCandidateAsync(
         TrustedSetupHostLayout layout,
         AdminBootstrapOwnershipDocument pending,
@@ -37,11 +47,23 @@ internal interface ISetupVerifiedWorkflowLease : IAsyncDisposable
         CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Opaque APPLY.lock hold used by Admin bootstrap recovery. Dispose releases the lock.
+/// </summary>
+internal interface ISetupVerifiedRecoveryLease : IAsyncDisposable;
+
 internal sealed class SetupVerifiedWorkflowLeaseResult
 {
     internal required SetupApplyResult Result { get; init; }
     internal ISetupVerifiedWorkflowLease? Lease { get; init; }
     internal bool IsSuccess => Lease is not null;
+}
+
+internal sealed class SetupVerifiedRecoveryLeaseResult
+{
+    internal required SetupAuthorityCheckResult Authority { get; init; }
+    internal ISetupVerifiedRecoveryLease? Lease { get; init; }
+    internal bool IsHeld => Lease is not null && Authority.IsCurrent;
 }
 
 internal readonly record struct SetupAuthorityCheckResult(bool IsCurrent, string? ReasonCode)

@@ -144,14 +144,18 @@ internal sealed class AdminBootstrapSourceClassifier(
 
         try
         {
-            var validation = SetupBundleStaticValidator.TryValidateFinalizedBundle(
+            var validation = SetupBundleStaticValidator.TryValidateFinalizedBundleAuthority(
                 fileSystem,
                 layout,
                 document.Candidate.BundleId,
                 out var recorded,
-                out var hostAtRest);
+                out var hostAtRest,
+                out var compose,
+                out var secrets);
             if (!validation.IsSuccess
                 || recorded is null
+                || compose is null
+                || secrets is null
                 || !string.Equals(hostAtRest, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
                 || !string.Equals(
                     recorded.BundleId,
@@ -168,7 +172,6 @@ internal sealed class AdminBootstrapSourceClassifier(
                     expectation.OperationId,
                     document.OperationId,
                     StringComparison.Ordinal)
-                || !TryReadBundleEnv(layout, document.Candidate.BundleId, out var compose, out var secrets)
                 || !compose.TryGetValue("AMANE_ADMIN_USERNAME", out var candidateUsername)
                 || !secrets.TryGetValue("AMANE_ADMIN_PASSWORD_HASH", out var candidateHash)
                 || string.IsNullOrWhiteSpace(candidateUsername)

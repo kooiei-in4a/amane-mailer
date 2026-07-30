@@ -1,3 +1,4 @@
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Operations;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -236,7 +237,7 @@ public static class SetupDatabaseFileProbe
 /// </summary>
 public static class SetupBundleStaticValidator
 {
-    public static string? ClassifyImageCompatibility(
+    internal static string? ClassifyImageCompatibility(
         TrustedSetupHostLayout layout,
         SetupRecordedMetadata candidateRecorded)
     {
@@ -392,6 +393,188 @@ public static class SetupBundleStaticValidator
                     CryptographicOperations.ZeroMemory(member.Content);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Validates a finalized bundle's seal, then recomputes the configuration fingerprint from the
+    /// public compose/tenants/(optional) platform-sender snapshot so a well-formed compose.env
+    /// rewrite cannot keep matching a recorded fingerprint that was never recomputed.
+    /// Returns the parsed compose/secrets used during verification to avoid a TOCTOU re-read.
+    /// </summary>
+    internal static SetupDockerResult TryValidateFinalizedBundleAuthority(
+        ISetupFileSystem fileSystem,
+        TrustedSetupHostLayout layout,
+        string bundleId,
+        out SetupRecordedMetadata? recorded,
+        out string hostAtRest,
+        out IReadOnlyDictionary<string, string>? compose,
+        out IReadOnlyDictionary<string, string>? secrets)
+    {
+        compose = null;
+        secrets = null;
+        var validation = TryValidateFinalizedBundle(
+            fileSystem,
+            layout,
+            bundleId,
+            out recorded,
+            out hostAtRest);
+        if (!validation.IsSuccess || recorded is null)
+            return validation;
+
+        if (!TryLoadPublicConfigSnapshot(
+                fileSystem,
+                layout,
+                recorded,
+                out var parsedCompose,
+                out var parsedSecrets,
+                out var tenants,
+                out var platformSender,
+                out var loadFailure))
+        {
+            hostAtRest = SetupIntegrityMerger.NotVerified;
+            return loadFailure!;
+        }
+
+        if (!SetupModeParser.TryParse(recorded.Mode, out var mode))
+        {
+            hostAtRest = SetupIntegrityMerger.NotVerified;
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Recorded mode is invalid.");
+        }
+
+        var fingerprintCompose = new SortedDictionary<string, string>(
+            parsedCompose,
+            StringComparer.Ordinal);
+        foreach (var key in fingerprintCompose.Keys.ToArray())
+        {
+            fingerprintCompose[key] = fingerprintCompose[key].Replace(
+                $"bundles/{recorded.BundleId}/",
+                "bundles/<bundle-id>/",
+                StringComparison.Ordinal);
+        }
+
+        var recomputed = SetupCanonicalPayload.FingerprintSha256(
+            SetupCanonicalPayload.BuildForRecordedSchema(
+                mode,
+                tenants,
+                fingerprintCompose,
+                platformSender,
+                recorded.AdminBootstrapRequested,
+                recorded.SchemaVersion));
+        if (!string.Equals(
+                recomputed,
+                recorded.ConfigurationFingerprint,
+                StringComparison.Ordinal))
+        {
+            hostAtRest = SetupIntegrityMerger.Mismatch;
+            return SetupDockerResult.Fail(
+                SetupDockerResultCode.InvalidBundleInventory,
+                "Public configuration fingerprint mismatch.");
+        }
+
+        compose = parsedCompose;
+        secrets = parsedSecrets;
+        return SetupDockerResult.Ok();
+    }
+
+    private static bool TryLoadPublicConfigSnapshot(
+        ISetupFileSystem fileSystem,
+        TrustedSetupHostLayout layout,
+        SetupRecordedMetadata recorded,
+        out Dictionary<string, string> compose,
+        out Dictionary<string, string> secrets,
+        out MailerTenantsFile tenants,
+        out PlatformSenderFile? platformSender,
+        out SetupDockerResult? failure)
+    {
+        compose = new Dictionary<string, string>(StringComparer.Ordinal);
+        secrets = new Dictionary<string, string>(StringComparer.Ordinal);
+        tenants = null!;
+        platformSender = null;
+        failure = null;
+
+        var bundleRoot = Path.GetFullPath(
+            SetupBundleLayout.BundleRoot(layout.ManagedRoot, recorded.BundleId));
+        var composePath = Path.Combine(
+            SetupBundleLayout.EnvDir(bundleRoot),
+            SetupBundleLayout.ComposeEnvFileName);
+        var secretsPath = Path.Combine(
+            SetupBundleLayout.EnvDir(bundleRoot),
+            SetupBundleLayout.SecretsEnvFileName);
+        var tenantsPath = Path.Combine(
+            SetupBundleLayout.ConfigDir(bundleRoot),
+            SetupBundleLayout.TenantsFileName);
+        SetupDockerResult? composeFailure = null;
+        SetupDockerResult? secretsFailure = null;
+        if (!fileSystem.FileExists(composePath)
+            || !fileSystem.FileExists(secretsPath)
+            || !fileSystem.FileExists(tenantsPath)
+            || !ManagedComposeEnvComposer.TryParseEnvFile(
+                fileSystem.ReadAllBytes(composePath),
+                out compose,
+                out composeFailure)
+            || !ManagedComposeEnvComposer.TryParseEnvFile(
+                fileSystem.ReadAllBytes(secretsPath),
+                out secrets,
+                out secretsFailure))
+        {
+            failure = composeFailure
+                ?? secretsFailure
+                ?? SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Bundle public configuration members are missing.");
+            return false;
+        }
+
+        try
+        {
+            var parsedTenants = JsonSerializer.Deserialize(
+                fileSystem.ReadAllBytes(tenantsPath),
+                SetupJsonContext.Default.MailerTenantsFile);
+            if (parsedTenants is null)
+            {
+                failure = SetupDockerResult.Fail(
+                    SetupDockerResultCode.InvalidBundleInventory,
+                    "Bundle tenants.json is malformed.");
+                return false;
+            }
+
+            tenants = parsedTenants;
+            if (recorded.PlatformSenderPresent)
+            {
+                var platformPath = Path.Combine(
+                    SetupBundleLayout.ConfigDir(bundleRoot),
+                    PlatformSenderFile.CanonicalFileName);
+                if (!fileSystem.FileExists(platformPath))
+                {
+                    failure = SetupDockerResult.Fail(
+                        SetupDockerResultCode.InvalidBundleInventory,
+                        "Bundle platform-sender.json is missing.");
+                    return false;
+                }
+
+                platformSender = JsonSerializer.Deserialize(
+                    fileSystem.ReadAllBytes(platformPath),
+                    SetupJsonContext.Default.PlatformSenderFile);
+                if (platformSender is null)
+                {
+                    failure = SetupDockerResult.Fail(
+                        SetupDockerResultCode.InvalidBundleInventory,
+                        "Bundle platform-sender.json is malformed.");
+                    return false;
+                }
+            }
+
+            return true;
+        }
+        catch (JsonException)
+        {
+            failure = SetupDockerResult.Fail(
+                SetupDockerResultCode.OutputMalformed,
+                "Bundle public configuration JSON is malformed.");
+            return false;
         }
     }
 
