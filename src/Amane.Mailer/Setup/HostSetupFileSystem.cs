@@ -184,6 +184,16 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
         return Geteuid();
     }
 
+    public uint? GetEffectiveUnixGroupId()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+        {
+            return null;
+        }
+
+        return Getegid();
+    }
+
 
     [SupportedOSPlatform("linux")]
     [SupportedOSPlatform("macos")]
@@ -813,6 +823,9 @@ public sealed class HostSetupFileSystem : ISetupFileSystem
 
     [DllImport("libc", EntryPoint = "geteuid", SetLastError = false)]
     private static extern uint Geteuid();
+
+    [DllImport("libc", EntryPoint = "getegid", SetLastError = false)]
+    private static extern uint Getegid();
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern uint GetFileAttributesW(string lpFileName);

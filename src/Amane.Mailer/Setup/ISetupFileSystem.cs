@@ -32,4 +32,11 @@ public interface ISetupFileSystem
     bool IsOwnerOnlyFile(string path);
 
     uint? GetEffectiveUnixUserId();
+
+    /// <summary>
+    /// Effective Unix group id, or <c>null</c> on platforms without one. Callers that build a
+    /// <see cref="SetupRuntimeFileOwnership"/> need it alongside the user id; implementations
+    /// that do not model Unix ownership can keep the default.
+    /// </summary>
+    uint? GetEffectiveUnixGroupId() => null;
 }

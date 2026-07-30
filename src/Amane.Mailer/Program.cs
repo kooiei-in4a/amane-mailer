@@ -30,6 +30,8 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll admin provider register-acs
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
       dotnet Amane.Mailer.dll admin provider test-acs-send
+      dotnet Amane.Mailer.dll setup assistant
+      dotnet Amane.Mailer.dll setup assistant-self-check
       dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
       dotnet Amane.Mailer.dll setup inspect-effective --format json
       dotnet Amane.Mailer.dll setup core-self-check
@@ -185,6 +187,25 @@ if (AdminProviderTestAcsSendCommand.IsTestAcsSendCommand(commandArgs))
         Console.Error);
 }
 
+
+// The assistant runs an isolated loopback web host. It never starts the normal Mailer runtime,
+// and the runtime never gains a setup route.
+if (Amane.Mailer.Setup.Assistant.SetupAssistantCommand.IsAssistantCommand(commandArgs))
+{
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => Amane.Mailer.Setup.Assistant.SetupAssistantCommand.ExecuteAsync(
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
+}
+
+if (Amane.Mailer.Setup.Assistant.SetupAssistantSelfCheckCommand.IsSelfCheckCommand(commandArgs))
+{
+    return await Amane.Mailer.Setup.Assistant.SetupAssistantSelfCheckCommand.ExecuteAsync(
+        Console.Out,
+        Console.Error);
+}
 
 if (Amane.Mailer.Setup.SetupCoreSelfCheckCommand.IsSelfCheckCommand(commandArgs))
 {
