@@ -2319,19 +2319,8 @@ public sealed class SetupApplyEngine : ISetupApplyEngine, ISetupVerifiedWorkflow
 
     private static string? ClassifyImageCompatibility(
         TrustedSetupHostLayout layout,
-        SetupRecordedMetadata candidateRecorded)
-    {
-        var allowed = layout.ReleaseInventory.AllowedImageRepository;
-        var recorded = candidateRecorded.ImageRepository;
-        if (string.IsNullOrWhiteSpace(recorded) || string.IsNullOrWhiteSpace(allowed))
-        {
-            return "image_repository_unknown";
-        }
-
-        return string.Equals(recorded, allowed, StringComparison.Ordinal)
-            ? null
-            : "image_repository_mismatch";
-    }
+        SetupRecordedMetadata candidateRecorded) =>
+        SetupBundleStaticValidator.ClassifyImageCompatibility(layout, candidateRecorded);
 
     private static string ImageReference(SetupRecordedMetadata recorded) =>
         (recorded.ImageRepository ?? string.Empty) + ":" + (recorded.ImageTag ?? string.Empty);

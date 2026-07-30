@@ -37,6 +37,11 @@ internal static class AdminBootstrapResultCode
     internal const string FailedUnexpected = "admin.bootstrap.failed_unexpected";
 }
 
+internal readonly record struct AdminDatabaseAuthorityCheck(
+    bool IsCurrent,
+    string ReasonCode,
+    AdminBootstrapDatabaseSnapshot? Snapshot);
+
 internal sealed class AdminBootstrapWorkflowResult
 {
     internal required string Code { get; init; }
@@ -59,6 +64,12 @@ internal sealed class AdminBootstrapWorkflowResult
 internal sealed class AdminBootstrapWorkflow
 {
     internal static readonly TimeSpan CleanupBudget = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Budget for the final Admin database authority read. It is separate from the session cleanup
+    /// budget so a slow or locked database cannot silently consume the cleanup allowance.
+    /// </summary>
+    internal static readonly TimeSpan DatabaseAuthorityBudget = TimeSpan.FromSeconds(15);
 
     private readonly SetupCore _setupCore;
     private readonly ISetupFileSystem _fileSystem;
@@ -125,6 +136,22 @@ internal sealed class AdminBootstrapWorkflow
                 AdminBootstrapOwnershipState.Succeeded,
                 StringComparison.Ordinal))
         {
+            // A committed current is only authority while ACTIVE, bundle integrity, and SQLite
+            // still prove it; login page reachability alone never justifies dropping pending.
+            var committedAuthority = await VerifyCommittedCurrentAuthorityAsync(
+                layout,
+                currentDocument,
+                cancellationToken);
+            if (!committedAuthority.IsCurrent)
+            {
+                return RecoveryResult(
+                    profile,
+                    AdminBootstrapResultCode.ManualActionRequired,
+                    committedAuthority.ReasonCode,
+                    sessionCleanup: "succeeded",
+                    manualActionRequired: true);
+            }
+
             var exposure = await ProbeExposureAfterRollbackAsync(
                 accessEndpoint,
                 SourceAdminDisposition.EnabledManagedSameUser,
@@ -251,16 +278,23 @@ internal sealed class AdminBootstrapWorkflow
                 AdminBootstrapOwnershipState.SessionCleaned,
                 StringComparison.Ordinal))
         {
-            var authority = await _applyEngine.VerifyPendingCandidateAsync(
+            var authority = await VerifyCommittedCurrentAuthorityAsync(
                 layout,
                 pending,
                 cancellationToken);
             if (!authority.IsCurrent)
             {
+                var rollbackAfterAuthorityLoss =
+                    await _applyEngine.RecoverAdminBootstrapRollbackAsync(
+                        layout,
+                        pending,
+                        cancellationToken);
+                _ = MarkPendingNeedsIntervention(layout, pending, database: null);
                 return RecoveryResult(
                     profile,
                     AdminBootstrapResultCode.ManualActionRequired,
-                    authority.ReasonCode ?? "candidate_authority_changed",
+                    authority.ReasonCode,
+                    configRollback: rollbackAfterAuthorityLoss.ConfigRollbackStatus,
                     sessionCleanup: "succeeded",
                     manualActionRequired: true);
             }
@@ -431,7 +465,9 @@ internal sealed class AdminBootstrapWorkflow
                     AllowHttp = request.AllowHttp,
                     Expectation = expectation,
                 });
-            if (!generated.IsSuccess || generated.BundleId is null)
+            if (!generated.IsSuccess
+                || generated.BundleId is null
+                || string.IsNullOrWhiteSpace(generated.ConfigurationFingerprint))
             {
                 return Failed(
                     request,
@@ -462,6 +498,7 @@ internal sealed class AdminBootstrapWorkflow
                 {
                     BundleId = generated.BundleId,
                     ExpectedActivationGeneration = active.ActivationGeneration + 1,
+                    ConfigurationFingerprint = generated.ConfigurationFingerprint,
                 },
                 ExpectedDatabase = expectation,
                 ObservedDatabaseClassification = databaseBefore.Classification,
@@ -666,6 +703,25 @@ internal sealed class AdminBootstrapWorkflow
                     cleanupAlreadyAttempted: true);
             }
 
+            var finalDatabase = await VerifyFinalDatabaseAuthorityAsync(
+                pending,
+                request.Username,
+                passwordHash);
+            if (!finalDatabase.IsCurrent)
+            {
+                return await FailAfterActivationAsync(
+                    request,
+                    lease,
+                    operationId,
+                    pending,
+                    finalDatabase.Snapshot,
+                    finalDatabase.ReasonCode,
+                    "succeeded",
+                    "succeeded",
+                    cleanupAlreadyAttempted: true,
+                    databaseAuthorityTrusted: false);
+            }
+
             var promote = _ownership.PromotePendingToCurrent(
                 request.Layout.ManagedRoot,
                 pending with
@@ -763,7 +819,8 @@ internal sealed class AdminBootstrapWorkflow
         string reasonCode,
         string loginVerification,
         string setupStatusVerification,
-        bool cleanupAlreadyAttempted = false)
+        bool cleanupAlreadyAttempted = false,
+        bool databaseAuthorityTrusted = true)
     {
         var cleanup = cleanupAlreadyAttempted || await CleanupSessionAsync(operationId);
         // Cleanup failure never suppresses config rollback.
@@ -795,7 +852,8 @@ internal sealed class AdminBootstrapWorkflow
             databaseAfter,
             rollback.ActivationGeneration,
             rollbackSucceeded,
-            rollback.ReasonCode);
+            rollback.ReasonCode,
+            databaseAuthorityTrusted);
 
         return Failed(
             request,
@@ -823,9 +881,10 @@ internal sealed class AdminBootstrapWorkflow
         AdminBootstrapDatabaseSnapshot? database,
         long? activationGeneration,
         bool rollbackSucceeded,
-        string? reasonCode)
+        string? reasonCode,
+        bool databaseAuthorityTrusted = true)
     {
-        if (database is null)
+        if (database is null || !databaseAuthorityTrusted)
         {
             _ = MarkPendingNeedsIntervention(layout, pending, database);
             return false;
@@ -955,6 +1014,58 @@ internal sealed class AdminBootstrapWorkflow
         };
     }
 
+    /// <summary>
+    /// Proves that an ownership document is still the live Easy Setup authority: candidate config
+    /// authority (ACTIVE pointer, generation, verification record, runtime binding, bundle
+    /// integrity), verified candidate credential authority, and the live SQLite after-state.
+    /// </summary>
+    private async Task<AdminDatabaseAuthorityCheck> VerifyCommittedCurrentAuthorityAsync(
+        TrustedSetupHostLayout layout,
+        AdminBootstrapOwnershipDocument document,
+        CancellationToken cancellationToken)
+    {
+        var authority = await _applyEngine.VerifyPendingCandidateAsync(
+            layout,
+            document,
+            cancellationToken);
+        if (!authority.IsCurrent)
+            return new(false, authority.ReasonCode ?? "candidate_authority_changed", null);
+
+        if (!_sourceClassifier.TryReadVerifiedCandidateAdminAuthority(
+                layout,
+                document,
+                out _,
+                out var username,
+                out var passwordHash))
+        {
+            return new(false, "candidate_integrity_changed", null);
+        }
+
+        return await VerifyFinalDatabaseAuthorityAsync(document, username!, passwordHash!);
+    }
+
+    /// <summary>
+    /// Re-reads SQLite immediately before a succeeded ownership is committed. Admin rows may change
+    /// after the first postflight, so a promotion is only allowed while the live database still
+    /// matches the expected after-state and the candidate effective credential authority.
+    /// </summary>
+    private async Task<AdminDatabaseAuthorityCheck> VerifyFinalDatabaseAuthorityAsync(
+        AdminBootstrapOwnershipDocument document,
+        string expectedUsername,
+        string expectedPasswordHash)
+    {
+        var snapshot = await TryInspectDatabaseAsync(DatabaseAuthorityBudget);
+        if (snapshot is null)
+            return new(false, "database_final_read_failed", null);
+
+        return Matches(snapshot, document.ExpectedDatabase.After)
+            && string.Equals(snapshot.Username, expectedUsername, StringComparison.Ordinal)
+            && string.Equals(snapshot.AppliedPasswordHash, expectedPasswordHash, StringComparison.Ordinal)
+            && string.Equals(snapshot.UserPasswordHash, expectedPasswordHash, StringComparison.Ordinal)
+            ? new(true, "ok", snapshot)
+            : new AdminDatabaseAuthorityCheck(false, "database_authority_changed", snapshot);
+    }
+
     private async Task<bool> CleanupSessionAsync(AdminBootstrapOperationId operationId)
     {
         using var cleanupCts = new CancellationTokenSource(CleanupBudget);
@@ -977,6 +1088,19 @@ internal sealed class AdminBootstrapWorkflow
         try
         {
             return await _inspectDatabase(CancellationToken.None);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<AdminBootstrapDatabaseSnapshot?> TryInspectDatabaseAsync(TimeSpan budget)
+    {
+        using var budgetCts = new CancellationTokenSource(budget);
+        try
+        {
+            return await _inspectDatabase(budgetCts.Token);
         }
         catch
         {

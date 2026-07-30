@@ -236,6 +236,23 @@ public static class SetupDatabaseFileProbe
 /// </summary>
 public static class SetupBundleStaticValidator
 {
+    public static string? ClassifyImageCompatibility(
+        TrustedSetupHostLayout layout,
+        SetupRecordedMetadata candidateRecorded)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(candidateRecorded);
+
+        var allowed = layout.ReleaseInventory.AllowedImageRepository;
+        var recorded = candidateRecorded.ImageRepository;
+        if (string.IsNullOrWhiteSpace(recorded) || string.IsNullOrWhiteSpace(allowed))
+            return "image_repository_unknown";
+
+        return string.Equals(recorded, allowed, StringComparison.Ordinal)
+            ? null
+            : "image_repository_mismatch";
+    }
+
     public static SetupDockerResult TryValidateFinalizedBundle(
         ISetupFileSystem fileSystem,
         TrustedSetupHostLayout layout,

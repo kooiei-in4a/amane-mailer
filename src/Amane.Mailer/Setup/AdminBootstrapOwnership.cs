@@ -100,6 +100,14 @@ internal sealed record AdminBootstrapCandidateAuthority
 
     [JsonPropertyName("expectedActivationGeneration")]
     public long ExpectedActivationGeneration { get; init; }
+
+    /// <summary>
+    /// Candidate configuration fingerprint recorded at generation time. Residual and recovery
+    /// authority checks compare this against the finalized candidate bundle so a tampered bundle
+    /// cannot be re-adopted as Easy Setup managed state.
+    /// </summary>
+    [JsonPropertyName("configurationFingerprint")]
+    public required string ConfigurationFingerprint { get; init; }
 }
 
 internal enum AdminBootstrapOwnershipReadKind
@@ -374,6 +382,7 @@ internal sealed class AdminBootstrapOwnershipStore
             StringComparison.Ordinal)
         && SetupActivePointer.IsSafeBundleId(document.Source.BundleId)
         && SetupActivePointer.IsSafeBundleId(document.Candidate.BundleId)
+        && !string.IsNullOrWhiteSpace(document.Candidate.ConfigurationFingerprint)
         && document.Source.ActivationGeneration >= 1
         && document.Candidate.ExpectedActivationGeneration >= 1
         && SetupBundleLayout.IsSupportedRecordedSchemaVersion(document.Source.RecordedSchemaVersion)

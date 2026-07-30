@@ -8,6 +8,7 @@ using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Operations.AdminBootstrap;
 using Amane.Mailer.Setup;
+using Amane.Mailer.Tests.Setup;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -1019,6 +1020,289 @@ public sealed class AdminBootstrapContractsTests
     }
 
     [Fact]
+    public async Task Execute_refuses_promotion_when_database_changes_after_postflight()
+    {
+        var (root, factory) = await CreateMigratedDatabaseAsync();
+        try
+        {
+            var store = new AdminBootstrapOwnershipStore(new HostSetupFileSystem());
+            var source = SeedActiveSourceBundle(root);
+            var reads = 0;
+            var workflow = CreateExecuteWorkflow(
+                root,
+                factory,
+                store,
+                source,
+                _ => Task.FromResult(
+                    Interlocked.Increment(ref reads) switch
+                    {
+                        1 => FreshSnapshot(),
+                        2 => AppliedSnapshot("effective-hash"),
+                        // A concurrent Manual rotation lands between postflight and promotion.
+                        _ => AppliedSnapshot("effective-hash") with { AdminUserCredentialEpoch = 5 },
+                    }));
+            using var credential = new AdminBootstrapCredentialLease("test-password");
+
+            var result = await workflow.ExecuteAsync(
+                CreateRequest(root, credential),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal("database_authority_changed", result.ReasonCode);
+            Assert.True(result.ManualActionRequired);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Missing, store.ReadCurrent(root).Kind);
+            var retained = store.ReadPending(root);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Valid, retained.Kind);
+            Assert.Equal(AdminBootstrapOwnershipState.NeedsIntervention, retained.Document!.State);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Execute_promotes_when_final_database_authority_still_matches_candidate()
+    {
+        var (root, factory) = await CreateMigratedDatabaseAsync();
+        try
+        {
+            var store = new AdminBootstrapOwnershipStore(new HostSetupFileSystem());
+            var source = SeedActiveSourceBundle(root);
+            var reads = 0;
+            var workflow = CreateExecuteWorkflow(
+                root,
+                factory,
+                store,
+                source,
+                _ => Task.FromResult(
+                    Interlocked.Increment(ref reads) == 1
+                        ? FreshSnapshot()
+                        : AppliedSnapshot(CandidateEffectiveHash(root, store))));
+            using var credential = new AdminBootstrapCredentialLease("test-password");
+
+            var result = await workflow.ExecuteAsync(
+                CreateRequest(root, credential),
+                TestContext.Current.CancellationToken);
+
+            Assert.Null(result.ReasonCode);
+            Assert.False(result.ManualActionRequired);
+            Assert.Equal(AdminBootstrapResultCode.Succeeded, result.Code);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Missing, store.ReadPending(root).Kind);
+            var current = store.ReadCurrent(root);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Valid, current.Kind);
+            Assert.Equal(AdminBootstrapOwnershipState.Succeeded, current.Document!.State);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Recover_committed_current_requires_candidate_and_database_authority()
+    {
+        var (root, factory) = await CreateMigratedDatabaseAsync();
+        try
+        {
+            var store = new AdminBootstrapOwnershipStore(new HostSetupFileSystem());
+            var operation = AdminBootstrapOperationId.Create();
+            var current = Ownership(
+                operation,
+                AdminBootstrapOwnershipState.Succeeded,
+                "bundle-candidate");
+            Assert.True(store.WritePending(root, current).IsSuccess);
+            Assert.True(store.PromotePendingToCurrent(root, current).IsFullySucceeded);
+            Assert.True(store.WritePending(root, current).IsSuccess);
+            var probeCount = 0;
+            var workflow = CreateRecoveryWorkflow(
+                root,
+                factory,
+                store,
+                new FakeVerifiedWorkflowApplyEngine(
+                    SetupApplyResult.Create(
+                        SetupApplyResultCode.RollbackSucceeded,
+                        SetupManagedDeploymentState.Active)),
+                () =>
+                {
+                    Interlocked.Increment(ref probeCount);
+                    return new StaticResponseHandler(HttpStatusCode.OK);
+                });
+            Assert.True(
+                TrustedAdminAccessEndpoint.TryCreate(
+                    AdminAccessProfile.LocalDevelopment,
+                    new Uri("http://127.0.0.1:8080/"),
+                    out var endpoint));
+
+            var result = await workflow.RecoverAsync(
+                CreateLayout(root),
+                endpoint!,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.ManualActionRequired);
+            Assert.Equal("candidate_integrity_changed", result.ReasonCode);
+            Assert.Equal(0, probeCount);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Valid, store.ReadPending(root).Kind);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Valid, store.ReadCurrent(root).Kind);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Recover_session_cleaned_does_not_promote_without_final_database_authority()
+    {
+        var (root, factory) = await CreateMigratedDatabaseAsync();
+        try
+        {
+            var store = new AdminBootstrapOwnershipStore(new HostSetupFileSystem());
+            var pending = Ownership(
+                AdminBootstrapOperationId.Create(),
+                AdminBootstrapOwnershipState.SessionCleaned,
+                "bundle-candidate");
+            Assert.True(store.WritePending(root, pending).IsSuccess);
+            var workflow = CreateRecoveryWorkflow(
+                root,
+                factory,
+                store,
+                new FakeVerifiedWorkflowApplyEngine(
+                    SetupApplyResult.Create(
+                        SetupApplyResultCode.RollbackSucceeded,
+                        SetupManagedDeploymentState.Active,
+                        configRollbackStatus: SetupConfigRollbackStatus.Succeeded)),
+                () => new StaticResponseHandler(HttpStatusCode.NotFound));
+            Assert.True(
+                TrustedAdminAccessEndpoint.TryCreate(
+                    AdminAccessProfile.LocalDevelopment,
+                    new Uri("http://127.0.0.1:8080/"),
+                    out var endpoint));
+
+            var result = await workflow.RecoverAsync(
+                CreateLayout(root),
+                endpoint!,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.ManualActionRequired);
+            Assert.Equal(AdminBootstrapResultCode.ManualActionRequired, result.Code);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Missing, store.ReadCurrent(root).Kind);
+            var retained = store.ReadPending(root);
+            Assert.Equal(AdminBootstrapOwnershipReadKind.Valid, retained.Kind);
+            Assert.Equal(AdminBootstrapOwnershipState.NeedsIntervention, retained.Document!.State);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Residual_candidate_authority_requires_finalized_bundle_integrity()
+    {
+        var root = TempRoot();
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fileSystem = new HostSetupFileSystem();
+            var core = new SetupCore(fileSystem);
+            var layout = CreateLayout(root);
+            var source = core.GenerateBundle(SetupTestFixtures.LocalMailpitRequest(root));
+            Assert.Equal(SetupResultCode.Succeeded, source.Code);
+
+            var operationId = AdminBootstrapOperationId.Create();
+            var hash = AdminPasswordHasher.Hash("managed-password");
+            var expectation = new SetupAdminBootstrapExpectation
+            {
+                OperationId = operationId.Value,
+                Before = FreshState(),
+                After = FreshState(),
+            };
+            var derived = core.GenerateAdminDerivedBundle(
+                layout,
+                source.BundleId!,
+                SourceAdminDisposition.DisabledMain,
+                runtimeFileOwnership: null,
+                new SetupAdminBundleDelta
+                {
+                    Username = "admin",
+                    PasswordHash = hash,
+                    AllowedLocalAddress = "127.0.0.1",
+                    AllowHttp = true,
+                    Expectation = expectation,
+                });
+            Assert.Equal(SetupResultCode.Succeeded, derived.Code);
+
+            var classifier = new AdminBootstrapSourceClassifier(
+                fileSystem,
+                new AdminBootstrapOwnershipStore(fileSystem));
+            var residual = Ownership(
+                operationId,
+                AdminBootstrapOwnershipState.ResidualAfterConfigRollback,
+                derived.BundleId!) with
+            {
+                Candidate = new AdminBootstrapCandidateAuthority
+                {
+                    BundleId = derived.BundleId!,
+                    ExpectedActivationGeneration = 2,
+                    ConfigurationFingerprint = derived.ConfigurationFingerprint!,
+                },
+                ExpectedDatabase = expectation,
+            };
+
+            Assert.True(
+                classifier.TryReadVerifiedCandidateAdminAuthority(
+                    layout,
+                    residual,
+                    out _,
+                    out var username,
+                    out var candidateHash));
+            Assert.Equal("admin", username);
+            Assert.Equal(hash, candidateHash);
+
+            Assert.False(
+                classifier.TryReadVerifiedCandidateAdminAuthority(
+                    layout,
+                    residual with
+                    {
+                        Candidate = residual.Candidate with
+                        {
+                            ConfigurationFingerprint = "sha256:" + new string('b', 64),
+                        },
+                    },
+                    out _,
+                    out _,
+                    out _),
+                "A candidate fingerprint mismatch must not be adopted.");
+
+            var composePath = Path.Combine(
+                SetupBundleLayout.EnvDir(SetupBundleLayout.BundleRoot(root, derived.BundleId!)),
+                SetupBundleLayout.ComposeEnvFileName);
+            File.AppendAllText(composePath, "AMANE_ADMIN_USERNAME=manual-admin\n");
+            Assert.False(
+                classifier.TryReadVerifiedCandidateAdminAuthority(
+                    layout,
+                    residual,
+                    out _,
+                    out _,
+                    out _),
+                "A tampered candidate bundle must fail host at-rest integrity.");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Residual_authority_rejects_manual_epoch_scope_username_and_hash_drift()
     {
         var operationId = AdminBootstrapOperationId.Create();
@@ -1307,6 +1591,7 @@ public sealed class AdminBootstrapContractsTests
             {
                 BundleId = candidateBundleId,
                 ExpectedActivationGeneration = 2,
+                ConfigurationFingerprint = "sha256:candidate",
             },
             ExpectedDatabase = new SetupAdminBootstrapExpectation
             {
@@ -1390,7 +1675,8 @@ public sealed class AdminBootstrapContractsTests
     private static TrustedSetupHostLayout CreateLayout(string root)
     {
         var state = SetupBundleLayout.StateDir(root);
-        Directory.CreateDirectory(state);
+        if (!Directory.Exists(state))
+            new HostSetupFileSystem().CreateOwnerOnlyDirectory(state);
         return new TrustedSetupHostLayout(
             root,
             root,
@@ -1400,7 +1686,7 @@ public sealed class AdminBootstrapContractsTests
             SetupComposeTopology.DeployWithMailpit,
             new TrustedReleaseInventory
             {
-                AllowedImageRepository = "example.invalid/amane-mailer",
+                AllowedImageRepository = SetupImageDefaults.DefaultRepository,
                 RequiredImageDigest = "sha256:" + new string('a', 64),
                 AllowedDisplayTag = "test",
                 ComposeBundleVersion = "test",
@@ -1409,6 +1695,118 @@ public sealed class AdminBootstrapContractsTests
                 ProjectNamePrefix = "amane-test",
             },
             "admin-bootstrap-test");
+    }
+
+    private static AdminBootstrapDatabaseSnapshot FreshSnapshot() =>
+        new(
+            AdminBootstrapDatabaseClassification.Fresh,
+            0,
+            0,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            false);
+
+    /// <summary>
+    /// The state a candidate runtime leaves behind for the fresh bootstrap path: one managed config
+    /// row, one managed user row, epoch 0, and the requested tenant scope.
+    /// </summary>
+    private static AdminBootstrapDatabaseSnapshot AppliedSnapshot(string effectiveHash) =>
+        new(
+            AdminBootstrapDatabaseClassification.ManagedSameUser,
+            1,
+            1,
+            0,
+            0,
+            "admin",
+            effectiveHash,
+            effectiveHash,
+            AdminBootstrapScopeFingerprint.Compute(
+                [Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")]),
+            false);
+
+    private static string CandidateEffectiveHash(string root, AdminBootstrapOwnershipStore store)
+    {
+        var pending = store.ReadPending(root);
+        Assert.Equal(AdminBootstrapOwnershipReadKind.Valid, pending.Kind);
+        var secrets = File.ReadAllBytes(Path.Combine(
+            SetupBundleLayout.EnvDir(
+                SetupBundleLayout.BundleRoot(root, pending.Document!.Candidate.BundleId)),
+            SetupBundleLayout.SecretsEnvFileName));
+        Assert.True(ManagedComposeEnvComposer.TryParseEnvFile(secrets, out var parsed, out _));
+        return parsed["AMANE_ADMIN_PASSWORD_HASH"];
+    }
+
+    private static TrustedVerifiedActiveBundle SeedActiveSourceBundle(string root)
+    {
+        var fileSystem = new HostSetupFileSystem();
+        var generated = new SetupCore(fileSystem)
+            .GenerateBundle(SetupTestFixtures.LocalMailpitRequest(root));
+        Assert.Equal(SetupResultCode.Succeeded, generated.Code);
+
+        var layout = CreateLayout(root);
+        File.WriteAllText(
+            layout.ActivePointerPath,
+            $"{{\"schemaVersion\":1,\"bundleId\":\"{generated.BundleId}\",\"activationGeneration\":1}}\n");
+        Assert.True(
+            SetupBundleStaticValidator.TryValidateFinalizedBundle(
+                fileSystem,
+                layout,
+                generated.BundleId!,
+                out var recorded,
+                out _).IsSuccess);
+        Assert.True(SetupActivePointer.TryParse(
+            File.ReadAllText(layout.ActivePointerPath),
+            out var active));
+        return new TrustedVerifiedActiveBundle(
+            active!,
+            recorded!,
+            new SetupVerificationRecord
+            {
+                SchemaVersion = SetupVerificationRecord.CurrentSchemaVersion,
+                Status = SetupVerificationRecord.StatusCommitted,
+                BundleId = generated.BundleId!,
+                ActivationGeneration = 1,
+                FingerprintComparison = SetupVerificationRecord.FingerprintMatched,
+                HostAtRest = SetupIntegrityMerger.Matched,
+                MountAttestation = SetupIntegrityMerger.Matched,
+                BundleIntegrity = SetupIntegrityMerger.Matched,
+                RuntimeIdentityBinding = SetupIntegrityMerger.Matched,
+                Readiness = SetupVerificationRecord.ReadinessPassed,
+                SendReadyEvaluation = SetupVerificationRecord.SendReadyNotEvaluated,
+            },
+            new SetupRuntimeIdentityBindingStamp
+            {
+                SchemaVersion = SetupRuntimeIdentityBindingStamp.CurrentSchemaVersion,
+                BundleId = generated.BundleId!,
+                ActivationGeneration = 1,
+                BindingMac = new string('a', 64),
+            },
+            SourceAdminDisposition.DisabledMain);
+    }
+
+    private static AdminBootstrapWorkflow CreateExecuteWorkflow(
+        string root,
+        SqliteConnectionFactory factory,
+        AdminBootstrapOwnershipStore ownership,
+        TrustedVerifiedActiveBundle source,
+        Func<CancellationToken, Task<AdminBootstrapDatabaseSnapshot>> inspectDatabase)
+    {
+        var fileSystem = new HostSetupFileSystem();
+        return new AdminBootstrapWorkflow(
+            new SetupCore(fileSystem),
+            fileSystem,
+            new AdminBootstrapDatabase(factory, TimeProvider.System),
+            new AdminBootstrapSourceClassifier(fileSystem, ownership),
+            ownership,
+            new LeasedWorkflowApplyEngine(new FakeWorkflowLease(source)),
+            new AdminAccessVerifier(static () => new AdminAccessScriptHandler()),
+            new AdminSessionRepository(factory),
+            TimeProvider.System,
+            inspectDatabase);
     }
 
     private static AdminBootstrapRequest CreateRequest(
@@ -1437,7 +1835,111 @@ public sealed class AdminBootstrapContractsTests
         };
     }
 
-    private sealed class FakeVerifiedWorkflowApplyEngine(SetupApplyResult recoveryResult)
+    private sealed class FakeWorkflowLease(TrustedVerifiedActiveBundle source)
+        : ISetupVerifiedWorkflowLease
+    {
+        public TrustedVerifiedActiveBundle Source { get; } = source;
+
+        public Task<SetupApplyResult> ApplyCandidateAsync(
+            string candidateBundleId,
+            AdminBootstrapOwnershipDocument pending,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(SetupApplyResult.Create(
+                SetupApplyResultCode.ApplySucceeded,
+                SetupManagedDeploymentState.Active,
+                bundleId: candidateBundleId,
+                activationGeneration: pending.Candidate.ExpectedActivationGeneration,
+                configurationApplied: true,
+                verificationCommitted: true));
+
+        public Task<SetupApplyResult> RollbackToSourceAsync(string reasonCode) =>
+            Task.FromResult(SetupApplyResult.Create(
+                SetupApplyResultCode.RollbackSucceeded,
+                SetupManagedDeploymentState.Active,
+                reasonCode: reasonCode,
+                bundleId: Source.Active.BundleId,
+                activationGeneration: Source.Active.ActivationGeneration + 2,
+                configRollbackStatus: SetupConfigRollbackStatus.Succeeded));
+
+        public Task<SetupAuthorityCheckResult> VerifyCandidateStillCurrentAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(SetupAuthorityCheckResult.Current());
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class LeasedWorkflowApplyEngine(ISetupVerifiedWorkflowLease lease)
+        : ISetupVerifiedWorkflowApplyEngine
+    {
+        public Task<SetupVerifiedWorkflowLeaseResult> AcquireVerifiedWorkflowLeaseAsync(
+            TrustedSetupHostLayout layout,
+            SourceAdminDisposition sourceDisposition,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new SetupVerifiedWorkflowLeaseResult
+            {
+                Result = SetupApplyResult.Create(
+                    SetupApplyResultCode.ApplySucceeded,
+                    SetupManagedDeploymentState.Active),
+                Lease = lease,
+            });
+
+        public Task<SetupApplyResult> RecoverAdminBootstrapRollbackAsync(
+            TrustedSetupHostLayout layout,
+            AdminBootstrapOwnershipDocument pending,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(SetupApplyResult.Create(
+                SetupApplyResultCode.RollbackSucceeded,
+                SetupManagedDeploymentState.Active,
+                configRollbackStatus: SetupConfigRollbackStatus.Succeeded));
+
+        public Task<SetupAuthorityCheckResult> VerifyPendingCandidateAsync(
+            TrustedSetupHostLayout layout,
+            AdminBootstrapOwnershipDocument pending,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(SetupAuthorityCheckResult.Current());
+    }
+
+    /// <summary>
+    /// Serves the minimum same-origin Admin login and setup-status responses the verifier accepts.
+    /// </summary>
+    private sealed class AdminAccessScriptHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri?.AbsolutePath ?? string.Empty;
+            var response = path switch
+            {
+                "/admin/login" => Html(
+                    "<form action=\"/admin/api/login\" method=\"post\">"
+                    + "<input name=\"__RequestVerificationToken\" value=\"synthetic-token\" />"
+                    + "</form>"),
+                "/admin/api/login" => Redirect(),
+                "/admin/setup-status" => Html("<main aria-label=\"Setup status\"></main>"),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound),
+            };
+            response.RequestMessage = request;
+            return Task.FromResult(response);
+        }
+
+        private static HttpResponseMessage Html(string body) =>
+            new(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, System.Text.Encoding.UTF8, "text/html"),
+            };
+
+        private static HttpResponseMessage Redirect()
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Redirect);
+            response.Headers.Location = new Uri("/admin", UriKind.Relative);
+            return response;
+        }
+    }
+
+    private sealed class FakeVerifiedWorkflowApplyEngine(
+        SetupApplyResult recoveryResult,
+        SetupAuthorityCheckResult? candidateAuthority = null)
         : ISetupVerifiedWorkflowApplyEngine
     {
         public Task<SetupVerifiedWorkflowLeaseResult> AcquireVerifiedWorkflowLeaseAsync(
@@ -1462,7 +1964,7 @@ public sealed class AdminBootstrapContractsTests
             TrustedSetupHostLayout layout,
             AdminBootstrapOwnershipDocument pending,
             CancellationToken cancellationToken) =>
-            Task.FromResult(SetupAuthorityCheckResult.Current());
+            Task.FromResult(candidateAuthority ?? SetupAuthorityCheckResult.Current());
     }
 
     private sealed class StaticResponseHandler(HttpStatusCode statusCode) : HttpMessageHandler
