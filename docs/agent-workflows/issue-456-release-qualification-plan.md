@@ -22,6 +22,7 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 |---------|---------|-------------|
 | **M-27** optional evidence outside aggregator / machine verdict | Correct | Sec. 9.3 / Sec. 14: aggregate all bound keys (`required ∪ optional`); optional missing/FAIL alone do not NO_GO; integrity/authz/PII/schema/seal violations still NO_GO; index records optional state. |
 | **m-08** root digest algorithm ambiguous | Correct | Sec. 7.8: replace Merkle ambiguity with fixed RFC 8785 JCS sorted `{path,sha256}` root algorithm. |
+| **M-28** FAIL→PASS UTF-8 mojibake after re-encode | Correct | Replaced corrupted `FAIL→PASS` sequences with ASCII `FAIL -> PASS` (7 sites); no design change. |
 
 ### 0.2 Rev.7 change log (Agent B sixth review; historical)
 
@@ -36,7 +37,7 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 |---------|---------|-------------|
 | **M-23** authorization write before candidate/run IDs exist | Correct | Sec. 16: Step 2 = resolve role identities only; write `authorization.json` once at Phase-2 after IDs/keys exist. |
 | **M-24** Phase-4 seal commit point ambiguous | Correct | Sec. 7.8 / Sec. 14: sole seal marker = sealed run-status event after three Phase-4 objects; incomplete Phase-4 => abandon + new run. |
-| **M-25** FAIL뿯↽PASS dual-actor not mappable to schema | Correct | Sec. 9.4: recommended split — evidence `executedBy*` = owner; disposition `approvedBy*` = qualification lead. |
+| **M-25** FAIL -> PASS dual-actor not mappable to schema | Correct | Sec. 9.4: recommended split — evidence `executedBy*` = owner; disposition `approvedBy*` = qualification lead. |
 | **m-06** G456-06 PASS / G456-05 reference predicates | Correct | Sec. 12.2 / Sec. 14.1: G456-06 PASS predicates + `distinctFromSendReadyEvidenceId` must reference active accepted G456-05 PASS. |
 
 ### 0.4 Rev.5 change log (Agent B fourth review; historical)
@@ -908,7 +909,7 @@ Aggregator steps:
 6. Apply **global integrity rules** (Sec. 14) to **all** bound keys and their active or orphaned evidence/disposition objects — including optional keys.
 7. Apply **Gate outcome rules** only to required keys (and Conditional exceptions): missing/FAIL follow Hard/Conditional semantics.
 8. For optional keys: missing / `NOT_RUN` / active FAIL / not-confirmed **alone** do **not** force `NO_GO`. Still record state in final evidence index.
-9. New PASS after prior FAIL: apply Sec. 9.4 FAIL뿯↽PASS split predicates (owner on evidence `executedBy*`, lead on disposition `approvedBy*`) for **any** bound key including optional.
+9. New PASS after prior FAIL: apply Sec. 9.4 FAIL -> PASS split predicates (owner on evidence `executedBy*`, lead on disposition `approvedBy*`) for **any** bound key including optional.
 10. False FAIL: `invalidate` with Qualification lead; does not count as Hard FAIL once invalidated and not active.
 11. Later accepted FAIL supersedes prior PASS via `supersede` (or invalidate+accept when active was cleared).
 
@@ -972,7 +973,7 @@ Rules:
 |--------|------------------------|
 | Write new evidence for K | `evidenceOwners` entry for that `(scenarioId, variantId)` via `executedByRole`/`executedByIdentity` |
 | Disposition `accept` (first accept; any result including PASS or FAIL) | Evidence owner for K via `approvedBy*` |
-| Disposition `supersede` PASS -> FAIL or PASS -> PASS (replacement; not FAIL->PASS) | Evidence owner for K via `approvedBy*` |
+| Disposition `supersede` PASS -> FAIL or PASS -> PASS (replacement; not FAIL -> PASS) | Evidence owner for K via `approvedBy*` |
 | Disposition `accept` or `supersede` that changes **active FAIL -> active PASS** | **Split actors (M-25 recommended):** see below |
 | Disposition `invalidate` | `qualificationLeadRole` + identity via `approvedBy*` |
 | Disposition `restore` | `qualificationLeadRole` + identity via `approvedBy*` |
@@ -993,7 +994,7 @@ For accept/supersede that changes active FAIL -> active PASS for key K:
 3. Both (1) and (2) are required. Either mismatch => NO_GO / reject event.
 ```
 
-Interpretation: evidence owner authors the replacement PASS evidence; qualification lead alone authorizes the disposition that activates it. This is the only FAIL->PASS authorization predicate; implementations must not substitute owner-only or lead-only checks.
+Interpretation: evidence owner authors the replacement PASS evidence; qualification lead alone authorizes the disposition that activates it. This is the only FAIL -> PASS authorization predicate; implementations must not substitute owner-only or lead-only checks.
 
 Mismatch between event `approvedByRole`/`approvedByIdentity` (or evidence `executedBy*`) and the sealed snapshot, under the matrix above, => `NO_GO`.
 
@@ -1296,7 +1297,7 @@ Optional evidence missing / FAIL alone does **not** force `NO_GO`. Global integr
 | `result` / typePayload contradiction (Sec. 12.2 M-19) on any bound evidence | `NO_GO` | all bound |
 | Disposition / exception / run-status hash-chain invalid **or** JCS canonicalization mismatch | `NO_GO` | all bound |
 | Disposition / exception **invalid state transition** (Sec. 9.2 / 9.5) | `NO_GO` | all bound |
-| FAIL뿯↽PASS actor predicates violated (Sec. 9.4 M-25) | `NO_GO` | all bound |
+| FAIL -> PASS actor predicates violated (Sec. 9.4 M-25) | `NO_GO` | all bound |
 | Authorization snapshot missing / digest mismatch / role-identity mismatch on events | `NO_GO` | all bound |
 | Evidence or disposition written after sealed run-status event on this run | `NO_GO` | global |
 | Phase-4 objects present but sealed predicate false (incomplete / abandoned Phase-4) | `NO_GO` for handoff; run not consumable by #458 | global |
@@ -1469,7 +1470,7 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 | Q7 | Evidence-owner identity map per `(scenarioId, variantId)` | Open until execution start; **resolve policy before #455**; **materialize once in Phase-2 `authorization.json`**; not variantId-alone (M-22/M-23) |
 | Q8 | G456-03 required variant | Closed — `acs-staging-nosend` (m-05) |
 | Q9 | Phase-4 seal marker | Closed — sealed run-status event is sole authority (M-24) |
-| Q10 | FAIL뿯↽PASS dual-actor mapping | Closed — owner `executedBy*` + lead `approvedBy*` (M-25) |
+| Q10 | FAIL -> PASS dual-actor mapping | Closed — owner `executedBy*` + lead `approvedBy*` (M-25) |
 | Q11 | Seal inventory / #458 re-verify | Closed — `sealedObjectInventory` + `finalRunState` in phase-4.json (M-26) |
 | Q12 | Informational evidence authorization | Closed — Option A `optionalEvidenceKeys` + owners (m-07) |
 | Q13 | Optional evidence aggregation | Closed — allBoundEvidenceKeys replay + integrity vs Gate split (M-27) |
@@ -1488,7 +1489,7 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 - [ ] Durable Phases 1-4; seal = sealed run-status event + inventory re-verify; incomplete Phase-4 abandoned
 - [ ] Docs digests including setup-release-bundle JA/EN
 - [ ] Roles resolved before #455; authorization.json written once at Phase-2 after IDs exist
-- [ ] FAIL뿯↽PASS uses owner executedBy + lead approvedBy split predicates
+- [ ] FAIL -> PASS uses owner executedBy + lead approvedBy split predicates
 - [ ] Unique evidence owners keyed by `(scenarioId, variantId)` including optional Informational keys
 - [ ] Aggregator replays allBoundEvidenceKeys; optional Gate miss ≠ NO_GO; optional integrity fail = NO_GO
 - [ ] Object-set roots use `RFC8785-JCS-sorted-path-sha256/v1`
@@ -1522,7 +1523,7 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 7. Freshness check-to-APPROVE race window remains (minimize operationally).
 8. Disposition/exception approver operational mistakes mitigated by hash-chain + authorization snapshot audit, not eliminated.
 9. Phase-4 sealed event + sealedObjectInventory enable #458 independent re-verify; partial Phase-4 still requires abandon + new run.
-10. FAIL뿯↽PASS split-actor mapping relies on operators setting executedBy/approvedBy correctly; matrix validates but does not invent missing actors.
+10. FAIL -> PASS split-actor mapping relies on operators setting executedBy/approvedBy correctly; matrix validates but does not invent missing actors.
 11. Optional Informational evidence still depends on operators actually attempting recording; absence alone does not block Go.
 12. Optional evidence with secret/PII or authz failures correctly blocks Go only if scanners/aggregators actually evaluate those objects (now mandatory for all bound keys).
 
@@ -1548,7 +1549,7 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 | 14 | #458 inventory re-verify + sealed-event sole marker | Pass — M-21/M-24/M-26 |
 | 15 | Rebinding / run identity | Pass — M-15 |
 | 16-17 | Disposition total order + state machine + JCS | Pass — M-16/M-20 |
-| 18 | Immutable authorization + FAIL뿯↽PASS actor mapping | Pass — M-22/M-25 |
+| 18 | Immutable authorization + FAIL -> PASS actor mapping | Pass — M-22/M-25 |
 | 19 | Optional keys aggregated + fixed root digest | Pass — M-27/m-08 |
 | 20 | No HTTP/DB/mode5/publish | Pass |
 
