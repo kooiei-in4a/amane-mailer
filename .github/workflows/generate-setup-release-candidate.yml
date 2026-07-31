@@ -1,0 +1,327 @@
+name: Generate Setup Release Candidate
+
+# Easy Setup release-candidate packaging (#455).
+# Builds local multi-arch OCI layout + per-RID host Native AOT archives for qualification.
+# Does NOT create Git tags, push GHCR, or create GitHub Releases (#458).
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Candidate version (major.minor.patch only, e.g. 1.2.0)
+        required: true
+        type: string
+      mailpit_image_ref:
+        description: Required Mailpit digest pin (repo@sha256:<64 lowercase hex>)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: setup-release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  CONFIGURATION: Release
+  MAILER_VERSION: ${{ inputs.release_version }}
+  LAUNCHER_VERSION: ${{ inputs.release_version }}
+  MAILPIT_IMAGE: ${{ inputs.mailpit_image_ref }}
+  IMAGE_REPOSITORY: ghcr.io/kooiei-in4a/amane-mailer
+  CREATE_ARCHIVES: "1"
+
+jobs:
+  validate-inputs:
+    name: Validate workflow inputs
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check release_version and mailpit_image_ref
+        shell: bash
+        env:
+          RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+          MAILPIT_IMAGE_INPUT: ${{ inputs.mailpit_image_ref }}
+        run: |
+          set -Eeuo pipefail
+          ver="${RELEASE_VERSION_INPUT}"
+          mailpit="${MAILPIT_IMAGE_INPUT}"
+          if [[ ! "${ver}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release_version must be major.minor.patch only (got: ${ver})" >&2
+            exit 1
+          fi
+          if [[ ! "${mailpit}" =~ ^[^@[:space:]]+@sha256:[a-f0-9]{64}$ ]]; then
+            echo "mailpit_image_ref must be repo@sha256:<64 lowercase hex>" >&2
+            exit 1
+          fi
+          # Reject tag-before-digest (name-component after last '/' must not contain ':').
+          name="${mailpit%%@*}"
+          name_component="${name##*/}"
+          if [[ "${name_component}" == *:* ]]; then
+            echo "mailpit_image_ref must not include an image tag before @digest" >&2
+            exit 1
+          fi
+
+  build-oci:
+    name: Build multi-arch OCI layout
+    needs: validate-inputs
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v3.12.0
+
+      - name: Restore
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Build packaging tool
+        run: dotnet build tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj -c ${{ env.CONFIGURATION }} --no-restore
+
+      - name: Build OCI layout (linux/amd64,linux/arm64)
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          IMAGE_TAG: sha-${{ github.sha }}
+          OUT_ROOT: ${{ github.workspace }}/artifacts/setup-release-candidate
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "${OUT_ROOT}"
+          # Prefer git rev-parse HEAD as sourceCommitSha authority.
+          export SOURCE_SHA="$(git rev-parse HEAD)"
+          bash scripts/build-candidate-oci-image.sh \
+            "${OUT_ROOT}/oci" \
+            "linux/amd64,linux/arm64"
+
+      - name: Upload OCI layout + image identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: setup-release-candidate-oci
+          path: |
+            artifacts/setup-release-candidate/oci/
+            artifacts/setup-release-candidate/image-identity.json
+            artifacts/setup-release-candidate/buildx-metadata.json
+            artifacts/setup-release-candidate/oci-index.digest
+          if-no-files-found: error
+          retention-days: 14
+
+  package-linux-x64:
+    name: Package linux-x64 host archive
+    needs: build-oci
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+
+      - name: Install Native AOT prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang zlib1g-dev
+
+      - name: Restore
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Download OCI identity (not full layout into host archive)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: setup-release-candidate-oci
+          path: artifacts/setup-release-candidate
+
+      - name: Generate linux-x64 candidate
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          OUT_ROOT: ${{ github.workspace }}/artifacts/setup-release-candidate
+          IDENTITY_FILE: ${{ github.workspace }}/artifacts/setup-release-candidate/image-identity.json
+        run: |
+          set -Eeuo pipefail
+          export SOURCE_SHA="$(git rev-parse HEAD)"
+          bash scripts/generate-setup-release-bundle.sh linux-x64
+
+      - name: Upload linux-x64 archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: setup-release-candidate-linux-x64
+          path: |
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-x64.tar.gz
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-x64.tar.gz.sha256
+            artifacts/setup-release-candidate/staged/linux-x64/
+          if-no-files-found: error
+          retention-days: 14
+
+  package-linux-arm64:
+    name: Package linux-arm64 host archive
+    needs: build-oci
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+
+      - name: Install Native AOT prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang zlib1g-dev
+
+      - name: Restore
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Download OCI identity (not full layout into host archive)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: setup-release-candidate-oci
+          path: artifacts/setup-release-candidate
+
+      - name: Generate linux-arm64 candidate
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          OUT_ROOT: ${{ github.workspace }}/artifacts/setup-release-candidate
+          IDENTITY_FILE: ${{ github.workspace }}/artifacts/setup-release-candidate/image-identity.json
+        run: |
+          set -Eeuo pipefail
+          export SOURCE_SHA="$(git rev-parse HEAD)"
+          bash scripts/generate-setup-release-bundle.sh linux-arm64
+
+      - name: Upload linux-arm64 archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: setup-release-candidate-linux-arm64
+          path: |
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-arm64.tar.gz
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-arm64.tar.gz.sha256
+            artifacts/setup-release-candidate/staged/linux-arm64/
+          if-no-files-found: error
+          retention-days: 14
+
+  package-win-x64:
+    name: Package win-x64 host archive
+    needs: build-oci
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        shell: bash
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Download OCI identity (not full layout into host archive)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: setup-release-candidate-oci
+          path: artifacts/setup-release-candidate
+
+      - name: Generate win-x64 candidate
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          OUT_ROOT: ${{ github.workspace }}/artifacts/setup-release-candidate
+          IDENTITY_FILE: ${{ github.workspace }}/artifacts/setup-release-candidate/image-identity.json
+        run: |
+          set -Eeuo pipefail
+          export SOURCE_SHA="$(git rev-parse HEAD)"
+          bash scripts/generate-setup-release-bundle.sh win-x64
+
+      - name: Upload win-x64 archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: setup-release-candidate-win-x64
+          path: |
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-windows-x64.zip
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-windows-x64.zip.sha256
+            artifacts/setup-release-candidate/staged/win-x64/
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble-handoff:
+    name: Assemble candidate handoff
+    needs:
+      - build-oci
+      - package-linux-x64
+      - package-linux-arm64
+      - package-win-x64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Download OCI identity
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: setup-release-candidate-oci
+          path: artifacts/setup-release-candidate
+
+      - name: Download linux-x64
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: setup-release-candidate-linux-x64
+          path: artifacts/setup-release-candidate
+
+      - name: Download linux-arm64
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: setup-release-candidate-linux-arm64
+          path: artifacts/setup-release-candidate
+
+      - name: Download win-x64
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: setup-release-candidate-win-x64
+          path: artifacts/setup-release-candidate
+
+      - name: Write handoff + provenance + CANDIDATE-SHA256SUMS
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          OUT_ROOT: ${{ github.workspace }}/artifacts/setup-release-candidate
+          IDENTITY_FILE: ${{ github.workspace }}/artifacts/setup-release-candidate/image-identity.json
+        run: |
+          set -Eeuo pipefail
+          export SOURCE_SHA="$(git rev-parse HEAD)"
+          bash scripts/handoff-setup-release-candidate.sh "${OUT_ROOT}"
+
+      - name: Upload handoff package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: setup-release-candidate-handoff
+          path: |
+            artifacts/setup-release-candidate/CANDIDATE-SHA256SUMS
+            artifacts/setup-release-candidate/candidate-provenance.json
+            artifacts/setup-release-candidate/CANDIDATE-HANDOFF.md
+            artifacts/setup-release-candidate/image-identity.json
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-windows-x64.zip
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-x64.tar.gz
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 14

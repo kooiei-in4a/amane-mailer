@@ -7,6 +7,8 @@ COPY src/Amane.Mailer.Contracts/ ./src/Amane.Mailer.Contracts/
 COPY src/Amane.Mailer/ ./src/Amane.Mailer/
 
 ARG TARGETARCH
+ARG SOURCE_COMMIT=unknown
+ARG MAILER_VERSION=0.0.0
 RUN target_arch="${TARGETARCH:-amd64}" \
     && case "${target_arch}" in \
         amd64) runtime_id="linux-x64" ;; \
@@ -21,9 +23,16 @@ RUN target_arch="${TARGETARCH:-amd64}" \
     --no-restore \
     -o /app/publish \
     /p:PublishAot=true \
-    /p:IlcTreatWarningsAsErrors=true
+    /p:IlcTreatWarningsAsErrors=true \
+    /p:Version="${MAILER_VERSION}" \
+    /p:InformationalVersion="${MAILER_VERSION}+${SOURCE_COMMIT}" \
+    /p:IncludeSourceRevisionInInformationalVersion=false
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled@sha256:bc6ba0158e93277ca1a5bc0881d13b08e6ca7f6d98db623592095eaf7fd7a816 AS runtime
+ARG SOURCE_COMMIT=unknown
+ARG MAILER_VERSION=0.0.0
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      org.opencontainers.image.version="${MAILER_VERSION}"
 WORKDIR /app
 
 COPY --from=build /app/publish/ ./
