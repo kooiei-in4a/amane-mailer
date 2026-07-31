@@ -55,6 +55,8 @@ public sealed class SetupApplyNonInteractiveCommandTests
         Assert.False(result.AdminBootstrapPerformed);
         Assert.Equal(1, operations.DockerPreflightCalls);
         Assert.Equal(1, operations.ApplyCalls);
+        // CLI never deletes the managed config file; retention is the caller's responsibility.
+        Assert.True(File.Exists(configPath));
     }
 
     [Fact]

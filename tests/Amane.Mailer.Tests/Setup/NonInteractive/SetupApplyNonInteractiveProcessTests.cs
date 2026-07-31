@@ -15,24 +15,18 @@ public sealed class SetupApplyNonInteractiveProcessTests
     [Fact]
     public void Incomplete_setup_apply_is_usage_error_with_empty_stdout()
     {
-        if (!TryResolveMailerEntry(out var entry))
-        {
-            return;
-        }
-
+        var entry = RequireMailerEntry();
         var result = RunMailer(entry, ["setup", "apply"]);
         Assert.Equal(SetupApplyNonInteractiveCommand.UsageErrorExitCode, result.ExitCode);
-        Assert.True(string.IsNullOrWhiteSpace(result.Stdout), result.Stdout);
+        Assert.Equal(string.Empty, result.Stdout);
         Assert.Contains("Usage:", result.Stderr, StringComparison.Ordinal);
     }
 
     [Fact]
     public void Malformed_json_emits_one_canonical_json_and_keeps_config_file()
     {
-        if (!OperatingSystem.IsLinux() || !TryResolveMailerEntry(out var entry))
-        {
-            return;
-        }
+        Assert.SkipWhen(!OperatingSystem.IsLinux(), "Linux filesystem and process CLI evidence.");
+        var entry = RequireMailerEntry();
 
         var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost("{ not-json");
         try
@@ -42,7 +36,7 @@ public sealed class SetupApplyNonInteractiveProcessTests
                 ["setup", "apply", "--config", configPath, "--non-interactive"]);
             Assert.Equal(SetupApplyNonInteractiveCommand.FailureExitCode, result.ExitCode);
             Assert.True(File.Exists(configPath));
-            AssertSingleJsonLine(result.Stdout, out var parsed);
+            AssertExactlyOneCanonicalJsonLine(result.Stdout, out var parsed);
             Assert.False(parsed.GetProperty("ok").GetBoolean());
             Assert.Equal(
                 SetupNonInteractiveResultCode.InvalidJson,
@@ -57,10 +51,13 @@ public sealed class SetupApplyNonInteractiveProcessTests
     [Fact]
     public void Group_or_other_readable_config_is_rejected_and_retained()
     {
-        if (!OperatingSystem.IsLinux() || !TryResolveMailerEntry(out var entry))
+        Assert.SkipWhen(!OperatingSystem.IsLinux(), "Linux filesystem permission evidence.");
+        if (!OperatingSystem.IsLinux())
         {
             return;
         }
+
+        var entry = RequireMailerEntry();
 
         var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(
             SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
@@ -74,7 +71,7 @@ public sealed class SetupApplyNonInteractiveProcessTests
                 ["setup", "apply", "--config", configPath, "--non-interactive"]);
             Assert.Equal(SetupApplyNonInteractiveCommand.FailureExitCode, result.ExitCode);
             Assert.True(File.Exists(configPath));
-            AssertSingleJsonLine(result.Stdout, out var parsed);
+            AssertExactlyOneCanonicalJsonLine(result.Stdout, out var parsed);
             Assert.False(parsed.GetProperty("ok").GetBoolean());
             Assert.Equal(
                 SetupNonInteractiveResultCode.ConfigPermissionsRejected,
@@ -89,10 +86,8 @@ public sealed class SetupApplyNonInteractiveProcessTests
     [Fact]
     public void Final_component_symlink_is_rejected_and_target_retained()
     {
-        if (!OperatingSystem.IsLinux() || !TryResolveMailerEntry(out var entry))
-        {
-            return;
-        }
+        Assert.SkipWhen(!OperatingSystem.IsLinux(), "Linux symlink rejection evidence.");
+        var entry = RequireMailerEntry();
 
         var targetPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(
             SetupNonInteractiveTestSupport.BuildLocalMailpitJson());
@@ -108,7 +103,7 @@ public sealed class SetupApplyNonInteractiveProcessTests
             Assert.Equal(SetupApplyNonInteractiveCommand.FailureExitCode, result.ExitCode);
             Assert.True(File.Exists(targetPath));
             Assert.True(File.Exists(linkPath) || File.Exists(targetPath));
-            AssertSingleJsonLine(result.Stdout, out var parsed);
+            AssertExactlyOneCanonicalJsonLine(result.Stdout, out var parsed);
             Assert.False(parsed.GetProperty("ok").GetBoolean());
             var code = parsed.GetProperty("code").GetString();
             Assert.True(
@@ -127,10 +122,8 @@ public sealed class SetupApplyNonInteractiveProcessTests
     [Fact]
     public void Oversize_config_is_rejected_and_retained()
     {
-        if (!OperatingSystem.IsLinux() || !TryResolveMailerEntry(out var entry))
-        {
-            return;
-        }
+        Assert.SkipWhen(!OperatingSystem.IsLinux(), "Linux oversize config evidence.");
+        var entry = RequireMailerEntry();
 
         var oversized = "{" + new string('a', SetupNonInteractiveConfigReader.MaxConfigBytes + 64) + "}";
         var configPath = SetupNonInteractiveTestSupport.WriteOwnerOnlyConfigOnHost(oversized);
@@ -141,7 +134,7 @@ public sealed class SetupApplyNonInteractiveProcessTests
                 ["setup", "apply", "--config", configPath, "--non-interactive"]);
             Assert.Equal(SetupApplyNonInteractiveCommand.FailureExitCode, result.ExitCode);
             Assert.True(File.Exists(configPath));
-            AssertSingleJsonLine(result.Stdout, out var parsed);
+            AssertExactlyOneCanonicalJsonLine(result.Stdout, out var parsed);
             Assert.False(parsed.GetProperty("ok").GetBoolean());
             Assert.Equal(
                 SetupNonInteractiveResultCode.ConfigTooLarge,
@@ -153,15 +146,31 @@ public sealed class SetupApplyNonInteractiveProcessTests
         }
     }
 
-    private static void AssertSingleJsonLine(string stdout, out JsonElement parsed)
+    /// <summary>
+    /// Recognized invocations must emit exactly one JSON object on stdout, terminated by a single
+    /// trailing newline and nothing else (no diagnostic prefix/suffix lines).
+    /// </summary>
+    private static void AssertExactlyOneCanonicalJsonLine(string stdout, out JsonElement parsed)
     {
-        var lines = stdout
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        Assert.True(lines.Length >= 1, stdout);
-        // Canonical contract: recognized invocations emit exactly one JSON object on stdout.
-        Assert.Equal(1, lines.Count(static line => line.StartsWith('{') && line.EndsWith('}')));
-        using var doc = JsonDocument.Parse(lines.First(static line => line.StartsWith('{')));
+        Assert.False(string.IsNullOrEmpty(stdout), "stdout must contain canonical JSON.");
+        Assert.EndsWith("\n", stdout);
+        Assert.False(stdout.EndsWith("\n\n", StringComparison.Ordinal), stdout);
+
+        // Drop the required final newline, then require exactly one remaining line.
+        var lines = stdout[..^1].Split('\n');
+        var line = Assert.Single(lines);
+        Assert.DoesNotContain('\r', line);
+        using var doc = JsonDocument.Parse(line);
         parsed = doc.RootElement.Clone();
+        Assert.Equal(JsonValueKind.Object, parsed.ValueKind);
+    }
+
+    private static string RequireMailerEntry()
+    {
+        Assert.True(
+            TryResolveMailerEntry(out var entry),
+            "Amane.Mailer.dll (or native Amane.Mailer binary) must be present next to the test output; silent skip is not allowed.");
+        return entry;
     }
 
     private static bool TryResolveMailerEntry(out string entry)
