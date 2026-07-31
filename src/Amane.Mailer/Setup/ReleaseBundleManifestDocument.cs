@@ -95,6 +95,20 @@ public sealed class ReleaseBundleManifestDocument
     [JsonPropertyName("supportedInspectEffectiveSchemaMax")]
     public int? SupportedInspectEffectiveSchemaMax { get; init; }
 
+    /// <summary>
+    /// Packaging-only additive range (#455). Runtime host Docker / ValidateShape
+    /// do not require these fields; packaging requires both == schemaVersion (1).
+    /// </summary>
+    [JsonPropertyName("supportedReleaseManifestSchemaMin")]
+    public int? SupportedReleaseManifestSchemaMin { get; init; }
+
+    /// <summary>
+    /// Packaging-only additive range (#455). Runtime host Docker / ValidateShape
+    /// do not require these fields; packaging requires both == schemaVersion (1).
+    /// </summary>
+    [JsonPropertyName("supportedReleaseManifestSchemaMax")]
+    public int? SupportedReleaseManifestSchemaMax { get; init; }
+
     [JsonPropertyName("artifactFileName")]
     public string? ArtifactFileName { get; init; }
 

@@ -12,6 +12,7 @@ return args[0] switch
     "stage" => RunStage(args.AsSpan(1)),
     "validate-oci" => RunValidateOci(args.AsSpan(1)),
     "assert-binary-version" => RunAssertBinaryVersion(args.AsSpan(1)),
+    "assert-image-identity" => RunAssertImageIdentity(args.AsSpan(1)),
     "write-image-identity" => RunWriteImageIdentity(args.AsSpan(1)),
     "write-provenance" => RunWriteProvenance(args.AsSpan(1)),
     _ => Unknown(args[0]),
@@ -35,8 +36,9 @@ static void PrintUsage()
 
         Commands:
           stage --output <dir> --staging-parent <dir> --rid <rid> ...
-          validate-oci --layout <dir> --image-digest <sha256:...> [--require-platforms linux/amd64,linux/arm64]
+          validate-oci --layout <dir> --image-digest <sha256:...> [--require-platforms linux/amd64,linux/arm64] [--metadata-file <buildx.json>]
           assert-binary-version --binary <path> --expected-core <major.minor.patch>
+          assert-image-identity --identity <file> --source-sha <sha> --mailer-version <ver>
           write-image-identity --output <file> --repository <repo> --tag <tag> --digest <sha256:...> --source-sha <sha> --mailer-version <ver> --platforms <csv>
           write-provenance --output <file> --handoff <file> --sums <file> ...
 
@@ -169,10 +171,42 @@ static int RunValidateOci(ReadOnlySpan<string> args)
         platforms = csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
+    OciDescriptor? expectedDescriptor = null;
+    if (values.TryGetValue("--metadata-file", out var metadataPath) && !string.IsNullOrWhiteSpace(metadataPath))
+    {
+        if (!File.Exists(metadataPath))
+        {
+            Console.Error.WriteLine("validate-oci --metadata-file not found: " + metadataPath);
+            return 1;
+        }
+
+        var parsed = ReleaseBundlePackaging.TryParseBuildxMetadata(
+            File.ReadAllText(metadataPath),
+            out var metaDigest,
+            out expectedDescriptor);
+        if (!parsed.Success)
+        {
+            Console.Error.WriteLine(
+                "validate-oci metadata parse failed: "
+                + (parsed.ReasonCode ?? "unknown")
+                + " — "
+                + (parsed.Message ?? "invalid."));
+            return 1;
+        }
+
+        if (!string.Equals(metaDigest, values["--image-digest"], StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine(
+                "validate-oci failed: --image-digest does not match Buildx metadata digest.");
+            return 1;
+        }
+    }
+
     var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(
         values["--layout"],
         values["--image-digest"],
-        platforms);
+        platforms,
+        expectedDescriptor);
     if (!result.Success)
     {
         Console.Error.WriteLine(
@@ -215,6 +249,66 @@ static int RunAssertBinaryVersion(ReadOnlySpan<string> args)
     return 0;
 }
 
+static int RunAssertImageIdentity(ReadOnlySpan<string> args)
+{
+    if (!TryParseKv(args, out var values, out var error))
+    {
+        Console.Error.WriteLine(error);
+        return 2;
+    }
+
+    if (!values.ContainsKey("--identity")
+        || !values.ContainsKey("--source-sha")
+        || !values.ContainsKey("--mailer-version"))
+    {
+        Console.Error.WriteLine(
+            "assert-image-identity requires --identity, --source-sha, and --mailer-version.");
+        return 2;
+    }
+
+    if (!File.Exists(values["--identity"]))
+    {
+        Console.Error.WriteLine("assert-image-identity identity file missing.");
+        return 1;
+    }
+
+    ImageIdentityDocument? identity;
+    try
+    {
+        identity = JsonSerializer.Deserialize(
+            File.ReadAllText(values["--identity"]),
+            ReleaseBundleJsonContext.Default.ImageIdentityDocument);
+    }
+    catch
+    {
+        Console.Error.WriteLine("assert-image-identity could not parse identity JSON.");
+        return 1;
+    }
+
+    if (identity is null)
+    {
+        Console.Error.WriteLine("assert-image-identity identity document was empty.");
+        return 1;
+    }
+
+    var result = ReleaseBundlePackaging.AssertImageIdentityForHostPackaging(
+        identity,
+        values["--source-sha"],
+        values["--mailer-version"]);
+    if (!result.Success)
+    {
+        Console.Error.WriteLine(
+            "assert-image-identity failed: "
+            + (result.ReasonCode ?? "unknown")
+            + " — "
+            + (result.Message ?? "mismatch."));
+        return 1;
+    }
+
+    Console.Out.WriteLine("assert-image-identity: ok");
+    return 0;
+}
+
 static int RunWriteImageIdentity(ReadOnlySpan<string> args)
 {
     if (!TryParseKv(args, out var values, out var error))
@@ -248,6 +342,15 @@ static int RunWriteImageIdentity(ReadOnlySpan<string> args)
         return 1;
     }
 
+    if (!ReleaseBundlePackaging.IsValidReleaseVersion(values["--mailer-version"]))
+    {
+        Console.Error.WriteLine("--mailer-version must be major.minor.patch.");
+        return 1;
+    }
+
+    var platforms = values["--platforms"]
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
     var doc = new ImageIdentityDocument
     {
         ImageRepository = values["--repository"],
@@ -255,9 +358,22 @@ static int RunWriteImageIdentity(ReadOnlySpan<string> args)
         ImageDigest = values["--digest"].ToLowerInvariant(),
         SourceCommitSha = values["--source-sha"].ToLowerInvariant(),
         MailerVersion = values["--mailer-version"],
-        Platforms = values["--platforms"]
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+        Platforms = platforms,
     };
+
+    var assert = ReleaseBundlePackaging.AssertImageIdentityForHostPackaging(
+        doc,
+        values["--source-sha"],
+        values["--mailer-version"]);
+    if (!assert.Success)
+    {
+        Console.Error.WriteLine(
+            "write-image-identity failed: "
+            + (assert.ReasonCode ?? "unknown")
+            + " — "
+            + (assert.Message ?? "invalid identity."));
+        return 1;
+    }
 
     var json = JsonSerializer.Serialize(doc, ReleaseBundleJsonContext.Default.ImageIdentityDocument);
     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(values["--output"]))!);
@@ -359,6 +475,8 @@ static string BuildHandoffMarkdown(CandidateProvenanceDocument provenance, strin
         $"- Release version: `{provenance.ReleaseVersion}`",
         $"- Workflow run id / attempt: `{provenance.WorkflowRunId}` / `{provenance.WorkflowRunAttempt}`",
         $"- Workflow ref: `{provenance.WorkflowRef}`",
+        $"- OCI workflow artifact name: `setup-release-candidate-oci`",
+        $"- OCI layout contents: `oci/` + `image-identity.json` + `buildx-metadata.json` + `oci-index.digest`",
         $"- OCI index digest (local layout; **not** pushed to GHCR): `{provenance.OciIndexDigest}`",
         $"- OCI platforms: `{string.Join(", ", provenance.OciPlatforms ?? [])}`",
         $"- Mailpit image: `{provenance.MailpitImageReference}`",
@@ -385,6 +503,24 @@ static string BuildHandoffMarkdown(CandidateProvenanceDocument provenance, strin
     lines.Add("| #455 (this packaging) | Reproducible candidate generation, secret scan, artifact smoke, checksums |");
     lines.Add("| #456 | Qualification / go-no-go on these candidates |");
     lines.Add("| #458 | Tag, GHCR publish, GitHub Release, public checksum recording; promotes qualified archive bytes (rebuild = new candidate) |");
+    lines.Add(string.Empty);
+    lines.Add("## #456 OCI import notes (Windows Docker Desktop / Linux Engine)");
+    lines.Add(string.Empty);
+    lines.Add("Workflow artifact: **`setup-release-candidate-oci`** (multi-platform OCI layout for `linux/amd64` + `linux/arm64`).");
+    lines.Add(string.Empty);
+    lines.Add("Classic `docker load` only accepts a single-platform image tarball and **cannot** load a multi-platform OCI layout directory. Prefer one of:");
+    lines.Add(string.Empty);
+    lines.Add("1. **Recommended (Linux Engine or Docker Desktop with containerd image store):** enable the containerd image store, then import with `skopeo copy oci:./oci containers-storage:<repo>@<digest>` or `ctr images import` / `nerdctl image load` against an OCI archive produced from the layout.");
+    lines.Add("2. **Platform-specific import without containerd store:** use `skopeo copy --override-os linux --override-arch amd64 oci:./oci docker-daemon:<repo>:<tag>` (or `arm64`) so the daemon receives one platform only; repeat per arch under test.");
+    lines.Add("3. **crane / buildx:** `crane push ./oci <repo>@<digest>` to a local registry, or `docker buildx imagetools create` from a registry mirror — never rebuild the candidate image during qualification.");
+    lines.Add(string.Empty);
+    lines.Add("Host archives already pin `image-identity.json` (repo / tag / digest). Qualification should import the **same** OCI graph bytes from `setup-release-candidate-oci`, not rebuild.");
+    lines.Add(string.Empty);
+    lines.Add("## #458 promote notes");
+    lines.Add(string.Empty);
+    lines.Add("Promote the **qualified** OCI graph and host archive bytes without rebuild when possible.");
+    lines.Add("If attestations (provenance / SBOM) are re-added at publish time, the public image index digest **may change** even when platform image layers are unchanged — record the promoted digest explicitly.");
+    lines.Add("A rebuild always produces a **new** candidate (`archiveSha256` / provenance).");
     lines.Add(string.Empty);
     lines.Add("## Explicit non-goals completed as non-goals");
     lines.Add(string.Empty);

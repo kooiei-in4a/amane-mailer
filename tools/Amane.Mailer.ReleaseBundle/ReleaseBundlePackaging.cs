@@ -59,11 +59,11 @@ public static class ReleaseBundlePackaging
         @"^[0-9]+\.[0-9]+\.[0-9]+$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    private static readonly Regex MailpitImageRef = new(
-        @"^[^@\s]+@sha256:[a-f0-9]{64}$",
+    private static readonly Regex BlobHexName = new(
+        "^[a-f0-9]{64}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    private static readonly Regex BlobHexName = new(
+    private static readonly Regex LowercaseSha256Hex = new(
         "^[a-f0-9]{64}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
@@ -136,6 +136,18 @@ public static class ReleaseBundlePackaging
         public string? Message { get; init; }
     }
 
+    /// <summary>
+    /// Parsed Mailpit digest-pin reference (<c>name@sha256:…</c>).
+    /// Rejects tag-style name-components (<c>repo:tag@sha256:…</c>) while allowing
+    /// registry hosts with ports (<c>localhost:5000/mailpit@sha256:…</c>).
+    /// </summary>
+    public sealed class MailpitImageReferenceParts
+    {
+        public required string Name { get; init; }
+        public required string Digest { get; init; }
+        public required string NameComponent { get; init; }
+    }
+
     public static bool IsSupportedHostRid(string? rid) =>
         !string.IsNullOrWhiteSpace(rid)
         && SupportedHostRids.Contains(rid, StringComparer.Ordinal);
@@ -147,7 +159,80 @@ public static class ReleaseBundlePackaging
         !string.IsNullOrWhiteSpace(version) && ReleaseVersionCore.IsMatch(version);
 
     public static bool IsValidMailpitImageReference(string? reference) =>
-        !string.IsNullOrWhiteSpace(reference) && MailpitImageRef.IsMatch(reference);
+        TryParseMailpitImageReference(reference, out _);
+
+    /// <summary>
+    /// Dedicated Mailpit reference parser (not a single loose regex).
+    /// Accepts <c>path/name@sha256:&lt;64 hex&gt;</c> and registry ports in the host segment.
+    /// Rejects a <c>:</c> inside the final path name-component (image tag before digest).
+    /// </summary>
+    public static bool TryParseMailpitImageReference(
+        string? reference,
+        out MailpitImageReferenceParts? parts)
+    {
+        parts = null;
+        if (string.IsNullOrWhiteSpace(reference))
+        {
+            return false;
+        }
+
+        var trimmed = reference.Trim();
+        if (trimmed.Contains(' ', StringComparison.Ordinal)
+            || trimmed.Contains('\t', StringComparison.Ordinal)
+            || trimmed.Contains('\n', StringComparison.Ordinal)
+            || trimmed.Contains('\r', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        const string digestMarker = "@sha256:";
+        var atDigest = trimmed.LastIndexOf(digestMarker, StringComparison.Ordinal);
+        if (atDigest <= 0)
+        {
+            return false;
+        }
+
+        // Exactly one '@' — the digest separator. Reject extra '@'.
+        if (trimmed.IndexOf('@', StringComparison.Ordinal) != atDigest)
+        {
+            return false;
+        }
+
+        var name = trimmed[..atDigest];
+        var digest = trimmed[(atDigest + 1)..]; // "sha256:…"
+        if (name.Length == 0 || !IsValidDigest(digest))
+        {
+            return false;
+        }
+
+        var hex = digest["sha256:".Length..];
+        if (!LowercaseSha256Hex.IsMatch(hex))
+        {
+            return false;
+        }
+
+        var lastSlash = name.LastIndexOf('/');
+        var nameComponent = lastSlash >= 0 ? name[(lastSlash + 1)..] : name;
+        if (nameComponent.Length == 0)
+        {
+            return false;
+        }
+
+        // Tag-before-digest: "axllent/mailpit:latest@sha256:…" → name-component contains ':'.
+        // Registry port: "localhost:5000/mailpit@…" → ':' is before the last '/', allowed.
+        if (nameComponent.Contains(':', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        parts = new MailpitImageReferenceParts
+        {
+            Name = name,
+            Digest = digest,
+            NameComponent = nameComponent,
+        };
+        return true;
+    }
 
     public static bool IsForbiddenDisplayTag(string? tag) =>
         string.IsNullOrWhiteSpace(tag)
@@ -496,6 +581,8 @@ public static class ReleaseBundlePackaging
                 SupportedRecordedSchemaMax = request.SupportedRecordedSchemaMax,
                 SupportedInspectEffectiveSchemaMin = request.SupportedInspectEffectiveSchemaMin,
                 SupportedInspectEffectiveSchemaMax = request.SupportedInspectEffectiveSchemaMax,
+                SupportedReleaseManifestSchemaMin = ManifestSchemaVersion,
+                SupportedReleaseManifestSchemaMax = ManifestSchemaVersion,
                 ArtifactFileName = artifactFileName,
                 Reproducibility =
                     "Same source commit SHA, Dockerfile base digests, publish flags "
@@ -662,6 +749,22 @@ public static class ReleaseBundlePackaging
             return PackagingFail("schema_range_missing", "Supported schema ranges are required for packaging.");
         }
 
+        if (document.SupportedReleaseManifestSchemaMin is null
+            || document.SupportedReleaseManifestSchemaMax is null)
+        {
+            return PackagingFail(
+                "release_manifest_schema_range_missing",
+                "supportedReleaseManifestSchemaMin/Max are required for packaging.");
+        }
+
+        if (document.SupportedReleaseManifestSchemaMin.Value != ManifestSchemaVersion
+            || document.SupportedReleaseManifestSchemaMax.Value != ManifestSchemaVersion)
+        {
+            return PackagingFail(
+                "release_manifest_schema_range_invalid",
+                "supportedReleaseManifestSchemaMin/Max must both equal schemaVersion (1).");
+        }
+
         var recordedMin = document.SupportedRecordedSchemaMin.Value;
         var recordedMax = document.SupportedRecordedSchemaMax.Value;
         var inspectMin = document.SupportedInspectEffectiveSchemaMin.Value;
@@ -724,7 +827,8 @@ public static class ReleaseBundlePackaging
     public static PackagingValidationResult ValidateOciLayoutDirectory(
         string ociLayoutDirectory,
         string expectedImageDigest,
-        IReadOnlyList<string>? requiredPlatforms = null)
+        IReadOnlyList<string>? requiredPlatforms = null,
+        OciDescriptor? expectedRootDescriptor = null)
     {
         requiredPlatforms ??= RequiredOciPlatforms;
 
@@ -821,9 +925,10 @@ public static class ReleaseBundlePackaging
         }
 
         OciIndexDocument? index;
+        byte[] indexBytes;
         try
         {
-            var indexBytes = File.ReadAllBytes(indexPath);
+            indexBytes = File.ReadAllBytes(indexPath);
             index = JsonSerializer.Deserialize(indexBytes, ReleaseBundleJsonContext.Default.OciIndexDocument);
         }
         catch
@@ -834,6 +939,48 @@ public static class ReleaseBundlePackaging
         if (index?.Manifests is null || index.Manifests.Length == 0)
         {
             return PackagingFail("oci_index_empty", "OCI index.json manifests must not be empty.");
+        }
+
+        // Bind Buildx image digest to the OCI layout root index.json content digest.
+        var layoutIndexDigest = DigestBytes(indexBytes);
+        if (!string.Equals(expectedImageDigest, layoutIndexDigest, StringComparison.OrdinalIgnoreCase))
+        {
+            return PackagingFail(
+                "oci_image_digest_mismatch",
+                "expectedImageDigest must equal sha256 of the OCI layout index.json bytes.");
+        }
+
+        if (expectedRootDescriptor is not null)
+        {
+            if (!IsValidDigest(expectedRootDescriptor.Digest)
+                || !string.Equals(
+                    expectedRootDescriptor.Digest,
+                    layoutIndexDigest,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return PackagingFail(
+                    "oci_descriptor_digest_mismatch",
+                    "Buildx containerimage.descriptor.digest must equal sha256(index.json).");
+            }
+
+            if (expectedRootDescriptor.Size is null
+                || expectedRootDescriptor.Size.Value != indexBytes.LongLength)
+            {
+                return PackagingFail(
+                    "oci_descriptor_size_mismatch",
+                    "Buildx containerimage.descriptor.size must equal index.json byte length.");
+            }
+
+            var expectedMediaType = expectedRootDescriptor.MediaType;
+            var layoutMediaType = index.MediaType;
+            if (!string.IsNullOrWhiteSpace(expectedMediaType)
+                && !string.IsNullOrWhiteSpace(layoutMediaType)
+                && !string.Equals(expectedMediaType, layoutMediaType, StringComparison.Ordinal))
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Buildx containerimage.descriptor.mediaType must match index.json mediaType.");
+            }
         }
 
         var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -854,17 +1001,7 @@ public static class ReleaseBundlePackaging
             }
         }
 
-        foreach (var required in foundPlatforms)
-        {
-            if (requiredPlatforms.Count > 0
-                && !requiredPlatforms.Contains(required, StringComparer.Ordinal)
-                && required is "linux/amd64" or "linux/arm64")
-            {
-                // Extra known platforms beyond the required set are acceptable only when required set is a subset.
-            }
-        }
-
-        // Exactly the required platforms for candidate multi-arch (no missing; extras beyond amd64/arm64 fail).
+        // Exactly the required platforms for candidate multi-arch (no missing; extras beyond required fail).
         if (requiredPlatforms.Count > 0)
         {
             var unexpected = foundPlatforms
@@ -898,11 +1035,152 @@ public static class ReleaseBundlePackaging
             }
         }
 
-        // expectedImageDigest is Buildx containerimage.digest (index digest), not hash of index.json bytes.
-        // Confirm the digest string form; multi-arch image digest identity is recorded from metadata-file.
-        if (!IsValidDigest(expectedImageDigest))
+        return new PackagingValidationResult { Success = true };
+    }
+
+    /// <summary>
+    /// Prefer Buildx <c>containerimage.descriptor</c>; fall back to <c>containerimage.digest</c>.
+    /// </summary>
+    public static PackagingValidationResult TryParseBuildxMetadata(
+        string metadataJson,
+        out string? imageDigest,
+        out OciDescriptor? imageDescriptor)
+    {
+        imageDigest = null;
+        imageDescriptor = null;
+        if (string.IsNullOrWhiteSpace(metadataJson))
         {
-            return PackagingFail("oci_index_digest_invalid", "Expected OCI image digest is invalid.");
+            return PackagingFail("buildx_metadata_empty", "Buildx metadata-file content is empty.");
+        }
+
+        JsonElement root;
+        try
+        {
+            using var doc = JsonDocument.Parse(metadataJson);
+            root = doc.RootElement.Clone();
+        }
+        catch
+        {
+            return PackagingFail("buildx_metadata_unreadable", "Buildx metadata-file could not be parsed.");
+        }
+
+        if (root.TryGetProperty("containerimage.descriptor", out var descriptorElement)
+            && descriptorElement.ValueKind == JsonValueKind.Object)
+        {
+            string? digest = null;
+            string? mediaType = null;
+            long? size = null;
+            if (descriptorElement.TryGetProperty("digest", out var digestEl)
+                && digestEl.ValueKind == JsonValueKind.String)
+            {
+                digest = digestEl.GetString();
+            }
+
+            if (descriptorElement.TryGetProperty("mediaType", out var mediaEl)
+                && mediaEl.ValueKind == JsonValueKind.String)
+            {
+                mediaType = mediaEl.GetString();
+            }
+
+            if (descriptorElement.TryGetProperty("size", out var sizeEl)
+                && sizeEl.TryGetInt64(out var sizeValue))
+            {
+                size = sizeValue;
+            }
+
+            if (!IsValidDigest(digest))
+            {
+                return PackagingFail(
+                    "buildx_descriptor_digest_invalid",
+                    "containerimage.descriptor.digest is missing or invalid.");
+            }
+
+            imageDigest = digest!.ToLowerInvariant();
+            imageDescriptor = new OciDescriptor
+            {
+                Digest = imageDigest,
+                MediaType = mediaType,
+                Size = size,
+            };
+            return new PackagingValidationResult { Success = true };
+        }
+
+        if (root.TryGetProperty("containerimage.digest", out var digestOnly)
+            && digestOnly.ValueKind == JsonValueKind.String)
+        {
+            var digest = digestOnly.GetString();
+            if (!IsValidDigest(digest))
+            {
+                return PackagingFail(
+                    "buildx_digest_invalid",
+                    "containerimage.digest is missing or invalid.");
+            }
+
+            imageDigest = digest!.ToLowerInvariant();
+            return new PackagingValidationResult { Success = true };
+        }
+
+        return PackagingFail(
+            "buildx_digest_missing",
+            "Buildx metadata-file must contain containerimage.descriptor or containerimage.digest.");
+    }
+
+    /// <summary>
+    /// Assert image-identity.json fields used when generating host RID archives.
+    /// </summary>
+    public static PackagingValidationResult AssertImageIdentityForHostPackaging(
+        ImageIdentityDocument identity,
+        string expectedSourceCommitSha,
+        string expectedMailerVersion,
+        IReadOnlyList<string>? requiredPlatforms = null)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        requiredPlatforms ??= RequiredOciPlatforms;
+
+        if (string.IsNullOrWhiteSpace(identity.SourceCommitSha)
+            || !FullSha1OrSha256.IsMatch(identity.SourceCommitSha)
+            || !string.Equals(
+                identity.SourceCommitSha,
+                expectedSourceCommitSha,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return PackagingFail(
+                "image_identity_source_sha_mismatch",
+                "image-identity sourceCommitSha must equal git HEAD / SOURCE_SHA.");
+        }
+
+        if (!IsValidReleaseVersion(identity.MailerVersion)
+            || !string.Equals(identity.MailerVersion, expectedMailerVersion, StringComparison.Ordinal))
+        {
+            return PackagingFail(
+                "image_identity_mailer_version_mismatch",
+                "image-identity mailerVersion must equal MAILER_VERSION.");
+        }
+
+        if (!IsValidDigest(identity.ImageDigest))
+        {
+            return PackagingFail(
+                "image_identity_digest_invalid",
+                "image-identity imageDigest must be sha256:<64 hex>.");
+        }
+
+        if (string.IsNullOrWhiteSpace(identity.ImageRepository)
+            || string.IsNullOrWhiteSpace(identity.ImageTag)
+            || IsForbiddenDisplayTag(identity.ImageTag))
+        {
+            return PackagingFail(
+                "image_identity_tag_invalid",
+                "image-identity repository/tag are required and must not use latest/placeholders.");
+        }
+
+        var platforms = identity.Platforms ?? [];
+        if (platforms.Length != requiredPlatforms.Count
+            || requiredPlatforms.Any(p => !platforms.Contains(p, StringComparer.Ordinal))
+            || platforms.Any(p => !requiredPlatforms.Contains(p, StringComparer.Ordinal)))
+        {
+            return PackagingFail(
+                "image_identity_platforms_mismatch",
+                "image-identity platforms must be exactly linux/amd64 and linux/arm64.");
         }
 
         return new PackagingValidationResult { Success = true };
@@ -1261,6 +1539,8 @@ public static class ReleaseBundlePackaging
             SupportedRecordedSchemaMax = source.SupportedRecordedSchemaMax,
             SupportedInspectEffectiveSchemaMin = source.SupportedInspectEffectiveSchemaMin,
             SupportedInspectEffectiveSchemaMax = source.SupportedInspectEffectiveSchemaMax,
+            SupportedReleaseManifestSchemaMin = source.SupportedReleaseManifestSchemaMin,
+            SupportedReleaseManifestSchemaMax = source.SupportedReleaseManifestSchemaMax,
             ArtifactFileName = source.ArtifactFileName,
             PayloadTreeSha256 = payloadTreeSha256,
             Reproducibility = source.Reproducibility,

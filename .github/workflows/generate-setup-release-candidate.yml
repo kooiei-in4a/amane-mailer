@@ -40,16 +40,26 @@ jobs:
     steps:
       - name: Check release_version and mailpit_image_ref
         shell: bash
+        env:
+          RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
+          MAILPIT_IMAGE_INPUT: ${{ inputs.mailpit_image_ref }}
         run: |
           set -Eeuo pipefail
-          ver='${{ inputs.release_version }}'
-          mailpit='${{ inputs.mailpit_image_ref }}'
+          ver="${RELEASE_VERSION_INPUT}"
+          mailpit="${MAILPIT_IMAGE_INPUT}"
           if [[ ! "${ver}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "release_version must be major.minor.patch only (got: ${ver})" >&2
             exit 1
           fi
           if [[ ! "${mailpit}" =~ ^[^@[:space:]]+@sha256:[a-f0-9]{64}$ ]]; then
             echo "mailpit_image_ref must be repo@sha256:<64 lowercase hex>" >&2
+            exit 1
+          fi
+          # Reject tag-before-digest (name-component after last '/' must not contain ':').
+          name="${mailpit%%@*}"
+          name_component="${name##*/}"
+          if [[ "${name_component}" == *:* ]]; then
+            echo "mailpit_image_ref must not include an image tag before @digest" >&2
             exit 1
           fi
 
@@ -119,6 +129,11 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Install Native AOT prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang zlib1g-dev
+
       - name: Restore
         run: dotnet restore Amane.Mailer.slnx --locked-mode
 
@@ -143,8 +158,8 @@ jobs:
         with:
           name: setup-release-candidate-linux-x64
           path: |
-            artifacts/setup-release-candidate/amane-mailer-v${{ inputs.release_version }}-linux-x64.tar.gz
-            artifacts/setup-release-candidate/amane-mailer-v${{ inputs.release_version }}-linux-x64.tar.gz.sha256
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-x64.tar.gz
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-x64.tar.gz.sha256
             artifacts/setup-release-candidate/staged/linux-x64/
           if-no-files-found: error
           retention-days: 14
@@ -161,6 +176,11 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
+
+      - name: Install Native AOT prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang zlib1g-dev
 
       - name: Restore
         run: dotnet restore Amane.Mailer.slnx --locked-mode
@@ -186,8 +206,8 @@ jobs:
         with:
           name: setup-release-candidate-linux-arm64
           path: |
-            artifacts/setup-release-candidate/amane-mailer-v${{ inputs.release_version }}-linux-arm64.tar.gz
-            artifacts/setup-release-candidate/amane-mailer-v${{ inputs.release_version }}-linux-arm64.tar.gz.sha256
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-arm64.tar.gz
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-arm64.tar.gz.sha256
             artifacts/setup-release-candidate/staged/linux-arm64/
           if-no-files-found: error
           retention-days: 14
@@ -231,8 +251,8 @@ jobs:
         with:
           name: setup-release-candidate-win-x64
           path: |
-            artifacts/setup-release-candidate/amane-mailer-v${{ inputs.release_version }}-windows-x64.zip
-            artifacts/setup-release-candidate/amane-mailer-v${{ inputs.release_version }}-windows-x64.zip.sha256
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-windows-x64.zip
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-windows-x64.zip.sha256
             artifacts/setup-release-candidate/staged/win-x64/
           if-no-files-found: error
           retention-days: 14
@@ -300,8 +320,8 @@ jobs:
             artifacts/setup-release-candidate/candidate-provenance.json
             artifacts/setup-release-candidate/CANDIDATE-HANDOFF.md
             artifacts/setup-release-candidate/image-identity.json
-            artifacts/setup-release-candidate/amane-mailer-v${{ inputs.release_version }}-windows-x64.zip
-            artifacts/setup-release-candidate/amane-mailer-v${{ inputs.release_version }}-linux-x64.tar.gz
-            artifacts/setup-release-candidate/amane-mailer-v${{ inputs.release_version }}-linux-arm64.tar.gz
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-windows-x64.zip
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-x64.tar.gz
+            artifacts/setup-release-candidate/amane-mailer-v${{ env.MAILER_VERSION }}-linux-arm64.tar.gz
           if-no-files-found: error
           retention-days: 14

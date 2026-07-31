@@ -55,7 +55,12 @@ Required packaging fields include:
 - Compose file digests and launcher version range
 - `supportedRecordedSchemaMin` / `Max`
 - `supportedInspectEffectiveSchemaMin` / `Max`
-- `mailpitImageReference` (**required**, `repo@sha256:<64 lowercase hex>`)
+- `supportedReleaseManifestSchemaMin` / `Max` (**packaging requires both == 1**;
+  runtime `TrustedReleaseInventory.ValidateShape` / resolver do **not** require
+  these fields and continue to enforce `schemaVersion == 1` exactly)
+- `mailpitImageReference` (**required**, `repo@sha256:<64 lowercase hex>`;
+  name-component after the last `/` must not contain `:`; registry ports such as
+  `localhost:5000/mailpit@sha256:…` are allowed; `repo:tag@sha256:…` is rejected)
 - `payloadTreeSha256` (ordered path + content digest **excluding** the manifest
   and `FILES-SHA256SUMS` / `SHA256SUMS` — non-self-referential)
 - `artifactFileName`, `reproducibility`
@@ -76,11 +81,43 @@ Candidates build a local multi-arch OCI layout via
 - Layout allowlist: `oci-layout`, `index.json`, `blobs/sha256/<referenced digests>`
 - Descriptor-graph validation rejects empty indexes, missing amd64/arm64,
   symlinks, extra files, empty blobs, and digest mismatches
-- Image digest source of truth: Buildx metadata `containerimage.digest`
-- `sourceCommitSha` from `git rev-parse HEAD`
+- Image digest source of truth: Buildx metadata prefers
+  `containerimage.descriptor` (digest / mediaType / size), with careful fallback
+  to `containerimage.digest`
+- `validate-oci` **fails** unless `--image-digest` equals `sha256(index.json
+  bytes)`; when a descriptor is present it must also match index.json size /
+  mediaType
+- Host packaging asserts `image-identity.json`: `sourceCommitSha` ==
+  `git rev-parse HEAD` / `SOURCE_SHA`, `mailerVersion` == `MAILER_VERSION`,
+  platforms exactly `linux/amd64` + `linux/arm64` (order-insensitive)
 - Dockerfile accepts `SOURCE_COMMIT` + `MAILER_VERSION` for publish props and labels
 - This path **never** pushes to GHCR. #458 owns public image publish.
 
+Workflow OCI artifact name: **`setup-release-candidate-oci`**
+(`oci/` layout + `image-identity.json` + `buildx-metadata.json` +
+`oci-index.digest`).
+
+### #456 import notes (Windows Docker Desktop / Linux Engine)
+
+Classic `docker load` accepts a single-platform image tarball and **cannot**
+load a multi-platform OCI layout directory. Recommended paths:
+
+1. **Preferred:** enable the Docker **containerd image store**, then import with
+   `skopeo copy oci:./oci containers-storage:<repo>@<digest>` (or
+   `nerdctl` / `ctr` against an OCI archive derived from the layout).
+2. **Platform-specific daemon import:**
+   `skopeo copy --override-os linux --override-arch amd64 oci:./oci docker-daemon:<repo>:<tag>`
+   (repeat for `arm64` under test).
+3. **crane / local registry:** `crane push ./oci <repo>@<digest>` then pull by
+   digest — do **not** rebuild the candidate during qualification.
+
+### #458 promote notes
+
+Promote the qualified OCI graph and host archive bytes **without rebuild** when
+possible. If attestations (provenance / SBOM) are re-added at publish time, the
+public image index digest **may change** even when platform layers are
+unchanged — record the promoted digest explicitly. A rebuild always produces a
+**new** candidate.
 ## Version single source
 
 ```text
@@ -193,3 +230,13 @@ Mailpit digest, SDK/toolchain, and smoke results.
 | M5 | Evidence honesty (unit tests + workflow_dispatch E2E residual) | Addressed |
 | m1 | LICENSE + manifest contract fields | Addressed |
 | m2 | PR finding table mapped to Agent B IDs | Addressed |
+
+## Agent B re-review findings
+
+| ID | Finding | Status |
+|----|---------|--------|
+| B1 | Bind Buildx image digest to OCI layout `index.json` | Addressed |
+| M1 | Workflow input shell-injection via `env:` | Addressed |
+| M2 | Native AOT clang/zlib prerequisites on linux package jobs | Addressed |
+| m1 | Mailpit parser rejects tag-before-digest; allows registry ports | Addressed |
+| m2 | Additive `supportedReleaseManifestSchemaMin`/`Max` (packaging == 1) | Addressed |

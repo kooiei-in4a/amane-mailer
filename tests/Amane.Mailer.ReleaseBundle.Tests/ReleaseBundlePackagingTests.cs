@@ -61,6 +61,8 @@ public sealed class ReleaseBundlePackagingTests
         Assert.Equal("x64", result.Manifest.Architecture);
         Assert.Equal("1.2.0", result.Manifest.SetupLauncherVersion);
         Assert.Equal(TestMailpit, result.Manifest.MailpitImageReference);
+        Assert.Equal(1, result.Manifest.SupportedReleaseManifestSchemaMin);
+        Assert.Equal(1, result.Manifest.SupportedReleaseManifestSchemaMax);
         Assert.False(string.IsNullOrWhiteSpace(result.Manifest.ArtifactId));
         Assert.False(string.IsNullOrWhiteSpace(result.Manifest.PayloadTreeSha256));
         Assert.Null(result.Manifest.ArtifactSha256);
@@ -195,6 +197,8 @@ public sealed class ReleaseBundlePackagingTests
             SupportedRecordedSchemaMax = ok.SupportedRecordedSchemaMax,
             SupportedInspectEffectiveSchemaMin = ok.SupportedInspectEffectiveSchemaMin,
             SupportedInspectEffectiveSchemaMax = ok.SupportedInspectEffectiveSchemaMax,
+            SupportedReleaseManifestSchemaMin = ok.SupportedReleaseManifestSchemaMin,
+            SupportedReleaseManifestSchemaMax = ok.SupportedReleaseManifestSchemaMax,
             ArtifactFileName = ok.ArtifactFileName,
             PayloadTreeSha256 = ok.PayloadTreeSha256,
             Reproducibility = ok.Reproducibility,
@@ -250,6 +254,24 @@ public sealed class ReleaseBundlePackagingTests
     }
 
     [Fact]
+    public void ValidateOciLayoutDirectory_binds_expected_digest_to_index_json_bytes()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "oci");
+        var layoutDigest = CreateMinimalOciLayout(oci, includePlatformManifests: true);
+
+        Assert.True(
+            ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, layoutDigest).Success,
+            "digest == sha256(index.json) must PASS");
+
+        var unrelated =
+            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        var mismatch = ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, unrelated);
+        Assert.False(mismatch.Success);
+        Assert.Equal("oci_image_digest_mismatch", mismatch.ReasonCode);
+    }
+
+    [Fact]
     public void ValidateOciLayoutDirectory_rejects_symlink_and_extra_files()
     {
         using var scratch = new TempDir();
@@ -257,6 +279,100 @@ public sealed class ReleaseBundlePackagingTests
         var digest = CreateMinimalOciLayout(oci, includePlatformManifests: true);
         File.WriteAllText(Path.Combine(oci, "EXTRA"), "nope");
         Assert.False(ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, digest).Success);
+    }
+
+    [Theory]
+    [InlineData("axllent/mailpit@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", true)]
+    [InlineData("localhost:5000/mailpit@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", true)]
+    [InlineData("registry.example:5000/path/mailpit@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", true)]
+    [InlineData("axllent/mailpit:latest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", false)]
+    [InlineData("axllent/mailpit:v1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", false)]
+    public void TryParseMailpitImageReference_rejects_tag_before_digest(string reference, bool expectedValid)
+    {
+        var ok = ReleaseBundlePackaging.TryParseMailpitImageReference(reference, out var parts);
+        Assert.Equal(expectedValid, ok);
+        Assert.Equal(expectedValid, ReleaseBundlePackaging.IsValidMailpitImageReference(reference));
+        if (expectedValid)
+        {
+            Assert.NotNull(parts);
+            Assert.StartsWith("sha256:", parts!.Digest, StringComparison.Ordinal);
+            Assert.DoesNotContain(':', parts.NameComponent);
+        }
+        else
+        {
+            Assert.Null(parts);
+        }
+    }
+
+    [Fact]
+    public void AssertImageIdentityForHostPackaging_requires_source_version_and_platforms()
+    {
+        var ok = new ImageIdentityDocument
+        {
+            ImageRepository = "ghcr.io/kooiei-in4a/amane-mailer",
+            ImageTag = "sha-" + TestCommit,
+            ImageDigest = TestDigest,
+            SourceCommitSha = TestCommit,
+            MailerVersion = "1.2.0",
+            Platforms = ["linux/arm64", "linux/amd64"],
+        };
+        Assert.True(
+            ReleaseBundlePackaging.AssertImageIdentityForHostPackaging(ok, TestCommit, "1.2.0").Success);
+
+        Assert.False(
+            ReleaseBundlePackaging.AssertImageIdentityForHostPackaging(
+                new ImageIdentityDocument
+                {
+                    ImageRepository = ok.ImageRepository,
+                    ImageTag = ok.ImageTag,
+                    ImageDigest = ok.ImageDigest,
+                    SourceCommitSha = "0000000000000000000000000000000000000000",
+                    MailerVersion = ok.MailerVersion,
+                    Platforms = ok.Platforms,
+                },
+                TestCommit,
+                "1.2.0").Success);
+        Assert.False(
+            ReleaseBundlePackaging.AssertImageIdentityForHostPackaging(
+                new ImageIdentityDocument
+                {
+                    ImageRepository = ok.ImageRepository,
+                    ImageTag = ok.ImageTag,
+                    ImageDigest = ok.ImageDigest,
+                    SourceCommitSha = ok.SourceCommitSha,
+                    MailerVersion = "9.9.9",
+                    Platforms = ok.Platforms,
+                },
+                TestCommit,
+                "1.2.0").Success);
+        Assert.False(
+            ReleaseBundlePackaging.AssertImageIdentityForHostPackaging(
+                new ImageIdentityDocument
+                {
+                    ImageRepository = ok.ImageRepository,
+                    ImageTag = ok.ImageTag,
+                    ImageDigest = ok.ImageDigest,
+                    SourceCommitSha = ok.SourceCommitSha,
+                    MailerVersion = ok.MailerVersion,
+                    Platforms = ["linux/amd64"],
+                },
+                TestCommit,
+                "1.2.0").Success);
+    }
+
+    [Fact]
+    public void ValidatePackagingDocument_requires_release_manifest_schema_range_eq_one()
+    {
+        var doc = CreateValidPackagingDocument();
+        Assert.Equal(1, doc.SupportedReleaseManifestSchemaMin);
+        Assert.Equal(1, doc.SupportedReleaseManifestSchemaMax);
+        Assert.True(ReleaseBundlePackaging.ValidatePackagingDocument(doc).Success);
+
+        var missing = CloneWith(doc, releaseManifestSchemaMin: null, releaseManifestSchemaMax: null);
+        Assert.False(ReleaseBundlePackaging.ValidatePackagingDocument(missing).Success);
+
+        var wrong = CloneWith(doc, releaseManifestSchemaMin: 1, releaseManifestSchemaMax: 2);
+        Assert.False(ReleaseBundlePackaging.ValidatePackagingDocument(wrong).Success);
     }
 
     [Fact]
@@ -369,6 +485,8 @@ public sealed class ReleaseBundlePackagingTests
             SupportedRecordedSchemaMax = 2,
             SupportedInspectEffectiveSchemaMin = 1,
             SupportedInspectEffectiveSchemaMax = 1,
+            SupportedReleaseManifestSchemaMin = 1,
+            SupportedReleaseManifestSchemaMax = 1,
             ArtifactFileName = "amane-mailer-v1.2.0-linux-x64.tar.gz",
             PayloadTreeSha256 = TestDigest,
             Reproducibility = "test",
@@ -379,7 +497,9 @@ public sealed class ReleaseBundlePackagingTests
         int? schemaVersion = null,
         string? imageTag = null,
         string? ociIndexDigest = null,
-        string? mailpitImageReference = "") =>
+        string? mailpitImageReference = "",
+        int? releaseManifestSchemaMin = -1,
+        int? releaseManifestSchemaMax = -1) =>
         new()
         {
             SchemaVersion = schemaVersion ?? source.SchemaVersion,
@@ -409,6 +529,12 @@ public sealed class ReleaseBundlePackagingTests
             SupportedRecordedSchemaMax = source.SupportedRecordedSchemaMax,
             SupportedInspectEffectiveSchemaMin = source.SupportedInspectEffectiveSchemaMin,
             SupportedInspectEffectiveSchemaMax = source.SupportedInspectEffectiveSchemaMax,
+            SupportedReleaseManifestSchemaMin = releaseManifestSchemaMin == -1
+                ? source.SupportedReleaseManifestSchemaMin
+                : releaseManifestSchemaMin,
+            SupportedReleaseManifestSchemaMax = releaseManifestSchemaMax == -1
+                ? source.SupportedReleaseManifestSchemaMax
+                : releaseManifestSchemaMax,
             ArtifactFileName = source.ArtifactFileName,
             PayloadTreeSha256 = source.PayloadTreeSha256,
             Reproducibility = source.Reproducibility,
@@ -466,7 +592,7 @@ public sealed class ReleaseBundlePackagingTests
             + Encoding.UTF8.GetByteCount(manifestArm64).ToString()
             + ",\"platform\":{\"architecture\":\"arm64\",\"os\":\"linux\"}}]}\n";
         File.WriteAllText(Path.Combine(directory, "index.json"), indexJson);
-        // Buildx containerimage.digest is the image index digest identity; for tests any valid sha256 works.
+        // Buildx image digest must equal sha256(index.json bytes) for validate-oci binding.
         return "sha256:"
             + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(indexJson))).ToLowerInvariant();
     }

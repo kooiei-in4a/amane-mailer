@@ -87,31 +87,57 @@ if [[ ! -f "${METADATA_FILE}" ]]; then
   exit 1
 fi
 
-IMAGE_DIGEST="$(python3 - <<'PY' "${METADATA_FILE}"
-import json, sys
-path = sys.argv[1]
-with open(path, encoding="utf-8") as f:
+IMAGE_DIGEST="$(python3 - <<'PY' "${METADATA_FILE}" "${DEST}/index.json"
+import hashlib, json, sys
+meta_path = sys.argv[1]
+index_path = sys.argv[2]
+with open(meta_path, encoding="utf-8") as f:
     meta = json.load(f)
-digest = meta.get("containerimage.digest")
+
+descriptor = meta.get("containerimage.descriptor")
+digest = None
+media_type = None
+size = None
+if isinstance(descriptor, dict):
+    digest = descriptor.get("digest")
+    media_type = descriptor.get("mediaType")
+    size = descriptor.get("size")
+if not isinstance(digest, str):
+    digest = meta.get("containerimage.digest")
 if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
-    raise SystemExit("containerimage.digest missing or invalid in Buildx metadata-file")
+    raise SystemExit("Buildx metadata missing containerimage.descriptor.digest / containerimage.digest")
 hexpart = digest[len("sha256:"):]
 if hexpart != hexpart.lower() or any(c not in "0123456789abcdef" for c in hexpart):
-    raise SystemExit("containerimage.digest must use lowercase hex")
-print(digest)
+    raise SystemExit("Buildx image digest must use lowercase hex")
+
+index_bytes = open(index_path, "rb").read()
+layout_digest = "sha256:" + hashlib.sha256(index_bytes).hexdigest()
+if digest.lower() != layout_digest:
+    raise SystemExit(
+        f"Buildx image digest {digest} does not equal sha256(index.json) {layout_digest}"
+    )
+if isinstance(descriptor, dict):
+    if size is not None and int(size) != len(index_bytes):
+        raise SystemExit("containerimage.descriptor.size does not match index.json byte length")
+    index_json = json.loads(index_bytes.decode("utf-8"))
+    layout_media = index_json.get("mediaType")
+    if isinstance(media_type, str) and isinstance(layout_media, str) and media_type != layout_media:
+        raise SystemExit("containerimage.descriptor.mediaType does not match index.json mediaType")
+print(digest.lower())
 PY
 )"
 
 echo "imageDigest=${IMAGE_DIGEST}"
 echo "${IMAGE_DIGEST}" > "${PARENT}/oci-index.digest"
 
-# Validate descriptor graph via tools project (exact amd64+arm64).
+# Validate descriptor graph via tools project (exact amd64+arm64); bind Buildx digest to layout.
 dotnet run --project "${REPO_ROOT}/tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" \
   -c "${CONFIGURATION:-Release}" --no-launch-profile -- \
   validate-oci \
   --layout "${DEST}" \
   --image-digest "${IMAGE_DIGEST}" \
-  --require-platforms "linux/amd64,linux/arm64"
+  --require-platforms "linux/amd64,linux/arm64" \
+  --metadata-file "${METADATA_FILE}"
 
 dotnet run --project "${REPO_ROOT}/tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" \
   -c "${CONFIGURATION:-Release}" --no-launch-profile -- \

@@ -7,8 +7,11 @@ bundle の生成手順です。公開（tag / GHCR / GitHub Release）は
 [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) の所有です。
 
 詳細（構成、manifest schemaVersion 1 additive、`payloadTreeSha256` /
-`archiveSha256`、OCI descriptor graph、Mailpit 必須、tools へ分離した packaging、
-artifact smoke、#456/#458 handoff、非目標、Agent B B1/B2/B3/M1–M5）は
+`archiveSha256`、OCI descriptor graph + Buildx digest↔`index.json` 束縛、
+Mailpit 必須 / tag 拒否、`supportedReleaseManifestSchemaMin`/`Max`、
+tools へ分離した packaging、artifact smoke、workflow artifact
+`setup-release-candidate-oci`、#456 OCI import（containerd / skopeo）、
+#458 promote（再 attest で digest 変化の可能性）、非目標、Agent B 指摘対応）は
 [英語版](setup-release-bundle.en.md)を正本としてください。
 
 ```bash

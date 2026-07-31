@@ -59,6 +59,14 @@ if [[ ! -f "${IDENTITY_FILE}" ]]; then
   exit 1
 fi
 
+# Bind host packaging to the OCI identity produced for this source SHA / version / platforms.
+dotnet run --project "${REPO_ROOT}/tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" \
+  -c "${CONFIGURATION}" --no-launch-profile -- \
+  assert-image-identity \
+  --identity "${IDENTITY_FILE}" \
+  --source-sha "${SOURCE_SHA}" \
+  --mailer-version "${MAILER_VERSION}"
+
 OCI_INDEX_DIGEST="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1],encoding="utf-8")); assert isinstance(d.get("imageDigest"), str) and d["imageDigest"].startswith("sha256:"); print(d["imageDigest"])' "${IDENTITY_FILE}")"
 IDENTITY_REPO="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("imageRepository") or "")' "${IDENTITY_FILE}")"
 IDENTITY_TAG="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("imageTag") or "")' "${IDENTITY_FILE}")"

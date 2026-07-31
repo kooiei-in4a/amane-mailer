@@ -92,6 +92,20 @@ public sealed class ReleaseBundleManifestDocument
     [JsonPropertyName("supportedInspectEffectiveSchemaMax")]
     public int? SupportedInspectEffectiveSchemaMax { get; init; }
 
+    /// <summary>
+    /// Packaging-only additive range. Must equal schemaVersion (1) when staging;
+    /// runtime TrustedReleaseInventory does not require these fields.
+    /// </summary>
+    [JsonPropertyName("supportedReleaseManifestSchemaMin")]
+    public int? SupportedReleaseManifestSchemaMin { get; init; }
+
+    /// <summary>
+    /// Packaging-only additive range. Must equal schemaVersion (1) when staging;
+    /// runtime TrustedReleaseInventory does not require these fields.
+    /// </summary>
+    [JsonPropertyName("supportedReleaseManifestSchemaMax")]
+    public int? SupportedReleaseManifestSchemaMax { get; init; }
+
     [JsonPropertyName("artifactFileName")]
     public string? ArtifactFileName { get; init; }
 
