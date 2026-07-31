@@ -1,13 +1,13 @@
 # Issue #456 Release Qualification Plan
 
-> **Status:** Plan only (pre-implementation). Rev.8 content **Approve** by Agent B (M-27, m-08 closed). **Commit-specific start gate pending** exact plan-only commit SHA.
+> **Status:** Plan revision for **B-MIG INCLUDE** scope (migrations 012/013). Still does **not** authorize Go execution / publish / Phase 1. Issue body drift (new migration Hard rows) => **new binding/run** (B-MIG INCLUDE condition #9). This revision is B-MIG INCLUDE **condition #5**. B-MIG clearance remains **SET** until all nine INCLUDE conditions complete.
 > **Issue:** [#456](https://github.com/kooiei-in4a/amane-mailer/issues/456)
 > **Parent tracking:** [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445)
 > **Design authority:** [ADR 0021](../adr/0021-easy-setup-boundaries.md) ([#446](https://github.com/kooiei-in4a/amane-mailer/issues/446), Accepted)
 > **Base branch at planning time:** `develop`
 > **Base SHA at planning time (remote `origin/develop`):** `9d6c556ec758384f8f8f8b32e976178529032f9c` (#457 merge)
-> **Plan revision:** 8 (2026-08-01)
-> **Supersedes:** Rev.1 through Rev.7 (same path; do not implement prior revisions)
+> **Plan revision:** 9 (2026-08-01)
+> **Supersedes:** Rev.8 (and Rev.1 through Rev.7; same path; do not implement prior revisions)
 > **Encoding:** UTF-8 (no BOM)
 
 This document plans **release-candidate qualification** for v1.2.0 Easy Setup. It does **not** authorize product code changes, publish, tag, real ACS send during planning, or Go/No-Go execution.
@@ -16,7 +16,19 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 
 ## 0. Change logs
 
-### 0.1 Rev.8 change log (Agent B seventh review)
+### 0.0 Rev.9 change log (B-MIG INCLUDE of migrations 012/013)
+
+| Decision / fact | Plan change |
+|-----------------|-------------|
+| Parent #445 ACK `migrationDecision=INCLUDE` for frozen inventory `012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql` (#460/#461; tests in `BounceIngestionMigrationTests` / BounceIngestionSchemaTests) | Sec. 6.2 appends **G456-42..44**; Sec. 8 Pack H; Sec. 12.2 migration typePayload validators; Sec. 6.3/12.1 `planRevision="9"`. |
+| `dSeqAck=true` recorded in maintainer chat | No #456 process change this rev; sequencing remains #458 / parent concern. |
+| Issue #456/#458 bodies amended in parallel with three Hard migration rows | Gate class remains **solely** in Issue snapshot (no Gate labels in Pack H). Issue body SHA change => **new binding/run** (INCLUDE condition #9). |
+| B-MIG clearance still **SET** until nine INCLUDE conditions complete; this rev = condition **#5** (plan revision) | Sec. 4 / Sec. 5 / Sec. 18: inventory **list** freeze vs `releaseCommitSha` **SHA** freeze (#458 Phase 1) distinguished; do not bind until Issue snapshot includes G456-42..44. |
+| `variantRulesVersion` | **Keep 4** — new rows reuse existing `Windows / Linux` -> `win-docker`+`linux-docker` and `自動` -> `ci-auto` patterns (no bump). |
+| Rev.8 sealed-store / aggregator / FAIL -> PASS / optional-key rules | **Unchanged** — do not weaken. |
+| Go / publish / Phase 1 | **Not authorized** by this revision. |
+
+### 0.1 Rev.8 change log (Agent B seventh review; historical)
 
 | Finding | Verdict | Plan change |
 |---------|---------|-------------|
@@ -172,7 +184,7 @@ Qualify one **release-candidate commit** by consuming:
 
 | Item | Blocks |
 |------|--------|
-| Exact RC `sourceCommitSha` | candidateId / binding |
+| Exact RC `sourceCommitSha` / `releaseCommitSha` | candidateId / binding; inventory **SHA** freeze (#458 Phase 1; distinct from filename list freeze) |
 | Maintainer Staging/Production ACS handles | Hard ACS rows |
 | Approved HTTPS reverse-proxy lab | Admin Production variants |
 | Durable store concrete URI/bucket | Operationalization of Sec. 7.8 (contract fixed) |
@@ -182,7 +194,7 @@ Qualify one **release-candidate commit** by consuming:
 
 1. Dependencies closed: #447-#455, #457, #459 (confirmed at planning).
 2. ADR 0021 Accepted.
-3. **Plan Rev.8 (or later)** committed; Agent B re-review passed on that exact plan-only commit SHA.
+3. **Plan Rev.9 (or later)** committed; Agent B re-review passed on that exact plan-only commit SHA.
 4. Role identities resolved and approved (qualification lead, Conditional approver, intended evidence-owner assignment policy). Do **not** write `authorization.json` yet.
 5. Fresh #455 workflow for pinned SHA; provenance + sums + archives + OCI present.
 6. Phase-1 durable intake completed (Sec. 7.8) before workflow retention (14d) expires.
@@ -197,18 +209,27 @@ Qualify one **release-candidate commit** by consuming:
 | ID | Note |
 |----|------|
 | B-LOCAL | Local develop may lag remote; implement from fetched pin |
-| B-RC | First RC pin still maintainer choice |
+| B-RC | First RC pin / `releaseCommitSha` still pending (#458 Phase 1); list-freeze of migration filenames != SHA freeze of pin |
 | B-ACS / B-PROXY | Real ACS / HTTPS lab outside CI |
+| B-MIG | INCLUDE decided; clearance still **SET** until nine INCLUDE conditions complete. Before bind: Issue snapshot **must** include G456-42..44 and inventory list must match frozen filenames. This plan rev satisfies condition #5 only. |
 
 ---
 
 ## 5. Dependency / readiness matrix
 
-| Issue | State (2026-07-31) | Plan | Execute qual |
+| Issue | State (2026-08-01) | Plan | Execute qual |
 |-------|--------------------|------|--------------|
 | #446-#455, #457, #459 | Closed | Yes | Yes (artifacts for pin) |
-| #456 | Open | This plan | Self |
-| #458 | Open | Boundary | After Go |
+| #456 | Open | This plan Rev.9 | Self — after B-MIG nine conditions + binding |
+| #458 | Open | Boundary | After Go; owns Phase 1 `releaseCommitSha` pin |
+| #445 B-MIG | INCLUDE ACK; clearance still SET | Condition #5 = this rev | Do not bind until Issue snapshot includes G456-42..44 |
+
+**B-MIG INCLUDE readiness (before bind):**
+
+1. Frozen **inventory list** (filenames only): `012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql`.
+2. Issue #456 required-scenario snapshot **must** include rows aliased as G456-42..44 (Gate class from Issue only).
+3. Inventory **SHA freeze** to `releaseCommitSha` remains #458 Phase 1 (distinct from list freeze); pin still pending.
+4. Issue body amendment => new `issueBodySha256` => **new binding/run** (INCLUDE condition #9), even if candidate bytes unchanged.
 
 ---
 
@@ -273,6 +294,9 @@ This plan **must not**:
 | G456-39 | macOS | macOS |
 | G456-40 | mode 5 | Manual only |
 | G456-41 | external secret manager examples | Hardened docs |
+| G456-42 | DB migration fresh apply through 013 | Windows / Linux |
+| G456-43 | DB migration upgrade from v1.1.0 (011 applied) through 013 | Windows / Linux |
+| G456-44 | Migration 012/013 schema + PII-safe contract (no raw payload/recipient columns) | 自動 |
 
 Aliases are non-authoritative labels. Gate class for aggregation comes only from `binding.issueSnapshot.rows[N].gateClass`.
 
@@ -318,7 +342,7 @@ At bind time, harness **must** record:
 bindingId
 qualificationRunId
 candidateId
-planRevision = "8"
+planRevision = "9"
 planCommitSha
 planFileSha256
 variantRulesVersion = 4
@@ -343,6 +367,8 @@ optionalEvidenceKeys[]:           # Informational keys that MAY be evidenced (m-
 docs.* digests (Sec. 7.4)
 ```
 
+**variantRulesVersion = 4 (no bump for Rev.9):** G456-42/43 environment text `Windows / Linux` reuses the existing default -> `win-docker` + `linux-docker`. G456-44 environment text `自動` reuses the same pattern as `automated` -> `ci-auto`. No new variantId vocabulary is introduced.
+
 #458 must audit row meaning from binding alone without re-fetching GitHub.
 
 **Freshness gate (before humanDecision):** re-fetch live Issue #456 body; require `currentIssueBodySha256 == binding.issueBodySha256`. Mismatch => do not APPROVE; create new binding/run and re-evaluate impact.
@@ -363,6 +389,7 @@ Evidence key = `(scenarioId, variantId)`. Scenario PASS only when **every** `req
 | OS-specific | `win-docker` + `linux-docker` (symlink and reparse on win; symlink on linux) |
 | Local / proxy | `local-dev` + `proxy-https` |
 | automated / Web integration / automated FAIL (except G456-16) | `ci-auto` |
+| `自動` (Issue wording; same pattern as `automated`) | `ci-auto` |
 | G456-16 (`automated / integrated`) | **`ci-auto` + `admin-integrated`** (fixed; not optional) |
 | Development / loopback | `admin-local-dev` |
 | approved HTTPS proxy / Production (Admin HTTP rows) | `admin-prod-https` |
@@ -374,6 +401,14 @@ Evidence key = `(scenarioId, variantId)`. Scenario PASS only when **every** `req
 | Informational (G456-38..41) | `requiredVariants=[]` + `informationalNotRequired:true`; **and** bind `optionalEvidenceKeys` (m-07 Option A) |
 
 `binding.variantRulesVersion = 4`. Changing rules requires plan revision.
+
+**Rev.9 migration row variants (reuse; no rules bump):**
+
+| scenarioId | Issue environment text | requiredVariants |
+|------------|------------------------|------------------|
+| G456-42 | Windows / Linux | `win-docker` + `linux-docker` |
+| G456-43 | Windows / Linux | `win-docker` + `linux-docker` |
+| G456-44 | 自動 | `ci-auto` |
 
 **Informational optional keys (closes m-07; Option A):**
 
@@ -795,6 +830,18 @@ G456-13/14/17 require `win-docker` and `linux-docker`.
 
 Gate class for these rows is read only from `binding.issueSnapshot` at display/aggregation time. Do not hard-code Conditional/Informational strings in this section. Informational optional keys are aggregated (Sec. 9.3); their missing/FAIL alone never blocks Go, but integrity violations on them do (Sec. 14).
 
+### 8.9 Pack H — DB migrations (012/013) (execution info only; no Gate class labels)
+
+Frozen INCLUDE inventory (filenames): `012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql` (from #460/#461). Gate class is read only from `binding.issueSnapshot` — do not hard-code Hard/Conditional/Informational in this pack.
+
+| ID | requiredVariants / procedure | Evidence type |
+|----|------------------------------|---------------|
+| G456-42 | `win-docker`, `linux-docker` — fresh/empty DB; ApplyPending through 013; Sec. 12.2 G456-42 validators | `db-migration-fresh-apply` |
+| G456-43 | `win-docker`, `linux-docker` — DB previously at v1.1.0 tip (011 applied); then apply 012+013; Sec. 12.2 G456-43 validators | `db-migration-upgrade` |
+| G456-44 | `ci-auto` — schema + PII-safe column allow/deny contract; Sec. 12.2 G456-44 validators | `db-migration-schema-contract` |
+
+**Supporting automation:** unit coverage already exists in `BounceIngestionMigrationTests` / BounceIngestionSchemaTests and may drive or corroborate G456-44 (and inform 42/43 fixtures). Supporting unit PASS alone is **not** qualification evidence — harness envelope + `prohibitedContentScan` + disposition under Sec. 12 / Sec. 9 are still required for Go.
+
 ---
 
 ## 9. Evidence, disposition, and exception model (B-03, M-11, M-16, M-17, M-20, M-21, M-22)
@@ -1118,7 +1165,7 @@ Assert Admin routes not served after successful config rollback to disabled.
   "scenarioId": "G456-NN",
   "variantId": "...",
   "issueBodySha256": "...",
-  "planRevision": "8",
+  "planRevision": "9",
   "planCommitSha": "...",
   "planFileSha256": "...",
   "bindingId": "...",
@@ -1163,6 +1210,9 @@ Common envelope `result` and typePayload failure indicators **must not contradic
 | G456-04 | `outcome=completed` **and** all send predicates in Sec. 12.2 G456-04 | any incomplete/forbidden send state => `result=FAIL` (or evidence rejected before accept) |
 | G456-05 | `doctorOrReadinessSummary=pass` **and** all Sec. 12.2 G456-05 predicates | `doctorOrReadinessSummary=fail` => `result=FAIL` |
 | G456-06 | all Sec. 12.2 G456-06 predicates **and** valid active G456-05 PASS reference | any predicate/reference mismatch => `result=FAIL` (or evidence rejected before accept) |
+| G456-42 | `outcome=applied` **and** all Sec. 12.2 G456-42 predicates | apply/schema/inventory failure => `result=FAIL` |
+| G456-43 | `outcome=upgraded` **and** all Sec. 12.2 G456-43 predicates (incl. pending-before proof) | pending/apply/schema failure => `result=FAIL` |
+| G456-44 | `contractResult=pass` **and** all Sec. 12.2 G456-44 allow/deny predicates | `contractResult=fail` => `result=FAIL` |
 
 `result=EXCEPTION` is reserved for Conditional exception paths (not G456-03/04/05 Hard PASS). `result=NOT_RUN` must not be active-accepted for Hard required variants.
 
@@ -1243,6 +1293,82 @@ restrictedOpsRecordId: required opaque id
 
 Includes Sec. 11 fields + `accessProfile`.
 
+#### db-migration-fresh-apply — G456-42 validator
+
+```text
+migrationDecision = INCLUDE
+migrationInventory[] = [
+  "012_provider_event_inbox_details.sql",
+  "013_provider_queue_dead_letters.sql"
+]
+startingSchema = empty-or-new-db
+applyPendingThrough = "013_provider_queue_dead_letters.sql"
+appliedMigrationsMustContain[] = migrationInventory   # both filenames present after ApplyPending
+tablesPresent[] includes: provider_event_inbox, provider_queue_dead_letters
+# PII / raw-payload absence on migration-owned surfaces (dead_letters):
+forbiddenColumns.provider_queue_dead_letters[] = [
+  "payload_json", "raw_json", "body", "recipient_email"
+]
+outcome = applied | failed
+```
+
+**PASS consistency:** `result=PASS` **iff** `outcome=applied` **and** ApplyPending reached through 013 **and** both inventory filenames appear in the applied list **and** required tables/columns present **and** forbiddenColumns absent on dead_letters as listed.  
+**FAIL consistency:** any missing inventory file in applied list, apply stop before 013, missing required table, or forbidden column present => `result=FAIL`.  
+**Required:** `prohibitedContentScan.result=PASS`. Contradiction between `result` and typePayload => `NO_GO` (Sec. 14 / M-19).
+
+#### db-migration-upgrade — G456-43 validator
+
+```text
+migrationDecision = INCLUDE
+migrationInventory[] = [
+  "012_provider_event_inbox_details.sql",
+  "013_provider_queue_dead_letters.sql"
+]
+startingSchema = v1.1.0-tip-011-applied   # DB previously migrated only through 011 (or equivalent v1.1.0 tip)
+pendingBeforeApplyMustContain[] = migrationInventory  # prove 012/013 were pending
+applyPendingThrough = "013_provider_queue_dead_letters.sql"
+appliedAfterMustContain[] = migrationInventory
+tablesPresent[] includes: provider_event_inbox, provider_queue_dead_letters
+forbiddenColumns.provider_queue_dead_letters[] = [
+  "payload_json", "raw_json", "body", "recipient_email"
+]
+outcome = upgraded | failed
+```
+
+**PASS consistency:** `result=PASS` **iff** `outcome=upgraded` **and** pending-before proof holds **and** both 012/013 applied after **and** same schema/PII asserts as G456-42.  
+**FAIL consistency:** cannot prove pending 012/013, apply fails, or schema/PII asserts fail => `result=FAIL`.  
+**Required:** `prohibitedContentScan.result=PASS`.
+
+#### db-migration-schema-contract — G456-44 validator
+
+Align allow/deny lists with `BounceIngestionMigrationTests` / BounceIngestionSchemaTests (supporting automation; harness envelope still required):
+
+```text
+migrationDecision = INCLUDE
+migrationInventory[] = [
+  "012_provider_event_inbox_details.sql",
+  "013_provider_queue_dead_letters.sql"
+]
+# provider_event_inbox required present:
+requiredColumns.provider_event_inbox[] includes: status_message, occurred_at
+# provider_event_inbox forbidden:
+forbiddenColumns.provider_event_inbox[] = [
+  "payload_json", "raw_json", "event_json"
+]
+# provider_queue_dead_letters required present:
+requiredColumns.provider_queue_dead_letters[] includes:
+  queue_message_id, failure_stage, last_error_code, dequeue_count
+# provider_queue_dead_letters forbidden:
+forbiddenColumns.provider_queue_dead_letters[] = [
+  "body", "payload", "recipient_email"
+]
+contractResult = pass | fail
+```
+
+**PASS consistency:** `result=PASS` **iff** `contractResult=pass` **and** all requiredColumns present **and** all forbiddenColumns absent **and** `migrationDecision=INCLUDE` with exact `migrationInventory[]`.  
+**FAIL consistency:** `contractResult=fail` => `result=FAIL` (mandatory).  
+**Required:** `prohibitedContentScan.result=PASS`.
+
 ### 12.3 Conditional exception
 
 See Sec. 9.5 for immutable exception + exception-disposition lifecycle. Payload fields remain:
@@ -1294,6 +1420,7 @@ Optional evidence missing / FAIL alone does **not** force `NO_GO`. Global integr
 | G456-03 predicate mismatch (Sec. 12.2) | `NO_GO` | required ACS |
 | G456-04 predicate mismatch (Sec. 12.2) | `NO_GO` | required ACS |
 | G456-06 predicate mismatch **or** invalid `distinctFromSendReadyEvidenceId` (Sec. 12.2 m-06) | `NO_GO` | required ACS |
+| G456-42/43/44 migration predicate mismatch **or** `migrationInventory` / `migrationDecision` mismatch (Sec. 12.2) | `NO_GO` | required migration |
 | `result` / typePayload contradiction (Sec. 12.2 M-19) on any bound evidence | `NO_GO` | all bound |
 | Disposition / exception / run-status hash-chain invalid **or** JCS canonicalization mismatch | `NO_GO` | all bound |
 | Disposition / exception **invalid state transition** (Sec. 9.2 / 9.5) | `NO_GO` | all bound |
@@ -1391,6 +1518,7 @@ Final Go for #458 requires `machineVerdict=GO_ELIGIBLE` and `humanDecision=APPRO
 | WP-D | Admin profile / bootstrap drivers | G456-07-14,17 (`win-docker`/`linux-docker`/`admin-*`) |
 | WP-E | ACS runbook adapters | G456-03 `acs-staging-nosend`; G456-04-06 ACS variants |
 | WP-F | Exception + decision UX | G456-29,34,36,37 exceptions; G456-38-41 **optional** Informational keys (`nas`/`macos`/`mode5-manual`/`external-secret-manager-docs`); final go-no-go.json |
+| WP-G | DB migration fresh/upgrade drivers + schema-contract fixtures | G456-42/43 (`win-docker`/`linux-docker`); G456-44 (`ci-auto`) |
 
 | ID | Evidence owner |
 |----|----------------|
@@ -1400,6 +1528,9 @@ Final Go for #458 requires `machineVerdict=GO_ELIGIBLE` and `humanDecision=APPRO
 | G456-03 | WP-E (`acs-staging-nosend`) |
 | G456-07-14,17 | WP-D |
 | G456-36 | WP-F (`vps`) |
+| G456-42 | WP-G (`win-docker` and `linux-docker`) |
+| G456-43 | WP-G (`win-docker` and `linux-docker`) |
+| G456-44 | WP-G (`ci-auto`) |
 
 No two WPs may append a disposition `accept`/`supersede` for the same `(scenarioId, variantId)` without a higher-`eventSequence` event authorized per Sec. 9.4.
 
@@ -1413,22 +1544,25 @@ All Hard required variants PASS (derived active for the chosen **sealed** `quali
 
 ```text
 0. Fetch develop @ pin; clean worktree
-1. Commit plan Rev.8; pass Agent B re-review on that exact plan-only SHA
+1. Commit plan Rev.9; pass Agent B re-review on that exact plan-only SHA
 2. Resolve and approve role identities and the intended evidence-owner assignment policy
    (qualification lead, Conditional approver, owners per required + optionalEvidenceKeys).
    Do NOT write authorization.json yet.
-3. Dispatch #455 for pin -> download handoff package
-4. Phase-1 durable intake under candidates/<candidateId>/
-5. Compute candidateId / bindingId / qualificationRunId; materialize required + optional evidence keys
-6. Write authorization.json and binding.json once as Phase-2 objects
+3. Confirm Issue #456 snapshot includes G456-42..44; B-MIG inventory list frozen;
+   do not treat B-MIG as cleared until remaining INCLUDE conditions + new binding/run.
+4. Dispatch #455 for pin -> download handoff package
+5. Phase-1 durable intake under candidates/<candidateId>/
+6. Compute candidateId / bindingId / qualificationRunId; materialize required + optional evidence keys
+7. Write authorization.json and binding.json once as Phase-2 objects
    (plus docs extract + Phase-2 manifest) under runs/<qualificationRunId>/
-7. WP-B CI fixtures (includes G456-16 both variants)
-8. WP-C Mailpit variants
-9. WP-D Admin variants
-10. WP-E ACS / Release OV (G456-03 acs-staging-nosend; G456-04; G456-05 no-send; G456-06 send)
-11. WP-F exceptions + optional Informational evidence + recording
-12. Issue freshness check; freeze Phase-3; write Phase-4 objects with sealedObjectInventory; append terminal sealed run-status event last
-13. Hand off sealed run to #458 (no publish in #456); #458 re-verifies inventory
+8. WP-B CI fixtures (includes G456-16 both variants)
+9. WP-C Mailpit variants
+10. WP-D Admin variants
+11. WP-E ACS / Release OV (G456-03 acs-staging-nosend; G456-04; G456-05 no-send; G456-06 send)
+12. WP-G DB migrations G456-42..44 (fresh / upgrade / schema-contract)
+13. WP-F exceptions + optional Informational evidence + recording
+14. Issue freshness check; freeze Phase-3; write Phase-4 objects with sealedObjectInventory; append terminal sealed run-status event last
+15. Hand off sealed run to #458 (no publish in #456); #458 re-verifies inventory
 ```
 
 ---
@@ -1475,6 +1609,7 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 | Q12 | Informational evidence authorization | Closed — Option A `optionalEvidenceKeys` + owners (m-07) |
 | Q13 | Optional evidence aggregation | Closed — allBoundEvidenceKeys replay + integrity vs Gate split (M-27) |
 | Q14 | Object-set root digest algorithm | Closed — `RFC8785-JCS-sorted-path-sha256/v1` (m-08) |
+| Q15 | B-MIG INCLUDE 012/013 | Decided INCLUDE (`migrationDecision=INCLUDE`); clearance still SET until nine conditions complete. Inventory **list** frozen to filenames above; **SHA** freeze awaits #458 Phase 1 `releaseCommitSha`. This Rev.9 = condition #5. Issue body amend => rebind (condition #9). |
 
 ---
 
@@ -1494,6 +1629,8 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 - [ ] Aggregator replays allBoundEvidenceKeys; optional Gate miss ≠ NO_GO; optional integrity fail = NO_GO
 - [ ] Object-set roots use `RFC8785-JCS-sorted-path-sha256/v1`
 - [ ] G456-03 uses `acs-staging-nosend`
+- [ ] G456-42..44 present in Issue snapshot before bind; migrationInventory matches INCLUDE filenames; typePayload validators enforced
+- [ ] B-MIG: list freeze != `releaseCommitSha` SHA freeze; no Go/publish authorized by plan-only rev
 
 ---
 
@@ -1526,32 +1663,30 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 10. FAIL -> PASS split-actor mapping relies on operators setting executedBy/approvedBy correctly; matrix validates but does not invent missing actors.
 11. Optional Informational evidence still depends on operators actually attempting recording; absence alone does not block Go.
 12. Optional evidence with secret/PII or authz failures correctly blocks Go only if scanners/aggregators actually evaluate those objects (now mandatory for all bound keys).
+13. B-MIG INCLUDE expands Hard required variants (G456-42..44); Issue body amend without rebind would incorrectly reuse a stale snapshot — freshness gate + new binding/run required.
 
 ---
 
-## 22. Plan self-review (Rev.8)
+## 22. Plan self-review (Rev.9)
 
 | # | Check | Result |
 |---|-------|--------|
-| 1 | Hard coverage / variants | Pass — G456-03=`acs-staging-nosend` |
-| 2 | No second Gate authority | Pass |
-| 3 | Same RC commit + plan pin | Pass — planCommitSha/planFileSha256 |
-| 4 | #455/#457 boundaries | Pass |
-| 5 | send-ready vs Release OV + Staging predicates + result consistency | Pass — M-18/M-19/m-06 |
-| 6 | No tenant status reuse | Pass |
-| 7 | Value-free + execution provenance | Pass |
-| 8 | Win/Linux/arm64/VPS cardinality | Pass |
-| 9 | Fault first-class | Pass |
-| 10 | Admin SQLite + accessProfile | Pass |
-| 11 | Secret/PII | Pass — optional keys included in prohibitedContentScan NO_GO |
-| 12 | Conditional lifecycle + exception-disposition schema | Pass — M-17/M-20 |
-| 13 | Hard not alternate PASS | Pass |
-| 14 | #458 inventory re-verify + sealed-event sole marker | Pass — M-21/M-24/M-26 |
-| 15 | Rebinding / run identity | Pass — M-15 |
-| 16-17 | Disposition total order + state machine + JCS | Pass — M-16/M-20 |
-| 18 | Immutable authorization + FAIL -> PASS actor mapping | Pass — M-22/M-25 |
-| 19 | Optional keys aggregated + fixed root digest | Pass — M-27/m-08 |
-| 20 | No HTTP/DB/mode5/publish | Pass |
+| 1 | Migration scope honesty (INCLUDE inventory only; no silent EXCLUDE/`none`) | Pass — frozen filenames + G456-42..44 |
+| 2 | No second Hard list / Gate class in Pack H | Pass — class only from Issue snapshot |
+| 3 | Aliases match Issue wording exactly | Pass — fresh apply / upgrade / schema+PII rows |
+| 4 | Variants reuse rules (no `variantRulesVersion` bump) | Pass — keep 4; Windows/Linux + 自動 patterns |
+| 5 | Evidence schema defined for 42/43/44 + prohibitedContentScan | Pass — Sec. 12.2 |
+| 6 | Supporting unit tests != qualification envelope | Pass — Pack H note |
+| 7 | PII policy (no raw payload/recipient columns on migration surfaces) | Pass — forbid lists aligned with BounceIngestionMigrationTests |
+| 8 | Issue body drift => new binding/run (condition #9) | Pass — Sec. 5 / 6.3 / Q15 |
+| 9 | Inventory list freeze vs `releaseCommitSha` SHA freeze | Pass — B-RC / Q15 |
+| 10 | B-MIG still SET; this rev is condition #5 only | Pass |
+| 11 | Rev.8 sealed-store / aggregator / FAIL -> PASS / optional-key rules not weakened | Pass |
+| 12 | No Go / publish / Phase 1 authorization | Pass |
+| 13 | Same RC commit + plan pin fields | Pass — planCommitSha/planFileSha256 |
+| 14 | #455/#457/#458 boundaries | Pass |
+
+**Self-review verdict:** Ready for **Agent B review of Rev.9** (review-only). **Not** ready for Go execution, publish, or #458 Phase 1.
 
 ---
 
@@ -1559,6 +1694,14 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 
 - No product/test code
 - No qualification execution / Go decision
-- No Issue/PR/tag/deploy operations
+- No Issue/PR/tag/deploy operations (Issue #456/#458 body amendments happen in parallel outside this file)
 - Plan document only (`docs/agent-workflows/issue-456-release-qualification-plan.md`)
-- Agent B **content Approve** for Rev.8 received; **plan-only commit SHA** still required before commit-specific start-gate review and Qualification start
+- Does **not** clear B-MIG (nine INCLUDE conditions incomplete)
+- Does **not** authorize Phase 1 / publish
+
+### Next steps (plan-only)
+
+1. **Agent B** review Rev.9 (APPROVE / REVISE). Independent review of this plan revision **is** B-MIG INCLUDE condition #6.
+2. After APPROVE: plan-only durability commit/PR if required (condition #5 durable SHA), still no Go.
+3. Remaining B-MIG INCLUDE conditions: evidence schema usability at execution (covered by this rev's Sec. 12.2 as the schema definition — condition #7); inventory SHA freeze at #458 Phase 1 `releaseCommitSha` (condition #8); new binding/run after Issue body SHA change (condition #9).
+4. Do **not** start Phase 1 / publish from this revision alone.
