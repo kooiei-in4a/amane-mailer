@@ -2,6 +2,9 @@
 
 # Easy Setup release-candidate bundles (#455)
 
+Operator judgment and start procedures are owned by the
+[setup guide](setup-guide.en.md).
+
 This runbook describes how to generate **release-candidate** Easy Setup host
 bundles for Windows x64 / Linux x64 / Linux arm64. Packaging stops at candidate
 qualification handoff. Publishing is owned by [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458).

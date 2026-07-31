@@ -1575,12 +1575,70 @@ public static class ReleaseBundlePackaging
 
     private static void WriteReadmeSetup(string stagedRoot, StageRequest request)
     {
+        var sha = request.SourceCommitSha;
+        var setupGuideJa =
+            $"https://github.com/kooiei-in4a/amane-mailer/blob/{sha}/docs/ops/setup-guide.md";
+        var setupGuideEn =
+            $"https://github.com/kooiei-in4a/amane-mailer/blob/{sha}/docs/ops/setup-guide.en.md";
+
         var content =
             $"""
             # Amane Mailer Easy Setup candidate bundle
 
-            This directory is a **release-candidate** Easy Setup host bundle (#455).
-            It is not a GitHub Release artifact and must not be treated as published.
+            This file is a **minimal entry** for operators who extracted this host
+            bundle. Detailed judgment, order, and safety boundaries live only in
+            the setup guide (same commit as this candidate). This README is
+            inventory and start commands — not the procedure authority.
+
+            This directory is a **release-candidate / qualification** Easy Setup
+            host bundle (#455). It is **not** a published GitHub Release artifact
+            and must not be treated as published (#458 owns publish).
+
+            ## Setup guide (authority)
+
+            - JA: {setupGuideJa}
+            - EN: {setupGuideEn}
+
+            ## Offline fallback (GitHub unavailable)
+
+            From this extracted directory:
+
+            ```text
+            Amane.Mailer setup assistant --help
+            Amane.Mailer setup assistant --terminal
+            ```
+
+            On Windows use `Amane.Mailer.exe` instead of `Amane.Mailer`.
+
+            ## Start commands
+
+            Windows (Docker Desktop host):
+
+            ```text
+            Amane.Mailer.exe setup assistant
+            ```
+
+            Linux (GUI / Docker Engine host):
+
+            ```text
+            ./Amane.Mailer setup assistant
+            ```
+
+            Headless / VPS: use `--no-browser` or `--terminal` (SSH tunnel /
+            terminal details are in the setup guide). Browser alone does not
+            complete setup on a remote VPS.
+
+            Non-interactive Main setup only (Admin stays disabled; details in
+            the setup guide):
+
+            ```text
+            Amane.Mailer setup apply --config <absolute-path> --non-interactive
+            ```
+
+            Mode 5 (production ACS + Event Grid / Storage Queue) is **Manual /
+            not Easy Setup**. Do not expect the assistant to automate mode 5.
+
+            ## Inventory (identity — not procedure authority)
 
             - Host RID: `{request.HostRid}`
             - Mailer version: `{request.MailerVersion}`
@@ -1590,6 +1648,19 @@ public static class ReleaseBundlePackaging
             - Display tag: `{request.ImageDisplayTag}`
             - OCI index digest: `{request.OciIndexDigest}`
             - Mailpit: `{request.MailpitImageReference}`
+
+            These fields identify this candidate. Follow the setup guide for
+            how to verify and operate.
+
+            ## Checksum concepts (do not conflate)
+
+            - `FILES-SHA256SUMS` — verify **files after extract** (per-file inventory
+              inside this tree).
+            - `CANDIDATE-SHA256SUMS` (outer handoff) — verify the **archive itself**
+              before / as you extract.
+            - `payloadTreeSha256` in `release-bundle-manifest.json` — a tree digest
+              of staged payload bytes (excludes the manifest and checksum files).
+              It is **not** the archive checksum.
 
             ## Distinctions
 
@@ -1601,22 +1672,13 @@ public static class ReleaseBundlePackaging
             - Archive SHA-256 lives in outer `CANDIDATE-SHA256SUMS` / provenance (#458
               promotes qualified archive bytes; a rebuild is a new candidate).
 
-            ## Start setup
-
-            From this directory:
-
-            ```text
-            ./{HostBinaryFileName(request.HostRid)} setup assistant --help
-            ./{HostBinaryFileName(request.HostRid)} --help
-            ```
-
             Setup never pulls `latest`. Compose uses the digest-pinned overlay
             (`compose.image-digest.yml`) so runtime references the immutable digest.
 
             ## Upgrade
 
             Product upgrade / publish is owned by later release issues (#458). This
-            candidate package is for qualification (#456) only.
+            candidate package is for qualification (#456) only. Setup is not upgrade.
 
             ## Non-goals
 

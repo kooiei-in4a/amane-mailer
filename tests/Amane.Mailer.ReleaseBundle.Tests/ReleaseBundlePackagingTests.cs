@@ -90,6 +90,90 @@ public sealed class ReleaseBundlePackagingTests
     }
 
     [Fact]
+    public void Stage_readme_setup_is_minimal_entry_with_setup_guide_links_and_checksum_distinctions()
+    {
+        using var scratch = new TempDir();
+        var inputs = CreateInputs(scratch.Path);
+        var stagingParent = Path.Combine(scratch.Path, "parent");
+        Directory.CreateDirectory(stagingParent);
+        var output = Path.Combine(stagingParent, "linux-x64");
+
+        var result = ReleaseBundlePackaging.Stage(new ReleaseBundlePackaging.StageRequest
+        {
+            OutputDirectory = output,
+            StagingParentDirectory = stagingParent,
+            HostRid = "linux-x64",
+            HostBinaryPath = inputs.HostBinary,
+            SourceCommitSha = TestCommit,
+            MailerVersion = "1.2.0",
+            LauncherVersion = "1.2.0",
+            ImageRepository = "ghcr.io/kooiei-in4a/amane-mailer",
+            ImageDisplayTag = "sha-" + TestCommit,
+            OciIndexDigest = TestDigest,
+            DeployComposePath = inputs.DeployCompose,
+            ImageDigestOverlayPath = inputs.ImageDigestOverlay,
+            RecordedMetadataOverlayPath = inputs.RecordedMetadataOverlay,
+            MailpitOverlayPath = inputs.MailpitOverlay,
+            EnvExamplePath = inputs.EnvExample,
+            TenantsExamplePath = inputs.TenantsExample,
+            TenantsSchemaPath = inputs.TenantsSchema,
+            TenantsLocalAcsExamplePath = inputs.TenantsLocalAcsExample,
+            LicensePath = inputs.License,
+            MailpitImageReference = TestMailpit,
+            AssertHostBinaryVersion = false,
+        });
+
+        Assert.True(result.Success, result.Message);
+        var readmePath = Path.Combine(result.OutputDirectory!, "README-SETUP.md");
+        Assert.True(File.Exists(readmePath));
+        var readme = File.ReadAllText(readmePath);
+
+        Assert.Contains("minimal entry", readme, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            $"https://github.com/kooiei-in4a/amane-mailer/blob/{TestCommit}/docs/ops/setup-guide.md",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            $"https://github.com/kooiei-in4a/amane-mailer/blob/{TestCommit}/docs/ops/setup-guide.en.md",
+            readme,
+            StringComparison.Ordinal);
+
+        Assert.Contains("Amane.Mailer.exe setup assistant", readme, StringComparison.Ordinal);
+        Assert.Contains("./Amane.Mailer setup assistant", readme, StringComparison.Ordinal);
+        Assert.Contains("setup assistant --help", readme, StringComparison.Ordinal);
+        Assert.Contains("setup assistant --terminal", readme, StringComparison.Ordinal);
+        Assert.Contains("--no-browser", readme, StringComparison.Ordinal);
+        Assert.Contains(
+            "setup apply --config <absolute-path> --non-interactive",
+            readme,
+            StringComparison.Ordinal);
+        Assert.Contains("Admin stays disabled", readme, StringComparison.Ordinal);
+        Assert.Contains("Mode 5", readme, StringComparison.Ordinal);
+        Assert.Contains("not Easy Setup", readme, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not** a published GitHub Release", readme, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("FILES-SHA256SUMS", readme, StringComparison.Ordinal);
+        Assert.Contains("CANDIDATE-SHA256SUMS", readme, StringComparison.Ordinal);
+        Assert.Contains("payloadTreeSha256", readme, StringComparison.Ordinal);
+        Assert.Contains("archive itself", readme, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("files after extract", readme, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not** the archive checksum", readme, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(TestCommit, readme, StringComparison.Ordinal);
+        Assert.Contains(TestDigest, readme, StringComparison.Ordinal);
+        Assert.Contains("linux-x64", readme, StringComparison.Ordinal);
+        Assert.Contains("inventory", readme, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Endpoint=sb://", readme, StringComparison.Ordinal);
+        Assert.DoesNotContain("Bearer ", readme, StringComparison.Ordinal);
+        Assert.DoesNotContain("/home/", readme, StringComparison.Ordinal);
+        Assert.DoesNotContain("C:\\Users\\", readme, StringComparison.OrdinalIgnoreCase);
+
+        Assert.True(ReleaseBundlePackaging.VerifyChecksumsFile(result.OutputDirectory!).Success);
+        var sums = File.ReadAllText(Path.Combine(result.OutputDirectory!, "FILES-SHA256SUMS"));
+        Assert.Contains("README-SETUP.md", sums, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Stage_requires_mailpit_and_rejects_missing_mailpit()
     {
         using var scratch = new TempDir();
