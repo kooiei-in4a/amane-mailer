@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Build a local OCI image layout for Easy Setup release candidates (#455).
+# Build a local multi-arch OCI image layout for Easy Setup release candidates (#455).
 # Does NOT push to GHCR and does NOT create tags or GitHub Releases.
 #
 # Output:
-#   <dest>/  … OCI layout (oci-layout, index.json, blobs/sha256/…)
-#   stdout … ociIndexDigest=sha256:...
+#   <dest>/                 … OCI layout (oci-layout, index.json, blobs/sha256/…)
+#   <dest>/../buildx-metadata.json
+#   stdout … imageDigest=sha256:... (from Buildx containerimage.digest)
 #
 # Requirements: docker buildx
 set -Eeuo pipefail
@@ -14,12 +15,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
 
 DEST="${1:-}"
-PLATFORM="${2:-linux/amd64}"
+PLATFORM="${2:-linux/amd64,linux/arm64}"
 SOURCE_SHA="${SOURCE_SHA:-}"
-MAILER_VERSION="${MAILER_VERSION:-0.0.0-candidate}"
+MAILER_VERSION="${MAILER_VERSION:-}"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}"
+IMAGE_TAG="${IMAGE_TAG:-}"
 
 if [[ -z "${DEST}" ]]; then
-  echo "Usage: $0 <oci-layout-dest-dir> [platform]" >&2
+  echo "Usage: $0 <oci-layout-dest-dir> [platforms]" >&2
   exit 2
 fi
 
@@ -32,9 +35,28 @@ if [[ -z "${SOURCE_SHA}" ]]; then
   SOURCE_SHA="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 fi
 
-mkdir -p "$(dirname "${DEST}")"
+if [[ -z "${MAILER_VERSION}" ]]; then
+  echo "[error] MAILER_VERSION (major.minor.patch) is required." >&2
+  exit 1
+fi
+
+if [[ ! "${MAILER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "[error] MAILER_VERSION must be major.minor.patch only (not ${MAILER_VERSION})." >&2
+  exit 1
+fi
+
+if [[ -z "${IMAGE_TAG}" ]]; then
+  IMAGE_TAG="sha-${SOURCE_SHA}"
+fi
+
+PARENT="$(cd "$(dirname "${DEST}")" >/dev/null 2>&1 && pwd)"
+METADATA_FILE="${PARENT}/buildx-metadata.json"
+IDENTITY_FILE="${PARENT}/image-identity.json"
+
+mkdir -p "${PARENT}"
 rm -rf "${DEST}"
 mkdir -p "${DEST}"
+rm -f "${METADATA_FILE}"
 
 echo "[info] Building candidate OCI layout at ${DEST} (platform=${PLATFORM}, no GHCR push)"
 
@@ -42,14 +64,16 @@ docker buildx build \
   --file "${REPO_ROOT}/infra/docker/Dockerfile" \
   --platform "${PLATFORM}" \
   --build-arg "SOURCE_COMMIT=${SOURCE_SHA}" \
+  --build-arg "MAILER_VERSION=${MAILER_VERSION}" \
   --label "org.opencontainers.image.source=https://github.com/kooiei-in4a/amane-mailer" \
   --label "org.opencontainers.image.revision=${SOURCE_SHA}" \
   --label "org.opencontainers.image.version=${MAILER_VERSION}" \
-  --output "type=oci,dest=${DEST}" \
+  --metadata-file "${METADATA_FILE}" \
+  --output "type=oci,dest=${DEST},tar=false" \
   "${REPO_ROOT}"
 
 if [[ ! -f "${DEST}/oci-layout" || ! -f "${DEST}/index.json" ]]; then
-  echo "[error] OCI layout incomplete: missing oci-layout or index.json (B1)." >&2
+  echo "[error] OCI layout incomplete: missing oci-layout or index.json." >&2
   exit 1
 fi
 
@@ -58,6 +82,46 @@ if [[ ! -d "${DEST}/blobs/sha256" ]]; then
   exit 1
 fi
 
-DIGEST="sha256:$(sha256sum "${DEST}/index.json" | awk '{print $1}')"
-echo "ociIndexDigest=${DIGEST}"
-echo "${DIGEST}" > "${DEST}/../oci-index.digest"
+if [[ ! -f "${METADATA_FILE}" ]]; then
+  echo "[error] Buildx metadata-file missing: ${METADATA_FILE}" >&2
+  exit 1
+fi
+
+IMAGE_DIGEST="$(python3 - <<'PY' "${METADATA_FILE}"
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    meta = json.load(f)
+digest = meta.get("containerimage.digest")
+if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
+    raise SystemExit("containerimage.digest missing or invalid in Buildx metadata-file")
+hexpart = digest[len("sha256:"):]
+if hexpart != hexpart.lower() or any(c not in "0123456789abcdef" for c in hexpart):
+    raise SystemExit("containerimage.digest must use lowercase hex")
+print(digest)
+PY
+)"
+
+echo "imageDigest=${IMAGE_DIGEST}"
+echo "${IMAGE_DIGEST}" > "${PARENT}/oci-index.digest"
+
+# Validate descriptor graph via tools project (exact amd64+arm64).
+dotnet run --project "${REPO_ROOT}/tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" \
+  -c "${CONFIGURATION:-Release}" --no-launch-profile -- \
+  validate-oci \
+  --layout "${DEST}" \
+  --image-digest "${IMAGE_DIGEST}" \
+  --require-platforms "linux/amd64,linux/arm64"
+
+dotnet run --project "${REPO_ROOT}/tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" \
+  -c "${CONFIGURATION:-Release}" --no-launch-profile -- \
+  write-image-identity \
+  --output "${IDENTITY_FILE}" \
+  --repository "${IMAGE_REPOSITORY}" \
+  --tag "${IMAGE_TAG}" \
+  --digest "${IMAGE_DIGEST}" \
+  --source-sha "${SOURCE_SHA}" \
+  --mailer-version "${MAILER_VERSION}" \
+  --platforms "${PLATFORM}"
+
+echo "[info] Wrote ${IDENTITY_FILE}"

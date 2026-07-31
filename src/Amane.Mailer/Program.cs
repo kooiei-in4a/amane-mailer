@@ -37,7 +37,6 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll setup inspect-effective --format json
       dotnet Amane.Mailer.dll setup core-self-check
       dotnet Amane.Mailer.dll setup host-docker-self-check
-      dotnet Amane.Mailer.dll setup stage-release-bundle --output <dir> --rid <rid> ...
       dotnet Amane.Mailer.dll setup check-event-grid --subscription <id-or-name> --resource-group <rg> (--acs-name <name> | --acs-resource-id <id>) --event-subscription <name> --storage-account <name> --queue-name <name> --environment <dev|staging|production>
       dotnet Amane.Mailer.dll setup verify-delivery-report
 
@@ -218,26 +217,6 @@ if (Amane.Mailer.Setup.SetupCoreSelfCheckCommand.IsSelfCheckCommand(commandArgs)
 if (Amane.Mailer.Setup.SetupHostDockerSelfCheckCommand.IsSelfCheckCommand(commandArgs))
 {
     return await Amane.Mailer.Setup.SetupHostDockerSelfCheckCommand.ExecuteAsync(Console.Out, Console.Error);
-}
-
-if (Amane.Mailer.Setup.SetupStageReleaseBundleCommand.IsStageReleaseBundleCommand(commandArgs))
-{
-    if (!Amane.Mailer.Setup.SetupStageReleaseBundleCommand.TryParseArguments(
-            commandArgs,
-            out var stageRequest,
-            out var stageUsageError)
-        || stageRequest is null)
-    {
-        await Console.Error.WriteLineAsync(
-            stageUsageError ?? "Invalid setup stage-release-bundle arguments.");
-        await Console.Error.WriteLineAsync(Amane.Mailer.Setup.SetupStageReleaseBundleCommand.UsageLine);
-        return Amane.Mailer.Setup.SetupStageReleaseBundleCommand.UsageErrorExitCode;
-    }
-
-    return await Amane.Mailer.Setup.SetupStageReleaseBundleCommand.ExecuteAsync(
-        stageRequest,
-        Console.Out,
-        Console.Error);
 }
 
 if (Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.IsApplyNonInteractiveCommand(commandArgs))

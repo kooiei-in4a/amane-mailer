@@ -11,6 +11,11 @@ fi
 
 echo "[info] Scanning ${STAGED_ROOT} for forbidden secret-like paths"
 
+if [[ -d "${STAGED_ROOT}/oci" ]]; then
+  echo "[error] Host candidate tree must not embed oci/." >&2
+  exit 1
+fi
+
 mapfile -t hits < <(
   find "${STAGED_ROOT}" \( \
     -name '.env' -o \
@@ -39,6 +44,14 @@ if grep -RIl --exclude='*.exe' --exclude='Amane.Mailer' \
   "${STAGED_ROOT}" >/dev/null 2>&1; then
   echo "[error] Candidate tree appears to embed an ACS connection-string pattern." >&2
   exit 1
+fi
+
+if [[ -f "${STAGED_ROOT}/release-bundle-manifest.json" ]]; then
+  if grep -qiE '"imageTag"[[:space:]]*:[[:space:]]*"latest"' \
+    "${STAGED_ROOT}/release-bundle-manifest.json"; then
+    echo "[error] Manifest pins imageTag latest." >&2
+    exit 1
+  fi
 fi
 
 echo "[PASS] secret scan"

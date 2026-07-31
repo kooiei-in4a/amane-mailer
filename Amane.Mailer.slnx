@@ -3,9 +3,13 @@
     <Project Path="src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj" />
     <Project Path="src/Amane.Mailer/Amane.Mailer.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Amane.Mailer.Contracts.Tests/Amane.Mailer.Contracts.Tests.csproj" />
     <Project Path="tests/Amane.Mailer.ProcessFixture/Amane.Mailer.ProcessFixture.csproj" />
     <Project Path="tests/Amane.Mailer.Tests/Amane.Mailer.Tests.csproj" />
+    <Project Path="tests/Amane.Mailer.ReleaseBundle.Tests/Amane.Mailer.ReleaseBundle.Tests.csproj" />
   </Folder>
 </Solution>

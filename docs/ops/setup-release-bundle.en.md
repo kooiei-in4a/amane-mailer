@@ -15,16 +15,19 @@ Each host RID archive contains:
 | Path | Role |
 |------|------|
 | `Amane.Mailer` / `Amane.Mailer.exe` | Same Native AOT binary (setup assistant + Admin + runtime CLI) |
+| `LICENSE` | License text |
 | `compose.yml` | Fixed deploy Compose template |
 | `compose.image-digest.yml` | Digest-pin overlay (`MAILER_IMAGE_REFERENCE`) |
 | `compose.recorded-metadata.yml` | Recorded metadata mount overlay |
 | `compose.mailpit.yml` | Mode-1 Mailpit overlay |
-| `.env.example` | Example only (never a real `.env`) |
-| `config/mailer/*.example.json` + schema | Safe examples only |
+| `examples/.env.example` | Example only (never a real `.env`) |
+| `examples/config/mailer/*.example.json` + schema | Safe examples only |
 | `release-bundle-manifest.json` | Distribution inventory (schemaVersion **1**, additive) |
-| `SHA256SUMS` | Per-file SHA-256 checksums |
+| `FILES-SHA256SUMS` | Per-file SHA-256 checksum inventory |
 | `README-SETUP.md` | Operator entry notes |
-| `oci/` | Local OCI image layout (B1; optional when provided) |
+
+Host archives do **not** embed `oci/`. The multi-arch OCI layout is a separate
+workflow artifact; hosts consume `image-identity.json` (repo / tag / digest only).
 
 Candidate archive names:
 
@@ -37,20 +40,28 @@ amane-mailer-vX.Y.Z-linux-arm64.tar.gz
 ## Manifest schema (schemaVersion 1, additive)
 
 `release-bundle-manifest.json` stays on **schemaVersion 1**. Packaging fields are
-additive and validated by `ReleaseBundlePackaging` separately from runtime
-`TrustedReleaseInventory.ValidateShape()`.
+additive. Emit/validate lives in `tools/Amane.Mailer.ReleaseBundle` (build-only).
+Runtime host Docker continues to deserialize via product
+`ReleaseBundleManifestDocument` / `TrustedReleaseInventory.ValidateShape()`.
 
 Required packaging fields include:
 
 - `packagingKind` = `setup-release-candidate`
-- `sourceCommitSha`
-- `mailerVersion`, `hostRid`
+- `artifactId`, `sourceCommitSha`
+- `mailerVersion`, `setupLauncherVersion`
+- `hostRid` / `targetRid`, `platform`, `architecture`
 - `imageRepository`, `imageTag`, `imageDigest`
-- `ociIndexDigest` (must equal `imageDigest`)
+- `ociIndexDigest` (must equal `imageDigest`; Buildx `containerimage.digest`)
 - Compose file digests and launcher version range
 - `supportedRecordedSchemaMin` / `Max`
 - `supportedInspectEffectiveSchemaMin` / `Max`
-- `artifactSha256`, `reproducibility`
+- `mailpitImageReference` (**required**, `repo@sha256:<64 lowercase hex>`)
+- `payloadTreeSha256` (ordered path + content digest **excluding** the manifest
+  and `FILES-SHA256SUMS` / `SHA256SUMS` — non-self-referential)
+- `artifactFileName`, `reproducibility`
+
+`archiveSha256` is **not** embedded in the host manifest. It is recorded in
+outer `CANDIDATE-SHA256SUMS` and `candidate-provenance.json`.
 
 Managed deployment metadata under operator `managed/` (ACTIVE, recorded.json,
 verification) is a **different** concept. Do not treat the distribution manifest
@@ -58,15 +69,30 @@ as deployment metadata.
 
 ## OCI index digest pinning (no GHCR push)
 
-Candidates build a local OCI layout via
-`scripts/build-candidate-oci-image.sh` (`docker buildx --output type=oci`).
+Candidates build a local multi-arch OCI layout via
+`scripts/build-candidate-oci-image.sh`:
 
-- Layout must include `oci-layout`, `index.json`, and `blobs/sha256/` (Agent B **B1**).
-- `ociIndexDigest` is `sha256:` of `index.json` bytes and is pinned into the
-  host-bundle manifest.
+- `docker buildx --platform linux/amd64,linux/arm64 --metadata-file … --output type=oci,dest=…,tar=false`
+- Layout allowlist: `oci-layout`, `index.json`, `blobs/sha256/<referenced digests>`
+- Descriptor-graph validation rejects empty indexes, missing amd64/arm64,
+  symlinks, extra files, empty blobs, and digest mismatches
+- Image digest source of truth: Buildx metadata `containerimage.digest`
+- `sourceCommitSha` from `git rev-parse HEAD`
+- Dockerfile accepts `SOURCE_COMMIT` + `MAILER_VERSION` for publish props and labels
 - This path **never** pushes to GHCR. #458 owns public image publish.
 
-## Reproducibility
+## Version single source
+
+```text
+/p:Version=<release_version>
+/p:InformationalVersion=<release_version>+<sourceSha>
+```
+
+`release_version` is **major.minor.patch only** (for example `1.2.0`, never
+`1.2.0-candidate`). After publish, packaging asserts the binary informational
+version core equals `release_version` and matching manifest fields.
+
+## Reproducibility / #458 contract
 
 Reproducible candidate means:
 
@@ -75,49 +101,73 @@ Reproducible candidate means:
 3. Same `dotnet publish` RID / AOT flags / version properties
 4. Same OCI layout build inputs
 
-→ Same `ociIndexDigest` and same staged payload `artifactSha256`
-(archive container metadata such as tar/zip timestamps may differ; compare
-`artifactSha256` / `SHA256SUMS`, not archive bytes alone).
+→ Same OCI `containerimage.digest` and same staged `payloadTreeSha256`.
+
+**#458 promotes qualified archive bytes.** A rebuild produces a **new**
+candidate (new `archiveSha256` / provenance). Do not assume bit-identical
+archive containers across rebuilds; compare payload tree hashes and promote the
+qualified archive bytes that were smoked.
 
 ## Checksums
 
-- Per-file: `SHA256SUMS` inside each staged tree
-- Payload: `artifactSha256` in the manifest (ordered path + content digest)
+- Per-file: `FILES-SHA256SUMS` inside each staged tree
+- Payload: `payloadTreeSha256` in the manifest (excludes manifest + checksums)
+- Archive: `archiveSha256` in `CANDIDATE-SHA256SUMS` + provenance/handoff
 
 ## Secret scan / artifact smoke
 
+Artifact smoke runs on an **extracted** archive on a matching OS/arch runner:
+
+1. Verify archive SHA-256
+2. Extract to a fresh temp directory
+3. Verify `FILES-SHA256SUMS` inventory
+4. Parse manifest
+5. Assert binary version core
+6. `--help`
+7. `setup assistant --help` or `setup assistant-self-check`
+8. Linux: verify executable bit after extract **without** `chmod`
+9. Secret / `latest` structural scan
+
+Cross-RID “binary present” is a **failure**, not a pass. Each RID job runs on a
+matching runner so real exec is possible.
+
 ```bash
-bash scripts/scan-setup-release-bundle.sh artifacts/setup-release-candidate/staged
-bash scripts/smoke-setup-release-bundle.sh artifacts/setup-release-candidate/staged
+bash scripts/scan-setup-release-bundle.sh <extracted-rid-dir>
+bash scripts/smoke-setup-release-bundle.sh <archive> <archiveSha256> <rid> <release_version>
 ```
 
-Artifact smoke checks `--help` / `setup assistant --help` when the RID matches
-the host. Runtime Docker smoke (`scripts/release-smoke.sh`) remains separate.
+Runtime Docker smoke (`scripts/release-smoke.sh`) remains separate.
 
-## Generate locally
+## Generate via workflow
 
-```bash
-export MAILER_VERSION=1.2.0-candidate
-export SOURCE_SHA="$(git rev-parse HEAD)"
-bash scripts/generate-setup-release-bundle.sh
-```
+Dispatch `.github/workflows/generate-setup-release-candidate.yml` with:
 
-Or dispatch `.github/workflows/generate-setup-release-candidate.yml`.
+| Input | Rule |
+|-------|------|
+| `release_version` | `major.minor.patch` only |
+| `mailpit_image_ref` | required `repo@sha256:<64 lowercase hex>` |
 
-CLI staging entry (after a host binary exists):
+Jobs: `build-oci` → `package-linux-x64` / `package-linux-arm64` /
+`package-win-x64` → `assemble-handoff`.
+
+Packaging CLI is **build-only**:
 
 ```text
-Amane.Mailer setup stage-release-bundle --output ... --rid linux-x64 ...
+dotnet run --project tools/Amane.Mailer.ReleaseBundle -- stage ...
 ```
 
+The product `Amane.Mailer` binary does **not** offer `setup stage-release-bundle`.
+
 ## Handoff
+
+Handoff package includes source SHA, workflow run id/attempt, artifact names,
+archive filenames, `archiveSha256`, RID, versions, OCI index digest, platforms,
+Mailpit digest, SDK/toolchain, and smoke results.
 
 | Issue | Owns next |
 |-------|-----------|
 | [#456](https://github.com/kooiei-in4a/amane-mailer/issues/456) | Qualification / go-no-go |
-| [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) | Tag, GHCR, GitHub Release, public checksums |
-
-See `artifacts/setup-release-candidate/CANDIDATE-HANDOFF.md` after generation.
+| [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) | Tag, GHCR, GitHub Release, public checksums; promote qualified archive bytes |
 
 ## Explicit non-goals
 
@@ -129,14 +179,17 @@ See `artifacts/setup-release-candidate/CANDIDATE-HANDOFF.md` after generation.
 - NAS vendor package
 - Setup UI inside the container
 
-## Agent B plan findings addressed
+## Agent B implementation-review findings
 
-| ID | Finding | Resolution |
-|----|---------|------------|
-| B1 | Prefer OCI layout over opaque `docker save` tar | `type=oci` layout + `oci-layout` / `index.json` / `blobs/sha256` validation |
-| M1 | Keep schemaVersion 1 additive | Packaging fields added without bumping schema |
-| M2 | Separate packaging validation from runtime inventory | `ValidatePackagingDocument` vs `ValidateShape` |
-| M3 | Pin immutable digest without publishing | Local OCI index digest in manifest; no GHCR push |
-| M4 | Emit SHA-256 checksums | `SHA256SUMS` + `artifactSha256` |
-| M5 | Secret / private config scan | `scan-setup-release-bundle.sh` + staging scan |
-| M6 | Define reproducibility / no `latest` | Manifest `reproducibility` text; forbid `latest` tags |
+| ID | Finding | Status |
+|----|---------|--------|
+| B1 | Multi-job candidate workflow + agreed artifacts | Addressed |
+| B2 | Mailpit required on Mode-1 capable manifests | Addressed |
+| B3 | Split payloadTreeSha256 vs archiveSha256; handoff evidence | Addressed |
+| M1 | Artifact smoke on extracted archives (real exec) | Addressed |
+| M2 | Version single source (`Version` + `InformationalVersion`) | Addressed |
+| M3 | OCI allowlist as descriptor graph; OCI not inside host zips | Addressed |
+| M4 | Packaging moved out of product CLI into tools project | Addressed |
+| M5 | Evidence honesty (unit tests + workflow_dispatch E2E residual) | Addressed |
+| m1 | LICENSE + manifest contract fields | Addressed |
+| m2 | PR finding table mapped to Agent B IDs | Addressed |
