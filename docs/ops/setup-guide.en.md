@@ -82,6 +82,37 @@ After publish, use GitHub Release checksums / the public release record / the pu
 - Do **not** mix Managed Setup and Manual Deployment on the same root (no Managed `ACTIVE` / metadata alongside an ad-hoc Manual `.env` as dual authorities).
 - Privileged host administrators who can rewrite seals and secrets together are **out of scope** for Easy Setup protections.
 
+#### Managed backup boundaries
+
+| Target | Treatment |
+|--------|-----------|
+| SQLite database | Obtain via the [Backup operations](backup-operations.en.md) path **separately**. Config rollback does not restore it |
+| Managed root | Preserve `bundles` / `state` (`ACTIVE`) / `verification` / `sealing` as **one generation** |
+| External / manual-only | Data path, backup settings, rclone config, etc. stay **outside** Managed switching and are managed separately |
+| Docs / logs | Never include secret values or private host paths |
+
+Do not copy full procedures here: [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md).
+
+#### Managed failure / recovery
+
+| Situation | Treatment |
+|-----------|-----------|
+| Previous `ACTIVE` present | Atomic switch back → recreate containers → fingerprint / integrity / verification must succeed before calling rollback successful |
+| Previous `ACTIVE` absent | **FreshFailed** — do not present as a successful rollback |
+| Lock / `TX.stamp` / incomplete `ACTIVE` / FINALIZED mismatch | Not success; recovery or manual intervention |
+| Migration, Admin SQLite, mail data, provider side effects | **Out of config rollback scope** |
+| `docker compose down -v` / DB migration rollback | **Do not guide** |
+
+#### Secret detection scope and limits
+
+| Contract | Meaning |
+|----------|---------|
+| Non-secret fingerprint | Does **not** include secret values |
+| Secrets in a finalized Managed bundle | Integrity-seal targets (values stay off public surfaces) |
+| Wrong mount / substitution | Runtime may detect via mount attestation |
+| Fingerprint match alone | Does **not** mean full secret-inclusive bundle match |
+| Privileged host rewriting seal + secrets together | Out of Easy Setup protection scope |
+
 ### Deployment states
 
 | State | Meaning |
@@ -128,6 +159,7 @@ Easy Setup does **not** build reverse proxies, certificates, or DNS. If no HTTPS
 
 ### Backup / rollback / recovery (high level)
 
+- Prefer the Managed backup / failure-recovery / secret-detection tables above.
 - Prefer documented backup of DB and operator-owned secrets / config; exclude what runbooks exclude.
 - Do **not** use `docker compose down -v` as a casual rollback (destroys volumes).
 - Do **not** treat DB migration rollback as a supported Easy Setup recovery.

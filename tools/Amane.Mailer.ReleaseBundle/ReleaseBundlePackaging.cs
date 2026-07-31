@@ -245,6 +245,15 @@ public static class ReleaseBundlePackaging
             ? "Amane.Mailer.exe"
             : "Amane.Mailer";
 
+    /// <summary>
+    /// Runnable path prefix for README-SETUP examples for this host RID
+    /// (<c>.\Amane.Mailer.exe</c> on win-x64; <c>./Amane.Mailer</c> otherwise).
+    /// </summary>
+    public static string ReadmeSetupLauncher(string hostRid) =>
+        string.Equals(hostRid, "win-x64", StringComparison.Ordinal)
+            ? @".\Amane.Mailer.exe"
+            : "./Amane.Mailer";
+
     public static (string Platform, string Architecture) PlatformArchitectureForRid(string hostRid) =>
         hostRid switch
         {
@@ -1576,6 +1585,7 @@ public static class ReleaseBundlePackaging
     private static void WriteReadmeSetup(string stagedRoot, StageRequest request)
     {
         var sha = request.SourceCommitSha;
+        var launcher = ReadmeSetupLauncher(request.HostRid);
         var setupGuideJa =
             $"https://github.com/kooiei-in4a/amane-mailer/blob/{sha}/docs/ops/setup-guide.md";
         var setupGuideEn =
@@ -1604,35 +1614,31 @@ public static class ReleaseBundlePackaging
             From this extracted directory:
 
             ```text
-            Amane.Mailer setup assistant --help
-            Amane.Mailer setup assistant --terminal
+            {launcher} setup assistant --help
+            {launcher} setup assistant --terminal
             ```
-
-            On Windows use `Amane.Mailer.exe` instead of `Amane.Mailer`.
 
             ## Start commands
 
-            Windows (Docker Desktop host):
+            From this extracted directory (host RID `{request.HostRid}`):
 
             ```text
-            Amane.Mailer.exe setup assistant
+            {launcher} setup assistant
             ```
 
-            Linux (GUI / Docker Engine host):
+            Headless / VPS (SSH tunnel / terminal details are in the setup guide).
+            Browser alone does not complete setup on a remote VPS:
 
             ```text
-            ./Amane.Mailer setup assistant
+            {launcher} setup assistant --no-browser
+            {launcher} setup assistant --terminal
             ```
-
-            Headless / VPS: use `--no-browser` or `--terminal` (SSH tunnel /
-            terminal details are in the setup guide). Browser alone does not
-            complete setup on a remote VPS.
 
             Non-interactive Main setup only (Admin stays disabled; details in
             the setup guide):
 
             ```text
-            Amane.Mailer setup apply --config <absolute-path> --non-interactive
+            {launcher} setup apply --config <absolute-path> --non-interactive
             ```
 
             Mode 5 (production ACS + Event Grid / Storage Queue) is **Manual /

@@ -82,6 +82,37 @@ packaging maintainer 手順: [setup-release-bundle](setup-release-bundle.md)。�
 - 同一 root で Managed Setup と Manual Deployment を混在させない（`ACTIVE`／metadata と ad-hoc Manual `.env` を二重権威にしない）
 - seal と secret を同時に書き換えられる特権 host 管理者は Easy Setup の保護対象外
 
+#### Managed backup 境界
+
+| 対象 | 扱い |
+|------|------|
+| SQLite DB | [バックアップ運用](backup-operations.md) 等で**別途**取得。config rollback では戻さない |
+| Managed root | 同一世代として `bundles` / `state`（`ACTIVE`）/ `verification` / `sealing` を保全する |
+| external / manual-only | data path、backup 設定、rclone 設定などは **Managed 切替の外**で別管理 |
+| 文書・ログ | secret 値や private host path を載せない |
+
+詳細手順は複製しない: [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md)。
+
+#### Managed failure / recovery
+
+| 状況 | 扱い |
+|------|------|
+| previous `ACTIVE` がある | atomic に previous へ切替 → コンテナ recreate → fingerprint / integrity / verification 再確認が成功して初めて rollback 成功 |
+| previous `ACTIVE` がない | **FreshFailed**。成功した rollback として提示しない |
+| lock / `TX.stamp` / 不完全な `ACTIVE` / FINALIZED 不一致 | 成功扱いにしない。recovery または手動介入 |
+| migration・Admin SQLite・mail data・provider 副作用 | **config rollback の範囲外** |
+| `docker compose down -v` / DB migration rollback | **案内しない** |
+
+#### Secret 検知の範囲と限界
+
+| 契約 | 意味 |
+|------|------|
+| non-secret fingerprint | secret **値**を含めない |
+| finalized Managed bundle の secret | integrity seal 対象（値は公開面に出さない） |
+| 誤 mount / 差し替え | runtime の mount attestation などで検知し得る |
+| fingerprint 一致のみ | secret 込みの bundle 全体一致を意味**しない** |
+| 特権 host が seal + secret を同時改ざん | Easy Setup の保護対象外 |
+
 ### Deployment 状態
 
 | 状態 | 意味 |
@@ -128,6 +159,7 @@ Easy Setup は reverse proxy・証明書・DNS を**自動構築しない**。Pr
 
 ### backup / rollback / recovery（概要）
 
+- 上の Managed backup / failure・recovery / secret 検知表を優先する
 - DB と運用者が所有する secret / config の文書化された backup を優先。runbook が除外するものは除外する
 - 安易な rollback に `docker compose down -v` を使わない（volume 破壊）
 - DB migration rollback を Easy Setup のサポート済み recovery としない
