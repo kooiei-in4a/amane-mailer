@@ -1,4 +1,3 @@
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace Amane.Mailer.Setup;
@@ -31,6 +30,12 @@ public sealed class TrustedReleaseInventory
 
     /// <summary>Digest-pinned Mailpit reference for mode 1 overlay (<c>repo@sha256:…</c>).</summary>
     public string? MailpitImageReference { get; init; }
+
+    /// <summary>Optional packaging metadata from #455 candidate manifests (ignored by shape checks).</summary>
+    public string? MailerVersion { get; init; }
+
+    /// <summary>Optional source commit recorded by #455 candidate packaging.</summary>
+    public string? SourceCommitSha { get; init; }
 
     public string PinnedMailerImageReference =>
         $"{AllowedImageRepository}@{RequiredImageDigest}";
@@ -101,47 +106,4 @@ public sealed class TrustedReleaseInventory
     public bool MatchesActiveImage(string? repository, string? tag) =>
         string.Equals(repository, AllowedImageRepository, StringComparison.Ordinal)
         && string.Equals(tag, AllowedDisplayTag, StringComparison.Ordinal);
-}
-
-/// <summary>Wire DTO for <c>release-bundle-manifest.json</c> (#455 shape; consumed by #449).</summary>
-public sealed class ReleaseBundleManifestDocument
-{
-    [JsonPropertyName("schemaVersion")]
-    public int SchemaVersion { get; init; }
-
-    [JsonPropertyName("imageRepository")]
-    public string? ImageRepository { get; init; }
-
-    [JsonPropertyName("imageDigest")]
-    public string? ImageDigest { get; init; }
-
-    [JsonPropertyName("imageTag")]
-    public string? ImageTag { get; init; }
-
-    [JsonPropertyName("composeBundleVersion")]
-    public string? ComposeBundleVersion { get; init; }
-
-    [JsonPropertyName("composeSha256")]
-    public string? ComposeSha256 { get; init; }
-
-    [JsonPropertyName("composeImageDigestSha256")]
-    public string? ComposeImageDigestSha256 { get; init; }
-
-    [JsonPropertyName("composeRecordedMetadataSha256")]
-    public string? ComposeRecordedMetadataSha256 { get; init; }
-
-    [JsonPropertyName("composeMailpitSha256")]
-    public string? ComposeMailpitSha256 { get; init; }
-
-    [JsonPropertyName("launcherVersionMin")]
-    public string? LauncherVersionMin { get; init; }
-
-    [JsonPropertyName("launcherVersionMax")]
-    public string? LauncherVersionMax { get; init; }
-
-    [JsonPropertyName("projectNamePrefix")]
-    public string? ProjectNamePrefix { get; init; }
-
-    [JsonPropertyName("mailpitImageReference")]
-    public string? MailpitImageReference { get; init; }
 }

@@ -99,6 +99,8 @@ public static class TrustedSetupHostLayoutResolver
                 LauncherVersionMax = document.LauncherVersionMax ?? string.Empty,
                 ProjectNamePrefix = document.ProjectNamePrefix ?? "amane",
                 MailpitImageReference = document.MailpitImageReference,
+                MailerVersion = document.MailerVersion,
+                SourceCommitSha = document.SourceCommitSha,
             };
         }
         catch

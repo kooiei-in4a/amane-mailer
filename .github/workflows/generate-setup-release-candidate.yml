@@ -1,0 +1,77 @@
+name: Generate Setup Release Candidate
+
+# Easy Setup release-candidate packaging (#455).
+# Builds local OCI layout + host RID bundles for qualification.
+# Does NOT create Git tags, push GHCR, or create GitHub Releases (#458).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mailer_version:
+        description: Candidate version label (not a Git tag)
+        required: true
+        default: "1.2.0-candidate"
+      rids:
+        description: Comma-separated host RIDs
+        required: true
+        default: "linux-x64,linux-arm64,win-x64"
+      skip_oci_build:
+        description: Set to 1 only when reusing a pre-built OCI layout under artifacts/
+        required: false
+        default: "0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: setup-release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  CONFIGURATION: Release
+  MAILER_VERSION: ${{ inputs.mailer_version }}
+  LAUNCHER_VERSION: ${{ inputs.mailer_version }}
+  RIDS: ${{ inputs.rids }}
+  SKIP_OCI_BUILD: ${{ inputs.skip_oci_build }}
+  CREATE_ARCHIVES: "1"
+
+jobs:
+  generate-candidate:
+    name: Generate setup release candidate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v3.12.0
+
+      - name: Restore
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Build (staging CLI)
+        run: dotnet build Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-restore
+
+      - name: Generate candidate bundles
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          IMAGE_TAG: sha-${{ github.sha }}
+          OUT_ROOT: ${{ github.workspace }}/artifacts/setup-release-candidate
+        run: bash scripts/generate-setup-release-bundle.sh
+
+      - name: Upload candidate artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: setup-release-candidate-${{ github.sha }}
+          path: artifacts/setup-release-candidate/
+          if-no-files-found: error
+          retention-days: 14
