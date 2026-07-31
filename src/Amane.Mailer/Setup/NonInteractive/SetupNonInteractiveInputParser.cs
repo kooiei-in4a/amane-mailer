@@ -51,8 +51,8 @@ internal static class SetupNonInteractiveInputParser
 
 internal static class SetupNonInteractiveOrchestratorAdapter
 {
-    internal static SetupAssistantMainWorkflowState BuildInitialState(SetupNonInteractiveInput input) =>
-        SetupAssistantMainWorkflowState.CreateInitial(input.Mode);
+    internal static ISetupAssistantMainWorkflowState BuildInitialState(SetupNonInteractiveInput input) =>
+        SetupAssistantMainSetupOrchestrator.CreateInitial(input.Mode);
 
     internal static SetupAssistantMainCollectedInput BuildCollectedInput(SetupNonInteractiveInput input) =>
         new()

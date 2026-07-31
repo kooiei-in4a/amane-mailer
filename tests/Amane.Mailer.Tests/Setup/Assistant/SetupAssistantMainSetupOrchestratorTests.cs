@@ -15,7 +15,7 @@ public sealed class SetupAssistantMainSetupOrchestratorTests
     {
         var tracker = new OrchestratorTrackingOperations();
         var tenantId = Guid.Parse("00000000-0000-0000-0000-000000000201");
-        var state = SetupAssistantMainWorkflowState.CreateInitial(SetupMode.StagingVerification);
+        var state = SetupAssistantMainSetupOrchestrator.CreateInitial(SetupMode.StagingVerification);
         var input = new SetupAssistantMainCollectedInput
         {
             MainSetupInput = BuildStagingMainSetupInput(tenantId),
@@ -52,7 +52,7 @@ public sealed class SetupAssistantMainSetupOrchestratorTests
         var tenantId = Guid.Parse("00000000-0000-0000-0000-000000000301");
         var result = await SetupAssistantMainSetupOrchestrator.RunToCompletionAsync(
             tracker,
-            SetupAssistantMainWorkflowState.CreateInitial(SetupMode.ProductionAcs),
+            SetupAssistantMainSetupOrchestrator.CreateInitial(SetupMode.ProductionAcs),
             new SetupAssistantMainCollectedInput
             {
                 MainSetupInput = BuildProductionMainSetupInput(tenantId),
@@ -74,12 +74,22 @@ public sealed class SetupAssistantMainSetupOrchestratorTests
     }
 
     [Fact]
-    public async Task Advance_skips_docker_when_initial_state_says_so()
+    public async Task Advance_skips_docker_only_after_acknowledged_passed_preflight()
     {
         var tracker = new OrchestratorTrackingOperations();
+        var initial = SetupAssistantMainSetupOrchestrator.CreateInitial(SetupMode.LocalMailpit);
+        var acknowledged = SetupAssistantMainSetupOrchestrator.AcknowledgeDockerPreflight(
+            initial,
+            new SetupAssistantDockerPreflightOutcome
+            {
+                Passed = true,
+                Code = "docker.ok",
+                EngineKind = "docker",
+            });
+
         var result = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
             tracker,
-            SetupAssistantMainWorkflowState.CreateInitial(SetupMode.LocalMailpit, skipDockerPreflight: true),
+            acknowledged,
             new SetupAssistantMainCollectedInput
             {
                 MainSetupInput = BuildLocalMainSetupInput(),
@@ -91,13 +101,77 @@ public sealed class SetupAssistantMainSetupOrchestratorTests
     }
 
     [Fact]
+    public async Task AcknowledgeDockerPreflight_ignores_failed_outcome()
+    {
+        var tracker = new OrchestratorTrackingOperations();
+        var initial = SetupAssistantMainSetupOrchestrator.CreateInitial(SetupMode.LocalMailpit);
+        var stillRequiresDocker = SetupAssistantMainSetupOrchestrator.AcknowledgeDockerPreflight(
+            initial,
+            new SetupAssistantDockerPreflightOutcome
+            {
+                Passed = false,
+                Code = "docker.missing",
+                EngineKind = "none",
+            });
+
+        Assert.False(stillRequiresDocker.SkipDockerPreflight);
+
+        tracker.DockerFails = true;
+        var result = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
+            tracker,
+            stillRequiresDocker,
+            new SetupAssistantMainCollectedInput
+            {
+                MainSetupInput = BuildLocalMainSetupInput(),
+            },
+            CancellationToken.None);
+
+        Assert.False(result.State.ConfigurationStageSucceeded);
+        Assert.Equal([OrchestratorTrackingOperations.OpDocker], tracker.Sequence);
+    }
+
+    [Fact]
+    public async Task Advance_rejects_non_service_issued_state()
+    {
+        var tracker = new OrchestratorTrackingOperations();
+        var result = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
+            tracker,
+            new ForgedWorkflowState(),
+            new SetupAssistantMainCollectedInput
+            {
+                MainSetupInput = BuildLocalMainSetupInput(),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.Rejected);
+        Assert.Empty(tracker.Sequence);
+    }
+
+    [Fact]
+    public async Task Advance_rejects_mode_mismatch_between_state_and_main_input()
+    {
+        var tracker = new OrchestratorTrackingOperations();
+        var result = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
+            tracker,
+            SetupAssistantMainSetupOrchestrator.CreateInitial(SetupMode.LocalMailpit),
+            new SetupAssistantMainCollectedInput
+            {
+                MainSetupInput = BuildStagingMainSetupInput(
+                    Guid.Parse("00000000-0000-0000-0000-000000000501")),
+            },
+            CancellationToken.None);
+
+        Assert.True(result.Rejected);
+        Assert.Empty(tracker.Sequence);
+    }
+
+    [Fact]
     public async Task Advance_rejects_staging_without_service_issued_proof()
     {
         var tracker = new OrchestratorTrackingOperations();
-        // Fabricated-looking call: initial state has no AppliedProof.
         var result = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
             tracker,
-            SetupAssistantMainWorkflowState.CreateInitial(SetupMode.StagingVerification),
+            SetupAssistantMainSetupOrchestrator.CreateInitial(SetupMode.StagingVerification),
             new SetupAssistantMainCollectedInput
             {
                 TenantId = Guid.NewGuid(),
@@ -110,6 +184,51 @@ public sealed class SetupAssistantMainSetupOrchestratorTests
 
         Assert.True(result.Rejected);
         Assert.Empty(tracker.Sequence);
+    }
+
+    [Fact]
+    public async Task PrepareStagingRetry_preserves_applied_proof()
+    {
+        var tracker = new OrchestratorTrackingOperations
+        {
+            StagingFailsOnce = true,
+        };
+        var tenantId = Guid.Parse("00000000-0000-0000-0000-000000000601");
+        var afterApply = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
+            tracker,
+            SetupAssistantMainSetupOrchestrator.AcknowledgeDockerPreflight(
+                SetupAssistantMainSetupOrchestrator.CreateInitial(SetupMode.StagingVerification),
+                new SetupAssistantDockerPreflightOutcome
+                {
+                    Passed = true,
+                    Code = "docker.ok",
+                    EngineKind = "docker",
+                }),
+            new SetupAssistantMainCollectedInput
+            {
+                MainSetupInput = BuildStagingMainSetupInput(tenantId),
+                TenantId = tenantId,
+            },
+            CancellationToken.None);
+
+        var afterFailedStaging = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
+            tracker,
+            afterApply.State,
+            new SetupAssistantMainCollectedInput
+            {
+                TenantId = tenantId,
+                StagingRecipientEmail = "qa-recipient@example.com",
+                StagingEnvironmentConfirmation = AcsEnvironmentConfirmation.Staging,
+                StagingIntentConfirmation = AcsStagingVerificationOperation.IntentPhrase,
+                AssistantSessionId = "web-session",
+            },
+            CancellationToken.None);
+
+        Assert.True(afterFailedStaging.State.CanRetryStaging);
+        var retried = SetupAssistantMainSetupOrchestrator.PrepareStagingRetry(afterFailedStaging.State);
+        Assert.Null(retried.Staging);
+        Assert.Same(afterApply.State.AppliedProof, retried.AppliedProof);
+        Assert.Equal(SetupAssistantMainWorkflowStage.AwaitingStagingVerification, retried.Stage);
     }
 
     [Fact]
@@ -139,7 +258,14 @@ public sealed class SetupAssistantMainSetupOrchestratorTests
         var tenantId = Guid.Parse("00000000-0000-0000-0000-000000000401");
         var afterApply = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
             tracker,
-            SetupAssistantMainWorkflowState.CreateInitial(SetupMode.StagingVerification, skipDockerPreflight: true),
+            SetupAssistantMainSetupOrchestrator.AcknowledgeDockerPreflight(
+                SetupAssistantMainSetupOrchestrator.CreateInitial(SetupMode.StagingVerification),
+                new SetupAssistantDockerPreflightOutcome
+                {
+                    Passed = true,
+                    Code = "docker.ok",
+                    EngineKind = "docker",
+                }),
             new SetupAssistantMainCollectedInput
             {
                 MainSetupInput = BuildStagingMainSetupInput(tenantId),
@@ -230,6 +356,24 @@ public sealed class SetupAssistantMainSetupOrchestratorTests
         };
     }
 
+    private sealed class ForgedWorkflowState : ISetupAssistantMainWorkflowState
+    {
+        public SetupMode Mode => SetupMode.LocalMailpit;
+        public SetupAssistantMainWorkflowStage Stage => SetupAssistantMainWorkflowStage.AwaitingApply;
+        public bool SkipDockerPreflight => true;
+        public SetupAssistantMainSetupOutcome? MainSetup => null;
+        public SetupAssistantStagingOutcome? Staging => null;
+        public SetupAssistantMainSetupOutcome? LiveSending => null;
+        public object? AppliedProof => new object();
+        public bool ConfigurationStageSucceeded => false;
+        public bool DeploymentSendReady => false;
+        public bool IsComplete => false;
+        public bool CanRetryApply => false;
+        public bool CanRetryStaging => false;
+        public bool CanRunLiveSending => false;
+        public bool CanFinish => false;
+    }
+
     private sealed class OrchestratorTrackingOperations : ISetupAssistantOperations
     {
         internal const string OpDocker = "docker";
@@ -240,14 +384,17 @@ public sealed class SetupAssistantMainSetupOrchestratorTests
         internal List<string> Sequence { get; } = [];
         internal SetupAssistantMainSetupInput? LastMainSetupInput { get; private set; }
         internal SetupAssistantStagingInput? LastStagingInput { get; private set; }
+        internal bool DockerFails { get; set; }
+        internal bool StagingFailsOnce { get; set; }
+        private bool _stagingFailed;
 
         public Task<SetupAssistantDockerPreflightOutcome> CheckDockerAsync(CancellationToken cancellationToken)
         {
             Sequence.Add(OpDocker);
             return Task.FromResult(new SetupAssistantDockerPreflightOutcome
             {
-                Passed = true,
-                Code = "docker.ok",
+                Passed = !DockerFails,
+                Code = DockerFails ? "docker.missing" : "docker.ok",
                 EngineKind = "docker",
             });
         }
@@ -277,6 +424,17 @@ public sealed class SetupAssistantMainSetupOrchestratorTests
         {
             Sequence.Add(OpStaging);
             LastStagingInput = input;
+            if (StagingFailsOnce && !_stagingFailed)
+            {
+                _stagingFailed = true;
+                return Task.FromResult(new SetupAssistantStagingOutcome
+                {
+                    Code = AcsSetupResultCode.StagingVerificationFailed,
+                    Kind = SetupAssistantOutcomeKind.Failed,
+                    SendRequestAccepted = false,
+                });
+            }
+
             return Task.FromResult(new SetupAssistantStagingOutcome
             {
                 Code = AcsSetupResultCode.StagingVerificationSucceeded,

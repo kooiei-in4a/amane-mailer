@@ -76,7 +76,7 @@ internal sealed class SetupAssistantSession : IDisposable
     /// Service-issued Main workflow authority. Outcomes below are mirrored from this state for
     /// existing presenters and transition gates.
     /// </summary>
-    internal SetupAssistantMainWorkflowState? MainWorkflow { get; private set; }
+    internal ISetupAssistantMainWorkflowState? MainWorkflow { get; private set; }
 
     internal SetupAssistantMainSetupOutcome? MainSetup => MainWorkflow?.MainSetup;
 
@@ -165,17 +165,18 @@ internal sealed class SetupAssistantSession : IDisposable
     {
         if (MainWorkflow is null || MainWorkflow.Mode != mode)
         {
-            MainWorkflow = SetupAssistantMainWorkflowState.CreateInitial(
-                mode,
-                skipDockerPreflight: DockerPreflight is { Passed: true });
+            MainWorkflow = SetupAssistantMainSetupOrchestrator.CreateInitial(mode);
         }
-        else if (DockerPreflight is { Passed: true } && !MainWorkflow.SkipDockerPreflight)
+
+        if (DockerPreflight is { Passed: true } && !MainWorkflow.SkipDockerPreflight)
         {
-            MainWorkflow = MainWorkflow.WithSkipDockerPreflight(true);
+            MainWorkflow = SetupAssistantMainSetupOrchestrator.AcknowledgeDockerPreflight(
+                MainWorkflow,
+                DockerPreflight);
         }
     }
 
-    internal void ApplyMainWorkflow(SetupAssistantMainWorkflowState state) => MainWorkflow = state;
+    internal void ApplyMainWorkflow(ISetupAssistantMainWorkflowState state) => MainWorkflow = state;
 
     internal void MarkApplyStarted() => ApplyStarted = true;
 
@@ -193,12 +194,8 @@ internal sealed class SetupAssistantSession : IDisposable
             return;
         }
 
-        // Drop staging outcome while preserving applied proof via service-issued reconstruction.
-        MainWorkflow = SetupAssistantMainWorkflowState.FromApplyResult(
-            MainWorkflow.Mode,
-            MainWorkflow.SkipDockerPreflight,
-            MainWorkflow.MainSetup
-                ?? throw new InvalidOperationException("Staging retry requires Main setup."));
+        // Service-owned transition: drop staging outcome, keep AppliedProof.
+        MainWorkflow = SetupAssistantMainSetupOrchestrator.PrepareStagingRetry(MainWorkflow);
     }
 
     internal void SetAdminAccessInput(

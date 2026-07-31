@@ -31,7 +31,7 @@ internal sealed class SetupTerminalWizard
     private SetupAssistantSecret? _acsConnectionStringConfirmation;
     private SetupAssistantSecret? _adminPassword;
     private SetupAssistantDockerPreflightOutcome? _dockerPreflight;
-    private SetupAssistantMainWorkflowState? _workflow;
+    private ISetupAssistantMainWorkflowState? _workflow;
     private SetupAssistantAdminPreflightOutcome? _adminPreflight;
     private SetupAssistantAdminBootstrapOutcome? _adminBootstrap;
     private bool _adminUnexpectedFailure;
@@ -170,8 +170,9 @@ internal sealed class SetupTerminalWizard
         _output.WriteLine("- reverse proxy・証明書・DNS の自動構築");
         _output.WriteLine("- 実送信による運用確認の記録");
         _output.WriteLine();
-        _output.WriteLine("各プロンプトで cancel と入力すると、副作用開始前は clean cancel（exit 0）、");
-        _output.WriteLine("適用開始後は exit 130 で終了します。Ctrl+C も同様です。");
+        _output.WriteLine("各プロンプトで cancel と入力すると、Main setup の副作用開始前は clean cancel（exit 0）、");
+        _output.WriteLine("Main setup の副作用開始後は exit 130 で終了します。Ctrl+C も同様です。");
+        _output.WriteLine("Main setup 成功後の Admin bootstrap の cancel は Main 成功を維持し exit 0 です。");
         _output.WriteLine();
         WaitForContinue();
     }
@@ -476,9 +477,14 @@ internal sealed class SetupTerminalWizard
 
             _mainSideEffectsStarted = true;
 
-            var initial = SetupAssistantMainWorkflowState.CreateInitial(
-                _mode!.Value,
-                skipDockerPreflight: _dockerPreflight is { Passed: true });
+            var initial = SetupAssistantMainSetupOrchestrator.CreateInitial(_mode!.Value);
+            if (_dockerPreflight is { Passed: true })
+            {
+                initial = SetupAssistantMainSetupOrchestrator.AcknowledgeDockerPreflight(
+                    initial,
+                    _dockerPreflight);
+            }
+
             var collected = BuildCollectedInput(
                 environmentConfirmation,
                 intentConfirmation,
@@ -968,7 +974,15 @@ internal sealed class SetupTerminalWizard
             }
             catch (OperationCanceledException)
             {
+                // Side effects have not started; clean Admin cancel.
                 _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+                return true;
+            }
+            catch (Exception)
+            {
+                // Preflight threw unexpectedly: no Admin mutation; keep Main succeeded.
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Failed;
+                SetupTerminalPresenter.WriteAdminPreflightUnexpectedFailure(_output);
                 return true;
             }
             finally
@@ -1006,8 +1020,10 @@ internal sealed class SetupTerminalWizard
             }
             catch (OperationCanceledException)
             {
-                // Prefer leaving Main succeeded; Admin cancel after side effects started is Admin-only.
-                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+                // After Admin side effects may have started, cancellation is state-unknown.
+                _adminUnexpectedFailure = true;
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.CancelledUnknown;
+                SetupTerminalPresenter.WriteAdminCancelledUnknown(_output);
                 return true;
             }
             catch (Exception)
@@ -1035,7 +1051,37 @@ internal sealed class SetupTerminalWizard
             || ConfigurationStageSucceeded)
         {
             // Input cancel after Main success is Admin-only.
-            _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+            if (_adminSideEffectsStarted)
+            {
+                _adminUnexpectedFailure = true;
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.CancelledUnknown;
+                SetupTerminalPresenter.WriteAdminCancelledUnknown(_output);
+            }
+            else
+            {
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
+            }
+
+            return true;
+        }
+        catch (Exception) when (
+            _mainSetupStatus == SetupTerminalMainSetupStatus.Succeeded
+            || ConfigurationStageSucceeded)
+        {
+            // Any other unexpected Admin-path exception must not unwind Main success.
+            _adminUnexpectedFailure = true;
+            _adminBootstrapStatus = _adminSideEffectsStarted
+                ? SetupTerminalAdminBootstrapStatus.CancelledUnknown
+                : SetupTerminalAdminBootstrapStatus.Failed;
+            if (_adminSideEffectsStarted)
+            {
+                SetupTerminalPresenter.WriteAdminCancelledUnknown(_output);
+            }
+            else
+            {
+                SetupTerminalPresenter.WriteAdminPreflightUnexpectedFailure(_output);
+            }
+
             return true;
         }
     }
@@ -1238,7 +1284,12 @@ internal sealed class SetupTerminalWizard
         {
             // Main already succeeded: Admin-only cancel.
             _mainSetupStatus = SetupTerminalMainSetupStatus.Succeeded;
-            if (_adminBootstrapStatus == SetupTerminalAdminBootstrapStatus.NotRequested)
+            if (_adminSideEffectsStarted)
+            {
+                _adminUnexpectedFailure = true;
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.CancelledUnknown;
+            }
+            else if (_adminBootstrapStatus == SetupTerminalAdminBootstrapStatus.NotRequested)
             {
                 _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
             }
@@ -1277,7 +1328,12 @@ internal sealed class SetupTerminalWizard
             || (ConfigurationStageSucceeded && IsMainSetupCompleatable()))
         {
             _mainSetupStatus = SetupTerminalMainSetupStatus.Succeeded;
-            if (_adminBootstrapStatus == SetupTerminalAdminBootstrapStatus.NotRequested)
+            if (_adminSideEffectsStarted)
+            {
+                _adminUnexpectedFailure = true;
+                _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.CancelledUnknown;
+            }
+            else if (_adminBootstrapStatus == SetupTerminalAdminBootstrapStatus.NotRequested)
             {
                 _adminBootstrapStatus = SetupTerminalAdminBootstrapStatus.Cancelled;
             }

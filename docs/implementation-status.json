@@ -365,7 +365,7 @@
           "src/Amane.Mailer/Setup/Assistant/SetupAssistantBrowserLauncher.cs",
           "src/Amane.Mailer/Setup/Assistant/SetupAssistantRemoteAccessHints.cs",
           "src/Amane.Mailer/Setup/Assistant/SetupAssistantMainSetupOrchestrator.cs",
-          "src/Amane.Mailer/Setup/Assistant/SetupAssistantMainSetupRunRequest.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantMainWorkflowState.cs",
           "src/Amane.Mailer/Setup/Assistant/SetupAssistantMainSetupRunResult.cs",
           "src/Amane.Mailer/Setup/Assistant/Terminal/SetupTerminalAssistant.cs",
           "src/Amane.Mailer/Setup/Assistant/Terminal/SetupTerminalWizard.cs",
@@ -425,6 +425,7 @@
           "Amane.Mailer.Setup.Assistant.ISetupAssistantOperations",
           "Amane.Mailer.Setup.Assistant.SetupAssistantSelfCheckCommand",
           "Amane.Mailer.Setup.Assistant.SetupAssistantMainSetupOrchestrator",
+          "Amane.Mailer.Setup.Assistant.ISetupAssistantMainWorkflowState",
           "Amane.Mailer.Setup.Assistant.SetupAssistantCliParser",
           "Amane.Mailer.Setup.Assistant.Terminal.SetupTerminalWizard",
           "Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand"
@@ -460,6 +461,8 @@
           "tests/Amane.Mailer.Tests/Setup/Assistant/SetupTerminalWizardTests.cs",
           "tests/Amane.Mailer.Tests/Setup/Assistant/FakeSetupTerminalConsole.cs",
           "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupNonInteractiveInputValidatorTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupNonInteractiveConfigReaderTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupApplyNonInteractiveProcessTests.cs",
           "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupApplyNonInteractiveCommandTests.cs",
           "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupNonInteractiveTestSupport.cs"
         ]

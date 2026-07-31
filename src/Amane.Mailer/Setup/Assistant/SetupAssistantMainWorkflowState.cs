@@ -3,203 +3,40 @@ using Amane.Mailer.Operations.AcsSetup;
 namespace Amane.Mailer.Setup.Assistant;
 
 /// <summary>
-/// Immutable Main setup workflow authority issued exclusively by
-/// <see cref="SetupAssistantMainSetupOrchestrator"/>. Adapters may hold and return a state, but
-/// cannot construct or invent prior outcomes, AppliedProof, or next-stage eligibility.
+/// Opaque Main setup workflow authority. Only
+/// <see cref="SetupAssistantMainSetupOrchestrator"/> can issue concrete instances; adapters may
+/// hold and return the handle but cannot construct, invent outcomes, or set skip flags.
 /// </summary>
-internal sealed class SetupAssistantMainWorkflowState
+internal interface ISetupAssistantMainWorkflowState
 {
-    private SetupAssistantMainWorkflowState(
-        SetupMode mode,
-        SetupAssistantMainWorkflowStage stage,
-        bool skipDockerPreflight,
-        SetupAssistantMainSetupOutcome? mainSetup,
-        SetupAssistantStagingOutcome? staging,
-        SetupAssistantMainSetupOutcome? liveSending,
-        object? appliedProof)
-    {
-        Mode = mode;
-        Stage = stage;
-        SkipDockerPreflight = skipDockerPreflight;
-        MainSetup = mainSetup;
-        Staging = staging;
-        LiveSending = liveSending;
-        AppliedProof = appliedProof;
-    }
+    SetupMode Mode { get; }
 
-    internal SetupMode Mode { get; }
+    SetupAssistantMainWorkflowStage Stage { get; }
 
-    internal SetupAssistantMainWorkflowStage Stage { get; }
+    bool SkipDockerPreflight { get; }
 
-    internal bool SkipDockerPreflight { get; }
+    SetupAssistantMainSetupOutcome? MainSetup { get; }
 
-    internal SetupAssistantMainSetupOutcome? MainSetup { get; }
+    SetupAssistantStagingOutcome? Staging { get; }
 
-    internal SetupAssistantStagingOutcome? Staging { get; }
-
-    internal SetupAssistantMainSetupOutcome? LiveSending { get; }
+    SetupAssistantMainSetupOutcome? LiveSending { get; }
 
     /// <summary>Service-issued applied proof from a successful configuration apply only.</summary>
-    internal object? AppliedProof { get; }
+    object? AppliedProof { get; }
 
-    internal bool ConfigurationStageSucceeded =>
-        MainSetup is { ConfigurationApplied: true } outcome
-        && (outcome.Kind == SetupAssistantOutcomeKind.Succeeded
-            || outcome.ActionCode == SetupApplyActionCode.CompleteSendReadyEvaluation);
+    bool ConfigurationStageSucceeded { get; }
 
-    internal bool DeploymentSendReady =>
-        LiveSending is { Kind: SetupAssistantOutcomeKind.Succeeded, DeploymentSendReady: true };
+    bool DeploymentSendReady { get; }
 
-    internal bool IsComplete =>
-        Stage == SetupAssistantMainWorkflowStage.Completed
-        && SetupAssistantMainSetupOrchestrator.IsMainSetupCompletableForMode(
-            MainSetup,
-            Mode,
-            Staging,
-            LiveSending);
+    bool IsComplete { get; }
 
-    internal bool CanRetryApply =>
-        Stage == SetupAssistantMainWorkflowStage.AwaitingApply
-        && MainSetup is { } outcome
-        && CanRetryApplyOutcome(outcome);
+    bool CanRetryApply { get; }
 
-    internal bool CanRetryStaging =>
-        Stage == SetupAssistantMainWorkflowStage.AwaitingStagingVerification
-        && Staging is
-        {
-            SendRequestAccepted: false,
-            Kind: SetupAssistantOutcomeKind.Rejected or SetupAssistantOutcomeKind.Failed,
-        };
+    bool CanRetryStaging { get; }
 
-    internal bool CanRunLiveSending =>
-        Stage == SetupAssistantMainWorkflowStage.AwaitingLiveSendingEnablement
-        && (LiveSending is null || CanRetryApplyOutcome(LiveSending));
+    bool CanRunLiveSending { get; }
 
-    internal bool CanFinish => IsComplete;
-
-    internal static SetupAssistantMainWorkflowState CreateInitial(
-        SetupMode mode,
-        bool skipDockerPreflight = false) =>
-        new(
-            mode,
-            SetupAssistantMainWorkflowStage.AwaitingApply,
-            skipDockerPreflight,
-            mainSetup: null,
-            staging: null,
-            liveSending: null,
-            appliedProof: null);
-
-    internal SetupAssistantMainWorkflowState WithSkipDockerPreflight(bool skip) =>
-        new(Mode, Stage, skip, MainSetup, Staging, LiveSending, AppliedProof);
-
-    internal static SetupAssistantMainWorkflowState FromApplyResult(
-        SetupMode mode,
-        bool skipDockerPreflight,
-        SetupAssistantMainSetupOutcome mainSetup)
-    {
-        var applied = IsConfigurationStageSucceeded(mainSetup) ? mainSetup.AppliedProof : null;
-        if (!IsConfigurationStageSucceeded(mainSetup))
-        {
-            return new(
-                mode,
-                SetupAssistantMainWorkflowStage.AwaitingApply,
-                skipDockerPreflight,
-                mainSetup,
-                staging: null,
-                liveSending: null,
-                appliedProof: null);
-        }
-
-        return mode switch
-        {
-            SetupMode.StagingVerification => new(
-                mode,
-                SetupAssistantMainWorkflowStage.AwaitingStagingVerification,
-                skipDockerPreflight,
-                mainSetup,
-                staging: null,
-                liveSending: null,
-                applied),
-            SetupMode.ProductionAcs => new(
-                mode,
-                SetupAssistantMainWorkflowStage.AwaitingLiveSendingEnablement,
-                skipDockerPreflight,
-                mainSetup,
-                staging: null,
-                liveSending: null,
-                applied),
-            _ => new(
-                mode,
-                SetupAssistantMainWorkflowStage.Completed,
-                skipDockerPreflight,
-                mainSetup,
-                staging: null,
-                liveSending: null,
-                applied),
-        };
-    }
-
-    internal SetupAssistantMainWorkflowState WithStaging(SetupAssistantStagingOutcome staging)
-    {
-        if (AppliedProof is null || !ConfigurationStageSucceeded)
-        {
-            throw new InvalidOperationException("Staging requires a service-issued applied proof.");
-        }
-
-        var nextStage = staging.Kind == SetupAssistantOutcomeKind.Succeeded
-            ? SetupAssistantMainWorkflowStage.Completed
-            : SetupAssistantMainWorkflowStage.AwaitingStagingVerification;
-        return new(Mode, nextStage, SkipDockerPreflight, MainSetup, staging, LiveSending, AppliedProof);
-    }
-
-    internal SetupAssistantMainWorkflowState WithLiveSending(SetupAssistantMainSetupOutcome liveSending)
-    {
-        if (AppliedProof is null || !ConfigurationStageSucceeded)
-        {
-            throw new InvalidOperationException("Live sending requires a service-issued applied proof.");
-        }
-
-        var nextStage = liveSending is
-        { Kind: SetupAssistantOutcomeKind.Succeeded, DeploymentSendReady: true }
-            ? SetupAssistantMainWorkflowStage.Completed
-            : SetupAssistantMainWorkflowStage.AwaitingLiveSendingEnablement;
-        return new(Mode, nextStage, SkipDockerPreflight, MainSetup, Staging, liveSending, AppliedProof);
-    }
-
-    internal SetupAssistantMainWorkflowState ClearedForApplyRetry()
-    {
-        if (!CanRetryApply)
-        {
-            throw new InvalidOperationException("Apply retry is not eligible.");
-        }
-
-        return new(
-            Mode,
-            SetupAssistantMainWorkflowStage.AwaitingApply,
-            SkipDockerPreflight,
-            mainSetup: null,
-            staging: null,
-            liveSending: null,
-            appliedProof: null);
-    }
-
-    private static bool IsConfigurationStageSucceeded(SetupAssistantMainSetupOutcome? mainSetup) =>
-        mainSetup is { ConfigurationApplied: true } outcome
-        && (outcome.Kind == SetupAssistantOutcomeKind.Succeeded
-            || outcome.ActionCode == SetupApplyActionCode.CompleteSendReadyEvaluation);
-
-    private static bool CanRetryApplyOutcome(SetupAssistantMainSetupOutcome outcome) =>
-        !outcome.ConfigurationApplied
-        && !outcome.PersistentSideEffectMayRemain
-        && outcome.ConfigRollbackStatus != SetupConfigRollbackStatus.Failed
-        && outcome.Kind is SetupAssistantOutcomeKind.Rejected or SetupAssistantOutcomeKind.Failed
-        && outcome.Code is not (SetupApplyResultCode.RecoveryRequired
-            or SetupApplyResultCode.NeedsIntervention
-            or SetupApplyResultCode.ApplyFailedRollbackFailed
-            or AcsSetupResultCode.ConfigRollbackFailed
-            or AcsSetupResultCode.ManualActionRequired)
-        && outcome.ActionCode is not (SetupApplyActionCode.ManualInterventionRequired
-            or SetupApplyActionCode.UnsafeVerifierResidue);
+    bool CanFinish { get; }
 }
 
 internal enum SetupAssistantMainWorkflowStage
@@ -212,7 +49,7 @@ internal enum SetupAssistantMainWorkflowStage
 
 /// <summary>
 /// Operator-collected input for one Main workflow advance. Adapters never choose a phase; the
-/// shared service maps <see cref="SetupAssistantMainWorkflowState.Stage"/> plus this input to the
+/// shared service maps <see cref="ISetupAssistantMainWorkflowState.Stage"/> plus this input to the
 /// next typed operation.
 /// </summary>
 internal sealed class SetupAssistantMainCollectedInput
@@ -237,7 +74,7 @@ internal sealed class SetupAssistantMainCollectedInput
 /// <summary>Result of one AdvanceAsync call: the new service-issued state plus presentation fields.</summary>
 internal sealed class SetupAssistantMainWorkflowTransition
 {
-    internal required SetupAssistantMainWorkflowState State { get; init; }
+    internal required ISetupAssistantMainWorkflowState State { get; init; }
 
     internal required bool Succeeded { get; init; }
 

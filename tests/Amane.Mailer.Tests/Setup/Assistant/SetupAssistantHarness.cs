@@ -237,6 +237,12 @@ internal sealed class FakeSetupAssistantOperations : ISetupAssistantOperations
     /// <summary>When true, BootstrapAdminAsync throws OperationCanceledException.</summary>
     internal bool BootstrapCancels { get; set; }
 
+    /// <summary>When set, CheckAdminAccessProfileAsync throws this exception.</summary>
+    internal Exception? AdminPreflightThrows { get; set; }
+
+    /// <summary>When true, CheckAdminAccessProfileAsync throws OperationCanceledException.</summary>
+    internal bool AdminPreflightCancels { get; set; }
+
     public Task<SetupAssistantDockerPreflightOutcome> CheckDockerAsync(
         CancellationToken cancellationToken)
     {
@@ -281,8 +287,20 @@ internal sealed class FakeSetupAssistantOperations : ISetupAssistantOperations
 
     public Task<SetupAssistantAdminPreflightOutcome> CheckAdminAccessProfileAsync(
         SetupAssistantAdminAccessInput input,
-        CancellationToken cancellationToken) =>
-        Task.FromResult(AdminPreflight);
+        CancellationToken cancellationToken)
+    {
+        if (AdminPreflightCancels)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+
+        if (AdminPreflightThrows is { } ex)
+        {
+            throw ex;
+        }
+
+        return Task.FromResult(AdminPreflight);
+    }
 
     public Task<SetupAssistantAdminBootstrapOutcome> BootstrapAdminAsync(
         SetupAssistantAdminBootstrapInput input,

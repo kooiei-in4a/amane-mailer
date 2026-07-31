@@ -103,6 +103,24 @@ internal static class SetupTerminalPresenter
         output.WriteLine("Admin の状態画面またはrunbookで確認してください。");
     }
 
+    internal static void WriteAdminPreflightUnexpectedFailure(TextWriter output)
+    {
+        output.WriteLine();
+        output.WriteLine("adminBootstrap.status: failed");
+        output.WriteLine("Main setup は成功しています。");
+        output.WriteLine("Admin access preflight で予期しないエラーが発生しました。");
+        output.WriteLine("Admin 設定は変更していません。");
+    }
+
+    internal static void WriteAdminCancelledUnknown(TextWriter output)
+    {
+        output.WriteLine();
+        output.WriteLine("adminBootstrap.status: cancelled_unknown");
+        output.WriteLine("Main setup は成功しています。");
+        output.WriteLine("Admin bootstrap の最終状態を確認できませんでした。");
+        output.WriteLine("Admin の状態画面またはrunbookで確認してください。");
+    }
+
     internal static void WriteDockerPreflight(TextWriter output, SetupAssistantDockerPreflightOutcome preflight)
     {
         WriteOutcomeHeader(
@@ -141,7 +159,9 @@ internal static class SetupTerminalPresenter
         output.WriteLine($"Deployment send-ready: {(summary.DeploymentSendReady ? "到達" : "未到達")}");
         output.WriteLine($"Admin bootstrap: {DescribeAdminBootstrapState(summary)}");
         output.WriteLine("実送信による運用確認: 記録していません。");
-        if (summary.MainSetupSucceeded && summary.AdminUnexpectedFailure)
+        if (summary.MainSetupSucceeded
+            && (summary.AdminUnexpectedFailure
+                || summary.AdminBootstrapStatus == SetupTerminalAdminBootstrapStatus.CancelledUnknown))
         {
             output.WriteLine("Main setup は成功しています。");
             output.WriteLine("Admin bootstrap の最終状態を確認できませんでした。");
@@ -204,6 +224,7 @@ internal static class SetupTerminalPresenter
             "succeeded" => "成功",
             "failed" => "失敗",
             "cancelled" => "中止",
+            "cancelled_unknown" => "中止（状態不明）",
             _ => "-",
         };
 }
@@ -224,6 +245,7 @@ internal enum SetupTerminalAdminBootstrapStatus
     Succeeded = 2,
     Failed = 3,
     Cancelled = 4,
+    CancelledUnknown = 5,
 }
 
 internal sealed class SetupTerminalRunSummary
@@ -242,7 +264,8 @@ internal sealed class SetupTerminalRunSummary
 
     internal bool AdminBootstrapFailedOrCancelled =>
         AdminBootstrapStatus is SetupTerminalAdminBootstrapStatus.Failed
-            or SetupTerminalAdminBootstrapStatus.Cancelled;
+            or SetupTerminalAdminBootstrapStatus.Cancelled
+            or SetupTerminalAdminBootstrapStatus.CancelledUnknown;
 
     internal string MainSetupStatusWire => MainSetupStatus switch
     {
@@ -260,6 +283,7 @@ internal sealed class SetupTerminalRunSummary
         SetupTerminalAdminBootstrapStatus.Succeeded => "succeeded",
         SetupTerminalAdminBootstrapStatus.Failed => "failed",
         SetupTerminalAdminBootstrapStatus.Cancelled => "cancelled",
+        SetupTerminalAdminBootstrapStatus.CancelledUnknown => "cancelled_unknown",
         _ => "not_requested",
     };
 }

@@ -88,11 +88,11 @@ internal sealed class SetupTerminalLifetime : IDisposable
     internal string DescribeStopReason() => StopReason switch
     {
         SetupAssistantShutdownReason.IdleTimeout =>
-            "뿯撽作がないまま時뿯붿が経붿したた뿯ソ、session 뿯ソ破뿯梽します。",
+            "操作がないまま時間が経過したため、session を破棄します。",
         SetupAssistantShutdownReason.AbsoluteTimeout =>
-            "session の上붿時뿯붿に붿したた뿯ソ、session 뿯ソ破뿯梽します。",
-        SetupAssistantShutdownReason.Cancelled => "Assistant 뿯ソ中止しました。",
-        _ => "Assistant 뿯ソ終뿯亽します。",
+            "session の上限時間に達したため、session を破棄します。",
+        SetupAssistantShutdownReason.Cancelled => "Assistant を中止しました。",
+        _ => "Assistant を終了します。",
     };
 
     private SetupAssistantShutdownReason ClassifyExpiry(DateTimeOffset now)

@@ -208,7 +208,7 @@ public sealed class SetupTerminalWizardTests
     }
 
     [Fact]
-    public async Task Main_success_with_admin_operation_canceled_keeps_exit_0()
+    public async Task Main_success_with_admin_operation_canceled_after_side_effects_keeps_exit_0_and_manual_action()
     {
         var operations = new FakeSetupAssistantOperations { BootstrapCancels = true };
         var console = BuildConsoleForMode("1", SetupMode.LocalMailpit, enableAdmin: true);
@@ -223,8 +223,68 @@ public sealed class SetupTerminalWizardTests
             CancellationToken.None).RunAsync();
 
         Assert.Equal(SetupAssistantCommand.SuccessExitCode, exit);
-        Assert.Contains("mainSetup.status: succeeded", output.ToString(), StringComparison.Ordinal);
-        Assert.Contains("adminBootstrap.status: cancelled", output.ToString(), StringComparison.Ordinal);
+        var combined = output.ToString() + error.ToString();
+        Assert.Contains("mainSetup.status: succeeded", combined, StringComparison.Ordinal);
+        Assert.Contains("adminBootstrap.status: cancelled_unknown", combined, StringComparison.Ordinal);
+        Assert.Contains("最終状態を確認できませんでした", combined, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Main_success_with_admin_preflight_exception_keeps_exit_0_without_mutation()
+    {
+        var operations = new FakeSetupAssistantOperations
+        {
+            AdminPreflightThrows = new InvalidOperationException("preflight-secret must not leak"),
+        };
+        var console = BuildConsoleForMode("1", SetupMode.LocalMailpit, enableAdmin: true);
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+
+        var exit = await new SetupTerminalWizard(
+            console,
+            operations,
+            output,
+            error,
+            CancellationToken.None).RunAsync();
+
+        Assert.Equal(SetupAssistantCommand.SuccessExitCode, exit);
+        var combined = output.ToString() + error.ToString();
+        Assert.Contains("mainSetup.status: succeeded", combined, StringComparison.Ordinal);
+        Assert.Contains("adminBootstrap.status: failed", combined, StringComparison.Ordinal);
+        Assert.Contains("Admin 設定は変更していません", combined, StringComparison.Ordinal);
+        Assert.DoesNotContain("preflight-secret", combined, StringComparison.Ordinal);
+        Assert.Null(operations.LastAdminBootstrapInput);
+    }
+
+    [Fact]
+    public async Task Lifetime_stop_reason_and_welcome_messages_are_valid_japanese()
+    {
+        var lifetime = new SetupTerminalLifetime();
+        lifetime.RequestStop(SetupAssistantShutdownReason.IdleTimeout);
+        Assert.Equal("操作がないまま時間が経過したため、session を破棄します。", lifetime.DescribeStopReason());
+
+        lifetime = new SetupTerminalLifetime();
+        lifetime.RequestStop(SetupAssistantShutdownReason.AbsoluteTimeout);
+        Assert.Equal("session の上限時間に達したため、session を破棄します。", lifetime.DescribeStopReason());
+
+        lifetime = new SetupTerminalLifetime();
+        lifetime.RequestStop(SetupAssistantShutdownReason.Cancelled);
+        Assert.Equal("Assistant を中止しました。", lifetime.DescribeStopReason());
+
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        var console = new FakeSetupTerminalConsole();
+        console.EnqueueLine("cancel");
+        _ = await new SetupTerminalWizard(
+            console,
+            new FakeSetupAssistantOperations(),
+            output,
+            error,
+            CancellationToken.None).RunAsync();
+        var welcome = output.ToString();
+        Assert.Contains("Main setup の副作用開始後は exit 130", welcome, StringComparison.Ordinal);
+        Assert.Contains("Admin bootstrap の cancel は Main 成功を維持し exit 0", welcome, StringComparison.Ordinal);
+        Assert.DoesNotContain("뿯", welcome, StringComparison.Ordinal);
     }
 
     [Fact]
