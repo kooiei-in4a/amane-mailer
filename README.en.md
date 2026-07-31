@@ -25,10 +25,14 @@ Mailer handles transport.
 
 ## Setup entry point
 
-For first-time setup, start at the
+For first-time setup, start at the single
 [setup entry point](docs/ops/setup-guide.en.md) [(ja)](docs/ops/setup-guide.md)
-for configuration choice, required inputs, order of operations, and verification.
-Detailed steps link out to existing runbooks.
+and prefer **Easy Setup**
+([Easy Setup](docs/ops/setup-guide.en.md#easy-setup-recommended) /
+[Manual](docs/ops/setup-guide.en.md#manual-deployment) /
+[Hardened](docs/ops/setup-guide.en.md#hardened-deployment)).
+Detailed steps link out to existing runbooks. Judgment, order, and safety
+boundaries are owned by the setup guide.
 
 ## Verify Locally
 

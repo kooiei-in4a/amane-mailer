@@ -2,6 +2,8 @@
 
 # Easy Setup release-candidate bundle（#455）
 
+オペレーター向けの判断・開始手順の正本は [setup-guide](setup-guide.md) です。
+
 Windows x64 / Linux x64 / Linux arm64 向け Easy Setup **release-candidate** 配布
 bundle の生成手順です。公開（tag / GHCR / GitHub Release）は
 [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) の所有です。

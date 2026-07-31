@@ -2,23 +2,198 @@
 
 # Amane Mailer セットアップ入口
 
-初めて Amane Mailer を構築するときの**単一の入口**です。構成を 1 つ選び、必要な情報を揃え、既存 runbook の順に進めます。
+初めて Amane Mailer を構築するときの**単一の入口**です。Easy Setup（推奨）、Manual Deployment、Hardened Deployment のどれかを選び、必要な情報を揃え、リンク先 runbook の順に進めます。この文書は**判断・順序・安全境界**の正本です。詳細手順の全文複製はせず、候補固有の SHA / digest / checksum **値**も埋め込みません。
 
-この文書は判断・順序・安全境界・用語の正本です。詳細な操作手順は複製せず、各 runbook / 設定 README へリンクします。
+Parent tracking: [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445) · 本 Issue: [#457](https://github.com/kooiei-in4a/amane-mailer/issues/457) · Design authority: [ADR 0021](../adr/0021-easy-setup-boundaries.md) ([#446](https://github.com/kooiei-in4a/amane-mailer/issues/446))
 
-Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) · 本 Issue: [#424](https://github.com/kooiei-in4a/amane-mailer/issues/424)
+例示は `replace-with-*`、`example.invalid`、synthetic UUID / path のみ。実在する secret、token、接続文字列、送信元・送信先、PII、host 固有 private path を docs・Issue・ログ・チャットへ貼らないでください。
 
-### v1.2.0 Easy Setup（設計固定・部分実装）
+## 文書の役割
 
-v1.2.0 向け Easy Setup の実行境界・設定正本・Managed／Manual・Admin／Gate 契約は [ADR 0021](../adr/0021-easy-setup-boundaries.md)（[#446](https://github.com/kooiei-in4a/amane-mailer/issues/446)）を Design authority とする。tracking は [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445)。**現行の完遂経路は本ガイドの Manual 導線のまま**である。
+| 文書 | 役割 |
+|------|------|
+| [README](../../README.md) / [README.en](../../README.en.md) | リポジトリの最小入口 → 本ガイド |
+| **本 setup-guide** | 判断・経路選択・順序・安全境界（正本） |
+| `docs/ops/` 配下の runbook | 詳細手順（リンクのみ。全文複製しない） |
+| [ADR 0021](../adr/0021-easy-setup-boundaries.md) | Easy Setup の Design authority |
+| [setup-release-bundle](setup-release-bundle.md) | maintainer 向け packaging / candidate handoff |
+| [implementation-status](../implementation-status.json) | 機能実装状況（Easy Setup は #458 まで `partial`） |
+| 候補 `README-SETUP.md` | 展開後の最小入口。候補の `sourceCommitSha` で本ガイドへリンク |
 
-コンテナ one-shot の effective inspection（`Amane.Mailer setup inspect-effective --format json`、[#447](https://github.com/kooiei-in4a/amane-mailer/issues/447)）は実装済みである。stdout は JSON のみ。recorded／effective／mountAttestation を分離し、one-shot 単独では最終 `bundleIntegrity=matched` を主張しない（host at-rest 統合は #450）。host assistant／ACTIVE 適用／Docker 操作は後続 Issue であり、本ガイドの mode 手順を置き換えない。
+## 経路の選び方
 
-## 既存文書の役割（複製しない）
+| 経路 | 選ぶとき | 注意 |
+|------|----------|------|
+| **Easy Setup（推奨）** | Windows Docker Desktop または Linux Docker Engine / VPS。mode 1–4 | host の `setup assistant` / 任意の non-interactive Main apply。mode 5 は Manual |
+| **Manual Deployment** | Managed bundle なしで既存 runbook / CLI を使う | mode 1–5 を維持。下の v1.1.0 公開イメージ記述は正直に残す |
+| **Hardened Deployment** | file secret / owner-only / Managed metadata なしを厳密に | Easy Setup assistant は**使わない**。Manual 契約が土台 |
 
-| 文書 | 役割 | この入口との関係 |
+---
+
+## Easy Setup（推奨）
+
+Easy Setup は既存の `.env` / `tenants.json` / file secret / deploy compose 契約を、host 上の local Web または terminal assistant で包みます（[ADR 0021](../adr/0021-easy-setup-boundaries.md)）。実装状況は [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) まで **partial** です。Managed 活性化なしで今日完遂したい場合は Manual 経路を使ってください。
+
+### プラットフォーム別の開始
+
+| 環境 | 最初に実行するコマンド（展開した host bundle または同等レイアウトから） |
+|------|------------------------------------------------------------------------|
+| Windows Docker Desktop | `Amane.Mailer.exe setup assistant` |
+| Linux GUI + Docker Engine | `./Amane.Mailer setup assistant` |
+| headless Linux / VPS | `./Amane.Mailer setup assistant --no-browser` または `./Amane.Mailer setup assistant --terminal` |
+| VPS への SSH | `--terminal` を推奨。または assistant の loopback port へ SSH tunnel してローカルブラウザを使う。**VPS 上のブラウザーだけでは完結しない** |
+| Offline / GitHub 不可 | `Amane.Mailer setup assistant --help` のあと `--terminal`（Windows は `Amane.Mailer.exe`） |
+| non-interactive（Main のみ） | `Amane.Mailer setup apply --config <absolute-path> --non-interactive` |
+
+使用する CLI は次のみ（別名を発明しない）:
+
+```text
+Amane.Mailer setup assistant [--port <n>] [--no-browser] [--terminal]
+Amane.Mailer setup apply --config <absolute-path> --non-interactive
+```
+
+`--port` は localhost Web の listen port。`--no-browser` はブラウザ起動を抑止。`--terminal` は対話式 terminal UI です。
+
+### 候補の消費（検証方法）
+
+Easy Setup **release-candidate** host bundle（公開 GitHub Release ではない）を使う場合:
+
+#### リリース候補の資格確認（#456）
+
+検証**方法**のみを示します。本ガイドに固定 digest を権威として埋め込みません:
+
+- 外側の `CANDIDATE-SHA256SUMS` は展開前／展開時の**アーカイブ自体**を検証する
+- 内側の `FILES-SHA256SUMS` は**展開後のファイル**を検証する
+- `release-bundle-manifest.json` で `sourceCommitSha`、image digest、schema 範囲を読む
+- manifest の `payloadTreeSha256` は staged payload の tree digest であり、**アーカイブ checksum ではない**
+- handoff 資料が食い違う場合は**停止**する。handoff は qualification 専用（maintainer #456）であり、利用者環境の「本番検証済み」印ではない
+
+packaging maintainer 手順: [setup-release-bundle](setup-release-bundle.md)。オペレーター判断の正本は本ガイドです。
+
+#### 公開リリース利用者（#458 以降）
+
+公開後は GitHub Release の checksum / release record / 公開 image digest を使います。candidate handoff と公開リリース検証を混同しないでください。
+
+### Managed 境界
+
+- 設定 bundle は immutable。**活性化の唯一権威は `ACTIVE`**（`bundleId` + 単調増加の `activationGeneration`）
+- **configuration fingerprint** は non-secret 設定の同一性のみ。**bundle integrity** は sealed な secret-valued env と file secret を含む。fingerprint 一致を secret 込みの全体一致とみなさない
+- **recorded** metadata と **effective** runtime 検査は別。metadata は送信正本にしない
+- 同一 root で Managed Setup と Manual Deployment を混在させない（`ACTIVE`／metadata と ad-hoc Manual `.env` を二重権威にしない）
+- seal と secret を同時に書き換えられる特権 host 管理者は Easy Setup の保護対象外
+
+#### Managed backup 境界
+
+| 対象 | 扱い |
+|------|------|
+| SQLite DB | [バックアップ運用](backup-operations.md) 等で**別途**取得。config rollback では戻さない |
+| Managed root | 同一世代として `bundles` / `state`（`ACTIVE`）/ `verification` / `sealing` を保全する |
+| external / manual-only | data path、backup 設定、rclone 設定などは **Managed 切替の外**で別管理 |
+| 文書・ログ | secret 値や private host path を載せない |
+
+詳細手順は複製しない: [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md)。
+
+#### Managed failure / recovery
+
+| 状況 | 扱い |
+|------|------|
+| previous `ACTIVE` がある | atomic に previous へ切替 → コンテナ recreate → fingerprint / integrity / verification 再確認が成功して初めて rollback 成功 |
+| previous `ACTIVE` がない | **FreshFailed**。成功した rollback として提示しない |
+| lock / `TX.stamp` / 不完全な `ACTIVE` / FINALIZED 不一致 | 成功扱いにしない。recovery または手動介入 |
+| migration・Admin SQLite・mail data・provider 副作用 | **config rollback の範囲外** |
+| `docker compose down -v` / DB migration rollback | **案内しない** |
+
+#### Secret 検知の範囲と限界
+
+| 契約 | 意味 |
+|------|------|
+| non-secret fingerprint | secret **値**を含めない |
+| finalized Managed bundle の secret | integrity seal 対象（値は公開面に出さない） |
+| 誤 mount / 差し替え | runtime の mount attestation などで検知し得る |
+| fingerprint 一致のみ | secret 込みの bundle 全体一致を意味**しない** |
+| 特権 host が seal + secret を同時改ざん | Easy Setup の保護対象外 |
+
+### Deployment 状態
+
+| 状態 | 意味 |
+|------|------|
+| **configuration applied** | Managed bundle が `ACTIVE` 経由で commit された |
+| **send-ready** | 適用 bundle が send-ready 条件（effective / doctor / readiness / fingerprint / integrity / verification record 整合）を満たす |
+| **deployment operational verification** | 利用者が通常 Mailer 経路で実送信を確認した状態。**Easy Setup では記録しない** — 必要なら Manual verification |
+| **Release Production operational verification** | maintainer #456 の製品 qualification。**利用者環境の状態ではない** |
+
+Staging 試験と Production は ACS / Queue / token を環境分離する。Staging drill を Production 証拠にしない。
+
+### Admin（任意・既定 disabled）
+
+- Admin 有効化は**任意**で**既定 disabled**。主セットアップ成功後の**独立した任意 transaction**
+- bootstrap は対話式 Web または terminal のみ。**non-interactive では行わない**
+- non-interactive の Main apply は Admin disabled のまま。入力で Admin 有効化が指定されたら黙って無視せず **FAIL** し、対話式 Assistant へ案内する
+- 平文 password を file / redirected stdin / CLI 引数から受け取らない。password hash file 方式は v1.2.0 対象外
+- 対象 DB 状態は **fresh** と **managed same-user** 再適用のみ。既存 Manual / unsupported は Manual 経路
+- config bundle rollback と SQLite Admin 状態（`admin_config` / `admin_users` / session）の rollback は同一視しない
+- bootstrap 成功には login と `/admin/setup-status` 表示まで含む。Admin setup status に doctor / テスト送信 / Docker 操作はない
+
+#### Admin access profile
+
+| Profile | 条件（要約） |
+|---------|--------------|
+| **Local Development** | `ASPNETCORE_ENVIRONMENT=Development`、loopback のみ host 公開、`AMANE_ADMIN_ALLOW_HTTP=true`、localhost アクセス、`Connection.LocalIpAddress` が `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` と一致 |
+| **Production HTTPS** | 承認済み HTTPS reverse proxy が**既に存在**、`AMANE_ADMIN_ALLOW_HTTP=false`、Secure / `__Host-` cookie、server-side local address が allowed local address と一致、Admin の Internet 直公開なし |
+
+`AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` はクライアント送信元 IP ではなく、**`Connection.LocalIpAddress`**（server-side）を照合します。
+
+Easy Setup は reverse proxy・証明書・DNS を**自動構築しない**。Production HTTPS 経路がなければ **Admin を disabled のまま**にする。Main セットアップは成功可能です。
+
+### mode・サポート行列・setup ≠ upgrade
+
+| mode 1–4 | Easy Setup 正式対象 |
+|----------|---------------------|
+| mode 5（production ACS + Event Grid / Storage Queue） | **Manual / Easy Setup 対象外** |
+| Windows Docker Desktop / Linux Docker Engine / VPS | 正式 |
+| NAS | best-effort |
+| remote Docker / Kubernetes / Podman / macOS 正式配布 | 対象外 |
+| Consumer bounced Webhook [#307](https://github.com/kooiei-in4a/amane-mailer/issues/307) | v1.2.0 対象外（v1.5.0 以降） |
+
+**setup と upgrade は別操作です。** 製品 upgrade / publish は後続 Issue（#458）。
+
+### backup / rollback / recovery（概要）
+
+- 上の Managed backup / failure・recovery / secret 検知表を優先する
+- DB と運用者が所有する secret / config の文書化された backup を優先。runbook が除外するものは除外する
+- 安易な rollback に `docker compose down -v` を使わない（volume 破壊）
+- DB migration rollback を Easy Setup のサポート済み recovery としない
+- 詳細: [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md)
+
+### Easy Setup トラブルシュート指針
+
+- assistant が起動・bind しない: host binary、Docker Desktop/Engine の local context、loopback 前提を確認
+- VPS で「ブラウザーだけ」: `--terminal` または SSH tunnel へ切替
+- non-interactive で Admin 有効化要求: 期待どおり **FAIL** — 対話式 Assistant を使う
+- fingerprint 一致でも secret 誤り／誤 mount: integrity / mount attestation はなお FAIL し得る。fingerprint だけでは不十分
+- Manual 寄りの失敗参照: 下の [トラブルシューティング](#トラブルシューティング)
+
+### 文書不備の戻り先（#456 → #457）
+
+qualification（#456）で本ガイドまたは候補 `README-SETUP.md` の文書不備が見つかった場合:
+
+1. [#457](https://github.com/kooiei-in4a/amane-mailer/issues/457)（本ドキュメント / packaging 生成）で修正する
+2. **新しい merge SHA** から candidate を再生成する
+3. 影響する qualification シナリオを再実行する
+4. #456 の Hard gate 表を本ガイドへ**貼らない**（正本は #456）
+
+---
+
+## Manual Deployment
+
+Manual Deployment は第一級の経路のままです。以下は v1.1.0 時代の mode 1–5 runbook 順、完遂可否の意味、公開 **v1.1.0** イメージに関する正直な記述を維持します。すべての `v1.1.0` を無批判に `v1.2.0` へ置換しないでください。
+
+コンテナ one-shot の effective inspection（`Amane.Mailer setup inspect-effective --format json`、[#447](https://github.com/kooiei-in4a/amane-mailer/issues/447)）は Managed host 向けに実装済みです。stdout は JSON のみ。recorded／effective／mountAttestation は分離し、one-shot 単独では最終 `bundleIntegrity=matched` を主張しません。host assistant／ACTIVE 適用は、この Manual 手順を削除しません。
+
+### 既存 Manual 文書の役割（複製しない）
+
+| 文書 | 役割 | Manual 入口との関係 |
 |------|------|------------------|
-| [README](../../README.md) | リポジトリ入口 | ここへ 1 クリックで到達する |
 | [Zero-Admin 初回メール quickstart](first-mail-quickstart.md) | **local Mailpit** の最短手順 | mode 1 の詳細正本 |
 | [local Docker runbook](local-mailer-docker-runbook.md)（[bash](local-mailer-docker-runbook-bash.md)） | local の追加 smoke（冪等・Admin など） | mode 1 の拡張 |
 | [local deploy rehearsal](local-deploy-rehearsal-runbook.md) | deploy 形スタックの再現 | mode 2 の詳細正本 |
@@ -30,7 +205,7 @@ v1.2.0 向け Easy Setup の実行境界・設定正本・Managed／Manual・Adm
 | [設定 README](../../config/mailer/README.md) | tenant / env / preflight | 全モードの設定 shape 正本 |
 | [release-image-smoke](release-image-smoke.md) | 公開イメージ smoke | 公開済みタグ向け。`v1.1.0` 未公開時はその検証にならない |
 
-## 読む前に（安全）
+### 読む前に（安全）
 
 - secret、接続文字列、実テナント token、送信元・送信先、PII、provider raw error を docs・Issue・ログ・チャットへ貼らない。
 - placeholder（`replace-with-*`、`local-mail-service-token`）だけを例に使う。
@@ -58,11 +233,11 @@ production ACS（mode 4）の file-secret 登録は `admin provider register-acs
 
 production ACS + Queue（mode 5）は [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) / [`.env.example`](../../infra/deploy/.env.example) 経由で `MAILER_BOUNCE_INGESTION` / Queue 名 / Queue 接続（file）をコンテナへ渡せるため **Available**。host shell にだけ変数を置いてもコンテナへは入らない。
 
-## モード完遂可否と結果コード（分離）
+### モード完遂可否と結果コード（分離）
 
 構成が今完了できるかどうか（モード表の列）と、診断 CLI の結果コードは別レイヤとする。setup doctor / 確認 CLI（[#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)–[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)）は下の結果コード意味に合わせる。既存 smoke script は主に `[PASS]` / `[FAIL]` を出す。
 
-### モード完遂可否（構成の提供状況）
+#### モード完遂可否（構成の提供状況）
 
 | 値 | 意味 |
 |----|------|
@@ -70,7 +245,7 @@ production ACS + Queue（mode 5）は [`infra/deploy/compose.yml`](../../infra/d
 | **Blocked** | 目標モードだが、必須経路が欠けており今は完遂できない |
 | **Target only** | 目標像の説明のみ。現行テンプレートでは完了扱いにしない |
 
-### 結果コード（診断出力）
+#### 結果コード（診断出力）
 
 | コード | 意味 | 次にすること |
 |--------|------|----------------|
@@ -92,7 +267,7 @@ secret 値・宛先平文・接続文字列・raw provider error を結果に含
 
 `mail_provider_queue_poll_failed_total` が増えないことだけでは、Event Grid → Queue 配線の成功判定にしない（poller が動いてもイベント未到着があり得る → `[WARN]` / `[ACTION]`）。
 
-## 構成モードを選ぶ
+### 構成モードを選ぶ
 
 次の質問で **1 つだけ**選ぶ。
 
@@ -110,7 +285,7 @@ secret 値・宛先平文・接続文字列・raw provider error を結果に含
 | production ACS | 本番配送 | `acs` | `true`（承認済みのみ） | `off` 可 | **Available** | [register-acs CLI](register-acs-cli-runbook.md)（確認 **`Production`**）、[deploy `.env.example`](../../infra/deploy/.env.example)、[compose.yml](../../infra/deploy/compose.yml)、[設定 README](../../config/mailer/README.md) |
 | production ACS + Queue | 本番配送 + ハードバウンス抑制 | `acs` | `true` | **`queue` のみ** | **Available** | [bounce ingestion runbook](bounce-ingestion-runbook.md)、[deploy `.env.example`](../../infra/deploy/.env.example)、[compose.yml](../../infra/deploy/compose.yml)、[register-acs CLI](register-acs-cli-runbook.md)（確認 **`Production`**） |
 
-## provider / `live_sending` / bounce mode
+### provider / `live_sending` / bounce mode
 
 | 組合せ | 実メール | 受理・永続化 | 備考 |
 |--------|----------|--------------|------|
@@ -123,7 +298,7 @@ secret 値・宛先平文・接続文字列・raw provider error を結果に含
 
 `MAILER_PROVIDER` / `Mailer__Provider` は全 tenant の provider を上書きする。意図しない上書きに注意（[設定 README](../../config/mailer/README.md)）。
 
-### ACS secret と platform-owned sender の境界
+#### ACS secret と platform-owned sender の境界
 
 | 対象 | 何をするか | いま使える場面 |
 |------|------------|----------------|
@@ -132,7 +307,7 @@ secret 値・宛先平文・接続文字列・raw provider error を結果に含
 
 production オペレーターに、production 作業なのに確認欄へ `Staging` と書かせる案内はしない。
 
-## 責任境界
+### 責任境界
 
 | コンポーネント | 責任 | 非責任 |
 |----------------|------|--------|
@@ -143,7 +318,7 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 
 環境（dev / staging / production）ごとに **ACS と Queue を分離**する。混線すると `provider_message_id` 誤相関の原因になる（[bounce runbook](bounce-ingestion-runbook.md)）。
 
-## local / staging / production の安全境界
+### local / staging / production の安全境界
 
 | | local | staging | production |
 |--|-------|---------|------------|
@@ -154,11 +329,11 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 | bounce Queue | 通常不要 | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) の `setup check-event-grid` で environment 別の read-only 構成確認。[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は Staging E2E のみ | Available。compose 経由で `queue` + Queue 名 + file secret |
 | 完了の定義 | health + 1 通 Mailpit 到着など | 起動・preflight・（任意）明示 verification | deploy 形 + production 確認付き secret 登録 + 承認済み live send。実バウンスは不要 |
 
-## 共通チェックリスト（必要情報・権限・secret・network）
+### 共通チェックリスト（必要情報・権限・secret・network）
 
 値そのものは書かず、「用意できているか」だけ確認する。
 
-### 情報
+#### 情報
 
 - [ ] 使う構成モード（上表の 1 つ）。mode 4 / 5 は production 固有の安全境界（専用 token / ACS・Queue 分離、Push 非採用）を理解したうえでの選択。公開イメージは `v1.1.0` を正とする（[release record](../releases/v1.1.0.md)）
 - [ ] tenant JSON の置き場所（example をコピーした **未コミット** ファイル）
@@ -168,7 +343,7 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 - [ ] bounce mode（`off` または `queue`）
 - [ ] Admin / metrics / backup を有効にするか（既定オフまたは runbook のとおり）
 
-### Azure 側で必要な能力（mode 2 以降。具体ロール名は組織の IAM に従う）
+#### Azure 側で必要な能力（mode 2 以降。具体ロール名は組織の IAM に従う）
 
 - [ ] ACS Email リソースを参照し、承認済み sender / domain を確認できる
 - [ ]（mode 3）deploy host で `admin provider register-acs` を実行できる（対話 TTY、secret ディレクトリ権限、確認フレーズ **`Staging`**）
@@ -176,7 +351,7 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 - [ ]（mode 5）Delivery Report を Event Grid で購読し、エンドポイントを **Storage Queue** にできる
 - [ ]（mode 5）対象 Queue の接続情報を、**compose 経由で** Mailer コンテナへ渡せる（`.env` + secret file mount。host shell だけでは不十分）
 
-### secret（置き場所だけ。値は記録しない）
+#### secret（置き場所だけ。値は記録しない）
 
 - [ ] tenant Bearer token（環境変数。JSON 平文禁止）
 - [ ]（Staging ACS live）`register-acs`（確認 `Staging`）が書く `ACS_CONNECTION_STRING_FILE` 経路の file secret
@@ -186,14 +361,14 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 - [ ]（metrics 有効時）scrape bearer
 - [ ]（Admin 有効時）password hash など Admin 秘密
 
-### network / runtime
+#### network / runtime
 
 - [ ] Docker（local / rehearsal）または deploy host の compose ネットワーク
 - [ ] Mailer HTTP（health / ready）と、local なら Mailpit UI/API
 - [ ] production では reverse proxy / firewall 等の到達境界（Admin 直公開なし）
 - [ ]（mode 5）Mailer から Storage Queue への**外向き**到達（公開 HTTPS 受信口は不要）
 
-## setup doctor（read-only 診断）
+### setup doctor（read-only 診断）
 
 セットアップ前または起動失敗時に、ローカル設定と host 前提を **read-only** で診断する CLI です。設定ファイル、DB、container、Azure リソースは変更しません。
 
@@ -218,16 +393,16 @@ dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
 
 deploy host では、Docker CLI と公開 host port の意味が正確になるよう、**host 上**で同コマンドを実行することを推奨します（コンテナが使う env / compose と同じ前提で）。Mailer コンテナ内で実行する場合、Docker 利用可否と loopback port 確認はコンテナ namespaceしか見えないため WARN / ACTION になります。
 
-## 実行順序（全モード共通）
+### 実行順序（全モード共通）
 
 1. **Preflight** — モード選択、チェックリスト、**setup doctor**（上）、tenant / env の shape 確認（[設定 README Preflight](../../config/mailer/README.md#preflight)）
 2. **Setup** — 該当モードの正本 runbook に従い起動・登録（ギャップがあるモードは無理に完了させない）
 3. **Verification** — health / ready、受理、（モードに応じた）配送または no-send 確認。結果コードは上表
-4. **Troubleshooting** — FAIL / WARN 時は下の「失敗時の参照先」へ。自動修正はしない（ACTION）
+4. **Troubleshooting** — FAIL / WARN 時は [トラブルシューティング](#トラブルシューティング) へ。自動修正はしない（ACTION）
 
-## モード別の一本道
+### モード別の一本道
 
-### 1. local Mailpit
+#### 1. local Mailpit
 
 **順序**
 
@@ -237,7 +412,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 **完了の目安:** `[PASS]` で health / ready / 1 通 Mailpit 到着。ACS・bounce・実バウンスは不要。
 
-### 2. staging ACS no-send
+#### 2. staging ACS no-send
 
 **順序**
 
@@ -248,7 +423,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 **完了の目安:** スタックが healthy / ready。実メールを送っていないこと。
 
-### 3. staging ACS verification
+#### 3. staging ACS verification
 
 **前提:** mode 2 相当の deploy 形が動いている。検証は**明示実行**のみ。対象は **Staging**。
 
@@ -262,7 +437,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 **完了の目安:** 明示した検証メールが ACS 経由で期待どおり処理されること。**実バウンスは不要。** platform-owned sender ファイルの存在は tenant 送信完了の根拠にしない。
 
-### 4. production ACS
+#### 4. production ACS
 
 **範囲:** deploy テンプレートと設定に加え、`admin provider register-acs` の exact **`Production`** 確認で file secret を登録できる。production 作業で `Staging` と入力する回避策は案内しない（`Staging` は staging 登録として受理されるため production 証跡にならず、`setup doctor --mode production-acs` は `environment` 不一致を `[FAIL]` する）。
 
@@ -279,9 +454,9 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 **完了の目安:** deploy 形・tenant / env preflight・`Production` 確認付き secret 登録・doctor 再実行での `platform_sender_environment` PASS・health/ready・承認済み live send を `[PASS]` にし得る。公開イメージは `v1.1.0`（[release record](../releases/v1.1.0.md)）。
 
-### 5. production ACS + Event Grid / Storage Queue
+#### 5. production ACS + Event Grid / Storage Queue
 
-**範囲:** mode 4 に加え、[`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) / [`.env.example`](../../infra/deploy/.env.example) 経由で bounce Queue 設定を Mailer コンテナへ渡せる。host shell にだけ変数を置いてもコンテナへは入らない。Push webhook（#304）は作らない。
+**範囲:** mode 4 に加え、[`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) / [`.env.example`](../../infra/deploy/.env.example) 経由で bounce Queue 設定を Mailer コンテナへ渡せる。host shell にだけ変数を置いてもコンテナへは入らない。Push webhook（#304）は作らない。Easy Setup では本 mode は **Manual**（assistant 自動化対象外）。
 
 **順序**
 
@@ -302,11 +477,50 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 
 **完了の目安:** mode 4 の完了条件に加え、compose 経由の `queue` 設定・Queue file secret・Queue 名・Event Grid → Queue の構成確認を `[PASS]` / 人手確認できること。公開イメージは `v1.1.0`（[release record](../releases/v1.1.0.md)）。
 
-## 失敗時の参照先
+### Manual 確認機能の提供状況
+
+| Issue | 機能 | 境界 |
+|-------|------|------|
+| [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **提供済み**（上「setup doctor」） |
+| [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS 単体の実送信確認 CLI | **提供済み** — [test-acs-send-cli-runbook.md](test-acs-send-cli-runbook.md)（Staging 限定） |
+| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認（`setup check-event-grid`） | **提供済み** — [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md)（選択 environment 向け。到着は保証しない） |
+| [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report の Queue 到着 E2E（message ID 相関。実バウンス必須にしない） | **提供済み** — [verify-delivery-report-runbook.md](verify-delivery-report-runbook.md)（**Staging 限定**。production Queue / production テスト送信は非目標） |
+
+Manual セットアップとしては上記 CLI と既存 preflight / smoke / runbook 手動確認で進める。
+
+---
+
+## Hardened Deployment
+
+Easy Setup assistant を使わず、厳格な host 制御が必要なときに Hardened Deployment を選びます。
+
+- **Manual** 契約（mode・runbook・file secret・compose）を土台にする
+- Managed root / `ACTIVE` / Easy Setup metadata を**作らない**
+- file secret と owner-only 権限を優先し、`.env` / tenants / secrets / DB / backup を方針に応じて**分離した**置き場所に保つ
+- remote Docker、Mailer コンテナへの Docker socket 委譲、文書化された deploy テンプレート外の任意 Compose は使わない
+- Production Admin は HTTPS のみ。`AMANE_ADMIN_ALLOW_HTTP=false`
+
+CLI 例（exact）:
+
+```text
+Amane.Mailer setup doctor --mode <mode>
+Amane.Mailer admin provider register-acs
+Amane.Mailer admin hash-password
+Amane.Mailer admin user create --username <name> --password-hash <pbkdf2> --tenant-id <uuid>
+Amane.Mailer db backup <absolute-path>
+Amane.Mailer db checkpoint
+```
+
+`password-hash` は機密です。docs・ログ・Issue へ貼らないでください。shell history やプロセス一覧に残る可能性があります。Admin の詳細は既存 Admin / local Docker runbook へリンクし、break-glass を既定経路として提示しません。
+
+---
+
+## トラブルシューティング
 
 | 症状の例 | 参照 |
 |----------|------|
-| tenant / token / `LIVE_SENDING_DISABLED` / provider 不足 | [設定 README troubleshooting](../../config/mailer/README.md#tenant--env-troubleshooting)、本ガイドの setup doctor |
+| Easy Setup 起動 / VPS / non-interactive Admin FAIL | [Easy Setup トラブルシュート指針](#easy-setup-トラブルシュート指針) |
+| tenant / token / `LIVE_SENDING_DISABLED` / provider 不足 | [設定 README troubleshooting](../../config/mailer/README.md#tenant--env-troubleshooting)、Manual の setup doctor |
 | local 起動・Admin・Mailpit | [local Docker runbook](local-mailer-docker-runbook.md) |
 | deploy 形の compose / migrate / network | [local deploy rehearsal](local-deploy-rehearsal-runbook.md) |
 | Staging / Production ACS secret 登録失敗 | [register-acs CLI](register-acs-cli-runbook.md)（確認フレーズを環境に合わせる） |
@@ -316,23 +530,23 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 | bounce / unmatched / Queue poll（runtime 説明） | [bounce ingestion](bounce-ingestion-runbook.md)、[metrics-and-alerts](metrics-and-alerts.md) |
 | backup / restore | [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md) |
 | 公開イメージ smoke（公開済みタグ） | [release-image-smoke](release-image-smoke.md) |
-
-## 確認機能の提供状況
-
-| Issue | 機能 | 境界 |
-|-------|------|------|
-| [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **提供済み**（上「setup doctor」） |
-| [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS 単体の実送信確認 CLI | **提供済み** — [test-acs-send-cli-runbook.md](test-acs-send-cli-runbook.md)（Staging 限定） |
-| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | Event Grid / Storage Queue の read-only 構成確認（`setup check-event-grid`） | **提供済み** — [event-grid-config-check-runbook.md](event-grid-config-check-runbook.md)（選択 environment 向け。到着は保証しない） |
-| [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report の Queue 到着 E2E（message ID 相関。実バウンス必須にしない） | **提供済み** — [verify-delivery-report-runbook.md](verify-delivery-report-runbook.md)（**Staging 限定**。production Queue / production テスト送信は非目標） |
-
-セットアップ入口としては上記 CLI と既存 preflight / smoke / runbook 手動確認で進める。
+| candidate packaging / handoff | [setup-release-bundle](setup-release-bundle.md) |
 
 ## この入口の非目標
 
+- 本ドキュメント Issue での runtime 実装変更
+- marketing site
+- NAS 製品別手順の網羅
+- credential / password rotation ガイド
+- reverse proxy / 証明書 / DNS の自動構築
+- non-interactive Admin bootstrap
+- Admin bootstrap の password hash file 方式
+- Easy Setup 内での deployment operational verification 記録
+- external secret manager 製品別ガイドの網羅
 - Azure リソース自動作成
 - 既存 runbook 全文のこのファイルへの複製
-- v1.2.0 の Consumer bounce API / webhook 契約の説明
+- v1.2.0 の Consumer bounce API / webhook 契約の説明（#307 は後続）
 - Event Grid Push（#304）の採用手順
 - production 作業で `Staging` 確認フレーズを入力させる回避策の案内
 - 実在 credential / tenant / private path の掲載
+- #456 Hard gate 表や候補固有 digest 値の埋め込み
