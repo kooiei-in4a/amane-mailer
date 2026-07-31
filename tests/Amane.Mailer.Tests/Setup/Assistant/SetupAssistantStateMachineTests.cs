@@ -3,6 +3,7 @@ using Amane.Mailer.Operations.AcsSetup;
 using Amane.Mailer.Operations.AdminBootstrap;
 using Amane.Mailer.Setup;
 using Amane.Mailer.Setup.Assistant;
+using Amane.Mailer.Tests.Setup;
 
 namespace Amane.Mailer.Tests.Setup.Assistant;
 
@@ -15,7 +16,7 @@ public sealed class SetupAssistantStateMachineTests
     private const string ServiceToken = "assistant-test-service-token";
 
     [Fact]
-    public void Canonical_apply_handoff_projects_as_a_navigable_configuration_stage()
+    public async Task Canonical_apply_handoff_projects_as_a_navigable_configuration_stage()
     {
         var apply = SetupApplyResult.Create(
             SetupApplyResultCode.ApplySucceeded,
@@ -39,10 +40,72 @@ public sealed class SetupAssistantStateMachineTests
 
         using var session = new SetupAssistantSession("session", "csrf", DateTimeOffset.UtcNow);
         session.SetMode(SetupMode.LocalMailpit);
-        session.SetMainSetup(applyOutcome);
+        session.SetDockerPreflight(new SetupAssistantDockerPreflightOutcome
+        {
+            Passed = true,
+            Code = SetupDockerResultCode.Succeeded,
+            EngineKind = "LocalUnixSocket",
+        });
+        session.EnsureMainWorkflow(SetupMode.LocalMailpit);
+        var transition = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
+            new ImmediateApplyOperations(applyOutcome),
+            session.MainWorkflow!,
+            new SetupAssistantMainCollectedInput
+            {
+                MainSetupInput = new SetupAssistantMainSetupInput
+                {
+                    Mode = SetupMode.LocalMailpit,
+                    Tenants = SetupTestFixtures.LocalMailpitTenants(),
+                    TokenSecrets = new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        [SetupAssistantInputs.TokenEnvFor(SetupMode.LocalMailpit)] = ServiceToken,
+                    },
+                    EnvironmentConfirmation = string.Empty,
+                    IntentConfirmation = string.Empty,
+                },
+            },
+            CancellationToken.None);
+        session.ApplyMainWorkflow(transition.State);
         session.MoveTo(SetupAssistantStep.ApplyOutcome);
         Assert.True(session.ConfigurationStageSucceeded);
         Assert.True(SetupAssistantTransitions.IsAllowed(session, "/verify", "continue"));
+    }
+
+    private sealed class ImmediateApplyOperations(SetupAssistantMainSetupOutcome applyOutcome)
+        : ISetupAssistantOperations
+    {
+        public Task<SetupAssistantDockerPreflightOutcome> CheckDockerAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new SetupAssistantDockerPreflightOutcome
+            {
+                Passed = true,
+                Code = SetupDockerResultCode.Succeeded,
+                EngineKind = "LocalUnixSocket",
+            });
+
+        public Task<SetupAssistantMainSetupOutcome> ApplyMainSetupAsync(
+            SetupAssistantMainSetupInput input,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(applyOutcome);
+
+        public Task<SetupAssistantStagingOutcome> VerifyStagingAsync(
+            SetupAssistantStagingInput input,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SetupAssistantMainSetupOutcome> EnableLiveSendingAsync(
+            SetupAssistantProductionInput input,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SetupAssistantAdminPreflightOutcome> CheckAdminAccessProfileAsync(
+            SetupAssistantAdminAccessInput input,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<SetupAssistantAdminBootstrapOutcome> BootstrapAdminAsync(
+            SetupAssistantAdminBootstrapInput input,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     [Fact]

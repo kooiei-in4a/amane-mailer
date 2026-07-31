@@ -13,21 +13,35 @@ public static class SetupAssistantCommand
     public const int UsageErrorExitCode = 2;
 
     public static bool IsAssistantCommand(IReadOnlyList<string> args) =>
-        args.Count == 2
+        args.Count >= 2
         && string.Equals(args[0], "setup", StringComparison.Ordinal)
         && string.Equals(args[1], "assistant", StringComparison.Ordinal);
 
     public static async Task<int> ExecuteAsync(
+        IReadOnlyList<string> args,
         TextWriter output,
         TextWriter error,
         CancellationToken cancellationToken)
     {
-        if (!SetupAssistantOptions.TryResolvePort(
-                Environment.GetEnvironmentVariable(SetupAssistantOptions.PortEnvironmentKey),
-                out var port))
+        if (!SetupAssistantCliParser.TryParse(args, out var cliOptions, out var usageError))
         {
-            error.WriteLine(
-                $"setup assistant: {SetupAssistantOptions.PortEnvironmentKey} must be an integer between 1 and 65535.");
+            if (!string.IsNullOrWhiteSpace(usageError))
+            {
+                error.WriteLine($"setup assistant: {usageError}");
+            }
+
+            error.WriteLine(SetupAssistantCliParser.UsageText);
+            return UsageErrorExitCode;
+        }
+
+        if (cliOptions.Mode == SetupAssistantCliMode.Terminal)
+        {
+            return await SetupTerminalAssistant.ExecuteAsync(output, error, cancellationToken);
+        }
+
+        if (!TryResolvePort(cliOptions.Port, out var port, out var portError))
+        {
+            error.WriteLine($"setup assistant: {portError}");
             return UsageErrorExitCode;
         }
 
@@ -44,10 +58,26 @@ public static class SetupAssistantCommand
                 cancellationToken);
             listening = true;
 
-            output.WriteLine("Amane Mailer Easy Setup Assistant");
-            output.WriteLine($"  URL:   {host.BaseAddress}");
-            output.WriteLine($"  Token: {sessions.OneTimeTokenText}");
-            output.WriteLine("  The token can be used once. Press Ctrl+C to stop the assistant.");
+            if (cliOptions.Mode == SetupAssistantCliMode.WebNoBrowser)
+            {
+                SetupAssistantRemoteAccessHints.WriteNoBrowserStartup(
+                    output,
+                    host.BoundPort,
+                    sessions.OneTimeTokenText);
+            }
+            else
+            {
+                SetupAssistantRemoteAccessHints.WriteDefaultStartup(
+                    output,
+                    host.BoundPort,
+                    sessions.OneTimeTokenText);
+
+                if (!SetupAssistantBrowserLauncher.TryOpen(host.BoundPort))
+                {
+                    SetupAssistantRemoteAccessHints.WriteBrowserFallback(output);
+                }
+            }
+
             output.Flush();
 
             var reason = await host.WaitForShutdownAsync(cancellationToken);
@@ -69,6 +99,28 @@ public static class SetupAssistantCommand
                 : "setup assistant: could not bind the loopback listener. No other interface is used.");
             return FailureExitCode;
         }
+    }
+
+    private static bool TryResolvePort(int? cliPort, out int port, out string portError)
+    {
+        if (cliPort.HasValue)
+        {
+            port = cliPort.Value;
+            portError = string.Empty;
+            return true;
+        }
+
+        if (!SetupAssistantOptions.TryResolvePort(
+                Environment.GetEnvironmentVariable(SetupAssistantOptions.PortEnvironmentKey),
+                out port))
+        {
+            portError =
+                $"{SetupAssistantOptions.PortEnvironmentKey} must be an integer between 1 and 65535.";
+            return false;
+        }
+
+        portError = string.Empty;
+        return true;
     }
 
     private static string DescribeReason(SetupAssistantShutdownReason reason) => reason switch

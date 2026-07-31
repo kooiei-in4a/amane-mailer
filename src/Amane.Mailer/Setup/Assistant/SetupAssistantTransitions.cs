@@ -1,3 +1,5 @@
+using Amane.Mailer.Operations.AcsSetup;
+
 namespace Amane.Mailer.Setup.Assistant;
 
 /// <summary>
@@ -66,28 +68,33 @@ internal static class SetupAssistantTransitions
     /// send-ready boundary a server-side invariant rather than a screen-level convention.
     /// </summary>
     internal static bool IsMainSetupCompletable(SetupAssistantSession session) =>
-        session.MainSetupSucceeded
-        && session.Mode switch
-        {
-            SetupMode.StagingVerification =>
-                session.Staging is { Kind: SetupAssistantOutcomeKind.Succeeded },
-            SetupMode.ProductionAcs => session.DeploymentSendReady,
-            _ => true,
-        };
+        session.MainWorkflow?.IsComplete == true
+        || (session.MainWorkflow is null
+            && session.MainSetupSucceeded
+            && session.Mode switch
+            {
+                SetupMode.StagingVerification =>
+                    session.Staging is { Kind: SetupAssistantOutcomeKind.Succeeded },
+                SetupMode.ProductionAcs => session.DeploymentSendReady,
+                _ => true,
+            });
 
     internal static bool CanRetryMainApply(SetupAssistantSession session) =>
-        session.MainSetup is { } outcome && CanRetryApplyOutcome(outcome);
+        session.MainWorkflow?.CanRetryApply == true;
 
     internal static bool CanRetryStaging(SetupAssistantSession session) =>
-        session.Staging is
-        {
-            SendRequestAccepted: false,
-            Kind: SetupAssistantOutcomeKind.Rejected or SetupAssistantOutcomeKind.Failed,
-        };
+        session.MainWorkflow?.CanRetryStaging == true
+        || (session.MainWorkflow is null
+            && session.Staging is
+            {
+                SendRequestAccepted: false,
+                Kind: SetupAssistantOutcomeKind.Rejected or SetupAssistantOutcomeKind.Failed,
+            });
 
     internal static bool CanRunLiveSending(SetupAssistantSession session) =>
-        session.LiveSending is null
-        || CanRetryApplyOutcome(session.LiveSending);
+        session.MainWorkflow?.CanRunLiveSending == true
+        || (session.MainWorkflow is null
+            && (session.LiveSending is null || CanRetryApplyOutcome(session.LiveSending)));
 
     private static bool CanRetryApplyOutcome(SetupAssistantMainSetupOutcome outcome) =>
         !outcome.ConfigurationApplied

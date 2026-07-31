@@ -30,9 +30,10 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll admin provider register-acs
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
       dotnet Amane.Mailer.dll admin provider test-acs-send
-      dotnet Amane.Mailer.dll setup assistant
+      dotnet Amane.Mailer.dll setup assistant [--port <1-65535>] [--no-browser] [--terminal]
       dotnet Amane.Mailer.dll setup assistant-self-check
       dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
+      dotnet Amane.Mailer.dll setup apply --config <absolute-path> --non-interactive
       dotnet Amane.Mailer.dll setup inspect-effective --format json
       dotnet Amane.Mailer.dll setup core-self-check
       dotnet Amane.Mailer.dll setup host-docker-self-check
@@ -194,6 +195,7 @@ if (Amane.Mailer.Setup.Assistant.SetupAssistantCommand.IsAssistantCommand(comman
 {
     return await MailerCliHost.RunCancellableCliAsync(
         ct => Amane.Mailer.Setup.Assistant.SetupAssistantCommand.ExecuteAsync(
+            commandArgs,
             Console.Out,
             Console.Error,
             ct),
@@ -215,6 +217,28 @@ if (Amane.Mailer.Setup.SetupCoreSelfCheckCommand.IsSelfCheckCommand(commandArgs)
 if (Amane.Mailer.Setup.SetupHostDockerSelfCheckCommand.IsSelfCheckCommand(commandArgs))
 {
     return await Amane.Mailer.Setup.SetupHostDockerSelfCheckCommand.ExecuteAsync(Console.Out, Console.Error);
+}
+
+if (Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.IsApplyNonInteractiveCommand(commandArgs))
+{
+    if (!Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.TryParseArguments(
+            commandArgs,
+            out var configPath,
+            out var usageError))
+    {
+        await Console.Error.WriteLineAsync(usageError ?? "Invalid setup apply arguments.");
+        await Console.Error.WriteLineAsync(
+            Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.UsageLine);
+        return Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.UsageErrorExitCode;
+    }
+
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.ExecuteAsync(
+            configPath!,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
 }
 
 if (Amane.Mailer.Setup.SetupInspectEffectiveCommand.IsInspectEffectiveCommand(commandArgs))

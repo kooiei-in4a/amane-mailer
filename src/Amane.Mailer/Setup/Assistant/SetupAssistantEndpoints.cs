@@ -368,10 +368,27 @@ internal static class SetupAssistantEndpoints
         }
 
         session.MarkApplyStarted();
-        var outcome = await step.Operations.ApplyMainSetupAsync(
-            BuildMainSetupInput(session, mode, environmentConfirmation, intentConfirmation),
+        session.EnsureMainWorkflow(mode);
+        var transition = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
+            step.Operations,
+            session.MainWorkflow!,
+            new SetupAssistantMainCollectedInput
+            {
+                MainSetupInput = BuildMainSetupInput(
+                    session,
+                    mode,
+                    environmentConfirmation,
+                    intentConfirmation),
+                TenantId = session.TenantId,
+            },
             step.CancellationToken);
-        session.SetMainSetup(outcome);
+        if (transition.Rejected)
+        {
+            session.Reject(transition.RejectionKey ?? SetupAssistantRejection.StepNotAvailable);
+            return;
+        }
+
+        session.ApplyMainWorkflow(transition.State);
         if (session.ConfigurationStageSucceeded)
         {
             // Every later stage works from the #451 applied proof, so the provider and ACS material
@@ -406,7 +423,7 @@ internal static class SetupAssistantEndpoints
                 return;
 
             case "staging-retry" when mode == SetupMode.StagingVerification:
-                session.ClearStaging();
+                session.ClearStagingForRetry();
                 session.MoveTo(SetupAssistantStep.DeploymentVerification);
                 return;
 
@@ -431,7 +448,7 @@ internal static class SetupAssistantEndpoints
             return;
         }
 
-        if (session.MainSetup?.AppliedProof is not { } proof)
+        if (session.MainWorkflow is not { AppliedProof: not null } workflow)
         {
             session.Reject(SetupAssistantRejection.StepNotAvailable);
             return;
@@ -439,18 +456,25 @@ internal static class SetupAssistantEndpoints
 
         session.SetStagingRecipient(recipient);
         session.MarkStagingSendStarted();
-        var outcome = await step.Operations.VerifyStagingAsync(
-            new SetupAssistantStagingInput
+        var transition = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
+            step.Operations,
+            workflow,
+            new SetupAssistantMainCollectedInput
             {
                 TenantId = session.TenantId,
-                RecipientEmail = recipient,
-                EnvironmentConfirmation = step.Field("environment_confirmation"),
-                IntentConfirmation = step.Field("intent_confirmation"),
+                StagingRecipientEmail = recipient,
+                StagingEnvironmentConfirmation = step.Field("environment_confirmation"),
+                StagingIntentConfirmation = step.Field("intent_confirmation"),
                 AssistantSessionId = session.SessionId,
-                AppliedProof = proof,
             },
             step.CancellationToken);
-        session.SetStaging(outcome);
+        if (transition.Rejected)
+        {
+            session.Reject(transition.RejectionKey ?? SetupAssistantRejection.StepNotAvailable);
+            return;
+        }
+
+        session.ApplyMainWorkflow(transition.State);
         session.MoveTo(SetupAssistantStep.DeploymentVerification);
     }
 
@@ -458,7 +482,7 @@ internal static class SetupAssistantEndpoints
         SetupAssistantStepContext step,
         SetupAssistantSession session)
     {
-        if (session.MainSetup?.AppliedProof is not { } proof)
+        if (session.MainWorkflow is not { AppliedProof: not null } workflow)
         {
             session.Reject(SetupAssistantRejection.StepNotAvailable);
             return;
@@ -474,19 +498,27 @@ internal static class SetupAssistantEndpoints
         }
 
         session.MarkLiveSendingPromotionStarted();
-        var outcome = await step.Operations.EnableLiveSendingAsync(
-            new SetupAssistantProductionInput
+        var transition = await SetupAssistantMainSetupOrchestrator.AdvanceAsync(
+            step.Operations,
+            workflow,
+            new SetupAssistantMainCollectedInput
             {
-                EnvironmentConfirmation = environmentConfirmation,
+                TenantId = session.TenantId,
+                ProductionEnvironmentConfirmation = environmentConfirmation,
                 LiveSendingEnableApproval = approval,
-                AppliedProof = proof,
             },
             step.CancellationToken);
+        if (transition.Rejected)
+        {
+            session.Reject(transition.RejectionKey ?? SetupAssistantRejection.StepNotAvailable);
+            return;
+        }
+
+        session.ApplyMainWorkflow(transition.State);
         // Recorded apart from the apply result: a failed enablement is a live-sending failure, not
         // a retraction of the main setup that already succeeded.
-        session.SetLiveSending(outcome);
         session.MoveTo(
-            outcome.Kind == SetupAssistantOutcomeKind.Succeeded
+            transition.State.IsComplete
                 ? SetupAssistantStep.MainSetupComplete
                 : SetupAssistantStep.DeploymentVerification);
     }
