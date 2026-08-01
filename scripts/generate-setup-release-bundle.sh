@@ -178,21 +178,22 @@ rm -f "${archive_path}"
 
 if [[ "${CREATE_ARCHIVES}" == "1" ]]; then
   if [[ "${RID}" == "win-x64" ]]; then
-    if command -v powershell.exe >/dev/null 2>&1; then
-      powershell.exe -NoProfile -Command \
-        "Compress-Archive -Path '${out_dir}' -DestinationPath '${archive_path}' -Force"
-    elif command -v zip >/dev/null 2>&1; then
-      (cd "${STAGING_PARENT}" && zip -qr "${archive_path}" "${RID}")
-    else
-      echo "[error] zip or powershell required to archive win-x64." >&2
-      exit 1
-    fi
+    # Prefer Python zipfile with explicit POSIX entry names.
+    # Do not use the Windows PowerShell archive cmdlet: it stores backslash
+    # separators and Git Bash unzip fails (Candidate attempt 3 / #458).
+    python3 "${SCRIPT_DIR}/create-setup-release-zip.py" "${out_dir}" "${archive_path}"
   else
     # Preserve executable bits in the archive (smoke verifies without chmod).
     tar -C "${STAGING_PARENT}" -czf "${archive_path}" "${RID}"
   fi
   echo "[info] Wrote ${archive_path}"
-  ARCHIVE_SHA="sha256:$(sha256sum "${archive_path}" | awk '{print $1}')"
+  # Do not parse sha256sum path output: Windows paths make GNU sha256sum prefix
+  # a leading backslash on the digest field (Candidate attempt 3).
+  ARCHIVE_SHA="$(python3 "${SCRIPT_DIR}/compute-file-sha256.py" "${archive_path}")"
+  if [[ ! "${ARCHIVE_SHA}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+    echo "[error] malformed archive digest: ${ARCHIVE_SHA}" >&2
+    exit 1
+  fi
   echo "${ARCHIVE_SHA}" > "${archive_path}.sha256"
   echo "${ARCHIVE_SHA}  ${archive_name}" > "${OUT_ROOT}/${archive_name}.sha256.txt"
   echo "archiveSha256=${ARCHIVE_SHA}"

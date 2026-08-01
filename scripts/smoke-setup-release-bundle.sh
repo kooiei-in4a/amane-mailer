@@ -20,7 +20,13 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 
 [[ -f "${ARCHIVE_PATH}" ]] || fail "archive missing: ${ARCHIVE_PATH}"
 
-actual_sha="sha256:$(sha256sum "${ARCHIVE_PATH}" | awk '{print $1}')"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+if [[ ! "${EXPECTED_ARCHIVE_SHA}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+  fail "malformed expected archive sha: ${EXPECTED_ARCHIVE_SHA}"
+fi
+# Hash file bytes directly — never parse sha256sum path output on Windows.
+actual_sha="$(python3 "${SCRIPT_DIR}/compute-file-sha256.py" "${ARCHIVE_PATH}")"
+[[ "${actual_sha}" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "malformed actual archive sha: ${actual_sha}"
 [[ "${actual_sha}" == "${EXPECTED_ARCHIVE_SHA}" ]] || fail "archive sha mismatch"
 
 # Confirm this runner can execute the RID (fail closed — never PASS on presence alone).
@@ -50,13 +56,12 @@ trap cleanup EXIT
 
 echo "[info] Extracting ${ARCHIVE_PATH} -> ${TMP}"
 if [[ "${ARCHIVE_PATH}" == *.zip ]]; then
-  if command -v unzip >/dev/null 2>&1; then
-    unzip -q "${ARCHIVE_PATH}" -d "${TMP}"
-  elif command -v powershell.exe >/dev/null 2>&1; then
-    powershell.exe -NoProfile -Command "Expand-Archive -Path '${ARCHIVE_PATH}' -DestinationPath '${TMP}' -Force"
-  else
-    fail "unzip/powershell required for zip archives"
-  fi
+  # Require unzip so backslash entry warnings fail closed (do not fall back to
+  # Expand-Archive, which would hide Compress-Archive regressions).
+  command -v unzip >/dev/null 2>&1 || fail "unzip required for zip archives"
+  python3 "${SCRIPT_DIR}/assert-posix-zip-entries.py" "${ARCHIVE_PATH}" --rid "${EXPECTED_RID}"
+  unzip -t "${ARCHIVE_PATH}" >/dev/null || fail "unzip -t failed"
+  unzip -q "${ARCHIVE_PATH}" -d "${TMP}"
 else
   tar -C "${TMP}" -xzf "${ARCHIVE_PATH}"
 fi
@@ -108,17 +113,39 @@ assert not manifest.get("ociLayoutRelativePath")
 print("manifest-ok")
 PY
 
-# Verify FILES-SHA256SUMS
+# Verify FILES-SHA256SUMS (hash bytes directly; avoid sha256sum path escapes)
 checksums="${rid_dir}/FILES-SHA256SUMS"
 [[ -f "${checksums}" ]] || checksums="${rid_dir}/SHA256SUMS"
-while read -r hex path; do
-  [[ -n "${hex}" ]] || continue
-  rel="${path#\*}"
-  file="${rid_dir}/${rel}"
-  [[ -f "${file}" ]] || fail "checksum path missing: ${rel}"
-  got="$(sha256sum "${file}" | awk '{print $1}')"
-  [[ "${got}" == "${hex}" ]] || fail "checksum mismatch: ${rel}"
-done < "${checksums}"
+python3 - <<'PY' "${checksums}" "${rid_dir}"
+import hashlib, pathlib, sys
+sums = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+for line in sums.read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    parts = line.split()
+    if len(parts) < 2:
+        raise SystemExit(f"malformed checksum line: {line!r}")
+    hex_digest, rel = parts[0], parts[1]
+    rel = rel[1:] if rel.startswith("*") else rel
+    if len(hex_digest) != 64 or any(c not in "0123456789abcdef" for c in hex_digest):
+        raise SystemExit(f"malformed hex digest: {hex_digest!r}")
+    path = root / rel
+    if not path.is_file():
+        raise SystemExit(f"checksum path missing: {rel}")
+    h = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    got = h.hexdigest()
+    if got != hex_digest:
+        raise SystemExit(f"checksum mismatch: {rel}")
+print("files-sha256sums-ok")
+PY
 pass "FILES-SHA256SUMS"
 
 # Linux: executable bit must survive extract WITHOUT chmod.
@@ -127,8 +154,8 @@ if [[ "${EXPECTED_RID}" == linux-* ]]; then
   pass "executable bit preserved"
 fi
 
-# Secret / latest structural scan
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd)"
+# Secret / PII structural scan
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
 bash "${REPO_ROOT}/scripts/scan-setup-release-bundle.sh" "${rid_dir}"
 
 # Binary version core assert + real exec smoke
