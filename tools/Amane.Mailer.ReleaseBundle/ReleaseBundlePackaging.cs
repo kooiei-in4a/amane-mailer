@@ -950,13 +950,71 @@ public static class ReleaseBundlePackaging
             return PackagingFail("oci_index_empty", "OCI index.json manifests must not be empty.");
         }
 
-        // Bind Buildx image digest to the OCI layout root index.json content digest.
-        var layoutIndexDigest = DigestBytes(indexBytes);
-        if (!string.Equals(expectedImageDigest, layoutIndexDigest, StringComparison.OrdinalIgnoreCase))
+        // Bind Buildx image digest to a descriptor inside index.json manifests[].
+        // index.json is the OCI layout entrypoint file; its content digest is NOT the
+        // Buildx containerimage.descriptor.digest / containerimage.digest identity.
+        // That digest names the image index (or image manifest) blob referenced by
+        // a descriptor in manifests[] (see OCI Image Layout + Buildx metadata-file).
+        var expectedDigest = expectedImageDigest.ToLowerInvariant();
+        var boundMatches = index.Manifests
+            .Where(d =>
+                !string.IsNullOrWhiteSpace(d.Digest)
+                && string.Equals(d.Digest, expectedDigest, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (boundMatches.Length == 0)
         {
             return PackagingFail(
                 "oci_image_digest_mismatch",
-                "expectedImageDigest must equal sha256 of the OCI layout index.json bytes.");
+                "expectedImageDigest must match exactly one descriptor digest in index.json manifests.");
+        }
+
+        if (boundMatches.Length != 1)
+        {
+            return PackagingFail(
+                "oci_image_digest_ambiguous",
+                "expectedImageDigest matched multiple descriptors in index.json manifests.");
+        }
+
+        var bound = boundMatches[0];
+        var boundBlobPath = BlobPath(rootFull, expectedDigest);
+        if (!File.Exists(boundBlobPath))
+        {
+            return PackagingFail(
+                "oci_blob_missing",
+                "OCI layout is missing the blob referenced by the Buildx image digest descriptor.");
+        }
+
+        byte[] boundBlobBytes;
+        try
+        {
+            boundBlobBytes = File.ReadAllBytes(boundBlobPath);
+        }
+        catch
+        {
+            return PackagingFail(
+                "oci_blob_unreadable",
+                "OCI layout could not read the blob referenced by the Buildx image digest.");
+        }
+
+        var boundBlobDigest = DigestBytes(boundBlobBytes);
+        if (!string.Equals(boundBlobDigest, expectedDigest, StringComparison.OrdinalIgnoreCase))
+        {
+            return PackagingFail(
+                "oci_blob_digest_mismatch",
+                "Referenced blob content digest does not match the Buildx image digest.");
+        }
+
+        if (bound.Size is null || bound.Size.Value != boundBlobBytes.LongLength)
+        {
+            return PackagingFail(
+                "oci_descriptor_size_mismatch",
+                "Bound index.json descriptor size must equal referenced blob byte length.");
+        }
+
+        var boundMediaCheck = AssertDescriptorMediaTypeMatchesBlob(bound, boundBlobBytes);
+        if (!boundMediaCheck.Success)
+        {
+            return boundMediaCheck;
         }
 
         if (expectedRootDescriptor is not null)
@@ -964,31 +1022,48 @@ public static class ReleaseBundlePackaging
             if (!IsValidDigest(expectedRootDescriptor.Digest)
                 || !string.Equals(
                     expectedRootDescriptor.Digest,
-                    layoutIndexDigest,
+                    expectedDigest,
                     StringComparison.OrdinalIgnoreCase))
             {
                 return PackagingFail(
                     "oci_descriptor_digest_mismatch",
-                    "Buildx containerimage.descriptor.digest must equal sha256(index.json).");
+                    "Buildx containerimage.descriptor.digest must equal --image-digest / bound manifests[] digest.");
             }
 
             if (expectedRootDescriptor.Size is null
-                || expectedRootDescriptor.Size.Value != indexBytes.LongLength)
+                || expectedRootDescriptor.Size.Value != boundBlobBytes.LongLength
+                || bound.Size.Value != expectedRootDescriptor.Size.Value)
             {
                 return PackagingFail(
                     "oci_descriptor_size_mismatch",
-                    "Buildx containerimage.descriptor.size must equal index.json byte length.");
+                    "Buildx containerimage.descriptor.size must equal bound descriptor size and blob byte length.");
             }
 
             var expectedMediaType = expectedRootDescriptor.MediaType;
-            var layoutMediaType = index.MediaType;
+            var boundMediaType = bound.MediaType;
             if (!string.IsNullOrWhiteSpace(expectedMediaType)
-                && !string.IsNullOrWhiteSpace(layoutMediaType)
-                && !string.Equals(expectedMediaType, layoutMediaType, StringComparison.Ordinal))
+                && !string.IsNullOrWhiteSpace(boundMediaType)
+                && !string.Equals(expectedMediaType, boundMediaType, StringComparison.Ordinal))
             {
                 return PackagingFail(
                     "oci_descriptor_media_type_mismatch",
-                    "Buildx containerimage.descriptor.mediaType must match index.json mediaType.");
+                    "Buildx containerimage.descriptor.mediaType must match the bound index.json descriptor mediaType.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(expectedMediaType))
+            {
+                var metaMediaCheck = AssertDescriptorMediaTypeMatchesBlob(
+                    new OciDescriptor
+                    {
+                        Digest = expectedDigest,
+                        MediaType = expectedMediaType,
+                        Size = expectedRootDescriptor.Size,
+                    },
+                    boundBlobBytes);
+                if (!metaMediaCheck.Success)
+                {
+                    return metaMediaCheck;
+                }
             }
         }
 
@@ -1190,6 +1265,98 @@ public static class ReleaseBundlePackaging
             return PackagingFail(
                 "image_identity_platforms_mismatch",
                 "image-identity platforms must be exactly linux/amd64 and linux/arm64.");
+        }
+
+        return new PackagingValidationResult { Success = true };
+    }
+
+    /// <summary>
+    /// Ensure a descriptor mediaType is consistent with the JSON mediaType inside the
+    /// referenced blob when the blob is an OCI index or image manifest document.
+    /// </summary>
+    private static PackagingValidationResult AssertDescriptorMediaTypeMatchesBlob(
+        OciDescriptor descriptor,
+        byte[] blobBytes)
+    {
+        var mediaType = descriptor.MediaType ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(mediaType))
+        {
+            return new PackagingValidationResult { Success = true };
+        }
+
+        if (mediaType.Contains("index", StringComparison.OrdinalIgnoreCase))
+        {
+            OciIndexDocument? nested;
+            try
+            {
+                nested = JsonSerializer.Deserialize(
+                    blobBytes,
+                    ReleaseBundleJsonContext.Default.OciIndexDocument);
+            }
+            catch
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType claims an index but blob is not a readable OCI index.");
+            }
+
+            if (nested is null)
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType claims an index but blob is not a readable OCI index.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(nested.MediaType)
+                && !string.Equals(nested.MediaType, mediaType, StringComparison.Ordinal))
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType does not match mediaType inside the referenced index blob.");
+            }
+
+            if (nested.Manifests is null)
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType claims an index but blob has no manifests array.");
+            }
+
+            return new PackagingValidationResult { Success = true };
+        }
+
+        if (mediaType.Contains("manifest", StringComparison.OrdinalIgnoreCase))
+        {
+            OciManifestDocument? manifest;
+            try
+            {
+                manifest = JsonSerializer.Deserialize(
+                    blobBytes,
+                    ReleaseBundleJsonContext.Default.OciManifestDocument);
+            }
+            catch
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType claims a manifest but blob is not a readable OCI manifest.");
+            }
+
+            if (manifest is null)
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType claims a manifest but blob is not a readable OCI manifest.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(manifest.MediaType)
+                && !string.Equals(manifest.MediaType, mediaType, StringComparison.Ordinal))
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType does not match mediaType inside the referenced manifest blob.");
+            }
+
+            return new PackagingValidationResult { Success = true };
         }
 
         return new PackagingValidationResult { Success = true };

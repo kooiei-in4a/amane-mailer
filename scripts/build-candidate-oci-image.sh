@@ -60,9 +60,14 @@ rm -f "${METADATA_FILE}"
 
 echo "[info] Building candidate OCI layout at ${DEST} (platform=${PLATFORM}, no GHCR push)"
 
+# EXTERNAL_PROVENANCE (D-ATTEST 方式2): do not embed Buildx provenance/SBOM
+# attestation manifests in the candidate OCI index. Registry attestation is out
+# of band for v1.2.0; including them would change the image-index digest identity.
 docker buildx build \
   --file "${REPO_ROOT}/infra/docker/Dockerfile" \
   --platform "${PLATFORM}" \
+  --provenance=false \
+  --sbom=false \
   --build-arg "SOURCE_COMMIT=${SOURCE_SHA}" \
   --build-arg "MAILER_VERSION=${MAILER_VERSION}" \
   --label "org.opencontainers.image.source=https://github.com/kooiei-in4a/amane-mailer" \
@@ -77,6 +82,10 @@ if [[ ! -f "${DEST}/oci-layout" || ! -f "${DEST}/index.json" ]]; then
   exit 1
 fi
 
+# Buildx may leave a transient "ingest/" directory in type=oci exports.
+# It is not part of the OCI Image Layout allowlist — remove before validation.
+rm -rf "${DEST}/ingest"
+
 if [[ ! -d "${DEST}/blobs/sha256" ]]; then
   echo "[error] OCI layout incomplete: missing blobs/sha256." >&2
   exit 1
@@ -87,21 +96,16 @@ if [[ ! -f "${METADATA_FILE}" ]]; then
   exit 1
 fi
 
-IMAGE_DIGEST="$(python3 - <<'PY' "${METADATA_FILE}" "${DEST}/index.json"
-import hashlib, json, sys
+IMAGE_DIGEST="$(python3 - <<'PY' "${METADATA_FILE}"
+import json, sys
 meta_path = sys.argv[1]
-index_path = sys.argv[2]
 with open(meta_path, encoding="utf-8") as f:
     meta = json.load(f)
 
 descriptor = meta.get("containerimage.descriptor")
 digest = None
-media_type = None
-size = None
 if isinstance(descriptor, dict):
     digest = descriptor.get("digest")
-    media_type = descriptor.get("mediaType")
-    size = descriptor.get("size")
 if not isinstance(digest, str):
     digest = meta.get("containerimage.digest")
 if not isinstance(digest, str) or not digest.startswith("sha256:") or len(digest) != 71:
@@ -110,19 +114,9 @@ hexpart = digest[len("sha256:"):]
 if hexpart != hexpart.lower() or any(c not in "0123456789abcdef" for c in hexpart):
     raise SystemExit("Buildx image digest must use lowercase hex")
 
-index_bytes = open(index_path, "rb").read()
-layout_digest = "sha256:" + hashlib.sha256(index_bytes).hexdigest()
-if digest.lower() != layout_digest:
-    raise SystemExit(
-        f"Buildx image digest {digest} does not equal sha256(index.json) {layout_digest}"
-    )
-if isinstance(descriptor, dict):
-    if size is not None and int(size) != len(index_bytes):
-        raise SystemExit("containerimage.descriptor.size does not match index.json byte length")
-    index_json = json.loads(index_bytes.decode("utf-8"))
-    layout_media = index_json.get("mediaType")
-    if isinstance(media_type, str) and isinstance(layout_media, str) and media_type != layout_media:
-        raise SystemExit("containerimage.descriptor.mediaType does not match index.json mediaType")
+# index.json is the OCI layout entrypoint only. Buildx digest names the image
+# index/manifest blob referenced from index.json manifests[] — do NOT compare
+# digest to sha256(index.json). Full graph binding is enforced by validate-oci.
 print(digest.lower())
 PY
 )"
@@ -130,6 +124,8 @@ PY
 echo "imageDigest=${IMAGE_DIGEST}"
 echo "${IMAGE_DIGEST}" > "${PARENT}/oci-index.digest"
 
+# oci-index.digest / ImageDigest / OciIndexDigest mean the Buildx image/index
+# descriptor digest (manifests[] target), not sha256(index.json bytes).
 # Validate descriptor graph via tools project (exact amd64+arm64); bind Buildx digest to layout.
 dotnet run --project "${REPO_ROOT}/tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" \
   -c "${CONFIGURATION:-Release}" --no-launch-profile -- \

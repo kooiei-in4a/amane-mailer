@@ -9,7 +9,8 @@ bundle の生成手順です。公開（tag / GHCR / GitHub Release）は
 [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) の所有です。
 
 詳細（構成、manifest schemaVersion 1 additive、`payloadTreeSha256` /
-`archiveSha256`、OCI descriptor graph + Buildx digest↔`index.json` 束縛、
+`archiveSha256`、OCI descriptor graph + Buildx digest↔`index.json` `manifests[]`
+束縛（`sha256(index.json)` ではない）、
 Mailpit 必須 / tag 拒否、`supportedReleaseManifestSchemaMin`/`Max`、
 tools へ分離した packaging、artifact smoke、workflow artifact
 `setup-release-candidate-oci`、#456 OCI import（containerd / skopeo）、

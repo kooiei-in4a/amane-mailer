@@ -82,18 +82,24 @@ Candidates build a local multi-arch OCI layout via
 
 - `docker buildx --platform linux/amd64,linux/arm64 --metadata-file … --output type=oci,dest=…,tar=false`
 - Layout allowlist: `oci-layout`, `index.json`, `blobs/sha256/<referenced digests>`
+  (Buildx may emit a transient `ingest/` directory; the candidate script removes it
+  before validation)
 - Descriptor-graph validation rejects empty indexes, missing amd64/arm64,
   symlinks, extra files, empty blobs, and digest mismatches
 - Image digest source of truth: Buildx metadata prefers
   `containerimage.descriptor` (digest / mediaType / size), with careful fallback
   to `containerimage.digest`
-- `validate-oci` **fails** unless `--image-digest` equals `sha256(index.json
-  bytes)`; when a descriptor is present it must also match index.json size /
-  mediaType
+- That digest is the **image index / image manifest blob** named by a descriptor
+  in `index.json` `manifests[]`. It is **not** `sha256(index.json)` (layout
+  entrypoint file digest). `validate-oci` binds `--image-digest` to exactly one
+  `manifests[]` descriptor, then checks blob presence, content SHA-256, size,
+  and mediaType, and walks the descriptor graph for required platforms
 - Host packaging asserts `image-identity.json`: `sourceCommitSha` ==
   `git rev-parse HEAD` / `SOURCE_SHA`, `mailerVersion` == `MAILER_VERSION`,
   platforms exactly `linux/amd64` + `linux/arm64` (order-insensitive)
 - Dockerfile accepts `SOURCE_COMMIT` + `MAILER_VERSION` for publish props and labels
+- Candidate builds use `--provenance=false --sbom=false` so the OCI index matches
+  EXTERNAL_PROVENANCE (no embedded Buildx attestation manifests)
 - This path **never** pushes to GHCR. #458 owns public image publish.
 
 Workflow OCI artifact name: **`setup-release-candidate-oci`**
