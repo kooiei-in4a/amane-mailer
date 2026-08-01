@@ -570,7 +570,7 @@ public sealed class ReleaseBundlePackagingTests
 
         var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, digest);
         Assert.False(result.Success);
-        Assert.Equal("oci_descriptor_media_type_mismatch", result.ReasonCode);
+        Assert.Equal("oci_bound_not_image_index", result.ReasonCode);
     }
 
     [Fact]
@@ -634,39 +634,135 @@ public sealed class ReleaseBundlePackagingTests
     }
 
     [Fact]
-    public void TryParseBuildxMetadata_and_validate_oci_reject_image_digest_argument_mismatch()
+    public void AssertImageDigestMatchesMetadata_rejects_mismatch()
     {
-        using var scratch = new TempDir();
-        var oci = Path.Combine(scratch.Path, "oci");
-        var digest = CreateMinimalOciLayout(oci, includePlatformManifests: true);
-        var blobPath = Path.Combine(oci, "blobs", "sha256", digest["sha256:".Length..]);
-        var size = new FileInfo(blobPath).Length;
-        var metadata = JsonSerializer.Serialize(new Dictionary<string, object>
-        {
-            ["containerimage.descriptor"] = new Dictionary<string, object>
-            {
-                ["mediaType"] = "application/vnd.oci.image.index.v1+json",
-                ["digest"] = digest,
-                ["size"] = size,
-            },
-        });
-
-        var parsed = ReleaseBundlePackaging.TryParseBuildxMetadata(
-            metadata,
-            out var metaDigest,
-            out var descriptor);
-        Assert.True(parsed.Success);
-        Assert.Equal(digest, metaDigest);
+        var ok = ReleaseBundlePackaging.AssertImageDigestMatchesMetadata(TestDigest, TestDigest);
+        Assert.True(ok.Success);
 
         var other =
             "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        // Program.cs compares --image-digest to metadata before validate; mirror that gate.
-        Assert.False(string.Equals(metaDigest, other, StringComparison.OrdinalIgnoreCase));
+        var mismatch = ReleaseBundlePackaging.AssertImageDigestMatchesMetadata(TestDigest, other);
+        Assert.False(mismatch.Success);
+        Assert.Equal("buildx_image_digest_mismatch", mismatch.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_sibling_platform_outside_bound_subtree()
+    {
+        using var scratch = new TempDir();
+
+        // bound subtree = amd64 only; top-level sibling supplies arm64
+        var amdOnly = Path.Combine(scratch.Path, "amd-only-sibling-arm");
+        var amdDigest = CreateLayoutWithTopLevelSiblingPlatform(
+            amdOnly,
+            boundPlatforms: ["amd64"],
+            siblingPlatform: "arm64");
+        var amdResult = ReleaseBundlePackaging.ValidateOciLayoutDirectory(amdOnly, amdDigest);
+        Assert.False(amdResult.Success);
+        Assert.Equal("oci_layout_sibling_manifests", amdResult.ReasonCode);
+
+        // bound subtree = arm64 only; top-level sibling supplies amd64
+        var armOnly = Path.Combine(scratch.Path, "arm-only-sibling-amd");
+        var armDigest = CreateLayoutWithTopLevelSiblingPlatform(
+            armOnly,
+            boundPlatforms: ["arm64"],
+            siblingPlatform: "amd64");
+        var armResult = ReleaseBundlePackaging.ValidateOciLayoutDirectory(armOnly, armDigest);
+        Assert.False(armResult.Success);
+        Assert.Equal("oci_layout_sibling_manifests", armResult.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_bound_single_manifest_with_sibling_platform()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "bound-manifest-sibling");
+        var digest = CreateBoundSingleManifestWithSibling(oci);
+        var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, digest);
+        Assert.False(result.Success);
+        // Sibling reject fires first; bound-not-index would also apply without siblings.
         Assert.True(
-            ReleaseBundlePackaging.ValidateOciLayoutDirectory(
-                oci,
-                digest,
-                expectedRootDescriptor: descriptor).Success);
+            result.ReasonCode is "oci_layout_sibling_manifests" or "oci_bound_not_image_index",
+            result.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_arbitrary_blob_platform_annotation()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "arbitrary-platform");
+        var digest = CreateMinimalOciLayout(oci, includePlatformManifests: true, omitArm64: true);
+        digest = InjectBogusPlatformDescriptorIntoBoundIndex(
+            oci,
+            digest,
+            mediaType: "application/octet-stream",
+            architecture: "arm64");
+        var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, digest);
+        Assert.False(result.Success);
+        Assert.True(
+            result.ReasonCode is "oci_platform_manifest_media_type_invalid"
+                or "oci_descriptor_media_type_unknown",
+            result.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_config_descriptor_platform_annotation()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "config-platform");
+        var digest = CreateMinimalOciLayout(oci, includePlatformManifests: true);
+        var fail = MutateFirstConfigDescriptor(oci, digest, addPlatformArm64: true, clearMediaType: false);
+        Assert.False(fail.Success);
+        Assert.Equal("oci_platform_on_non_manifest", fail.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_missing_or_unknown_media_types_for_platforms()
+    {
+        using var scratch = new TempDir();
+        var missingMedia = Path.Combine(scratch.Path, "missing-media");
+        var missingDigest = CreateMinimalOciLayout(missingMedia, includePlatformManifests: true, omitArm64: true);
+        missingDigest = InjectBogusPlatformDescriptorIntoBoundIndex(
+            missingMedia,
+            missingDigest,
+            mediaType: null,
+            architecture: "arm64");
+        var missing = ReleaseBundlePackaging.ValidateOciLayoutDirectory(missingMedia, missingDigest);
+        Assert.False(missing.Success);
+        Assert.Equal("oci_descriptor_media_type_missing", missing.ReasonCode);
+
+        var unknownMedia = Path.Combine(scratch.Path, "unknown-media");
+        var unknownDigest = CreateMinimalOciLayout(unknownMedia, includePlatformManifests: true, omitArm64: true);
+        unknownDigest = InjectBogusPlatformDescriptorIntoBoundIndex(
+            unknownMedia,
+            unknownDigest,
+            mediaType: "application/vnd.example.unknown",
+            architecture: "arm64");
+        var unknown = ReleaseBundlePackaging.ValidateOciLayoutDirectory(unknownMedia, unknownDigest);
+        Assert.False(unknown.Success);
+        Assert.Equal("oci_descriptor_media_type_unknown", unknown.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_nested_descriptor_size_mismatches()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "nested-size");
+        var digest = CreateMinimalOciLayout(oci, includePlatformManifests: true);
+        var fail = MutateFirstPlatformManifestSize(oci, digest, delta: 17);
+        Assert.False(fail.Success);
+        Assert.Equal("oci_descriptor_size_mismatch", fail.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_config_size_mismatch()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "config-size");
+        var digest = CreateMinimalOciLayout(oci, includePlatformManifests: true);
+        var fail = MutateFirstConfigDescriptor(oci, digest, addPlatformArm64: false, clearMediaType: false, sizeDelta: 5);
+        Assert.False(fail.Success);
+        Assert.Equal("oci_descriptor_size_mismatch", fail.ReasonCode);
     }
 
     [Fact]
@@ -1056,6 +1152,308 @@ public sealed class ReleaseBundlePackagingTests
 
         // Return Buildx-style image digest (= image index blob), not sha256(index.json).
         return imageIndexDigest;
+    }
+
+    /// <summary>
+    /// Bound image-index has only the listed platforms; a top-level sibling manifest
+    /// supplies another platform outside the Buildx digest subtree.
+    /// </summary>
+    private static string CreateLayoutWithTopLevelSiblingPlatform(
+        string directory,
+        string[] boundPlatforms,
+        string siblingPlatform)
+    {
+        Directory.CreateDirectory(Path.Combine(directory, "blobs", "sha256"));
+        File.WriteAllText(
+            Path.Combine(directory, "oci-layout"),
+            """{"imageLayoutVersion":"1.0.0"}""" + "\n");
+
+        void MakeManifest(string arch, out string digest, out string json)
+        {
+            var configJson =
+                "{\"architecture\":\"" + arch + "\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[]}}\n";
+            var configDigest = WriteBlob(directory, configJson);
+            json =
+                "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\","
+                + "\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\""
+                + configDigest
+                + "\",\"size\":"
+                + Encoding.UTF8.GetByteCount(configJson).ToString()
+                + "},\"layers\":[]}\n";
+            digest = WriteBlob(directory, json);
+        }
+
+        var platformDescriptors = new List<string>();
+        foreach (var arch in boundPlatforms)
+        {
+            MakeManifest(arch, out var dig, out var json);
+            platformDescriptors.Add(
+                "{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\""
+                + dig
+                + "\",\"size\":"
+                + Encoding.UTF8.GetByteCount(json).ToString()
+                + ",\"platform\":{\"architecture\":\""
+                + arch
+                + "\",\"os\":\"linux\"}}");
+        }
+
+        var imageIndexJson =
+            "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":["
+            + string.Join(",", platformDescriptors)
+            + "]}\n";
+        var imageIndexDigest = WriteBlob(directory, imageIndexJson);
+
+        MakeManifest(siblingPlatform, out var siblingDig, out var siblingJson);
+        var layoutIndexJson =
+            "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":["
+            + "{\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"digest\":\""
+            + imageIndexDigest
+            + "\",\"size\":"
+            + Encoding.UTF8.GetByteCount(imageIndexJson).ToString()
+            + "},"
+            + "{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\""
+            + siblingDig
+            + "\",\"size\":"
+            + Encoding.UTF8.GetByteCount(siblingJson).ToString()
+            + ",\"platform\":{\"architecture\":\""
+            + siblingPlatform
+            + "\",\"os\":\"linux\"}}]}\n";
+        File.WriteAllText(Path.Combine(directory, "index.json"), layoutIndexJson);
+        return imageIndexDigest;
+    }
+
+    private static string CreateBoundSingleManifestWithSibling(string directory)
+    {
+        Directory.CreateDirectory(Path.Combine(directory, "blobs", "sha256"));
+        File.WriteAllText(
+            Path.Combine(directory, "oci-layout"),
+            """{"imageLayoutVersion":"1.0.0"}""" + "\n");
+
+        var configAmd = """{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}""" + "\n";
+        var configAmdDig = WriteBlob(directory, configAmd);
+        var manifestAmd =
+            "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\","
+            + "\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\""
+            + configAmdDig
+            + "\",\"size\":"
+            + Encoding.UTF8.GetByteCount(configAmd).ToString()
+            + "},\"layers\":[]}\n";
+        var manifestAmdDig = WriteBlob(directory, manifestAmd);
+
+        var configArm = """{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}""" + "\n";
+        var configArmDig = WriteBlob(directory, configArm);
+        var manifestArm =
+            "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\","
+            + "\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\""
+            + configArmDig
+            + "\",\"size\":"
+            + Encoding.UTF8.GetByteCount(configArm).ToString()
+            + "},\"layers\":[]}\n";
+        var manifestArmDig = WriteBlob(directory, manifestArm);
+
+        var layout =
+            "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":["
+            + "{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\""
+            + manifestAmdDig
+            + "\",\"size\":"
+            + Encoding.UTF8.GetByteCount(manifestAmd).ToString()
+            + ",\"platform\":{\"architecture\":\"amd64\",\"os\":\"linux\"}},"
+            + "{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\""
+            + manifestArmDig
+            + "\",\"size\":"
+            + Encoding.UTF8.GetByteCount(manifestArm).ToString()
+            + ",\"platform\":{\"architecture\":\"arm64\",\"os\":\"linux\"}}]}\n";
+        File.WriteAllText(Path.Combine(directory, "index.json"), layout);
+        return manifestAmdDig;
+    }
+
+    private static string InjectBogusPlatformDescriptorIntoBoundIndex(
+        string ociRoot,
+        string boundDigest,
+        string? mediaType,
+        string architecture)
+    {
+        var bogusJson = "{\"kind\":\"not-a-manifest\"}\n";
+        var bogusDigest = WriteBlob(ociRoot, bogusJson);
+        var indexBlobPath = Path.Combine(ociRoot, "blobs", "sha256", boundDigest["sha256:".Length..]);
+        var nested = JsonSerializer.Deserialize(
+            File.ReadAllBytes(indexBlobPath),
+            ReleaseBundleJsonContext.Default.OciIndexDocument)!;
+        var descriptors = nested.Manifests!.ToList();
+        descriptors.Add(new OciDescriptor
+        {
+            Digest = bogusDigest,
+            MediaType = mediaType,
+            Size = Encoding.UTF8.GetByteCount(bogusJson),
+            Platform = new OciPlatform { Os = "linux", Architecture = architecture },
+        });
+        var rewritten = new OciIndexDocument
+        {
+            SchemaVersion = 2,
+            MediaType = "application/vnd.oci.image.index.v1+json",
+            Manifests = descriptors.ToArray(),
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(
+            rewritten,
+            ReleaseBundleJsonContext.Default.OciIndexDocument);
+        var newBoundDigest = "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        File.WriteAllBytes(Path.Combine(ociRoot, "blobs", "sha256", newBoundDigest["sha256:".Length..]), bytes);
+        File.Delete(indexBlobPath);
+        var layout = new OciIndexDocument
+        {
+            SchemaVersion = 2,
+            MediaType = "application/vnd.oci.image.index.v1+json",
+            Manifests =
+            [
+                new OciDescriptor
+                {
+                    Digest = newBoundDigest,
+                    MediaType = "application/vnd.oci.image.index.v1+json",
+                    Size = bytes.LongLength,
+                },
+            ],
+        };
+        File.WriteAllBytes(
+            Path.Combine(ociRoot, "index.json"),
+            JsonSerializer.SerializeToUtf8Bytes(layout, ReleaseBundleJsonContext.Default.OciIndexDocument));
+        return newBoundDigest;
+    }
+
+    private static ReleaseBundlePackaging.PackagingValidationResult MutateFirstPlatformManifestSize(
+        string ociRoot,
+        string boundDigest,
+        long delta)
+    {
+        var indexBlobPath = Path.Combine(ociRoot, "blobs", "sha256", boundDigest["sha256:".Length..]);
+        var nested = JsonSerializer.Deserialize(
+            File.ReadAllBytes(indexBlobPath),
+            ReleaseBundleJsonContext.Default.OciIndexDocument)!;
+        var first = nested.Manifests![0];
+        nested = new OciIndexDocument
+        {
+            SchemaVersion = 2,
+            MediaType = nested.MediaType,
+            Manifests =
+            [
+                new OciDescriptor
+                {
+                    Digest = first.Digest,
+                    MediaType = first.MediaType,
+                    Size = (first.Size ?? 0) + delta,
+                    Platform = first.Platform,
+                },
+                .. nested.Manifests.Skip(1),
+            ],
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(
+            nested,
+            ReleaseBundleJsonContext.Default.OciIndexDocument);
+        var newBound = "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        File.WriteAllBytes(Path.Combine(ociRoot, "blobs", "sha256", newBound["sha256:".Length..]), bytes);
+        File.Delete(indexBlobPath);
+        var layout = new OciIndexDocument
+        {
+            SchemaVersion = 2,
+            MediaType = "application/vnd.oci.image.index.v1+json",
+            Manifests =
+            [
+                new OciDescriptor
+                {
+                    Digest = newBound,
+                    MediaType = "application/vnd.oci.image.index.v1+json",
+                    Size = bytes.LongLength,
+                },
+            ],
+        };
+        File.WriteAllBytes(
+            Path.Combine(ociRoot, "index.json"),
+            JsonSerializer.SerializeToUtf8Bytes(layout, ReleaseBundleJsonContext.Default.OciIndexDocument));
+        return ReleaseBundlePackaging.ValidateOciLayoutDirectory(ociRoot, newBound);
+    }
+
+    private static ReleaseBundlePackaging.PackagingValidationResult MutateFirstConfigDescriptor(
+        string ociRoot,
+        string boundDigest,
+        bool addPlatformArm64,
+        bool clearMediaType,
+        long sizeDelta = 0)
+    {
+        var indexBlobPath = Path.Combine(ociRoot, "blobs", "sha256", boundDigest["sha256:".Length..]);
+        var nested = JsonSerializer.Deserialize(
+            File.ReadAllBytes(indexBlobPath),
+            ReleaseBundleJsonContext.Default.OciIndexDocument)!;
+        var first = nested.Manifests![0];
+        var manifestPath = Path.Combine(ociRoot, "blobs", "sha256", first.Digest!["sha256:".Length..]);
+        var manifest = JsonSerializer.Deserialize(
+            File.ReadAllBytes(manifestPath),
+            ReleaseBundleJsonContext.Default.OciManifestDocument)!;
+        var config = manifest.Config!;
+        var mutatedConfig = new OciDescriptor
+        {
+            Digest = config.Digest,
+            MediaType = clearMediaType ? null : config.MediaType,
+            Size = (config.Size ?? 0) + sizeDelta,
+            Platform = addPlatformArm64
+                ? new OciPlatform { Os = "linux", Architecture = "arm64" }
+                : config.Platform,
+        };
+        var mutatedManifest = new OciManifestDocument
+        {
+            SchemaVersion = 2,
+            MediaType = manifest.MediaType,
+            Config = mutatedConfig,
+            Layers = manifest.Layers,
+        };
+        var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(
+            mutatedManifest,
+            ReleaseBundleJsonContext.Default.OciManifestDocument);
+        var newManifestDigest =
+            "sha256:" + Convert.ToHexString(SHA256.HashData(manifestBytes)).ToLowerInvariant();
+        File.WriteAllBytes(
+            Path.Combine(ociRoot, "blobs", "sha256", newManifestDigest["sha256:".Length..]),
+            manifestBytes);
+        File.Delete(manifestPath);
+
+        nested = new OciIndexDocument
+        {
+            SchemaVersion = 2,
+            MediaType = nested.MediaType,
+            Manifests =
+            [
+                new OciDescriptor
+                {
+                    Digest = newManifestDigest,
+                    MediaType = first.MediaType,
+                    Size = manifestBytes.LongLength,
+                    Platform = first.Platform,
+                },
+                .. nested.Manifests.Skip(1),
+            ],
+        };
+        var indexBytes = JsonSerializer.SerializeToUtf8Bytes(
+            nested,
+            ReleaseBundleJsonContext.Default.OciIndexDocument);
+        var newBound = "sha256:" + Convert.ToHexString(SHA256.HashData(indexBytes)).ToLowerInvariant();
+        File.WriteAllBytes(Path.Combine(ociRoot, "blobs", "sha256", newBound["sha256:".Length..]), indexBytes);
+        File.Delete(indexBlobPath);
+        var layout = new OciIndexDocument
+        {
+            SchemaVersion = 2,
+            MediaType = "application/vnd.oci.image.index.v1+json",
+            Manifests =
+            [
+                new OciDescriptor
+                {
+                    Digest = newBound,
+                    MediaType = "application/vnd.oci.image.index.v1+json",
+                    Size = indexBytes.LongLength,
+                },
+            ],
+        };
+        File.WriteAllBytes(
+            Path.Combine(ociRoot, "index.json"),
+            JsonSerializer.SerializeToUtf8Bytes(layout, ReleaseBundleJsonContext.Default.OciIndexDocument));
+        return ReleaseBundlePackaging.ValidateOciLayoutDirectory(ociRoot, newBound);
     }
 
     private static string WriteBlob(string ociRoot, string content)

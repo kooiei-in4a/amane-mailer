@@ -92,8 +92,11 @@ Candidates build a local multi-arch OCI layout via
 - That digest is the **image index / image manifest blob** named by a descriptor
   in `index.json` `manifests[]`. It is **not** `sha256(index.json)` (layout
   entrypoint file digest). `validate-oci` binds `--image-digest` to exactly one
-  `manifests[]` descriptor, then checks blob presence, content SHA-256, size,
-  and mediaType, and walks the descriptor graph for required platforms
+  `manifests[]` descriptor (candidate layouts must have **exactly that one**
+  top-level descriptor — siblings are fail-closed), requires an image-index
+  mediaType, then walks **only that bound subtree** for platforms. Platform
+  counts come only from real image-manifest descriptors under the bound index;
+  every walked descriptor must satisfy digest/size/mediaType allowlist contracts
 - Host packaging asserts `image-identity.json`: `sourceCommitSha` ==
   `git rev-parse HEAD` / `SOURCE_SHA`, `mailerVersion` == `MAILER_VERSION`,
   platforms exactly `linux/amd64` + `linux/arm64` (order-insensitive)
