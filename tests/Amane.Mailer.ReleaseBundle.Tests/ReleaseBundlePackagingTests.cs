@@ -766,6 +766,29 @@ public sealed class ReleaseBundlePackagingTests
     }
 
     [Fact]
+    public void ValidateOciLayoutDirectory_rejects_layer_size_and_media_type_mismatches()
+    {
+        using var scratch = new TempDir();
+        var okOci = Path.Combine(scratch.Path, "layer-ok");
+        var okDigest = CreateMinimalOciLayout(okOci, includePlatformManifests: true, includeLayerBlob: true);
+        Assert.True(ReleaseBundlePackaging.ValidateOciLayoutDirectory(okOci, okDigest).Success);
+
+        var sizeOci = Path.Combine(scratch.Path, "layer-size");
+        var sizeDigest = CreateMinimalOciLayout(sizeOci, includePlatformManifests: true, includeLayerBlob: true);
+        var sizeFail = MutateFirstLayerDescriptor(sizeOci, sizeDigest, sizeDelta: 9, unknownMediaType: false);
+        Assert.False(sizeFail.Success);
+        Assert.Equal("oci_descriptor_size_mismatch", sizeFail.ReasonCode);
+
+        var mediaOci = Path.Combine(scratch.Path, "layer-media");
+        var mediaDigest = CreateMinimalOciLayout(mediaOci, includePlatformManifests: true, includeLayerBlob: true);
+        var mediaFail = MutateFirstLayerDescriptor(mediaOci, mediaDigest, sizeDelta: 0, unknownMediaType: true);
+        Assert.False(mediaFail.Success);
+        Assert.True(
+            mediaFail.ReasonCode is "oci_layer_media_type_invalid" or "oci_descriptor_media_type_unknown",
+            mediaFail.ReasonCode);
+    }
+
+    [Fact]
     public void ValidateOciLayoutDirectory_rejects_symlink_and_extra_files()
     {
         using var scratch = new TempDir();
@@ -1039,7 +1062,8 @@ public sealed class ReleaseBundlePackagingTests
         bool includePlatformManifests,
         bool platformOrderArm64First = false,
         bool omitArm64 = false,
-        bool includeLinux386 = false)
+        bool includeLinux386 = false,
+        bool includeLayerBlob = false)
     {
         Directory.CreateDirectory(Path.Combine(directory, "blobs", "sha256"));
         File.WriteAllText(
@@ -1058,7 +1082,21 @@ public sealed class ReleaseBundlePackagingTests
         // Realistic Buildx OCI layout:
         //   index.json (entrypoint; NOT the Buildx digest)
         //     -> image index blob (THIS is containerimage.descriptor.digest)
-        //          -> platform image manifests -> configs
+        //          -> platform image manifests -> configs (+ optional layers)
+        string? layerDigest = null;
+        string layersJson = "[]";
+        if (includeLayerBlob)
+        {
+            var layerBytes = "fake-layer-bytes\n";
+            layerDigest = WriteBlob(directory, layerBytes);
+            layersJson =
+                "[{\"mediaType\":\"application/vnd.oci.image.layer.v1.tar\",\"digest\":\""
+                + layerDigest
+                + "\",\"size\":"
+                + Encoding.UTF8.GetByteCount(layerBytes).ToString()
+                + "}]";
+        }
+
         var configJson = """{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}""" + "\n";
         var configDigest = WriteBlob(directory, configJson);
         var configArm = """{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}""" + "\n";
@@ -1070,16 +1108,21 @@ public sealed class ReleaseBundlePackagingTests
             + configDigest
             + "\",\"size\":"
             + Encoding.UTF8.GetByteCount(configJson).ToString()
-            + "},\"layers\":[]}\n";
+            + "},\"layers\":"
+            + layersJson
+            + "}\n";
         var manifestAmd64Digest = WriteBlob(directory, manifestAmd64);
 
+        // Arm64 reuses the same optional layer blob when present (shared digest is allowed).
         var manifestArm64 =
             "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\","
             + "\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\""
             + configArmDigest
             + "\",\"size\":"
             + Encoding.UTF8.GetByteCount(configArm).ToString()
-            + "},\"layers\":[]}\n";
+            + "},\"layers\":"
+            + layersJson
+            + "}\n";
         var manifestArm64Digest = WriteBlob(directory, manifestArm64);
 
         string? manifest386Digest = null;
@@ -1403,6 +1446,91 @@ public sealed class ReleaseBundlePackagingTests
             MediaType = manifest.MediaType,
             Config = mutatedConfig,
             Layers = manifest.Layers,
+        };
+        var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(
+            mutatedManifest,
+            ReleaseBundleJsonContext.Default.OciManifestDocument);
+        var newManifestDigest =
+            "sha256:" + Convert.ToHexString(SHA256.HashData(manifestBytes)).ToLowerInvariant();
+        File.WriteAllBytes(
+            Path.Combine(ociRoot, "blobs", "sha256", newManifestDigest["sha256:".Length..]),
+            manifestBytes);
+        File.Delete(manifestPath);
+
+        nested = new OciIndexDocument
+        {
+            SchemaVersion = 2,
+            MediaType = nested.MediaType,
+            Manifests =
+            [
+                new OciDescriptor
+                {
+                    Digest = newManifestDigest,
+                    MediaType = first.MediaType,
+                    Size = manifestBytes.LongLength,
+                    Platform = first.Platform,
+                },
+                .. nested.Manifests.Skip(1),
+            ],
+        };
+        var indexBytes = JsonSerializer.SerializeToUtf8Bytes(
+            nested,
+            ReleaseBundleJsonContext.Default.OciIndexDocument);
+        var newBound = "sha256:" + Convert.ToHexString(SHA256.HashData(indexBytes)).ToLowerInvariant();
+        File.WriteAllBytes(Path.Combine(ociRoot, "blobs", "sha256", newBound["sha256:".Length..]), indexBytes);
+        File.Delete(indexBlobPath);
+        var layout = new OciIndexDocument
+        {
+            SchemaVersion = 2,
+            MediaType = "application/vnd.oci.image.index.v1+json",
+            Manifests =
+            [
+                new OciDescriptor
+                {
+                    Digest = newBound,
+                    MediaType = "application/vnd.oci.image.index.v1+json",
+                    Size = indexBytes.LongLength,
+                },
+            ],
+        };
+        File.WriteAllBytes(
+            Path.Combine(ociRoot, "index.json"),
+            JsonSerializer.SerializeToUtf8Bytes(layout, ReleaseBundleJsonContext.Default.OciIndexDocument));
+        return ReleaseBundlePackaging.ValidateOciLayoutDirectory(ociRoot, newBound);
+    }
+
+    private static ReleaseBundlePackaging.PackagingValidationResult MutateFirstLayerDescriptor(
+        string ociRoot,
+        string boundDigest,
+        long sizeDelta,
+        bool unknownMediaType)
+    {
+        var indexBlobPath = Path.Combine(ociRoot, "blobs", "sha256", boundDigest["sha256:".Length..]);
+        var nested = JsonSerializer.Deserialize(
+            File.ReadAllBytes(indexBlobPath),
+            ReleaseBundleJsonContext.Default.OciIndexDocument)!;
+        var first = nested.Manifests![0];
+        var manifestPath = Path.Combine(ociRoot, "blobs", "sha256", first.Digest!["sha256:".Length..]);
+        var manifest = JsonSerializer.Deserialize(
+            File.ReadAllBytes(manifestPath),
+            ReleaseBundleJsonContext.Default.OciManifestDocument)!;
+        Assert.NotNull(manifest.Layers);
+        Assert.NotEmpty(manifest.Layers);
+
+        var layer = manifest.Layers[0];
+        var mutatedLayer = new OciDescriptor
+        {
+            Digest = layer.Digest,
+            MediaType = unknownMediaType ? "application/vnd.example.not-a-layer" : layer.MediaType,
+            Size = (layer.Size ?? 0) + sizeDelta,
+            Platform = layer.Platform,
+        };
+        var mutatedManifest = new OciManifestDocument
+        {
+            SchemaVersion = 2,
+            MediaType = manifest.MediaType,
+            Config = manifest.Config,
+            Layers = [mutatedLayer, .. manifest.Layers.Skip(1)],
         };
         var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(
             mutatedManifest,
