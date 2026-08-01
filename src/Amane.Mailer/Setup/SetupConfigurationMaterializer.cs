@@ -42,6 +42,8 @@ public static class SetupConfigurationMaterializer
         compose["MAILER_TENANTS_HOST_PATH"] = $"bundles/{bundleId}/config/{SetupBundleLayout.TenantsFileName}";
         compose["MAILER_TENANTS_CONTAINER_PATH"] = SetupBundleLayout.ContainerTenantsPath;
         compose["MAILER_SETUP_RECORDED_METADATA_PATH"] = SetupBundleLayout.ContainerRecordedMetadataPath;
+        compose["MAILER_SETUP_RECORDED_METADATA_HOST_PATH"] =
+            $"bundles/{bundleId}/metadata/{SetupBundleLayout.RecordedMetadataFileName}";
         compose["MAILER_ACS_SECRET_HOST_PATH"] = $"bundles/{bundleId}/secrets";
         compose["MAILER_PLATFORM_SENDER_HOST_PATH"] = $"bundles/{bundleId}/config";
 
@@ -78,12 +80,7 @@ public static class SetupConfigurationMaterializer
 
         // Fingerprint must exclude bundle id (ADR 0021 / #448). Written compose.env keeps real
         // bundle-specific path bindings; canonical form substitutes a stable placeholder.
-        var fingerprintCompose = new SortedDictionary<string, string>(compose, StringComparer.Ordinal);
-        foreach (var key in fingerprintCompose.Keys.ToList())
-        {
-            fingerprintCompose[key] = fingerprintCompose[key]
-                .Replace($"bundles/{bundleId}/", "bundles/<bundle-id>/", StringComparison.Ordinal);
-        }
+        var fingerprintCompose = SetupFingerprintComposeNormalizer.Normalize(compose, bundleId);
 
         var canonical = SetupCanonicalPayload.Build(
             request.Mode,
@@ -160,14 +157,7 @@ public static class SetupConfigurationMaterializer
         compose["AMANE_ADMIN_ALLOW_HTTP"] = delta.AllowHttp ? "true" : "false";
         secrets["AMANE_ADMIN_PASSWORD_HASH"] = delta.PasswordHash;
 
-        var fingerprintCompose = new SortedDictionary<string, string>(compose, StringComparer.Ordinal);
-        foreach (var key in fingerprintCompose.Keys.ToArray())
-        {
-            fingerprintCompose[key] = fingerprintCompose[key].Replace(
-                $"bundles/{bundleId}/",
-                "bundles/<bundle-id>/",
-                StringComparison.Ordinal);
-        }
+        var fingerprintCompose = SetupFingerprintComposeNormalizer.Normalize(compose, bundleId);
 
         var canonical = SetupCanonicalPayload.Build(
             mode,
@@ -223,15 +213,17 @@ public static class SetupConfigurationMaterializer
 
     private static Dictionary<string, string> BuildDefaultComposeEnv(SetupRequest request, string bundleId)
     {
+        var modeWire = SetupModeParser.ToWireValue(request.Mode);
         var compose = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["COMPOSE_PROJECT_NAME"] = "amane-mailer",
+            ["COMPOSE_PROJECT_NAME"] = request.TrustedComposeProjectName
+                ?? SetupDockerInventory.BuildProjectName("amane", modeWire),
             ["MAILER_IMAGE_REPOSITORY"] = request.ImageRepository ?? SetupImageDefaults.DefaultRepository,
             ["MAILER_IMAGE_TAG"] = request.ImageTag
                 ?? (request.DryRun
                     ? SetupImageDefaults.DryRunImageTagPlaceholder
                     : throw new InvalidOperationException("Image tag is required for non-dry-run materialization.")),
-            ["MAILER_PULL_POLICY"] = "always",
+            ["MAILER_PULL_POLICY"] = request.TrustedMailerImageReference is not null ? "never" : "always",
             ["MAILER_MEM_LIMIT"] = "512m",
             ["MAILER_CPUS"] = "1.0",
             ["MAILER_STOP_GRACE_PERIOD"] = "120s",
@@ -258,6 +250,11 @@ public static class SetupConfigurationMaterializer
             ["AMANE_ADMIN_ALLOW_HTTP"] = "false",
             ["AMANE_ADMIN_PII_LIST_MODE"] = "masked",
         };
+
+        if (request.TrustedMailerImageReference is not null)
+        {
+            compose["MAILER_IMAGE_REFERENCE"] = request.TrustedMailerImageReference;
+        }
 
         return compose;
     }

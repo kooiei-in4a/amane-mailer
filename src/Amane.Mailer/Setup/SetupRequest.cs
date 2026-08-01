@@ -68,6 +68,18 @@ public sealed record SetupRequest
 
     public string? ImageTag { get; init; }
 
+    /// <summary>
+    /// Trusted Compose project name from release inventory + deployment identity. When set, the
+    /// recorded fingerprint uses this value instead of a generic placeholder.
+    /// </summary>
+    public string? TrustedComposeProjectName { get; init; }
+
+    /// <summary>
+    /// Pinned mailer image reference from trusted release inventory. When set, compose.env and
+    /// the recorded fingerprint use <c>MAILER_PULL_POLICY=never</c> and this reference.
+    /// </summary>
+    public string? TrustedMailerImageReference { get; init; }
+
 }
 
 public sealed class SetupPlatformSenderInput
