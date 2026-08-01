@@ -8,27 +8,29 @@
 | **Design authority** | [ADR 0021](../adr/0021-easy-setup-boundaries.md) ([#446](https://github.com/kooiei-in4a/amane-mailer/issues/446), Accepted) |
 | **Target release** | `v1.2.0` |
 | **Base branch** | `develop` |
-| **Plan revision** | **5** / **2026-08-01** |
-| **Supersedes** | **Rev.4** / 2026-08-01 (and Rev.3 / Rev.2 / Rev.1) |
+| **Plan revision** | **6** / **2026-08-01** |
+| **Supersedes** | **Rev.5** / 2026-08-01 (and Rev.4 / Rev.3 / Rev.2 / Rev.1) |
 | **Encoding** | UTF-8 (no BOM); prefer ASCII arrows (`->`) over rare Unicode punctuation |
-| **This round** | Plan document revision only. **Does not execute** version prep, promote, tag, publish, public smoke, sync, commit, push, Issue/PR mutation. **Step 0.0 COMPLETE on develop for Rev.4 plan text** (`issue458PlanCommitSha` / `baseDevelopSha` = `3f2b640c08294502a6796c2634de5fdf03ce776f`). **This Rev.5 plan text is not yet durable** until Agent B APPROVE + new plan-only durability. Phase 1 remains **forbidden**. |
+| **This round** | Plan document revision only. **Does not execute** version prep, promote, tag, publish, public smoke, sync, commit, push, Issue/PR mutation. **Step 0.0 COMPLETE on develop for Rev.4 plan text** (`issue458PlanCommitSha` / `baseDevelopSha` = `3f2b640c08294502a6796c2634de5fdf03ce776f`) — still true for that file revision. **This Rev.6 plan text is not yet durable** until Agent B APPROVE + merge (new plan-only durability). Phase 1 remains **forbidden** until **B-MIG-SCOPE cleared** + explicit maintainer authorization. |
 
 This document is the execution plan for future release rounds of #458. It does **not** close #456 or #458, and it does **not** authorize irreversible release operations.
 
 ---
 
-## 0. Rev.5 changelog（Agent B B-01 REVISE 対応）
+## 0. Rev.6 changelog（Agent B M-R10-01 REVISE 対応 + sister #456 Rev.11）
 
-| Finding | Severity | Plan change in Rev.5 |
+| Finding | Severity | Plan change in Rev.6 |
 |---------|----------|----------------------|
-| **B-01** | Blocker | Break **B-MIG clearance vs Phase 1 circularity**. Rev.4 required full B-MIG (all nine INCLUDE conditions) clear before Phase 1, but INCLUDE condition 8 needs `releaseCommitSha` from version-prep merge, and condition 9 needs a new binding/run after pin/candidate — a circular gate. **Normative phase-aware split** (align Issue #458 body): **B-MIG-SCOPE** (conds 1-7 + frozen filename list + no-extra-migration policy) -> required before Phase 1 version prep; **B-MIG-PIN** (cond 8: exact inventory on `releaseCommitSha`) -> required after version-prep merge, before #455 / Step 1b.2; **B-MIG-BIND** (cond 9: new binding/run) -> required before #456 qualification start. INCLUDE still needs all nine conditions overall; they clear **in phases**, not as one pre-Phase-1 mega-gate. Update §5, §6.1, §7.1, Steps 0.2 / 0.4 / 1.4 / 1.6 / 1b.0 / 2.1, dependency shape, Next steps. Sister alignment: #456 plan Rev.10 same SCOPE/PIN/BIND split. |
-| **B-02 note** (Issue AC; already fixed on GitHub) | Blocker (Issue) | Issue #458 AC Conditional-exception language for migration Hard rows **removed**. Migration Hard (G456-42..44) = **active PASS only**; Conditional exceptions apply only where binding `gateClass=Conditional`. Plan §10 / consumer mapping already treat Hard as active PASS; retain that honesty. |
+| **M-R10-01** | Major | Sync **B-MIG-PIN / B-MIG-BIND** with sister **#456 plan Rev.11**. Normative **B-MIG-PIN output** schema (`migrationPin`: `releaseCommitSha`, `inventoryAlgorithm`, `inventoryDigestSha256`, per-file `path`+`sha256`+`gitBlobSha` for frozen 012/013, `evidenceDigestSha256`). PIN **FAIL** if `releaseCommitSha` tree has migrations beyond the frozen list, or digests mismatch that tree. **B-MIG-BIND** must carry PIN digests into #456 binding (`migrationPinDigestSha256`, `migrationInventoryDigestSha256`, `migrationFileDigests[]`) and **refuse BIND** without those PIN outputs. Add #458 consumer validators **CV-MIG-PIN-01** / **CV-MIG-PIN-02** (sealed-package integrity — **not** a second Hard product-scenario list); **B-VAL** must cover them on the migration INCLUDE path. Update §5, §6.1, Steps 1b.0 / 2.1 / 2.3, Appendix B, Next steps. |
+| **B-01 retained** | Blocker (closed in Rev.5 text) | Keep Rev.5 **phase-aware** order: **B-MIG-SCOPE** -> Phase 1 -> **B-MIG-PIN** before #455 -> **B-MIG-BIND** before #456. Do **not** restore a pre-Phase-1 full-B-MIG mega-gate. |
+
+**Historical Rev.5 (B-01) retained as prior revision content:** phase-aware SCOPE/PIN/BIND split; Issue #458 AC migration Hard = active PASS only; sister alignment previously #456 Rev.10 (now **Rev.11**).
 
 **Maintainer decisions already recorded (execution chat / Issue notes; not invented here):** `dSeqAck=true`; `attestMode=EXTERNAL_PROVENANCE` (方式2); `migrationDecision=INCLUDE` for frozen `012_provider_event_inbox_details.sql` / `013_provider_queue_dead_letters.sql`. **B-MIG clearance remains SET** until phase-aware subgates clear. Phase 1 still forbidden until **B-MIG-SCOPE cleared** + explicit maintainer authorization.
 
-**Step 0.0 status (honest):** COMPLETE on `develop` for the **Rev.4** durable plan file (`issue458PlanCommitSha`=`baseDevelopSha`=`3f2b640c08294502a6796c2634de5fdf03ce776f`). Do **not** re-open Step 0.0 as future-only without acknowledging COMPLETE. **This Rev.5 text supersedes Rev.4 content and is not yet durable** — after Agent B APPROVE of Rev.5, a **new** plan-only durability (Step 0.0 re-run for Rev.5) is required before treating this revision as binding. Do **not** claim Phase 0 complete.
+**Step 0.0 status (honest):** COMPLETE on `develop` for the **Rev.4** durable plan file (`issue458PlanCommitSha`=`baseDevelopSha`=`3f2b640c08294502a6796c2634de5fdf03ce776f`). Do **not** re-open Step 0.0 as future-only without acknowledging COMPLETE. **This Rev.6 text supersedes Rev.5 content and is not yet durable** — after Agent B APPROVE of Rev.6, a **new** plan-only durability (Step 0.0 re-run for Rev.6 / APPROVE+merge) is required before treating this revision as binding. Do **not** claim Phase 0 complete.
 
-**Rev.4 strengths retained (do not regress):** B-DISPATCH / RC ref; Step 0.0 durability pattern; attempt unity (attempt==1 only); CV-ACTIVE/SCENARIO; merge-commit-only promotion; Option A single #455 workflow run; B-PUB/B-OCI-HANDOFF before 1b.2/#456; exact promotion head == `releaseCommitSha`; D-SEQ; D-ATTEST 方式2 default (now decided EXTERNAL_PROVENANCE); CV-* sealed integrity; B-VAL; completion PR on main after smoke; no UNDECIDED success outputs; Hard sole authority = Issue #456 table; archive manifest immutability; P-OCI-PROMOTE; B-MIG INCLUDE nine conditions (**now phase-aware**).
+**Rev.5 / Rev.4 strengths retained (do not regress):** B-01 phase-aware B-MIG-SCOPE/PIN/BIND; B-DISPATCH / RC ref; Step 0.0 durability pattern; attempt unity (attempt==1 only); CV-ACTIVE/SCENARIO; merge-commit-only promotion; Option A single #455 workflow run; B-PUB/B-OCI-HANDOFF before 1b.2/#456; exact promotion head == `releaseCommitSha`; D-SEQ; D-ATTEST decided EXTERNAL_PROVENANCE; CV-* sealed integrity; B-VAL; completion PR on main after smoke; no UNDECIDED success outputs; Hard sole authority = Issue #456 table; archive manifest immutability; P-OCI-PROMOTE; B-MIG INCLUDE nine conditions (phase-aware).
 
 **Rev.3 / Rev.2 strengths retained:** as listed in Rev.4 §0 (Option A tag target; phase-aware B-456/B-EVID/B-GO block promotion start not Phase 1; publication readiness; etc.).
 
@@ -67,7 +69,7 @@ Recorded at plan time (2026-08-01). Re-verify before any irreversible gate. SHAs
 | Compare `main...develop` | `status=ahead`, **ahead_by 488**, **behind_by 0**, total_commits 488 | Fact |
 | Worktree dirty/clean | **UNCONFIRMED** (local Shell broken: `C:\in4a\tmp` access denied) | Unconfirmed |
 | Latest public release | **v1.1.0** (`published_at` ~2026-07-27; GitHub Release assets list empty in API snapshot; Docker/NuGet recorded in `docs/releases/v1.1.0.md`) | Fact |
-| #456 plan path | `docs/agent-workflows/issue-456-release-qualification-plan.md` (Rev.8 durable on develop; sister **Rev.10** phase-aware B-MIG in progress) | Fact |
+| #456 plan path | `docs/agent-workflows/issue-456-release-qualification-plan.md` (Rev.8 durable on develop; sister **Rev.11** PIN/BIND digest contract + phase-aware B-MIG in progress) | Fact |
 | #456 Go / No-Go | **NOT executed** | Fact |
 | #456 `sourceCommitSha` / first RC pin | **undetermined** until version-prep merge freezes it | Fact / Plan |
 | `easy-setup` status | `partial` in `docs/implementation-status.json` | Fact |
@@ -111,7 +113,7 @@ v1.1.0 used a **squash merge commit** as the annotated tag target. For v1.2.0, t
 | Rule | Statement |
 |------|-----------|
 | **Sole Hard authority** | **Issue #456 required-scenario table** (Gate column). Live Issue body is classification authority; a run freezes a snapshot into qualification binding. |
-| **Plan authority for execution of #456** | `docs/agent-workflows/issue-456-release-qualification-plan.md` — sister **Rev.10** (phase-aware B-MIG-SCOPE/PIN/BIND; supersedes Rev.9 draft / Rev.8 durable on develop). Re-pin after sister APPROVE + durability. |
+| **Plan authority for execution of #456** | `docs/agent-workflows/issue-456-release-qualification-plan.md` — sister **Rev.11** (M-R10-01 PIN/BIND digest handoff + phase-aware B-MIG-SCOPE/PIN/BIND; supersedes Rev.10 / Rev.9 draft / Rev.8 durable on develop). Re-pin after sister APPROVE + durability. |
 | **Do not** | Create an alternate / shortened Hard checklist inside #458 |
 | **Do not** | Waive Hard missing/FAIL via residual-risk narrative alone |
 | **Do not** | Re-implement full #456 qualification inside #458 |
@@ -143,30 +145,31 @@ v1.1.0 used a **squash merge commit** as the annotated tag target. For v1.2.0, t
 | #459 | Optional Admin bootstrap | **closed** | Ready |
 | #460 / #461 | Migrations 012 / 013 (v1.1.1 candidates) | **closed** | **B-MIG**: INCLUDE decided; phase-aware **B-MIG-SCOPE** / **B-MIG-PIN** / **B-MIG-BIND** still SET |
 | #445 | Parent tracking | **open** | Remains open until #456+#458 complete; owns **D-SEQ** + **B-MIG** (+ acknowledges **D-ATTEST**) |
-| #458 | This issue (publish) | **open** | Plan-only this round (Rev.5 authorship; Phase 1 forbidden) |
+| #458 | This issue (publish) | **open** | Plan-only this round (Rev.6 authorship; Phase 1 forbidden) |
 
-Dependency shape (Rev.5 — **non-circular**; phase-aware B-MIG; single #455 run; RC ref + attempt==1):
+Dependency shape (Rev.6 — **non-circular**; phase-aware B-MIG + PIN/BIND digests; single #455 run; RC ref + attempt==1):
 
 ```text
 #446 -> #447/#448/#449 -> #450 -> #451 & #459 -> #452/#453/#454
                                               |
                                     #455 tooling ready; #457 closed
                                               |
-Agent B APPROVE of this plan revision (Rev.5)
-  -> Step 0.0 plan durability on develop for APPROVED Rev.5 text
-     (Rev.4 Step 0.0 already COMPLETE @ 3f2b640...; Rev.5 needs new durability)
+Agent B APPROVE of this plan revision (Rev.6)
+  -> Step 0.0 plan durability on develop for APPROVED Rev.6 text
+     (Rev.4 Step 0.0 already COMPLETE @ 3f2b640...; Rev.6 needs new durability)
   -> Phase 0 (scope + B-MIG-SCOPE track + D-SEQ + D-ATTEST ack + worktree)
   -> Clear B-MIG-SCOPE (conds 1-7 + frozen filenames + no-extra policy)
   -> Phase 1 version prep PR merge to develop (explicit auth required)
   -> freeze releaseCommitSha / RC sourceCommitSha
-  -> Clear B-MIG-PIN (cond 8: exact inventory on releaseCommitSha)
+  -> Clear B-MIG-PIN (cond 8: migrationPin output exact on releaseCommitSha)
   -> create immutable release/v1.2.0-rc @ releaseCommitSha (Step 1.6.1)
   -> Clear B-DISPATCH (workflow on main + RC ref) + B-PUB/D-ATTEST (Step 1b.0 / 1b.1)
   -> Dispatch #455 --ref release/v1.2.0-rc (attempt 1 only):
        build-oci (=1b.2) then package-* + assemble-handoff (=1c.1)
   -> Staging/dry-run digest-preserving promote proof on that OCI
-  -> Clear B-MIG-BIND (cond 9: new binding/run) before #456 start
-  -> Phase 2 #456 qualify that candidate; #458 consumer-validate (B-VAL + CV-* incl ACTIVE)
+  -> Clear B-MIG-BIND (cond 9: binding carries PIN digests) before #456 start
+  -> Phase 2 #456 qualify that candidate; #458 consumer-validate
+       (B-VAL + CV-* incl ACTIVE + CV-MIG-PIN-01/02)
   -> Phase 3 gates + publication readiness
   -> Phase 4 PR from release/v1.2.0-rc exact head; merge commit only
   -> Phase 5 tag exact releaseCommitSha; promote same OCI+archives; Release assets
@@ -199,21 +202,21 @@ Parent Gate 3C language that “publish after #456” remains normative for **pr
 |----|---------|-------------|-----|---------------------|
 | **B-MIG** (umbrella; aka **B-SCOPE**) | INCLUDE decided; **phase-aware clearance still SET** until SCOPE/PIN/BIND clear | **Phased** — see B-MIG-SCOPE / B-MIG-PIN / B-MIG-BIND | develop has 012+013 from #460/#461. INCLUDE needs nine conditions overall, but clearing them as one pre-Phase-1 mega-gate creates circularity with conds 8–9 | Parent INCLUDE recorded (`migrationDecision=INCLUDE`); clear subgates per §6.1; success records concrete `dbMigrationStatement` (never UNDECIDED / false `none`) |
 | **B-MIG-SCOPE** | INCLUDE conditions 1–7 + frozen filename list + no-extra-migration policy incomplete | **Phase 1 version prep start** | Scope/authority must be honest before version strings land; does **not** require `releaseCommitSha` | Conds 1–7 satisfied; frozen filenames = `012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql`; any migration outside inventory needs parent re-decision |
-| **B-MIG-PIN** | Condition 8 incomplete: inventory not proven exact on `releaseCommitSha` | **After version-prep merge; before #455 / Step 1b.2** | Cond 8 needs the pin that Phase 1 creates — cannot clear before Phase 1 | On `releaseCommitSha` tree: migration inventory exact match (filenames + digests); FAIL if extra migrations beyond frozen 012/013 since v1.1.0 tip |
-| **B-MIG-BIND** | Condition 9 incomplete: new binding/run not created | **Before #456 qualification start** | Cond 9 needs final Issue/plan/`releaseCommitSha` identities after pin | New binding/run on final Issue body SHA + planCommitSha/planFileSha256 + `releaseCommitSha` |
+| **B-MIG-PIN** | Condition 8 incomplete: normative `migrationPin` output not proven exact on `releaseCommitSha` | **After version-prep merge; before #455 / Step 1b.2** | Cond 8 needs the pin that Phase 1 creates — cannot clear before Phase 1 | Produce normative **B-MIG-PIN output** (§6.1); inventory + per-file digests match `releaseCommitSha` tree; **FAIL** if tree has migrations beyond frozen 012/013, or digests mismatch tree |
+| **B-MIG-BIND** | Condition 9 incomplete: new binding/run not created with PIN digests | **Before #456 qualification start** | Cond 9 needs final Issue/plan/`releaseCommitSha` identities after pin; digests must flow into #456 binding | New binding/run on final Issue body SHA + planCommitSha/planFileSha256 + `releaseCommitSha` **and** required PIN handoff fields (`migrationPinDigestSha256`, `migrationInventoryDigestSha256`, `migrationFileDigests[]`); **refuse BIND** without PIN outputs |
 | **D-SEQ** | Gate 3C sequencing clarification unacknowledged | **Any irreversible / execution start** (after Step 0.0 durability) | Circular-order fix must be explicitly accepted | Maintainer ACK recorded (`dSeqAck=true`) |
 | **D-ATTEST** | Attestation / provenance mode undecided | **Step 1b.2 / single #455 run** | Index digest identity depends on whether attestations are in the final OCI graph | Maintainer ACK; decided `EXTERNAL_PROVENANCE` (方式2) for v1.2.0 |
 | **B-RC** | `releaseCommitSha` / RC `sourceCommitSha` not yet pinned | **Phase 1b/1c (#455) and Phase 2 (#456)** | After version-prep merge, that merge SHA is frozen; required before candidate generate / qualify | Version-prep PR merged; SHA recorded as `releaseCommitSha` == future #456 `sourceCommitSha` |
 | **B-DISPATCH** (aka **B-RC-REF**) | #455 cannot be dispatched at exact `releaseCommitSha` with verifiable ref/SHA identity | **Before Step 1b.2** | GitHub requires workflow file on default branch `main` for `workflow_dispatch`; dispatch must use immutable RC branch ref (not raw SHA); run must verify `GITHUB_SHA` / job HEAD == `releaseCommitSha` | (1) `generate-setup-release-candidate.yml` (+ promote tooling required by B-PUB) on `main`; `infraBootstrapMainSha` recorded; (2) `release/v1.2.0-rc` exists and tip == `releaseCommitSha`; (3) dispatch `--ref release/v1.2.0-rc`; (4) machine-verify ref/SHA/job HEAD equality (Step 1b.0 / §7.6) |
 | **B-PUB** / **B-OCI-HANDOFF** | No promote-capable path **and/or** no digest-preserving promote proof tooling readiness | **Before Step 1b.2 / 1c.1 / #456** (not “by Phase 5”) | Current `publish-image.yml` rebuilds and cannot ingest candidate OCI. Under Option A, the OCI from `build-oci` **is** the final public OCI to promote. Starting #456 on un-promotable bytes is forbidden | (1) Promote-capable tooling exists for chosen method; (2) digest-preserving dry-run or staging-namespace push proof recorded for that method on the chosen path; failure => stop |
-| **B-VAL** | Version-pinned `#456 consumer validator` (implementing `CV-*` incl ACTIVE/SCENARIO) missing | **Phase 2.3+** (consumer validation / promotion that depends on it) | Sealed-package integrity must be reported at predicate level | Validator binary/script exists at pinned version implementing listed `CV-*` IDs, **or** maintainers accept an explicitly enumerated checklist that is still sealed-package integrity (not a second Hard gate for product scenarios) |
+| **B-VAL** | Version-pinned `#456 consumer validator` (implementing `CV-*` incl ACTIVE/SCENARIO + **CV-MIG-PIN-01/02** on INCLUDE path) missing | **Phase 2.3+** (consumer validation / promotion that depends on it) | Sealed-package integrity must be reported at predicate level | Validator binary/script exists at pinned version implementing listed `CV-*` IDs (incl migration PIN equality on INCLUDE), **or** maintainers accept an explicitly enumerated checklist that is still sealed-package integrity (not a second Hard gate for product scenarios) |
 | **B-456** | Issue #456 still open / qualification incomplete | **Promotion start (Phase 3.5+)** — **not** Phase 1 | Hard authority and sealed evidence do not yet exist for the pinned RC | #456 produces durable sealed Go package for pinned `sourceCommitSha` |
 | **B-EVID** | Qualification evidence / Go package not yet available to #458 | **Phase 2 consumer validation / Phase 3.5+** | Cannot map Hard PASS / Conditional / Informational / digests | Durable store per #456 Rev.8+ available; value-free; inventory complete |
 | **B-GO** | Human+machine Go not executed | **Phase 3.5+** | Publish must not proceed without Go | `machineVerdict` GO_ELIGIBLE + human APPROVE per #456 rules; Hard NO_GO cannot be overridden |
 
-Additional pre-flight (not separate Hard authority): local worktree cleanliness **UNCONFIRMED** at early exploration — re-verify before version-prep PR / promote. Rev.4 Step 0.0 durability is COMPLETE; **Rev.5 plan text** still needs Agent B APPROVE + new Step 0.0 before this revision is binding. Phase 0 is **not** complete while **B-MIG-SCOPE** remains SET.
+Additional pre-flight (not separate Hard authority): local worktree cleanliness **UNCONFIRMED** at early exploration — re-verify before version-prep PR / promote. Rev.4 Step 0.0 durability is COMPLETE; **Rev.6 plan text** still needs Agent B APPROVE + new Step 0.0 / merge before this revision is binding. Phase 0 is **not** complete while **B-MIG-SCOPE** remains SET.
 
-**Rev.5 order reminder:** Phase 1 start requires **B-MIG-SCOPE cleared** (not full B-MIG). After Step 1.6 pin, require **B-MIG-PIN** before 1b.2/#455. Before Phase 2/#456 start require **B-MIG-BIND**. B-456, B-EVID, and B-GO are **not** blockers for starting Phase 1 version prep. B-RC becomes active after Phase 1 merge (pin). **B-DISPATCH**, **B-PUB/B-OCI-HANDOFF**, and **D-ATTEST** must clear **before** the single #455 run (Step 1b.2). **B-VAL** must clear before Phase 2.3+.
+**Rev.6 order reminder (B-01 retained):** Phase 1 start requires **B-MIG-SCOPE cleared** (not full B-MIG). After Step 1.6 pin, require **B-MIG-PIN** (normative `migrationPin` output) before 1b.2/#455. Before Phase 2/#456 start require **B-MIG-BIND** (binding carries PIN digests; refuse without PIN). B-456, B-EVID, and B-GO are **not** blockers for starting Phase 1 version prep. B-RC becomes active after Phase 1 merge (pin). **B-DISPATCH**, **B-PUB/B-OCI-HANDOFF**, and **D-ATTEST** must clear **before** the single #455 run (Step 1b.2). **B-VAL** (incl **CV-MIG-PIN-01/02** on INCLUDE) must clear before Phase 2.3+.
 
 Planning-time undecided / SET states (allowed **only** in this Blockers sense until cleared): B-MIG-SCOPE, B-MIG-PIN, B-MIG-BIND (umbrella B-MIG SET), B-DISPATCH, B-PUB/B-OCI-HANDOFF, B-VAL, B-456, B-EVID, B-GO. D-SEQ / D-ATTEST / migrationDecision already decided but must remain recorded. Successful Step outputs must use concrete enums (see §7.5) — never `UNDECIDED`.
 
@@ -237,7 +240,7 @@ v1.2.0 is a **backward-compatible operator-facing** minor release. If any of the
 | Reverse proxy auto-build | Forbidden |
 | Non-interactive Admin bootstrap | Forbidden |
 
-### 6.1 B-MIG INCLUDE / EXCLUDE authority（M-R2-03 retained; Rev.5 phase-aware）
+### 6.1 B-MIG INCLUDE / EXCLUDE authority（M-R2-03 retained; Rev.5 phase-aware; Rev.6 PIN/BIND digests）
 
 #### INCLUDE path — ALL of the following are mandatory (overall)
 
@@ -245,26 +248,68 @@ v1.2.0 is a **backward-compatible operator-facing** minor release. If any of the
 2. Formal change to Issue #458 **minor gate** + migration AC (truthful INCLUDE inventory; no `none` / UNDECIDED).
 3. Issue #456 body **required-scenario table** add/include migration rows **OR** explicit containment decision mapping migrations to existing rows.
 4. Explicit **Gate class** per migration row (Hard / Conditional / Informational as appropriate). Migration Hard rows G456-42..44 require **active PASS only** (Conditional-exception language removed from Issue AC).
-5. #456 qualification **plan revision** update reflecting migration scope (sister Rev.10 phase-aware split).
+5. #456 qualification **plan revision** update reflecting migration scope (sister **Rev.11** PIN/BIND digest handoff + phase-aware split).
 6. **Independent review** of that plan revision.
 7. Migration qualification **evidence schema** defined and usable.
-8. Migration inventory **frozen** to `releaseCommitSha` (exact filenames + digests on that tree).
-9. **New binding/run** because Issue body / plan / pin identities change when bodies are amended.
+8. Migration inventory **frozen** to `releaseCommitSha` via normative **B-MIG-PIN output** (exact filenames + digests on that tree).
+9. **New binding/run** that carries PIN digests into #456 binding (Issue body / plan / pin identities change when bodies are amended).
 
-#### Phase-aware clearance (normative; breaks Rev.4 circularity — Agent B B-01)
+#### Phase-aware clearance (normative; breaks Rev.4 circularity — Agent B B-01; order unchanged in Rev.6)
 
 ```text
 B-MIG-SCOPE (conds 1-7 + frozen filename list + no-extra-migration policy)
   -> required before Phase 1 version prep
-B-MIG-PIN (cond 8: exact inventory on releaseCommitSha)
+B-MIG-PIN (cond 8: migrationPin output exact on releaseCommitSha)
   -> required after version-prep merge, before #455 / Step 1b.2
-B-MIG-BIND (cond 9: new binding/run)
+B-MIG-BIND (cond 9: new binding/run carrying PIN digests)
   -> required before #456 qualification start
 ```
 
 INCLUDE still needs the nine conditions **overall**, but they clear **in phases** — **not** as one pre-Phase-1 mega-gate. Until **B-MIG-SCOPE** clears, Phase 1 is forbidden. Until **B-MIG-PIN** clears, #455 / 1b.2 is forbidden. Until **B-MIG-BIND** clears, #456 qualification start is forbidden. Umbrella **B-MIG** remains SET until all three subgates clear.
 
 Frozen INCLUDE inventory (no-extra-migration policy): `012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql`. Any migration outside this list requires parent re-decision.
+
+#### Normative B-MIG-PIN output（same as #456 Rev.11 / M-R10-01）
+
+On PIN clearance, produce exactly:
+
+```text
+migrationPin:
+  releaseCommitSha
+  inventoryAlgorithm
+  inventoryDigestSha256
+  files: [012 path+sha256+gitBlobSha, 013 path+sha256+gitBlobSha]
+  evidenceDigestSha256
+```
+
+Concrete file rows (paths relative to repo root):
+
+```text
+files:
+  - path: src/Amane.Mailer/Data/Migrations/012_provider_event_inbox_details.sql
+    sha256: ...
+    gitBlobSha: ...
+  - path: src/Amane.Mailer/Data/Migrations/013_provider_queue_dead_letters.sql
+    sha256: ...
+    gitBlobSha: ...
+```
+
+**PIN FAIL** if:
+
+- `releaseCommitSha` tree contains migrations beyond the frozen 012/013 list (since v1.1.0 tip / no-extra policy), **or**
+- any inventory / per-file SHA-256 / `gitBlobSha` mismatches the `releaseCommitSha` tree.
+
+#### Normative B-MIG-BIND handoff（same as #456 Rev.11 / M-R10-01）
+
+BIND must carry PIN digests into the #456 `binding.json` required fields:
+
+```text
+migrationPinDigestSha256
+migrationInventoryDigestSha256
+migrationFileDigests[]
+```
+
+**Refuse BIND** if PIN outputs are missing, incomplete, or digests do not match the cleared `migrationPin` object. Sister #456 Hard rows G456-42..44 PASS only when evidence migration digests exactly equal these binding PIN values (and thus the PIN'd `releaseCommitSha` tree). #458 consumer-validates that equality via **CV-MIG-PIN-01** / **CV-MIG-PIN-02** (sealed-package integrity — not a second Hard product-scenario list).
 
 #### EXCLUDE path
 
@@ -278,6 +323,8 @@ On success (never `UNDECIDED`):
 - `migrationDecision=INCLUDE|EXCLUDE` (v1.2.0: `INCLUDE`)
 - `dbMigrationStatement=<concrete decided text>` (INCLUDE inventory + operator impact; never `none`)
 - Subgate flags: `bMigScopeCleared`, `bMigPinCleared`, `bMigBindCleared` when each phase clears
+- On PIN clear: full `migrationPin` object (fields above)
+- On BIND clear: binding carries `migrationPinDigestSha256`, `migrationInventoryDigestSha256`, `migrationFileDigests[]`
 
 ---
 
@@ -296,26 +343,27 @@ On success (never `UNDECIDED`):
 11. **`implementation-status` -> `implemented` ONLY** in Phase 7 completion PR on `main` **after** public smoke. Never in version-prep PR.
 12. **Contracts/OpenAPI:** expect HTTP **content** unchanged for Easy Setup release; **version string sync to `1.2.0`** is still required for tag validation. Record the change-or-no-content-change **decision** in the release record.
 13. When **candidate == published** (byte-identical archives + same OCI graph that was qualified), **skip** re-running: real ACS Staging verification; Release Production operational verification; Local Development / Production HTTPS Admin access E2E; rollback / fault injection; full Windows/Linux fresh install; Admin DB partial-failure; non-interactive Admin rejection scenarios.
-14. **Irreversible gates** requiring explicit stop/go: **Step 0.0 plan durability** (Rev.5 re-run after APPROVE), **D-SEQ ACK**, **D-ATTEST ACK**, **B-MIG-SCOPE** (before Phase 1), **B-MIG-PIN** (before 1b.2/#455), **B-MIG-BIND** (before #456), **B-DISPATCH clearance**, **3.5**, **4.2 merge-method check**, **4.4**, **5.0**, **5.1–5.5**, **7.3 merge**, **8.2**.
+14. **Irreversible gates** requiring explicit stop/go: **Step 0.0 plan durability** (Rev.6 re-run after APPROVE), **D-SEQ ACK**, **D-ATTEST ACK**, **B-MIG-SCOPE** (before Phase 1), **B-MIG-PIN** (before 1b.2/#455), **B-MIG-BIND** (before #456), **B-DISPATCH clearance**, **3.5**, **4.2 merge-method check**, **4.4**, **5.0**, **5.1–5.5**, **7.3 merge**, **8.2**.
 15. **#455 attempt unity (v1.2.0):** accept only `workflowRunAttempt == 1` with all required jobs `runAttempt == 1`; forbid partial job re-runs / attempt mix (§7.7).
 16. **B-DISPATCH / RC ref:** dispatch #455 only via immutable `release/v1.2.0-rc` at exact `releaseCommitSha` after workflow exists on `main`; never imply raw-SHA dispatch works (§7.6).
 17. **This round does not execute release ops** — only revises this plan document.
 
-### 7.1 Canonical order (Rev.5)
+### 7.1 Canonical order (Rev.6)
 
 ```text
-Agent B APPROVE of Rev.5
-  -> Step 0.0 plan durability on develop for Rev.5 text
-     (Rev.4 Step 0.0 COMPLETE @ 3f2b640...; do not pretend Rev.5 is already durable)
+Agent B APPROVE of Rev.6
+  -> Step 0.0 plan durability on develop for Rev.6 text
+     (Rev.4 Step 0.0 COMPLETE @ 3f2b640...; do not pretend Rev.6 is already durable)
   -> Phase 0 (B-MIG-SCOPE track, D-SEQ, D-ATTEST ack, worktree, ...)
   -> Clear B-MIG-SCOPE (conds 1-7 + frozen filenames + no-extra policy)
   -> Phase 1 version prep (explicit auth) -> freeze releaseCommitSha
-  -> Clear B-MIG-PIN (cond 8: exact inventory on releaseCommitSha)
+  -> Clear B-MIG-PIN (cond 8: migrationPin output on releaseCommitSha)
   -> create immutable release/v1.2.0-rc @ that SHA
   -> Clear B-DISPATCH (workflow on main + RC ref) + B-PUB/D-ATTEST
   -> Dispatch #455 --ref release/v1.2.0-rc (attempt 1 only)
   -> promote-path proof
-  -> Clear B-MIG-BIND (cond 9) -> #456 -> CV-* incl ACTIVE
+  -> Clear B-MIG-BIND (cond 9: binding carries PIN digests)
+       -> #456 -> CV-* incl ACTIVE + CV-MIG-PIN-01/02
   -> Phase 4 PR from release/v1.2.0-rc exact head; merge commit only
   -> tag releaseCommitSha -> publish same bytes -> smoke
   -> completion PR -> sync
@@ -481,7 +529,7 @@ Common column legend for every Step table:
 | Re-run | When requalification / redo is required |
 | Outputs | Hand-off to next step |
 | Owner | Owning Issue |
-| This-round status | Always **計画のみ / 未実行** in Rev.5 for Phase 1+; Step 0.0 Rev.4 COMPLETE acknowledged separately |
+| This-round status | Always **計画のみ / 未実行** in Rev.6 for Phase 1+; Step 0.0 Rev.4 COMPLETE acknowledged separately |
 
 ---
 
@@ -491,16 +539,16 @@ Common column legend for every Step table:
 |------|---------|
 | Phase/Step | **0.0** (before Phase 0) |
 | Purpose | Persist the Agent B–APPROVED plan text on `develop` before any Phase 0+ execution; fix binding-equivalent plan identity |
-| Preconditions | Agent B **APPROVE** of **this plan revision (Rev.5)**; maintainer authorizes the plan-only durability PR/commit |
-| Inputs | Reviewed plan text (this file, Rev.5); `origin/develop` tip |
+| Preconditions | Agent B **APPROVE** of **this plan revision (Rev.6)**; maintainer authorizes the plan-only durability PR/commit |
+| Inputs | Reviewed plan text (this file, Rev.6); `origin/develop` tip |
 | Actions | (1) Agent B APPROVE of this plan revision. (2) Open a **plan-only** PR / commit containing **only** the APPROVED plan text (no unrelated product edits). (3) Merge to `develop`. (4) Fix `issue458PlanCommitSha` = that merge/commit SHA. (5) Record plan file blob SHA and `issue458PlanFileSha256` (SHA-256 of the committed plan file bytes). (6) `git fetch origin/develop`; refresh `baseDevelopSha`. (7) **Only then** begin Phase 0 under this revision. |
 | Verification | Committed plan text == reviewed APPROVED text (byte/content equality for the plan file); SHAs recorded; `baseDevelopSha` refreshed |
 | Evidence | PR URL; `issue458PlanCommitSha`; plan blob SHA; `issue458PlanFileSha256`; `baseDevelopSha` |
-| Stop | Committed text ≠ reviewed text; substantive plan change without re-review; attempting Phase 0 under a non-durable Rev.5 text |
+| Stop | Committed text ≠ reviewed text; substantive plan change without re-review; attempting Phase 0 under a non-durable Rev.6 text |
 | Re-run | Any substantive plan change => new revision + Agent B re-review + new Step 0.0 |
 | Outputs | `issue458PlanCommitSha`; `issue458PlanFileSha256`; `baseDevelopSha` (refreshed) |
 | Owner | #458 |
-| This-round status | **Rev.4 Step 0.0 COMPLETE** on develop: `issue458PlanCommitSha`=`baseDevelopSha`=`3f2b640c08294502a6796c2634de5fdf03ce776f` (durable **Rev.4** plan file). **This Rev.5 plan text is not yet durable** — after Agent B APPROVE of Rev.5, re-run Step 0.0 for Rev.5. Do not describe Rev.4 COMPLETE as absent/future-only. **This authorship round does not commit.** |
+| This-round status | **Rev.4 Step 0.0 COMPLETE** on develop: `issue458PlanCommitSha`=`baseDevelopSha`=`3f2b640c08294502a6796c2634de5fdf03ce776f` (durable **Rev.4** plan file). **This Rev.6 plan text is not yet durable** — after Agent B APPROVE of Rev.6, re-run Step 0.0 for Rev.6 (APPROVE+merge). Do not describe Rev.4 COMPLETE as absent/future-only. **This authorship round does not commit.** |
 
 ---
 
@@ -529,7 +577,7 @@ Common column legend for every Step table:
 |------|---------|
 | Phase/Step | 0.2 |
 | Purpose | Freeze v1.2.0 scope; clear **B-MIG-SCOPE** (not full B-MIG); detect minor-gate violations early |
-| Preconditions | Durable plan for the active revision (Rev.5 Step 0.0 after APPROVE); 0.1 pass |
+| Preconditions | Durable plan for the active revision (Rev.6 Step 0.0 after APPROVE); 0.1 pass |
 | Inputs | Issue #458 minor gate list; migration inventory since v1.1.0; CHANGELOG draft intent; diff `main...develop` summary; §6.1 authority requirements |
 | Actions | Inventory migrations since v1.1.0 (at least `012_*`, `013_*`). Confirm parent **INCLUDE** (`migrationDecision=INCLUDE`). Track INCLUDE conditions **1–7**, freeze filename list (`012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql`), and no-extra-migration policy. Do **not** require conds 8–9 here (those are B-MIG-PIN / B-MIG-BIND). Review develop tip vs last release for Contracts schema diffs, new public endpoints. |
 | Verification | **B-MIG-SCOPE** cleared with written decision meeting §6.1 SCOPE criteria; no silent breaking HTTP/Contracts/mode-5 automation/#307; migration statement concrete; umbrella B-MIG still SET until PIN+BIND later |
@@ -547,7 +595,7 @@ Common column legend for every Step table:
 | Phase/Step | 0.3 |
 | Purpose | Lock Gate 3C interpretation, attestation mode, and commit-identity policy before execution |
 | Preconditions | 0.0–0.2 progressing; maintainer available |
-| Inputs | §4.1 D-SEQ; §7.2 Option A; §7.4 D-ATTEST; §7.6 B-DISPATCH; this plan Rev.5 |
+| Inputs | §4.1 D-SEQ; §7.2 Option A; §7.4 D-ATTEST; §7.6 B-DISPATCH; this plan Rev.6 |
 | Actions | Confirm maintainer ACK for D-SEQ (`dSeqAck=true`) and D-ATTEST (`attestMode=EXTERNAL_PROVENANCE`). Record policy: after Phase 1 merge, that SHA **is** `releaseCommitSha` / RC `sourceCommitSha`; create immutable `release/v1.2.0-rc`; later #456 binds the same SHA; tag targets that exact SHA (Option A); promotion head equality + **merge commit only**. |
 | Verification | Written ACKs; `attestMode` recorded; no floating “latest develop tip” publish policy |
 | Evidence | D-SEQ ACK reference; D-ATTEST ACK; policy text |
@@ -601,7 +649,7 @@ Common column legend for every Step table:
 |------|---------|
 | Phase/Step | 1.1 |
 | Purpose | Enumerate every version surface for `1.2.0` / tag `v1.2.0` |
-| Preconditions | Phase 0 scope freeze (**B-MIG-SCOPE cleared**); D-SEQ ACK; worktree OK; durable Rev.5 plan (Step 0.0). Explicit maintainer authorization for Phase 1. **Not** blocked by B-456/B-EVID/B-GO; **not** blocked by B-MIG-PIN/BIND (those clear later) |
+| Preconditions | Phase 0 scope freeze (**B-MIG-SCOPE cleared**); D-SEQ ACK; worktree OK; durable Rev.6 plan (Step 0.0). Explicit maintainer authorization for Phase 1. **Not** blocked by B-456/B-EVID/B-GO; **not** blocked by B-MIG-PIN/BIND (those clear later) |
 | Inputs | csproj files; OpenAPI; Docker labels; bundle scripts; CHANGELOG; release record path |
 | Actions | Prepare edits (future round) for: service/Docker/`MAILER_VERSION` (=`1.2.0` no `v`), Contracts `<Version>`, OpenAPI `info.version`, setup bundle `mailerVersion`/`setupLauncherVersion`, CHANGELOG `[1.2.0]`, `docs/releases/v1.2.0.md` draft skeleton, workflow inputs; document public verifier expectation that OCI label is `1.2.0` |
 | Verification | Checklist covers all tag-validation surfaces used by publish workflows |
@@ -686,14 +734,14 @@ Common column legend for every Step table:
 |------|---------|
 | Phase/Step | 1.6 |
 | Purpose | Land version alignment on develop; **freeze** merge SHA as release/RC identity |
-| Preconditions | 1.1–1.5; **B-MIG-SCOPE cleared**; D-SEQ ACK; worktree clean; durable Rev.5 plan; explicit Phase 1 authorization. Full B-MIG (PIN/BIND) **not** required here |
+| Preconditions | 1.1–1.5; **B-MIG-SCOPE cleared**; D-SEQ ACK; worktree clean; durable Rev.6 plan; explicit Phase 1 authorization. Full B-MIG (PIN/BIND) **not** required here |
 | Inputs | Touch list; base develop SHA |
-| Actions | Branch from frozen develop; open PR; CI green; merge to develop; record **merge result commit** as `releaseCommitSha` / RC `sourceCommitSha`. Immediately after pin, run **B-MIG-PIN** verification (Step 1.6 outputs feed PIN before 1b.2). |
+| Actions | Branch from frozen develop; open PR; CI green; merge to develop; record **merge result commit** as `releaseCommitSha` / RC `sourceCommitSha`. Immediately after pin, run **B-MIG-PIN** verification (emit normative `migrationPin` per §6.1; feeds PIN before 1b.2). |
 | Verification | All version strings `1.2.0`; CI pass; no product feature drive-by; SHA recorded |
 | Evidence | PR URL, merge SHA |
 | Stop | CI fail; scope creep; B-MIG-SCOPE still SET; attempting Phase 1 under full-nine-condition mega-gate reading |
 | Re-run | Fix-forward PR; new merge SHA becomes the pin (invalidates prior candidate/qual if any) |
-| Outputs | `releaseCommitSha` (frozen); clears **B-RC** for subsequent #455/#456 (RC branch still required — Step 1.6.1); enables **B-MIG-PIN** check |
+| Outputs | `releaseCommitSha` (frozen); clears **B-RC** for subsequent #455/#456 (RC branch still required — Step 1.6.1); enables **B-MIG-PIN** (`migrationPin` clearance before 1b.2) |
 | Owner | #458 |
 | This-round status | 計画のみ / 未実行 — **Phase 1 forbidden until B-MIG-SCOPE cleared + explicit auth** |
 
@@ -730,12 +778,12 @@ Common column legend for every Step table:
 | Purpose | Clear **B-DISPATCH** and confirm **B-MIG-PIN** before starting the #455 run; prove workflow is on `main` and RC ref identity is correct |
 | Preconditions | Steps 1.6 + 1.6.1 complete; `releaseCommitSha` frozen; Agent B APPROVE + durable plan already done earlier |
 | Inputs | `origin/main`; `generate-setup-release-candidate.yml`; promote tooling required by B-PUB; `release/v1.2.0-rc`; `releaseCommitSha`; frozen migration inventory |
-| Actions | (1) Confirm release-infra bootstrap: workflow (+ promote tooling required by B-PUB) exists on default branch `main`; record `infraBootstrapMainSha` (bootstrap may have landed earlier after Step 0.0 — verify still present). (2) Confirm `refs/heads/release/v1.2.0-rc` tip == `releaseCommitSha`. (3) Confirm dispatch will use `--ref release/v1.2.0-rc` (not raw SHA). (4) Confirm attempt-unity policy understood (§7.7). (5) **B-MIG-PIN:** verify migration inventory on `releaseCommitSha` exact match (filenames + digests); FAIL if tree has migrations beyond frozen 012/013 since v1.1.0 tip. |
-| Verification | Workflow present on `main`; RC tip equality; no raw-SHA dispatch plan; **B-MIG-PIN cleared** |
-| Evidence | `infraBootstrapMainSha`; RC tip SHA; B-DISPATCH clearance note; B-MIG-PIN inventory proof |
-| Stop | Workflow missing on `main`; RC tip ≠ `releaseCommitSha`; plan to dispatch @ raw SHA; **B-MIG-PIN FAIL** |
+| Actions | (1) Confirm release-infra bootstrap: workflow (+ promote tooling required by B-PUB) exists on default branch `main`; record `infraBootstrapMainSha` (bootstrap may have landed earlier after Step 0.0 — verify still present). (2) Confirm `refs/heads/release/v1.2.0-rc` tip == `releaseCommitSha`. (3) Confirm dispatch will use `--ref release/v1.2.0-rc` (not raw SHA). (4) Confirm attempt-unity policy understood (§7.7). (5) **B-MIG-PIN:** produce/verify normative `migrationPin` output (§6.1) against `releaseCommitSha` tree (inventoryAlgorithm, inventoryDigestSha256, per-file path+sha256+gitBlobSha for 012/013, evidenceDigestSha256); **FAIL** if tree has migrations beyond frozen 012/013, or digests mismatch tree. |
+| Verification | Workflow present on `main`; RC tip equality; no raw-SHA dispatch plan; **B-MIG-PIN cleared** with complete `migrationPin` object |
+| Evidence | `infraBootstrapMainSha`; RC tip SHA; B-DISPATCH clearance note; B-MIG-PIN `migrationPin` object / digests |
+| Stop | Workflow missing on `main`; RC tip ≠ `releaseCommitSha`; plan to dispatch @ raw SHA; **B-MIG-PIN FAIL** (extra migrations or digest mismatch) |
 | Re-run | After infra bootstrap PR / RC branch fix / inventory repair (may need new version-prep pin) |
-| Outputs | `bDispatchCleared=true`; `infraBootstrapMainSha`; `dispatchRef=release/v1.2.0-rc`; `bMigPinCleared=true` |
+| Outputs | `bDispatchCleared=true`; `infraBootstrapMainSha`; `dispatchRef=release/v1.2.0-rc`; `bMigPinCleared=true`; `migrationPin` (full §6.1 object) |
 | Owner | #458 |
 | This-round status | 計画のみ / 未実行 — **B-DISPATCH currently SET**; **B-MIG-PIN SET** until after 1.6 |
 
@@ -817,14 +865,14 @@ Common column legend for every Step table:
 |------|---------|
 | Phase/Step | 2.1 |
 | Purpose | Run or obtain #456 qualification against candidate at `releaseCommitSha` from the frozen #455 run |
-| Preconditions | Phase 1c.2 promote-path proof pass; B-RC cleared; attempt-unity recorded; **B-MIG-BIND cleared** (cond 9: new binding/run on final Issue/plan/`releaseCommitSha`) |
-| Inputs | Issue #456 body table; plan Rev.10 (sister; phase-aware B-MIG); candidate artifacts; OCI identity; `workflowRunId`; `workflowRunAttempt` |
-| Actions | Confirm **B-MIG-BIND** before start. Execute #456 per sister plan (separate authorization) **or** fetch completed sealed package; load binding snapshot; load evidence inventory; load go-no-go decision objects; **verify provenance attempt fields** (`workflowRunAttempt==1`, job attempts == 1, headSha equality, same `workflowRunId`) |
-| Verification | Sealed package exists for this SHA/candidateIds; value-free; binds same OCI/archives from `workflowRunId` attempt 1; binding identities match final Issue/plan/pin |
-| Evidence | Evidence index digests (not raw logs); attempt-field verification record; B-MIG-BIND clearance |
-| Stop | Missing Hard rows; PII in evidence; incomplete inventory; wrong SHA; qualifying a different OCI than 1b.2; attempt>1 / mixed attempts; **B-MIG-BIND still SET** |
+| Preconditions | Phase 1c.2 promote-path proof pass; B-RC cleared; attempt-unity recorded; **B-MIG-BIND cleared** (cond 9: new binding/run on final Issue/plan/`releaseCommitSha` **carrying PIN digests**) |
+| Inputs | Issue #456 body table; plan Rev.11 (sister; PIN/BIND digests + phase-aware B-MIG); candidate artifacts; OCI identity; `workflowRunId`; `workflowRunAttempt`; cleared `migrationPin` |
+| Actions | Confirm **B-MIG-BIND** before start: binding must include `migrationPinDigestSha256`, `migrationInventoryDigestSha256`, `migrationFileDigests[]` from PIN; **refuse BIND** without those PIN outputs. Execute #456 per sister plan (separate authorization) **or** fetch completed sealed package; load binding snapshot; load evidence inventory; load go-no-go decision objects; **verify provenance attempt fields** (`workflowRunAttempt==1`, job attempts == 1, headSha equality, same `workflowRunId`) |
+| Verification | Sealed package exists for this SHA/candidateIds; value-free; binds same OCI/archives from `workflowRunId` attempt 1; binding identities match final Issue/plan/pin; PIN handoff fields present and match cleared `migrationPin` |
+| Evidence | Evidence index digests (not raw logs); attempt-field verification record; B-MIG-BIND clearance + PIN handoff digests |
+| Stop | Missing Hard rows; PII in evidence; incomplete inventory; wrong SHA; qualifying a different OCI than 1b.2; attempt>1 / mixed attempts; **B-MIG-BIND still SET**; BIND attempted without PIN digests |
 | Re-run | New #456 run (after new #455 if candidate identity invalid) |
-| Outputs | `qualificationPackageRef`; progresses B-456/B-EVID/B-GO clearance; `bMigBindCleared=true` |
+| Outputs | `qualificationPackageRef`; progresses B-456/B-EVID/B-GO clearance; `bMigBindCleared=true`; binding PIN fields recorded |
 | Owner | #456 (execution) / #458 (consume) |
 | This-round status | 計画のみ / 未実行 — **B-MIG-BIND SET until before Phase 2 start** |
 
@@ -853,7 +901,7 @@ Common column legend for every Step table:
 | Purpose | #458 consumer-validates sealed evidence with explicit Rev.8 **predicate IDs**; version-pinned validator is the authority |
 | Preconditions | 2.1–2.2; **B-VAL cleared** |
 | Inputs | Sealed run package; Phase-4 manifest; decision object; inventories; roots; disposition chain; authz; active evidence set; validator at pinned version |
-| Actions | Run version-pinned `#456 consumer validator` implementing all `CV-*` IDs below (including **CV-ACTIVE-*** / **CV-SCENARIO-01**). Produce predicate-level report rows with required fields. This is sealed-package integrity — **not** a second Hard product-scenario gate. |
+| Actions | Run version-pinned `#456 consumer validator` implementing all `CV-*` IDs below (including **CV-ACTIVE-*** / **CV-SCENARIO-01** and, on the migration INCLUDE path, **CV-MIG-PIN-01** / **CV-MIG-PIN-02**). Produce predicate-level report rows with required fields. This is sealed-package integrity — **not** a second Hard product-scenario gate. |
 | Verification | Every required predicate PASS (or documented Conditional path only where #456 allows — never for Hard). Report fields complete. |
 | Evidence | Consumer validation report (value-free) |
 | Stop | Any required predicate FAIL; optional evidence PII/schema/authz violations; validator missing (B-VAL) |
@@ -904,6 +952,10 @@ Common column legend for every Step table:
 | **CV-ACTIVE-01** | Replay disposition events for every required∪optional key; derived `activeEvidenceId` == `decision/evidence-index.json` exactly |
 | **CV-ACTIVE-02** | Replay exception-disposition for every Conditional key; derived active exception == exception state used by `go-no-go.json` |
 | **CV-SCENARIO-01** | Derived per-variant results reproduce `go-no-go.json` `scenarioIndex` including `informationalNotConfirmed` |
+| **CV-MIG-PIN-01** | Evidence migration inventory digest == binding migration PIN digest (`migrationInventoryDigestSha256` / PIN inventory digest equality) |
+| **CV-MIG-PIN-02** | Per-file SHA-256 / `gitBlobSha` == `releaseCommitSha` tree **and** `binding.migrationFileDigests[]` |
+
+**Migration INCLUDE path:** **B-VAL** / Step 2.3 **must** cover **CV-MIG-PIN-01** and **CV-MIG-PIN-02**. These are sealed-package integrity predicates that prove PIN digests flowed into binding and match the release tree — **not** a second Hard product-scenario list (Hard sole authority remains Issue #456 G456-42..44).
 
 If validator binary/script does not yet exist in repo: **B-VAL** blocks Phase 2.3+ until a version-pinned validator implementing these IDs exists (or maintainers accept an explicitly enumerated checklist that remains sealed-package integrity — still not a second Hard gate for product scenarios).
 
@@ -1479,7 +1531,7 @@ See Step 2.7 table. Normative rules:
 
 ## 10. Acceptance criteria 対応表（Issue #458 全件）
 
-| 受入条件（Issue #458） | Phase/Step | 確認方法 | 証拠 | 停止条件 | Rev.5 note |
+| 受入条件（Issue #458） | Phase/Step | 確認方法 | 証拠 | 停止条件 | Rev.6 note |
 |------------------------|------------|----------|------|----------|------------|
 | #456必須シナリオ表のHard項目が全件PASSでGo判定されている | 2.2, 2.4, 3.5 | Map each Hard row to active PASS; confirm Go objects | Mapping + Go digests | Any Hard not PASS or Go missing | Unchanged; ACTIVE replay strengthens integrity |
 | Hard gateを別の短縮リストから判定せず、#456必須シナリオ表を正本として確認している | 2.1–2.2, §3, §7 | Review plan/execution uses Issue table only | Explicit sole-authority statement in evidence | Alternate Hard list detected | `CV-*` are sealed-package integrity, not a second Hard list |
@@ -1517,7 +1569,7 @@ See Step 2.7 table. Normative rules:
 
 | Risk | Severity | Stop / mitigation |
 |------|----------|-------------------|
-| Circular “#456 before any #458” reading recreates B-01 (Rev.1) | Blocker | D-SEQ ACK; Rev.5 order |
+| Circular “#456 before any #458” reading recreates B-01 (Rev.1) | Blocker | D-SEQ ACK; Rev.6 phase-aware order (SCOPE -> Phase 1 -> PIN -> BIND) |
 | Circular “full B-MIG before Phase 1” vs conds 8–9 needing pin/binding (Agent B B-01) | Blocker | **B-MIG-SCOPE / PIN / BIND** phase-aware split; §5 / §6.1 / Steps 0.4 / 1.6 / 1b.0 / 2.1 |
 | Treating 1b and 1c as two independent OCI builds / Option B prebuilt OCI | Blocker | **B-R2-01**; `ociHandoffMode=SINGLE_WF_RUN_OPTION_A` only |
 | Dispatching #455 @ raw SHA / missing workflow on main | Blocker | **B-DISPATCH** / §7.6; Steps 1.6.1 + 1b.0 |
@@ -1556,15 +1608,15 @@ See Step 2.7 table. Normative rules:
 | Tag created / publish aborted mid-flight | Use 3.4b-style inventory of what exists; resume only remaining ops with same identities | If wrong tag target, maintainer recovery (not casual retag) |
 | Any class C after public version tags | **Stop completion**; do not claim AC pass | Yank / new candidate / re-qual path — forbidden as a planned outcome |
 
-**Irreversible gates (must have explicit APPROVE immediately before):** Step 0.0 plan durability (Rev.5 re-run after APPROVE), D-SEQ ACK, D-ATTEST ACK, **B-MIG-SCOPE**, **B-MIG-PIN**, **B-MIG-BIND**, B-DISPATCH clearance, **3.5**, **4.2 merge-method check**, **4.4**, **5.0**, **5.1–5.5**, **7.3**, **8.2**.
+**Irreversible gates (must have explicit APPROVE immediately before):** Step 0.0 plan durability (Rev.6 re-run after APPROVE), D-SEQ ACK, D-ATTEST ACK, **B-MIG-SCOPE**, **B-MIG-PIN**, **B-MIG-BIND**, B-DISPATCH clearance, **3.5**, **4.2 merge-method check**, **4.4**, **5.0**, **5.1–5.5**, **7.3**, **8.2**.
 
 ---
 
 ## 12. 明示的に未実施（Explicitly not done this round）
 
-This planning round (**Rev.5 authorship**) **did not**:
+This planning round (**Rev.6 authorship**) **did not**:
 
-- Step 0.0 durability for **this Rev.5** text (Rev.4 Step 0.0 is COMPLETE @ `3f2b640…`; Rev.5 needs new durability after APPROVE)
+- Step 0.0 durability for **this Rev.6** text (Rev.4 Step 0.0 is COMPLETE @ `3f2b640…`; Rev.6 needs new durability after APPROVE+merge)
 - Clear **B-MIG-SCOPE** / **B-MIG-PIN** / **B-MIG-BIND** (umbrella B-MIG remains SET)
 - Claim Phase 0 complete or authorize Phase 1
 - Version prep / version number edits
@@ -1578,7 +1630,7 @@ This planning round (**Rev.5 authorship**) **did not**:
 - GitHub Release create/update
 - public artifact smoke
 - main -> develop sync
-- commit / push of this Rev.5 authorship
+- commit / push of this Rev.6 authorship
 - Issue comment / close (Issue bodies already updated on GitHub separately where noted)
 - PR review submission
 - Parent #445 close
@@ -1595,15 +1647,15 @@ Only this file path is in scope for plan authorship: `docs/agent-workflows/issue
 
 ---
 
-## 13. セルフレビュー（1–17）— Rev.5
+## 13. セルフレビュー（1–17）— Rev.6
 
 | # | Check | Result |
 |---|-------|--------|
-| 1 | Issue #458全受入条件が計画に対応 | **Pass** (§10; INCLUDE AC + active PASS for migration Hard; phase-aware B-MIG) |
+| 1 | Issue #458全受入条件が計画に対応 | **Pass** (§10; INCLUDE AC + active PASS for migration Hard; phase-aware B-MIG + PIN/BIND digests) |
 | 2 | #456必須シナリオ表を唯一のHard gate正本 | **Pass** (§3, 2.2) |
-| 3 | 独自Hard一覧を作っていない | **Pass** (`CV-*` = sealed-package integrity under B-VAL; ACTIVE/SCENARIO included) |
+| 3 | 独自Hard一覧を作っていない | **Pass** (`CV-*` = sealed-package integrity under B-VAL; ACTIVE/SCENARIO + CV-MIG-PIN-01/02; not a second Hard list) |
 | 4 | Hard未実施/FAILを免除していない | **Pass** (migration Hard = active PASS only) |
-| 5 | qualification evidenceとrelease commitの同一性を確認できる | **Pass** (1.6, 1.6.1, 2.5, 4.1 exact head via RC, 4.4, 5.1 Option A) |
+| 5 | qualification evidenceとrelease commitの同一性を確認できる | **Pass** (1.6, 1.6.1, 2.5, 4.1 exact head via RC, 4.4, 5.1 Option A; CV-MIG-PIN-02 tree equality) |
 | 6 | candidateとpublished差異判定が明確 | **Pass** (6.4–6.5; class B removed) |
 | 7 | artifact一致時にqualificationを不要重複実行しない | **Pass** (6.5 class A only) |
 | 8 | 不一致時の再qualification範囲を決定できる | **Pass** (2.7; attempt unity + RC tip move rows) |
@@ -1615,7 +1667,7 @@ Only this file path is in scope for plan authorship: `docs/agent-workflows/issue
 | 14 | `implementation-status`更新順序が正しい | **Pass** (1.5 -> Phase 7 completion PR on main after smoke) |
 | 15 | post-promote syncまで計画 | **Pass** (Phase 8) |
 | 16 | 今回禁止操作を実行していない | **Pass** (§12) |
-| 17 | 現在の事実と将来の計画を混同していない | **Pass** (§1; Rev.4 Step 0.0 COMPLETE acknowledged; Rev.5 text not yet durable; Phase 0 not complete; Phase 1 forbidden) |
+| 17 | 現在の事実と将来の計画を混同していない | **Pass** (§1; Rev.4 Step 0.0 COMPLETE acknowledged; Rev.6 text not yet durable; Phase 0 not complete; Phase 1 forbidden) |
 
 ### 13.1 Agent B R2 finding closure table（retained）
 
@@ -1624,7 +1676,7 @@ Only this file path is in scope for plan authorship: `docs/agent-workflows/issue
 | **B-R2-01** | Blocker | **Yes** | §0 (Rev.3), §2.1, §5 B-PUB/B-OCI-HANDOFF, §7.1/7.3, Phase 1b/1c (same run), Step 1c.2 promote-path proof |
 | **M-R2-01** | Major | **Yes** (merge/FF tightened further in Rev.4 to merge-only) | §7.2, Steps 4.1–4.4 |
 | **M-R2-02** | Major | **Yes** | §3, §5 B-VAL, Step 2.3 `CV-*` + report fields |
-| **M-R2-03** | Major | **Yes** (phase-aware in Rev.5) | §6.1 nine INCLUDE conditions + SCOPE/PIN/BIND; Steps 0.2/1.4/1b.0/2.1 |
+| **M-R2-03** | Major | **Yes** (phase-aware in Rev.5; PIN/BIND digests in Rev.6) | §6.1 nine INCLUDE conditions + SCOPE/PIN/BIND; Steps 0.2/1.4/1b.0/2.1/2.3 |
 | **M-R2-04** | Major | **Yes** | §4.1/§7.4 D-ATTEST; OCI label `1.2.0`; Step 5.5 attachments |
 | **m-R2-01** | Minor | **Yes** | §7.5; success outputs — no UNDECIDED on success |
 
@@ -1638,44 +1690,51 @@ Only this file path is in scope for plan authorship: `docs/agent-workflows/issue
 | **M-R3-03** | Major | **Yes** | Step 2.3 **CV-ACTIVE-01/02** + **CV-SCENARIO-01** + report fields |
 | **m-R3-01** | Minor | **Yes** | §7.2, Steps 4.2–4.3 (`mergeMethodAllowed/Used=merge`); FF out-of-policy |
 
-### 13.3 Agent B B-01 (Rev.5) finding closure table
+### 13.3 Agent B B-01 (Rev.5) finding closure table（retained）
 
 | Finding | Severity | Closed in Rev.5? | Where |
 |---------|----------|------------------|-------|
-| **B-01** (B-MIG vs Phase 1 circularity) | Blocker | **Addressed in plan text — needs Agent B re-review** | §0, §5, §6.1, §7.1, Steps 0.2 / 0.4 / 1.4 / 1.6 / 1b.0 / 2.1, Next steps |
+| **B-01** (B-MIG vs Phase 1 circularity) | Blocker | **Addressed in plan text** (phase-aware order retained in Rev.6) | §0, §5, §6.1, §7.1, Steps 0.2 / 0.4 / 1.4 / 1.6 / 1b.0 / 2.1, Next steps |
 
-**Self-review verdict:** **Pass for authorship completeness of the B-01 fix** (17/17 checks as plan-text). **Not** an execution APPROVE. **Rev.5 needs independent Agent B re-review** (APPROVE / REVISE). Residual: **B-MIG-SCOPE/PIN/BIND SET** (umbrella B-MIG SET); **B-DISPATCH**, **B-PUB/B-OCI-HANDOFF**, **B-VAL**, plus later **B-RC** / **B-456** / **B-EVID** / **B-GO**. Rev.4 Step 0.0 outputs remain valid for the **Rev.4** durable file only; **this Rev.5 plan text is not yet durable** until new plan-only durability after APPROVE. Do **not** claim Phase 0 complete. **Phase 1 still forbidden.**
+### 13.4 Agent B M-R10-01 (Rev.6) finding closure table
+
+| Finding | Severity | Closed in Rev.6? | Where |
+|---------|----------|------------------|-------|
+| **M-R10-01** (PIN digests -> binding + consumer equality) | Major | **Addressed in plan text — needs Agent B re-review** | §0, §5 B-MIG-PIN/BIND/B-VAL, §6.1 PIN/BIND normative schemas, Steps 1b.0 / 2.1 / 2.3 **CV-MIG-PIN-01/02**, Appendix B, Next steps; sister #456 Rev.11 |
+
+**Self-review verdict:** **Pass for authorship completeness of the M-R10-01 sync** (17/17 checks as plan-text). **Not** an execution APPROVE. **Rev.6 needs independent Agent B re-review** (APPROVE / REVISE). Residual: **B-MIG-SCOPE/PIN/BIND SET** (umbrella B-MIG SET); **B-DISPATCH**, **B-PUB/B-OCI-HANDOFF**, **B-VAL** (must cover CV-MIG-PIN-*), plus later **B-RC** / **B-456** / **B-EVID** / **B-GO**. Rev.4 Step 0.0 outputs remain valid for the **Rev.4** durable file only; **this Rev.6 plan text is not yet durable** until APPROVE+merge / new plan-only durability. Do **not** claim Phase 0 complete. **Phase 1 still forbidden.**
 
 ---
 
 ## 14. Next steps + Agent B re-review note
 
-1. Independent **Agent B** re-review (APPROVE / REVISE) against Issue #458 + this **Rev.5** document + #456 Rev.10 (sister B-MIG-SCOPE/PIN/BIND) + ADR 0021 + current `generate-setup-release-candidate.yml`. Agent B must not modify the repo. Focus: **B-01** phase-aware B-MIG split (no pre-Phase-1 mega-gate; SCOPE before Phase 1; PIN before #455; BIND before #456).
-2. After Agent B **APPROVE**: execute **Step 0.0 for Rev.5** (plan-only PR/commit of APPROVED Rev.5 text -> merge to develop -> fix new `issue458PlanCommitSha` / `issue458PlanFileSha256` -> refresh `baseDevelopSha`). Rev.4 Step 0.0 COMPLETE @ `3f2b640…` remains historical fact for that file revision. **This authorship round still does not commit.**
+1. Independent **Agent B** re-review (APPROVE / REVISE) against Issue #458 + this **Rev.6** document + #456 **Rev.11** (sister B-MIG-PIN/BIND digest contract) + ADR 0021 + current `generate-setup-release-candidate.yml`. Agent B must not modify the repo. Focus: **M-R10-01** PIN output schema + BIND handoff + **CV-MIG-PIN-01/02**; confirm B-01 phase-aware order retained (SCOPE -> Phase 1 -> PIN before #455 -> BIND before #456).
+2. After Agent B **APPROVE**: execute **Step 0.0 for Rev.6** (plan-only PR/commit of APPROVED Rev.6 text -> merge to develop -> fix new `issue458PlanCommitSha` / `issue458PlanFileSha256` -> refresh `baseDevelopSha`). Rev.4 Step 0.0 COMPLETE @ `3f2b640…` remains historical fact for that file revision. **This authorship round still does not commit.** Rev.6 is **not durable** until APPROVE+merge.
 3. Maintainer decisions already recorded: **D-SEQ** ACK, **D-ATTEST**=`EXTERNAL_PROVENANCE`, **B-MIG** decision=INCLUDE — keep durable evidence; do not re-litigate unless changed.
 4. Clear **B-MIG-SCOPE** (conds 1–7 + frozen filenames + no-extra policy) before any Phase 1 start.
 5. Clear **B-DISPATCH** via workflow-only / release-infra bootstrap PR to `main` (record `infraBootstrapMainSha`) before any #455 dispatch.
 6. Clear **B-PUB/B-OCI-HANDOFF** by implementing/adopting digest-preserving P-OCI-PROMOTE tooling **and** recording proof readiness before the #455 run.
-7. Clear **B-VAL** by landing a version-pinned `#456 consumer validator` implementing `CV-*` including ACTIVE/SCENARIO (or an explicitly accepted enumerated equivalent for sealed-package integrity).
+7. Clear **B-VAL** by landing a version-pinned `#456 consumer validator` implementing `CV-*` including ACTIVE/SCENARIO **and CV-MIG-PIN-01/02** on the INCLUDE path (or an explicitly accepted enumerated equivalent for sealed-package integrity).
 8. Re-verify local worktree clean + fast-forward `develop` to `origin/develop` (tip at execution time).
-9. Only after Agent B APPROVE **and** Rev.5 Step 0.0 **and** **B-MIG-SCOPE cleared** + D-SEQ/D-ATTEST recorded + **explicit maintainer authorization**: begin Phase 1 version prep (**B-MIG-PIN/BIND and B-456/B-EVID/B-GO not required to start Phase 1**).
-10. After version-prep merge: freeze SHA (**B-RC**), clear **B-MIG-PIN**, create `release/v1.2.0-rc`, clear B-DISPATCH + B-PUB/B-OCI-HANDOFF, single #455 run `--ref release/v1.2.0-rc` (**attempt 1 only**), promote-path proof (1c.2), clear **B-MIG-BIND**, then #456, then #458 consumer validation (B-VAL + CV-ACTIVE), then promote (**merge commit only**) / tag on `releaseCommitSha` / publish.
+9. Only after Agent B APPROVE **and** Rev.6 Step 0.0 **and** **B-MIG-SCOPE cleared** + D-SEQ/D-ATTEST recorded + **explicit maintainer authorization**: begin Phase 1 version prep (**B-MIG-PIN/BIND and B-456/B-EVID/B-GO not required to start Phase 1**). **Phase 1 forbidden until then.**
+10. After version-prep merge: freeze SHA (**B-RC**), clear **B-MIG-PIN** (emit `migrationPin`), create `release/v1.2.0-rc`, clear B-DISPATCH + B-PUB/B-OCI-HANDOFF, single #455 run `--ref release/v1.2.0-rc` (**attempt 1 only**), promote-path proof (1c.2), clear **B-MIG-BIND** (binding carries PIN digests; refuse without PIN), then #456, then #458 consumer validation (B-VAL + CV-ACTIVE + **CV-MIG-PIN-***), then promote (**merge commit only**) / tag on `releaseCommitSha` / publish.
 11. Keep `easy-setup` at `partial` until Phase 6 public smoke + Phase 7 completion PR on main.
 
 **Canonical next-step order:**
 
 ```text
-Agent B APPROVE (Rev.5)
-  -> Step 0.0 durability for Rev.5
+Agent B APPROVE (Rev.6)
+  -> Step 0.0 durability for Rev.6
   -> Clear B-MIG-SCOPE
   -> Phase 1 version prep (explicit auth)
-  -> Clear B-MIG-PIN
+  -> Clear B-MIG-PIN (migrationPin output)
   -> #455 (after B-DISPATCH / B-PUB / D-ATTEST)
-  -> Clear B-MIG-BIND
+  -> Clear B-MIG-BIND (binding carries PIN digests)
   -> #456 ...
+  -> CV-* incl CV-MIG-PIN-01/02
 ```
 
-**No release execution in this round. Phase 1 still forbidden.**
+**No release execution in this round. Phase 1 still forbidden. Rev.6 not durable until APPROVE+merge.**
 
 ---
 
@@ -1683,8 +1742,8 @@ Agent B APPROVE (Rev.5)
 
 | Artifact | Owner path |
 |----------|------------|
-| Qualification plan | `docs/agent-workflows/issue-456-release-qualification-plan.md` (Rev.10 sister; phase-aware B-MIG) |
-| This execution plan | `docs/agent-workflows/issue-458-release-execution-plan.md` (**Rev.5**) |
+| Qualification plan | `docs/agent-workflows/issue-456-release-qualification-plan.md` (Rev.11 sister; PIN/BIND digests + phase-aware B-MIG) |
+| This execution plan | `docs/agent-workflows/issue-458-release-execution-plan.md` (**Rev.6**) |
 | Release record template | `docs/releases/v1.1.0.md` -> future `v1.2.0.md` |
 | Bundle runbook | `docs/ops/setup-release-bundle.md` / `.en.md` |
 | Image publish (current; rebuild) | `.github/workflows/publish-image.yml` — **not** promote-capable for v1.2.0 until extended (**B-PUB**) |
@@ -1712,22 +1771,24 @@ Agent B APPROVE (Rev.5)
 | D-ATTEST | 方式1 REGISTRY_ATTEST vs 方式2 EXTERNAL_PROVENANCE (v1.2.0 decided EXTERNAL_PROVENANCE) |
 | B-MIG | Umbrella INCLUDE/EXCLUDE + nine INCLUDE conditions; clearance phased via SCOPE/PIN/BIND |
 | B-MIG-SCOPE | Conds 1-7 + frozen filenames + no-extra policy; before Phase 1 |
-| B-MIG-PIN | Cond 8 exact inventory on releaseCommitSha; after 1.6, before #455 / 1b.2 |
-| B-MIG-BIND | Cond 9 new binding/run; before #456 qualification start |
+| B-MIG-PIN | Cond 8 normative `migrationPin` output on releaseCommitSha; after 1.6, before #455 / 1b.2; FAIL on extra migrations / digest mismatch |
+| B-MIG-BIND | Cond 9 new binding/run carrying PIN digests (`migrationPinDigestSha256`, `migrationInventoryDigestSha256`, `migrationFileDigests[]`); refuse without PIN; before #456 start |
 | B-DISPATCH / B-RC-REF | Workflow on `main` + immutable `release/v1.2.0-rc` dispatch at exact SHA |
 | B-OCI-HANDOFF | Promote-capable tooling + digest-preserving proof before 1b.2/1c/#456 |
-| B-VAL | Version-pinned consumer validator implementing `CV-*` |
+| B-VAL | Version-pinned consumer validator implementing `CV-*` (incl CV-MIG-PIN-01/02 on INCLUDE) |
 | `CV-*` | #458 sealed-package integrity predicates (not a second Hard gate) |
+| CV-MIG-PIN-01 | Evidence migration inventory digest == binding migration PIN digest |
+| CV-MIG-PIN-02 | Per-file SHA-256/blob SHA == releaseCommitSha tree and binding.migrationFileDigests |
 | Attempt unity | v1.2.0 accepts only workflow/job attempt == 1; no partial re-runs |
 | Release OV | Maintainer product qualification send — not tenant verification |
 
-## Appendix C — Normative #455 job mapping (Rev.5)
+## Appendix C — Normative #455 job mapping (Rev.6)
 
 ```text
 # Preconditions (B-DISPATCH + B-MIG-PIN):
 #   generate-setup-release-candidate.yml exists on default branch main
 #   release/v1.2.0-rc tip == releaseCommitSha
-#   B-MIG-PIN cleared (cond 8 exact inventory on releaseCommitSha)
+#   B-MIG-PIN cleared (cond 8: migrationPin output exact on releaseCommitSha)
 #   DO NOT use workflow_dispatch @ raw SHA
 
 gh workflow run generate-setup-release-candidate.yml --ref release/v1.2.0-rc
@@ -1750,12 +1811,12 @@ Machine-verify before accept:
 -> one workflowRunId (attempt 1 only) freezes:
    OCI layout + image-identity.json + host archives + candidate-provenance.json
 -> Step 1c.2 promote-path proof (digest preserved)
--> Clear B-MIG-BIND (cond 9) before Phase 2 #456
--> Phase 2 #456 + consumer validator (CV-* incl ACTIVE/SCENARIO)
+-> Clear B-MIG-BIND (cond 9: binding carries PIN digests) before Phase 2 #456
+-> Phase 2 #456 + consumer validator (CV-* incl ACTIVE/SCENARIO + CV-MIG-PIN-01/02)
 -> Phase 4: reuse release/v1.2.0-rc as PR head; merge commit only
 -> Phase 5: tag releaseCommitSha (not the merge commit on main)
 ```
 
 ---
 
-End of Issue #458 Release Execution Plan **Rev.5** (2026-08-01). Supersedes Rev.4, Rev.3, Rev.2, and Rev.1.
+End of Issue #458 Release Execution Plan **Rev.6** (2026-08-01). Supersedes Rev.5, Rev.4, Rev.3, Rev.2, and Rev.1.
