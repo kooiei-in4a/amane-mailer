@@ -179,8 +179,8 @@ rm -f "${archive_path}"
 if [[ "${CREATE_ARCHIVES}" == "1" ]]; then
   if [[ "${RID}" == "win-x64" ]]; then
     # Prefer Python zipfile with explicit POSIX entry names.
-    # Compress-Archive stores backslash separators; Git Bash unzip then fails
-    # (Candidate attempt 3 / #458).
+    # Do not use the Windows PowerShell archive cmdlet: it stores backslash
+    # separators and Git Bash unzip fails (Candidate attempt 3 / #458).
     python3 "${SCRIPT_DIR}/create-setup-release-zip.py" "${out_dir}" "${archive_path}"
   else
     # Preserve executable bits in the archive (smoke verifies without chmod).

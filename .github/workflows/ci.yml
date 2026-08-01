@@ -212,15 +212,15 @@ jobs:
           set -Eeuo pipefail
           gen=scripts/generate-setup-release-bundle.sh
           smoke=scripts/smoke-setup-release-bundle.sh
-          if grep -nF 'Compress-Archive' "${gen}"; then
+          if grep -nE 'Compress-Archive' "${gen}" | grep -vE '^[0-9]+:[[:space:]]*#'; then
             echo "[error] ${gen} must not use Compress-Archive for win-x64 ZIP" >&2
             exit 1
           fi
-          if grep -nE 'sha256sum[[:space:]]+"\$\{archive_path\}"' "${gen}"; then
+          if grep -nE 'sha256sum[[:space:]]+"\$\{archive_path\}"' "${gen}" | grep -vE '^[0-9]+:[[:space:]]*#'; then
             echo "[error] ${gen} must not parse sha256sum for archive digest" >&2
             exit 1
           fi
-          if grep -nE 'sha256sum[[:space:]]+"\$\{ARCHIVE_PATH\}"' "${smoke}"; then
+          if grep -nE 'sha256sum[[:space:]]+"\$\{ARCHIVE_PATH\}"' "${smoke}" | grep -vE '^[0-9]+:[[:space:]]*#'; then
             echo "[error] ${smoke} must not parse sha256sum for archive digest" >&2
             exit 1
           fi
