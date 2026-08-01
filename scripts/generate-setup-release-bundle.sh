@@ -97,16 +97,22 @@ if [[ "${SKIP_HOST_PUBLISH}" != "1" ]]; then
   echo "[info] Publishing host Native AOT for ${RID}"
   rm -rf "${publish_dir}"
   mkdir -p "${publish_dir}"
-  dotnet publish "${REPO_ROOT}/src/Amane.Mailer/Amane.Mailer.csproj" \
-    -c "${CONFIGURATION}" \
-    -r "${RID}" \
-    --self-contained \
-    -o "${publish_dir}" \
-    /p:PublishAot=true \
-    /p:IlcTreatWarningsAsErrors=true \
-    /p:Version="${MAILER_VERSION}" \
-    /p:InformationalVersion="${MAILER_VERSION}+${SOURCE_SHA}" \
-    /p:IncludeSourceRevisionInInformationalVersion=false
+  # Use -p: (not /p:) so Git for Windows / MSYS does not rewrite leading '/'
+  # into a path and strip the MSBuild switch (Candidate attempt 2 MSB1008).
+  publish_args=(
+    publish
+    "${REPO_ROOT}/src/Amane.Mailer/Amane.Mailer.csproj"
+    -c "${CONFIGURATION}"
+    -r "${RID}"
+    --self-contained
+    -o "${publish_dir}"
+    "-p:PublishAot=true"
+    "-p:IlcTreatWarningsAsErrors=true"
+    "-p:Version=${MAILER_VERSION}"
+    "-p:InformationalVersion=${MAILER_VERSION}+${SOURCE_SHA}"
+    "-p:IncludeSourceRevisionInInformationalVersion=false"
+  )
+  dotnet "${publish_args[@]}"
 fi
 
 if [[ "${RID}" == "win-x64" ]]; then
