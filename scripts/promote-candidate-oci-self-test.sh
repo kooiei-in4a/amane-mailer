@@ -248,6 +248,61 @@ expect_fail "missing arm64" \
     --attest-mode EXTERNAL_PROVENANCE \
     --dry-run
 
+
+# Registry lookup fail-closed negatives (must NOT treat as tag-absent)
+expect_fail "unreachable registry tag lookup" \
+  "${PROMOTE[@]}" \
+    --oci-layout "${OCI_LAYOUT}" \
+    --expected-digest "${SOURCE_DIGEST}" \
+    --repository "127.0.0.1:9/amane-mailer" \
+    --release-version "${RELEASE_VERSION}" \
+    --release-commit-sha "${RELEASE_COMMIT}" \
+    --version-tag "${VERSION_TAG}" \
+    --sha-tag "${SHA_TAG}" \
+    --attest-mode EXTERNAL_PROVENANCE \
+    --dry-run
+
+AUTH_REG_NAME="amane-oci-promote-auth-$$"
+AUTH_DIR="${WORK}/authreg"
+mkdir -p "${AUTH_DIR}/auth"
+# Avoid pulling httpd solely for htpasswd; apr1 is accepted by distribution registry auth.
+openssl passwd -apr1 'wrong-pass-not-a-secret' | awk '{print "promoter:" $0}' > "${AUTH_DIR}/auth/htpasswd"
+docker rm -f "${AUTH_REG_NAME}" >/dev/null 2>&1 || true
+docker run -d --rm --name "${AUTH_REG_NAME}" \
+  -p 15001:5000 \
+  -e REGISTRY_AUTH=htpasswd \
+  -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" \
+  -e REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd \
+  -v "${AUTH_DIR}/auth:/auth:ro" \
+  registry:2 >/dev/null
+sleep 2
+
+expect_fail "unauthorized registry tag lookup" \
+  "${PROMOTE[@]}" \
+    --oci-layout "${OCI_LAYOUT}" \
+    --expected-digest "${SOURCE_DIGEST}" \
+    --repository "127.0.0.1:15001/amane-mailer" \
+    --release-version "${RELEASE_VERSION}" \
+    --release-commit-sha "${RELEASE_COMMIT}" \
+    --version-tag "${VERSION_TAG}" \
+    --sha-tag "${SHA_TAG}" \
+    --attest-mode EXTERNAL_PROVENANCE \
+    --dry-run
+
+docker rm -f "${AUTH_REG_NAME}" >/dev/null 2>&1 || true
+
+expect_fail "TLS-class / closed-port registry tag lookup" \
+  "${PROMOTE[@]}" \
+    --oci-layout "${OCI_LAYOUT}" \
+    --expected-digest "${SOURCE_DIGEST}" \
+    --repository "127.0.0.1:1/amane-mailer" \
+    --release-version "${RELEASE_VERSION}" \
+    --release-commit-sha "${RELEASE_COMMIT}" \
+    --version-tag "${VERSION_TAG}" \
+    --sha-tag "${SHA_TAG}" \
+    --attest-mode EXTERNAL_PROVENANCE \
+    --dry-run
+
 # Secret-like scan of promote script help/dry-run output
 SCAN_OUT="${WORK}/scan.txt"
 "${PROMOTE[@]}" \
@@ -269,6 +324,23 @@ if [[ "${FAIL_COUNT}" -ne 0 ]]; then
   die "self-test failures: ${FAIL_COUNT} (passes=${PASS_COUNT})"
 fi
 
-echo "[info] promote-candidate-oci self-test passed (passes=${PASS_COUNT})"
+CRANE_VER="$("${CRANE}" version 2>/dev/null | head -n 1 | tr -d '\r')"
+PLATFORMS="$("${CRANE}" manifest "${REPO}:${VERSION_TAG}" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+ms=d.get("manifests") or []
+vals=[]
+for m in ms:
+  p=m.get("platform") or {}
+  os_=p.get("os") or ""
+  arch=p.get("architecture") or ""
+  if os_ and os_ != "unknown":
+    vals.append(f"{os_}/{arch}")
+print(",".join(sorted(set(vals))))')"
+echo "[info] promote-candidate-oci self-test passed (passes=${PASS_COUNT} fails=${FAIL_COUNT})"
+echo "craneVersion=${CRANE_VER}"
 echo "sourceDigest=${SOURCE_DIGEST}"
-echo "destinationDigest=${VERSION_DIGEST}"
+echo "destinationVersionTagDigest=${VERSION_DIGEST}"
+echo "destinationShaTagDigest=${SHA_DIGEST}"
+echo "platforms=${PLATFORMS}"
+echo "negativeTestPasses=${PASS_COUNT}"
+echo "finalResult=PASS"

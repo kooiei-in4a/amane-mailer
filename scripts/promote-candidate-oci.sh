@@ -66,16 +66,25 @@ done
 require_cmd sha256sum
 PYTHON_BIN="$(resolve_python)"
 
-if [[ -z "${CRANE_BIN}" ]]; then
-  if command -v crane >/dev/null 2>&1; then
-    CRANE_BIN="$(command -v crane)"
-  else
-    pin_dir="$(mktemp -d)"
-    bash "${SCRIPT_DIR}/install-pinned-crane.sh" "${pin_dir}"
-    CRANE_BIN="${pin_dir}/crane"
-  fi
+# Always install checksum-pinned crane. Never silently use PATH.
+# An explicit --crane must be byte-identical to the freshly installed pin.
+pin_dir="$(mktemp -d)"
+bash "${SCRIPT_DIR}/install-pinned-crane.sh" "${pin_dir}"
+PINNED_CRANE="${pin_dir}/crane"
+[[ -x "${PINNED_CRANE}" ]] || die "pinned crane binary not executable: ${PINNED_CRANE}"
+PINNED_VER="$("${PINNED_CRANE}" version 2>/dev/null | head -n 1 | tr -d '\r')"
+[[ "${PINNED_VER}" == "0.20.3" ]] || die "pinned crane version mismatch (got ${PINNED_VER}, expected 0.20.3)"
+PINNED_SHA="$(sha256sum "${PINNED_CRANE}" | awk '{print $1}')"
+if [[ -n "${CRANE_BIN}" ]]; then
+  [[ -x "${CRANE_BIN}" ]] || die "crane binary not executable: ${CRANE_BIN}"
+  got_ver="$("${CRANE_BIN}" version 2>/dev/null | head -n 1 | tr -d '\r')"
+  [[ "${got_ver}" == "0.20.3" ]] || die "crane --crane version mismatch (got ${got_ver}, expected 0.20.3)"
+  got_sha="$(sha256sum "${CRANE_BIN}" | awk '{print $1}')"
+  [[ "${got_sha}" == "${PINNED_SHA}" ]] || die "crane --crane SHA-256 mismatch vs pinned v0.20.3 installer"
+else
+  CRANE_BIN="${PINNED_CRANE}"
 fi
-[[ -x "${CRANE_BIN}" ]] || die "crane binary not executable: ${CRANE_BIN}"
+echo "[info] using pinned crane v0.20.3 sha256:${PINNED_SHA}"
 
 if [[ "${REPOSITORY}" == *@* ]]; then die "repository must not include a digest"; fi
 if [[ "${REPOSITORY}" =~ :[^/]+$ ]]; then die "repository must not include a tag"; fi
@@ -204,10 +213,68 @@ PY
 VERSION_REF="${REPOSITORY}:${VERSION_TAG}"
 SHA_REF="${REPOSITORY}:${SHA_TAG}"
 
-tag_exists() { "${CRANE_BIN}" digest "$1" >/dev/null 2>&1; }
+redact_registry_err() {
+  # Avoid leaking credentials / tokens from registry client stderr.
+  sed -E \
+    -e 's/[Bb]earer[[:space:]]+[A-Za-z0-9._~+\/=-]+/Bearer [REDACTED]/g' \
+    -e 's/(password|token|authorization|GITHUB_TOKEN|GHCR_TOKEN)[=:][^[:space:]]+/\1=[REDACTED]/gI' \
+    -e 's/ghp_[A-Za-z0-9]+/ghp_[REDACTED]/g' \
+    -e 's/gho_[A-Za-z0-9]+/gho_[REDACTED]/g'
+}
 
-if tag_exists "${VERSION_REF}"; then die "destination version tag already exists: ${VERSION_REF}"; fi
-if tag_exists "${SHA_REF}"; then die "destination SHA tag already exists: ${SHA_REF}"; fi
+# Classify destination tag lookup:
+#   EXISTS  -> stop (no overwrite)
+#   ABSENT  -> continue
+#   UNKNOWN -> stop (auth/network/TLS/other); never treat as absent
+classify_tag_lookup() {
+  local ref="$1"
+  local errf out rc err
+  errf="$(mktemp)"
+  set +e
+  out="$("${CRANE_BIN}" digest "${ref}" 2>"${errf}")"
+  rc=$?
+  set -e
+  if [[ "${rc}" -eq 0 ]]; then
+    rm -f "${errf}"
+    printf '%s\n' "EXISTS"
+    return 0
+  fi
+  err="$(redact_registry_err < "${errf}" || true)"
+  rm -f "${errf}"
+  if echo "${err}" | grep -Eiq \
+    'unauthorized|authentication required|denied|forbidden|[[:space:]]401([[:space:]]|$)|[[:space:]]403([[:space:]]|$)|dial tcp|connection refused|i/o timeout|context deadline|tls:|x509:|certificate|no such host|network is unreachable|temporary failure|server misbehaving|EOF|http2:|could not parse reference|server gave HTTP response to HTTPS'; then
+    printf '%s\n' "UNKNOWN"
+    return 0
+  fi
+  if echo "${err}" | grep -Eiq 'MANIFEST_UNKNOWN|NAME_UNKNOWN|manifest unknown|name unknown'; then
+    printf '%s\n' "ABSENT"
+    return 0
+  fi
+  printf '%s\n' "UNKNOWN"
+}
+
+require_tag_absent() {
+  local ref="$1"
+  local class
+  class="$(classify_tag_lookup "${ref}")"
+  case "${class}" in
+    ABSENT)
+      return 0
+      ;;
+    EXISTS)
+      die "destination tag already exists: ${ref}"
+      ;;
+    UNKNOWN)
+      die "destination tag lookup failed (state unknown); refusing to publish: ${ref}"
+      ;;
+    *)
+      die "unexpected tag lookup class '${class}' for ${ref}"
+      ;;
+  esac
+}
+
+require_tag_absent "${VERSION_REF}"
+require_tag_absent "${SHA_REF}"
 
 echo "[info] canonical source index digest ${SOURCE_DIGEST}"
 echo "[info] validated OCI layout at ${OCI_LAYOUT}"
