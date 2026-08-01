@@ -359,6 +359,10 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
             PlatformSender = input.PlatformSender,
             RuntimeFileOwnership = ResolveRuntimeFileOwnership(),
 
+            // Metrics stay enabled by default; mint a managed bearer so Setup Core does not reject
+            // assistant / non-interactive Main setup for a missing secret (#456 G456-01).
+            MetricsBearerToken = SetupAssistantInputs.CreateManagedMetricsBearerToken(),
+
             // Image identity comes from the trusted release inventory. The UI cannot supply a
             // repository, tag, or digest (ADR 0021 D-06).
             ImageRepository = layout.ReleaseInventory.AllowedImageRepository,

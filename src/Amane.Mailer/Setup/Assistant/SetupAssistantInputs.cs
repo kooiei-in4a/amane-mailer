@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using Amane.Mailer.Operations.AcsSetup;
 
@@ -99,6 +100,14 @@ internal static partial class SetupAssistantInputs
 
     internal static string EnvironmentFor(SetupMode mode) =>
         SetupRequestValidator.ExpectedEnvironment(mode);
+
+    /// <summary>
+    /// Easy Setup enables metrics by default (<c>MAILER_METRICS_ENABLED=true</c>).
+    /// Operators are not prompted for a metrics bearer; the assistant / non-interactive path
+    /// must mint a managed secret so Setup Core validation can succeed (#456 G456-01).
+    /// </summary>
+    internal static string CreateManagedMetricsBearerToken() =>
+        Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
 
     /// <summary>Exact phrase the operator must retype for the mode, per the #451 contract.</summary>
     internal static string EnvironmentConfirmationFor(SetupMode mode) =>
