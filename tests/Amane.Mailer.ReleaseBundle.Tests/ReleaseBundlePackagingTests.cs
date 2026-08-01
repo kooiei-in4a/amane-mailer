@@ -414,6 +414,73 @@ public sealed class ReleaseBundlePackagingTests
     }
 
     [Fact]
+    public void ValidateOciLayoutDirectory_accepts_exact_amd64_and_arm64_cardinality()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "exact-platforms");
+        var digest = CreateMinimalOciLayout(oci, includePlatformManifests: true, includeLayerBlob: true);
+        Assert.True(ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, digest).Success);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_duplicate_amd64_distinct_digests()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "dup-amd64-distinct");
+        var digest = CreateMinimalOciLayout(
+            oci,
+            includePlatformManifests: true,
+            duplicateAmd64DistinctDigest: true);
+        var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, digest);
+        Assert.False(result.Success);
+        Assert.Equal("oci_platform_duplicate", result.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_duplicate_arm64_distinct_digests()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "dup-arm64-distinct");
+        var digest = CreateMinimalOciLayout(
+            oci,
+            includePlatformManifests: true,
+            duplicateArm64DistinctDigest: true);
+        var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, digest);
+        Assert.False(result.Success);
+        Assert.Equal("oci_platform_duplicate", result.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_same_digest_referenced_twice_as_amd64()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "dup-amd64-same-digest");
+        var digest = CreateMinimalOciLayout(
+            oci,
+            includePlatformManifests: true,
+            duplicateAmd64SameDigest: true);
+        var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, digest);
+        Assert.False(result.Success);
+        Assert.Equal("oci_platform_digest_duplicate", result.ReasonCode);
+    }
+
+    [Fact]
+    public void ValidateOciLayoutDirectory_rejects_same_digest_with_conflicting_platform_annotations()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "conflict-annotation");
+        // amd64 manifest listed twice: once as amd64, once as arm64 (omit real arm64 blob entry).
+        var digest = CreateMinimalOciLayout(
+            oci,
+            includePlatformManifests: true,
+            omitArm64: true,
+            conflictingPlatformAnnotationSameDigest: true);
+        var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(oci, digest);
+        Assert.False(result.Success);
+        Assert.Equal("oci_platform_annotation_conflict", result.ReasonCode);
+    }
+
+    [Fact]
     public void ValidateOciLayoutDirectory_binds_buildx_metadata_descriptor_fields()
     {
         using var scratch = new TempDir();
@@ -1063,7 +1130,11 @@ public sealed class ReleaseBundlePackagingTests
         bool platformOrderArm64First = false,
         bool omitArm64 = false,
         bool includeLinux386 = false,
-        bool includeLayerBlob = false)
+        bool includeLayerBlob = false,
+        bool duplicateAmd64DistinctDigest = false,
+        bool duplicateArm64DistinctDigest = false,
+        bool duplicateAmd64SameDigest = false,
+        bool conflictingPlatformAnnotationSameDigest = false)
     {
         Directory.CreateDirectory(Path.Combine(directory, "blobs", "sha256"));
         File.WriteAllText(
@@ -1125,6 +1196,46 @@ public sealed class ReleaseBundlePackagingTests
             + "}\n";
         var manifestArm64Digest = WriteBlob(directory, manifestArm64);
 
+        string? manifestAmd64Alt = null;
+        string? manifestAmd64AltDigest = null;
+        if (duplicateAmd64DistinctDigest)
+        {
+            var configAmdAlt =
+                """{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{"Env":["X=1"]}}"""
+                + "\n";
+            var configAmdAltDigest = WriteBlob(directory, configAmdAlt);
+            manifestAmd64Alt =
+                "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\","
+                + "\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\""
+                + configAmdAltDigest
+                + "\",\"size\":"
+                + Encoding.UTF8.GetByteCount(configAmdAlt).ToString()
+                + "},\"layers\":"
+                + layersJson
+                + "}\n";
+            manifestAmd64AltDigest = WriteBlob(directory, manifestAmd64Alt);
+        }
+
+        string? manifestArm64Alt = null;
+        string? manifestArm64AltDigest = null;
+        if (duplicateArm64DistinctDigest)
+        {
+            var configArmAlt =
+                """{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{"Env":["Y=1"]}}"""
+                + "\n";
+            var configArmAltDigest = WriteBlob(directory, configArmAlt);
+            manifestArm64Alt =
+                "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\","
+                + "\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\""
+                + configArmAltDigest
+                + "\",\"size\":"
+                + Encoding.UTF8.GetByteCount(configArmAlt).ToString()
+                + "},\"layers\":"
+                + layersJson
+                + "}\n";
+            manifestArm64AltDigest = WriteBlob(directory, manifestArm64Alt);
+        }
+
         string? manifest386Digest = null;
         string? manifest386 = null;
         if (includeLinux386)
@@ -1170,6 +1281,31 @@ public sealed class ReleaseBundlePackagingTests
             {
                 AddPlatform(manifestArm64Digest, manifestArm64, "arm64");
             }
+        }
+
+        if (duplicateAmd64DistinctDigest
+            && manifestAmd64AltDigest is not null
+            && manifestAmd64Alt is not null)
+        {
+            AddPlatform(manifestAmd64AltDigest, manifestAmd64Alt, "amd64");
+        }
+
+        if (duplicateArm64DistinctDigest
+            && manifestArm64AltDigest is not null
+            && manifestArm64Alt is not null)
+        {
+            AddPlatform(manifestArm64AltDigest, manifestArm64Alt, "arm64");
+        }
+
+        if (duplicateAmd64SameDigest)
+        {
+            AddPlatform(manifestAmd64Digest, manifestAmd64, "amd64");
+        }
+
+        if (conflictingPlatformAnnotationSameDigest)
+        {
+            // Same amd64 manifest digest also claimed as arm64 (omit real arm64 when present).
+            AddPlatform(manifestAmd64Digest, manifestAmd64, "arm64");
         }
 
         if (includeLinux386 && manifest386Digest is not null && manifest386 is not null)

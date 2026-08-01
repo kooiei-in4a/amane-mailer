@@ -1111,19 +1111,23 @@ public static class ReleaseBundlePackaging
 
         // Platform / graph validation is rooted at the bound descriptor only so
         // sibling top-level manifests cannot satisfy required platforms.
+        // Platforms are tracked with multiplicity (not a collapsing HashSet) so
+        // duplicate os/arch or duplicate digest references fail closed before
+        // the required-platform membership checks below.
         var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var foundPlatforms = new HashSet<string>(StringComparer.Ordinal);
+        var platformOccurrences = new OciPlatformOccurrenceTracker();
         var walk = WalkOciDescriptors(
             rootFull,
             [bound],
             referenced,
-            foundPlatforms,
+            platformOccurrences,
             OciWalkRole.BoundImageIndex);
         if (!walk.Success)
         {
             return walk;
         }
 
+        var foundPlatforms = platformOccurrences.PlatformIdentities;
         foreach (var required in requiredPlatforms)
         {
             if (!foundPlatforms.Contains(required))
@@ -1492,11 +1496,70 @@ public static class ReleaseBundlePackaging
         return new PackagingValidationResult { Success = true };
     }
 
+    /// <summary>
+    /// Tracks bound-subtree platform-manifest occurrences with multiplicity.
+    /// Identity is <c>os/architecture</c> (variant is ignored for identity; duplicates
+    /// of the same os/arch are always rejected). Shared config/layer digests across
+    /// distinct platform manifests remain allowed via the blob <c>referenced</c> set.
+    /// </summary>
+    private sealed class OciPlatformOccurrenceTracker
+    {
+        private readonly Dictionary<string, string> _platformToDigest = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string?> _digestToPlatform =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        public IReadOnlyCollection<string> PlatformIdentities => _platformToDigest.Keys;
+
+        public PackagingValidationResult RecordIndexPlatformManifest(
+            string digest,
+            string? platformIdentity)
+        {
+            if (_digestToPlatform.TryGetValue(digest, out var priorPlatform))
+            {
+                if (!string.IsNullOrWhiteSpace(priorPlatform)
+                    && !string.IsNullOrWhiteSpace(platformIdentity)
+                    && !string.Equals(priorPlatform, platformIdentity, StringComparison.Ordinal))
+                {
+                    return PackagingFail(
+                        "oci_platform_annotation_conflict",
+                        "Bound subtree references the same image-manifest digest with conflicting platform annotations.");
+                }
+
+                return PackagingFail(
+                    "oci_platform_digest_duplicate",
+                    "Bound subtree must not reference the same image-manifest digest more than once.");
+            }
+
+            _digestToPlatform[digest] = platformIdentity;
+
+            if (string.IsNullOrWhiteSpace(platformIdentity))
+            {
+                return new PackagingValidationResult { Success = true };
+            }
+
+            if (_platformToDigest.TryGetValue(platformIdentity, out var existingDigest))
+            {
+                return PackagingFail(
+                    "oci_platform_duplicate",
+                    "Bound subtree declares platform "
+                    + platformIdentity
+                    + " more than once (digests "
+                    + existingDigest
+                    + " and "
+                    + digest
+                    + ").");
+            }
+
+            _platformToDigest[platformIdentity] = digest;
+            return new PackagingValidationResult { Success = true };
+        }
+    }
+
     private static PackagingValidationResult WalkOciDescriptors(
         string rootFull,
         OciDescriptor[] descriptors,
         HashSet<string> referenced,
-        HashSet<string> foundPlatforms,
+        OciPlatformOccurrenceTracker platformOccurrences,
         OciWalkRole role)
     {
         foreach (var descriptor in descriptors)
@@ -1593,6 +1656,28 @@ public static class ReleaseBundlePackaging
                     break;
             }
 
+            // Platform multiplicity / digest-reference uniqueness for index platform
+            // manifests is enforced before the required-platform membership check and
+            // before skipping already-walked blob content (shared layers still OK).
+            if (role == OciWalkRole.IndexPlatformManifest)
+            {
+                string? platformIdentity = null;
+                if (descriptor.Platform is { Os: { } os, Architecture: { } arch }
+                    && !string.IsNullOrWhiteSpace(os)
+                    && !string.IsNullOrWhiteSpace(arch))
+                {
+                    platformIdentity = os + "/" + arch;
+                }
+
+                var recorded = platformOccurrences.RecordIndexPlatformManifest(
+                    digest,
+                    platformIdentity);
+                if (!recorded.Success)
+                {
+                    return recorded;
+                }
+            }
+
             var alreadyWalked = !referenced.Add(digest);
             if (alreadyWalked)
             {
@@ -1622,7 +1707,7 @@ public static class ReleaseBundlePackaging
                     rootFull,
                     nested.Manifests,
                     referenced,
-                    foundPlatforms,
+                    platformOccurrences,
                     OciWalkRole.IndexPlatformManifest);
                 if (!nestedWalk.Success)
                 {
@@ -1634,15 +1719,8 @@ public static class ReleaseBundlePackaging
 
             if (role == OciWalkRole.IndexPlatformManifest)
             {
-                // Platforms are collected only from real image-manifest descriptors under the
-                // bound image index (not from config/layer/unknown descriptors).
-                if (descriptor.Platform is { Os: { } os, Architecture: { } arch }
-                    && !string.IsNullOrWhiteSpace(os)
-                    && !string.IsNullOrWhiteSpace(arch))
-                {
-                    foundPlatforms.Add(os + "/" + arch);
-                }
-
+                // Platforms are recorded above from real image-manifest descriptors under
+                // the bound image index (not from config/layer/unknown descriptors).
                 OciManifestDocument? manifest;
                 try
                 {
@@ -1674,7 +1752,7 @@ public static class ReleaseBundlePackaging
                     rootFull,
                     [manifest.Config],
                     referenced,
-                    foundPlatforms,
+                    platformOccurrences,
                     OciWalkRole.ManifestConfig);
                 if (!configWalk.Success)
                 {
@@ -1687,7 +1765,7 @@ public static class ReleaseBundlePackaging
                         rootFull,
                         manifest.Layers,
                         referenced,
-                        foundPlatforms,
+                        platformOccurrences,
                         OciWalkRole.ManifestLayer);
                     if (!layerWalk.Success)
                     {
