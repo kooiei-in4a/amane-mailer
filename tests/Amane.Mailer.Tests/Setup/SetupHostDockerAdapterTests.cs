@@ -766,11 +766,23 @@ public sealed class SetupHostDockerAdapterTests
         var env = HostProcessRunner.CreateMinimalDockerChildEnvironment(clearDockerOverrides: true);
 
         // Docker Desktop Compose CLI plugins resolve via these roots; omit => compose_unavailable.
-        Assert.False(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ProgramFiles")));
-        Assert.Equal(Environment.GetEnvironmentVariable("ProgramFiles"), env["ProgramFiles"]);
+        AssertPresentAmbientCopied(env, "ProgramFiles");
+        AssertPresentAmbientCopied(env, "ProgramData");
+        AssertPresentAmbientCopied(env, "LOCALAPPDATA");
+        AssertPresentAmbientCopied(env, "APPDATA");
         Assert.False(env.ContainsKey("DOCKER_HOST"));
         Assert.False(env.ContainsKey("DOCKER_CONTEXT"));
         Assert.False(env.ContainsKey("COMPOSE_FILE"));
+    }
+
+    private static void AssertPresentAmbientCopied(
+        IReadOnlyDictionary<string, string?> env,
+        string key)
+    {
+        var ambient = Environment.GetEnvironmentVariable(key);
+        Assert.False(string.IsNullOrEmpty(ambient));
+        Assert.True(env.ContainsKey(key));
+        Assert.Equal(ambient, env[key]);
     }
 
     private static bool IsBindingProbe(string joinedArguments) =>
