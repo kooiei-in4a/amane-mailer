@@ -733,7 +733,44 @@ public sealed class SetupHostDockerAdapterTests
         Assert.Equal(string.Empty, psi.Arguments);
         Assert.Equal("1", psi.Environment["COMPOSE_DISABLE_ENV_FILE"]);
         Assert.False(psi.Environment.ContainsKey("DOCKER_HOST"));
+        Assert.False(psi.Environment.ContainsKey("DOCKER_CONTEXT"));
         Assert.False(psi.Environment.ContainsKey("COMPOSE_FILE"));
+    }
+
+    [Fact]
+    public void Minimal_docker_child_environment_rejects_remote_overrides_from_extra()
+    {
+        var env = HostProcessRunner.CreateMinimalDockerChildEnvironment(
+            clearDockerOverrides: true,
+            extra: new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["DOCKER_HOST"] = "tcp://127.0.0.1:2375",
+                ["DOCKER_CONTEXT"] = "remote",
+                ["COMPOSE_PROJECT_NAME"] = "amane-mailer-qual",
+            });
+
+        Assert.False(env.ContainsKey("DOCKER_HOST"));
+        Assert.False(env.ContainsKey("DOCKER_CONTEXT"));
+        Assert.Equal("amane-mailer-qual", env["COMPOSE_PROJECT_NAME"]);
+        Assert.Equal("1", env["COMPOSE_DISABLE_ENV_FILE"]);
+    }
+
+    [Fact]
+    public void Minimal_docker_child_environment_copies_windows_compose_plugin_roots()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var env = HostProcessRunner.CreateMinimalDockerChildEnvironment(clearDockerOverrides: true);
+
+        // Docker Desktop Compose CLI plugins resolve via these roots; omit => compose_unavailable.
+        Assert.False(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ProgramFiles")));
+        Assert.Equal(Environment.GetEnvironmentVariable("ProgramFiles"), env["ProgramFiles"]);
+        Assert.False(env.ContainsKey("DOCKER_HOST"));
+        Assert.False(env.ContainsKey("DOCKER_CONTEXT"));
+        Assert.False(env.ContainsKey("COMPOSE_FILE"));
     }
 
     private static bool IsBindingProbe(string joinedArguments) =>

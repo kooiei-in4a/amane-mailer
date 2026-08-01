@@ -176,6 +176,13 @@ internal sealed class HostProcessRunner : IHostProcessRunner
         return null;
     }
 
+    /// <summary>
+    /// Builds a cleared child environment for Docker / Compose invocations.
+    /// Ambient <c>DOCKER_HOST</c>, <c>DOCKER_CONTEXT</c>, and Compose file overrides are
+    /// intentionally omitted so remote-context / injection controls stay fail-closed.
+    /// On Windows, path roots required for Docker Compose CLI plugin discovery are copied
+    /// (G456-01 / #456: without them <c>docker compose version --short</c> fails closed).
+    /// </summary>
     internal static Dictionary<string, string?> CreateMinimalDockerChildEnvironment(
         bool clearDockerOverrides,
         IReadOnlyDictionary<string, string?>? extra = null)
@@ -194,11 +201,30 @@ internal sealed class HostProcessRunner : IHostProcessRunner
             ["COMPOSE_DISABLE_ENV_FILE"] = "1",
         };
 
+        // Windows Docker Desktop resolves Compose CLI plugins using these roots.
+        // Do not copy DOCKER_HOST / DOCKER_CONTEXT / COMPOSE_FILE from ambient here.
+        if (OperatingSystem.IsWindows())
+        {
+            CopyAmbientIfPresent(env, "ProgramFiles");
+            CopyAmbientIfPresent(env, "ProgramFiles(x86)");
+            CopyAmbientIfPresent(env, "ProgramW6432");
+            CopyAmbientIfPresent(env, "ProgramData");
+            CopyAmbientIfPresent(env, "LOCALAPPDATA");
+            CopyAmbientIfPresent(env, "APPDATA");
+            CopyAmbientIfPresent(env, "USERNAME");
+            CopyAmbientIfPresent(env, "USER");
+            // Optional Docker CLI config dir (plugin discovery); never DOCKER_HOST.
+            CopyAmbientIfPresent(env, "DOCKER_CONFIG");
+        }
+
         if (extra is not null)
         {
             foreach (var pair in extra)
             {
-                if (pair.Value is not null)
+                // Managed compose env is passed via extra (includes COMPOSE_PROJECT_NAME).
+                // Never accept ambient remote-context overrides through that seam.
+                if (pair.Value is not null
+                    && !IsDeniedRemoteDockerOverrideKey(pair.Key))
                 {
                     env[pair.Key] = pair.Value;
                 }
@@ -215,6 +241,23 @@ internal sealed class HostProcessRunner : IHostProcessRunner
 
         return env;
     }
+
+    private static void CopyAmbientIfPresent(Dictionary<string, string?> env, string key)
+    {
+        var value = Environment.GetEnvironmentVariable(key);
+        if (!string.IsNullOrEmpty(value))
+        {
+            env[key] = value;
+        }
+    }
+
+    /// <summary>
+    /// Remote Docker connection overrides that must never enter the child env (ambient or extra).
+    /// Compose file selection stays on argv; managed <c>COMPOSE_PROJECT_NAME</c> may still be passed via extra.
+    /// </summary>
+    internal static bool IsDeniedRemoteDockerOverrideKey(string key) =>
+        key.Equals("DOCKER_HOST", StringComparison.OrdinalIgnoreCase)
+        || key.Equals("DOCKER_CONTEXT", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<StreamReadResult> ReadStreamAsync(
         Stream stream,

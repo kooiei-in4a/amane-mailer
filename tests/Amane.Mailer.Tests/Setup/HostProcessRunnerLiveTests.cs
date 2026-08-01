@@ -82,6 +82,49 @@ public sealed class HostProcessRunnerLiveTests
         }
     }
 
+    [Fact]
+    public async Task Minimal_docker_child_environment_runs_compose_version_short_on_windows()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var dockerPath = HostProcessRunner.TryResolveDockerExecutable();
+        if (string.IsNullOrWhiteSpace(dockerPath))
+        {
+            return;
+        }
+
+        // Preflight: skip when Docker Engine is not reachable in this environment.
+        var probe = await new HostProcessRunner().RunAsync(
+            new HostProcessSpec(
+                dockerPath,
+                ["version", "--format", "{{.Server.Version}}"],
+                workingDirectory: null,
+                HostProcessRunner.CreateMinimalDockerChildEnvironment(clearDockerOverrides: true),
+                TimeSpan.FromSeconds(20)),
+            TestContext.Current.CancellationToken);
+        if (probe.Outcome != HostProcessOutcome.Completed || probe.ExitCode != 0)
+        {
+            return;
+        }
+
+        var result = await new HostProcessRunner().RunAsync(
+            new HostProcessSpec(
+                dockerPath,
+                ["compose", "version", "--short"],
+                workingDirectory: null,
+                HostProcessRunner.CreateMinimalDockerChildEnvironment(clearDockerOverrides: true),
+                TimeSpan.FromSeconds(20)),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HostProcessOutcome.Completed, result.Outcome);
+        Assert.Equal(0, result.ExitCode);
+        Assert.False(string.IsNullOrWhiteSpace(result.StandardOutput));
+        Assert.DoesNotContain("unknown flag", result.StandardError ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsProcessAlive(int pid)
     {
         try
