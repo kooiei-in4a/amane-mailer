@@ -1,0 +1,113 @@
+name: Promote Qualified OCI
+
+# Digest-preserving promotion of a qualified Easy Setup OCI layout (P-OCI-PROMOTE).
+# Does NOT rebuild images. Does NOT attach registry attestation.
+# Intended for v1.2.0 EXTERNAL_PROVENANCE releases after #456 Go.
+# This workflow is not executed in the tooling Draft PR round.
+
+on:
+  workflow_dispatch:
+    inputs:
+      oci_layout_artifact:
+        description: Actions artifact name containing the OCI layout directory
+        required: true
+        type: string
+      expected_oci_index_digest:
+        description: Expected source index digest (sha256:<64 lowercase hex>)
+        required: true
+        type: string
+      release_version:
+        description: Release version major.minor.patch (e.g. 1.2.0, no leading v)
+        required: true
+        type: string
+      release_commit_sha:
+        description: Exact 40-hex releaseCommitSha
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+concurrency:
+  group: promote-qualified-oci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/amane-mailer
+  ATTEST_MODE: EXTERNAL_PROVENANCE
+
+jobs:
+  promote:
+    name: Promote OCI layout without rebuild
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate inputs
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          EXPECTED_DIGEST: ${{ inputs.expected_oci_index_digest }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::release_version must be major.minor.patch"; exit 1; }
+          [[ "${RELEASE_COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::release_commit_sha must be 40 lowercase hex"; exit 1; }
+          [[ "${EXPECTED_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]] \
+            || { echo "::error::expected_oci_index_digest must be sha256:<64 lowercase hex>"; exit 1; }
+          if [[ "${RELEASE_VERSION}" == "1.2.0" ]]; then
+            echo "[info] v1.2.0 promote path selected (P-OCI-PROMOTE / EXTERNAL_PROVENANCE)"
+          fi
+
+      - name: Download OCI layout artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.oci_layout_artifact }}
+          path: artifacts/promote-oci
+
+      - name: Locate OCI layout directory
+        id: layout
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -f artifacts/promote-oci/oci-layout ]]; then
+            echo "path=artifacts/promote-oci" >> "$GITHUB_OUTPUT"
+          elif [[ -f artifacts/promote-oci/oci/oci-layout ]]; then
+            echo "path=artifacts/promote-oci/oci" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::OCI layout (oci-layout) not found in artifact"
+            find artifacts/promote-oci -maxdepth 3 -type f | head -n 50
+            exit 1
+          fi
+
+      - name: Login to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote without rebuild
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          EXPECTED_DIGEST: ${{ inputs.expected_oci_index_digest }}
+          LAYOUT_PATH: ${{ steps.layout.outputs.path }}
+        run: |
+          set -Eeuo pipefail
+          bash scripts/promote-candidate-oci.sh \
+            --oci-layout "${LAYOUT_PATH}" \
+            --expected-digest "${EXPECTED_DIGEST}" \
+            --repository "${IMAGE_REPOSITORY}" \
+            --release-version "${RELEASE_VERSION}" \
+            --release-commit-sha "${RELEASE_COMMIT_SHA}" \
+            --version-tag "v${RELEASE_VERSION}" \
+            --sha-tag "sha-${RELEASE_COMMIT_SHA}" \
+            --attest-mode "${ATTEST_MODE}"
