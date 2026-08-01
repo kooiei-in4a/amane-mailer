@@ -4,6 +4,7 @@ name: Promote Qualified OCI
 # Does NOT rebuild images. Does NOT attach registry attestation.
 # Intended for v1.2.0 EXTERNAL_PROVENANCE releases after #456 Go.
 # Consumes the OCI layout artifact from a single #455 workflow run (SINGLE_WF_RUN_OPTION_A).
+# Immutable handoff identity: candidate_workflow_run_id + candidate_artifact_id (+ artifact name check).
 
 on:
   workflow_dispatch:
@@ -12,16 +13,15 @@ on:
         description: GitHub Actions run ID of Generate Setup Release Candidate (#455)
         required: true
         type: string
+      candidate_artifact_id:
+        description: Exact Actions artifact ID of setup-release-candidate-oci from that run
+        required: true
+        type: string
       oci_layout_artifact:
-        description: Artifact name from the candidate run (default setup-release-candidate-oci)
+        description: Artifact name from the candidate run (must match artifact ID)
         required: true
         type: string
         default: setup-release-candidate-oci
-      candidate_artifact_id:
-        description: Optional exact artifact ID from the candidate run (fail-closed if mismatched)
-        required: false
-        type: string
-        default: ""
       expected_oci_index_digest:
         description: Expected source index digest (sha256:<64 lowercase hex>)
         required: true
@@ -86,6 +86,8 @@ jobs:
             || { echo "::error::expected_oci_index_digest must be sha256:<64 lowercase hex>"; exit 1; }
           [[ "${CANDIDATE_RUN_ID}" =~ ^[0-9]+$ ]] \
             || { echo "::error::candidate_workflow_run_id must be numeric"; exit 1; }
+          [[ "${CANDIDATE_ARTIFACT_ID}" =~ ^[0-9]+$ ]] \
+            || { echo "::error::candidate_artifact_id must be numeric"; exit 1; }
           [[ -n "${OCI_ARTIFACT_NAME}" ]] \
             || { echo "::error::oci_layout_artifact is required"; exit 1; }
           if [[ "${RELEASE_VERSION}" == "1.2.0" ]]; then
@@ -98,7 +100,7 @@ jobs:
       - name: Download OCI layout artifact from candidate run
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ${{ inputs.oci_layout_artifact }}
+          artifact-ids: ${{ inputs.candidate_artifact_id }}
           path: artifacts/promote-oci
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}

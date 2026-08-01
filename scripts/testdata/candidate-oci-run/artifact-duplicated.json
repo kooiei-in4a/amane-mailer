@@ -1,0 +1,15 @@
+{
+  "total_count": 2,
+  "artifacts": [
+    {
+      "id": 900001,
+      "name": "setup-release-candidate-oci",
+      "expired": false
+    },
+    {
+      "id": 900002,
+      "name": "setup-release-candidate-oci",
+      "expired": false
+    }
+  ]
+}
