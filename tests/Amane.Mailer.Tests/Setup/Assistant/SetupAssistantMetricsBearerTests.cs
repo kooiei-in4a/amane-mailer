@@ -1,4 +1,3 @@
-using Amane.Mailer.Configuration;
 using Amane.Mailer.Setup;
 using Amane.Mailer.Setup.Assistant;
 using Amane.Mailer.Setup.NonInteractive;
@@ -9,6 +8,9 @@ namespace Amane.Mailer.Tests.Setup.Assistant;
 
 public sealed class SetupAssistantMetricsBearerTests
 {
+    private const string TestImageRepository = "ghcr.io/kooiei-in4a/amane-mailer";
+    private const string TestImageTag = "sha-78486c52ac9eaba50a0a2f758bfeb3f0f31aec82";
+
     [Fact]
     public void CreateManagedMetricsBearerToken_is_secret_shaped_and_unique()
     {
@@ -23,43 +25,49 @@ public sealed class SetupAssistantMetricsBearerTests
     }
 
     [Fact]
-    public void Non_interactive_local_mailpit_request_with_managed_metrics_bearer_passes_core_validation()
+    public void BuildSetupRequest_from_non_interactive_input_sets_managed_metrics_bearer()
+    {
+        var root = Path.GetFullPath(
+            Path.Combine(Path.GetTempPath(), "amane-ni-metrics-wire-" + Guid.NewGuid().ToString("N")));
+        var main = BuildLocalMailpitMainInput();
+        var ownership = SetupTestFixtures.LinuxRuntimeOwnershipOrNull();
+
+        var request = SetupAssistantOperations.BuildSetupRequest(
+            main,
+            root,
+            TestImageRepository,
+            TestImageTag,
+            ownership);
+
+        Assert.Equal(main.Mode, request.Mode);
+        Assert.Equal(root, request.ManagedRootPath);
+        Assert.Same(main.Tenants, request.Tenants);
+        Assert.Same(main.TokenSecrets, request.TokenSecrets);
+        Assert.Equal(TestImageRepository, request.ImageRepository);
+        Assert.Equal(TestImageTag, request.ImageTag);
+        Assert.Same(ownership, request.RuntimeFileOwnership);
+        Assert.False(string.IsNullOrWhiteSpace(request.MetricsBearerToken));
+        Assert.True(SetupAssistantInputs.IsSecret(request.MetricsBearerToken));
+        Assert.Matches("^[0-9a-f]{64}$", request.MetricsBearerToken);
+    }
+
+    [Fact]
+    public void BuildSetupRequest_result_passes_core_validation_and_dry_run()
     {
         var root = Path.GetFullPath(
             Path.Combine(Path.GetTempPath(), "amane-ni-metrics-" + Guid.NewGuid().ToString("N")));
-        var parsed = SetupNonInteractiveTestSupport.BuildLocalMailpitInput();
-        var collected = SetupNonInteractiveOrchestratorAdapter.BuildCollectedInput(parsed);
-        var main = collected.MainSetupInput
-            ?? throw new InvalidOperationException("Main setup input missing.");
-
-        var request = new SetupRequest
-        {
-            Mode = main.Mode,
-            ManagedRootPath = root,
-            Tenants = main.Tenants,
-            TokenSecrets = main.TokenSecrets,
-            AcsConnectionString = main.AcsConnectionString,
-            PlatformSender = main.PlatformSender,
-            MetricsBearerToken = SetupAssistantInputs.CreateManagedMetricsBearerToken(),
-            ImageRepository = "ghcr.io/kooiei-in4a/amane-mailer",
-            ImageTag = "sha-78486c52ac9eaba50a0a2f758bfeb3f0f31aec82",
-        };
+        var request = SetupAssistantOperations.BuildSetupRequest(
+            BuildLocalMailpitMainInput(),
+            root,
+            TestImageRepository,
+            TestImageTag,
+            SetupTestFixtures.LinuxRuntimeOwnershipOrNull());
 
         Assert.True(
             SetupRequestValidator.TryValidate(request, out var code, out var message),
             $"code={code} message={message}");
 
-        var dryRun = new SetupRequest
-        {
-            Mode = request.Mode,
-            ManagedRootPath = request.ManagedRootPath,
-            DryRun = true,
-            Tenants = request.Tenants,
-            TokenSecrets = request.TokenSecrets,
-            MetricsBearerToken = request.MetricsBearerToken,
-            ImageRepository = request.ImageRepository,
-            ImageTag = request.ImageTag,
-        };
+        var dryRun = request with { DryRun = true, RuntimeFileOwnership = null };
         var result = new SetupCore().GenerateBundle(dryRun);
         Assert.True(result.IsSuccess, result.Code + " " + result.Message);
         Assert.Equal(SetupResultCode.DryRunPlan, result.Code);
@@ -70,20 +78,21 @@ public sealed class SetupAssistantMetricsBearerTests
     {
         var root = Path.GetFullPath(
             Path.Combine(Path.GetTempPath(), "amane-ni-metrics-miss-" + Guid.NewGuid().ToString("N")));
-        var request = SetupTestFixtures.LocalMailpitRequest(root, dryRun: true);
-        request = new SetupRequest
+        var request = SetupTestFixtures.LocalMailpitRequest(root, dryRun: true) with
         {
-            Mode = request.Mode,
-            ManagedRootPath = request.ManagedRootPath,
-            DryRun = true,
-            Tenants = request.Tenants,
-            TokenSecrets = request.TokenSecrets,
             MetricsBearerToken = null,
-            ImageRepository = request.ImageRepository,
-            ImageTag = request.ImageTag,
         };
 
-        Assert.False(SetupRequestValidator.TryValidate(request, out var code, out _));
+        Assert.False(SetupRequestValidator.TryValidate(request, out var code, out var message));
         Assert.Equal(SetupResultCode.RejectedValidation, code);
+        Assert.Contains("Metrics bearer token", message, StringComparison.Ordinal);
+    }
+
+    private static SetupAssistantMainSetupInput BuildLocalMailpitMainInput()
+    {
+        var parsed = SetupNonInteractiveTestSupport.BuildLocalMailpitInput();
+        var collected = SetupNonInteractiveOrchestratorAdapter.BuildCollectedInput(parsed);
+        return collected.MainSetupInput
+            ?? throw new InvalidOperationException("Main setup input missing.");
     }
 }
