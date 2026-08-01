@@ -63,7 +63,7 @@ jobs:
       - name: PTY smoke (ACS register-acs interactive paths)
         run: python3 scripts/pty-smoke-register-acs.py
 
-      - name: Guard setup-bundle MSBuild -p: args (MSYS-safe)
+      - name: "Guard setup-bundle MSBuild -p args (MSYS-safe)"
         run: |
           set -Eeuo pipefail
           target=scripts/generate-setup-release-bundle.sh
@@ -169,8 +169,10 @@ jobs:
     name: Windows setup-bundle MSYS smoke
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.base_ref == 'main' ||
-      github.base_ref == 'develop'
+      github.event_name == 'pull_request' ||
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/develop' ||
+      startsWith(github.ref, 'refs/heads/fix/')
     runs-on: windows-2022
     steps:
       - name: Checkout
@@ -181,7 +183,7 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Static guard — MSBuild -p: (not /p:)
+      - name: "Static guard: MSBuild -p (not /p)"
         shell: bash
         run: |
           set -Eeuo pipefail
