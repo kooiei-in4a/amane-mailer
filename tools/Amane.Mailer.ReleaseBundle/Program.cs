@@ -194,10 +194,16 @@ static int RunValidateOci(ReadOnlySpan<string> args)
             return 1;
         }
 
-        if (!string.Equals(metaDigest, values["--image-digest"], StringComparison.OrdinalIgnoreCase))
+        var digestGate = ReleaseBundlePackaging.AssertImageDigestMatchesMetadata(
+            values["--image-digest"],
+            metaDigest);
+        if (!digestGate.Success)
         {
             Console.Error.WriteLine(
-                "validate-oci failed: --image-digest does not match Buildx metadata digest.");
+                "validate-oci failed: "
+                + (digestGate.ReasonCode ?? "buildx_image_digest_mismatch")
+                + " — "
+                + (digestGate.Message ?? "--image-digest does not match Buildx metadata digest."));
             return 1;
         }
     }

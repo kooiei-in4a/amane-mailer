@@ -47,6 +47,52 @@ public static class ReleaseBundlePackaging
         "linux/arm64",
     ];
 
+    private static readonly HashSet<string> AllowedOciIndexMediaTypes = new(StringComparer.Ordinal)
+    {
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+    };
+
+    private static readonly HashSet<string> AllowedOciImageManifestMediaTypes = new(StringComparer.Ordinal)
+    {
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    };
+
+    private static readonly HashSet<string> AllowedOciConfigMediaTypes = new(StringComparer.Ordinal)
+    {
+        "application/vnd.oci.image.config.v1+json",
+        "application/vnd.docker.container.image.v1+json",
+    };
+
+    private static readonly HashSet<string> AllowedOciLayerMediaTypes = new(StringComparer.Ordinal)
+    {
+        "application/vnd.oci.image.layer.v1.tar",
+        "application/vnd.oci.image.layer.v1.tar+gzip",
+        "application/vnd.oci.image.layer.v1.tar+zstd",
+        "application/vnd.oci.image.layer.nondistributable.v1.tar",
+        "application/vnd.oci.image.layer.nondistributable.v1.tar+gzip",
+        "application/vnd.oci.image.layer.nondistributable.v1.tar+zstd",
+        "application/vnd.docker.image.rootfs.diff.tar",
+        "application/vnd.docker.image.rootfs.diff.tar.gzip",
+        "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip",
+    };
+
+    private enum OciWalkRole
+    {
+        /// <summary>Buildx-bound descriptor: must be an image index.</summary>
+        BoundImageIndex,
+
+        /// <summary>Child of an image index: must be an image manifest; may contribute platforms.</summary>
+        IndexPlatformManifest,
+
+        /// <summary>Image manifest config descriptor.</summary>
+        ManifestConfig,
+
+        /// <summary>Image manifest layer descriptor.</summary>
+        ManifestLayer,
+    }
+
     private static readonly Regex FullSha1OrSha256 = new(
         "^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
@@ -950,56 +996,138 @@ public static class ReleaseBundlePackaging
             return PackagingFail("oci_index_empty", "OCI index.json manifests must not be empty.");
         }
 
-        // Bind Buildx image digest to the OCI layout root index.json content digest.
-        var layoutIndexDigest = DigestBytes(indexBytes);
-        if (!string.Equals(expectedImageDigest, layoutIndexDigest, StringComparison.OrdinalIgnoreCase))
+        // Bind Buildx image digest to a descriptor inside index.json manifests[].
+        // index.json is the OCI layout entrypoint file; its content digest is NOT the
+        // Buildx containerimage.descriptor.digest / containerimage.digest identity.
+        // That digest names the image-index blob referenced by a descriptor in
+        // manifests[] (see OCI Image Layout + Buildx metadata-file).
+        var expectedDigest = expectedImageDigest.ToLowerInvariant();
+        var boundMatches = index.Manifests
+            .Where(d =>
+                !string.IsNullOrWhiteSpace(d.Digest)
+                && string.Equals(d.Digest, expectedDigest, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (boundMatches.Length == 0)
         {
             return PackagingFail(
                 "oci_image_digest_mismatch",
-                "expectedImageDigest must equal sha256 of the OCI layout index.json bytes.");
+                "expectedImageDigest must match exactly one descriptor digest in index.json manifests.");
+        }
+
+        if (boundMatches.Length != 1)
+        {
+            return PackagingFail(
+                "oci_image_digest_ambiguous",
+                "expectedImageDigest matched multiple descriptors in index.json manifests.");
+        }
+
+        // Candidate layout policy (fail-closed): index.json.manifests[] must contain
+        // exactly the single Buildx-bound image-index descriptor. Sibling descriptors
+        // must not contribute platforms or blobs outside that digest subtree.
+        if (index.Manifests.Length != 1)
+        {
+            return PackagingFail(
+                "oci_layout_sibling_manifests",
+                "Candidate OCI layout index.json must contain exactly one manifests[] descriptor (the Buildx-bound image index).");
+        }
+
+        var bound = boundMatches[0];
+        if (string.IsNullOrWhiteSpace(bound.MediaType)
+            || !AllowedOciIndexMediaTypes.Contains(bound.MediaType))
+        {
+            return PackagingFail(
+                "oci_bound_not_image_index",
+                "Buildx-bound descriptor must use an OCI/Docker image-index mediaType.");
+        }
+
+        var boundBlobPath = BlobPath(rootFull, expectedDigest);
+        if (!File.Exists(boundBlobPath))
+        {
+            return PackagingFail(
+                "oci_blob_missing",
+                "OCI layout is missing the blob referenced by the Buildx image digest descriptor.");
+        }
+
+        byte[] boundBlobBytes;
+        try
+        {
+            boundBlobBytes = File.ReadAllBytes(boundBlobPath);
+        }
+        catch
+        {
+            return PackagingFail(
+                "oci_blob_unreadable",
+                "OCI layout could not read the blob referenced by the Buildx image digest.");
+        }
+
+        var boundContract = ValidateDescriptorContentContract(
+            bound,
+            boundBlobBytes,
+            requireJsonMediaTypeMatch: true);
+        if (!boundContract.Success)
+        {
+            return boundContract;
         }
 
         if (expectedRootDescriptor is not null)
         {
-            if (!IsValidDigest(expectedRootDescriptor.Digest)
-                || !string.Equals(
-                    expectedRootDescriptor.Digest,
-                    layoutIndexDigest,
-                    StringComparison.OrdinalIgnoreCase))
+            var metaMatch = AssertImageDigestMatchesMetadata(
+                expectedDigest,
+                expectedRootDescriptor.Digest);
+            if (!metaMatch.Success)
             {
                 return PackagingFail(
                     "oci_descriptor_digest_mismatch",
-                    "Buildx containerimage.descriptor.digest must equal sha256(index.json).");
+                    "Buildx containerimage.descriptor.digest must equal --image-digest / bound manifests[] digest.");
             }
 
             if (expectedRootDescriptor.Size is null
-                || expectedRootDescriptor.Size.Value != indexBytes.LongLength)
+                || expectedRootDescriptor.Size.Value != boundBlobBytes.LongLength
+                || bound.Size!.Value != expectedRootDescriptor.Size.Value)
             {
                 return PackagingFail(
                     "oci_descriptor_size_mismatch",
-                    "Buildx containerimage.descriptor.size must equal index.json byte length.");
+                    "Buildx containerimage.descriptor.size must equal bound descriptor size and blob byte length.");
             }
 
             var expectedMediaType = expectedRootDescriptor.MediaType;
-            var layoutMediaType = index.MediaType;
+            var boundMediaType = bound.MediaType;
             if (!string.IsNullOrWhiteSpace(expectedMediaType)
-                && !string.IsNullOrWhiteSpace(layoutMediaType)
-                && !string.Equals(expectedMediaType, layoutMediaType, StringComparison.Ordinal))
+                && !string.Equals(expectedMediaType, boundMediaType, StringComparison.Ordinal))
             {
                 return PackagingFail(
                     "oci_descriptor_media_type_mismatch",
-                    "Buildx containerimage.descriptor.mediaType must match index.json mediaType.");
+                    "Buildx containerimage.descriptor.mediaType must match the bound index.json descriptor mediaType.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(expectedMediaType)
+                && !AllowedOciIndexMediaTypes.Contains(expectedMediaType))
+            {
+                return PackagingFail(
+                    "oci_bound_not_image_index",
+                    "Buildx containerimage.descriptor.mediaType must be an OCI/Docker image-index mediaType.");
             }
         }
 
+        // Platform / graph validation is rooted at the bound descriptor only so
+        // sibling top-level manifests cannot satisfy required platforms.
+        // Platforms are tracked with multiplicity (not a collapsing HashSet) so
+        // duplicate os/arch or duplicate digest references fail closed before
+        // the required-platform membership checks below.
         var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var foundPlatforms = new HashSet<string>(StringComparer.Ordinal);
-        var walk = WalkOciDescriptors(rootFull, index.Manifests, referenced, foundPlatforms);
+        var platformOccurrences = new OciPlatformOccurrenceTracker();
+        var walk = WalkOciDescriptors(
+            rootFull,
+            [bound],
+            referenced,
+            platformOccurrences,
+            OciWalkRole.BoundImageIndex);
         if (!walk.Success)
         {
             return walk;
         }
 
+        var foundPlatforms = platformOccurrences.PlatformIdentities;
         foreach (var required in requiredPlatforms)
         {
             if (!foundPlatforms.Contains(required))
@@ -1195,48 +1323,374 @@ public static class ReleaseBundlePackaging
         return new PackagingValidationResult { Success = true };
     }
 
+    /// <summary>
+    /// Fail-closed gate used by <c>validate-oci</c>: <c>--image-digest</c> must equal
+    /// the Buildx metadata digest when metadata is supplied.
+    /// </summary>
+    public static PackagingValidationResult AssertImageDigestMatchesMetadata(
+        string imageDigest,
+        string? metadataDigest)
+    {
+        if (!IsValidDigest(imageDigest))
+        {
+            return PackagingFail(
+                "oci_index_digest_invalid",
+                "Expected OCI image digest is invalid.");
+        }
+
+        if (!IsValidDigest(metadataDigest))
+        {
+            return PackagingFail(
+                "buildx_image_digest_mismatch",
+                "--image-digest does not match Buildx metadata digest.");
+        }
+
+        if (!string.Equals(imageDigest, metadataDigest, StringComparison.OrdinalIgnoreCase))
+        {
+            return PackagingFail(
+                "buildx_image_digest_mismatch",
+                "--image-digest does not match Buildx metadata digest.");
+        }
+
+        return new PackagingValidationResult { Success = true };
+    }
+
+    /// <summary>
+    /// Validate digest / size / mediaType contracts against blob bytes.
+    /// </summary>
+    private static PackagingValidationResult ValidateDescriptorContentContract(
+        OciDescriptor descriptor,
+        byte[] blobBytes,
+        bool requireJsonMediaTypeMatch)
+    {
+        if (string.IsNullOrWhiteSpace(descriptor.Digest) || !IsValidDigest(descriptor.Digest))
+        {
+            return PackagingFail("oci_descriptor_digest_invalid", "OCI descriptor digest is invalid.");
+        }
+
+        var digest = descriptor.Digest.ToLowerInvariant();
+        var actualDigest = DigestBytes(blobBytes);
+        if (!string.Equals(actualDigest, digest, StringComparison.OrdinalIgnoreCase))
+        {
+            return PackagingFail(
+                "oci_blob_digest_mismatch",
+                "Referenced blob content digest does not match the descriptor digest.");
+        }
+
+        if (descriptor.Size is null || descriptor.Size.Value < 0)
+        {
+            return PackagingFail(
+                "oci_descriptor_size_missing",
+                "OCI descriptor size is required and must be non-negative.");
+        }
+
+        if (descriptor.Size.Value != blobBytes.LongLength)
+        {
+            return PackagingFail(
+                "oci_descriptor_size_mismatch",
+                "OCI descriptor size must equal referenced blob byte length.");
+        }
+
+        if (string.IsNullOrWhiteSpace(descriptor.MediaType))
+        {
+            return PackagingFail(
+                "oci_descriptor_media_type_missing",
+                "OCI descriptor mediaType is required.");
+        }
+
+        var mediaType = descriptor.MediaType;
+        var allowed =
+            AllowedOciIndexMediaTypes.Contains(mediaType)
+            || AllowedOciImageManifestMediaTypes.Contains(mediaType)
+            || AllowedOciConfigMediaTypes.Contains(mediaType)
+            || AllowedOciLayerMediaTypes.Contains(mediaType);
+        if (!allowed)
+        {
+            return PackagingFail(
+                "oci_descriptor_media_type_unknown",
+                "OCI descriptor mediaType is not in the candidate allowlist.");
+        }
+
+        if (!requireJsonMediaTypeMatch)
+        {
+            return new PackagingValidationResult { Success = true };
+        }
+
+        if (AllowedOciIndexMediaTypes.Contains(mediaType))
+        {
+            OciIndexDocument? nested;
+            try
+            {
+                nested = JsonSerializer.Deserialize(
+                    blobBytes,
+                    ReleaseBundleJsonContext.Default.OciIndexDocument);
+            }
+            catch
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType claims an index but blob is not a readable OCI index.");
+            }
+
+            if (nested is null || nested.Manifests is null)
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType claims an index but blob is not a readable OCI index.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(nested.MediaType)
+                && !string.Equals(nested.MediaType, mediaType, StringComparison.Ordinal))
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType does not match mediaType inside the referenced index blob.");
+            }
+
+            return new PackagingValidationResult { Success = true };
+        }
+
+        if (AllowedOciImageManifestMediaTypes.Contains(mediaType))
+        {
+            OciManifestDocument? manifest;
+            try
+            {
+                manifest = JsonSerializer.Deserialize(
+                    blobBytes,
+                    ReleaseBundleJsonContext.Default.OciManifestDocument);
+            }
+            catch
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType claims a manifest but blob is not a readable OCI manifest.");
+            }
+
+            if (manifest is null)
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType claims a manifest but blob is not a readable OCI manifest.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(manifest.MediaType)
+                && !string.Equals(manifest.MediaType, mediaType, StringComparison.Ordinal))
+            {
+                return PackagingFail(
+                    "oci_descriptor_media_type_mismatch",
+                    "Descriptor mediaType does not match mediaType inside the referenced manifest blob.");
+            }
+
+            // Reject incomplete manifests that cannot form a publishable image graph.
+            if (manifest.Config is null)
+            {
+                return PackagingFail(
+                    "oci_manifest_incomplete",
+                    "OCI image manifest must declare a config descriptor.");
+            }
+
+            return new PackagingValidationResult { Success = true };
+        }
+
+        // Config / layer: allowlist + size/digest only (binary layers are not JSON).
+        return new PackagingValidationResult { Success = true };
+    }
+
+    /// <summary>
+    /// Tracks bound-subtree platform-manifest occurrences with multiplicity.
+    /// Identity is <c>os/architecture</c> (variant is ignored for identity; duplicates
+    /// of the same os/arch are always rejected). Shared config/layer digests across
+    /// distinct platform manifests remain allowed via the blob <c>referenced</c> set.
+    /// </summary>
+    private sealed class OciPlatformOccurrenceTracker
+    {
+        private readonly Dictionary<string, string> _platformToDigest = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string?> _digestToPlatform =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        public IReadOnlyCollection<string> PlatformIdentities => _platformToDigest.Keys;
+
+        public PackagingValidationResult RecordIndexPlatformManifest(
+            string digest,
+            string? platformIdentity)
+        {
+            if (_digestToPlatform.TryGetValue(digest, out var priorPlatform))
+            {
+                if (!string.IsNullOrWhiteSpace(priorPlatform)
+                    && !string.IsNullOrWhiteSpace(platformIdentity)
+                    && !string.Equals(priorPlatform, platformIdentity, StringComparison.Ordinal))
+                {
+                    return PackagingFail(
+                        "oci_platform_annotation_conflict",
+                        "Bound subtree references the same image-manifest digest with conflicting platform annotations.");
+                }
+
+                return PackagingFail(
+                    "oci_platform_digest_duplicate",
+                    "Bound subtree must not reference the same image-manifest digest more than once.");
+            }
+
+            _digestToPlatform[digest] = platformIdentity;
+
+            if (string.IsNullOrWhiteSpace(platformIdentity))
+            {
+                return new PackagingValidationResult { Success = true };
+            }
+
+            if (_platformToDigest.TryGetValue(platformIdentity, out var existingDigest))
+            {
+                return PackagingFail(
+                    "oci_platform_duplicate",
+                    "Bound subtree declares platform "
+                    + platformIdentity
+                    + " more than once (digests "
+                    + existingDigest
+                    + " and "
+                    + digest
+                    + ").");
+            }
+
+            _platformToDigest[platformIdentity] = digest;
+            return new PackagingValidationResult { Success = true };
+        }
+    }
+
     private static PackagingValidationResult WalkOciDescriptors(
         string rootFull,
         OciDescriptor[] descriptors,
         HashSet<string> referenced,
-        HashSet<string> foundPlatforms)
+        OciPlatformOccurrenceTracker platformOccurrences,
+        OciWalkRole role)
     {
         foreach (var descriptor in descriptors)
         {
-            if (descriptor.Platform is { Os: { } os, Architecture: { } arch }
-                && !string.IsNullOrWhiteSpace(os)
-                && !string.IsNullOrWhiteSpace(arch))
-            {
-                var platformKey = os + "/" + arch;
-                foundPlatforms.Add(platformKey);
-            }
-
             if (string.IsNullOrWhiteSpace(descriptor.Digest) || !IsValidDigest(descriptor.Digest))
             {
                 return PackagingFail("oci_descriptor_digest_invalid", "OCI descriptor digest is invalid.");
             }
 
             var digest = descriptor.Digest.ToLowerInvariant();
-            if (!referenced.Add(digest))
-            {
-                // Already walked.
-                continue;
-            }
-
             var blobPath = BlobPath(rootFull, digest);
             if (!File.Exists(blobPath))
             {
                 return PackagingFail("oci_blob_missing", "OCI layout is missing a referenced blob.");
             }
 
-            var mediaType = descriptor.MediaType ?? string.Empty;
-            if (mediaType.Contains("index", StringComparison.OrdinalIgnoreCase))
+            byte[] blobBytes;
+            try
+            {
+                blobBytes = File.ReadAllBytes(blobPath);
+            }
+            catch
+            {
+                return PackagingFail("oci_blob_unreadable", "OCI layout could not read a referenced blob.");
+            }
+
+            // Re-visits still enforce this descriptor's size/mediaType against the blob.
+            var requireJsonMatch =
+                role is OciWalkRole.BoundImageIndex or OciWalkRole.IndexPlatformManifest;
+            var contract = ValidateDescriptorContentContract(
+                descriptor,
+                blobBytes,
+                requireJsonMediaTypeMatch: requireJsonMatch);
+            if (!contract.Success)
+            {
+                return contract;
+            }
+
+            var mediaType = descriptor.MediaType!;
+            switch (role)
+            {
+                case OciWalkRole.BoundImageIndex:
+                    if (!AllowedOciIndexMediaTypes.Contains(mediaType))
+                    {
+                        return PackagingFail(
+                            "oci_bound_not_image_index",
+                            "Buildx-bound descriptor must use an OCI/Docker image-index mediaType.");
+                    }
+
+                    break;
+
+                case OciWalkRole.IndexPlatformManifest:
+                    if (!AllowedOciImageManifestMediaTypes.Contains(mediaType))
+                    {
+                        return PackagingFail(
+                            "oci_platform_manifest_media_type_invalid",
+                            "Image-index manifests[] entries must use an OCI/Docker image-manifest mediaType.");
+                    }
+
+                    break;
+
+                case OciWalkRole.ManifestConfig:
+                    if (!AllowedOciConfigMediaTypes.Contains(mediaType))
+                    {
+                        return PackagingFail(
+                            "oci_config_media_type_invalid",
+                            "Image manifest config must use an OCI/Docker config mediaType.");
+                    }
+
+                    if (descriptor.Platform is not null)
+                    {
+                        return PackagingFail(
+                            "oci_platform_on_non_manifest",
+                            "Config descriptors must not carry platform annotations.");
+                    }
+
+                    break;
+
+                case OciWalkRole.ManifestLayer:
+                    if (!AllowedOciLayerMediaTypes.Contains(mediaType))
+                    {
+                        return PackagingFail(
+                            "oci_layer_media_type_invalid",
+                            "Image manifest layers must use an OCI/Docker layer mediaType.");
+                    }
+
+                    if (descriptor.Platform is not null)
+                    {
+                        return PackagingFail(
+                            "oci_platform_on_non_manifest",
+                            "Layer descriptors must not carry platform annotations.");
+                    }
+
+                    break;
+            }
+
+            // Platform multiplicity / digest-reference uniqueness for index platform
+            // manifests is enforced before the required-platform membership check and
+            // before skipping already-walked blob content (shared layers still OK).
+            if (role == OciWalkRole.IndexPlatformManifest)
+            {
+                string? platformIdentity = null;
+                if (descriptor.Platform is { Os: { } os, Architecture: { } arch }
+                    && !string.IsNullOrWhiteSpace(os)
+                    && !string.IsNullOrWhiteSpace(arch))
+                {
+                    platformIdentity = os + "/" + arch;
+                }
+
+                var recorded = platformOccurrences.RecordIndexPlatformManifest(
+                    digest,
+                    platformIdentity);
+                if (!recorded.Success)
+                {
+                    return recorded;
+                }
+            }
+
+            var alreadyWalked = !referenced.Add(digest);
+            if (alreadyWalked)
+            {
+                continue;
+            }
+
+            if (role == OciWalkRole.BoundImageIndex)
             {
                 OciIndexDocument? nested;
                 try
                 {
                     nested = JsonSerializer.Deserialize(
-                        File.ReadAllBytes(blobPath),
+                        blobBytes,
                         ReleaseBundleJsonContext.Default.OciIndexDocument);
                 }
                 catch
@@ -1249,7 +1703,12 @@ public static class ReleaseBundlePackaging
                     return PackagingFail("oci_index_empty", "Nested OCI index manifests must not be empty.");
                 }
 
-                var nestedWalk = WalkOciDescriptors(rootFull, nested.Manifests, referenced, foundPlatforms);
+                var nestedWalk = WalkOciDescriptors(
+                    rootFull,
+                    nested.Manifests,
+                    referenced,
+                    platformOccurrences,
+                    OciWalkRole.IndexPlatformManifest);
                 if (!nestedWalk.Success)
                 {
                     return nestedWalk;
@@ -1258,14 +1717,15 @@ public static class ReleaseBundlePackaging
                 continue;
             }
 
-            if (mediaType.Contains("manifest", StringComparison.OrdinalIgnoreCase)
-                || mediaType.Contains("image.manifest", StringComparison.OrdinalIgnoreCase))
+            if (role == OciWalkRole.IndexPlatformManifest)
             {
+                // Platforms are recorded above from real image-manifest descriptors under
+                // the bound image index (not from config/layer/unknown descriptors).
                 OciManifestDocument? manifest;
                 try
                 {
                     manifest = JsonSerializer.Deserialize(
-                        File.ReadAllBytes(blobPath),
+                        blobBytes,
                         ReleaseBundleJsonContext.Default.OciManifestDocument);
                 }
                 catch
@@ -1273,40 +1733,50 @@ public static class ReleaseBundlePackaging
                     return PackagingFail("oci_manifest_unreadable", "OCI manifest could not be parsed.");
                 }
 
-                if (manifest is null)
+                if (manifest is null || manifest.Config is null)
                 {
-                    return PackagingFail("oci_manifest_unreadable", "OCI manifest could not be parsed.");
+                    return PackagingFail(
+                        "oci_manifest_incomplete",
+                        "OCI image manifest must declare a config descriptor.");
                 }
 
+                // Nested index-style manifests[] on an image manifest is out of policy for candidates.
                 if (manifest.Manifests is { Length: > 0 })
                 {
-                    var nestedWalk = WalkOciDescriptors(rootFull, manifest.Manifests, referenced, foundPlatforms);
-                    if (!nestedWalk.Success)
-                    {
-                        return nestedWalk;
-                    }
+                    return PackagingFail(
+                        "oci_manifest_nested_index_forbidden",
+                        "Candidate image manifests must not embed a nested manifests[] index.");
                 }
 
-                var children = new List<OciDescriptor>();
-                if (manifest.Config is not null)
+                var configWalk = WalkOciDescriptors(
+                    rootFull,
+                    [manifest.Config],
+                    referenced,
+                    platformOccurrences,
+                    OciWalkRole.ManifestConfig);
+                if (!configWalk.Success)
                 {
-                    children.Add(manifest.Config);
+                    return configWalk;
                 }
 
                 if (manifest.Layers is { Length: > 0 })
                 {
-                    children.AddRange(manifest.Layers);
-                }
-
-                if (children.Count > 0)
-                {
-                    var childWalk = WalkOciDescriptors(rootFull, children.ToArray(), referenced, foundPlatforms);
-                    if (!childWalk.Success)
+                    var layerWalk = WalkOciDescriptors(
+                        rootFull,
+                        manifest.Layers,
+                        referenced,
+                        platformOccurrences,
+                        OciWalkRole.ManifestLayer);
+                    if (!layerWalk.Success)
                     {
-                        return childWalk;
+                        return layerWalk;
                     }
                 }
+
+                continue;
             }
+
+            // Config / layer leaves: content contract already enforced; no further children.
         }
 
         return new PackagingValidationResult { Success = true };
