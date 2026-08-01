@@ -360,7 +360,9 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
             layout.ManagedRoot,
             layout.ReleaseInventory.AllowedImageRepository,
             layout.ReleaseInventory.AllowedDisplayTag,
-            runtimeFileOwnership);
+            runtimeFileOwnership,
+            layout.ProjectName,
+            layout.ReleaseInventory.PinnedMailerImageReference);
 
     /// <summary>
     /// Pure builder used by production layout wiring and focused regression tests.
@@ -370,7 +372,9 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
         string managedRootPath,
         string imageRepository,
         string imageTag,
-        SetupRuntimeFileOwnership? runtimeFileOwnership) =>
+        SetupRuntimeFileOwnership? runtimeFileOwnership,
+        string? trustedComposeProjectName = null,
+        string? trustedMailerImageReference = null) =>
         new()
         {
             Mode = input.Mode,
@@ -389,6 +393,8 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
             // repository, tag, or digest (ADR 0021 D-06).
             ImageRepository = imageRepository,
             ImageTag = imageTag,
+            TrustedComposeProjectName = trustedComposeProjectName,
+            TrustedMailerImageReference = trustedMailerImageReference,
         };
 
     internal static SetupAssistantMainSetupOutcome FromAcsWorkflow(AcsSetupWorkflowResult result) =>

@@ -409,13 +409,7 @@ public static class SetupBundleStaticValidator
             var fingerprintCompose = new SortedDictionary<string, string>(
                 parsedCompose,
                 StringComparer.Ordinal);
-            foreach (var key in fingerprintCompose.Keys.ToArray())
-            {
-                fingerprintCompose[key] = fingerprintCompose[key].Replace(
-                    $"bundles/{recorded.BundleId}/",
-                    "bundles/<bundle-id>/",
-                    StringComparison.Ordinal);
-            }
+            fingerprintCompose = SetupFingerprintComposeNormalizer.Normalize(fingerprintCompose, recorded.BundleId);
 
             var recomputed = SetupCanonicalPayload.FingerprintSha256(
                 SetupCanonicalPayload.BuildForRecordedSchema(

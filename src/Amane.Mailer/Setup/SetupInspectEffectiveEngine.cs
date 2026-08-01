@@ -368,16 +368,7 @@ public static partial class SetupInspectEffectiveEngine
             }
         }
 
-        if (bundleId is { Length: > 0 })
-        {
-            foreach (var key in compose.Keys.ToList())
-            {
-                compose[key] = compose[key]
-                    .Replace($"bundles/{bundleId}/", "bundles/<bundle-id>/", StringComparison.Ordinal);
-            }
-        }
-
-        return compose;
+        return SetupFingerprintComposeNormalizer.Normalize(compose, bundleId);
     }
 
     private static PlatformSenderFile? TryLoadPlatformSender(string tenantsPath)
