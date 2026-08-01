@@ -51,7 +51,7 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
             return Failure(layoutFailureCode);
         }
 
-        var request = BuildSetupRequest(input, layout);
+        var request = BuildSetupRequest(input, layout, ResolveRuntimeFileOwnership());
 
         if (input.Mode == SetupMode.LocalMailpit)
         {
@@ -346,23 +346,49 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
         return new SetupRuntimeFileOwnership { UnixUserId = userId, UnixGroupId = groupId };
     }
 
-    private SetupRequest BuildSetupRequest(
+    /// <summary>
+    /// Shared Main-setup request construction for Web / terminal / non-interactive.
+    /// Tests call this directly so a missing <see cref="SetupRequest.MetricsBearerToken"/>
+    /// assignment cannot regress without failing CI (#456 G456-01).
+    /// </summary>
+    internal static SetupRequest BuildSetupRequest(
         SetupAssistantMainSetupInput input,
-        TrustedSetupHostLayout layout) =>
+        TrustedSetupHostLayout layout,
+        SetupRuntimeFileOwnership? runtimeFileOwnership) =>
+        BuildSetupRequest(
+            input,
+            layout.ManagedRoot,
+            layout.ReleaseInventory.AllowedImageRepository,
+            layout.ReleaseInventory.AllowedDisplayTag,
+            runtimeFileOwnership);
+
+    /// <summary>
+    /// Pure builder used by production layout wiring and focused regression tests.
+    /// </summary>
+    internal static SetupRequest BuildSetupRequest(
+        SetupAssistantMainSetupInput input,
+        string managedRootPath,
+        string imageRepository,
+        string imageTag,
+        SetupRuntimeFileOwnership? runtimeFileOwnership) =>
         new()
         {
             Mode = input.Mode,
-            ManagedRootPath = layout.ManagedRoot,
+            ManagedRootPath = managedRootPath,
             Tenants = input.Tenants,
             TokenSecrets = input.TokenSecrets,
             AcsConnectionString = input.AcsConnectionString,
             PlatformSender = input.PlatformSender,
-            RuntimeFileOwnership = ResolveRuntimeFileOwnership(),
+            RuntimeFileOwnership = runtimeFileOwnership,
+
+            // Metrics stay enabled by default; mint a managed bearer so Setup Core does not reject
+            // assistant / non-interactive Main setup for a missing secret (#456 G456-01).
+            MetricsBearerToken = SetupAssistantInputs.CreateManagedMetricsBearerToken(),
 
             // Image identity comes from the trusted release inventory. The UI cannot supply a
             // repository, tag, or digest (ADR 0021 D-06).
-            ImageRepository = layout.ReleaseInventory.AllowedImageRepository,
-            ImageTag = layout.ReleaseInventory.AllowedDisplayTag,
+            ImageRepository = imageRepository,
+            ImageTag = imageTag,
         };
 
     internal static SetupAssistantMainSetupOutcome FromAcsWorkflow(AcsSetupWorkflowResult result) =>
