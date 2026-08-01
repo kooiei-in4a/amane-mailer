@@ -1,14 +1,14 @@
 # Issue #456 Release Qualification Plan
 
-> **Status:** **REVISE response** (Agent B Rev.9 findings). Still does **not** authorize Go execution / publish / Phase 1 from this document alone. `migrationDecision=INCLUDE` for frozen 012/013; `dSeqAck=true`; `attestMode=EXTERNAL_PROVENANCE`. B-MIG clearance remains **SET** until phase-aware subgates (B-MIG-SCOPE / B-MIG-PIN / B-MIG-BIND) clear. Full nine-condition clear is **not** required before #458 Phase 1 version prep — only **B-MIG-SCOPE**.
+> **Status:** **REVISE response** (Agent B Rev.10 findings B-R10-01 / M-R10-01 / M-R10-02 / m-R10-01). Still does **not** authorize Go execution / publish / Phase 1 from this document alone. `migrationDecision=INCLUDE` for frozen 012/013; `dSeqAck=true`; `attestMode=EXTERNAL_PROVENANCE`. B-MIG clearance remains **SET** until phase-aware subgates (B-MIG-SCOPE / B-MIG-PIN / B-MIG-BIND) clear. Full nine-condition clear is **not** required before #458 Phase 1 version prep — only **B-MIG-SCOPE**.
 > **Issue:** [#456](https://github.com/kooiei-in4a/amane-mailer/issues/456)
 > **Parent tracking:** [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445)
 > **Design authority:** [ADR 0021](../adr/0021-easy-setup-boundaries.md) ([#446](https://github.com/kooiei-in4a/amane-mailer/issues/446), Accepted)
 > **Base branch at planning time:** `develop`
 > **Inherited Rev.8 exploration base SHA:** `9d6c556ec758384f8f8f8b32e976178529032f9c` (#457 merge)
-> **PR / Rev.10 planning base SHA (`origin/develop` after #458 Step 0.0):** `3f2b640c08294502a6796c2634de5fdf03ce776f`
-> **Plan revision:** 10 (2026-08-01)
-> **Supersedes:** Rev.9 (and Rev.1 through Rev.8; same path; do not implement prior revisions)
+> **PR / planning base SHA (`origin/develop` after #458 Step 0.0):** `3f2b640c08294502a6796c2634de5fdf03ce776f`
+> **Plan revision:** 11 (2026-08-01)
+> **Supersedes:** Rev.10 (and Rev.1 through Rev.9; same path; do not implement prior revisions)
 > **Encoding:** UTF-8 (no BOM)
 
 This document plans **release-candidate qualification** for v1.2.0 Easy Setup. It does **not** authorize product code changes, publish, tag, real ACS send during planning, or Go/No-Go execution.
@@ -17,7 +17,20 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 
 ## 0. Change logs
 
-### 0.0 Rev.10 change log (Agent B Rev.9 REVISE; phase-aware B-MIG)
+### 0.0 Rev.11 change log (Agent B Rev.10 REVISE)
+
+| Finding | Verdict | Plan change |
+|---------|---------|-------------|
+| **B-R10-01** G456-44 PII value canary optional / `not-run` can PASS | Correct | Sec. 12.2 G456-44: required `piiValueCanaryResult = pass \| fail` (no `not-run`). PASS iff `contractResult=pass` AND exact schema allowlist PASS AND `piiValueCanaryResult=pass` AND `prohibitedContentScan.result=PASS`. FAIL / reject if canary not run or raw body/recipient/secret/connection-string/provider-raw-error canary values persisted into 013 table. Sec. 14 NO_GO / M-19 tables synced. |
+| **M-R10-01** B-MIG-PIN digests not carried into binding / evidence equality | Correct | Sec. 4 / Sec. 5 / Sec. 6.3: normative B-MIG-PIN `migrationPin` output (`releaseCommitSha`, `inventoryAlgorithm`, `inventoryDigestSha256`, per-file `sha256`+`gitBlobSha` for 012/013, `evidenceDigestSha256`). Binding required fields: `migrationPinDigestSha256`, `migrationInventoryDigestSha256`, `migrationFileDigests[]`. G456-42/43/44 PASS only if evidence migration digests **exactly equal** binding PIN values (PIN'd `releaseCommitSha` tree). B-MIG-BIND refuses bind without these PIN fields present and matching. |
+| **M-R10-02** migration history still uses ends-at / includes | Correct | Sec. 12.2: canonicalize `expectedFullMigrationInventory[]` / `expectedThrough011[]` / `expectedPost011Inventory[] == [012, 013]` in **runner order** (not filename ordinal). G456-42/43 require full exact equality of pre/post applied/pending lists; directory inventory digest must be consistent with those lists. Remove ends-at / must-include wording. |
+| **m-R10-01** Pack H reintroduces Gate class labels | Correct | Pack H: remove `Hard-only` and Conditional-exception Gate-class wording; keep procedure / variant / evidenceType only. Active-PASS / exception rules remain in Sec. 6.4 / 9.5 / 14 only. |
+| Dual base SHAs | Keep | Inherited Rev.8 exploration `9d6c556...` + planning base `3f2b640...`. |
+| `variantRulesVersion` | Keep **4** | No mapper / cardinality change. |
+| Rev.8 sealed-store / aggregator / FAIL -> PASS / optional-key rules | **Unchanged** | Do not weaken. Pack H remains without Gate class labels. |
+| B-MIG / Go / publish / Phase 1 | **SET** / **not authorized** | Overall B-MIG remains SET; this revision alone does not clear SCOPE/PIN/BIND or authorize Phase 1 / Go / publish. |
+
+### 0.1 Rev.10 change log (Agent B Rev.9 REVISE; phase-aware B-MIG; historical)
 
 | Finding | Verdict | Plan change |
 |---------|---------|-------------|
@@ -25,15 +38,15 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 | **B-02** Issue G456-44 wording / Hard Conditional ban | Already fixed on GitHub Issue #456 | No Issue edit in this file; Sec. 6.2 / Pack H / validators align to live Issue. Hard rows G456-42..44: Conditional exceptions **not** allowed — active PASS only (Sec. 6.4 / 9.5 / 12.2 / 14). |
 | **B-03** G456-44 alias text stale vs live Issue | Correct | Sec. 6.2 alias + Pack H + Sec. 12.2 G456-44 validators match live Issue: migration-owned delta; `provider_event_inbox.recipient_email` is 011-owned (out of 012/013 delta scope); 012 adds only `status_message`/`occurred_at`; 013 exact allowlist. |
 | **M-01** migration history uses contains / self-declared alone | Correct | Sec. 12.2 G456-42/43 typePayload: exact inventory digests + applied/pending lists; equality predicates (not MustContain). B-MIG-PIN FAIL if candidate tree has migrations beyond frozen inventory. |
-| **M-02** schema checks use partial deny-list | Correct | Prefer exact allowlists: `addedColumnsByMigration.012`; `createdTableByMigration.013` columns/constraints/indexes. Optional canary: no raw body/secret/recipient VALUES into 013 table (separate from column names). |
+| **M-02** schema checks use partial deny-list | Correct | Prefer exact allowlists: `addedColumnsByMigration.012`; `createdTableByMigration.013` columns/constraints/indexes. Optional canary: no raw body/secret/recipient VALUES into 013 table (separate from column names). Superseded for canary optionality by Rev.11 **B-R10-01**. |
 | **M-03** Sec. 2 DB schema non-goal over-broad vs INCLUDE | Correct | Sec. 2: forbid schema **invented inside #456**; parent-approved frozen 012/013 are frozen inputs to verify; align ADR 0021 D-14 / #445 INCLUDE clarification. |
-| **m-01** base SHA header ambiguous after Step 0.0 | Correct | Header shows both inherited Rev.8 exploration base `9d6c556...` and PR/Rev.10 planning base `3f2b640...`. |
+| **m-01** base SHA header ambiguous after Step 0.0 | Correct | Header shows both inherited Rev.8 exploration base `9d6c556...` and PR/planning base `3f2b640...`. |
 | Authoritative decisions | Recorded | `migrationDecision=INCLUDE`; `dSeqAck=true`; `attestMode=EXTERNAL_PROVENANCE`. |
 | `variantRulesVersion` | Keep **4** | New/rewritten rows still map via existing Windows/Linux and `自動` patterns; no mapper issue forcing bump to 5. |
 | Rev.8 sealed-store / aggregator / FAIL -> PASS / optional-key / Pack H no Gate labels | **Unchanged** | Do not weaken. |
 | Go / publish / Phase 1 | **Not authorized** by this revision alone. | |
 
-### 0.1 Rev.9 change log (B-MIG INCLUDE of migrations 012/013)
+### 0.2 Rev.9 change log (B-MIG INCLUDE of migrations 012/013; historical)
 
 | Decision / fact | Plan change |
 |-----------------|-------------|
@@ -45,22 +58,22 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 | Rev.8 sealed-store / aggregator / FAIL -> PASS / optional-key rules | **Unchanged** — do not weaken. |
 | Go / publish / Phase 1 | **Not authorized** by this revision. |
 
-### 0.2 Rev.8 change log (Agent B seventh review; historical)
+### 0.3 Rev.8 change log (Agent B seventh review; historical)
 
 | Finding | Verdict | Plan change |
 |---------|---------|-------------|
 | **M-27** optional evidence outside aggregator / machine verdict | Correct | Sec. 9.3 / Sec. 14: aggregate all bound keys (`required ∪ optional`); optional missing/FAIL alone do not NO_GO; integrity/authz/PII/schema/seal violations still NO_GO; index records optional state. |
 | **m-08** root digest algorithm ambiguous | Correct | Sec. 7.8: replace Merkle ambiguity with fixed RFC 8785 JCS sorted `{path,sha256}` root algorithm. |
-| **M-28** FAIL→PASS UTF-8 mojibake after re-encode | Correct | Replaced corrupted `FAIL→PASS` sequences with ASCII `FAIL -> PASS` (7 sites); no design change. |
+| **M-28** FAIL -> PASS UTF-8 mojibake after re-encode | Correct | Replaced corrupted FAIL -> PASS sequences with ASCII `FAIL -> PASS` (7 sites); no design change. |
 
-### 0.3 Rev.7 change log (Agent B sixth review; historical)
+### 0.4 Rev.7 change log (Agent B sixth review; historical)
 
 | Finding | Verdict | Plan change |
 |---------|---------|-------------|
 | **M-26** sealed event does not freeze full run inventory | Correct | Sec. 7.8: Phase-4 manifest carries `sealedObjectInventory` + high-water marks; sealed event digests that manifest; #458 re-verifies inventory completeness; run-status is a terminal state machine. |
 | **m-07** Informational evidence owner undefined | Correct | Sec. 6.4 / Sec. 9.4: **Option A** — `optionalEvidenceKeys[]` bound and owned in `authorization.evidenceOwners[]`. |
 
-### 0.4 Rev.6 change log (Agent B fifth review; historical)
+### 0.5 Rev.6 change log (Agent B fifth review; historical)
 
 | Finding | Verdict | Plan change |
 |---------|---------|-------------|
@@ -69,7 +82,7 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 | **M-25** FAIL -> PASS dual-actor not mappable to schema | Correct | Sec. 9.4: recommended split — evidence `executedBy*` = owner; disposition `approvedBy*` = qualification lead. |
 | **m-06** G456-06 PASS / G456-05 reference predicates | Correct | Sec. 12.2 / Sec. 14.1: G456-06 PASS predicates + `distinctFromSendReadyEvidenceId` must reference active accepted G456-05 PASS. |
 
-### 0.5 Rev.5 change log (Agent B fourth review; historical)
+### 0.6 Rev.5 change log (Agent B fourth review; historical)
 
 | Finding | Verdict | Plan change |
 |---------|---------|-------------|
@@ -79,7 +92,7 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 | **M-22** role mapping not run-immutable | Correct | Sec. 6.3 / Sec. 7.1 / Sec. 9.4: immutable `authorization.json` keyed by `(scenarioId, variantId)`; full action matrix. |
 | **m-05** G456-03 variant vs ACS lane | Correct | Sec. 6.4 / Sec. 8.3: G456-03 required variant = `acs-staging-nosend` (not `linux-docker`). |
 
-### 0.6 Rev.4 change log (Agent B third review; historical)
+### 0.7 Rev.4 change log (Agent B third review; historical)
 
 | Finding | Verdict | Plan change |
 |---------|---------|-------------|
@@ -90,7 +103,7 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 | **m-03** lifecycle.json vs write-once | Correct | Sec. 7.1 / Sec. 7.7: append-only lifecycle-events; versioned indexes. |
 | **m-04** Qualification lead mapping | Correct | Sec. 4 / Sec. 18: role mapping required before execution; plan start condition = Rev.4+. |
 
-### 0.7 Rev.3 change log (Agent B second review; historical)
+### 0.8 Rev.3 change log (Agent B second review; historical)
 
 | Finding | Verdict | Plan change |
 |---------|---------|-------------|
@@ -104,7 +117,7 @@ This document plans **release-candidate qualification** for v1.2.0 Easy Setup. I
 | **M-14** missing ACS/Production execution provenance | Correct | Sec. 12.1 execution provenance fields; G456-04/06 require `restrictedOpsRecordId`. |
 | **m-02** APPROVE allowed on some NO_GO | Correct | Sec. 14: any `machineVerdict=NO_GO` => humanDecision REJECT or NOT_DECIDED only. |
 
-### 0.8 Rev.2 change log (Agent B first review; historical)
+### 0.9 Rev.2 change log (Agent B first review; historical)
 
 | Finding | Verdict | Plan change |
 |---------|---------|-------------|
@@ -212,7 +225,7 @@ Qualify one **release-candidate commit** by consuming:
 
 1. Dependencies closed: #447-#455, #457, #459 (confirmed at planning).
 2. ADR 0021 Accepted.
-3. **Plan Rev.10 (or later)** committed; Agent B re-review passed on that exact plan-only commit SHA (feeds B-MIG-SCOPE conditions 5-6).
+3. **Plan Rev.11 (or later)** committed; Agent B re-review passed on that exact plan-only commit SHA (feeds B-MIG-SCOPE conditions 5-6).
 4. **B-MIG-SCOPE** cleared (conditions 1-7 + frozen filename list + no-extra-migration policy). Full B-MIG / B-MIG-PIN / B-MIG-BIND are **not** required to start #458 Phase 1 version prep; they gate later phases (see Blockers).
 5. Role identities resolved and approved (qualification lead, Conditional approver, intended evidence-owner assignment policy). Do **not** write `authorization.json` yet.
 6. **B-MIG-PIN** cleared on `releaseCommitSha` (after version-prep merge, before #455 dispatch).
@@ -232,9 +245,28 @@ Qualify one **release-candidate commit** by consuming:
 | B-RC | First RC pin / `releaseCommitSha` still pending (#458 Phase 1); list-freeze of migration filenames != SHA freeze of pin |
 | B-ACS / B-PROXY | Real ACS / HTTPS lab outside CI |
 | B-MIG | Overall clearance still **SET** until **B-MIG-SCOPE** + **B-MIG-PIN** + **B-MIG-BIND** all clear. INCLUDE decided (`migrationDecision=INCLUDE`). Do **not** treat monolithic "nine conditions" as a single pre-Phase-1 gate. |
-| B-MIG-SCOPE | Conditions **1-7** + frozen migration filename list (`012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql`) + **no-extra-migration** policy (no migrations beyond that frozen pair since v1.1.0 tip may enter scope without parent re-decision). **Required before #458 Phase 1 version prep.** This Rev.10 advances plan-side conditions 5-7 definitions; clearance of the subgate still needs Agent B APPROVE on the durable plan SHA and remaining SCOPE items. |
-| B-MIG-PIN | Condition **8**: after version-prep merge, before #455 — migration inventory on `releaseCommitSha` **exact match** (filenames + file digests). **FAIL** if the migrations directory has files beyond the frozen 012/013 pair since v1.1.0 tip (besides those two). |
-| B-MIG-BIND | Condition **9**: before #456 qualification start — new binding/run on final Issue body SHA + `planCommitSha`/`planFileSha256` + `releaseCommitSha`. Issue snapshot **must** include G456-42..44. |
+| B-MIG-SCOPE | Conditions **1-7** + frozen migration filename list (`012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql`) + **no-extra-migration** policy (no migrations beyond that frozen pair since v1.1.0 tip may enter scope without parent re-decision). **Required before #458 Phase 1 version prep.** This Rev.11 advances plan-side evidence/PIN-binding definitions for SCOPE condition 7; clearance of the subgate still needs Agent B APPROVE on the durable plan SHA and remaining SCOPE items. |
+| B-MIG-PIN | Condition **8**: after version-prep merge, before #455 — produce normative `migrationPin` (below) on `releaseCommitSha`. **FAIL** if the migrations directory has files beyond the frozen 012/013 pair since v1.1.0 tip (besides those two), or digests do not match the PIN'd tree. |
+| B-MIG-BIND | Condition **9**: before #456 qualification start — new binding/run on final Issue body SHA + `planCommitSha`/`planFileSha256` + `releaseCommitSha` **and** required PIN digest fields (`migrationPinDigestSha256`, `migrationInventoryDigestSha256`, `migrationFileDigests[]`) present and matching the B-MIG-PIN output. Issue snapshot **must** include G456-42..44. **Refuse bind** if PIN fields are missing or do not match PIN evidence. |
+
+**Normative B-MIG-PIN output (condition 8):**
+
+```text
+migrationPin:
+  releaseCommitSha
+  inventoryAlgorithm
+  inventoryDigestSha256
+  files:
+    - path: src/Amane.Mailer/Data/Migrations/012_provider_event_inbox_details.sql
+      sha256: ...
+      gitBlobSha: ...
+    - path: src/Amane.Mailer/Data/Migrations/013_provider_queue_dead_letters.sql
+      sha256: ...
+      gitBlobSha: ...
+  evidenceDigestSha256
+```
+
+`migrationPinDigestSha256` = digest of the canonical PIN evidence object (includes `evidenceDigestSha256` / PIN record). Binding and G456-42/43/44 evidence must carry digests that **exactly equal** these PIN values (and thus the PIN'd `releaseCommitSha` tree).
 
 ---
 
@@ -243,7 +275,7 @@ Qualify one **release-candidate commit** by consuming:
 | Issue | State (2026-08-01) | Plan | Execute qual |
 |-------|--------------------|------|--------------|
 | #446-#455, #457, #459 | Closed | Yes | Yes (artifacts for pin) |
-| #456 | Open | This plan Rev.10 | Self — after B-MIG-SCOPE + B-MIG-PIN + B-MIG-BIND |
+| #456 | Open | This plan Rev.11 | Self — after B-MIG-SCOPE + B-MIG-PIN + B-MIG-BIND |
 | #458 | Open | Boundary | Phase 1 version prep may start after **B-MIG-SCOPE** only (not full B-MIG); owns `releaseCommitSha` pin |
 | #445 B-MIG | INCLUDE ACK; clearance still SET | Phase-aware subgates below | Do not start #456 qualification until B-MIG-BIND |
 
@@ -256,18 +288,24 @@ B-MIG-SCOPE (before Phase 1 version prep):
   + no-extra-migration policy
 B-MIG-PIN (after version-prep merge, before #455):
   condition 8
-  migration inventory on releaseCommitSha exact match (filenames + file digests)
+  produce normative migrationPin on releaseCommitSha
+  (inventoryAlgorithm + inventoryDigestSha256 + per-file sha256/gitBlobSha for 012/013
+   + evidenceDigestSha256)
   FAIL if directory has migrations beyond frozen 012/013 since v1.1.0 tip besides those two
+  or digests do not match the PIN'd releaseCommitSha tree
 B-MIG-BIND (before #456 qualification start):
   condition 9
   new binding/run on final Issue body SHA + planCommitSha/planFileSha256 + releaseCommitSha
+  + migrationPinDigestSha256 + migrationInventoryDigestSha256 + migrationFileDigests[]
+  refuse bind if PIN fields missing or not exactly equal to B-MIG-PIN output
 ```
 
 1. Frozen **inventory list** (filenames only; SCOPE): `012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql`.
 2. Issue #456 required-scenario snapshot **must** include rows aliased as G456-42..44 (Gate class from Issue only) before B-MIG-BIND.
-3. Inventory **filename+digest freeze** to `releaseCommitSha` is **B-MIG-PIN** (after #458 Phase 1 version-prep merge; distinct from SCOPE list freeze).
+3. Inventory **filename+digest freeze** to `releaseCommitSha` is **B-MIG-PIN** (after #458 Phase 1 version-prep merge; distinct from SCOPE list freeze). PIN output schema is normative (Sec. 4).
 4. Issue body amendment => new `issueBodySha256` => **new binding/run** (**B-MIG-BIND** / condition #9), even if candidate bytes unchanged.
 5. Overall B-MIG remains **SET** until SCOPE+PIN+BIND clear; do **not** require full clear before Phase 1 — only B-MIG-SCOPE.
+6. B-MIG-BIND **refuses bind** unless binding carries PIN digests present and matching; G456-42/43/44 PASS only when evidence digests **exactly equal** those binding PIN values.
 
 ---
 
@@ -380,7 +418,7 @@ At bind time, harness **must** record:
 bindingId
 qualificationRunId
 candidateId
-planRevision = "10"
+planRevision = "11"
 planCommitSha
 planFileSha256
 variantRulesVersion = 4
@@ -389,6 +427,10 @@ issueNumber = 456
 issueUpdatedAt
 issueBodySha256
 fetchedAtUtc
+# Required B-MIG-PIN carry-forward (M-R10-01); B-MIG-BIND refuses bind if missing/mismatched:
+migrationPinDigestSha256          # digest of normative migrationPin / PIN evidence
+migrationInventoryDigestSha256    # == migrationPin.inventoryDigestSha256
+migrationFileDigests[]            # exact equality with migrationPin.files[] ({path, sha256, gitBlobSha})
 rows[]:
   rowIndex
   scenarioId
@@ -405,7 +447,7 @@ optionalEvidenceKeys[]:           # Informational keys that MAY be evidenced (m-
 docs.* digests (Sec. 7.4)
 ```
 
-**variantRulesVersion = 4 (no bump for Rev.10):** G456-42/43 environment text `Windows / Linux` reuses the existing default -> `win-docker` + `linux-docker`. G456-44 environment text `自動` reuses the same pattern as `automated` -> `ci-auto`. No new variantId vocabulary is introduced (mapper issue would force bump to 5; none here).
+**variantRulesVersion = 4 (no bump for Rev.11):** G456-42/43 environment text `Windows / Linux` reuses the existing default -> `win-docker` + `linux-docker`. G456-44 environment text `自動` reuses the same pattern as `automated` -> `ci-auto`. No new variantId vocabulary is introduced (mapper issue would force bump to 5; none here).
 
 #458 must audit row meaning from binding alone without re-fetching GitHub.
 
@@ -442,7 +484,7 @@ Evidence key = `(scenarioId, variantId)`. Scenario PASS only when **every** `req
 
 `binding.variantRulesVersion = 4`. Changing rules requires plan revision.
 
-**Rev.10 migration row variants (reuse; no rules bump; same as Rev.9):**
+**Rev.11 migration row variants (reuse; no rules bump; same as Rev.9/10):**
 
 | scenarioId | Issue environment text | requiredVariants |
 |------------|------------------------|------------------|
@@ -872,17 +914,15 @@ Gate class for these rows is read only from `binding.issueSnapshot` at display/a
 
 ### 8.9 Pack H — DB migrations (012/013) (execution info only; no Gate class labels)
 
-Frozen INCLUDE inventory (filenames): `012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql` (from #460/#461). Gate class is read only from `binding.issueSnapshot` — do not hard-code Hard/Conditional/Informational in this pack. Live Issue wording for G456-44 is migration-owned delta (`provider_event_inbox.recipient_email` is 011-owned; out of 012/013 delta scope); validators in Sec. 12.2 enforce exact history + exact schema allowlists.
+Frozen INCLUDE inventory (filenames): `012_provider_event_inbox_details.sql`, `013_provider_queue_dead_letters.sql` (from #460/#461). Live Issue wording for G456-44 is migration-owned delta (`provider_event_inbox.recipient_email` is 011-owned; out of 012/013 delta scope). Validators in Sec. 12.2 enforce exact history equality, exact schema allowlists, required PII value canary, and B-MIG-PIN digest equality with binding.
 
 | ID | requiredVariants / procedure | Evidence type |
 |----|------------------------------|---------------|
 | G456-42 | `win-docker`, `linux-docker` — fresh/empty DB; ApplyPending through 013; Sec. 12.2 G456-42 exact history validators | `db-migration-fresh-apply` |
 | G456-43 | `win-docker`, `linux-docker` — DB previously at v1.1.0 tip (011 applied); then apply 012+013; Sec. 12.2 G456-43 exact history validators | `db-migration-upgrade` |
-| G456-44 | `ci-auto` — 012/013 schema delta exact allowlist + PII-safe contract (011 `recipient_email` out of delta scope); Sec. 12.2 G456-44 validators | `db-migration-schema-contract` |
+| G456-44 | `ci-auto` — 012/013 schema delta exact allowlist + required PII value canary (011 `recipient_email` out of delta scope); Sec. 12.2 G456-44 validators | `db-migration-schema-contract` |
 
-**Hard-only (Issue Gate):** G456-42..44 required variants need **active PASS**. Conditional exceptions are forbidden for these rows (Sec. 6.4 / 9.5 / 14).
-
-**Supporting automation:** unit coverage already exists in `BounceIngestionMigrationTests` / BounceIngestionSchemaTests and may drive or corroborate G456-44 (and inform 42/43 fixtures). Supporting unit PASS alone is **not** qualification evidence — harness envelope + exact history/schema digests + `prohibitedContentScan` + disposition under Sec. 12 / Sec. 9 are still required for Go.
+**Supporting automation:** unit coverage already exists in `BounceIngestionMigrationTests` / BounceIngestionSchemaTests and may drive or corroborate G456-44 (and inform 42/43 fixtures). Supporting unit PASS alone is **not** qualification evidence — harness envelope + exact history/schema digests + PIN digest equality + required `piiValueCanaryResult` + `prohibitedContentScan` + disposition under Sec. 12 / Sec. 9 are still required for Go. Active-PASS / exception rules for these rows live only in Sec. 6.4 / 9.5 / 14 (not in this pack).
 
 ---
 
@@ -1209,7 +1249,7 @@ Assert Admin routes not served after successful config rollback to disabled.
   "scenarioId": "G456-NN",
   "variantId": "...",
   "issueBodySha256": "...",
-  "planRevision": "10",
+  "planRevision": "11",
   "planCommitSha": "...",
   "planFileSha256": "...",
   "bindingId": "...",
@@ -1254,9 +1294,9 @@ Common envelope `result` and typePayload failure indicators **must not contradic
 | G456-04 | `outcome=completed` **and** all send predicates in Sec. 12.2 G456-04 | any incomplete/forbidden send state => `result=FAIL` (or evidence rejected before accept) |
 | G456-05 | `doctorOrReadinessSummary=pass` **and** all Sec. 12.2 G456-05 predicates | `doctorOrReadinessSummary=fail` => `result=FAIL` |
 | G456-06 | all Sec. 12.2 G456-06 predicates **and** valid active G456-05 PASS reference | any predicate/reference mismatch => `result=FAIL` (or evidence rejected before accept) |
-| G456-42 | `outcome=applied` **and** all Sec. 12.2 G456-42 exact-history predicates | apply/schema/inventory/history inequality => `result=FAIL` |
-| G456-43 | `outcome=upgraded` **and** all Sec. 12.2 G456-43 exact-history predicates | pending/apply/schema/history inequality => `result=FAIL` |
-| G456-44 | `contractResult=pass` **and** all Sec. 12.2 G456-44 exact-allowlist predicates | `contractResult=fail` => `result=FAIL` |
+| G456-42 | `outcome=applied` **and** all Sec. 12.2 G456-42 exact-history predicates **and** evidence migration digests exactly equal binding PIN values | apply/schema/inventory/history/PIN inequality => `result=FAIL` |
+| G456-43 | `outcome=upgraded` **and** all Sec. 12.2 G456-43 exact-history predicates **and** evidence migration digests exactly equal binding PIN values | pending/apply/schema/history/PIN inequality => `result=FAIL` |
+| G456-44 | `contractResult=pass` **and** exact schema allowlist PASS **and** `piiValueCanaryResult=pass` **and** `prohibitedContentScan.result=PASS` **and** evidence migration digests exactly equal binding PIN values | `contractResult=fail` **or** `piiValueCanaryResult=fail` **or** canary not run **or** canary values persisted => `result=FAIL` (or reject) |
 
 `result=EXCEPTION` is reserved for Conditional exception paths (not G456-03/04/05 Hard PASS; **not** G456-42..44). `result=NOT_RUN` must not be active-accepted for Hard required variants. G456-42..44: Conditional exceptions forbidden — active PASS only.
 
@@ -1339,19 +1379,30 @@ Includes Sec. 11 fields + `accessProfile`.
 
 #### db-migration-fresh-apply — G456-42 validator
 
-Machine-check exact migration history (not MustContain; not self-declared inventory alone):
+Machine-check **full exact** migration history (not MustContain; not ends-at / includes; not self-declared inventory alone). Canonical lists use **migration runner order** (not filename ordinal):
 
 ```text
 migrationDecision = INCLUDE
-migrationInventory[] = [
+migrationInventory[] = expectedPost011Inventory[] = [
   "012_provider_event_inbox_details.sql",
   "013_provider_queue_dead_letters.sql"
 ]   # exact equality
 
+# Canonical expected lists (runner order at releaseCommitSha / candidate pin):
+expectedFullMigrationInventory[]   # full Data/Migrations inventory in runner apply order
+expectedThrough011[]               # prefix of expectedFullMigrationInventory through
+                                   # "011_bounce_ingestion.sql" inclusive
+expectedPost011Inventory[] == [
+  "012_provider_event_inbox_details.sql",
+  "013_provider_queue_dead_letters.sql"
+]
+
 # Required typePayload fields (all machine-checked):
-migrationDirectoryInventoryBefore[]     # sorted filenames under Data/Migrations at candidate pin
+migrationDirectoryInventoryBefore[]     # filenames under Data/Migrations at candidate pin
+                                        # in runner order (== expectedFullMigrationInventory)
 migrationDirectoryInventoryDigestSha256 # digest of that inventory listing
-migrationFileDigests[]                  # {path, sha256} for each inventory file
+migrationFileDigests[]                  # {path, sha256, gitBlobSha} — exact equality with
+                                        # binding.migrationFileDigests[] / migrationPin.files[]
 preApplyAppliedMigrations[]             # exact ordered applied list before ApplyPending
 preApplyPendingMigrations[]             # exact ordered pending list before ApplyPending
 postApplyAppliedMigrations[]            # exact ordered applied list after ApplyPending
@@ -1362,40 +1413,52 @@ lastAppliedAfter
 startingSchema = empty-or-new-db
 applyPendingThrough = "013_provider_queue_dead_letters.sql"
 
-# Exact equality (not MustContain):
+# Full exact equality (M-R10-02; not ends-at / must-include):
 preApplyAppliedMigrations[] == []
-# preApplyPendingMigrations[] ends exactly through 013
-#   (last element == "013_provider_queue_dead_letters.sql";
-#    frozen pair 012 then 013 appear as the terminal pending suffix;
-#    no pending filename beyond 013)
-postApplyAppliedMigrations[] ends at "013_provider_queue_dead_letters.sql"
+preApplyPendingMigrations[] == expectedFullMigrationInventory[]
+postApplyAppliedMigrations[] == expectedFullMigrationInventory[]
 postApplyPendingMigrations[] == []
 lastAppliedAfter == "013_provider_queue_dead_letters.sql"
 
-tablesPresent[] includes: provider_event_inbox, provider_queue_dead_letters
+# Directory inventory digest consistency with the canonical lists above:
+migrationDirectoryInventoryDigestSha256 == binding.migrationInventoryDigestSha256
+                                        == migrationPin.inventoryDigestSha256
+migrationFileDigests[] == binding.migrationFileDigests[]   # exact
+# also imply migrationPinDigestSha256 match for the PIN evidence record
+
+tablesPresent[] exact presence check may cross-check provider_event_inbox,
+                provider_queue_dead_letters
 # Schema delta allowlists verified under G456-44; fresh-apply may cross-check presence.
 outcome = applied | failed
 ```
 
-**B-MIG-PIN / directory gate:** if `migrationDirectoryInventoryBefore[]` contains any migration filename beyond the frozen 012/013 pair since v1.1.0 tip (besides those two), FAIL (and B-MIG-PIN fails for the pin).
+**B-MIG-PIN / directory gate:** if `migrationDirectoryInventoryBefore[]` contains any migration filename beyond the frozen 012/013 pair since v1.1.0 tip (besides those two), FAIL (and B-MIG-PIN fails for the pin). Evidence migration digests that are not **exactly equal** to binding PIN values => FAIL.
 
-**PASS consistency:** `result=PASS` **iff** `outcome=applied` **and** all exact-equality predicates above hold **and** `migrationDecision=INCLUDE` with exact `migrationInventory[]` **and** digests present.  
-**FAIL consistency:** any inequality, apply stop before 013, extra post-011 migration in directory, or missing digest fields => `result=FAIL`.  
+**PASS consistency:** `result=PASS` **iff** `outcome=applied` **and** all full exact-equality predicates above hold **and** `migrationDecision=INCLUDE` with exact `migrationInventory[]` **and** evidence migration digests **exactly equal** binding PIN values.  
+**FAIL consistency:** any inequality, apply stop before 013, extra post-011 migration in directory, missing digest fields, or PIN mismatch => `result=FAIL`.  
 **Required:** `prohibitedContentScan.result=PASS`. Contradiction between `result` and typePayload => `NO_GO` (Sec. 14 / M-19).
 
 #### db-migration-upgrade — G456-43 validator
 
 ```text
 migrationDecision = INCLUDE
-migrationInventory[] = [
+migrationInventory[] = expectedPost011Inventory[] = [
   "012_provider_event_inbox_details.sql",
   "013_provider_queue_dead_letters.sql"
 ]   # exact equality
 
-# Same required typePayload history fields as G456-42:
+# Same canonical expected lists as G456-42 (runner order, not filename ordinal):
+expectedFullMigrationInventory[]
+expectedThrough011[]
+expectedPost011Inventory[] == [
+  "012_provider_event_inbox_details.sql",
+  "013_provider_queue_dead_letters.sql"
+]
+
+# Same required typePayload history + digest fields as G456-42:
 migrationDirectoryInventoryBefore[]
 migrationDirectoryInventoryDigestSha256
-migrationFileDigests[]
+migrationFileDigests[]                  # exact equality with binding PIN digests
 preApplyAppliedMigrations[]
 preApplyPendingMigrations[]
 postApplyAppliedMigrations[]
@@ -1406,30 +1469,32 @@ lastAppliedAfter
 startingSchema = v1.1.0-tip-011-applied
 applyPendingThrough = "013_provider_queue_dead_letters.sql"
 
-# Exact equality (not MustContain):
+# Full exact equality (M-R10-02; not ends-at / must-include):
 lastAppliedBefore == "011_bounce_ingestion.sql"
-# 012 and 013 absent from preApplyAppliedMigrations[]
-preApplyPendingMigrations[] == [
-  "012_provider_event_inbox_details.sql",
-  "013_provider_queue_dead_letters.sql"
-]   # exact; no extras
-lastAppliedAfter == "013_provider_queue_dead_letters.sql"
+preApplyAppliedMigrations[] == expectedThrough011[]
+preApplyPendingMigrations[] == expectedPost011Inventory[]   # == [012, 013]
+postApplyAppliedMigrations[] == expectedThrough011[] + expectedPost011Inventory[]
 postApplyPendingMigrations[] == []
-# postApplyAppliedMigrations[] must include 012 and 013 and end at 013
+lastAppliedAfter == "013_provider_queue_dead_letters.sql"
 
-tablesPresent[] includes: provider_event_inbox, provider_queue_dead_letters
+# Directory inventory digest consistency with the canonical lists / binding PIN:
+migrationDirectoryInventoryDigestSha256 == binding.migrationInventoryDigestSha256
+migrationFileDigests[] == binding.migrationFileDigests[]
+
+tablesPresent[] exact presence check may cross-check provider_event_inbox,
+                provider_queue_dead_letters
 outcome = upgraded | failed
 ```
 
-**B-MIG-PIN / directory gate:** same as G456-42 — extra migrations beyond frozen 012/013 since v1.1.0 tip => FAIL.
+**B-MIG-PIN / directory gate:** same as G456-42 — extra migrations beyond frozen 012/013 since v1.1.0 tip => FAIL; PIN digest inequality => FAIL.
 
-**PASS consistency:** `result=PASS` **iff** `outcome=upgraded` **and** all exact-equality predicates above hold **and** digests present.  
-**FAIL consistency:** cannot prove exact pending `[012,013]`, apply fails, history inequality, or extra directory migrations => `result=FAIL`.  
+**PASS consistency:** `result=PASS` **iff** `outcome=upgraded` **and** all full exact-equality predicates above hold **and** evidence migration digests **exactly equal** binding PIN values.  
+**FAIL consistency:** pending/applied list inequality, apply fails, directory extras, missing digests, or PIN mismatch => `result=FAIL`.  
 **Required:** `prohibitedContentScan.result=PASS`.
 
 #### db-migration-schema-contract — G456-44 validator
 
-Align with live Issue wording (migration-owned delta) and `BounceIngestionMigrationTests` / BounceIngestionSchemaTests (supporting automation; harness envelope still required). Prefer **exact allowlists** over partial deny-lists.
+Align with live Issue wording (migration-owned delta) and `BounceIngestionMigrationTests` / BounceIngestionSchemaTests (supporting automation; harness envelope still required). Prefer **exact allowlists** over partial deny-lists. PII **value** canary is **required** (B-R10-01).
 
 ```text
 migrationDecision = INCLUDE
@@ -1437,6 +1502,10 @@ migrationInventory[] = [
   "012_provider_event_inbox_details.sql",
   "013_provider_queue_dead_letters.sql"
 ]   # exact equality
+
+# PIN digest equality (M-R10-01) — same as G456-42/43:
+migrationDirectoryInventoryDigestSha256 == binding.migrationInventoryDigestSha256
+migrationFileDigests[] == binding.migrationFileDigests[]   # exact
 
 # 012 delta only (exact):
 addedColumnsByMigration.012 == [
@@ -1470,17 +1539,20 @@ createdTableByMigration.013.indexes[] == [
 # out of 012/013 delta scope — do not treat its presence as a 012/013 FAIL,
 # and do not claim 012/013 "added" it.
 
-# Optional canary (integration; separate from column-name allowlist):
-# no raw body / secret / recipient VALUES stored into provider_queue_dead_letters
-optionalCanary.noRawBodySecretOrRecipientValuesIn013Table = pass | fail | not-run
+# Required PII value canary (B-R10-01; no not-run):
+# Prove raw body / recipient / secret / connection-string / provider-raw-error
+# canary VALUES are NOT persisted into provider_queue_dead_letters (013 table),
+# including into allowlisted columns such as queue_message_id / last_error_code /
+# failure_stage.
+piiValueCanaryResult = pass | fail     # required; no not-run
 
 contractResult = pass | fail
 ```
 
-**PASS consistency:** `result=PASS` **iff** `contractResult=pass` **and** exact `addedColumnsByMigration.012` **and** exact `createdTableByMigration.013` columns/constraints/indexes **and** `migrationDecision=INCLUDE` with exact `migrationInventory[]`. Optional canary `fail` => `result=FAIL` when the canary was run; `not-run` alone does not PASS-block if column allowlists pass (record canary state in typePayload).  
-**FAIL consistency:** `contractResult=fail` => `result=FAIL` (mandatory).  
-**Required:** `prohibitedContentScan.result=PASS`.
-**Forbidden:** treating 011-owned `recipient_email` as in-scope 012/013 delta evidence.
+**PASS consistency:** `result=PASS` **iff** `contractResult=pass` **and** exact schema allowlist PASS (`addedColumnsByMigration.012` + `createdTableByMigration.013` columns/constraints/indexes) **and** `piiValueCanaryResult=pass` **and** `prohibitedContentScan.result=PASS` **and** `migrationDecision=INCLUDE` with exact `migrationInventory[]` **and** evidence migration digests **exactly equal** binding PIN values.  
+**FAIL / reject:** canary not run; `piiValueCanaryResult=fail`; raw body / recipient / secret / connection-string / provider-raw-error canary values persisted into the 013 table; `contractResult=fail`; schema allowlist inequality; PIN digest mismatch.  
+**Required:** `prohibitedContentScan.result=PASS`.  
+**Forbidden:** treating 011-owned `recipient_email` as in-scope 012/013 delta evidence; recording `not-run` for the PII value canary.
 
 ### 12.3 Conditional exception
 
@@ -1533,9 +1605,11 @@ Optional evidence missing / FAIL alone does **not** force `NO_GO`. Global integr
 | G456-03 predicate mismatch (Sec. 12.2) | `NO_GO` | required ACS |
 | G456-04 predicate mismatch (Sec. 12.2) | `NO_GO` | required ACS |
 | G456-06 predicate mismatch **or** invalid `distinctFromSendReadyEvidenceId` (Sec. 12.2 m-06) | `NO_GO` | required ACS |
-| G456-42/43/44 migration predicate mismatch **or** `migrationInventory` / `migrationDecision` / exact history / exact schema-allowlist mismatch (Sec. 12.2) | `NO_GO` | required migration |
+| G456-42/43/44 migration predicate mismatch **or** `migrationInventory` / `migrationDecision` / full exact history / exact schema-allowlist / PIN digest mismatch (Sec. 12.2) | `NO_GO` | required migration |
+| G456-44 `piiValueCanaryResult` missing / not-run / fail **or** raw body/recipient/secret/connection-string/provider-raw-error canary values persisted into 013 table (Sec. 12.2 B-R10-01) | `NO_GO` | required migration |
+| Binding missing/mismatched `migrationPinDigestSha256` / `migrationInventoryDigestSha256` / `migrationFileDigests[]` vs B-MIG-PIN (B-MIG-BIND refuse; Sec. 4 / 6.3) | `NO_GO` | required migration |
 | Conditional exception created or approved for G456-42..44 (Hard; active PASS only) | `NO_GO` | required migration |
-| `result` / typePayload contradiction (Sec. 12.2 M-19) on any bound evidence | `NO_GO` | all bound |
+| `result` / typePayload contradiction (Sec. 12.2 M-19) on any bound evidence (incl. G456-44 canary / contractResult) | `NO_GO` | all bound |
 | Disposition / exception / run-status hash-chain invalid **or** JCS canonicalization mismatch | `NO_GO` | all bound |
 | Disposition / exception **invalid state transition** (Sec. 9.2 / 9.5) | `NO_GO` | all bound |
 | FAIL -> PASS actor predicates violated (Sec. 9.4 M-25) | `NO_GO` | all bound |
@@ -1658,18 +1732,20 @@ All Hard required variants PASS (derived active for the chosen **sealed** `quali
 
 ```text
 0. Fetch develop @ pin; clean worktree
-1. Commit plan Rev.10; pass Agent B re-review on that exact plan-only SHA (B-MIG-SCOPE conditions 5-6)
+1. Commit plan Rev.11; pass Agent B re-review on that exact plan-only SHA (B-MIG-SCOPE conditions 5-6)
 2. Clear **B-MIG-SCOPE** (conditions 1-7 + frozen filename list + no-extra-migration policy)
    before any #458 Phase 1 version prep. Do NOT require B-MIG-PIN / B-MIG-BIND / full nine-condition clear yet.
 3. Resolve and approve role identities and the intended evidence-owner assignment policy
    (qualification lead, Conditional approver, owners per required + optionalEvidenceKeys).
    Do NOT write authorization.json yet.
 4. After version-prep merge: clear **B-MIG-PIN** (condition 8) on releaseCommitSha
-   (filenames + digests exact; FAIL on extra migrations beyond frozen 012/013).
+   (normative migrationPin output; FAIL on extra migrations beyond frozen 012/013 or digest mismatch).
 5. Dispatch #455 for pin -> download handoff package
 6. Phase-1 durable intake under candidates/<candidateId>/
 7. Clear **B-MIG-BIND** (condition 9): final Issue body SHA + planCommitSha/planFileSha256
-   + releaseCommitSha; snapshot includes G456-42..44; compute bindingId / qualificationRunId;
+   + releaseCommitSha + migrationPinDigestSha256 + migrationInventoryDigestSha256
+   + migrationFileDigests[] (must match PIN); refuse bind if PIN fields missing/mismatched;
+   snapshot includes G456-42..44; compute bindingId / qualificationRunId;
    materialize required + optional evidence keys
 8. Write authorization.json and binding.json once as Phase-2 objects
    (plus docs extract + Phase-2 manifest) under runs/<qualificationRunId>/
@@ -1728,7 +1804,7 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 | Q12 | Informational evidence authorization | Closed — Option A `optionalEvidenceKeys` + owners (m-07) |
 | Q13 | Optional evidence aggregation | Closed — allBoundEvidenceKeys replay + integrity vs Gate split (M-27) |
 | Q14 | Object-set root digest algorithm | Closed — `RFC8785-JCS-sorted-path-sha256/v1` (m-08) |
-| Q15 | B-MIG INCLUDE 012/013 | Decided INCLUDE (`migrationDecision=INCLUDE`); `dSeqAck=true`; `attestMode=EXTERNAL_PROVENANCE`. Clearance still SET until **B-MIG-SCOPE** + **B-MIG-PIN** + **B-MIG-BIND** clear. Phase 1 version prep needs **B-MIG-SCOPE only** (conditions 1-7 + frozen filenames + no-extra-migration policy) — not full nine-condition clear. B-MIG-PIN = condition 8 on `releaseCommitSha` (filenames + digests; FAIL on extras). B-MIG-BIND = condition 9 new binding/run. This Rev.10 = REVISE response / plan-side SCOPE update; does not alone clear SCOPE. |
+| Q15 | B-MIG INCLUDE 012/013 | Decided INCLUDE (`migrationDecision=INCLUDE`); `dSeqAck=true`; `attestMode=EXTERNAL_PROVENANCE`. Clearance still SET until **B-MIG-SCOPE** + **B-MIG-PIN** + **B-MIG-BIND** clear. Phase 1 version prep needs **B-MIG-SCOPE only** (conditions 1-7 + frozen filenames + no-extra-migration policy) — not full nine-condition clear. B-MIG-PIN = condition 8 normative `migrationPin` on `releaseCommitSha` (FAIL on extras / digest mismatch). B-MIG-BIND = condition 9 new binding/run with PIN digest fields present and matching (refuse otherwise). This Rev.11 = REVISE response to Agent B Rev.10 findings; does not alone clear SCOPE/PIN/BIND. |
 
 ---
 
@@ -1748,7 +1824,7 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 - [ ] Aggregator replays allBoundEvidenceKeys; optional Gate miss ≠ NO_GO; optional integrity fail = NO_GO
 - [ ] Object-set roots use `RFC8785-JCS-sorted-path-sha256/v1`
 - [ ] G456-03 uses `acs-staging-nosend`
-- [ ] G456-42..44 present in Issue snapshot before bind; migrationInventory exact; exact history + schema allowlist validators enforced; Conditional exceptions forbidden for these rows
+- [ ] G456-42..44 present in Issue snapshot before bind; migrationInventory exact; full exact history + schema allowlist + required piiValueCanary + PIN digest equality enforced; Conditional exceptions forbidden for these rows (Sec. 6.4 / 9.5 / 14)
 - [ ] B-MIG phase-aware: SCOPE before Phase 1; PIN after version-prep before #455; BIND before qualification; no Go/publish authorized by plan-only rev
 
 ---
@@ -1787,29 +1863,31 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 
 ---
 
-## 22. Plan self-review (Rev.10)
+## 22. Plan self-review (Rev.11)
 
 | # | Check | Result |
 |---|-------|--------|
 | 1 | Migration scope honesty (INCLUDE inventory only; no silent EXCLUDE/`none`) | Pass — frozen filenames + G456-42..44 |
-| 2 | No second Hard list / Gate class in Pack H | Pass — class only from Issue snapshot |
+| 2 | No Gate class labels in Pack H (procedure/variant/evidenceType only) | Pass — m-R10-01; active-PASS rules in Sec. 6.4 / 9.5 / 14 |
 | 3 | Aliases match live Issue wording exactly (incl. G456-44 migration-owned delta) | Pass — Sec. 6.2 |
 | 4 | Variants reuse rules (no `variantRulesVersion` bump) | Pass — keep 4; Windows/Linux + 自動 patterns |
-| 5 | Exact migration history + digests (not MustContain alone) | Pass — Sec. 12.2 G456-42/43 |
-| 6 | Exact schema allowlists for 012/013 (+ optional VALUES canary) | Pass — Sec. 12.2 G456-44 |
-| 7 | Supporting unit tests != qualification envelope | Pass — Pack H note |
-| 8 | 011-owned recipient_email out of 012/013 delta scope | Pass — Sec. 6.2 / 12.2 |
-| 9 | Hard G456-42..44: Conditional exceptions forbidden; active PASS only | Pass — Sec. 6.4 / 9.5 / 14 |
-| 10 | Phase-aware B-MIG-SCOPE / PIN / BIND (B-01) | Pass — Sec. 4 / 5 / Q15 / 16 |
-| 11 | Phase 1 needs SCOPE only; not full nine-condition clear | Pass |
-| 12 | Dual base SHA header (m-01) | Pass — `9d6c556...` + `3f2b640...` |
-| 13 | Sec. 2 non-goal: no schema invented inside #456; frozen 012/013 are verify inputs | Pass — M-03 |
-| 14 | Rev.8 sealed-store / aggregator / FAIL -> PASS / optional-key rules not weakened | Pass |
-| 15 | No Go / publish / Phase 1 authorization from this doc alone | Pass |
-| 16 | Same RC commit + plan pin fields | Pass — planCommitSha/planFileSha256 |
-| 17 | #455/#457/#458 boundaries; dSeqAck / EXTERNAL_PROVENANCE recorded | Pass |
+| 5 | Full exact migration history equality (runner order; no ends-at/includes) | Pass — Sec. 12.2 G456-42/43 (M-R10-02) |
+| 6 | Exact schema allowlists + required PII value canary (no not-run) | Pass — Sec. 12.2 G456-44 (B-R10-01) |
+| 7 | B-MIG-PIN digests in binding + evidence exact equality | Pass — Sec. 4 / 6.3 / 12.2 (M-R10-01); BIND refuses without PIN fields |
+| 8 | Supporting unit tests != qualification envelope | Pass — Pack H note |
+| 9 | 011-owned recipient_email out of 012/013 delta scope | Pass — Sec. 6.2 / 12.2 |
+| 10 | Hard G456-42..44: Conditional exceptions forbidden; active PASS only | Pass — Sec. 6.4 / 9.5 / 14 (not Pack H) |
+| 11 | Phase-aware B-MIG-SCOPE / PIN / BIND | Pass — Sec. 4 / 5 / Q15 / 16 |
+| 12 | Phase 1 needs SCOPE only; not full nine-condition clear | Pass |
+| 13 | Dual base SHA header | Pass — `9d6c556...` + `3f2b640...` |
+| 14 | Sec. 2 non-goal: no schema invented inside #456; frozen 012/013 are verify inputs | Pass |
+| 15 | Rev.8 sealed-store / aggregator / FAIL -> PASS / optional-key rules not weakened | Pass |
+| 16 | No Go / publish / Phase 1 authorization from this doc alone; B-MIG still SET | Pass |
+| 17 | Same RC commit + plan pin fields | Pass — planCommitSha/planFileSha256 |
+| 18 | #455/#457/#458 boundaries; dSeqAck / EXTERNAL_PROVENANCE recorded | Pass |
+| 19 | Sec. 14 NO_GO / M-19 synced for canary + PIN digest mismatch | Pass |
 
-**Self-review verdict:** Ready for **Agent B review of Rev.10** (review-only). **Not** ready for Go execution, publish, or #458 Phase 1 authorization from this document alone. B-MIG-SCOPE still pending Agent B APPROVE on durable plan SHA + remaining SCOPE items.
+**Self-review verdict:** Ready for **Agent B review of Rev.11** (review-only). **Not** ready for Go execution, publish, or #458 Phase 1 authorization from this document alone. B-MIG clearance remains **SET** (SCOPE/PIN/BIND incomplete).
 
 ---
 
@@ -1824,8 +1902,8 @@ Do **not** document `scan-setup-release-bundle.mjs` or flag-style smoke CLI.
 
 ### Next steps (plan-only)
 
-1. **Agent B** review Rev.10 (APPROVE / REVISE). Independent review of this plan revision feeds **B-MIG-SCOPE** conditions 5-6.
+1. **Agent B** review Rev.11 (APPROVE / REVISE). Independent review of this plan revision feeds **B-MIG-SCOPE** conditions 5-6 / 7.
 2. After APPROVE: complete remaining **B-MIG-SCOPE** items (conditions 1-7 durable); then #458 may start Phase 1 version prep — still no #456 Go / publish from this doc.
-3. After version-prep merge: clear **B-MIG-PIN** (condition 8) on `releaseCommitSha` (filenames + digests; FAIL on extras) before #455.
-4. Before #456 qualification: clear **B-MIG-BIND** (condition 9) with new binding/run on final Issue body SHA + plan digests + `releaseCommitSha`.
+3. After version-prep merge: clear **B-MIG-PIN** (condition 8) on `releaseCommitSha` (normative `migrationPin` output; FAIL on extras / digest mismatch) before #455.
+4. Before #456 qualification: clear **B-MIG-BIND** (condition 9) with new binding/run on final Issue body SHA + plan digests + `releaseCommitSha` + PIN digest fields (refuse bind if missing/mismatched).
 5. Do **not** start Phase 1 / publish / qualification from this revision alone.
