@@ -28,9 +28,13 @@ internal static class SetupFingerprintComposeNormalizer
         }
 
         var bundleSegment = $"bundles/{bundleId}/";
-        if (value.Contains(bundleSegment, StringComparison.Ordinal))
+        var windowsBundleSegment = $"bundles\\{bundleId}\\";
+        if (value.StartsWith(bundleSegment, StringComparison.Ordinal)
+            || value.StartsWith(windowsBundleSegment, StringComparison.OrdinalIgnoreCase))
         {
-            return value.Replace(bundleSegment, "bundles/<bundle-id>/", StringComparison.Ordinal);
+            return value
+                .Replace(bundleSegment, "bundles/<bundle-id>/", StringComparison.Ordinal)
+                .Replace(windowsBundleSegment, "bundles/<bundle-id>/", StringComparison.OrdinalIgnoreCase);
         }
 
         if (!key.EndsWith("_HOST_PATH", StringComparison.Ordinal))
