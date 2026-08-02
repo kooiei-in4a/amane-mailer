@@ -398,6 +398,16 @@ public sealed class SetupHostDockerAdapterTests
             Path.Combine("metadata", SetupBundleLayout.RecordedMetadataFileName),
             harness.LastChildEnv["MAILER_SETUP_RECORDED_METADATA_HOST_PATH"],
             StringComparison.Ordinal);
+
+        var publicEnvPassThrough = inspectionArgs!
+            .Zip(inspectionArgs!.Skip(1), (left, right) => (left, right))
+            .Where(pair => string.Equals(pair.left, "-e", StringComparison.Ordinal))
+            .Select(pair => pair.right)
+            .Where(key => !string.Equals(key, SetupDockerInventory.ContainerVerifierEnvKey, StringComparison.Ordinal))
+            .ToArray();
+        Assert.Contains("COMPOSE_PROJECT_NAME", publicEnvPassThrough, StringComparer.Ordinal);
+        Assert.Contains("MAILER_IMAGE_REFERENCE", publicEnvPassThrough, StringComparer.Ordinal);
+        Assert.Contains("MAILER_TENANTS_HOST_PATH", publicEnvPassThrough, StringComparer.Ordinal);
     }
 
     [Fact]

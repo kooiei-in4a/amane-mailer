@@ -567,13 +567,7 @@ public sealed class SetupHostDockerAdapter
             // Recorded metadata mount/env come from compose.recorded-metadata.yml (same as
             // normal mailer). One-shot delta is the ephemeral verifier mount/env only.
             var args = BuildComposeArgPrefix(session)
-                .Concat([
-                    "run", "--rm", "--no-deps", "--pull", "never",
-                    "-v", $"{hostVerifierPath}:{SetupDockerInventory.ContainerVerifierMountPath}:ro",
-                    "-e", SetupDockerInventory.ContainerVerifierEnvKey,
-                    SetupDockerInventory.ServiceMailer,
-                    "setup", "inspect-effective", "--format", "json",
-                ])
+                .Concat(BuildInspectEffectiveRunArgs(hostVerifierPath, pinned))
                 .ToArray();
 
             operationResult = await RunDockerAsync(
@@ -664,6 +658,43 @@ public sealed class SetupHostDockerAdapter
         }
 
         return args;
+    }
+
+    /// <summary>
+    /// One-shot inspect-effective must observe the same pinned public compose env as the bundle
+    /// fingerprint. Compose interpolation alone does not inject those keys into the container.
+    /// </summary>
+    internal static IEnumerable<string> BuildInspectEffectiveRunArgs(
+        string hostVerifierPath,
+        IReadOnlyDictionary<string, string> pinnedComposeEnv)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(hostVerifierPath);
+        ArgumentNullException.ThrowIfNull(pinnedComposeEnv);
+
+        yield return "run";
+        yield return "--rm";
+        yield return "--no-deps";
+        yield return "--pull";
+        yield return "never";
+        yield return "-v";
+        yield return $"{hostVerifierPath}:{SetupDockerInventory.ContainerVerifierMountPath}:ro";
+        yield return "-e";
+        yield return SetupDockerInventory.ContainerVerifierEnvKey;
+
+        foreach (var key in ManagedEnvKeyCatalog.PublicNonSecretKeys.OrderBy(static k => k, StringComparer.Ordinal))
+        {
+            if (pinnedComposeEnv.ContainsKey(key))
+            {
+                yield return "-e";
+                yield return key;
+            }
+        }
+
+        yield return SetupDockerInventory.ServiceMailer;
+        yield return "setup";
+        yield return "inspect-effective";
+        yield return "--format";
+        yield return "json";
     }
 
     internal static string[] PrefixedDockerArgs(SetupHostDockerSession session, IReadOnlyList<string> args)
