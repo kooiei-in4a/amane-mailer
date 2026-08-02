@@ -488,6 +488,7 @@ internal static class SetupAssistantPages
                 new (string, string)[]
                 {
                     ("結果コード", SetupAssistantResultPresenter.SafeCode(outcome.Code)),
+                    ("理由コード", SetupAssistantResultPresenter.SafeCode(outcome.ReasonCode)),
                     ("access profile", SetupAssistantResultPresenter.SafeCode(outcome.AccessProfile)),
                     ("設定の巻き戻し", SetupAssistantResultPresenter.SafeCode(outcome.ConfigRollback)),
                     ("Admin データベース状態", SetupAssistantResultPresenter.SafeCode(outcome.AdminDatabaseState)),

@@ -13,6 +13,8 @@ internal static class AdminDerivedBundleDiff
         "AMANE_ADMIN_USERNAME",
         "AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS",
         "AMANE_ADMIN_ALLOW_HTTP",
+        // Production HTTPS Admin may flip this false→true with the reverse-proxy contract.
+        "ASPNETCORE_FORWARDEDHEADERS_ENABLED",
     };
 
     private static readonly HashSet<string> AllowedSecretsKeys = new(StringComparer.Ordinal)

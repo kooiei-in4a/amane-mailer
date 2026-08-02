@@ -402,7 +402,28 @@ public sealed class AdminBootstrapContractsTests
                 out var reason));
         Assert.Equal("admin_derived_disallowed_env_diff", reason);
 
+        // Production HTTPS Admin may enable Forwarded Headers (false→true).
         allowedCompose["MAILER_HTTP_PORT"] = "8080";
+        allowedCompose["ASPNETCORE_FORWARDEDHEADERS_ENABLED"] = "true";
+        sourceCompose["ASPNETCORE_FORWARDEDHEADERS_ENABLED"] = "false";
+        Assert.True(
+            AdminDerivedBundleDiff.TryValidate(
+                "source",
+                "candidate",
+                sourceCompose,
+                sourceSecrets,
+                allowedCompose,
+                allowedSecrets,
+                "{}",
+                "{}",
+                null,
+                null,
+                null,
+                null,
+                out _));
+
+        allowedCompose.Remove("ASPNETCORE_FORWARDEDHEADERS_ENABLED");
+        sourceCompose.Remove("ASPNETCORE_FORWARDEDHEADERS_ENABLED");
         allowedCompose["AMANE_ADMIN_PII_LIST_MODE"] = "raw";
         Assert.False(
             AdminDerivedBundleDiff.TryValidate(
@@ -1300,6 +1321,85 @@ public sealed class AdminBootstrapContractsTests
                     out _,
                     out _),
                 "A well-formed compose.env username rewrite must fail recomputed fingerprint matching.");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Production_https_admin_derived_bundle_enables_forwarded_headers()
+    {
+        var root = TempRoot();
+        Directory.CreateDirectory(root);
+        try
+        {
+            var fileSystem = new HostSetupFileSystem();
+            var core = new SetupCore(fileSystem);
+            var layout = CreateLayout(root);
+            var source = core.GenerateBundle(SetupTestFixtures.LocalMailpitRequest(root));
+            Assert.Equal(SetupResultCode.Succeeded, source.Code);
+
+            var sourceComposePath = Path.Combine(
+                SetupBundleLayout.EnvDir(SetupBundleLayout.BundleRoot(root, source.BundleId!)),
+                SetupBundleLayout.ComposeEnvFileName);
+            Assert.Contains(
+                "ASPNETCORE_FORWARDEDHEADERS_ENABLED=\"false\"",
+                File.ReadAllText(sourceComposePath));
+
+            var localDev = core.GenerateAdminDerivedBundle(
+                layout,
+                source.BundleId!,
+                SourceAdminDisposition.DisabledMain,
+                runtimeFileOwnership: null,
+                new SetupAdminBundleDelta
+                {
+                    Username = "admin",
+                    PasswordHash = AdminPasswordHasher.Hash("local-dev-password"),
+                    AllowedLocalAddress = "127.0.0.1",
+                    AllowHttp = true,
+                    Expectation = new SetupAdminBootstrapExpectation
+                    {
+                        OperationId = AdminBootstrapOperationId.Create().Value,
+                        Before = FreshState(),
+                        After = FreshState(),
+                    },
+                });
+            Assert.Equal(SetupResultCode.Succeeded, localDev.Code);
+            var localCompose = File.ReadAllText(
+                Path.Combine(
+                    SetupBundleLayout.EnvDir(SetupBundleLayout.BundleRoot(root, localDev.BundleId!)),
+                    SetupBundleLayout.ComposeEnvFileName));
+            Assert.Contains("ASPNETCORE_FORWARDEDHEADERS_ENABLED=\"false\"", localCompose);
+            Assert.Contains("AMANE_ADMIN_ALLOW_HTTP=\"true\"", localCompose);
+
+            var productionHttps = core.GenerateAdminDerivedBundle(
+                layout,
+                source.BundleId!,
+                SourceAdminDisposition.DisabledMain,
+                runtimeFileOwnership: null,
+                new SetupAdminBundleDelta
+                {
+                    Username = "admin",
+                    PasswordHash = AdminPasswordHasher.Hash("prod-https-password"),
+                    AllowedLocalAddress = "0.0.0.0",
+                    AllowHttp = false,
+                    Expectation = new SetupAdminBootstrapExpectation
+                    {
+                        OperationId = AdminBootstrapOperationId.Create().Value,
+                        Before = FreshState(),
+                        After = FreshState(),
+                    },
+                });
+            Assert.Equal(SetupResultCode.Succeeded, productionHttps.Code);
+            var prodCompose = File.ReadAllText(
+                Path.Combine(
+                    SetupBundleLayout.EnvDir(SetupBundleLayout.BundleRoot(root, productionHttps.BundleId!)),
+                    SetupBundleLayout.ComposeEnvFileName));
+            Assert.Contains("ASPNETCORE_FORWARDEDHEADERS_ENABLED=\"true\"", prodCompose);
+            Assert.Contains("AMANE_ADMIN_ALLOW_HTTP=\"false\"", prodCompose);
         }
         finally
         {

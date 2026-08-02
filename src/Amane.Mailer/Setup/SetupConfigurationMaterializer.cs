@@ -155,6 +155,14 @@ public static class SetupConfigurationMaterializer
         compose["AMANE_ADMIN_USERNAME"] = delta.Username;
         compose["AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS"] = delta.AllowedLocalAddress;
         compose["AMANE_ADMIN_ALLOW_HTTP"] = delta.AllowHttp ? "true" : "false";
+        // Production HTTPS Admin (AllowHttp=false) sits behind a TLS-terminating reverse proxy.
+        // Enable Forwarded Headers so antiforgery SecurePolicy.Always sees HTTPS via
+        // X-Forwarded-Proto (#496 / G456-13). Local Development keeps HTTP and leaves this false.
+        if (!delta.AllowHttp)
+        {
+            compose["ASPNETCORE_FORWARDEDHEADERS_ENABLED"] = "true";
+        }
+
         secrets["AMANE_ADMIN_PASSWORD_HASH"] = delta.PasswordHash;
 
         var fingerprintCompose = SetupFingerprintComposeNormalizer.Normalize(compose, bundleId);
