@@ -286,12 +286,17 @@ if (OperatingSystem.IsWindows())
 
 builder.Services.AddMailerJsonSerialization();
 builder.Services.AddAmaneMailerServices(builder.Configuration);
+ForwardedHeadersStartup.ConfigureServices(builder.Services, builder.Configuration);
 
 var app = builder.Build();
 
 // Single startup path: resolve every AddStartupValidatedSingleton registration so Load/Validate
 // fail-fast (Worker/Admin enabled gates stay inside each options type).
 app.Services.GetRequiredService<MailerStartupValidator>().Validate();
+
+// Before Admin (Secure / antiforgery) so X-Forwarded-Proto from an approved TLS-terminating
+// reverse proxy makes Request.IsHttps true when ASPNETCORE_FORWARDEDHEADERS_ENABLED=true.
+ForwardedHeadersStartup.UseIfEnabled(app);
 
 app.MapGet("/healthz", () => MailerJsonResults.Health(true));
 
