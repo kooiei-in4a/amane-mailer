@@ -1,3 +1,4 @@
+using Amane.Mailer.Admin;
 using Amane.Mailer.Operations.AcsSetup;
 
 namespace Amane.Mailer.Setup.Assistant;
@@ -47,6 +48,8 @@ internal static class SetupAssistantTransitions
                 && session.AdminPreflight is null,
             ("/admin-bootstrap", "open") => At(session, SetupAssistantStep.AdminAccessPreflight)
                 && session.AdminPreflight is { Satisfied: true },
+            ("/admin-bootstrap", "retry") => At(session, SetupAssistantStep.AdminBootstrapOutcome)
+                && CanRetryAdminBootstrap(session),
             ("/admin-bootstrap", "") => At(session, SetupAssistantStep.AdminBootstrapOutcome)
                 && session.AdminBootstrap is null,
 
@@ -81,6 +84,17 @@ internal static class SetupAssistantTransitions
 
     internal static bool CanRetryMainApply(SetupAssistantSession session) =>
         session.MainWorkflow?.CanRetryApply == true;
+
+    /// <summary>
+    /// Managed same-user reapply (G456-14 / ADR 0021 D-08) after a successful Admin bootstrap in
+    /// the same session. Submit stays gated on a cleared outcome so stale tabs cannot replay it.
+    /// </summary>
+    internal static bool CanRetryAdminBootstrap(SetupAssistantSession session) =>
+        session.AdminBootstrap is
+        {
+            Kind: SetupAssistantOutcomeKind.Succeeded,
+            AdminDatabaseState: AdminBootstrapDatabaseClassification.ManagedSameUser,
+        };
 
     internal static bool CanRetryStaging(SetupAssistantSession session) =>
         session.MainWorkflow?.CanRetryStaging == true

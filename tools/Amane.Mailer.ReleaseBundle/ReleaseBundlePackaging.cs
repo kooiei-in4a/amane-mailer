@@ -158,6 +158,12 @@ public static class ReleaseBundlePackaging
         public required string MailpitImageReference { get; init; }
         public string ProjectNamePrefix { get; init; } = "amane";
         public bool AssertHostBinaryVersion { get; init; } = true;
+        /// <summary>
+        /// When true (default), Stage fails closed unless the RID-specific SQLitePCL native
+        /// sidecar sits beside <see cref="HostBinaryPath"/>. Unit tests may set false only when
+        /// they intentionally omit the sidecar.
+        /// </summary>
+        public bool RequireNativeSqliteSidecar { get; init; } = true;
         public int SupportedRecordedSchemaMin { get; init; } = MinimumSupportedRecordedSchemaVersion;
         public int SupportedRecordedSchemaMax { get; init; } = RecordedSchemaVersion;
         public int SupportedInspectEffectiveSchemaMin { get; init; } = InspectEffectiveSchemaVersion;
@@ -290,6 +296,15 @@ public static class ReleaseBundlePackaging
         string.Equals(hostRid, "win-x64", StringComparison.Ordinal)
             ? "Amane.Mailer.exe"
             : "Amane.Mailer";
+
+    /// <summary>
+    /// Native SQLitePCL sidecar emitted next to the AOT publish output for this host RID.
+    /// Required for host handoff binaries that open SQLite (Admin bootstrap, db CLI).
+    /// </summary>
+    public static string NativeSqliteSidecarFileName(string hostRid) =>
+        string.Equals(hostRid, "win-x64", StringComparison.Ordinal)
+            ? "e_sqlite3.dll"
+            : "libe_sqlite3.so";
 
     /// <summary>
     /// Runnable path prefix for README-SETUP examples for this host RID
@@ -565,6 +580,34 @@ public static class ReleaseBundlePackaging
                 && !string.Equals(request.HostRid, "win-x64", StringComparison.Ordinal))
             {
                 TryMarkExecutable(binaryDest);
+            }
+
+            if (request.RequireNativeSqliteSidecar)
+            {
+                var publishDir = Path.GetDirectoryName(request.HostBinaryPath);
+                if (string.IsNullOrWhiteSpace(publishDir))
+                {
+                    return Fail(
+                        "host_native_sqlite_missing",
+                        "Could not resolve the publish directory for the host binary.");
+                }
+
+                var sidecarName = NativeSqliteSidecarFileName(request.HostRid);
+                var sidecarSrc = Path.Combine(publishDir, sidecarName);
+                if (!File.Exists(sidecarSrc))
+                {
+                    return Fail(
+                        "host_native_sqlite_missing",
+                        $"Native SQLite sidecar {sidecarName} was not found beside the host binary.");
+                }
+
+                var sidecarDest = Path.Combine(outputFull, sidecarName);
+                File.Copy(sidecarSrc, sidecarDest, overwrite: true);
+                if (!OperatingSystem.IsWindows()
+                    && !string.Equals(request.HostRid, "win-x64", StringComparison.Ordinal))
+                {
+                    TryMarkExecutable(sidecarDest);
+                }
             }
 
             CopyRequired(request.DeployComposePath, Path.Combine(outputFull, DeployComposeRelativePath));

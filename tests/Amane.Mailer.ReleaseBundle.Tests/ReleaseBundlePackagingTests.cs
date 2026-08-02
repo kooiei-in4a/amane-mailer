@@ -72,6 +72,8 @@ public sealed class ReleaseBundlePackagingTests
         Assert.Contains("#458", result.Manifest.Reproducibility, StringComparison.Ordinal);
 
         Assert.True(File.Exists(Path.Combine(result.OutputDirectory!, "Amane.Mailer")));
+        Assert.True(File.Exists(Path.Combine(result.OutputDirectory!, "libe_sqlite3.so")));
+        Assert.False(File.Exists(Path.Combine(result.OutputDirectory!, "e_sqlite3.dll")));
         Assert.True(File.Exists(Path.Combine(result.OutputDirectory!, "LICENSE")));
         Assert.True(File.Exists(Path.Combine(result.OutputDirectory!, "release-bundle-manifest.json")));
         Assert.True(File.Exists(Path.Combine(result.OutputDirectory!, "FILES-SHA256SUMS")));
@@ -131,6 +133,10 @@ public sealed class ReleaseBundlePackagingTests
 
         Assert.True(result.Success, result.Message);
         Assert.Equal(launcher, ReleaseBundlePackaging.ReadmeSetupLauncher(hostRid));
+        Assert.True(
+            File.Exists(Path.Combine(
+                result.OutputDirectory!,
+                ReleaseBundlePackaging.NativeSqliteSidecarFileName(hostRid))));
 
         var readmePath = Path.Combine(result.OutputDirectory!, "README-SETUP.md");
         Assert.True(File.Exists(readmePath));
@@ -997,6 +1003,44 @@ public sealed class ReleaseBundlePackagingTests
     }
 
     [Fact]
+    public void Stage_rejects_missing_native_sqlite_sidecar()
+    {
+        using var scratch = new TempDir();
+        var inputs = CreateInputs(scratch.Path);
+        File.Delete(Path.Combine(Path.GetDirectoryName(inputs.HostBinary)!, "libe_sqlite3.so"));
+        var stagingParent = Path.Combine(scratch.Path, "parent");
+        Directory.CreateDirectory(stagingParent);
+
+        var result = ReleaseBundlePackaging.Stage(new ReleaseBundlePackaging.StageRequest
+        {
+            OutputDirectory = Path.Combine(stagingParent, "linux-x64"),
+            StagingParentDirectory = stagingParent,
+            HostRid = "linux-x64",
+            HostBinaryPath = inputs.HostBinary,
+            SourceCommitSha = TestCommit,
+            MailerVersion = "1.2.0",
+            LauncherVersion = "1.2.0",
+            ImageRepository = "ghcr.io/kooiei-in4a/amane-mailer",
+            ImageDisplayTag = "sha-" + TestCommit,
+            OciIndexDigest = TestDigest,
+            DeployComposePath = inputs.DeployCompose,
+            ImageDigestOverlayPath = inputs.ImageDigestOverlay,
+            RecordedMetadataOverlayPath = inputs.RecordedMetadataOverlay,
+            MailpitOverlayPath = inputs.MailpitOverlay,
+            EnvExamplePath = inputs.EnvExample,
+            TenantsExamplePath = inputs.TenantsExample,
+            TenantsSchemaPath = inputs.TenantsSchema,
+            TenantsLocalAcsExamplePath = inputs.TenantsLocalAcsExample,
+            LicensePath = inputs.License,
+            MailpitImageReference = TestMailpit,
+            AssertHostBinaryVersion = false,
+        });
+
+        Assert.False(result.Success);
+        Assert.Equal("host_native_sqlite_missing", result.ReasonCode);
+    }
+
+    [Fact]
     public void ArchiveFileName_matches_issue_candidates()
     {
         Assert.Equal(
@@ -1734,6 +1778,8 @@ public sealed class ReleaseBundlePackagingTests
         Directory.CreateDirectory(inputs);
         var hostBinary = Path.Combine(inputs, "Amane.Mailer");
         File.WriteAllText(hostBinary, "fake-native-aot-binary");
+        File.WriteAllText(Path.Combine(inputs, "libe_sqlite3.so"), "fake-sqlite-native-linux");
+        File.WriteAllText(Path.Combine(inputs, "e_sqlite3.dll"), "fake-sqlite-native-windows");
 
         var deploy = Path.Combine(inputs, "compose.yml");
         File.WriteAllText(

@@ -226,7 +226,43 @@ public sealed class SetupAssistantWorkflowTests
 
         Assert.Contains("Admin bootstrap transaction", page, StringComparison.Ordinal);
         Assert.Contains("login と状態表示の確認に成功", page, StringComparison.Ordinal);
+        Assert.Contains("同一ユーザーで再適用する", page, StringComparison.Ordinal);
         Assert.Equal("setup-admin", harness.Operations.LastAdminBootstrapInput?.Username);
+        Assert.Equal(1, harness.Operations.AdminBootstrapCalls);
+    }
+
+    [Fact]
+    public async Task Admin_managed_same_user_reapply_succeeds_in_same_session()
+    {
+        await using var harness = await SetupAssistantHarness.StartAsync();
+        await StartMainSetupAsync(harness, SetupMode.LocalMailpit);
+        await RunAdminBootstrapAsync(harness);
+
+        Assert.Equal(1, harness.Operations.AdminBootstrapCalls);
+        using var stale = await harness.PostStepAsync(
+            "/admin-bootstrap",
+            ("admin_username", "setup-admin"),
+            ("admin_password", "assistant-test-admin-password"),
+            ("admin_password_confirm", "assistant-test-admin-password"));
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Equal(1, harness.Operations.AdminBootstrapCalls);
+
+        await harness.PostStepAsync("/admin-bootstrap", ("action", "retry"));
+        var formPage = await harness.ReadCurrentPageAsync();
+        Assert.Contains("Admin bootstrap を実行する", formPage, StringComparison.Ordinal);
+        Assert.DoesNotContain("同一ユーザーで再適用する", formPage, StringComparison.Ordinal);
+
+        await harness.PostStepAsync(
+            "/admin-bootstrap",
+            ("admin_username", "setup-admin"),
+            ("admin_password", "assistant-test-admin-password"),
+            ("admin_password_confirm", "assistant-test-admin-password"));
+
+        Assert.Equal(2, harness.Operations.AdminBootstrapCalls);
+        Assert.Equal("setup-admin", harness.Operations.LastAdminBootstrapInput?.Username);
+        var outcomePage = await harness.ReadCurrentPageAsync();
+        Assert.Contains("同一ユーザーで再適用する", outcomePage, StringComparison.Ordinal);
+        Assert.Equal(1, harness.Operations.ApplyCalls);
     }
 
     [Fact]
