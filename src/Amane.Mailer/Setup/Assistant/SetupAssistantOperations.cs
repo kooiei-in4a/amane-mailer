@@ -2,6 +2,7 @@ using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations.AcsSetup;
 using Amane.Mailer.Operations.AdminBootstrap;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 
 namespace Amane.Mailer.Setup.Assistant;
@@ -197,51 +198,60 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
             return AdminFailure(AdminBootstrapResultCode.PreflightRejected, database.ReasonCode);
         }
 
-        var ownership = new AdminBootstrapOwnershipStore(_fileSystem);
-        var workflow = new AdminBootstrapWorkflow(
-            _setupCore,
-            _fileSystem,
-            new AdminBootstrapDatabase(connections, TimeProvider.System),
-            new AdminBootstrapSourceClassifier(_fileSystem, ownership),
-            ownership,
-            _applyEngine,
-            new AdminAccessVerifier(),
-            new AdminSessionRepository(connections));
-
-        using var credential = new AdminBootstrapCredentialLease(input.Password.AsSpan());
-        var result = await workflow.ExecuteAsync(
-            new AdminBootstrapRequest
-            {
-                Layout = layout,
-                RuntimeFileOwnership = ResolveRuntimeFileOwnership(),
-                AccessEndpoint = endpoint,
-                EnvironmentName = input.Access.EnvironmentName,
-                Username = input.Username,
-                Credential = credential,
-                AllowedLocalAddress = input.Access.AllowedLocalAddress,
-                AllowHttp = input.Access.AllowHttp,
-                Interactive = true,
-                LoopbackOnlyPublished = input.Access.LoopbackOnlyPublished,
-                ApprovedReverseProxy = input.Access.ApprovedReverseProxy,
-                ServerLocalAddressConfirmed = input.Access.ServerLocalAddressConfirmed,
-                TenantIds = input.TenantIds,
-            },
-            cancellationToken);
-
-        return new SetupAssistantAdminBootstrapOutcome
+        try
         {
-            Code = result.Code,
-            Kind = ClassifyAdmin(result),
-            AccessProfile = result.AccessProfile,
-            ConfigRollback = result.ConfigRollback,
-            AdminDatabaseState = result.AdminDatabaseState,
-            AdminExposure = result.AdminExposure,
-            LoginVerification = result.LoginVerification,
-            SetupStatusVerification = result.SetupStatusVerification,
-            VerificationSessionCleanup = result.VerificationSessionCleanup,
-            ManualActionRequired = result.ManualActionRequired,
-            ReasonCode = result.ReasonCode,
-        };
+            var ownership = new AdminBootstrapOwnershipStore(_fileSystem);
+            var workflow = new AdminBootstrapWorkflow(
+                _setupCore,
+                _fileSystem,
+                new AdminBootstrapDatabase(connections, TimeProvider.System),
+                new AdminBootstrapSourceClassifier(_fileSystem, ownership),
+                ownership,
+                _applyEngine,
+                new AdminAccessVerifier(),
+                new AdminSessionRepository(connections));
+
+            using var credential = new AdminBootstrapCredentialLease(input.Password.AsSpan());
+            var result = await workflow.ExecuteAsync(
+                new AdminBootstrapRequest
+                {
+                    Layout = layout,
+                    RuntimeFileOwnership = ResolveRuntimeFileOwnership(),
+                    AccessEndpoint = endpoint,
+                    EnvironmentName = input.Access.EnvironmentName,
+                    Username = input.Username,
+                    Credential = credential,
+                    AllowedLocalAddress = input.Access.AllowedLocalAddress,
+                    AllowHttp = input.Access.AllowHttp,
+                    Interactive = true,
+                    LoopbackOnlyPublished = input.Access.LoopbackOnlyPublished,
+                    ApprovedReverseProxy = input.Access.ApprovedReverseProxy,
+                    ServerLocalAddressConfirmed = input.Access.ServerLocalAddressConfirmed,
+                    TenantIds = input.TenantIds,
+                },
+                cancellationToken);
+
+            return new SetupAssistantAdminBootstrapOutcome
+            {
+                Code = result.Code,
+                Kind = ClassifyAdmin(result),
+                AccessProfile = result.AccessProfile,
+                ConfigRollback = result.ConfigRollback,
+                AdminDatabaseState = result.AdminDatabaseState,
+                AdminExposure = result.AdminExposure,
+                LoginVerification = result.LoginVerification,
+                SetupStatusVerification = result.SetupStatusVerification,
+                VerificationSessionCleanup = result.VerificationSessionCleanup,
+                ManualActionRequired = result.ManualActionRequired,
+                ReasonCode = result.ReasonCode,
+            };
+        }
+        finally
+        {
+            // Windows/DrvFs: release any idle host SQLite handles so same-session
+            // managed-same-user retry (G456-14) can open the DB again (#456).
+            SqliteConnection.ClearAllPools();
+        }
     }
 
     private bool TryResolveLayout(
@@ -313,10 +323,24 @@ internal sealed class SetupAssistantOperations : ISetupAssistantOperations
             new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                    ["ConnectionStrings:Mailer"] = BuildAdminHostMailerConnectionString(databasePath),
                 })
                 .Build());
         return (connections, string.Empty);
+    }
+
+    /// <summary>
+    /// Host-side Admin bootstrap must not leave pooled SQLite handles on the shared
+    /// MAILER_DATA_PATH (Windows DrvFs dual-open / same-session retry; #456 G456-14).
+    /// </summary>
+    internal static string BuildAdminHostMailerConnectionString(string databasePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
+        return new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Pooling = false,
+        }.ConnectionString;
     }
 
     private static bool TryCreateAccessEndpoint(
