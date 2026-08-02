@@ -23,9 +23,12 @@ Amane Mailer は汎用メール送信マイクロサービスです。送信依�
 
 ## セットアップ入口
 
-初めて構築するときは、構成選択・必要情報・実行順序・確認方法をまとめた
+初めて構築するときは **Easy Setup（推奨）** を含む単一入口の
 [セットアップ入口](docs/ops/setup-guide.md) [(en)](docs/ops/setup-guide.en.md)
-から始めてください。詳細手順は既存 runbook へリンクします。
+から始めてください（[Easy Setup](docs/ops/setup-guide.md#easy-setup推奨) /
+[Manual](docs/ops/setup-guide.md#manual-deployment) /
+[Hardened](docs/ops/setup-guide.md#hardened-deployment)）。
+詳細手順は既存 runbook へリンクします。判断・順序・安全境界の正本は setup-guide です。
 
 ## ローカル検証
 

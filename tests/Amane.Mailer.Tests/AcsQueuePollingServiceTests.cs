@@ -4,6 +4,7 @@ using Amane.Mailer.Bounce;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Delivery;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
 using Microsoft.Data.Sqlite;
@@ -159,6 +160,37 @@ public sealed class AcsQueuePollingServiceTests
         }
         """;
 
+    private const string BouncedJsonWithDetails = """
+        {
+          "id": "eg-queue-details",
+          "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+          "eventTime": "2026-07-26T17:45:00Z",
+          "data": {
+            "messageId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "status": "Bounced",
+            "recipient": "user@example.com",
+            "deliveryStatusDetails": {
+              "statusMessage": "550 5.1.10 RESOLVER.ADR.RecipientNotFound; recipient pii-canary-queue@example.com Bearer secret-token-do-not-store};'"
+            }
+          }
+        }
+        """;
+
+    private const string BouncedJsonNoEventTime = """
+        {
+          "id": "eg-queue-no-time",
+          "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+          "data": {
+            "messageId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "status": "Bounced",
+            "recipient": "user@example.com",
+            "deliveryStatusDetails": {
+              "statusMessage": "mailbox unavailable"
+            }
+          }
+        }
+        """;
+
     private const string BouncedJsonSecond = """
         {
           "id": "eg-queue-2",
@@ -196,11 +228,97 @@ public sealed class AcsQueuePollingServiceTests
     }
 
     [Fact]
+    public async Task Poll_persists_sanitized_status_message_and_event_time()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-details", "pop-details", BouncedJsonWithDetails);
+
+        await CreateService(db.Factory, queue, new MailerRuntimeMetrics()).PollOnceAsync(ct);
+
+        var row = await ReadInboxDetailsAsync(db.Factory, "eg-queue-details", ct);
+        Assert.NotNull(row);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-26T17:45:00Z"), row.Value.OccurredAt);
+        Assert.False(string.IsNullOrWhiteSpace(row.Value.StatusMessage));
+        Assert.DoesNotContain("pii-canary-queue@example.com", row.Value.StatusMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret-token-do-not-store", row.Value.StatusMessage!, StringComparison.Ordinal);
+        Assert.Equal(
+            ProviderErrorSanitizer.Sanitize(
+                "550 5.1.10 RESOLVER.ADR.RecipientNotFound; recipient pii-canary-queue@example.com Bearer secret-token-do-not-store};'"),
+            row.Value.StatusMessage);
+        Assert.Contains(("msg-details", "pop-details"), queue.Deleted);
+    }
+
+    [Fact]
+    public async Task Poll_allows_null_occurred_at_when_event_time_missing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-no-time", "pop-no-time", BouncedJsonNoEventTime);
+
+        await CreateService(db.Factory, queue, new MailerRuntimeMetrics()).PollOnceAsync(ct);
+
+        var row = await ReadInboxDetailsAsync(db.Factory, "eg-queue-no-time", ct);
+        Assert.NotNull(row);
+        Assert.Null(row.Value.OccurredAt);
+        Assert.Equal(ProviderErrorSanitizer.Sanitize("mailbox unavailable"), row.Value.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Poll_multi_event_message_keeps_per_event_time_and_status()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var batch = $$"""
+            [
+              {
+                "id": "eg-multi-1",
+                "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+                "eventTime": "2026-07-26T16:00:00Z",
+                "data": {
+                  "messageId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                  "status": "Bounced",
+                  "recipient": "user@example.com",
+                  "deliveryStatusDetails": { "statusMessage": "first-detail" }
+                }
+              },
+              {
+                "id": "eg-multi-2",
+                "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+                "eventTime": "2026-07-26T16:05:00Z",
+                "data": {
+                  "messageId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                  "status": "Bounced",
+                  "recipient": "other@example.com",
+                  "deliveryStatusDetails": { "statusMessage": "second-detail" }
+                }
+              }
+            ]
+            """;
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-multi", "pop-multi", batch);
+
+        await CreateService(db.Factory, queue, new MailerRuntimeMetrics()).PollOnceAsync(ct);
+
+        var first = await ReadInboxDetailsAsync(db.Factory, "eg-multi-1", ct);
+        var second = await ReadInboxDetailsAsync(db.Factory, "eg-multi-2", ct);
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-26T16:00:00Z"), first.Value.OccurredAt);
+        Assert.Equal(DateTimeOffset.Parse("2026-07-26T16:05:00Z"), second.Value.OccurredAt);
+        Assert.Equal(ProviderErrorSanitizer.Sanitize("first-detail"), first.Value.StatusMessage);
+        Assert.Equal(ProviderErrorSanitizer.Sanitize("second-detail"), second.Value.StatusMessage);
+    }
+
+    [Fact]
     public async Task Poll_duplicate_event_still_deletes_queue_message()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await OpenMigratedAsync(ct);
         var inbox = new ProviderEventInboxRepository(db.Factory);
+        var originalOccurredAt = DateTimeOffset.Parse("2026-07-26T12:00:00Z");
         Assert.True(await inbox.TryInsertAsync(
             new ProviderEventInboxInsert
             {
@@ -210,18 +328,24 @@ public sealed class AcsQueuePollingServiceTests
                 ProviderMessageId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                 DeliveryStatus = "Bounced",
                 RecipientEmail = "user@example.com",
+                StatusMessage = "original-safe-message",
+                OccurredAt = originalOccurredAt,
                 MaxAttempts = 3,
                 CreatedAt = FixedNow,
             },
             ct));
 
         var queue = new FakeAcsEventQueueClient();
-        queue.Enqueue("msg-dup", "pop-dup", BouncedJson);
+        queue.Enqueue("msg-dup", "pop-dup", BouncedJsonWithDetails.Replace("eg-queue-details", "eg-queue-1", StringComparison.Ordinal));
         var service = CreateService(db.Factory, queue, new MailerRuntimeMetrics());
         await service.PollOnceAsync(ct);
 
         Assert.Contains(("msg-dup", "pop-dup"), queue.Deleted);
         Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
+        var preserved = await ReadInboxDetailsAsync(db.Factory, "eg-queue-1", ct);
+        Assert.NotNull(preserved);
+        Assert.Equal("original-safe-message", preserved.Value.StatusMessage);
+        Assert.Equal(originalOccurredAt, preserved.Value.OccurredAt);
     }
 
     [Fact]
@@ -237,6 +361,7 @@ public sealed class AcsQueuePollingServiceTests
         var service = new AcsQueuePollingService(
             queue,
             throwingInbox,
+            new ProviderQueueDeadLetterRepository(db.Factory),
             new MailerBounceIngestionOptions { Mode = BounceIngestionMode.Queue, MaxAttempts = 3 },
             new BounceIngestionQueue(),
             metrics,
@@ -265,6 +390,7 @@ public sealed class AcsQueuePollingServiceTests
         var service = new AcsQueuePollingService(
             queue,
             inbox,
+            new ProviderQueueDeadLetterRepository(db.Factory),
             new MailerBounceIngestionOptions { Mode = BounceIngestionMode.Queue, MaxAttempts = 3 },
             new BounceIngestionQueue(),
             metrics,
@@ -314,13 +440,16 @@ public sealed class AcsQueuePollingServiceTests
         Assert.Single(queue.Pending);
         Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
         Assert.Equal(0, await CountInboxAsync(db.Factory, "eg-invalid", ct));
-        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+        Assert.Equal(0, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePayloadInvalidTotal);
+        Assert.Equal(0, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
 
         // Redelivery: UNIQUE absorbs the already-inserted valid event; message still retained.
         await service.PollOnceAsync(ct);
         Assert.Empty(queue.Deleted);
         Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
-        Assert.Equal(2, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+        Assert.Equal(2, metrics.CaptureSnapshot().ProviderQueuePayloadInvalidTotal);
+        Assert.Equal(0, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
     }
 
     [Fact]
@@ -337,8 +466,10 @@ public sealed class AcsQueuePollingServiceTests
 
         Assert.Empty(queue.Deleted);
         Assert.Single(queue.Pending);
-        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+        Assert.Equal(0, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePayloadInvalidTotal);
         Assert.Equal(0, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
+        Assert.Equal(0, await CountQueueDeadLettersAsync(db.Factory, ct));
     }
 
     [Fact]
@@ -396,6 +527,7 @@ public sealed class AcsQueuePollingServiceTests
         var service = new AcsQueuePollingService(
             queue,
             new ProviderEventInboxRepository(db.Factory),
+            new ProviderQueueDeadLetterRepository(db.Factory),
             new MailerBounceIngestionOptions { Mode = BounceIngestionMode.Queue, MaxAttempts = 3 },
             new BounceIngestionQueue(),
             metrics,
@@ -409,6 +541,257 @@ public sealed class AcsQueuePollingServiceTests
         AssertNoSecretCanaries(logCapture);
         Assert.DoesNotContain("ErrorCode=", logCapture.JoinedOutput(), StringComparison.Ordinal);
         Assert.DoesNotContain("CanaryAzureError", logCapture.JoinedOutput(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task Poll_decode_failure_below_threshold_retains_message(long dequeueCount)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-decode", "pop-decode", "   ", dequeueCount);
+
+        var metrics = new MailerRuntimeMetrics();
+        var service = CreateService(db.Factory, queue, metrics);
+        await service.PollOnceAsync(ct);
+
+        Assert.Empty(queue.Deleted);
+        Assert.Single(queue.Pending);
+        Assert.Equal(0, await CountQueueDeadLettersAsync(db.Factory, ct));
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePayloadInvalidTotal);
+        Assert.Equal(0, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
+        Assert.Equal(0, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+    }
+
+    [Fact]
+    public async Task Poll_decode_failure_at_threshold_records_dead_letter_then_deletes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        const string whitespaceBody = " \t ";
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-decode-5", "pop-decode-5", whitespaceBody, dequeueCount: 5);
+
+        var metrics = new MailerRuntimeMetrics();
+        var service = CreateService(db.Factory, queue, metrics);
+        await service.PollOnceAsync(ct);
+
+        Assert.Contains(("msg-decode-5", "pop-decode-5"), queue.Deleted);
+        Assert.Empty(queue.Pending);
+        Assert.Equal(1, await CountQueueDeadLettersAsync(db.Factory, ct));
+        var row = await ReadQueueDeadLetterAsync(db.Factory, "msg-decode-5", ct);
+        Assert.NotNull(row);
+        Assert.Equal(ProviderQueueDeadLetterRepository.FailureStageDecode, row.Value.FailureStage);
+        Assert.Equal(ProviderQueueDeadLetterRepository.BodyInvalidErrorCode, row.Value.LastErrorCode);
+        Assert.Equal(5, row.Value.DequeueCount);
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePayloadInvalidTotal);
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
+        Assert.Equal(0, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+    }
+
+    [Fact]
+    public async Task Poll_parse_failure_at_threshold_uses_event_invalid_error_code()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        const string canary = "{ not-json pii-canary-parse@example.com Bearer secret-token-do-not-store";
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-parse-5", "pop-parse-5", canary, dequeueCount: 5);
+
+        var metrics = new MailerRuntimeMetrics();
+        var logger = CreateCapturingLogger(out var logCapture);
+        var service = new AcsQueuePollingService(
+            queue,
+            new ProviderEventInboxRepository(db.Factory),
+            new ProviderQueueDeadLetterRepository(db.Factory),
+            new MailerBounceIngestionOptions { Mode = BounceIngestionMode.Queue, MaxAttempts = 3 },
+            new BounceIngestionQueue(),
+            metrics,
+            new FixedUtcTimeProvider(FixedNow),
+            logger);
+        await service.PollOnceAsync(ct);
+
+        Assert.Contains(("msg-parse-5", "pop-parse-5"), queue.Deleted);
+        var row = await ReadQueueDeadLetterAsync(db.Factory, "msg-parse-5", ct);
+        Assert.NotNull(row);
+        Assert.Equal(ProviderQueueDeadLetterRepository.FailureStageParse, row.Value.FailureStage);
+        Assert.Equal(ProviderQueueDeadLetterRepository.EventInvalidErrorCode, row.Value.LastErrorCode);
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
+
+        await using (var connection = await db.Factory.OpenConnectionAsync(ct))
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT * FROM provider_queue_dead_letters;";
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            var schema = await reader.GetSchemaTableAsync(ct);
+            Assert.NotNull(schema);
+            foreach (System.Data.DataRow column in schema.Rows)
+            {
+                Assert.DoesNotContain("body", Convert.ToString(column["ColumnName"])!, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("payload", Convert.ToString(column["ColumnName"])!, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("recipient", Convert.ToString(column["ColumnName"])!, StringComparison.OrdinalIgnoreCase);
+            }
+
+            Assert.True(await reader.ReadAsync(ct));
+            for (var i = 0; i < reader.FieldCount; i++)
+            {
+                if (reader.IsDBNull(i))
+                {
+                    continue;
+                }
+
+                var value = reader.GetValue(i)?.ToString() ?? string.Empty;
+                Assert.DoesNotContain("pii-canary-parse@example.com", value, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain("secret-token-do-not-store", value, StringComparison.Ordinal);
+                Assert.DoesNotContain(canary, value, StringComparison.Ordinal);
+            }
+        }
+
+        AssertNoSecretCanaries(logCapture);
+        Assert.DoesNotContain("pii-canary-parse@example.com", logCapture.JoinedOutput(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secret-token-do-not-store", logCapture.JoinedOutput(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Poll_poison_dead_letter_insert_failure_does_not_delete()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-dl-fail", "pop-dl-fail", "{ not-json", dequeueCount: 5);
+
+        var metrics = new MailerRuntimeMetrics();
+        var service = new AcsQueuePollingService(
+            queue,
+            new ProviderEventInboxRepository(db.Factory),
+            new ThrowingQueueDeadLetterRepository(db.Factory),
+            new MailerBounceIngestionOptions { Mode = BounceIngestionMode.Queue, MaxAttempts = 3 },
+            new BounceIngestionQueue(),
+            metrics,
+            new FixedUtcTimeProvider(FixedNow),
+            CreateCapturingLogger(out var logCapture));
+        await service.PollOnceAsync(ct);
+
+        Assert.Empty(queue.Deleted);
+        Assert.Single(queue.Pending);
+        Assert.Equal(0, await CountQueueDeadLettersAsync(db.Factory, ct));
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePayloadInvalidTotal);
+        Assert.Equal(0, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+        AssertNoSecretCanaries(logCapture);
+    }
+
+    [Fact]
+    public async Task Poll_poison_delete_failure_retry_is_idempotent()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-retry", "pop-retry", "{ not-json", dequeueCount: 5);
+        var deleteAttempts = 0;
+        queue.OnDelete = (_, _) =>
+        {
+            deleteAttempts++;
+            if (deleteAttempts == 1)
+            {
+                throw new RequestFailedException(
+                    status: 500,
+                    message: "AccountKey=should-not-leak canary@example.com",
+                    errorCode: "CanaryAzureError",
+                    innerException: null);
+            }
+
+            return Task.CompletedTask;
+        };
+
+        var metrics = new MailerRuntimeMetrics();
+        var service = CreateService(db.Factory, queue, metrics);
+        await service.PollOnceAsync(ct);
+
+        Assert.Equal(1, await CountQueueDeadLettersAsync(db.Factory, ct));
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePollFailedTotal);
+        Assert.Single(queue.Pending);
+
+        await service.PollOnceAsync(ct);
+        Assert.Equal(1, await CountQueueDeadLettersAsync(db.Factory, ct));
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
+        Assert.Equal(2, metrics.CaptureSnapshot().ProviderQueuePayloadInvalidTotal);
+        Assert.Contains(("msg-retry", "pop-retry"), queue.Deleted);
+        Assert.Empty(queue.Pending);
+    }
+
+    [Fact]
+    public async Task Poll_mixed_valid_invalid_at_threshold_keeps_valid_and_converges()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var mixed = """
+            [
+              {
+                "id": "eg-queue-1",
+                "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+                "eventTime": "2026-07-26T18:00:00Z",
+                "data": {
+                  "messageId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                  "status": "Bounced",
+                  "recipient": "user@example.com"
+                }
+              },
+              {
+                "id": "eg-invalid",
+                "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+                "data": {}
+              }
+            ]
+            """;
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-mixed-5", "pop-mixed-5", mixed, dequeueCount: 5);
+
+        var metrics = new MailerRuntimeMetrics();
+        var service = CreateService(db.Factory, queue, metrics);
+        await service.PollOnceAsync(ct);
+
+        Assert.Contains(("msg-mixed-5", "pop-mixed-5"), queue.Deleted);
+        Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
+        Assert.Equal(0, await CountInboxAsync(db.Factory, "eg-invalid", ct));
+        Assert.Equal(1, await CountQueueDeadLettersAsync(db.Factory, ct));
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
+
+        queue.Enqueue("msg-mixed-5", "pop-mixed-5b", mixed, dequeueCount: 6);
+        await service.PollOnceAsync(ct);
+        Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-queue-1", ct));
+        Assert.Equal(1, await CountQueueDeadLettersAsync(db.Factory, ct));
+        Assert.Equal(1, metrics.CaptureSnapshot().ProviderQueuePoisonedTotal);
+    }
+
+    [Fact]
+    public async Task Poll_poison_cancelled_before_dead_letter_commit_does_not_delete()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var queue = new FakeAcsEventQueueClient();
+        queue.Enqueue("msg-cancel", "pop-cancel", "{ not-json", dequeueCount: 5);
+
+        using var cts = new CancellationTokenSource();
+        var deadLetters = new CancelOnInsertQueueDeadLetterRepository(db.Factory, cts);
+        var service = new AcsQueuePollingService(
+            queue,
+            new ProviderEventInboxRepository(db.Factory),
+            deadLetters,
+            new MailerBounceIngestionOptions { Mode = BounceIngestionMode.Queue, MaxAttempts = 3 },
+            new BounceIngestionQueue(),
+            new MailerRuntimeMetrics(),
+            new FixedUtcTimeProvider(FixedNow),
+            CreateCapturingLogger(out _));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.PollOnceAsync(cts.Token));
+        Assert.Empty(queue.Deleted);
+        Assert.Equal(0, await CountQueueDeadLettersAsync(db.Factory, ct));
     }
 
     private static ILogger<AcsQueuePollingService> CreateCapturingLogger(out CapturingLoggerProvider capture)
@@ -435,11 +818,37 @@ public sealed class AcsQueuePollingServiceTests
         new(
             queue,
             new ProviderEventInboxRepository(factory),
+            new ProviderQueueDeadLetterRepository(factory),
             new MailerBounceIngestionOptions { Mode = BounceIngestionMode.Queue, MaxAttempts = 3 },
             new BounceIngestionQueue(),
             metrics,
             new FixedUtcTimeProvider(FixedNow),
             CreateCapturingLogger(out _));
+
+    private static async Task<(string? StatusMessage, DateTimeOffset? OccurredAt)?> ReadInboxDetailsAsync(
+        SqliteConnectionFactory factory,
+        string eventId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT status_message, occurred_at
+            FROM provider_event_inbox
+            WHERE provider = 'acs' AND event_id = @EventId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@EventId", eventId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return (
+            reader.IsDBNull(0) ? null : reader.GetString(0),
+            reader.IsDBNull(1) ? null : SqliteTime.FromStorage(reader.GetString(1)));
+    }
 
     private static async Task<long> CountInboxAsync(
         SqliteConnectionFactory factory,
@@ -456,6 +865,40 @@ public sealed class AcsQueuePollingServiceTests
         command.Parameters.AddWithValue("@EventId", eventId);
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return result is long count ? count : Convert.ToInt64(result);
+    }
+
+    private static async Task<long> CountQueueDeadLettersAsync(
+        SqliteConnectionFactory factory,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM provider_queue_dead_letters;";
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is long count ? count : Convert.ToInt64(result);
+    }
+
+    private static async Task<(string FailureStage, string LastErrorCode, long DequeueCount)?> ReadQueueDeadLetterAsync(
+        SqliteConnectionFactory factory,
+        string queueMessageId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT failure_stage, last_error_code, dequeue_count
+            FROM provider_queue_dead_letters
+            WHERE provider = 'acs' AND queue_message_id = @QueueMessageId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@QueueMessageId", queueMessageId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return (reader.GetString(0), reader.GetString(1), reader.GetInt64(2));
     }
 
     private static async Task<MigratedDb> OpenMigratedAsync(CancellationToken cancellationToken)
@@ -514,11 +957,11 @@ public sealed class AcsQueuePollingServiceTests
             }
         }
 
-        public void Enqueue(string messageId, string popReceipt, string body)
+        public void Enqueue(string messageId, string popReceipt, string body, long dequeueCount = 1)
         {
             lock (_gate)
             {
-                _pending.Add(new AcsQueueReceivedMessage(messageId, popReceipt, body));
+                _pending.Add(new AcsQueueReceivedMessage(messageId, popReceipt, body, dequeueCount));
             }
         }
 
@@ -592,6 +1035,29 @@ public sealed class AcsQueuePollingServiceTests
             }
 
             return await base.TryInsertAsync(row, cancellationToken);
+        }
+    }
+
+    private sealed class ThrowingQueueDeadLetterRepository(SqliteConnectionFactory connections)
+        : ProviderQueueDeadLetterRepository(connections)
+    {
+        public override Task<bool> TryInsertAsync(
+            ProviderQueueDeadLetterInsert row,
+            CancellationToken cancellationToken = default) =>
+            throw new SqliteException("simulated SQLITE_BUSY AccountKey=should-not-leak canary@example.com", 5);
+    }
+
+    private sealed class CancelOnInsertQueueDeadLetterRepository(
+        SqliteConnectionFactory connections,
+        CancellationTokenSource cts) : ProviderQueueDeadLetterRepository(connections)
+    {
+        public override Task<bool> TryInsertAsync(
+            ProviderQueueDeadLetterInsert row,
+            CancellationToken cancellationToken = default)
+        {
+            cts.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(false);
         }
     }
 }

@@ -38,13 +38,27 @@ public sealed record MailerOptions
             MailpitSmtpHostConfiguredKey = hostKey,
             MailpitSmtpPort = port,
             MailpitSmtpPortLoadError = portError,
-            MailpitUseSsl = ConfigurationBooleanReader.Read(
+            MailpitUseSsl = ResolveMailpitUseSsl(configuration),
+            AcsConnectionString = ResolveAcsConnectionString(configuration),
+        };
+    }
+
+    private static bool ResolveMailpitUseSsl(IConfiguration configuration)
+    {
+        try
+        {
+            return ConfigurationBooleanReader.Read(
                 configuration,
                 defaultValue: false,
                 "Mailer:Mailpit:UseSsl",
-                "MAILPIT_SMTP_USE_SSL"),
-            AcsConnectionString = ResolveAcsConnectionString(configuration),
-        };
+                "MAILPIT_SMTP_USE_SSL");
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new MailerConfigurationLoadException(
+                MailerConfigurationLoadFailureKind.MailpitInvalid,
+                ex.Message);
+        }
     }
 
     public string ResolveProvider(MailerTenant tenant) =>
@@ -57,14 +71,15 @@ public sealed record MailerOptions
     /// tenants that lack a connection string. Matches offline
     /// <c>scripts/validate-tenant-config.mjs</c> ACS policy (<c>live_sending=true</c> only).
     /// When any tenant uses effective provider <c>mailpit</c>, also require a non-blank SMTP
-    /// host and a port in 1–65535 (#356). Unused Mailpit host/port typos do not block ACS-only
+    /// host and a port in 1窶・5535 (#356). Unused Mailpit host/port typos do not block ACS-only
     /// startups. This check is startup-only; <c>/readyz</c> does not re-validate providers.
     /// </summary>
     public void ValidateEffectiveProviders(IReadOnlyList<MailerTenant> tenants)
     {
         if (!string.IsNullOrWhiteSpace(ProviderOverride) && !IsKnownProvider(ProviderOverride))
         {
-            throw new InvalidOperationException(
+            throw new MailerConfigurationLoadException(
+                MailerConfigurationLoadFailureKind.ProviderInvalid,
                 "MAILER_PROVIDER / Mailer:Provider must be 'mailpit' or 'acs' when set "
                 + $"(got '{ProviderOverride}').");
         }
@@ -76,7 +91,8 @@ public sealed record MailerOptions
             var provider = ResolveProvider(tenant);
             if (!IsKnownProvider(provider))
             {
-                throw new InvalidOperationException(
+                throw new MailerConfigurationLoadException(
+                    MailerConfigurationLoadFailureKind.ProviderInvalid,
                     $"tenant '{tenant.Name}' effective provider must be 'mailpit' or 'acs' "
                     + $"(got '{provider}').");
             }
@@ -90,7 +106,8 @@ public sealed record MailerOptions
                 && tenant.LiveSending
                 && string.IsNullOrWhiteSpace(AcsConnectionString))
             {
-                throw new InvalidOperationException(
+                throw new MailerConfigurationLoadException(
+                    MailerConfigurationLoadFailureKind.AcsCredentialMissing,
                     $"ACS connection string is required when tenant '{tenant.Name}' uses "
                     + "effective provider 'acs' with live_sending=true. Configure "
                     + "ACS_CONNECTION_STRING_FILE or ACS_CONNECTION_STRING.");
@@ -109,20 +126,24 @@ public sealed record MailerOptions
         {
             var key = MailpitSmtpHostConfiguredKey
                 ?? "Mailer:Mailpit:SmtpHost / MAILPIT_SMTP_HOST";
-            throw new InvalidOperationException(
+            throw new MailerConfigurationLoadException(
+                MailerConfigurationLoadFailureKind.MailpitInvalid,
                 $"{key} must be a non-empty host name when any tenant uses "
                 + "effective provider 'mailpit'.");
         }
 
         if (MailpitSmtpPortLoadError is not null)
         {
-            throw new InvalidOperationException(MailpitSmtpPortLoadError);
+            throw new MailerConfigurationLoadException(
+                MailerConfigurationLoadFailureKind.MailpitInvalid,
+                MailpitSmtpPortLoadError);
         }
 
         if (MailpitSmtpPort < ConfigurationIntReader.MinPort
             || MailpitSmtpPort > ConfigurationIntReader.MaxPort)
         {
-            throw new InvalidOperationException(
+            throw new MailerConfigurationLoadException(
+                MailerConfigurationLoadFailureKind.MailpitInvalid,
                 "Mailer:Mailpit:SmtpPort / MAILPIT_SMTP_PORT must be an integer between "
                 + $"{ConfigurationIntReader.MinPort} and {ConfigurationIntReader.MaxPort} "
                 + "(inclusive) when any tenant uses effective provider 'mailpit'.");
@@ -183,38 +204,13 @@ public sealed record MailerOptions
     /// <c>ACS_CONNECTION_STRING_FILE</c> (see <see cref="Operations.AdminProviderRegisterAcsCommand"/>
     /// and the Compose boundary test guarding this) and sets
     /// <c>MAILER_REQUIRE_ACS_SECRET_FILE=true</c> on the <c>mailer</c> service only. When that flag
-    /// is set, a missing/empty secret file fails closed — the bare <c>ACS_CONNECTION_STRING</c>
+    /// is set, a missing/empty secret file fails closed 窶・the bare <c>ACS_CONNECTION_STRING</c>
     /// environment variable is never used as a fallback there, even if present in the process
     /// environment. Without the flag (local Mailpit compose, and the local ACS drill
     /// <c>infra/deploy/drills/mail-05a-acs-drill.sh</c>, which injects
     /// <c>ACS_CONNECTION_STRING</c> via its own compose override and unsets it on exit), the bare
     /// env var remains a valid fallback, matching existing drill behavior unchanged.
     /// </summary>
-    private static string ResolveAcsConnectionString(IConfiguration configuration)
-    {
-        var fileValue = ReadAcsConnectionStringFile(configuration);
-        if (!string.IsNullOrEmpty(fileValue))
-        {
-            return fileValue;
-        }
-
-        var requiresSecretFile = configuration.GetValue("MAILER_REQUIRE_ACS_SECRET_FILE", false);
-        if (requiresSecretFile)
-        {
-            return string.Empty;
-        }
-
-        return configuration["ACS_CONNECTION_STRING"] ?? string.Empty;
-    }
-
-    private static string ReadAcsConnectionStringFile(IConfiguration configuration)
-    {
-        var filePath = configuration["ACS_CONNECTION_STRING_FILE"];
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
-        {
-            return string.Empty;
-        }
-
-        return File.ReadAllText(filePath).Trim();
-    }
+    private static string ResolveAcsConnectionString(IConfiguration configuration) =>
+        MailerAcsCredential.Resolve(configuration).Value;
 }

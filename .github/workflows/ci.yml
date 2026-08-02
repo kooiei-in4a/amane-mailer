@@ -60,6 +60,29 @@ jobs:
       - name: PTY smoke (ACS test-acs-send interactive paths)
         run: python3 scripts/pty-smoke-test-acs-send.py
 
+      - name: PTY smoke (ACS register-acs interactive paths)
+        run: python3 scripts/pty-smoke-register-acs.py
+
+      - name: "Guard setup-bundle MSBuild -p args (MSYS-safe)"
+        run: |
+          set -Eeuo pipefail
+          target=scripts/generate-setup-release-bundle.sh
+          if grep -nE '[[:space:]]/p:(PublishAot|IlcTreatWarningsAsErrors|Version|InformationalVersion|IncludeSourceRevisionInInformationalVersion)=' "${target}"; then
+            echo "[error] ${target} still contains /p: MSBuild properties that MSYS may rewrite." >&2
+            exit 1
+          fi
+          for needle in \
+            '-p:PublishAot=true' \
+            '-p:IlcTreatWarningsAsErrors=true' \
+            '-p:Version=' \
+            '-p:InformationalVersion=' \
+            '-p:IncludeSourceRevisionInInformationalVersion=false'
+          do
+            grep -F -- "${needle}" "${target}" >/dev/null \
+              || { echo "[error] missing ${needle}" >&2; exit 1; }
+          done
+          echo "check-setup-bundle-msbuild-args: ok"
+
   sdk-tests:
     name: Consumer SDK tests
     runs-on: ubuntu-24.04
@@ -128,12 +151,149 @@ jobs:
           test -x artifacts/publish/aot-linux-x64/Amane.Mailer
           artifacts/publish/aot-linux-x64/Amane.Mailer --help
 
+      # Easy Setup Web Assistant startup / bind / HTTP security smoke (#452).
+      # Uses the stubbed assistant-self-check path; no Docker, ACS, or Admin side effects.
+      - name: Native AOT setup assistant self-check
+        run: artifacts/publish/aot-linux-x64/Amane.Mailer setup assistant-self-check
+
       # Low-frequency Native AOT paths (Admin / webhook HTTPS tenant / db backup).
       # Complements release-smoke (core API + Mailpit on the GHCR image). See #286.
       - name: Native AOT low-frequency path smoke
         env:
           MAILER_BIN: ${{ github.workspace }}/artifacts/publish/aot-linux-x64/Amane.Mailer
         run: bash scripts/native-aot-path-smoke.sh
+
+  # Regression for #458:
+  # - Candidate attempt 2: Git for Windows/MSYS rewrites /p: into bare p: (MSB1008).
+  # - Candidate attempt 3: Compress-Archive backslash ZIP entries + sha256sum path escape.
+  # Run the real host-bundle script under bash with CREATE_ARCHIVES=1 (ZIP + smoke).
+  windows-setup-bundle-msys-smoke:
+    name: Windows setup-bundle MSYS smoke
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/develop' ||
+      startsWith(github.ref, 'refs/heads/fix/')
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+
+      - name: "Static guard: MSBuild -p (not /p)"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          target=scripts/generate-setup-release-bundle.sh
+          if grep -nE '[[:space:]]/p:(PublishAot|IlcTreatWarningsAsErrors|Version|InformationalVersion|IncludeSourceRevisionInInformationalVersion)=' "${target}"; then
+            echo "[error] ${target} still contains /p: MSBuild properties that MSYS may rewrite." >&2
+            exit 1
+          fi
+          for needle in \
+            '-p:PublishAot=true' \
+            '-p:IlcTreatWarningsAsErrors=true' \
+            '-p:Version=' \
+            '-p:InformationalVersion=' \
+            '-p:IncludeSourceRevisionInInformationalVersion=false'
+          do
+            grep -F -- "${needle}" "${target}" >/dev/null \
+              || { echo "[error] missing ${needle}" >&2; exit 1; }
+          done
+          echo "check-setup-bundle-msbuild-args: ok"
+
+      - name: "Static guard: no Compress-Archive / sha256sum archive digest"
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          gen=scripts/generate-setup-release-bundle.sh
+          smoke=scripts/smoke-setup-release-bundle.sh
+          if grep -nE 'Compress-Archive' "${gen}" | grep -vE '^[0-9]+:[[:space:]]*#'; then
+            echo "[error] ${gen} must not use Compress-Archive for win-x64 ZIP" >&2
+            exit 1
+          fi
+          if grep -nE 'sha256sum[[:space:]]+"\$\{archive_path\}"' "${gen}" | grep -vE '^[0-9]+:[[:space:]]*#'; then
+            echo "[error] ${gen} must not parse sha256sum for archive digest" >&2
+            exit 1
+          fi
+          if grep -nE 'sha256sum[[:space:]]+"\$\{ARCHIVE_PATH\}"' "${smoke}" | grep -vE '^[0-9]+:[[:space:]]*#'; then
+            echo "[error] ${smoke} must not parse sha256sum for archive digest" >&2
+            exit 1
+          fi
+          grep -F 'create-setup-release-zip.py' "${gen}" >/dev/null \
+            || { echo "[error] missing create-setup-release-zip.py invocation" >&2; exit 1; }
+          grep -F 'compute-file-sha256.py' "${gen}" >/dev/null \
+            || { echo "[error] missing compute-file-sha256.py invocation in generator" >&2; exit 1; }
+          grep -F 'compute-file-sha256.py' "${smoke}" >/dev/null \
+            || { echo "[error] missing compute-file-sha256.py invocation in smoke" >&2; exit 1; }
+          grep -F 'assert-posix-zip-entries.py' "${smoke}" >/dev/null \
+            || { echo "[error] missing assert-posix-zip-entries.py invocation in smoke" >&2; exit 1; }
+          echo "check-setup-bundle-zip-checksum: ok"
+
+      - name: Restore
+        shell: bash
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Write test image-identity (no GHCR push)
+        shell: bash
+        env:
+          MAILER_VERSION: "1.2.0"
+        run: |
+          set -Eeuo pipefail
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          DIGEST="sha256:$(printf '%s' "windows-setup-bundle-msys-smoke-${SOURCE_SHA}" | openssl dgst -sha256 | awk '{print $NF}')"
+          mkdir -p artifacts/setup-release-candidate
+          dotnet run --project tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj \
+            -c "${CONFIGURATION}" --no-launch-profile -- \
+            write-image-identity \
+            --output artifacts/setup-release-candidate/image-identity.json \
+            --repository ghcr.io/kooiei-in4a/amane-mailer \
+            --tag "sha-${SOURCE_SHA}" \
+            --digest "${DIGEST}" \
+            --source-sha "${SOURCE_SHA}" \
+            --mailer-version "${MAILER_VERSION}" \
+            --platforms "linux/amd64,linux/arm64"
+
+      - name: Generate win-x64 candidate via Git Bash (CREATE_ARCHIVES=1)
+        shell: bash
+        env:
+          MAILER_VERSION: "1.2.0"
+          LAUNCHER_VERSION: "1.2.0"
+          MAILPIT_IMAGE: "axllent/mailpit@sha256:7f33095f80e901f6ad08028f06ca284aa58fe84942be5496008d041d3b9f4d4d"
+          CREATE_ARCHIVES: "1"
+          IDENTITY_FILE: artifacts/setup-release-candidate/image-identity.json
+          OUT_ROOT: artifacts/setup-release-candidate
+        run: |
+          set -Eeuo pipefail
+          export SOURCE_SHA="$(git rev-parse HEAD)"
+          bash scripts/generate-setup-release-bundle.sh win-x64
+
+      - name: Assert Native AOT win-x64 archive, ZIP entries, and checksum form
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -f artifacts/setup-release-candidate/publish/win-x64/Amane.Mailer.exe
+          test -d artifacts/setup-release-candidate/staged/win-x64
+          test -f artifacts/setup-release-candidate/staged/win-x64/release-bundle-manifest.json
+          archive=artifacts/setup-release-candidate/amane-mailer-v1.2.0-windows-x64.zip
+          test -f "${archive}"
+          test -f "${archive}.sha256"
+          test -f artifacts/setup-release-candidate/amane-mailer-v1.2.0-windows-x64.zip.sha256.txt
+          digest="$(tr -d '\r\n' < "${archive}.sha256")"
+          [[ "${digest}" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo "[error] malformed .sha256: ${digest}" >&2
+            exit 1
+          }
+          python3 scripts/compute-file-sha256.py --expect "${digest}" "${archive}"
+          python3 scripts/assert-posix-zip-entries.py "${archive}"
+          python3 scripts/create-setup-release-zip.py --self-test
+          python3 scripts/compute-file-sha256.py --self-test
+          unzip -t "${archive}" >/dev/null
+          echo "windows-setup-bundle-archive-asserts: ok"
 
   docker-build-smoke:
     name: Docker build smoke (${{ matrix.platform }})

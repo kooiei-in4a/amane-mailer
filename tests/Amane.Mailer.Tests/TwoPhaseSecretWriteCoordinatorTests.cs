@@ -14,8 +14,8 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
         var secondPath = Path.Combine(secondDir.Path, "platform-sender.json");
 
         TwoPhaseSecretWriteCoordinator.WriteBoth(
-            new SecretFileWriter(firstPath), "first-content",
-            new SecretFileWriter(secondPath), "second-content");
+            new SecretFileWriter(firstPath, firstDir.Path), "first-content",
+            new SecretFileWriter(secondPath, secondDir.Path), "second-content");
 
         Assert.Equal("first-content", File.ReadAllText(firstPath));
         Assert.Equal("second-content", File.ReadAllText(secondPath));
@@ -45,14 +45,14 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
         var secondPath = Path.Combine(missingSecondDirectory, "platform-sender.json");
         const string acsLikeSecret = "Endpoint=https://synthetic.example.communication.azure.com/;AccessKey=SYNTHETIC-NOT-REAL";
 
-        var first = new SecretFileWriter(firstPath);
+        var first = new SecretFileWriter(firstPath, firstDir.Path);
         first.Prepare(acsLikeSecret);
         var tempFileBeforePrepareFailure = Assert.Single(Directory.GetFiles(firstDir.Path));
 
         File.SetUnixFileMode(firstDir.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
         try
         {
-            var second = new SecretFileWriter(secondPath);
+            var second = new SecretFileWriter(secondPath, missingSecondDirectory);
             var prepareEx = Record.Exception(() => second.Prepare("second-content"));
             Assert.NotNull(prepareEx);
 
@@ -85,8 +85,8 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
 
         var ex = Assert.Throws<SecretOperationException>(() =>
             TwoPhaseSecretWriteCoordinator.WriteBoth(
-                new SecretFileWriter(firstPath), "first-content",
-                new SecretFileWriter(secondPath), "second-content"));
+                new SecretFileWriter(firstPath, firstDir.Path), "first-content",
+                new SecretFileWriter(secondPath, secondDir.Path), "second-content"));
 
         Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedPartialWriteRolledBack, ex.CanonicalCode);
         Assert.False(File.Exists(firstPath), "the first file must be rolled back, not left partially registered");
@@ -134,13 +134,28 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
     [Fact]
     public void WriteBothCore_reports_cleanup_failed_when_the_first_commit_fails_and_the_second_discard_also_fails()
     {
-        var first = new FakeSecretFileWriter { CommitSucceeds = false };
+        var first = new FakeSecretFileWriter { CommitSucceeds = false, DiscardSucceeds = false };
         var second = new FakeSecretFileWriter { DiscardSucceeds = false };
 
         var ex = Assert.Throws<SecretOperationException>(() =>
             TwoPhaseSecretWriteCoordinator.WriteBothCore(first, "first-content", second, "second-content"));
 
         Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed, ex.CanonicalCode);
+        Assert.True(first.DiscardAttempted);
+        Assert.True(second.DiscardAttempted);
+    }
+
+    [Fact]
+    public void WriteBothCore_discards_both_prepared_temps_when_the_first_commit_fails()
+    {
+        var first = new FakeSecretFileWriter { CommitSucceeds = false };
+        var second = new FakeSecretFileWriter();
+
+        var ex = Assert.Throws<IOException>(() =>
+            TwoPhaseSecretWriteCoordinator.WriteBothCore(first, "first-content", second, "second-content"));
+
+        Assert.Equal("simulated commit failure", ex.Message);
+        Assert.True(first.DiscardAttempted);
         Assert.True(second.DiscardAttempted);
     }
 
@@ -155,6 +170,21 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
 
         Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed, ex.CanonicalCode);
         Assert.True(first.DiscardAttempted);
+        Assert.True(second.DiscardAttempted);
+    }
+
+    [Fact]
+    public void WriteBothCore_reports_cleanup_failed_when_the_first_prepare_fails_and_discard_also_fails()
+    {
+        var first = new FakeSecretFileWriter { PrepareSucceeds = false, DiscardSucceeds = false };
+        var second = new FakeSecretFileWriter();
+
+        var ex = Assert.Throws<SecretOperationException>(() =>
+            TwoPhaseSecretWriteCoordinator.WriteBothCore(first, "first-content", second, "second-content"));
+
+        Assert.Equal(AdminProviderRegisterAcsResultCodes.RejectedCleanupFailed, ex.CanonicalCode);
+        Assert.True(first.DiscardAttempted);
+        Assert.False(second.DiscardAttempted);
     }
 
     private sealed class FakeSecretFileWriter : ISecretFileWriter
@@ -210,8 +240,8 @@ public sealed class TwoPhaseSecretWriteCoordinatorTests
 
         Assert.Throws<SecretOperationException>(() =>
             TwoPhaseSecretWriteCoordinator.WriteBoth(
-                new SecretFileWriter(firstPath), "first-content",
-                new SecretFileWriter(secondPath), "second-content"));
+                new SecretFileWriter(firstPath, missingDirectory), "first-content",
+                new SecretFileWriter(secondPath, secondDir.Path), "second-content"));
 
         Assert.False(File.Exists(secondPath));
         Assert.Empty(Directory.GetFiles(secondDir.Path));

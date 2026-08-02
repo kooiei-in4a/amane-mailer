@@ -352,6 +352,23 @@ body {
   color: #677182;
 }
 
+.ops-warning {
+  margin: 12px 0 0;
+  color: #8a4b00;
+  font-size: 0.9rem;
+}
+
+.ops-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: #424a57;
+  font-size: 0.9rem;
+}
+
+.ops-list li + li {
+  margin-top: 8px;
+}
+
 .ops-dl {
   display: grid;
   grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);

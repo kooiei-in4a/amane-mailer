@@ -18,6 +18,7 @@ public static class AdminOpsPage
         AdminDeadLetterCountCache deadLetterCountCache,
         MailRequestRepository mailRequestRepository,
         DeliveryEventRepository deliveryEventRepository,
+        ProviderQueueDeadLetterRepository providerQueueDeadLetterRepository,
         MailerDbStatsReader statsReader,
         MailerDbStorageInfoReader storageInfoReader,
         WorkerServiceStatus serviceStatus,
@@ -56,6 +57,7 @@ public static class AdminOpsPage
         var webhookDeadLetterCount = await deliveryEventRepository.CountDeadLettersForAdminAsync(
             access.AllowedTenantIdsForQuery,
             cancellationToken);
+        var providerQueueDeadLettersCount = await providerQueueDeadLetterRepository.CountAsync(cancellationToken);
 
         var workerEnabled = MailerWorkerOptions.IsEnabled(configuration);
         var readiness = BuildReadiness(storageInfo, serviceStatus, workerEnabled);
@@ -74,6 +76,7 @@ public static class AdminOpsPage
                 deadLetterCount,
                 webhookCounts,
                 webhookDeadLetterCount,
+                providerQueueDeadLettersCount,
                 dbOpsOptions,
                 canRunServiceWideDbOps,
                 csrfToken,
@@ -108,6 +111,7 @@ public static class AdminOpsPage
         int deadLetterCount,
         (long PendingCount, long DeadLetteredCount) webhookCounts,
         int webhookDeadLetterCount,
+        long providerQueueDeadLettersCount,
         MailerAdminDbOpsOptions dbOpsOptions,
         bool canRunServiceWideDbOps,
         string? csrfToken,
@@ -195,6 +199,13 @@ public static class AdminOpsPage
         AppendDefinition(html, "Webhook dead letters (service-wide)", FormatCount(webhookCounts.DeadLetteredCount));
         html.AppendLine("                  </dl>");
         html.AppendLine("                  <p><a href=\"/admin/webhook-dead-letters\">Webhook Dead Letters 一覧</a></p>");
+        html.AppendLine("                </section>");
+
+        html.AppendLine("                <section class=\"ops-section\" aria-label=\"Provider queue\">");
+        html.AppendLine("                  <h2 class=\"ops-heading\">Provider queue</h2>");
+        html.AppendLine("                  <dl class=\"ops-dl\">");
+        AppendDefinition(html, "Queue envelope dead letters", FormatCount(providerQueueDeadLettersCount));
+        html.AppendLine("                  </dl>");
         html.AppendLine("                </section>");
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Provider attempts\">");

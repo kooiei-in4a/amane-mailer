@@ -17,6 +17,7 @@ internal static class AdminEndpointMapping
         app.MapGet("/admin/audit-log", AdminAuditLogPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/audit-log/{id:long}", AdminAuditLogDetailPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/ops", AdminOpsPage.RenderAsync).RequireAuthorization();
+        app.MapGet("/admin/setup-status", AdminSetupStatusPage.RenderAsync).RequireAuthorization();
         app.MapPost("/admin/ops/checkpoint", AdminDbOpsHandlers.CheckpointAsync).RequireAuthorization();
         app.MapPost("/admin/ops/backup", AdminDbOpsHandlers.BackupAsync).RequireAuthorization();
         app.MapGet("/admin/mail-requests/{id}", AdminMailRequestDetailPage.RenderAsync).RequireAuthorization();

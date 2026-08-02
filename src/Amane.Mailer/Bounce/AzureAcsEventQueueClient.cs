@@ -50,7 +50,8 @@ public sealed class AzureAcsEventQueueClient : IAcsEventQueueClient
             messages.Add(new AcsQueueReceivedMessage(
                 message.MessageId,
                 message.PopReceipt,
-                message.Body.ToString()));
+                message.Body.ToString(),
+                message.DequeueCount));
         }
 
         return messages;

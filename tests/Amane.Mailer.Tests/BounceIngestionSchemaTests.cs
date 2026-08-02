@@ -31,6 +31,8 @@ public sealed class BounceIngestionMigrationTests
             var applied = await runner.ApplyPendingAsync(ct);
 
             Assert.Contains("011_bounce_ingestion.sql", applied);
+            Assert.Contains("012_provider_event_inbox_details.sql", applied);
+            Assert.Contains("013_provider_queue_dead_letters.sql", applied);
 
             await using var connection = new SqliteConnection($"Data Source={databasePath}");
             await connection.OpenAsync(ct);
@@ -38,6 +40,7 @@ public sealed class BounceIngestionMigrationTests
             Assert.True(await TableExistsAsync(connection, "provider_event_inbox", ct));
             Assert.True(await TableExistsAsync(connection, "bounce_events", ct));
             Assert.True(await TableExistsAsync(connection, "mail_suppressions", ct));
+            Assert.True(await TableExistsAsync(connection, "provider_queue_dead_letters", ct));
 
             var mailRequestColumns = await GetColumnNamesAsync(connection, "mail_requests", ct);
             Assert.Contains("recipient_email", mailRequestColumns);
@@ -52,6 +55,17 @@ public sealed class BounceIngestionMigrationTests
             Assert.DoesNotContain("event_json", inboxColumns);
             Assert.Contains("disposition", inboxColumns);
             Assert.Contains("last_error_code", inboxColumns);
+            Assert.Contains("status_message", inboxColumns);
+            Assert.Contains("occurred_at", inboxColumns);
+
+            var queueDeadLetterColumns = await GetColumnNamesAsync(connection, "provider_queue_dead_letters", ct);
+            Assert.Contains("queue_message_id", queueDeadLetterColumns);
+            Assert.Contains("failure_stage", queueDeadLetterColumns);
+            Assert.Contains("last_error_code", queueDeadLetterColumns);
+            Assert.Contains("dequeue_count", queueDeadLetterColumns);
+            Assert.DoesNotContain("body", queueDeadLetterColumns);
+            Assert.DoesNotContain("payload", queueDeadLetterColumns);
+            Assert.DoesNotContain("recipient_email", queueDeadLetterColumns);
 
             var suppressionColumns = await GetColumnNamesAsync(connection, "mail_suppressions", ct);
             Assert.DoesNotContain("removed_at", suppressionColumns);
@@ -60,6 +74,7 @@ public sealed class BounceIngestionMigrationTests
             Assert.Contains("idx_provider_event_inbox_pending_due", indexes);
             Assert.Contains("idx_provider_event_inbox_processing_expired", indexes);
             Assert.Contains("idx_provider_event_inbox_deadletter_completed", indexes);
+            Assert.Contains("idx_provider_queue_dead_letters_created", indexes);
             Assert.Contains("ix_bounce_events_tenant_occurred", indexes);
             Assert.Contains("ix_bounce_events_mail_request", indexes);
             Assert.Contains("ix_mail_suppressions_tenant_created", indexes);
@@ -94,7 +109,11 @@ public sealed class BounceIngestionMigrationTests
             var second = await runner.ApplyPendingAsync(ct);
 
             Assert.Contains("011_bounce_ingestion.sql", first);
+            Assert.Contains("012_provider_event_inbox_details.sql", first);
+            Assert.Contains("013_provider_queue_dead_letters.sql", first);
             Assert.DoesNotContain("011_bounce_ingestion.sql", second);
+            Assert.DoesNotContain("012_provider_event_inbox_details.sql", second);
+            Assert.DoesNotContain("013_provider_queue_dead_letters.sql", second);
         }
         finally
         {
@@ -102,6 +121,135 @@ public sealed class BounceIngestionMigrationTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task Db_migrate_012_upgrades_v1_1_0_inbox_and_keeps_existing_rows_processable()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-migration-012", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+        var migrationDirectory = Path.Combine(root, "migrations");
+
+        try
+        {
+            CopyMigrationsThrough(migrationDirectory, "011_bounce_ingestion.sql");
+
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                })
+                .Build();
+
+            var factory = new SqliteConnectionFactory(configuration);
+            var runner = new SqlMigrationRunner(factory, migrationDirectory);
+            var appliedBefore = await runner.ApplyPendingAsync(ct);
+            Assert.Contains("011_bounce_ingestion.sql", appliedBefore);
+            Assert.DoesNotContain("012_provider_event_inbox_details.sql", appliedBefore);
+
+            var now = DateTimeOffset.Parse("2026-07-26T00:00:00Z");
+            await using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                await connection.OpenAsync(ct);
+                var columnsBefore = await GetColumnNamesAsync(connection, "provider_event_inbox", ct);
+                Assert.DoesNotContain("status_message", columnsBefore);
+                Assert.DoesNotContain("occurred_at", columnsBefore);
+
+                await using var seed = connection.CreateCommand();
+                seed.CommandText = """
+                    INSERT INTO provider_event_inbox (
+                        id, provider, event_id, provider_message_id, delivery_status, recipient_email,
+                        status, disposition, attempt_count, max_attempts, next_attempt_at,
+                        created_at, updated_at)
+                    VALUES (
+                        @Id, 'acs', 'event-pre-012', @MessageId, 'Bounced', 'user@example.com',
+                        0, NULL, 0, 3, NULL,
+                        @Now, @Now);
+                    """;
+                seed.Parameters.AddWithValue("@Id", "00000000-0000-0000-0000-000000000460");
+                seed.Parameters.AddWithValue("@MessageId", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+                seed.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
+                await seed.ExecuteNonQueryAsync(ct);
+            }
+
+            File.Copy(
+                Path.Combine(GetCurrentMigrationDirectory(), "012_provider_event_inbox_details.sql"),
+                Path.Combine(migrationDirectory, "012_provider_event_inbox_details.sql"));
+
+            var applied = await runner.ApplyPendingAsync(ct);
+            Assert.Contains("012_provider_event_inbox_details.sql", applied);
+
+            await using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                await connection.OpenAsync(ct);
+                var columnsAfter = await GetColumnNamesAsync(connection, "provider_event_inbox", ct);
+                Assert.Contains("status_message", columnsAfter);
+                Assert.Contains("occurred_at", columnsAfter);
+
+                await using var read = connection.CreateCommand();
+                read.CommandText = """
+                    SELECT status_message, occurred_at
+                    FROM provider_event_inbox
+                    WHERE event_id = 'event-pre-012';
+                    """;
+                await using var reader = await read.ExecuteReaderAsync(ct);
+                Assert.True(await reader.ReadAsync(ct));
+                Assert.True(reader.IsDBNull(0));
+                Assert.True(reader.IsDBNull(1));
+            }
+
+            var claimed = await new ProviderEventInboxRepository(factory)
+                .TryClaimOneAsync(now, TimeSpan.FromMinutes(1), ct);
+            Assert.NotNull(claimed);
+            Assert.Equal("event-pre-012", claimed.EventId);
+            Assert.Null(claimed.StatusMessage);
+            Assert.Null(claimed.OccurredAt);
+
+            File.Copy(
+                Path.Combine(GetCurrentMigrationDirectory(), "013_provider_queue_dead_letters.sql"),
+                Path.Combine(migrationDirectory, "013_provider_queue_dead_letters.sql"));
+            var applied013 = await runner.ApplyPendingAsync(ct);
+            Assert.Contains("013_provider_queue_dead_letters.sql", applied013);
+
+            await using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                await connection.OpenAsync(ct);
+                Assert.True(await TableExistsAsync(connection, "provider_queue_dead_letters", ct));
+                await using var read = connection.CreateCommand();
+                read.CommandText = """
+                    SELECT COUNT(*)
+                    FROM provider_event_inbox
+                    WHERE event_id = 'event-pre-012';
+                    """;
+                var count = await read.ExecuteScalarAsync(ct);
+                Assert.Equal(1L, Convert.ToInt64(count));
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void CopyMigrationsThrough(string destination, string lastVersion)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.GetFiles(GetCurrentMigrationDirectory(), "*.sql", SearchOption.TopDirectoryOnly)
+                     .OrderBy(Path.GetFileName, StringComparer.Ordinal))
+        {
+            var fileName = Path.GetFileName(file)!;
+            File.Copy(file, Path.Combine(destination, fileName));
+            if (string.Equals(fileName, lastVersion, StringComparison.Ordinal))
+            {
+                break;
+            }
+        }
+    }
+
+    private static string GetCurrentMigrationDirectory() =>
+        Path.Combine(AppContext.BaseDirectory, "Data", "Migrations");
 
     private static async Task<bool> TableExistsAsync(
         SqliteConnection connection,
@@ -371,6 +519,56 @@ public sealed class BouncePersistenceRepositoryTests
         var deleted = await repository.DeleteExpiredTerminalAsync(now.AddDays(-90), batchSize: 100, ct);
         Assert.Equal(1, deleted);
         Assert.True(await repository.HasPendingWorkAsync(now.AddMinutes(1), ct));
+    }
+
+    [Fact]
+    public async Task Queue_dead_letter_delete_expired_follows_retention_cutoff()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        var repository = new ProviderQueueDeadLetterRepository(db.Factory);
+        var now = DateTimeOffset.Parse("2026-07-26T00:00:00Z");
+
+        Assert.True(await repository.TryInsertAsync(
+            new ProviderQueueDeadLetterInsert
+            {
+                Id = Guid.Parse("00000000-0000-0000-0000-000000000501"),
+                Provider = "acs",
+                QueueMessageId = "stale-msg",
+                FailureStage = ProviderQueueDeadLetterRepository.FailureStageParse,
+                LastErrorCode = ProviderQueueDeadLetterRepository.EventInvalidErrorCode,
+                DequeueCount = 5,
+                CreatedAt = now.AddDays(-120),
+            },
+            ct));
+        Assert.True(await repository.TryInsertAsync(
+            new ProviderQueueDeadLetterInsert
+            {
+                Id = Guid.Parse("00000000-0000-0000-0000-000000000502"),
+                Provider = "acs",
+                QueueMessageId = "fresh-msg",
+                FailureStage = ProviderQueueDeadLetterRepository.FailureStageDecode,
+                LastErrorCode = ProviderQueueDeadLetterRepository.BodyInvalidErrorCode,
+                DequeueCount = 5,
+                CreatedAt = now.AddDays(-10),
+            },
+            ct));
+
+        var deleted = await repository.DeleteExpiredAsync(now.AddDays(-90), batchSize: 100, ct);
+        Assert.Equal(1, deleted);
+        Assert.Equal(1, await repository.CountAsync(ct));
+        Assert.False(await repository.TryInsertAsync(
+            new ProviderQueueDeadLetterInsert
+            {
+                Id = Guid.Parse("00000000-0000-0000-0000-000000000503"),
+                Provider = "acs",
+                QueueMessageId = "fresh-msg",
+                FailureStage = ProviderQueueDeadLetterRepository.FailureStageParse,
+                LastErrorCode = ProviderQueueDeadLetterRepository.EventInvalidErrorCode,
+                DequeueCount = 6,
+                CreatedAt = now,
+            },
+            ct));
     }
 
     private static async Task<MigratedDb> OpenMigratedAsync(CancellationToken cancellationToken)

@@ -1,4 +1,5 @@
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Setup;
 using Microsoft.Data.Sqlite;
 using System.Security.Cryptography;
 using System.Text;
@@ -98,6 +99,137 @@ public sealed class SqlMigrationRunner
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Read-only schema classification used by <c>db migrate --status</c> and the Managed apply
+    /// engine. Never creates the database, never writes, and never applies a migration.
+    /// </summary>
+    /// <remarks>
+    /// Returns <see cref="SetupSchemaClassification.Behind"/> only when the applied set is a
+    /// contiguous, checksum-matching prefix of the bundled set. An unknown applied version, a gap
+    /// in the applied prefix, or checksum drift is
+    /// <see cref="SetupSchemaClassification.AheadOrUnsupported"/> because it cannot be resolved by
+    /// applying forward-only migrations.
+    /// </remarks>
+    public async Task<string> ClassifySchemaAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(_migrationDirectory))
+        {
+            return SetupSchemaClassification.Unknown;
+        }
+
+        IReadOnlyList<MigrationFile> bundled;
+        try
+        {
+            bundled = await LoadMigrationsAsync(_migrationDirectory, cancellationToken);
+        }
+        catch (IOException)
+        {
+            return SetupSchemaClassification.Unknown;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return SetupSchemaClassification.Unknown;
+        }
+
+        if (bundled.Count == 0)
+        {
+            return SetupSchemaClassification.Unknown;
+        }
+
+        try
+        {
+            // Schema-probe connections never create the file, so an absent database stays absent.
+            await using var connection = await _connections.OpenSchemaProbeConnectionAsync(cancellationToken);
+
+            if (!await HasSchemaMigrationsTableAsync(connection, cancellationToken))
+            {
+                return SetupSchemaClassification.DatabaseAbsent;
+            }
+
+            var applied = await GetAppliedMigrationsAsync(connection, cancellationToken);
+            if (applied.Count == 0)
+            {
+                return SetupSchemaClassification.DatabaseAbsent;
+            }
+
+            return ClassifyAppliedSet(bundled, applied);
+        }
+        catch (SqliteException)
+        {
+            // A missing database surfaces as an open error because the probe connection refuses
+            // create-missing-file. Anything else that fails to open is genuinely unknown.
+            var databasePath = _connections.GetConfiguredDatabasePath();
+            return databasePath is not null && !File.Exists(databasePath)
+                ? SetupSchemaClassification.DatabaseAbsent
+                : SetupSchemaClassification.Unknown;
+        }
+        catch (IOException)
+        {
+            return SetupSchemaClassification.Unknown;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return SetupSchemaClassification.Unknown;
+        }
+    }
+
+    private static string ClassifyAppliedSet(
+        IReadOnlyList<MigrationFile> bundled,
+        IReadOnlyDictionary<string, AppliedMigration> applied)
+    {
+        var bundledByVersion = bundled.ToDictionary(migration => migration.Version, StringComparer.Ordinal);
+        foreach (var version in applied.Keys)
+        {
+            if (!bundledByVersion.ContainsKey(version))
+            {
+                return SetupSchemaClassification.AheadOrUnsupported;
+            }
+        }
+
+        // Walk the bundled order: everything before the first pending migration must be applied
+        // with a matching checksum, and nothing may be applied after it.
+        var pendingSeen = false;
+        foreach (var migration in bundled)
+        {
+            if (!applied.TryGetValue(migration.Version, out var appliedMigration))
+            {
+                pendingSeen = true;
+                continue;
+            }
+
+            if (pendingSeen)
+            {
+                return SetupSchemaClassification.AheadOrUnsupported;
+            }
+
+            if (string.IsNullOrWhiteSpace(appliedMigration.Checksum)
+                || !string.Equals(migration.Checksum, appliedMigration.Checksum, StringComparison.Ordinal))
+            {
+                return SetupSchemaClassification.AheadOrUnsupported;
+            }
+        }
+
+        return pendingSeen
+            ? SetupSchemaClassification.Behind
+            : SetupSchemaClassification.Current;
+    }
+
+    private static async Task<bool> HasSchemaMigrationsTableAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'schema_migrations'
+            LIMIT 1;
+            """;
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null;
     }
 
     public async Task<IReadOnlyList<string>> ApplyPendingAsync(CancellationToken cancellationToken = default)

@@ -1,40 +1,28 @@
-using System.Net.Mail;
-using System.Text.Json;
-using System.Text.RegularExpressions;
-using Amane.Mailer.Configuration;
-using Amane.Mailer.Json;
+using Amane.Mailer.Operations.AcsSetup;
 
 namespace Amane.Mailer.Operations;
 
 /// <summary>
-/// <c>admin provider register-acs</c>: interactively registers the ACS connection string
-/// (deploy-time secret file, never tenant JSON, never the DB) and the platform-owned sender
-/// identity (a new, tenant-independent config file — not an existing tenant's <c>default_from</c>,
-/// and no tenant is created or faked here) used by System Admin platform-owned mail.
-/// <para>
-/// Registering these two values does not, by itself, wire System Admin mail sending. Consuming
-/// the platform sender file in a send decision belongs to the platform-owned mail request
-/// contract (tracked separately) — this command only writes safely-collected data to disk.
-/// </para>
+/// <c>admin provider register-acs</c> TTY adapter over <see cref="AcsRegisterOperation"/>.
 /// </summary>
 public sealed partial class AdminProviderRegisterAcsCommand(
     IAdminProviderRegisterAcsConsole console,
     string acsSecretDirectory,
     string platformSenderDirectory)
 {
-    public const string IntentPhrase = "MAILER-ACS-REGISTER";
+    public const string IntentPhrase = AcsRegisterOperation.IntentPhrase;
 
     /// <summary>
     /// Exact Staging confirmation phrase. Tenant schema uses lowercase <c>staging</c>; this
     /// command deliberately does not fold case or accept that spelling from the operator.
     /// </summary>
-    public const string StagingEnvironmentConfirmation = "Staging";
+    public const string StagingEnvironmentConfirmation = AcsEnvironmentConfirmation.Staging;
 
     /// <summary>
     /// Exact Production confirmation phrase. Do not ask production operators to type
     /// <see cref="StagingEnvironmentConfirmation"/>; that destroys the environment safety check.
     /// </summary>
-    public const string ProductionEnvironmentConfirmation = "Production";
+    public const string ProductionEnvironmentConfirmation = AcsEnvironmentConfirmation.Production;
 
     /// <summary>
     /// Retained for callers/tests that still refer to the Staging-only era constant.
@@ -43,16 +31,7 @@ public sealed partial class AdminProviderRegisterAcsCommand(
     /// </summary>
     public const string RequiredEnvironmentConfirmation = StagingEnvironmentConfirmation;
 
-    private const string InternalStagingEnvironmentValue = "staging";
-    private const string InternalProductionEnvironmentValue = "production";
-
-    private const int RegexMatchTimeoutMilliseconds = 250;
-
-    [GeneratedRegex(
-        @"^(?:endpoint=https://.+;accesskey=.+)$",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
-        RegexMatchTimeoutMilliseconds)]
-    private static partial Regex AcsConnectionStringRegex();
+    private readonly AcsRegisterOperation _operation = new();
 
     public static bool IsRegisterAcsCommand(IReadOnlyList<string> args) =>
         args.Count == 3
@@ -67,87 +46,82 @@ public sealed partial class AdminProviderRegisterAcsCommand(
         && string.Equals(args[2], "check-acs-preflight", StringComparison.Ordinal);
 
     /// <summary>
-    /// Non-interactive health check for the two mounted directories: existence,
-    /// symlink/reparse-point rejection, non-permissive mode (Linux), an actual write probe, and
-    /// current registration state. The write probe creates and immediately deletes a small marker
-    /// file (<see cref="FileSystemSafetyGuard.EnsureDirectoryIsWritable"/>), so this is not fully
-    /// side-effect-free, but it never prompts and never writes a secret — safe to run repeatedly,
-    /// including from CI / deploy validation scripts.
+    /// Non-interactive health check for the two mounted directories.
     /// </summary>
     public int RunPreflightOnly()
     {
-        var (acsSecretPath, senderPath) = ResolveTargetPaths();
-        try
+        var result = AcsRegisterOperation.RunPreflightOnly(acsSecretDirectory, platformSenderDirectory);
+        if (result.IsSuccess)
         {
-            RunPreflight(acsSecretPath, senderPath);
             console.WriteLine($"success: operation=check_acs_preflight result={AdminProviderRegisterAcsResultCodes.Success}");
             return 0;
         }
-        catch (SecretOperationException ex)
-        {
-            return Reject("check_acs_preflight", ex.CanonicalCode);
-        }
-        catch (Exception)
-        {
-            return Reject("check_acs_preflight", AdminProviderRegisterAcsResultCodes.FailedUnexpected);
-        }
+
+        return Reject("check_acs_preflight", result.Code);
     }
 
     public int Run()
     {
-        var (acsSecretPath, senderPath) = ResolveTargetPaths();
         try
         {
-            RunPreflight(acsSecretPath, senderPath);
-
-            using var operationLock = ExclusiveOperationLock.Acquire(acsSecretDirectory);
-
-            // Re-run the same non-interactive checks now that the lock is held. Nothing else
-            // writes to these paths without first holding this lock, so state cannot legitimately
-            // have changed since the first preflight; this re-check makes that invariant explicit
-            // instead of assumed, at negligible cost.
-            RunPreflight(acsSecretPath, senderPath);
+            var preflight = AcsRegisterOperation.RunPreflightOnly(acsSecretDirectory, platformSenderDirectory);
+            if (!preflight.IsSuccess)
+            {
+                return Reject("register_acs", preflight.Code);
+            }
 
             var environmentConfirmation = console.ReadLine("Confirm target environment (exact match): ");
-            if (!TryMapEnvironmentConfirmation(environmentConfirmation, out var internalEnvironment))
+            if (AcsConfigurationValidator.ValidateEnvironment(environmentConfirmation) is { } environmentError)
             {
-                throw new SecretOperationException(
-                    AdminProviderRegisterAcsResultCodes.RejectedEnvironmentMismatch,
-                    "Environment confirmation did not match.");
+                return Reject("register_acs", environmentError);
             }
 
             var intent = console.ReadLine($"Type {IntentPhrase} to confirm intent: ");
-            if (!string.Equals(intent, IntentPhrase, StringComparison.Ordinal))
+            if (AcsConfigurationValidator.ValidateIntent(intent, IntentPhrase) is { } intentError)
             {
-                throw new SecretOperationException(
-                    AdminProviderRegisterAcsResultCodes.RejectedIntentMismatch,
-                    "Intent confirmation did not match.");
+                return Reject("register_acs", intentError);
             }
 
-            var connectionString = ReadConfirmedConnectionString();
-            var senderEmail = ReadSenderEmail();
-            var senderDisplayName = ReadSenderDisplayName();
-
-            var senderFile = new PlatformSenderFile
+            var connectionString = console.ReadSecret("ACS connection string: ");
+            var connectionStringConfirmation = console.ReadSecret("Re-enter ACS connection string: ");
+            if (AcsConfigurationValidator.ValidateConnectionStrings(
+                    connectionString,
+                    connectionStringConfirmation) is { } connectionError)
             {
-                Version = 1,
-                Environment = internalEnvironment,
-                Sender = new PlatformSenderAddress { Email = senderEmail, DisplayName = senderDisplayName },
-                Provider = "acs",
-                LiveSending = false,
-            };
-            senderFile.Validate();
+                return Reject("register_acs", connectionError);
+            }
 
-            var senderJson = JsonSerializer.Serialize(senderFile, MailerJsonContext.Default.PlatformSenderFile);
+            var senderEmail = console.ReadLine("Sender email: ").Trim();
+            if (AcsConfigurationValidator.ValidateSenderEmail(senderEmail) is { } senderEmailError)
+            {
+                return Reject("register_acs", senderEmailError);
+            }
 
-            TwoPhaseSecretWriteCoordinator.WriteBoth(
-                new SecretFileWriter(acsSecretPath),
-                connectionString,
-                new SecretFileWriter(senderPath),
-                senderJson);
+            var senderDisplayName = console.ReadLine("Sender display name: ");
+            if (AcsConfigurationValidator.ValidateDisplayName(senderDisplayName) is { } senderError)
+            {
+                return Reject("register_acs", senderError);
+            }
 
-            console.WriteLine($"success: operation=register_acs result={AdminProviderRegisterAcsResultCodes.Success}");
-            return 0;
+            var result = _operation.Execute(new AcsRegisterRequest
+            {
+                EnvironmentConfirmation = environmentConfirmation,
+                IntentConfirmation = intent,
+                ConnectionString = connectionString,
+                ConnectionStringConfirmation = connectionStringConfirmation,
+                SenderEmail = senderEmail,
+                SenderDisplayName = senderDisplayName,
+                AcsSecretDirectory = acsSecretDirectory,
+                PlatformSenderDirectory = platformSenderDirectory,
+            });
+
+            if (result.IsSuccess)
+            {
+                console.WriteLine($"success: operation=register_acs result={AdminProviderRegisterAcsResultCodes.Success}");
+                return 0;
+            }
+
+            return Reject("register_acs", result.Code);
         }
         catch (SecretOperationException ex)
         {
@@ -161,106 +135,9 @@ public sealed partial class AdminProviderRegisterAcsCommand(
 
     /// <summary>
     /// Fixed one-way map from exact operator confirmation to the platform-sender schema value.
-    /// Only <see cref="StagingEnvironmentConfirmation"/> and
-    /// <see cref="ProductionEnvironmentConfirmation"/> are accepted; no case folding.
     /// </summary>
-    internal static bool TryMapEnvironmentConfirmation(string? confirmation, out string internalEnvironment)
-    {
-        if (string.Equals(confirmation, StagingEnvironmentConfirmation, StringComparison.Ordinal))
-        {
-            internalEnvironment = InternalStagingEnvironmentValue;
-            return true;
-        }
-
-        if (string.Equals(confirmation, ProductionEnvironmentConfirmation, StringComparison.Ordinal))
-        {
-            internalEnvironment = InternalProductionEnvironmentValue;
-            return true;
-        }
-
-        internalEnvironment = string.Empty;
-        return false;
-    }
-
-    private (string AcsSecretPath, string SenderPath) ResolveTargetPaths()
-    {
-        var acsSecretPath = Path.Combine(acsSecretDirectory, AcsSecretFileNames.CanonicalFileName);
-        var senderPath = Path.Combine(platformSenderDirectory, PlatformSenderFile.CanonicalFileName);
-        return (acsSecretPath, senderPath);
-    }
-
-    private static void RunPreflight(string acsSecretPath, string senderPath)
-    {
-        var acsDirectory = Path.GetDirectoryName(acsSecretPath)!;
-        var senderDirectory = Path.GetDirectoryName(senderPath)!;
-
-        FileSystemSafetyGuard.EnsureDirectoryIsSafe(acsDirectory);
-        FileSystemSafetyGuard.EnsureDirectoryIsWritable(acsDirectory);
-        FileSystemSafetyGuard.EnsureDirectoryIsSafe(senderDirectory);
-        FileSystemSafetyGuard.EnsureDirectoryIsWritable(senderDirectory);
-
-        var state = RegisteredSecretStateInspector.Inspect(acsSecretPath, senderPath);
-        switch (state)
-        {
-            case RegisteredSecretState.Clean:
-                return;
-            case RegisteredSecretState.FullyRegistered:
-                throw new SecretOperationException(
-                    AdminProviderRegisterAcsResultCodes.RejectedAlreadyRegistered,
-                    "Both the ACS secret and the platform sender file already hold a value.");
-            default:
-                throw new SecretOperationException(
-                    AdminProviderRegisterAcsResultCodes.RejectedPartialState,
-                    "Exactly one of the two files holds a value, or one is unparseable. Manual review is required before retrying.");
-        }
-    }
-
-    private string ReadConfirmedConnectionString()
-    {
-        var first = console.ReadSecret("ACS connection string: ");
-        var second = console.ReadSecret("Re-enter ACS connection string: ");
-        if (!string.Equals(first, second, StringComparison.Ordinal))
-        {
-            throw new SecretOperationException(
-                AdminProviderRegisterAcsResultCodes.RejectedSecretMismatch,
-                "Connection string confirmation did not match.");
-        }
-
-        if (!AcsConnectionStringRegex().IsMatch(first))
-        {
-            throw new SecretOperationException(
-                AdminProviderRegisterAcsResultCodes.RejectedInvalidConnectionString,
-                "Connection string does not look like an ACS endpoint/accesskey value.");
-        }
-
-        return first;
-    }
-
-    private string ReadSenderEmail()
-    {
-        var email = console.ReadLine("Sender email: ").Trim();
-        if (!MailAddress.TryCreate(email, out var parsed) || !string.Equals(parsed.Address, email, StringComparison.Ordinal))
-        {
-            throw new SecretOperationException(
-                AdminProviderRegisterAcsResultCodes.RejectedInvalidSenderEmail,
-                "Sender email must be a bare email address.");
-        }
-
-        return email;
-    }
-
-    private string ReadSenderDisplayName()
-    {
-        var displayName = console.ReadLine("Sender display name: ");
-        if (string.IsNullOrEmpty(displayName) || displayName.Length > 200 || displayName.Any(char.IsControl))
-        {
-            throw new SecretOperationException(
-                AdminProviderRegisterAcsResultCodes.RejectedInvalidDisplayName,
-                "Sender display name must be 1-200 characters with no control characters.");
-        }
-
-        return displayName;
-    }
+    internal static bool TryMapEnvironmentConfirmation(string? confirmation, out string internalEnvironment) =>
+        AcsEnvironmentConfirmation.TryMap(confirmation, out internalEnvironment);
 
     private int Reject(string operationCode, string canonicalCode)
     {

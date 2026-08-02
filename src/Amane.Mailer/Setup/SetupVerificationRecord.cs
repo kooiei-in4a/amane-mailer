@@ -1,0 +1,60 @@
+namespace Amane.Mailer.Setup;
+
+/// <summary>
+/// Secret-free verification record under verification/last-record.json.
+/// </summary>
+public sealed class SetupVerificationRecord
+{
+    public const int CurrentSchemaVersion = 1;
+    public const string StatusCommitted = "committed";
+    public const string StatusInvalidated = "invalidated";
+
+    public const string FingerprintMatched = "matched";
+    public const string FingerprintMismatch = "mismatch";
+    public const string FingerprintNotEvaluated = "not-evaluated";
+
+    public const string ReadinessPassed = "passed";
+    public const string ReadinessFailed = "failed";
+    public const string ReadinessNotEvaluated = "not-evaluated";
+
+    /// <summary>Apply never asserts outbound send readiness by itself.</summary>
+    public const string SendReadyNotEvaluated = "not-evaluated";
+
+    /// <summary>Deployment send-ready after ACS live_sending promotion (#451). Not operational verification.</summary>
+    public const string SendReadyReady = AcsSendReadyEvaluator.SendReadyReady;
+
+    /// <summary>Send-ready evaluated and not met.</summary>
+    public const string SendReadyNotReady = AcsSendReadyEvaluator.SendReadyNotReady;
+
+    public required int SchemaVersion { get; init; }
+    public required string Status { get; init; }
+    public required string BundleId { get; init; }
+    public required long ActivationGeneration { get; init; }
+    public required string FingerprintComparison { get; init; }
+    public required string HostAtRest { get; init; }
+    public required string MountAttestation { get; init; }
+    public required string BundleIntegrity { get; init; }
+    public string? ImageReference { get; init; }
+    public string? ComposeIdentity { get; init; }
+
+    /// <summary>Bundle id the running container resolved, as reported by effective inspection.</summary>
+    public string? ObservedBundleId { get; init; }
+
+    /// <summary>Mailer version the running container reported.</summary>
+    public string? ObservedMailerVersion { get; init; }
+
+    /// <summary>Recorded-metadata schema version observed in the container, not the host expectation.</summary>
+    public int? RecordedSchemaVersion { get; init; }
+    public required string RuntimeIdentityBinding { get; init; }
+    public required string Readiness { get; init; }
+    public required string SendReadyEvaluation { get; init; }
+    public string? CommittedAt { get; init; }
+
+    public bool IsCommittedSuccess =>
+        string.Equals(Status, StatusCommitted, StringComparison.Ordinal)
+        && string.Equals(FingerprintComparison, FingerprintMatched, StringComparison.Ordinal)
+        && string.Equals(BundleIntegrity, SetupIntegrityMerger.Matched, StringComparison.Ordinal)
+        && string.Equals(Readiness, ReadinessPassed, StringComparison.Ordinal)
+        && string.Equals(RuntimeIdentityBinding, SetupRuntimeIdentityBindingResult.Matched, StringComparison.Ordinal)
+        && !string.IsNullOrWhiteSpace(CommittedAt);
+}

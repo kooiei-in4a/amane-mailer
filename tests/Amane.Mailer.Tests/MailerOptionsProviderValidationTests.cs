@@ -11,7 +11,7 @@ public sealed class MailerOptionsProviderValidationTests
         var options = new MailerOptions { ProviderOverride = "acss" };
         var tenants = new[] { CreateTenant(provider: "mailpit", liveSending: false) };
 
-        var ex = Assert.Throws<InvalidOperationException>(
+        var ex = Assert.Throws<MailerConfigurationLoadException>(
             () => options.ValidateEffectiveProviders(tenants));
 
         Assert.Contains("MAILER_PROVIDER", ex.Message, StringComparison.Ordinal);
@@ -28,7 +28,7 @@ public sealed class MailerOptionsProviderValidationTests
         };
         var tenants = new[] { CreateTenant(provider: "mailpit", liveSending: true) };
 
-        var ex = Assert.Throws<InvalidOperationException>(
+        var ex = Assert.Throws<MailerConfigurationLoadException>(
             () => options.ValidateEffectiveProviders(tenants));
 
         Assert.Contains("ACS connection string is required", ex.Message, StringComparison.Ordinal);
@@ -82,7 +82,7 @@ public sealed class MailerOptionsProviderValidationTests
         var options = MailerOptions.Load(configuration);
         var tenants = new[] { CreateTenant(provider: "mailpit", liveSending: false) };
 
-        Assert.Throws<InvalidOperationException>(
+        Assert.Throws<MailerConfigurationLoadException>(
             () => options.ValidateEffectiveProviders(tenants));
     }
 

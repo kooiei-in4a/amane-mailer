@@ -7,7 +7,10 @@
       "status": "implemented",
       "trackingIssue": 92,
       "lastVerified": "2026-07-22",
-      "relatedAdrs": ["0013", "0014"],
+      "relatedAdrs": [
+        "0013",
+        "0014"
+      ],
       "notes": "AdminAuditRetentionService batch purge and db admin-audit purge CLI. Regression: tests/Amane.Mailer.Tests/Admin/AdminAuditRetentionTests.cs"
     },
     {
@@ -15,7 +18,9 @@
       "status": "implemented",
       "trackingIssue": 101,
       "lastVerified": "2026-07-22",
-      "relatedAdrs": ["0015"],
+      "relatedAdrs": [
+        "0015"
+      ],
       "notes": "Includes manual cancel and MailRequestState.Cancelled from the same tracking issue (#101). Migration 007_mail_request_cancelled_status.sql extends mail_requests.status CHECK to 0..5."
     },
     {
@@ -23,14 +28,20 @@
       "status": "implemented",
       "trackingIssue": 89,
       "lastVerified": "2026-07-22",
-      "relatedAdrs": ["0013", "0014"]
+      "relatedAdrs": [
+        "0013",
+        "0014"
+      ]
     },
     {
       "id": "admin-durable-session-store",
       "status": "implemented",
       "trackingIssue": 88,
       "lastVerified": "2026-07-27",
-      "relatedAdrs": ["0013", "0014"],
+      "relatedAdrs": [
+        "0013",
+        "0014"
+      ],
       "notes": "Session touch is monotonic and interval-throttled (#391). Cookie ticket uses absolute lifetime; idle expiry is enforced from admin_sessions only (no touch-time Set-Cookie)."
     },
     {
@@ -38,7 +49,10 @@
       "status": "implemented",
       "trackingIssue": 91,
       "lastVerified": "2026-07-22",
-      "relatedAdrs": ["0013", "0014"],
+      "relatedAdrs": [
+        "0013",
+        "0014"
+      ],
       "notes": "Scoped and break-glass authorization; startup fail-closed when 2+ effective tenants. Env bootstrap admin receives all configured tenant scopes on first seed (not break-glass)."
     },
     {
@@ -46,7 +60,9 @@
       "status": "implemented",
       "trackingIssue": 6,
       "lastVerified": "2026-07-22",
-      "relatedAdrs": ["0013"],
+      "relatedAdrs": [
+        "0013"
+      ],
       "notes": "Auth audit follow-up events (logout, session expired, account locked, login rate limited) delivered via #90."
     },
     {
@@ -54,7 +70,10 @@
       "status": "implemented",
       "trackingIssue": 55,
       "lastVerified": "2026-07-22",
-      "relatedAdrs": ["0013", "0014"],
+      "relatedAdrs": [
+        "0013",
+        "0014"
+      ],
       "notes": "No dedicated implementation issue. Delivered in Phase 1 via #89 (throttle key) and #90 (audit source_ip hash). When MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true, keyed hash is used and missing key causes startup fail-closed."
     },
     {
@@ -62,7 +81,10 @@
       "status": "implemented",
       "trackingIssue": 424,
       "lastVerified": "2026-07-28",
-      "relatedAdrs": ["0020", "0013"],
+      "relatedAdrs": [
+        "0020",
+        "0013"
+      ],
       "notes": "Single JA/EN setup entry (docs/ops/setup-guide) with mode taxonomy, checklists, PASS/FAIL/WARN/ACTION meanings, and links to existing runbooks. README reaches the entry in one click. Mode 4 (production ACS) is Available via production-confirmed register-acs (exact Production). Mode 5 (production ACS + Queue) is Available via deploy compose bounce Queue wiring (MAILER_BOUNCE_INGESTION / Queue name / file secret mount). Published v1.1.0 image final verification completed (GHCR tag v1.1.0 + release-image smoke; see docs/releases/v1.1.0.md). Does not implement Azure resource creation; #425–#428 CLIs are tracked separately.",
       "evidence": {
         "files": [
@@ -97,7 +119,9 @@
       "status": "implemented",
       "trackingIssue": 425,
       "lastVerified": "2026-07-27",
-      "relatedAdrs": ["0013"],
+      "relatedAdrs": [
+        "0013"
+      ],
       "notes": "Read-only setup doctor CLI (setup doctor --mode). PASS/FAIL/WARN/ACTION output; no config/DB/container/Azure mutation. Regression: tests/Amane.Mailer.Tests/SetupDoctorCliTests.cs",
       "evidence": {
         "files": [
@@ -118,7 +142,9 @@
       "status": "implemented",
       "trackingIssue": 426,
       "lastVerified": "2026-07-27",
-      "relatedAdrs": ["0013"],
+      "relatedAdrs": [
+        "0013"
+      ],
       "notes": "Staging-only admin provider test-acs-send CLI. Prefers ACS secret file, TTY fallback, fixed synthetic content, hidden PII input, sanitized provider failures (auth vs network vs sender), UUID-only message ID handoff for #428. No Mailer API/Worker/DB mutation. Real ACS smoke is maintainer-only; CI uses fake provider + PTY smoke without live send.",
       "evidence": {
         "files": [
@@ -146,7 +172,10 @@
       "status": "implemented",
       "trackingIssue": 427,
       "lastVerified": "2026-07-27",
-      "relatedAdrs": ["0020", "0013"],
+      "relatedAdrs": [
+        "0020",
+        "0013"
+      ],
       "notes": "Read-only setup check-event-grid CLI. Invokes allowlisted Azure CLI show/exists queries only (no ARM SDK). PASS/FAIL/WARN/ACTION; rejects Push webhook as valid v1.1.0 config; does not mutate Azure, read queue bodies, or require live Azure auth in CI (fake runner fixtures).",
       "evidence": {
         "files": [
@@ -172,7 +201,10 @@
       "status": "implemented",
       "trackingIssue": 428,
       "lastVerified": "2026-07-27",
-      "relatedAdrs": ["0020", "0013"],
+      "relatedAdrs": [
+        "0020",
+        "0013"
+      ],
       "notes": "Staging-only setup verify-delivery-report CLI. Reuses #426 IAcsTestSendClient, then read-only PeekMessages/GetProperties correlation for EmailDeliveryReportReceived. Separates wiring vs delivery status; backlog outside peek window is WARN/ACTION not PASS. No Receive/Delete/visibility change. Real Azure E2E is maintainer-only; CI uses fake ACS + synthetic peeker.",
       "evidence": {
         "files": [
@@ -196,14 +228,20 @@
       "id": "bounce-ingestion-and-suppression",
       "status": "implemented",
       "trackingIssue": 306,
-      "lastVerified": "2026-07-27",
-      "relatedAdrs": ["0020", "0013"],
-      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
+      "lastVerified": "2026-07-28",
+      "relatedAdrs": [
+        "0020",
+        "0013"
+      ],
+      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. #460 persists sanitized status_message and Event Grid eventTime on provider_event_inbox through bounce_events. #461 isolates poison Storage Queue envelopes via provider_queue_dead_letters after DequeueCount threshold (internal constant 5) without storing raw payload. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Data/Migrations/011_bounce_ingestion.sql",
+          "src/Amane.Mailer/Data/Migrations/012_provider_event_inbox_details.sql",
+          "src/Amane.Mailer/Data/Migrations/013_provider_queue_dead_letters.sql",
           "src/Amane.Mailer/Data/RecipientEmailNormalizer.cs",
           "src/Amane.Mailer/Data/Sqlite/ProviderEventInboxRepository.cs",
+          "src/Amane.Mailer/Data/Sqlite/ProviderQueueDeadLetterRepository.cs",
           "src/Amane.Mailer/Data/Sqlite/BounceEventRepository.cs",
           "src/Amane.Mailer/Data/Sqlite/MailSuppressionRepository.cs",
           "src/Amane.Mailer/Data/Sqlite/BounceIngestionStore.cs",
@@ -215,6 +253,7 @@
           "src/Amane.Mailer/Bounce/AcsQueueMessageBodyDecoder.cs",
           "src/Amane.Mailer/Configuration/MailerBounceIngestionOptions.cs",
           "src/Amane.Mailer/Worker/MailRequestWorker.cs",
+          "src/Amane.Mailer/Worker/RetentionService.cs",
           "src/Amane.Mailer.Contracts/MailRequests/MailDeliveryErrorCodes.cs",
           "src/Amane.Mailer/Operations/MailerRuntimeMetrics.cs",
           "src/Amane.Mailer/Operations/PrometheusMetricsFormatter.cs",
@@ -222,6 +261,7 @@
           "src/Amane.Mailer/Operations/DbStatsCommand.cs",
           "src/Amane.Mailer/Admin/AdminMailRequestDetailPage.cs",
           "src/Amane.Mailer/Admin/AdminSuppressionsPage.cs",
+          "src/Amane.Mailer/Admin/AdminOpsPage.cs",
           "docs/ops/bounce-ingestion-runbook.md",
           "docs/ops/metrics-and-alerts.md"
         ],
@@ -229,6 +269,7 @@
           "tests/Amane.Mailer.Tests/BounceIngestionSchemaTests.cs",
           "tests/Amane.Mailer.Tests/BounceIngestionWorkerTests.cs",
           "tests/Amane.Mailer.Tests/AcsQueuePollingServiceTests.cs",
+          "tests/Amane.Mailer.Tests/AcsQueueAzuriteIntegrationTests.cs",
           "tests/Amane.Mailer.Tests/MailRequestRetentionTests.cs",
           "tests/Amane.Mailer.Tests/MailRequestWorkerTests.cs",
           "tests/Amane.Mailer.Tests/MailRequestWorkerSuppressionEnqueueTests.cs",
@@ -237,6 +278,212 @@
           "tests/Amane.Mailer.Tests/Admin/AdminMailRequestDetailBounceRenderTests.cs",
           "tests/Amane.Mailer.Tests/Admin/AdminSuppressionsPageRenderTests.cs",
           "tests/Amane.Mailer.Tests/Admin/BounceAdminQueryTenantScopeTests.cs"
+        ]
+      }
+    },
+    {
+      "id": "easy-setup",
+      "status": "partial",
+      "trackingIssue": 445,
+      "lastVerified": "2026-07-31",
+      "relatedAdrs": [
+        "0021",
+        "0013",
+        "0019"
+      ],
+      "notes": "Design authority: ADR 0021 / #446. Lifecycle: planned (#446) → partial (first implementation PR #448 Setup Core; #447 inspect-effective; #449 host Docker adapter; #450 apply/rollback; #451 typed ACS workflow; #454 Admin read-only /admin/setup-status; #459 typed Admin bootstrap ownership/lease/CAS; #452 Web assistant; #453 terminal/non-interactive; #455 candidate release-bundle packaging) → evidence updates (#452–#455/#459) → implemented after #458 confirms all release gates. Modes 1–4 via host assistant; mode 5 remains manual. #451 extracts console-independent ACS register / Staging verification / Production live_sending two-step promotion over #448 generate + #450 apply. #454 reuses Admin auth/session/local-address and aggregates #447 inspection plus runtime-visible recorded metadata; host ACTIVE/verification/Staging summary are unavailable from container runtime (ADR 0021 D-04) and must not be guessed. #459 adds console-independent Admin bootstrap: exact-delta Admin-derived bundles, current/pending ownership with armed write-ahead, non-reentrant verified workflow lease, guarded Fresh/ManagedSameUser DB CAS without session revoke, and operationId-redacted workflow verification sessions. #452 adds the localhost-only `setup assistant` Web UI adapter: an isolated Kestrel host bound to 127.0.0.1 only, a one-time token exchanged for a single short-lived session, Host allowlist / Origin / CSRF checks, no-store and CSP hardening, no logging provider, secrets and PII held only in session memory, and no configuration, Docker, ACS, or Admin logic of its own. #453 adds Terminal UI adapter and non-interactive Main-only setup apply (setup apply --config --non-interactive); shared SetupAssistantMainSetupOrchestrator sequences Docker preflight, apply, and mode follow-up for Web/terminal/non-interactive adapters. #455 adds reproducible Easy Setup release-candidate host bundles (win-x64 / linux-x64 / linux-arm64) via build-only tools/Amane.Mailer.ReleaseBundle (product CLI no longer exposes stage-release-bundle): schemaVersion-1 additive release-bundle-manifest.json with required mailpitImageReference and non-self-referential payloadTreeSha256; multi-job workflow (build-oci linux/amd64+arm64 with Buildx containerimage.digest + descriptor-graph allowlist; per-RID package jobs with extracted-archive smoke; assemble-handoff with CANDIDATE-SHA256SUMS/provenance); OCI layout is a separate artifact (not embedded in host zips); Managed deployment metadata remains distinct; publish/tag/Release remain #458 (promote qualified archive bytes; rebuild = new candidate). Evidence honesty: packaging unit tests + linux-x64 AOT smoke when run locally; full workflow_dispatch E2E may be residual until Docker/secrets are available on the validating host. Deployment operational verification is never recorded or shown as confirmed in v1.2.0 Easy Setup. Does not change public HTTP contract, DB schema, or Manual Deployment source of truth. #457 finalizes the single-entry setup-guide (JA/EN) with Easy Setup recommended path, Manual / Hardened retention, and candidate README-SETUP.md generator links pinned to sourceCommitSha (tools/Amane.Mailer.ReleaseBundle WriteReadmeSetup); docs evidence only — status remains partial until #458.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Setup/SetupCore.cs",
+          "src/Amane.Mailer/Setup/ManagedEnvKeyCatalog.cs",
+          "src/Amane.Mailer/Setup/SetupIntegritySealer.cs",
+          "src/Amane.Mailer/Setup/SetupInspectEffectiveEngine.cs",
+          "src/Amane.Mailer/Setup/SetupMountAttestation.cs",
+          "src/Amane.Mailer/Setup/SetupHostDockerAdapter.cs",
+          "src/Amane.Mailer/Setup/SetupApplyEngine.cs",
+          "src/Amane.Mailer/Setup/SetupActivePointer.cs",
+          "src/Amane.Mailer/Setup/SetupTransactionStamp.cs",
+          "src/Amane.Mailer/Setup/SetupVerificationRecord.cs",
+          "src/Amane.Mailer/Setup/SetupDurableAtomicWriter.cs",
+          "src/Amane.Mailer/Setup/SetupDatabaseFileProbe.cs",
+          "src/Amane.Mailer/Setup/SetupMountVerifierFactory.cs",
+          "src/Amane.Mailer/Setup/SetupExternalInputSnapshot.cs",
+          "src/Amane.Mailer/Setup/ManagedComposeEnvComposer.cs",
+          "src/Amane.Mailer/Setup/SetupApplyJsonContext.cs",
+          "src/Amane.Mailer/Setup/TrustedReleaseInventory.cs",
+          "src/Amane.Mailer/Setup/ReleaseBundleManifestDocument.cs",
+          "tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj",
+          "tools/Amane.Mailer.ReleaseBundle/ReleaseBundlePackaging.cs",
+          "tools/Amane.Mailer.ReleaseBundle/Program.cs",
+          "src/Amane.Mailer/Setup/TrustedSetupHostLayout.cs",
+          "src/Amane.Mailer/Setup/DockerEnvironmentProbe.cs",
+          "src/Amane.Mailer/Setup/SetupApplyLock.cs",
+          "src/Amane.Mailer/Setup/HostProcessRunner.cs",
+          "src/Amane.Mailer/Operations/SecureFileCreate.cs",
+          "infra/deploy/compose.image-digest.yml",
+          "infra/deploy/compose.recorded-metadata.yml",
+          "infra/deploy/compose.mailpit.yml",
+          "docs/adr/0021-easy-setup-boundaries.md",
+          "src/Amane.Mailer/Setup/AcsSetupWorkflow.cs",
+          "src/Amane.Mailer/Setup/AcsSendReadyEvaluator.cs",
+          "src/Amane.Mailer/Setup/AcsConfigurationAppliedProof.cs",
+          "src/Amane.Mailer/Setup/AcsSetupDoctorOperation.cs",
+          "src/Amane.Mailer/Setup/ISetupApplyEngine.cs",
+          "src/Amane.Mailer/Setup/SetupExpectedActiveAuthority.cs",
+          "src/Amane.Mailer/Operations/AcsSetup/AcsRegisterOperation.cs",
+          "src/Amane.Mailer/Operations/AcsSetup/AcsConfigurationValidator.cs",
+          "src/Amane.Mailer/Operations/AcsSetup/AcsStagingVerificationOperation.cs",
+          "src/Amane.Mailer/Operations/AcsSetup/AcsEnvironmentConfirmation.cs",
+          "src/Amane.Mailer/Operations/AcsSetup/AcsSessionTestSendLimiter.cs",
+          "src/Amane.Mailer/Admin/AdminSetupStatusPage.cs",
+          "src/Amane.Mailer/Admin/AdminSetupStatusReadModel.cs",
+          "src/Amane.Mailer/Admin/AdminEndpointMapping.cs",
+          "src/Amane.Mailer/Admin/AdminLayout.cs",
+          "src/Amane.Mailer/Operations/AdminBootstrap/AdminBootstrapWorkflow.cs",
+          "src/Amane.Mailer/Operations/AdminBootstrap/AdminAccessVerifier.cs",
+          "src/Amane.Mailer/Operations/AdminBootstrap/AdminBootstrapCredentialLease.cs",
+          "src/Amane.Mailer/Operations/AdminBootstrap/AdminBootstrapSourceClassifier.cs",
+          "src/Amane.Mailer/Setup/AdminBootstrapOwnership.cs",
+          "src/Amane.Mailer/Setup/AdminDerivedBundleDiff.cs",
+          "src/Amane.Mailer/Setup/ISetupVerifiedWorkflowApplyEngine.cs",
+          "src/Amane.Mailer/Setup/TrustedVerifiedActiveBundle.cs",
+          "src/Amane.Mailer/Admin/AdminBootstrapDatabase.cs",
+          "src/Amane.Mailer/Admin/AdminWorkflowSessionId.cs",
+          "src/Amane.Mailer/Setup/AdminBootstrapOperationId.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantCommand.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantHost.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantOptions.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSecurity.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSessionManager.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSession.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSecret.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantEndpoints.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantPages.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantResultPresenter.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantInputs.cs",
+          "src/Amane.Mailer/Setup/Assistant/ISetupAssistantOperations.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantOperations.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantSelfCheckCommand.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantCliParser.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantCliOptions.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantBrowserLauncher.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantRemoteAccessHints.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantMainSetupOrchestrator.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantMainWorkflowState.cs",
+          "src/Amane.Mailer/Setup/Assistant/SetupAssistantMainSetupRunResult.cs",
+          "src/Amane.Mailer/Setup/Assistant/Terminal/SetupTerminalAssistant.cs",
+          "src/Amane.Mailer/Setup/Assistant/Terminal/SetupTerminalWizard.cs",
+          "src/Amane.Mailer/Setup/Assistant/Terminal/SetupTerminalConsole.cs",
+          "src/Amane.Mailer/Setup/Assistant/Terminal/SetupTerminalPresenter.cs",
+          "src/Amane.Mailer/Setup/Assistant/Terminal/SetupTerminalLifetime.cs",
+          "src/Amane.Mailer/Setup/NonInteractive/SetupApplyNonInteractiveCommand.cs",
+          "src/Amane.Mailer/Setup/NonInteractive/SetupNonInteractiveInputParser.cs",
+          "src/Amane.Mailer/Setup/NonInteractive/SetupNonInteractiveInputValidator.cs",
+          "src/Amane.Mailer/Setup/NonInteractive/SetupNonInteractiveConfigReader.cs",
+          "src/Amane.Mailer/Setup/NonInteractive/SetupNonInteractiveResult.cs",
+          "docs/ops/setup-release-bundle.en.md",
+          "docs/ops/setup-release-bundle.md",
+          "scripts/build-candidate-oci-image.sh",
+          "scripts/generate-setup-release-bundle.sh",
+          "scripts/scan-setup-release-bundle.sh",
+          "scripts/smoke-setup-release-bundle.sh",
+          "scripts/handoff-setup-release-candidate.sh",
+          ".github/workflows/generate-setup-release-candidate.yml",
+          "docs/ops/setup-guide.md",
+          "docs/ops/setup-guide.en.md",
+          "README.md",
+          "README.en.md"
+        ],
+        "types": [
+          "Amane.Mailer.Setup.SetupCore",
+          "Amane.Mailer.Setup.SetupRequest",
+          "Amane.Mailer.Setup.SetupPlan",
+          "Amane.Mailer.Setup.SetupResult",
+          "Amane.Mailer.Setup.ManagedEnvKeyCatalog",
+          "Amane.Mailer.Setup.SetupInspectEffectiveEngine",
+          "Amane.Mailer.Setup.SetupMountAttestation",
+          "Amane.Mailer.Setup.SetupHostDockerAdapter",
+          "Amane.Mailer.Setup.SetupApplyEngine",
+          "Amane.Mailer.Setup.SetupApplyResult",
+          "Amane.Mailer.Setup.SetupActivePointer",
+          "Amane.Mailer.Setup.SetupTransactionStamp",
+          "Amane.Mailer.Setup.SetupVerificationRecord",
+          "Amane.Mailer.Setup.SetupDurableAtomicWriter",
+          "Amane.Mailer.Setup.SetupMountVerifierFactory",
+          "Amane.Mailer.Setup.SetupMigrationStatusDocument",
+          "Amane.Mailer.Setup.SetupExternalInputSnapshot",
+          "Amane.Mailer.Setup.SetupComposeInputSnapshot",
+          "Amane.Mailer.Setup.TrustedReleaseInventory",
+          "Amane.Mailer.Setup.ReleaseBundleManifestDocument",
+          "Amane.Mailer.ReleaseBundle.ReleaseBundlePackaging",
+          "Amane.Mailer.Setup.SetupHostDockerSession",
+          "Amane.Mailer.Setup.DockerConnectionBinding",
+          "Amane.Mailer.Setup.AcsSetupWorkflow",
+          "Amane.Mailer.Setup.AcsSetupWorkflowResult",
+          "Amane.Mailer.Setup.AcsSendReadyEvaluator",
+          "Amane.Mailer.Setup.AcsConfigurationAppliedProof",
+          "Amane.Mailer.Setup.AcsSetupDoctorOperation",
+          "Amane.Mailer.Setup.ISetupApplyEngine",
+          "Amane.Mailer.Setup.SetupExpectedActiveAuthority",
+          "Amane.Mailer.Operations.AcsSetup.AcsRegisterOperation",
+          "Amane.Mailer.Operations.AcsSetup.AcsConfigurationValidator",
+          "Amane.Mailer.Operations.AcsSetup.AcsStagingVerificationOperation",
+          "Amane.Mailer.Operations.AcsSetup.AcsSessionTestSendLimiter",
+          "Amane.Mailer.Admin.AdminSetupStatusPage",
+          "Amane.Mailer.Admin.AdminSetupStatusReadModel",
+          "Amane.Mailer.Operations.AdminBootstrap.AdminBootstrapWorkflow",
+          "Amane.Mailer.Setup.AdminBootstrapOwnershipStore",
+          "Amane.Mailer.Setup.ISetupVerifiedWorkflowApplyEngine",
+          "Amane.Mailer.Setup.TrustedVerifiedActiveBundle",
+          "Amane.Mailer.Admin.AdminBootstrapDatabase",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantCommand",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantHost",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantSessionManager",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantSecurity",
+          "Amane.Mailer.Setup.Assistant.ISetupAssistantOperations",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantSelfCheckCommand",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantMainSetupOrchestrator",
+          "Amane.Mailer.Setup.Assistant.ISetupAssistantMainWorkflowState",
+          "Amane.Mailer.Setup.Assistant.SetupAssistantCliParser",
+          "Amane.Mailer.Setup.Assistant.Terminal.SetupTerminalWizard",
+          "Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/Setup/SetupCanonicalPayloadTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupBundleWriterTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupSecureWriterTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupPathAndCleanupTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupValidationAndRedactionTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupInspectEffectiveTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupHostDockerAdapterTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupApplyEngineTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupDurableAtomicWriterHostTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/SetupCoreHostDockerIntegrationTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/HostProcessRunnerLiveTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/AcsSetupWorkflowTests.cs",
+          "tests/Amane.Mailer.ReleaseBundle.Tests/ReleaseBundlePackagingTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminSetupStatusReadModelTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminSetupStatusPageRenderTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminSetupStatusPageXssTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminBootstrapContractsTests.cs",
+          "tests/Amane.Mailer.Tests/MailerAdminTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantBindTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantRuntimeSeparationTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantSessionTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantHttpSecurityTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantRenderingTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantWorkflowTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantCliParserTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantBrowserLauncherTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantRemoteAccessHintsTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupAssistantMainSetupOrchestratorTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/SetupTerminalWizardTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/Assistant/FakeSetupTerminalConsole.cs",
+          "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupNonInteractiveInputValidatorTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupNonInteractiveConfigReaderTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupApplyNonInteractiveProcessTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupApplyNonInteractiveCommandTests.cs",
+          "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupNonInteractiveTestSupport.cs"
         ]
       }
     }

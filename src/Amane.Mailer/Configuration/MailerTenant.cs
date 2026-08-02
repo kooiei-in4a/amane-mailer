@@ -36,11 +36,19 @@ public sealed record MailerTenantsFile
             throw new InvalidOperationException("Mailer tenant configuration must include at least one tenant.");
         }
     }
+
+    public MailerTenantsFile WithJsonDefaultsApplied() =>
+        this with
+        {
+            Tenants = Tenants.Select(static tenant => tenant.WithJsonDefaultsApplied()).ToArray(),
+        };
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record MailerTenant
 {
+    public const int DefaultMetadataMaxBytes = 4096;
+
     private ISet<string>? _sourceServiceSet;
 
     [JsonPropertyName("tenant_id")]
@@ -64,14 +72,25 @@ public sealed record MailerTenant
     [JsonPropertyName("live_sending")]
     public bool LiveSending { get; init; }
 
+    // Optional in tenant JSON (schema default 4096). Null = omitted; STJ source-gen does not
+    // apply C# property initializers for missing value-type members.
     [JsonPropertyName("metadata_max_bytes")]
-    public int MetadataMaxBytes { get; init; } = 4096;
+    public int? MetadataMaxBytes { get; init; }
+
+    [JsonIgnore]
+    public int EffectiveMetadataMaxBytes => MetadataMaxBytes ?? DefaultMetadataMaxBytes;
 
     [JsonPropertyName("retry")]
     public required MailerRetryOptions Retry { get; init; }
 
     [JsonPropertyName("webhook")]
     public MailerWebhookConfig? Webhook { get; init; }
+
+    // Explicit 0 stays 0 so Validate can reject it; omitted (null) becomes DefaultMetadataMaxBytes.
+    public MailerTenant WithJsonDefaultsApplied() =>
+        MetadataMaxBytes is null
+            ? this with { MetadataMaxBytes = DefaultMetadataMaxBytes }
+            : this;
 
     public bool IsSourceServiceAllowed(string sourceService)
     {
@@ -137,7 +156,7 @@ public sealed record MailerTenant
             throw new InvalidOperationException($"tenant '{Name}' provider must be 'mailpit' or 'acs'.");
         }
 
-        if (MetadataMaxBytes <= 0)
+        if (MetadataMaxBytes is <= 0)
         {
             throw new InvalidOperationException($"tenant '{Name}' metadata_max_bytes must be positive.");
         }

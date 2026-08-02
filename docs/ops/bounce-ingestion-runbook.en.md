@@ -60,12 +60,23 @@ See [metrics-and-alerts.en.md](metrics-and-alerts.en.md) for alert examples.
 | `mail_suppressed_sends_total` | Pre-send blocks |
 | `mail_provider_events_pending` | Inbox backlog (example: >50 for 15m) |
 | `mail_provider_events_dead_lettered` | Inbox dead letters (warn when >0) |
-| `mail_provider_queue_poll_failed_total` | Queue poll failures |
+| `mail_provider_queue_poll_failed_total` | Queue operational failures (connect/receive/delete/DB) |
+| `mail_provider_queue_payload_invalid_total` | Decode/parse-invalid messages (including sub-threshold redelivery) |
+| `mail_provider_queue_poisoned_total` | Poison envelopes newly recorded to local dead-letter storage |
 
 Do not attach `tenant_id` / recipient labels (ADR 0020 D-10).
 
 CLI `db stats` `provider_events_pending` / `provider_events_dead_lettered` use the
-same inbox aggregation.
+same inbox aggregation. `provider_queue_dead_letters_count` is the Queue-envelope
+local dead-letter count (#461). Admin `/admin/ops` Provider queue shows the same count.
+
+### Poison messages (broken Queue envelopes)
+
+Decode/parse-invalid messages are retained for Azure visibility redelivery while
+`DequeueCount` is below the internal threshold (5). After the threshold, Mailer
+records a PII-free row in `provider_queue_dead_letters` and deletes the Queue
+message only after that commit succeeds. Valid events in a mixed message are still
+inserted into the inbox; UNIQUE absorbs redelivery.
 
 ## 5. Triage when unmatched spikes
 

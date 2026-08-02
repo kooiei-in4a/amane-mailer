@@ -10,16 +10,22 @@ namespace Amane.Mailer.Bounce;
 /// <summary>
 /// Pull transport: polls Azure Storage Queue and inserts ACS delivery reports into the inbox (#305).
 /// Deletes queue messages only after durable inbox acceptance (insert or UNIQUE conflict). ADR 0020 D-09.
+/// Poison envelopes (decode/parse) are retained until DequeueCount reaches an internal threshold, then
+/// recorded in provider_queue_dead_letters before delete (#461).
 /// </summary>
 public sealed class AcsQueuePollingService(
     IAcsEventQueueClient queueClient,
     ProviderEventInboxRepository inboxRepository,
+    ProviderQueueDeadLetterRepository queueDeadLetterRepository,
     MailerBounceIngestionOptions options,
     IBounceIngestionQueue bounceQueue,
     MailerRuntimeMetrics runtimeMetrics,
     TimeProvider timeProvider,
     ILogger<AcsQueuePollingService> logger) : BackgroundService
 {
+    /// <summary>Internal poison threshold; not public configuration (#461).</summary>
+    internal const long PoisonDequeueThreshold = 5;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(options.QueuePollInterval);
@@ -93,9 +99,12 @@ public sealed class AcsQueuePollingService(
         }
         catch (Exception)
         {
-            // Treat decode failure like Unparseable: retain for visibility redelivery (ADR 0020 D-09).
-            runtimeMetrics.RecordProviderQueuePollFailed();
-            logger.LogWarning("ACS queue message body could not be decoded; leaving message for redelivery.");
+            await HandlePayloadInvalidAsync(
+                message,
+                ProviderQueueDeadLetterRepository.FailureStageDecode,
+                ProviderQueueDeadLetterRepository.BodyInvalidErrorCode,
+                "ACS queue message body could not be decoded.",
+                cancellationToken);
             return;
         }
 
@@ -106,8 +115,12 @@ public sealed class AcsQueuePollingService(
         }
         catch (Exception)
         {
-            runtimeMetrics.RecordProviderQueuePollFailed();
-            logger.LogWarning("ACS queue message parse threw; leaving message for redelivery.");
+            await HandlePayloadInvalidAsync(
+                message,
+                ProviderQueueDeadLetterRepository.FailureStageParse,
+                ProviderQueueDeadLetterRepository.EventInvalidErrorCode,
+                "ACS queue message parse threw.",
+                cancellationToken);
             return;
         }
 
@@ -146,6 +159,8 @@ public sealed class AcsQueuePollingService(
                         ProviderMessageId = parseResult.Report.MessageId,
                         DeliveryStatus = parseResult.Report.Status,
                         RecipientEmail = parseResult.Report.Recipient,
+                        StatusMessage = SanitizeStatusMessage(parseResult.Report.StatusMessage),
+                        OccurredAt = parseResult.Report.OccurredAt,
                         MaxAttempts = options.MaxAttempts,
                         CreatedAt = now,
                     },
@@ -168,11 +183,13 @@ public sealed class AcsQueuePollingService(
 
         if (sawUnparseable)
         {
-            // Prefer retain over delete when any event is Unparseable, even if sibling
-            // DeliveryReports were already inserted (UNIQUE absorbs redelivery; D-09).
-            runtimeMetrics.RecordProviderQueuePollFailed();
-            logger.LogWarning(
-                "ACS queue message contained an unparseable event; leaving message for redelivery.");
+            // Valid sibling DeliveryReports were already inserted (UNIQUE absorbs redelivery).
+            await HandlePayloadInvalidAsync(
+                message,
+                ProviderQueueDeadLetterRepository.FailureStageParse,
+                ProviderQueueDeadLetterRepository.EventInvalidErrorCode,
+                "ACS queue message contained an unparseable event.",
+                cancellationToken);
             return;
         }
 
@@ -184,6 +201,69 @@ public sealed class AcsQueuePollingService(
         }
 
         // Only Ignored events (e.g. Delivered / non-delivery-report types): safe to delete.
+        await TryDeleteAsync(message, cancellationToken);
+    }
+
+    private async Task HandlePayloadInvalidAsync(
+        AcsQueueReceivedMessage message,
+        string failureStage,
+        string errorCode,
+        string warningMessage,
+        CancellationToken cancellationToken)
+    {
+        runtimeMetrics.RecordProviderQueuePayloadInvalid();
+
+        if (message.DequeueCount < PoisonDequeueThreshold)
+        {
+            logger.LogWarning(
+                "{WarningMessage} DequeueCount={DequeueCount}; leaving message for redelivery.",
+                warningMessage,
+                message.DequeueCount);
+            return;
+        }
+
+        var now = timeProvider.GetUtcNow();
+        bool inserted;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            inserted = await queueDeadLetterRepository.TryInsertAsync(
+                new ProviderQueueDeadLetterInsert
+                {
+                    Id = Guid.CreateVersion7(now),
+                    Provider = MailerBounceIngestionOptions.ProviderAcs,
+                    QueueMessageId = message.MessageId,
+                    FailureStage = failureStage,
+                    LastErrorCode = errorCode,
+                    DequeueCount = message.DequeueCount,
+                    CreatedAt = now,
+                },
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Durable record failed: keep the queue message (do not delete).
+            runtimeMetrics.RecordProviderQueuePollFailed();
+            logger.LogError(
+                "ACS queue poison dead-letter insert failed; leaving message for redelivery. Detail={Detail}",
+                ProviderErrorSanitizer.Sanitize(ex.Message));
+            return;
+        }
+
+        if (inserted)
+        {
+            runtimeMetrics.RecordProviderQueuePoisoned();
+        }
+
+        logger.LogWarning(
+            "{WarningMessage} DequeueCount={DequeueCount}; recorded local dead-letter and deleting queue message.",
+            warningMessage,
+            message.DequeueCount);
+
         await TryDeleteAsync(message, cancellationToken);
     }
 
@@ -229,4 +309,10 @@ public sealed class AcsQueuePollingService(
             "ACS queue inbox insert failed; leaving message for visibility redelivery. Detail={Detail}",
             ProviderErrorSanitizer.Sanitize(ex.Message));
     }
+
+    /// <summary>
+    /// Sanitize before the first DB write (#460 / ADR 0020 D-08). Missing/blank stays null.
+    /// </summary>
+    internal static string? SanitizeStatusMessage(string? raw) =>
+        string.IsNullOrWhiteSpace(raw) ? null : ProviderErrorSanitizer.Sanitize(raw);
 }

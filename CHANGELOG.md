@@ -15,6 +15,53 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-01
+
+Minor release (version prep on `develop`; tag / publish / public smoke **not**
+completed in this prep PR). Ships Easy Setup (modes 1–4) for first-time
+Mailpit / ACS configuration, keeps Manual / Hardened paths, and **INCLUDEs**
+already-merged SQLite migrations `012` / `013` (bounce durability / poison
+queue isolation). Mode 5 remains Manual only. Public HTTP request / response
+schemas and Contracts DTO shapes are unchanged; package and OpenAPI
+`info.version` move to `1.2.0`.
+
+### Added
+
+- Easy Setup host assistant (Web + terminal / non-interactive) for modes 1–4
+  under ADR 0021 (#446–#453, #459).
+- Admin read-only `/admin/setup-status` and typed Admin bootstrap ownership
+  (#454, #459).
+- Setup release-candidate packaging workflow and bundle tooling (#455).
+- Qualification plan for Easy Setup release evidence (#456 plan Rev.12 on
+  `develop`; qualification execution still pending).
+
+### Changed
+
+- `Amane.Mailer.Contracts` and OpenAPI `info.version` aligned on `1.2.0`.
+- Release execution plan for v1.2.0 (#458 plan Rev.8 on `develop`).
+- Single setup entry docs retain Manual / Hardened routes (#457).
+
+### Fixed
+
+- Migration `012_provider_event_inbox_details.sql`: sanitized ACS delivery-report
+  fields (`status_message`, `occurred_at`) on `provider_event_inbox` (#460).
+- Migration `013_provider_queue_dead_letters.sql`: PII-free poison Storage Queue
+  envelope isolation via `provider_queue_dead_letters` (#461).
+
+### Security
+
+- Easy Setup remains localhost-bound for the Web assistant; no Docker socket
+  passthrough; no new public HTTP setup routes on the Mailer runtime (ADR 0021).
+- Migration 013 intentionally omits raw queue body / recipient / provider raw
+  error columns.
+
+### Documentation
+
+- Draft release record `docs/releases/v1.2.0.md` (pre-tag; digests PENDING).
+- Setup vs upgrade: Easy Setup targets fresh / managed setup; existing Manual
+  deployments upgrade via normal image / migration apply — not a silent
+  re-bootstrap of Admin.
+
 ## [1.1.0] - 2026-07-28
 
 Minor release. Ships ACS Delivery Report bounce ingestion (Storage Queue Pull),

@@ -19,4 +19,5 @@ public interface IAcsEventQueueClient
 public sealed record AcsQueueReceivedMessage(
     string MessageId,
     string PopReceipt,
-    string Body);
+    string Body,
+    long DequeueCount);

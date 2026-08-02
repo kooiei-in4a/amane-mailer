@@ -30,7 +30,13 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll admin provider register-acs
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
       dotnet Amane.Mailer.dll admin provider test-acs-send
+      dotnet Amane.Mailer.dll setup assistant [--port <1-65535>] [--no-browser] [--terminal]
+      dotnet Amane.Mailer.dll setup assistant-self-check
       dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
+      dotnet Amane.Mailer.dll setup apply --config <absolute-path> --non-interactive
+      dotnet Amane.Mailer.dll setup inspect-effective --format json
+      dotnet Amane.Mailer.dll setup core-self-check
+      dotnet Amane.Mailer.dll setup host-docker-self-check
       dotnet Amane.Mailer.dll setup check-event-grid --subscription <id-or-name> --resource-group <rg> (--acs-name <name> | --acs-resource-id <id>) --event-subscription <name> --storage-account <name> --queue-name <name> --environment <dev|staging|production>
       dotnet Amane.Mailer.dll setup verify-delivery-report
 
@@ -55,7 +61,7 @@ if (DbMigrateCommand.IsDbMigrateCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
     return await MailerCliHost.RunCancellableCliAsync(
-        ct => MailerCliHost.RunDbMigrateAsync(cliConfiguration, Console.Out, Console.Error, ct),
+        ct => MailerCliHost.RunDbMigrateAsync(cliConfiguration, commandArgs, Console.Out, Console.Error, ct),
         Console.Error);
 }
 
@@ -182,6 +188,72 @@ if (AdminProviderTestAcsSendCommand.IsTestAcsSendCommand(commandArgs))
         Console.Error);
 }
 
+
+// The assistant runs an isolated loopback web host. It never starts the normal Mailer runtime,
+// and the runtime never gains a setup route.
+if (Amane.Mailer.Setup.Assistant.SetupAssistantCommand.IsAssistantCommand(commandArgs))
+{
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => Amane.Mailer.Setup.Assistant.SetupAssistantCommand.ExecuteAsync(
+            commandArgs,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
+}
+
+if (Amane.Mailer.Setup.Assistant.SetupAssistantSelfCheckCommand.IsSelfCheckCommand(commandArgs))
+{
+    return await Amane.Mailer.Setup.Assistant.SetupAssistantSelfCheckCommand.ExecuteAsync(
+        Console.Out,
+        Console.Error);
+}
+
+if (Amane.Mailer.Setup.SetupCoreSelfCheckCommand.IsSelfCheckCommand(commandArgs))
+{
+    return await Amane.Mailer.Setup.SetupCoreSelfCheckCommand.ExecuteAsync(Console.Out, Console.Error);
+}
+
+if (Amane.Mailer.Setup.SetupHostDockerSelfCheckCommand.IsSelfCheckCommand(commandArgs))
+{
+    return await Amane.Mailer.Setup.SetupHostDockerSelfCheckCommand.ExecuteAsync(Console.Out, Console.Error);
+}
+
+if (Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.IsApplyNonInteractiveCommand(commandArgs))
+{
+    if (!Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.TryParseArguments(
+            commandArgs,
+            out var configPath,
+            out var usageError))
+    {
+        await Console.Error.WriteLineAsync(usageError ?? "Invalid setup apply arguments.");
+        await Console.Error.WriteLineAsync(
+            Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.UsageLine);
+        return Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.UsageErrorExitCode;
+    }
+
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => Amane.Mailer.Setup.NonInteractive.SetupApplyNonInteractiveCommand.ExecuteAsync(
+            configPath!,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
+}
+
+if (Amane.Mailer.Setup.SetupInspectEffectiveCommand.IsInspectEffectiveCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunSetupInspectEffectiveAsync(
+            cliConfiguration,
+            commandArgs,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
+}
+
 if (SetupDoctorCommand.IsSetupDoctorCommand(commandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
@@ -214,12 +286,17 @@ if (OperatingSystem.IsWindows())
 
 builder.Services.AddMailerJsonSerialization();
 builder.Services.AddAmaneMailerServices(builder.Configuration);
+ForwardedHeadersStartup.ConfigureServices(builder.Services, builder.Configuration);
 
 var app = builder.Build();
 
 // Single startup path: resolve every AddStartupValidatedSingleton registration so Load/Validate
 // fail-fast (Worker/Admin enabled gates stay inside each options type).
 app.Services.GetRequiredService<MailerStartupValidator>().Validate();
+
+// Before Admin (Secure / antiforgery) so X-Forwarded-Proto from an approved TLS-terminating
+// reverse proxy makes Request.IsHttps true when ASPNETCORE_FORWARDEDHEADERS_ENABLED=true.
+ForwardedHeadersStartup.UseIfEnabled(app);
 
 app.MapGet("/healthz", () => MailerJsonResults.Health(true));
 

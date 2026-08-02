@@ -14,6 +14,8 @@ public sealed class MailerRuntimeMetrics
     private long _bounceRecipientMismatchTotal;
     private long _suppressedSendsTotal;
     private long _providerQueuePollFailedTotal;
+    private long _providerQueuePayloadInvalidTotal;
+    private long _providerQueuePoisonedTotal;
     private int _ready;
     private bool _readinessObserved;
     private string? _readinessFailureReason;
@@ -44,6 +46,12 @@ public sealed class MailerRuntimeMetrics
 
     public void RecordProviderQueuePollFailed() =>
         Interlocked.Increment(ref _providerQueuePollFailedTotal);
+
+    public void RecordProviderQueuePayloadInvalid() =>
+        Interlocked.Increment(ref _providerQueuePayloadInvalidTotal);
+
+    public void RecordProviderQueuePoisoned() =>
+        Interlocked.Increment(ref _providerQueuePoisonedTotal);
 
     /// <summary>
     /// Updates readiness gauges. <paramref name="failureReason"/> must be a fixed
@@ -99,6 +107,8 @@ public sealed class MailerRuntimeMetrics
                 Interlocked.Read(ref _bounceRecipientMismatchTotal),
                 Interlocked.Read(ref _suppressedSendsTotal),
                 Interlocked.Read(ref _providerQueuePollFailedTotal),
+                Interlocked.Read(ref _providerQueuePayloadInvalidTotal),
+                Interlocked.Read(ref _providerQueuePoisonedTotal),
                 _readinessObserved,
                 _ready == 1,
                 _readinessFailureReason,
@@ -123,6 +133,8 @@ public sealed class MailerRuntimeMetrics
         Interlocked.Exchange(ref _bounceRecipientMismatchTotal, 0);
         Interlocked.Exchange(ref _suppressedSendsTotal, 0);
         Interlocked.Exchange(ref _providerQueuePollFailedTotal, 0);
+        Interlocked.Exchange(ref _providerQueuePayloadInvalidTotal, 0);
+        Interlocked.Exchange(ref _providerQueuePoisonedTotal, 0);
 
         lock (_gate)
         {
@@ -187,6 +199,8 @@ public sealed record MailerRuntimeMetricsSnapshot(
     long BounceRecipientMismatchTotal,
     long SuppressedSendsTotal,
     long ProviderQueuePollFailedTotal,
+    long ProviderQueuePayloadInvalidTotal,
+    long ProviderQueuePoisonedTotal,
     bool ReadinessObserved,
     bool Ready,
     string? ReadinessFailureReason,

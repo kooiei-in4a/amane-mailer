@@ -8,7 +8,8 @@ public sealed class DbStatsCommand(
     SqliteConnectionFactory connections,
     Func<DateTimeOffset>? nowProvider = null,
     DeliveryEventRepository? deliveryEventRepository = null,
-    ProviderEventInboxRepository? providerEventInboxRepository = null)
+    ProviderEventInboxRepository? providerEventInboxRepository = null,
+    ProviderQueueDeadLetterRepository? providerQueueDeadLetterRepository = null)
 {
     public const int SuccessExitCode = 0;
     public const int UnavailableExitCode = 1;
@@ -19,6 +20,8 @@ public sealed class DbStatsCommand(
         deliveryEventRepository ?? new DeliveryEventRepository(connections);
     private readonly ProviderEventInboxRepository _providerEventInboxRepository =
         providerEventInboxRepository ?? new ProviderEventInboxRepository(connections);
+    private readonly ProviderQueueDeadLetterRepository _providerQueueDeadLetterRepository =
+        providerQueueDeadLetterRepository ?? new ProviderQueueDeadLetterRepository(connections);
     private readonly Func<DateTimeOffset> _nowProvider = nowProvider ?? (() => SqliteTime.UtcNow);
 
     public static bool IsDbStatsCommand(IReadOnlyList<string> args) =>
@@ -67,6 +70,7 @@ public sealed class DbStatsCommand(
 
         var webhookCounts = await _deliveryEventRepository.CountOperationalAsync(cancellationToken);
         var providerEventCounts = await _providerEventInboxRepository.CountOperationalAsync(cancellationToken);
+        var providerQueueDeadLettersCount = await _providerQueueDeadLetterRepository.CountAsync(cancellationToken);
         var suppressions = new MailSuppressionRepository(connections);
         var suppressionsCount = await suppressions.CountAsync(options.TenantId, cancellationToken);
 
@@ -74,6 +78,7 @@ public sealed class DbStatsCommand(
             stats,
             webhookCounts,
             providerEventCounts,
+            providerQueueDeadLettersCount,
             suppressionsCount,
             options.TenantId,
             output);
@@ -84,6 +89,7 @@ public sealed class DbStatsCommand(
         MailerDbStatsResult stats,
         (long PendingCount, long DeadLetteredCount) webhookCounts,
         (long PendingCount, long DeadLetteredCount) providerEventCounts,
+        long providerQueueDeadLettersCount,
         long suppressionsCount,
         Guid? tenantId,
         TextWriter output)
@@ -111,6 +117,7 @@ public sealed class DbStatsCommand(
         await output.WriteLineAsync($"webhook_events_dead_lettered={webhookCounts.DeadLetteredCount}");
         await output.WriteLineAsync($"provider_events_pending={providerEventCounts.PendingCount}");
         await output.WriteLineAsync($"provider_events_dead_lettered={providerEventCounts.DeadLetteredCount}");
+        await output.WriteLineAsync($"provider_queue_dead_letters_count={providerQueueDeadLettersCount}");
         await output.WriteLineAsync($"mail_suppressions_count={suppressionsCount}");
     }
 

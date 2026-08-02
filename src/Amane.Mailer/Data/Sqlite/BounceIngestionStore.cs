@@ -48,7 +48,7 @@ public sealed class BounceIngestionStore(SqliteConnectionFactory connections)
     public async Task<bool> PersistCorrelatedAsync(
         ProviderEventInboxRow claimed,
         BounceCorrelationMatch match,
-        string? rawStatusMessage,
+        string? statusMessage,
         bool suppress,
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
@@ -59,9 +59,11 @@ public sealed class BounceIngestionStore(SqliteConnectionFactory connections)
         ArgumentException.ThrowIfNullOrWhiteSpace(claimed.DeliveryStatus);
 
         var bounceEventId = Guid.CreateVersion7(now);
-        var sanitizedStatusMessage = rawStatusMessage is null
+        // Inbox values are sanitized at queue ingest; re-sanitize defensively (idempotent).
+        var safeStatusMessage = string.IsNullOrWhiteSpace(statusMessage)
             ? null
-            : ProviderErrorSanitizer.Sanitize(rawStatusMessage);
+            : ProviderErrorSanitizer.Sanitize(statusMessage);
+        var occurredAt = claimed.OccurredAt ?? now;
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
@@ -88,8 +90,8 @@ public sealed class BounceIngestionStore(SqliteConnectionFactory connections)
                 bounce.Parameters.AddWithValue("@ProviderEventId", claimed.EventId);
                 bounce.Parameters.AddWithValue("@ProviderMessageId", claimed.ProviderMessageId);
                 bounce.Parameters.AddWithValue("@DeliveryStatus", claimed.DeliveryStatus);
-                bounce.Parameters.AddWithValue("@StatusMessage", (object?)sanitizedStatusMessage ?? DBNull.Value);
-                bounce.Parameters.AddWithValue("@OccurredAt", SqliteTime.ToStorageUtc(now));
+                bounce.Parameters.AddWithValue("@StatusMessage", (object?)safeStatusMessage ?? DBNull.Value);
+                bounce.Parameters.AddWithValue("@OccurredAt", SqliteTime.ToStorageUtc(occurredAt));
                 bounce.Parameters.AddWithValue("@CreatedAt", SqliteTime.ToStorageUtc(now));
                 await bounce.ExecuteNonQueryAsync(cancellationToken);
             }

@@ -1,0 +1,13 @@
+# Easy Setup mode-1 Mailpit overlay (Issue #449).
+# Used only as a second fixed `-f` beside compose.yml. Never caller-supplied.
+# Mailpit image must be digest-pinned via MAILPIT_IMAGE from TrustedReleaseInventory.
+services:
+  mailpit:
+    image: ${MAILPIT_IMAGE}
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:${MAILPIT_HTTP_PORT:-8025}:8025"
+    networks:
+      - mailer

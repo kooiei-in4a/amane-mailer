@@ -1,0 +1,9 @@
+# Easy Setup overlay: force digest-pinned image references for all Mailer services.
+# Always applied after compose.yml so Managed Setup never runs by mutable tag alone.
+services:
+  mailer-migrate:
+    image: ${MAILER_IMAGE_REFERENCE}
+  mailer:
+    image: ${MAILER_IMAGE_REFERENCE}
+  mailer-acs-admin:
+    image: ${MAILER_IMAGE_REFERENCE}

@@ -2,17 +2,200 @@
 
 # Amane Mailer setup entry point
 
-This is the **single entry point** for first-time Amane Mailer setup. Choose one configuration mode, gather what you need, then follow the existing runbooks in order.
+This is the **single entry point** for first-time Amane Mailer setup. Choose Easy Setup (recommended), Manual Deployment, or Hardened Deployment; gather what you need; then follow the linked runbooks. This document is the source of truth for **judgment, order, and safety boundaries**. It does not copy detailed procedures or embed candidate-specific SHA / digest / checksum values.
 
-This document is the source of truth for decisions, order, safety boundaries, and shared terminology. It does not copy detailed procedures; it links to each runbook and the config README.
+Parent tracking: [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445) · This issue: [#457](https://github.com/kooiei-in4a/amane-mailer/issues/457) · Design authority: [ADR 0021](../adr/0021-easy-setup-boundaries.md) ([#446](https://github.com/kooiei-in4a/amane-mailer/issues/446))
 
-Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) · This issue: [#424](https://github.com/kooiei-in4a/amane-mailer/issues/424)
+Use placeholders only (`replace-with-*`, `example.invalid`, synthetic UUIDs / paths). Do not paste real secrets, tokens, connection strings, sender/recipient addresses, PII, or private host paths into docs, issues, logs, or chat.
 
-## Role of existing docs (do not duplicate)
+## Document roles
 
-| Document | Role | Relation to this entry |
+| Document | Role |
+|----------|------|
+| [README](../../README.en.md) / [README.ja](../../README.md) | Minimal repository front door → this guide |
+| **This setup guide** | Judgment, path selection, order, safety boundaries (authority) |
+| Ops runbooks under `docs/ops/` | Detailed procedures (link; do not copy full text here) |
+| [ADR 0021](../adr/0021-easy-setup-boundaries.md) | Easy Setup design authority |
+| [setup-release-bundle](setup-release-bundle.en.md) | Maintainer packaging / candidate handoff |
+| [implementation-status](../implementation-status.json) | Tracked feature status (Easy Setup remains `partial` until #458) |
+| Candidate `README-SETUP.md` | Minimal extract entry; links back to this guide at the candidate `sourceCommitSha` |
+
+## Path selection
+
+| Path | When to choose | Notes |
+|------|----------------|-------|
+| **Easy Setup (recommended)** | Windows Docker Desktop or Linux Docker Engine / VPS; modes 1–4 | Host `setup assistant` / optional non-interactive Main apply. Mode 5 is Manual. |
+| **Manual Deployment** | You prefer existing runbooks / CLI without Managed bundles | Modes 1–5 remain available. Honest v1.1.0 published-image notes stay below. |
+| **Hardened Deployment** | Strict file-secret / owner-only / no Managed metadata | Easy Setup assistant is **not** used. Manual contract foundation. |
+
+---
+
+## Easy Setup (recommended)
+
+Easy Setup wraps existing `.env` / `tenants.json` / file-secret / deploy compose contracts with a host-local Web or terminal assistant ([ADR 0021](../adr/0021-easy-setup-boundaries.md)). Implementation status is **partial** until [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458); use Manual paths when you need today’s guaranteed completion without Managed activation.
+
+### Platform starts
+
+| Environment | First command (from the extracted host bundle or install layout) |
+|-------------|-------------------------------------------------------------------|
+| Windows Docker Desktop | `Amane.Mailer.exe setup assistant` |
+| Linux GUI + Docker Engine | `./Amane.Mailer setup assistant` |
+| Headless Linux / VPS | `./Amane.Mailer setup assistant --no-browser` or `./Amane.Mailer setup assistant --terminal` |
+| SSH to VPS | Prefer `--terminal`, or open an SSH tunnel to the assistant loopback port and use a local browser. **A browser alone on the VPS does not complete setup.** |
+| Offline / GitHub unavailable | `Amane.Mailer setup assistant --help` then `--terminal` (Windows: `Amane.Mailer.exe`) |
+| Non-interactive Main only | `Amane.Mailer setup apply --config <absolute-path> --non-interactive` |
+
+Exact CLIs (do not invent alternatives):
+
+```text
+Amane.Mailer setup assistant [--port <n>] [--no-browser] [--terminal]
+Amane.Mailer setup apply --config <absolute-path> --non-interactive
+```
+
+Optional `--port` selects the localhost Web listen port. `--no-browser` skips opening a browser. `--terminal` runs the interactive terminal UI.
+
+### Candidate consumption (verify methods)
+
+When consuming an Easy Setup **release-candidate** host bundle (not a published GitHub Release):
+
+#### Release-candidate qualification (#456)
+
+Verify methods only — **do not** treat any fixed digest in this guide as authoritative:
+
+- Outer `CANDIDATE-SHA256SUMS` verifies the **archive** before / as you extract.
+- Inner `FILES-SHA256SUMS` verifies **extracted files**.
+- Read `release-bundle-manifest.json` for `sourceCommitSha`, image digest, and schema ranges.
+- `payloadTreeSha256` in the manifest is a staged payload tree digest. It is **not** the archive checksum.
+- If handoff materials disagree, **stop**. Handoff is qualification-only (maintainer #456), not a per-user “production verified” stamp.
+
+Packaging maintainer steps: [setup-release-bundle](setup-release-bundle.en.md). Operator judgment stays in this guide.
+
+#### Published release users (#458 later)
+
+After publish, use GitHub Release checksums / the public release record / the public image digest. Do not confuse candidate handoff with published release verification.
+
+### Managed boundaries
+
+- Immutable configuration bundles; **`ACTIVE` is the sole activation authority** (`bundleId` + monotonic `activationGeneration`).
+- **Configuration fingerprint** covers non-secret configuration identity only. **Bundle integrity** covers sealed secret-valued env and file secrets. Do not treat fingerprint match as full secret-inclusive bundle match.
+- **Recorded** metadata vs **effective** runtime inspection are separate; metadata is not a send authority.
+- Do **not** mix Managed Setup and Manual Deployment on the same root (no Managed `ACTIVE` / metadata alongside an ad-hoc Manual `.env` as dual authorities).
+- Privileged host administrators who can rewrite seals and secrets together are **out of scope** for Easy Setup protections.
+
+#### Managed backup boundaries
+
+| Target | Treatment |
+|--------|-----------|
+| SQLite database | Obtain via the [Backup operations](backup-operations.en.md) path **separately**. Config rollback does not restore it |
+| Managed root | Preserve `bundles` / `state` (`ACTIVE`) / `verification` / `sealing` as **one generation** |
+| External / manual-only | Data path, backup settings, rclone config, etc. stay **outside** Managed switching and are managed separately |
+| Docs / logs | Never include secret values or private host paths |
+
+Do not copy full procedures here: [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md).
+
+#### Managed failure / recovery
+
+| Situation | Treatment |
+|-----------|-----------|
+| Previous `ACTIVE` present | Atomic switch back → recreate containers → fingerprint / integrity / verification must succeed before calling rollback successful |
+| Previous `ACTIVE` absent | **FreshFailed** — do not present as a successful rollback |
+| Lock / `TX.stamp` / incomplete `ACTIVE` / FINALIZED mismatch | Not success; recovery or manual intervention |
+| Migration, Admin SQLite, mail data, provider side effects | **Out of config rollback scope** |
+| `docker compose down -v` / DB migration rollback | **Do not guide** |
+
+#### Secret detection scope and limits
+
+| Contract | Meaning |
+|----------|---------|
+| Non-secret fingerprint | Does **not** include secret values |
+| Secrets in a finalized Managed bundle | Integrity-seal targets (values stay off public surfaces) |
+| Wrong mount / substitution | Runtime may detect via mount attestation |
+| Fingerprint match alone | Does **not** mean full secret-inclusive bundle match |
+| Privileged host rewriting seal + secrets together | Out of Easy Setup protection scope |
+
+### Deployment states
+
+| State | Meaning |
+|-------|---------|
+| **Configuration applied** | Managed bundle committed via `ACTIVE` |
+| **Send-ready** | Applied bundle meets send-ready conditions (effective / doctor / readiness / fingerprint / integrity / verification record aligned) |
+| **Deployment operational verification** | Operator proved live send via the normal Mailer path. **Not recorded by Easy Setup** — Manual verification is required if you need it |
+| **Release Production operational verification** | Maintainer #456 product qualification. **Not** a per-user environment status |
+
+Staging test vs Production: keep ACS / Queue / tokens separated per environment. Do not treat Staging drills as Production evidence.
+
+### Admin (optional; default disabled)
+
+- Admin enablement is **optional** and **default disabled**. It is an independent transaction **after** Main setup succeeds.
+- Bootstrap only via interactive Web or terminal assistant — **not** non-interactive.
+- Non-interactive Main apply keeps Admin disabled. If non-interactive input requests Admin enablement → **FAIL** (do not silently ignore); use the interactive assistant.
+- Do not accept plaintext passwords via file, redirected stdin, or CLI arguments. Password hash file input is out of scope for v1.2.0.
+- Supported DB states: **fresh** and **managed same-user** reapply. Existing Manual / unsupported Admin state → Manual path.
+- Config bundle rollback ≠ SQLite Admin state rollback (`admin_config` / `admin_users` / sessions may remain).
+- Bootstrap success includes login and `/admin/setup-status` display. Admin setup status does **not** run doctor, test send, or Docker operations.
+
+#### Admin access profiles
+
+| Profile | Conditions (summary) |
+|---------|----------------------|
+| **Local Development** | `ASPNETCORE_ENVIRONMENT=Development`; loopback-only host publish; `AMANE_ADMIN_ALLOW_HTTP=true`; localhost access; `Connection.LocalIpAddress` matches `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` |
+| **Production HTTPS** | Approved HTTPS reverse proxy already exists; `AMANE_ADMIN_ALLOW_HTTP=false`; Secure / `__Host-` cookies; server-side local address matches allowed local address; no direct internet Admin exposure |
+
+When the reverse proxy terminates TLS and forwards plain HTTP to Mailer, set `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` in compose / `external.env` so `X-Forwarded-Proto` makes Admin antiforgery treat the request as HTTPS. Enable only behind that trusted proxy boundary.
+
+`AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` matches **`Connection.LocalIpAddress`** (server-side), **not** the client source IP.
+
+Easy Setup does **not** build reverse proxies, certificates, or DNS. If no HTTPS Production path exists, **keep Admin disabled**. Main setup can still succeed.
+
+### Modes, support matrix, setup ≠ upgrade
+
+| Modes 1–4 | Easy Setup formal targets |
+|-----------|---------------------------|
+| Mode 5 (production ACS + Event Grid / Storage Queue) | **Manual / not Easy Setup** |
+| Windows Docker Desktop / Linux Docker Engine / VPS | Formal |
+| NAS | Best-effort |
+| Remote Docker / Kubernetes / Podman / macOS formal distribution | Out of scope |
+| Consumer bounced Webhook [#307](https://github.com/kooiei-in4a/amane-mailer/issues/307) | Out of v1.2.0 (v1.5.0+) |
+
+**Setup is not upgrade.** Product upgrade / publish remains later issues (#458).
+
+### Backup / rollback / recovery (high level)
+
+- Prefer the Managed backup / failure-recovery / secret-detection tables above.
+- Prefer documented backup of DB and operator-owned secrets / config; exclude what runbooks exclude.
+- Do **not** use `docker compose down -v` as a casual rollback (destroys volumes).
+- Do **not** treat DB migration rollback as a supported Easy Setup recovery.
+- Details: [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md).
+
+### Easy Setup troubleshooting pointers
+
+- Assistant will not start / bind: confirm host binary, Docker Desktop/Engine local context, loopback-only expectations.
+- VPS “browser only” attempts: switch to `--terminal` or SSH tunnel.
+- Non-interactive Admin enable request: expected **FAIL** — use interactive assistant.
+- Fingerprint match but secrets wrong / remounted: integrity / mount attestation may still fail; fingerprint alone is insufficient.
+- More Manual failure pointers: see [Troubleshooting](#troubleshooting) below.
+
+### Doc defect return (#456 → #457)
+
+If qualification (#456) finds a documentation defect in this guide or candidate `README-SETUP.md`:
+
+1. Fix in [#457](https://github.com/kooiei-in4a/amane-mailer/issues/457) (this document / packaging generator).
+2. Regenerate the candidate from the **new merge SHA**.
+3. Re-run affected qualification scenarios.
+4. Do **not** paste the #456 Hard gate table into this guide (#456 owns that table).
+
+---
+
+## Manual Deployment
+
+Manual Deployment remains a first-class path. The sections below preserve the v1.1.0-era mode 1–5 runbook order, availability meanings, and honest published **v1.1.0** image notes. Do not blindly replace every `v1.1.0` artifact reference with `v1.2.0`.
+
+Container one-shot effective inspection (`Amane.Mailer setup inspect-effective --format json`, [#447](https://github.com/kooiei-in4a/amane-mailer/issues/447)) is implemented for Managed hosts. stdout is JSON only. recorded / effective / mountAttestation are separate; the one-shot never claims final `bundleIntegrity=matched` by itself. Host assistant / ACTIVE apply do not delete these Manual procedures.
+
+### Role of existing Manual docs (do not duplicate)
+
+| Document | Role | Relation to Manual entry |
 |----------|------|------------------------|
-| [README](../../README.en.md) | Repository front door | One click to reach this guide |
 | [Zero-Admin first-mail quickstart](first-mail-quickstart.en.md) | Shortest **local Mailpit** path | Mode 1 procedure source of truth |
 | [local Docker runbook](local-mailer-docker-runbook.en.md) ([bash](local-mailer-docker-runbook-bash.en.md)) | Extra local smoke (idempotency, Admin, etc.) | Mode 1 extension |
 | [local deploy rehearsal](local-deploy-rehearsal-runbook.en.md) | Deploy-shaped stack rehearsal | Mode 2 procedure source of truth |
@@ -24,7 +207,7 @@ Parent tracking: [#423](https://github.com/kooiei-in4a/amane-mailer/issues/423) 
 | [config README](../../config/mailer/README.en.md) | tenant / env / preflight | Config shape source for all modes |
 | [release-image-smoke](release-image-smoke.en.md) | Published-image smoke | For published tags; not a `v1.1.0` check while that tag is missing |
 
-## Before you start (safety)
+### Before you start (safety)
 
 - Do not paste secrets, connection strings, real tenant tokens, sender/recipient addresses, PII, or raw provider errors into docs, issues, logs, or chat.
 - Use placeholders only (`replace-with-*`, `local-mail-service-token`).
@@ -53,11 +236,11 @@ Production ACS (mode 4) file-secret registration is **Available** via `admin pro
 
 Production ACS + Queue (mode 5) is **Available**: [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) / [`.env.example`](../../infra/deploy/.env.example) pass `MAILER_BOUNCE_INGESTION`, Queue name, and Queue connection (file) into the container. Host-shell-only variables still do not reach the container.
 
-## Mode availability vs result codes (keep them separate)
+### Mode availability vs result codes (keep them separate)
 
 Whether a configuration can be finished today (the mode-table column) is a different layer from diagnostic CLI result codes. Setup doctor / verification CLIs ([#425](https://github.com/kooiei-in4a/amane-mailer/issues/425)–[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)) use the result-code meanings below. Existing smoke scripts mainly emit `[PASS]` / `[FAIL]`.
 
-### Mode availability (what the sources support today)
+#### Mode availability (what the sources support today)
 
 | Value | Meaning |
 |-------|---------|
@@ -65,7 +248,7 @@ Whether a configuration can be finished today (the mode-table column) is a diffe
 | **Blocked** | Desired mode, but a required path is missing so it cannot be finished now |
 | **Target only** | Taxonomy / target description only; do not mark complete with current templates |
 
-### Result codes (diagnostic output)
+#### Result codes (diagnostic output)
 
 | Code | Meaning | What to do next |
 |------|---------|-----------------|
@@ -87,7 +270,7 @@ Do not include secret values, plaintext recipients, connection strings, or raw p
 
 A quiet `mail_provider_queue_poll_failed_total` alone is **not** proof that Event Grid → Queue wiring works (the poller can run with no events arriving → `[WARN]` / `[ACTION]`).
 
-## Choose a configuration mode
+### Choose a configuration mode
 
 Answer these questions and pick **exactly one** mode.
 
@@ -105,7 +288,7 @@ Answer these questions and pick **exactly one** mode.
 | production ACS | Production delivery | `acs` | `true` (approved only) | `off` allowed | **Available** | [register-acs CLI](register-acs-cli-runbook.en.md) (confirmation **`Production`**), [deploy `.env.example`](../../infra/deploy/.env.example), [compose.yml](../../infra/deploy/compose.yml), [config README](../../config/mailer/README.en.md) |
 | production ACS + Queue | Production delivery + hard-bounce suppression | `acs` | `true` | **`queue` only** | **Available** | [bounce ingestion runbook](bounce-ingestion-runbook.en.md), [deploy `.env.example`](../../infra/deploy/.env.example), [compose.yml](../../infra/deploy/compose.yml), [register-acs CLI](register-acs-cli-runbook.en.md) (confirmation **`Production`**) |
 
-## provider / `live_sending` / bounce mode
+### provider / `live_sending` / bounce mode
 
 | Combination | Live email | Accept / persist | Notes |
 |-------------|------------|------------------|-------|
@@ -118,7 +301,7 @@ Answer these questions and pick **exactly one** mode.
 
 `MAILER_PROVIDER` / `Mailer__Provider` overrides provider for **all** tenants. Avoid unintended overrides ([config README](../../config/mailer/README.en.md)).
 
-### Boundary between ACS secret and platform-owned sender
+#### Boundary between ACS secret and platform-owned sender
 
 | Artifact | What it is for | Where it can be used today |
 |----------|----------------|----------------------------|
@@ -127,7 +310,7 @@ Answer these questions and pick **exactly one** mode.
 
 Do not instruct production operators to type `Staging` into the confirmation prompt.
 
-## Responsibility boundaries
+### Responsibility boundaries
 
 | Component | Owns | Does not own |
 |-----------|------|--------------|
@@ -138,7 +321,7 @@ Do not instruct production operators to type `Staging` into the confirmation pro
 
 Keep **ACS and Queue separated per environment** (dev / staging / production). Mixing them can mis-correlate `provider_message_id` ([bounce runbook](bounce-ingestion-runbook.en.md)).
 
-## Safety boundaries: local / staging / production
+### Safety boundaries: local / staging / production
 
 | | local | staging | production |
 |--|-------|---------|------------|
@@ -149,11 +332,11 @@ Keep **ACS and Queue separated per environment** (dev / staging / production). M
 | bounce Queue | usually unnecessary | [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) `setup check-event-grid` for per-environment read-only config checks. [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) is Staging E2E only | Available; pass `queue` + Queue name + file secret via compose |
 | Done means | health + first Mailpit delivery, etc. | start + preflight + optional explicit verification | deploy shape + production-confirmed secret registration + approved live send. Real bounce not required |
 
-## Shared checklist (information, access, secrets, network)
+### Shared checklist (information, access, secrets, network)
 
 Confirm readiness only; do not write down secret values.
 
-### Information
+#### Information
 
 - [ ] Configuration mode (exactly one from the table). For modes 4 / 5, acknowledge production-specific safety boundaries (dedicated tokens / ACS·Queue isolation, no Push). Treat published image `v1.1.0` as canonical ([release record](../releases/v1.1.0.md))
 - [ ] Tenant JSON location (copy of an example; **do not commit** real files)
@@ -163,7 +346,7 @@ Confirm readiness only; do not write down secret values.
 - [ ] Bounce mode (`off` or `queue`)
 - [ ] Whether Admin / metrics / backup are enabled (defaults off or as in runbooks)
 
-### Azure capabilities required (mode 2+, exact IAM role names follow your org)
+#### Azure capabilities required (mode 2+, exact IAM role names follow your org)
 
 - [ ] Can inspect the ACS Email resource and approved sender / domain
 - [ ] (mode 3) Can run `admin provider register-acs` on the deploy host (interactive TTY, secret directory permissions, confirmation phrase **`Staging`**)
@@ -171,7 +354,7 @@ Confirm readiness only; do not write down secret values.
 - [ ] (mode 5) Can subscribe Delivery Reports via Event Grid with a **Storage Queue** endpoint
 - [ ] (mode 5) Can pass Queue credentials **into the Mailer container via compose** (`.env` + secret file mount; host shell alone is not enough)
 
-### Secrets (location only; never record values)
+#### Secrets (location only; never record values)
 
 - [ ] Tenant Bearer token (environment variable; never plaintext in JSON)
 - [ ] (Staging ACS live) file secret written by `register-acs` (confirmation `Staging`) for `ACS_CONNECTION_STRING_FILE`
@@ -181,14 +364,14 @@ Confirm readiness only; do not write down secret values.
 - [ ] (metrics enabled) scrape bearer
 - [ ] (Admin enabled) Admin secrets such as password hash
 
-### Network / runtime
+#### Network / runtime
 
 - [ ] Docker (local / rehearsal) or deploy-host compose networking
 - [ ] Mailer HTTP (health / ready); Mailpit UI/API for local
 - [ ] Production reachability boundary (reverse proxy / firewall; no direct Admin exposure)
 - [ ] (mode 5) **Outbound** reachability from Mailer to Storage Queue (no public HTTPS ingress required)
 
-## setup doctor (read-only diagnostics)
+### setup doctor (read-only diagnostics)
 
 Before setup or after a failed start, run read-only diagnostics for local configuration and host prerequisites. The command does **not** change config files, the DB, containers, or Azure resources.
 
@@ -213,16 +396,16 @@ Output uses the result codes above (PASS / FAIL / WARN / ACTION) and ends with `
 
 On deploy hosts, prefer running setup doctor **on the host** (with the same env / compose files the containers will use) so Docker CLI and published host ports are meaningful. If you run the command inside the Mailer container, Docker availability and loopback port checks are reported as WARN / ACTION because they only reflect the container namespace.
 
-## Execution order (all modes)
+### Execution order (all modes)
 
 1. **Preflight** — choose mode, complete the checklist, run **setup doctor** (above), validate tenant / env shape ([config README Preflight](../../config/mailer/README.en.md#preflight))
 2. **Setup** — follow the mode’s primary runbooks to start / register (do not force completion where gaps remain)
 3. **Verification** — health / ready, accept, and mode-appropriate delivery or no-send checks using the result codes above
-4. **Troubleshooting** — on FAIL / WARN, use “Where to look when something fails” below. No auto-repair (ACTION)
+4. **Troubleshooting** — on FAIL / WARN, use [Troubleshooting](#troubleshooting) below. No auto-repair (ACTION)
 
-## One path per mode
+### One path per mode
 
-### 1. local Mailpit
+#### 1. local Mailpit
 
 **Order**
 
@@ -232,7 +415,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 **Done when:** `[PASS]` for health / ready / first Mailpit delivery. ACS, bounce, and real bounces are not required.
 
-### 2. staging ACS no-send
+#### 2. staging ACS no-send
 
 **Order**
 
@@ -243,7 +426,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 **Done when:** the stack is healthy / ready and no live mail was sent.
 
-### 3. staging ACS verification
+#### 3. staging ACS verification
 
 **Prerequisite:** a mode-2-shaped deploy stack is running. Validation is **explicit only**. Scope is **Staging**.
 
@@ -257,7 +440,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 **Done when:** the explicit validation message is processed via ACS as expected. **A real bounce is not required.** Presence of `platform-sender.json` is not evidence that tenant live send is complete.
 
-### 4. production ACS
+#### 4. production ACS
 
 **Scope:** In addition to the deploy template and configuration, `admin provider register-acs` with exact **`Production`** confirmation registers the file secret. Do not suggest typing `Staging` as a production workaround: `Staging` is accepted as a **staging** registration and is not production evidence; `setup doctor --mode production-acs` reports `[FAIL]` when `environment` mismatches.
 
@@ -274,9 +457,9 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 **Done when:** deploy shape, tenant / env preflight, `Production`-confirmed secret registration, post-registration doctor `platform_sender_environment` PASS, health/ready, and approved live send can be `[PASS]`. Published image is `v1.1.0` ([release record](../releases/v1.1.0.md)).
 
-### 5. production ACS + Event Grid / Storage Queue
+#### 5. production ACS + Event Grid / Storage Queue
 
-**Scope:** In addition to mode 4, [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) / [`.env.example`](../../infra/deploy/.env.example) pass bounce Queue settings into the Mailer container. Host-shell-only variables still do not reach the container. Do not create a Push webhook (#304).
+**Scope:** In addition to mode 4, [`infra/deploy/compose.yml`](../../infra/deploy/compose.yml) / [`.env.example`](../../infra/deploy/.env.example) pass bounce Queue settings into the Mailer container. Host-shell-only variables still do not reach the container. Do not create a Push webhook (#304). This mode is **Manual** for Easy Setup (not assistant-automated).
 
 **Order**
 
@@ -297,11 +480,51 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 
 **Done when:** mode 4 completion plus compose-wired `queue` settings, Queue file secret, Queue name, and Event Grid → Queue configuration checks can be `[PASS]` / human-confirmed. Published image is `v1.1.0` ([release record](../releases/v1.1.0.md)).
 
-## Where to look when something fails
+### Manual verification helpers (availability)
+
+| Issue | Capability | Boundary |
+|-------|------------|----------|
+| [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **Available** (see “setup doctor” above) |
+| [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS-only live send check CLI | **Available** — [test-acs-send-cli-runbook.en.md](test-acs-send-cli-runbook.en.md) (Staging only) |
+| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check (`setup check-event-grid`) | **Available** — [event-grid-config-check-runbook.en.md](event-grid-config-check-runbook.en.md) (selected environment; does not prove arrival) |
+| [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report Queue arrival E2E (message ID correlation; real bounce not required) | **Available** — [verify-delivery-report-runbook.en.md](verify-delivery-report-runbook.en.md) (**Staging only**. Production Queue / production test send are non-goals) |
+
+For Manual setup, use the CLIs above plus existing preflight / smoke / manual runbook checks.
+
+---
+
+## Hardened Deployment
+
+Use Hardened Deployment when you need strict host controls and will **not** use the Easy Setup assistant.
+
+- Build on the **Manual** contract (modes, runbooks, file secrets, compose).
+- Do **not** create Managed root / `ACTIVE` / Easy Setup metadata.
+- Prefer file secrets with owner-only permissions; keep `.env`, tenants, secrets, DB, and backups in **separate** storage locations as your policy requires.
+- No remote Docker, Docker socket delegation into the Mailer container, or arbitrary Compose stacks outside the documented deploy template.
+- Production Admin: HTTPS only; `AMANE_ADMIN_ALLOW_HTTP=false`.
+- TLS-terminating reverse proxy → Mailer HTTP upstream: `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` (compose contract; trusted proxy only).
+
+CLI examples (exact):
+
+```text
+Amane.Mailer setup doctor --mode <mode>
+Amane.Mailer admin provider register-acs
+Amane.Mailer admin hash-password
+Amane.Mailer admin user create --username <name> --password-hash <pbkdf2> --tenant-id <uuid>
+Amane.Mailer db backup <absolute-path>
+Amane.Mailer db checkpoint
+```
+
+Treat `password-hash` as sensitive: do not paste it into docs, logs, or issues. It may remain in shell history or process listings. Admin details stay in existing Admin / local Docker runbooks — do not present break-glass as the default path.
+
+---
+
+## Troubleshooting
 
 | Example symptom | See |
 |-----------------|-----|
-| tenant / token / `LIVE_SENDING_DISABLED` / missing provider config | [config README troubleshooting](../../config/mailer/README.en.md#tenant--env-troubleshooting), setup doctor in this guide |
+| Easy Setup start / VPS / non-interactive Admin FAIL | [Easy Setup troubleshooting](#easy-setup-troubleshooting-pointers) |
+| tenant / token / `LIVE_SENDING_DISABLED` / missing provider config | [config README troubleshooting](../../config/mailer/README.en.md#tenant--env-troubleshooting), setup doctor in Manual Deployment |
 | local start / Admin / Mailpit | [local Docker runbook](local-mailer-docker-runbook.en.md) |
 | deploy-shaped compose / migrate / network | [local deploy rehearsal](local-deploy-rehearsal-runbook.en.md) |
 | Staging / Production ACS secret registration failure | [register-acs CLI](register-acs-cli-runbook.en.md) (match confirmation phrase to the environment) |
@@ -311,23 +534,23 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 | bounce / unmatched / Queue poll (runtime description) | [bounce ingestion](bounce-ingestion-runbook.en.md), [metrics-and-alerts](metrics-and-alerts.en.md) |
 | backup / restore | [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md) |
 | published image smoke (published tags) | [release-image-smoke](release-image-smoke.en.md) |
-
-## Verification helpers (availability)
-
-| Issue | Capability | Boundary |
-|-------|------------|----------|
-| [#425](https://github.com/kooiei-in4a/amane-mailer/issues/425) | read-only setup doctor | **Available** (see “setup doctor” above) |
-| [#426](https://github.com/kooiei-in4a/amane-mailer/issues/426) | ACS-only live send check CLI | **Available** — [test-acs-send-cli-runbook.en.md](test-acs-send-cli-runbook.en.md) (Staging only) |
-| [#427](https://github.com/kooiei-in4a/amane-mailer/issues/427) | read-only Event Grid / Storage Queue configuration check (`setup check-event-grid`) | **Available** — [event-grid-config-check-runbook.en.md](event-grid-config-check-runbook.en.md) (selected environment; does not prove arrival) |
-| [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) | Delivery Report Queue arrival E2E (message ID correlation; real bounce not required) | **Available** — [verify-delivery-report-runbook.en.md](verify-delivery-report-runbook.en.md) (**Staging only**. Production Queue / production test send are non-goals) |
-
-For the setup entry point, use the CLIs above plus existing preflight / smoke / manual runbook checks.
+| candidate packaging / handoff | [setup-release-bundle](setup-release-bundle.en.md) |
 
 ## Non-goals of this entry point
 
+- Runtime implementation changes in this documentation issue
+- Marketing site
+- Per-NAS product manuals
+- Credential / password rotation guides
+- Reverse proxy / certificate / DNS auto-configuration
+- Non-interactive Admin bootstrap
+- Password hash file input for Admin bootstrap
+- Recording deployment operational verification inside Easy Setup
+- Exhaustive external secret-manager product guides
 - Azure resource auto-creation
 - Copying full existing runbooks into this file
-- Documenting v1.2.0 Consumer bounce API / webhook contracts
+- Documenting Consumer bounce API / webhook contracts for v1.2.0 (#307 is later)
 - Adopting Event Grid Push (#304)
 - Workarounds that ask production operators to type `Staging`
 - Publishing real credentials, tenants, or private paths
+- Embedding #456 Hard gate tables or candidate-specific digest values
