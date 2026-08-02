@@ -141,6 +141,8 @@ Staging test vs Production: keep ACS / Queue / tokens separated per environment.
 | **Local Development** | `ASPNETCORE_ENVIRONMENT=Development`; loopback-only host publish; `AMANE_ADMIN_ALLOW_HTTP=true`; localhost access; `Connection.LocalIpAddress` matches `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` |
 | **Production HTTPS** | Approved HTTPS reverse proxy already exists; `AMANE_ADMIN_ALLOW_HTTP=false`; Secure / `__Host-` cookies; server-side local address matches allowed local address; no direct internet Admin exposure |
 
+When the reverse proxy terminates TLS and forwards plain HTTP to Mailer, set `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` in compose / `external.env` so `X-Forwarded-Proto` makes Admin antiforgery treat the request as HTTPS. Enable only behind that trusted proxy boundary.
+
 `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` matches **`Connection.LocalIpAddress`** (server-side), **not** the client source IP.
 
 Easy Setup does **not** build reverse proxies, certificates, or DNS. If no HTTPS Production path exists, **keep Admin disabled**. Main setup can still succeed.
@@ -500,6 +502,7 @@ Use Hardened Deployment when you need strict host controls and will **not** use 
 - Prefer file secrets with owner-only permissions; keep `.env`, tenants, secrets, DB, and backups in **separate** storage locations as your policy requires.
 - No remote Docker, Docker socket delegation into the Mailer container, or arbitrary Compose stacks outside the documented deploy template.
 - Production Admin: HTTPS only; `AMANE_ADMIN_ALLOW_HTTP=false`.
+- TLS-terminating reverse proxy → Mailer HTTP upstream: `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` (compose contract; trusted proxy only).
 
 CLI examples (exact):
 

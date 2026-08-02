@@ -141,6 +141,8 @@ Staging 試験と Production は ACS / Queue / token を環境分離する。Sta
 | **Local Development** | `ASPNETCORE_ENVIRONMENT=Development`、loopback のみ host 公開、`AMANE_ADMIN_ALLOW_HTTP=true`、localhost アクセス、`Connection.LocalIpAddress` が `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` と一致 |
 | **Production HTTPS** | 承認済み HTTPS reverse proxy が**既に存在**、`AMANE_ADMIN_ALLOW_HTTP=false`、Secure / `__Host-` cookie、server-side local address が allowed local address と一致、Admin の Internet 直公開なし |
 
+reverse proxy が TLS を終端し Mailer へ平文 HTTP で転送する場合は、compose / `external.env` で `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` を設定する。`X-Forwarded-Proto` により Admin antiforgery が HTTPS 扱いになり、Secure cookie が成立する。信頼できる proxy 境界の背後でのみ有効化する。
+
 `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` はクライアント送信元 IP ではなく、**`Connection.LocalIpAddress`**（server-side）を照合します。
 
 Easy Setup は reverse proxy・証明書・DNS を**自動構築しない**。Production HTTPS 経路がなければ **Admin を disabled のまま**にする。Main セットアップは成功可能です。
@@ -499,6 +501,7 @@ Easy Setup assistant を使わず、厳格な host 制御が必要なときに H
 - file secret と owner-only 権限を優先し、`.env` / tenants / secrets / DB / backup を方針に応じて**分離した**置き場所に保つ
 - remote Docker、Mailer コンテナへの Docker socket 委譲、文書化された deploy テンプレート外の任意 Compose は使わない
 - Production Admin は HTTPS のみ。`AMANE_ADMIN_ALLOW_HTTP=false`
+- TLS 終端 reverse proxy → Mailer HTTP upstream の場合は `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true`（compose 契約。信頼できる proxy 境界のみ）
 
 CLI 例（exact）:
 
