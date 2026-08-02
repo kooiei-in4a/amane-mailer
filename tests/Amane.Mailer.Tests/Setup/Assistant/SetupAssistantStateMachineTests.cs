@@ -197,6 +197,45 @@ public sealed class SetupAssistantStateMachineTests
     }
 
     [Fact]
+    public async Task Admin_bootstrap_outcome_submit_without_retry_is_stale()
+    {
+        await using var harness = await SetupAssistantHarness.StartAsync();
+        await StartMainSetupAsync(harness, SetupMode.LocalMailpit);
+        await RunAdminBootstrapAsync(harness);
+        Assert.Equal(1, harness.Operations.AdminBootstrapCalls);
+
+        using var replay = await harness.PostStepAsync(
+            "/admin-bootstrap",
+            ("admin_username", "setup-admin"),
+            ("admin_password", "assistant-test-admin-password"),
+            ("admin_password_confirm", "assistant-test-admin-password"));
+
+        Assert.Equal(HttpStatusCode.Conflict, replay.StatusCode);
+        Assert.Contains(
+            "画面の内容が古くなっています",
+            await replay.Content.ReadAsStringAsync(TestContext.Current.CancellationToken),
+            StringComparison.Ordinal);
+        Assert.Equal(1, harness.Operations.AdminBootstrapCalls);
+    }
+
+    [Fact]
+    public async Task Admin_bootstrap_retry_after_success_allows_second_submit()
+    {
+        await using var harness = await SetupAssistantHarness.StartAsync();
+        await StartMainSetupAsync(harness, SetupMode.LocalMailpit);
+        await RunAdminBootstrapAsync(harness);
+
+        await harness.PostStepAsync("/admin-bootstrap", ("action", "retry"));
+        await harness.PostStepAsync(
+            "/admin-bootstrap",
+            ("admin_username", "setup-admin"),
+            ("admin_password", "assistant-test-admin-password"),
+            ("admin_password_confirm", "assistant-test-admin-password"));
+
+        Assert.Equal(2, harness.Operations.AdminBootstrapCalls);
+    }
+
+    [Fact]
     public async Task Final_guidance_reports_main_setup_manual_action_without_admin()
     {
         await using var harness = await SetupAssistantHarness.StartAsync();

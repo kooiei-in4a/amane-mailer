@@ -499,6 +499,16 @@ internal static class SetupAssistantPages
                     ("手動対応", outcome.ManualActionRequired ? "必要" : "不要"),
                 }));
             body.AppendLine("<div class=\"card note\">Admin bootstrap の結果は Main setup とは独立しています。ここが失敗しても Main setup の成功は維持されます。</div>");
+            if (SetupAssistantTransitions.CanRetryAdminBootstrap(session))
+            {
+                body.Append(Form(
+                    session,
+                    "/admin-bootstrap",
+                    "同一ユーザーで再適用する",
+                    secondary: true,
+                    hidden: ("action", "retry")));
+            }
+
             body.Append(Form(session, "/finish", "最終案内へ進む", hidden: ("action", "continue")));
             return body.ToString();
         }

@@ -229,6 +229,8 @@ internal sealed class FakeSetupAssistantOperations : ISetupAssistantOperations
 
     internal SetupAssistantAdminBootstrapInput? LastAdminBootstrapInput { get; private set; }
 
+    internal int AdminBootstrapCalls { get; private set; }
+
     internal int DockerPreflightCalls { get; private set; }
 
     /// <summary>When set, BootstrapAdminAsync throws this exception after recording the call.</summary>
@@ -306,6 +308,7 @@ internal sealed class FakeSetupAssistantOperations : ISetupAssistantOperations
         SetupAssistantAdminBootstrapInput input,
         CancellationToken cancellationToken)
     {
+        AdminBootstrapCalls++;
         LastAdminBootstrapInput = input;
         if (BootstrapCancels)
         {
@@ -326,7 +329,7 @@ internal sealed class FakeSetupAssistantOperations : ISetupAssistantOperations
         Kind = SetupAssistantOutcomeKind.Succeeded,
         AccessProfile = "local-development",
         ConfigRollback = "not-applicable",
-        AdminDatabaseState = "bootstrapped",
+        AdminDatabaseState = "managed-same-user",
         AdminExposure = "enabled",
         LoginVerification = "verified",
         SetupStatusVerification = "verified",

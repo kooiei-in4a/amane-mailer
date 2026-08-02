@@ -228,6 +228,12 @@ internal sealed class SetupAssistantSession : IDisposable
     internal void SetAdminBootstrap(SetupAssistantAdminBootstrapOutcome outcome) =>
         AdminBootstrap = outcome;
 
+    /// <summary>
+    /// Clears a recorded Admin bootstrap outcome so managed same-user reapply can submit again.
+    /// Does not reset <see cref="AdminBootstrapStarted"/> — side-effect honesty stays intact.
+    /// </summary>
+    internal void ClearAdminBootstrapForRetry() => AdminBootstrap = null;
+
     internal void SkipAdmin() => AdminSkipped = true;
 
     /// <summary>

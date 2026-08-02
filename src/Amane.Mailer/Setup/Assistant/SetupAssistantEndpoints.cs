@@ -602,6 +602,13 @@ internal static class SetupAssistantEndpoints
             return;
         }
 
+        if (step.Action == "retry")
+        {
+            session.ClearAdminBootstrapForRetry();
+            session.MoveTo(SetupAssistantStep.AdminBootstrapOutcome);
+            return;
+        }
+
         var username = step.Field("admin_username");
         var password = step.Field("admin_password");
         var confirmation = step.Field("admin_password_confirm");
