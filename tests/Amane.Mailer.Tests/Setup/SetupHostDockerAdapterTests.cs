@@ -403,11 +403,14 @@ public sealed class SetupHostDockerAdapterTests
             .Zip(inspectionArgs!.Skip(1), (left, right) => (left, right))
             .Where(pair => string.Equals(pair.left, "-e", StringComparison.Ordinal))
             .Select(pair => pair.right)
-            .Where(key => !string.Equals(key, SetupDockerInventory.ContainerVerifierEnvKey, StringComparison.Ordinal))
+            .Where(arg => !string.Equals(arg, SetupDockerInventory.ContainerVerifierEnvKey, StringComparison.Ordinal))
             .ToArray();
-        Assert.Contains("COMPOSE_PROJECT_NAME", publicEnvPassThrough, StringComparer.Ordinal);
-        Assert.Contains("MAILER_IMAGE_REFERENCE", publicEnvPassThrough, StringComparer.Ordinal);
-        Assert.Contains("MAILER_TENANTS_HOST_PATH", publicEnvPassThrough, StringComparer.Ordinal);
+        Assert.True(
+            publicEnvPassThrough.Any(arg => arg.StartsWith("COMPOSE_PROJECT_NAME=", StringComparison.Ordinal)));
+        Assert.True(
+            publicEnvPassThrough.Any(arg => arg.StartsWith("MAILER_IMAGE_REFERENCE=", StringComparison.Ordinal)));
+        Assert.True(
+            publicEnvPassThrough.Any(arg => arg.StartsWith("MAILER_TENANTS_HOST_PATH=", StringComparison.Ordinal)));
     }
 
     [Fact]

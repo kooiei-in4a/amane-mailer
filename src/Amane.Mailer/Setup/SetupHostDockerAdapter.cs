@@ -681,12 +681,14 @@ public sealed class SetupHostDockerAdapter
         yield return "-e";
         yield return SetupDockerInventory.ContainerVerifierEnvKey;
 
+        // Explicit KEY=VALUE pairs — do not rely on `-e KEY` host passthrough, which is
+        // unreliable on Linux docker compose when the child process env is cleared (#494).
         foreach (var key in ManagedEnvKeyCatalog.PublicNonSecretKeys.OrderBy(static k => k, StringComparer.Ordinal))
         {
-            if (pinnedComposeEnv.ContainsKey(key))
+            if (pinnedComposeEnv.TryGetValue(key, out var value))
             {
                 yield return "-e";
-                yield return key;
+                yield return $"{key}={value}";
             }
         }
 
@@ -1003,24 +1005,27 @@ public sealed class SetupHostDockerAdapter
         _ = DockerOutputSanitizer.SanitizeForInternalUse(processResult.StandardOutput);
         _ = DockerOutputSanitizer.SanitizeForInternalUse(processResult.StandardError);
 
-        if (processResult.Outcome == HostProcessOutcome.Completed
-            && processResult.ExitCode == 0
-            && deserializeInspection)
+        if (processResult.Outcome == HostProcessOutcome.Completed && deserializeInspection)
         {
             try
             {
                 var inspection = JsonSerializer.Deserialize(
                     processResult.StandardOutput ?? string.Empty,
                     SetupHostDockerJsonContext.Default.SetupInspectEffectiveResult);
-                return inspection is null
-                    ? SetupDockerResult.Fail(
-                        SetupDockerResultCode.OutputMalformed,
-                        "Effective inspection output was malformed.")
-                    : SetupDockerResult.Ok(
-                        "Docker operation succeeded.",
+                if (inspection is not null)
+                {
+                    // inspect-effective exits non-zero for business issues (fingerprint mismatch,
+                    // mount mismatch); callers classify via Inspection, not process exit code.
+                    return SetupDockerResult.Ok(
+                        "Effective inspection completed.",
                         session.Binding.EngineKind,
                         session.Binding.ComposeMajorVersion,
                         inspection);
+                }
+
+                return SetupDockerResult.Fail(
+                    SetupDockerResultCode.OutputMalformed,
+                    "Effective inspection output was malformed.");
             }
             catch (JsonException)
             {

@@ -666,6 +666,21 @@ public sealed class SetupInspectEffectiveTests
         return new ConfigurationBuilder().AddInMemoryCollection(dict).Build();
     }
 
+    private static SortedDictionary<string, string> CollectRawPublicCompose(IConfiguration configuration)
+    {
+        var compose = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        foreach (var key in ManagedEnvKeyCatalog.PublicNonSecretKeys)
+        {
+            var value = configuration[key];
+            if (value is not null)
+            {
+                compose[key] = value;
+            }
+        }
+
+        return compose;
+    }
+
     /// <summary>
     /// Host-side tests point MAILER_SETUP_RECORDED_METADATA_PATH at a temp file. Rewrite the
     /// recorded fingerprint so it matches CollectPublicCompose over that same configuration
@@ -682,18 +697,9 @@ public sealed class SetupInspectEffectiveTests
             ?? throw new InvalidOperationException("MAILER_TENANTS_PATH is required.");
         var tenants = MailerTenantRegistry.LoadTenantsFile(tenantsPath);
 
-        var compose = new SortedDictionary<string, string>(StringComparer.Ordinal);
-        foreach (var key in ManagedEnvKeyCatalog.PublicNonSecretKeys)
-        {
-            var value = configuration[key];
-            if (value is not null)
-            {
-                compose[key] = value.Replace(
-                    $"bundles/{recorded.BundleId}/",
-                    "bundles/<bundle-id>/",
-                    StringComparison.Ordinal);
-            }
-        }
+        var compose = SetupFingerprintComposeNormalizer.Normalize(
+            CollectRawPublicCompose(configuration),
+            recorded.BundleId);
 
         PlatformSenderFile? platformSender = null;
         var tenantsDir = Path.GetDirectoryName(tenantsPath);
