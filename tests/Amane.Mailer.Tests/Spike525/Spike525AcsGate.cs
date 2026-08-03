@@ -75,6 +75,13 @@ internal static class Spike525AcsGate
 /// each time (#525 send-budget policy: "retryは新しい送信としてカウント"). Not reset between
 /// [Fact] methods in the same test run — the whole <c>dotnet test</c> process shares one budget,
 /// matching the Issue #525 requirement that the cap bounds the whole Spike session.
+///
+/// This counter is per OS process only (in-memory), not durable across separate
+/// <c>dotnet test</c> invocations. When #525 work spans multiple invocations in the same
+/// operator session, the operator/agent driving the run is responsible for adding each
+/// invocation's <see cref="Used"/> total to the running cumulative count and stopping before
+/// AMANE_ACS_SPIKE_MAX_SENDS is exceeded across the whole session — the same way Evidence
+/// output from each run is manually reviewed before deciding whether to run another fixture.
 /// </summary>
 internal static class Spike525AcsSendBudget
 {
