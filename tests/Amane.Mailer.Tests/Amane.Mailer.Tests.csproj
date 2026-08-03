@@ -20,11 +20,18 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Amane.Mailer\Amane.Mailer.csproj" />
     <ProjectReference Include="..\..\src\Amane.Mailer.Contracts\Amane.Mailer.Contracts.csproj" />
-    <ProjectReference Include="..\Amane.Mailer.Spike526.Probe\Amane.Mailer.Spike526.Probe.csproj" />
     <ProjectReference Include="..\Amane.Mailer.ProcessFixture\Amane.Mailer.ProcessFixture.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <PrivateAssets>all</PrivateAssets>
     </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526AcsEnvelopeCapture.cs" Link="Spike526Probe\Spike526AcsEnvelopeCapture.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526FixtureFactory.cs" Link="Spike526Probe\Spike526FixtureFactory.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526Models.cs" Link="Spike526Probe\Spike526Models.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526TempStore.cs" Link="Spike526Probe\Spike526TempStore.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526TokenBufferProcessor.cs" Link="Spike526Probe\Spike526TokenBufferProcessor.cs" />
   </ItemGroup>
 
   <Target Name="CopyProcessFixtureToOutput" AfterTargets="Build">
@@ -44,25 +51,6 @@
           DestinationFolder="$(TargetDir)"
           SkipUnchangedFiles="true"
           Condition="'@(_ProcessFixtureCopy)' != ''" />
-  </Target>
-
-  <Target Name="CopySpike526ProbeToOutput" AfterTargets="Build">
-    <PropertyGroup>
-      <_Spike526ProbeOutDir>$(MSBuildThisFileDirectory)..\Amane.Mailer.Spike526.Probe\bin\$(Configuration)\$(TargetFramework)\</_Spike526ProbeOutDir>
-    </PropertyGroup>
-    <ItemGroup>
-      <_Spike526ProbeCopy Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.dll" />
-      <_Spike526ProbeCopy Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.deps.json" />
-      <_Spike526ProbeCopy Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.runtimeconfig.json" />
-      <_Spike526ProbeCopy Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.exe"
-                          Condition="Exists('$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.exe')" />
-      <_Spike526ProbeCopy Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe"
-                          Condition="Exists('$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe')" />
-    </ItemGroup>
-    <Copy SourceFiles="@(_Spike526ProbeCopy)"
-          DestinationFolder="$(TargetDir)"
-          SkipUnchangedFiles="true"
-          Condition="'@(_Spike526ProbeCopy)' != ''" />
   </Target>
 
   <ItemGroup>
