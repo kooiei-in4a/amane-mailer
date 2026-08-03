@@ -1,5 +1,11 @@
 # Issue #456 Release Qualification Plan
 
+> **Completion (historical plan):** #456 attempt 13 sealed with
+> `GO_ELIGIBLE` + `APPROVE`. v1.2.0 published; see
+> [docs/releases/v1.2.0.md](../releases/v1.2.0.md). Issues #445 / #456 / #458 are
+> **closed**. Do **not** treat the REVISE / B-MIG-SET / “does not authorize”
+> planning wording below as the current product status.
+
 > **Status:** **REVISE response** (Agent B Rev.11 finding **M-R11-01** digest canonicalization / `evidenceDigestSha256` circularity). Still does **not** authorize Go execution / publish / Phase 1 from this document alone. `migrationDecision=INCLUDE` for frozen 012/013; `dSeqAck=true`; `attestMode=EXTERNAL_PROVENANCE`. B-MIG clearance remains **SET** until phase-aware subgates (B-MIG-SCOPE / B-MIG-PIN / B-MIG-BIND) clear. Full nine-condition clear is **not** required before #458 Phase 1 version prep — only **B-MIG-SCOPE**. Sync-ready for sister [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) Rev.7 (identical digest-rule essence).
 > **Issue:** [#456](https://github.com/kooiei-in4a/amane-mailer/issues/456)
 > **Parent tracking:** [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445)

@@ -17,7 +17,8 @@ Use placeholders only (`replace-with-*`, `example.invalid`, synthetic UUIDs / pa
 | Ops runbooks under `docs/ops/` | Detailed procedures (link; do not copy full text here) |
 | [ADR 0021](../adr/0021-easy-setup-boundaries.md) | Easy Setup design authority |
 | [setup-release-bundle](setup-release-bundle.en.md) | Maintainer packaging / candidate handoff |
-| [implementation-status](../implementation-status.json) | Tracked feature status (Easy Setup remains `partial` until #458) |
+| [implementation-status](../implementation-status.json) | Tracked feature status (Easy Setup is `implemented` in v1.2.0) |
+| [v1.2.0 release record](../releases/v1.2.0.md) | Published identities / digests / migrations / smoke evidence |
 | Candidate `README-SETUP.md` | Minimal extract entry; links back to this guide at the candidate `sourceCommitSha` |
 
 ## Path selection
@@ -25,14 +26,14 @@ Use placeholders only (`replace-with-*`, `example.invalid`, synthetic UUIDs / pa
 | Path | When to choose | Notes |
 |------|----------------|-------|
 | **Easy Setup (recommended)** | Windows Docker Desktop or Linux Docker Engine / VPS; modes 1–4 | Host `setup assistant` / optional non-interactive Main apply. Mode 5 is Manual. |
-| **Manual Deployment** | You prefer existing runbooks / CLI without Managed bundles | Modes 1–5 remain available. Honest v1.1.0 published-image notes stay below. |
+| **Manual Deployment** | You prefer existing runbooks / CLI without Managed bundles | Modes 1–5 remain available. Current published image is **v1.2.0** (prior v1.1.0 remains available) |
 | **Hardened Deployment** | Strict file-secret / owner-only / no Managed metadata | Easy Setup assistant is **not** used. Manual contract foundation. |
 
 ---
 
 ## Easy Setup (recommended)
 
-Easy Setup wraps existing `.env` / `tenants.json` / file-secret / deploy compose contracts with a host-local Web or terminal assistant ([ADR 0021](../adr/0021-easy-setup-boundaries.md)). Implementation status is **partial** until [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458); use Manual paths when you need today’s guaranteed completion without Managed activation.
+Easy Setup wraps existing `.env` / `tenants.json` / file-secret / deploy compose contracts with a host-local Web or terminal assistant ([ADR 0021](../adr/0021-easy-setup-boundaries.md)). It is **`implemented` in v1.2.0** ([#445](https://github.com/kooiei-in4a/amane-mailer/issues/445) / [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458)). Use Manual paths when you prefer not to activate Managed bundles.
 
 ### Platform starts
 
@@ -70,9 +71,9 @@ Verify methods only — **do not** treat any fixed digest in this guide as autho
 
 Packaging maintainer steps: [setup-release-bundle](setup-release-bundle.en.md). Operator judgment stays in this guide.
 
-#### Published release users (#458 later)
+#### Published release users
 
-After publish, use GitHub Release checksums / the public release record / the public image digest. Do not confuse candidate handoff with published release verification.
+For published **v1.2.0**, use GitHub Release checksums / the [release record](../releases/v1.2.0.md) / the public image digest (<https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0>). Do not confuse candidate handoff with published release verification. Host archives for Windows x64 / Linux x64 / Linux arm64 are attached.
 
 ### Managed boundaries
 
@@ -157,7 +158,14 @@ Easy Setup does **not** build reverse proxies, certificates, or DNS. If no HTTPS
 | Remote Docker / Kubernetes / Podman / macOS formal distribution | Out of scope |
 | Consumer bounced Webhook [#307](https://github.com/kooiei-in4a/amane-mailer/issues/307) | Out of v1.2.0 (v1.5.0+) |
 
-**Setup is not upgrade.** Product upgrade / publish remains later issues (#458).
+**Setup is not upgrade.** Easy Setup targets first-time / managed setup. Product upgrades for existing Manual / Hardened deployments pull the published image and apply SQLite migrations on the normal runtime path (not a silent Admin re-bootstrap).
+
+**v1.1.0 → v1.2.0 DB migrations (INCLUDE):** take a backup first; the runtime applies (omission / `none` is not allowed):
+
+- `012_provider_event_inbox_details.sql`
+- `013_provider_queue_dead_letters.sql`
+
+Identities: [docs/releases/v1.2.0.md](../releases/v1.2.0.md).
 
 ### Backup / rollback / recovery (high level)
 
@@ -188,7 +196,7 @@ If qualification (#456) finds a documentation defect in this guide or candidate 
 
 ## Manual Deployment
 
-Manual Deployment remains a first-class path. The sections below preserve the v1.1.0-era mode 1–5 runbook order, availability meanings, and honest published **v1.1.0** image notes. Do not blindly replace every `v1.1.0` artifact reference with `v1.2.0`.
+Manual Deployment remains a first-class path. The sections below keep the mode 1–5 runbook order and availability meanings. **The current recommended published image is v1.2.0.** Feature-boundary notes that originated in v1.1.0 (for example bounce Queue adoption) remain as historical facts.
 
 Container one-shot effective inspection (`Amane.Mailer setup inspect-effective --format json`, [#447](https://github.com/kooiei-in4a/amane-mailer/issues/447)) is implemented for Managed hosts. stdout is JSON only. recorded / effective / mountAttestation are separate; the one-shot never claims final `bundleIntegrity=matched` by itself. Host assistant / ACTIVE apply do not delete these Manual procedures.
 
@@ -205,7 +213,7 @@ Container one-shot effective inspection (`Amane.Mailer setup inspect-effective -
 | [event-grid config check](event-grid-config-check-runbook.en.md) | Read-only Event Grid / Queue configuration check | Per environment; does not prove arrival |
 | [verify-delivery-report](verify-delivery-report-runbook.en.md) | Delivery Report Queue arrival E2E | **Staging only**. Not production evidence |
 | [config README](../../config/mailer/README.en.md) | tenant / env / preflight | Config shape source for all modes |
-| [release-image-smoke](release-image-smoke.en.md) | Published-image smoke | For published tags; not a `v1.1.0` check while that tag is missing |
+| [release-image-smoke](release-image-smoke.en.md) | Published-image smoke | For published tags; default is `v1.2.0` |
 
 ### Before you start (safety)
 
@@ -215,14 +223,21 @@ Container one-shot effective inspection (`Amane.Mailer setup inspect-effective -
 - The v1.1.0 bounce transport is **Storage Queue Pull only** (`MAILER_BOUNCE_INGESTION=queue`).
 - **Generating a real bounce is not a normal setup completion criterion.**
 
-### About the published v1.1.0 image
+### About the published image (current v1.2.0)
 
-The public GitHub release / GHCR tag `v1.1.0` (including migration `011`) is available.
-Final verification evidence is in [docs/releases/v1.1.0.md](../releases/v1.1.0.md)
-(including release-image smoke). If you follow procedures with a local build or
-develop-derived artifact, record that in your ops notes.
+**Current recommendation:** public GitHub release / GHCR tag `v1.2.0` for both Easy Setup and Manual paths.
+Evidence: [docs/releases/v1.2.0.md](../releases/v1.2.0.md) (including release-image smoke) and
+<https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0>.
 
-[release-image-smoke](release-image-smoke.en.md) defaults to the published release tag (`v1.1.0`).
+When upgrading from a v1.1.0 deployment, take a DB backup before pulling the image. Expect runtime
+migrations `012_provider_event_inbox_details.sql` and `013_provider_queue_dead_letters.sql`
+(INCLUDE; omission is not allowed).
+
+**Prior release:** `v1.1.0` (through migration `011`) evidence remains in
+[docs/releases/v1.1.0.md](../releases/v1.1.0.md).
+If you follow procedures with a local build or develop-derived artifact, record that in your ops notes.
+
+[release-image-smoke](release-image-smoke.en.md) defaults to the published release tag (`v1.2.0`).
 
 ### Configurations that cannot be completed today (honest boundaries)
 
@@ -264,7 +279,7 @@ Examples:
 | Production ACS secret not registered (including wrong confirmation phrase) | Available (procedure exists) | `[FAIL]` or `[ACTION]` (`Production` confirmation on register-acs) |
 | Bounce mode / Queue secret / Queue name missing (mode 5) | Available (procedure exists) | `[FAIL]` or `[ACTION]` (settings via compose) |
 | Queue poller runs but Event Grid arrival unconfirmed | (depends on mode) | `[WARN]` or `[ACTION]` |
-| Published v1.1.0 image not verified | (depends on mode) | After publish, see the [v1.1.0 release record](../releases/v1.1.0.md). Hosts not yet on that image: `[WARN]` / `[ACTION]` |
+| Published v1.2.0 image not verified | (depends on mode) | See the [v1.2.0 release record](../releases/v1.2.0.md). Hosts not yet on that image: `[WARN]` / `[ACTION]` |
 
 Do not include secret values, plaintext recipients, connection strings, or raw provider errors in results. Report only which setting key or capability is missing.
 
@@ -338,7 +353,7 @@ Confirm readiness only; do not write down secret values.
 
 #### Information
 
-- [ ] Configuration mode (exactly one from the table). For modes 4 / 5, acknowledge production-specific safety boundaries (dedicated tokens / ACS·Queue isolation, no Push). Treat published image `v1.1.0` as canonical ([release record](../releases/v1.1.0.md))
+- [ ] Configuration mode (exactly one from the table). For modes 4 / 5, acknowledge production-specific safety boundaries (dedicated tokens / ACS·Queue isolation, no Push). Treat published image `v1.2.0` as canonical ([release record](../releases/v1.2.0.md))
 - [ ] Tenant JSON location (copy of an example; **do not commit** real files)
 - [ ] Each tenant `token_env` name and where the matching environment variable is set
 - [ ] Effective provider (tenant JSON or `MAILER_PROVIDER`)
@@ -452,10 +467,10 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 4. Setup (backup, optional): [Backup operations](backup-operations.en.md), [Restore procedure](restore-procedure.en.md), [Restore verification](restore-verification.en.md)
 5. Setup (ACS secret): [register-acs CLI runbook](register-acs-cli-runbook.en.md) (confirmation phrase **`Production`**; never pass secrets as CLI arguments)
 6. Setup doctor (re-run): `setup doctor --mode production-acs`. Confirm `[PASS] platform_sender_environment` (expected `production`) before live send. A `Staging` confirmation registration fails here
-7. Verification: `/healthz` `/readyz`, and explicit live send with an approved sender. Published-image smoke: [release-image-smoke](release-image-smoke.en.md) (default tag `v1.1.0`; evidence in the [v1.1.0 release record](../releases/v1.1.0.md))
+7. Verification: `/healthz` `/readyz`, and explicit live send with an approved sender. Published-image smoke: [release-image-smoke](release-image-smoke.en.md) (default tag `v1.2.0`; evidence in the [v1.2.0 release record](../releases/v1.2.0.md))
 8. If bounce ingestion is needed, continue to mode 5 (otherwise you may stop here)
 
-**Done when:** deploy shape, tenant / env preflight, `Production`-confirmed secret registration, post-registration doctor `platform_sender_environment` PASS, health/ready, and approved live send can be `[PASS]`. Published image is `v1.1.0` ([release record](../releases/v1.1.0.md)).
+**Done when:** deploy shape, tenant / env preflight, `Production`-confirmed secret registration, post-registration doctor `platform_sender_environment` PASS, health/ready, and approved live send can be `[PASS]`. Published image is `v1.2.0` ([release record](../releases/v1.2.0.md)).
 
 #### 5. production ACS + Event Grid / Storage Queue
 
@@ -469,7 +484,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 4. Setup (bounce): follow [bounce ingestion runbook](bounce-ingestion-runbook.en.md); set `MAILER_BOUNCE_INGESTION=queue` and `MAILER_BOUNCE_QUEUE_NAME` in `.env`, and place the Queue connection string at `${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH}/queue_connection_string` (never pass secrets as CLI arguments)
 5. Setup (Azure): Delivery Report → Event Grid → **Storage Queue** (not Push). Use `setup check-event-grid` ([#427](https://github.com/kooiei-in4a/amane-mailer/issues/427)) for a read-only configuration check
 6. Setup doctor (re-run): `setup doctor --mode production-queue`. Confirm `[PASS] compose_bounce_wiring` / `mode_bounce_queue` / `bounce_queue`
-7. Verification: `/healthz` `/readyz`, approved live send. Staging Delivery Report arrival is `setup verify-delivery-report` ([#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)) — not production evidence. Published image is `v1.1.0` ([release record](../releases/v1.1.0.md))
+7. Verification: `/healthz` `/readyz`, approved live send. Staging Delivery Report arrival is `setup verify-delivery-report` ([#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)) — not production evidence. Published image is `v1.2.0` ([release record](../releases/v1.2.0.md))
 
 **How to score results**
 
@@ -478,7 +493,7 @@ On deploy hosts, prefer running setup doctor **on the host** (with the same env 
 - [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) is **Staging-only**. Do not treat #428 results as evidence that production was exercised
 - **Real bounce is not a completion criterion**
 
-**Done when:** mode 4 completion plus compose-wired `queue` settings, Queue file secret, Queue name, and Event Grid → Queue configuration checks can be `[PASS]` / human-confirmed. Published image is `v1.1.0` ([release record](../releases/v1.1.0.md)).
+**Done when:** mode 4 completion plus compose-wired `queue` settings, Queue file secret, Queue name, and Event Grid → Queue configuration checks can be `[PASS]` / human-confirmed. Published image is `v1.2.0` ([release record](../releases/v1.2.0.md)).
 
 ### Manual verification helpers (availability)
 

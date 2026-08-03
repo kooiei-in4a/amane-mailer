@@ -4,6 +4,13 @@
 
 GitHub Actions will publish the Mailer runtime image to GitHub Container Registry.
 
+> **v1.2.0 note:** The public OCI was published via **P-OCI-PROMOTE** (promote the
+> qualified layout) with `EXTERNAL_PROVENANCE` — no registry attestation
+> manifests. See [docs/releases/v1.2.0.md](../releases/v1.2.0.md), the GitHub
+> Release attachments, and [release artifact verification](release-artifact-verification.en.md).
+> The steps below describe the classic rebuild-as-publish workflow
+> (`publish-image.yml`).
+
 Workflow:
 
 - `.github/workflows/publish-image.yml`

@@ -4,6 +4,12 @@
 
 GitHub Actions で Mailer ランタイムイメージを GitHub Container Registry へ publish します。
 
+> **v1.2.0 note:** 公開 OCI は **P-OCI-PROMOTE**（資格済み layout の promote）で、
+> `EXTERNAL_PROVENANCE` のため registry attestation manifest は添付しません。
+> 証跡は [docs/releases/v1.2.0.md](../releases/v1.2.0.md) と GitHub Release 添付、
+> 検証手順は [release-artifact-verification](release-artifact-verification.md) を参照。
+> 以下は従来の rebuild-as-publish workflow（`publish-image.yml`）の手順です。
+
 ワークフロー:
 
 - `.github/workflows/publish-image.yml`
