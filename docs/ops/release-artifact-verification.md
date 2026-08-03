@@ -12,9 +12,13 @@ release ごとに次を確認します。
 
 - GitHub Release tag と release record（`docs/releases/vX.Y.Z.md`）が同じ commit を指すこと
 - GHCR image の release tag と immutable `sha-<git-sha>` tag が同じ digest を指すこと
-- GHCR image の OCI `source` / `revision` label と、現行 workflow release の `version` label が
-  release record と一致すること
-- GHCR image index に SBOM / provenance の attestation manifest が存在すること
+- GHCR image の OCI `source` / `revision` label と、release record の `version` /
+  `revision` 記録が一致すること
+- **Provenance 方式**が release record と一致すること:
+  - `EXTERNAL_PROVENANCE`（例: v1.2.0）: registry attestation は**要求しない**。GitHub Release
+    添付（`CANDIDATE-SHA256SUMS` / `candidate-provenance.json` / `oci-index.digest` 等）と
+    release record を照合する
+  - registry attestation 付きの過去 release: image index の attestation manifest を照合する
 - NuGet package の version、repository metadata、署名、SourceLink / symbol package 方針が release record と一致すること
 
 公開 package だけを読む場合、GHCR / NuGet の認証は不要です。GHCR package が private の場合は
@@ -27,11 +31,13 @@ release ごとに次を確認します。
 - Image: `ghcr.io/kooiei-in4a/amane-mailer:vX.Y.Z`
 - Digest / index digest
 - Platform 一覧
-- Platform ごとの runtime manifest digest
-- Platform ごとの attestation manifest digest
+- Platform ごとの runtime manifest digest（release record に記載がある場合）
+- Provenance 方式（`EXTERNAL_PROVENANCE` または registry attestation）に応じた証跡
+  - EXTERNAL: GitHub Release の `oci-index.digest` / `candidate-provenance.json` 等
+  - registry attestation: Platform ごとの attestation manifest digest
 - Immutable tag: `ghcr.io/kooiei-in4a/amane-mailer:sha-<git-sha>`
 - OCI `org.opencontainers.image.revision`
-- OCI `org.opencontainers.image.version`（release record に記録がある場合）
+- OCI `org.opencontainers.image.version`（release record に記録がある場合。v1.2.0 は先頭 `v` なしの `1.2.0`）
 
 `vX.Y.Z` は対象 release に置き換えてください。
 
@@ -95,23 +101,44 @@ docker image inspect "$IMAGE_REF" --format '{{ index .Config.Labels "org.opencon
 
 - `org.opencontainers.image.source=https://github.com/kooiei-in4a/amane-mailer`
 - `org.opencontainers.image.revision=<release commit sha>`
-- `org.opencontainers.image.version=vX.Y.Z`（現行 workflow release。古い release で release record が
-  absent と明記している場合は、その release record を優先します）
+- `org.opencontainers.image.version=<X.Y.Z>`（現行 release は先頭 `v` なし。古い release で
+  release record が別表記を明記している場合は、その release record を優先します）
 
 `org.opencontainers.image.description` などの説明用 label は参考情報です。release record が明示しない限り、
 consumer verification の判定対象には含めません。
 
 ## Provenance / attestation / SBOM
 
-現行の image publish workflow は `docker/build-push-action` を次の設定で実行します。
+release record の **Attestation mode** / publish method を先に確認してください。方式によって
+検証対象が異なります。
+
+### EXTERNAL_PROVENANCE（v1.2.0: P-OCI-PROMOTE）
+
+v1.2.0 は資格済み OCI を **rebuild せず promote** し、registry へ attestation manifest を
+**添付しません**。欠落を不正とみなさないでください。
+
+次を release record / GitHub Release assets と照合します。
+
+- Index digest（version tag と `sha-<git-sha>` tag が一致）
+- `oci-index.digest` / `image-identity.json` / `candidate-provenance.json`
+- Setup host archive の `CANDIDATE-SHA256SUMS`（Windows x64 / Linux x64 / Linux arm64）
+
+```bash
+# Example: compare Release-attached digest file to imagetools output
+EXPECTED_INDEX_DIGEST="$(tr -d '[:space:]' < oci-index.digest)"
+docker buildx imagetools inspect "$IMAGE_REF" | grep Digest
+```
+
+### Registry attestation（過去の rebuild-as-publish release）
+
+一部の過去 release は `docker/build-push-action` で次を有効にして publish しています。
 
 - `provenance: true`
 - `sbom: true`
 - `platforms: linux/amd64,linux/arm64`
 
-SBOM と provenance は standalone release asset ではなく、GHCR image index に紐づく OCI
-attestation manifest として publish されます。attestation manifest の存在と digest は runtime
-manifest digest ごとに確認します。
+その場合、SBOM と provenance は GHCR image index に紐づく OCI attestation manifest として
+存在します。attestation manifest の存在と digest は runtime manifest digest ごとに確認します。
 
 ```bash
 EXPECTED_ATTESTATION_MANIFEST_DIGEST=sha256:replace-with-attestation-manifest-digest
@@ -133,7 +160,7 @@ docker buildx imagetools inspect --raw "$IMAGE_REF" \
 ```
 
 現時点では GitHub Release asset として個別の `.spdx` / `.cdx` SBOM file は添付していません。
-release record には image index digest、platform ごとの runtime manifest digest、attestation manifest digest を記録します。
+release record には image index digest と、方式に応じた provenance 証跡を記録します。
 
 ## NuGet package
 
@@ -215,7 +242,8 @@ repository metadata、repository signature、SourceLink / `.snupkg` の組み合
 - release tag と immutable `sha-<git-sha>` tag の digest が違う
 - OCI `revision` label が release record の commit と違う
 - release record が `version` label を記録している release で、OCI `version` label が違う
-- attestation manifest が存在しない、または release record の digest と違う
+- release record が registry attestation を要求しているのに attestation が無い、または digest が違う
+- release record が `EXTERNAL_PROVENANCE` なのに、Release 添付 checksum / digest が release record と違う
 - NuGet package version、repository commit、SourceLink commit が release record と違う
 - `dotnet nuget verify --all` が失敗する
 

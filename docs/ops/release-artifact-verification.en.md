@@ -15,9 +15,15 @@ For each release, verify:
   the same commit.
 - The GHCR release tag and immutable `sha-<git-sha>` tag resolve to the same
   digest.
-- The GHCR image OCI `source` / `revision` labels, and the `version` label for
-  current-workflow releases, match the release record.
-- The GHCR image index contains an SBOM / provenance attestation manifest.
+- The GHCR image OCI `source` / `revision` labels, and the `version` /
+  `revision` values recorded in the release record, match.
+- The **provenance mode** matches the release record:
+  - `EXTERNAL_PROVENANCE` (example: v1.2.0): do **not** require registry
+    attestation manifests. Compare GitHub Release attachments
+    (`CANDIDATE-SHA256SUMS` / `candidate-provenance.json` / `oci-index.digest`,
+    etc.) with the release record.
+  - Older releases that ship registry attestation: verify attestation manifests
+    on the image index.
 - The NuGet package version, repository metadata, signature, and SourceLink /
   symbol package posture match the release record.
 
@@ -32,11 +38,14 @@ Copy these values from `docs/releases/vX.Y.Z.md` or the GitHub Release notes:
 - Image: `ghcr.io/kooiei-in4a/amane-mailer:vX.Y.Z`
 - Digest / index digest
 - Platform list
-- Runtime manifest digest for each platform
-- Attestation manifest digest for each platform
+- Runtime manifest digest for each platform when the release record lists it
+- Provenance evidence matching the release mode
+  - EXTERNAL: GitHub Release `oci-index.digest` / `candidate-provenance.json`, etc.
+  - Registry attestation: attestation manifest digest for each platform
 - Immutable tag: `ghcr.io/kooiei-in4a/amane-mailer:sha-<git-sha>`
 - OCI `org.opencontainers.image.revision`
 - OCI `org.opencontainers.image.version` when the release record lists it
+  (v1.2.0 uses `1.2.0` with no leading `v`)
 
 Replace `vX.Y.Z` with the release you are verifying.
 
@@ -101,9 +110,9 @@ Expected values:
 
 - `org.opencontainers.image.source=https://github.com/kooiei-in4a/amane-mailer`
 - `org.opencontainers.image.revision=<release commit sha>`
-- `org.opencontainers.image.version=vX.Y.Z` for current-workflow releases. If an
-  older release record explicitly marks the version label absent, follow that
-  release record.
+- `org.opencontainers.image.version=<X.Y.Z>` for current releases (no leading
+  `v`). If an older release record explicitly marks a different spelling or
+  marks the version label absent, follow that release record.
 
 Informational labels such as `org.opencontainers.image.description` are recorded
 for context. They are not part of consumer verification unless a release record
@@ -111,15 +120,37 @@ explicitly says otherwise.
 
 ## Provenance / Attestation / SBOM
 
-The current image publishing workflow runs `docker/build-push-action` with:
+Check the release record **Attestation mode** / publish method first. Verification
+targets differ by mode.
+
+### EXTERNAL_PROVENANCE (v1.2.0: P-OCI-PROMOTE)
+
+v1.2.0 **promotes** the qualified OCI without rebuild and does **not** attach
+registry attestation manifests. Do not treat that absence as a failure.
+
+Compare these with the release record / GitHub Release assets:
+
+- Index digest (version tag and `sha-<git-sha>` tag must match)
+- `oci-index.digest` / `image-identity.json` / `candidate-provenance.json`
+- Setup host archive `CANDIDATE-SHA256SUMS` (Windows x64 / Linux x64 / Linux arm64)
+
+```bash
+# Example: compare Release-attached digest file to imagetools output
+EXPECTED_INDEX_DIGEST="$(tr -d '[:space:]' < oci-index.digest)"
+docker buildx imagetools inspect "$IMAGE_REF" | grep Digest
+```
+
+### Registry attestation (older rebuild-as-publish releases)
+
+Some older releases publish with `docker/build-push-action` settings:
 
 - `provenance: true`
 - `sbom: true`
 - `platforms: linux/amd64,linux/arm64`
 
-The SBOM and provenance are published as OCI attestation manifests attached to
-the GHCR image index, not as standalone GitHub Release assets. Verify the
-attestation manifest presence and digest for each runtime manifest digest:
+In that case, SBOM and provenance are OCI attestation manifests attached to the
+GHCR image index. Verify attestation manifest presence and digest for each
+runtime manifest digest:
 
 ```bash
 EXPECTED_ATTESTATION_MANIFEST_DIGEST=sha256:replace-with-attestation-manifest-digest
@@ -141,8 +172,8 @@ docker buildx imagetools inspect --raw "$IMAGE_REF" \
 ```
 
 At this time, GitHub Releases do not attach separate `.spdx` / `.cdx` SBOM
-files. Release records store the image index digest plus the runtime manifest
-digest and attestation manifest digest for each platform.
+files. Release records store the image index digest plus provenance evidence for
+the release's attestation mode.
 
 ## NuGet Package
 
@@ -231,8 +262,10 @@ Treat these mismatches as release evidence issues:
 - The release tag and immutable `sha-<git-sha>` tag have different digests.
 - The OCI `revision` label does not match the release record commit.
 - The release record lists an OCI `version` label, but the image label differs.
-- The attestation manifest is missing or has a different digest than the release
-  record.
+- The release record requires registry attestation, but the attestation
+  manifest is missing or has a different digest.
+- The release record uses `EXTERNAL_PROVENANCE`, but Release-attached checksum /
+  digest assets disagree with the release record.
 - The NuGet package version, repository commit, or SourceLink commit differs
   from the release record.
 - `dotnet nuget verify --all` fails.

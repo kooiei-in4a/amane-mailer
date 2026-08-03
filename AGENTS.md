@@ -128,8 +128,8 @@ Native AOT and full trimming are mandatory (`PublishAot`, `IsTrimmable`, `TrimMo
 ### Release and CI
 
 - Changes to `.github/workflows/` must preserve existing SHA-pinned actions, existing validation, and any existing approval boundaries.
-- Publish workflow hardening is tracked by #23. Until #23 is closed, treat tag/version consistency, safe input handling, `release` environment alignment, and SBOM/provenance/digest tracking as required work items, not completed guarantees.
-- Do not assume release hardening from #23 is complete until that issue is closed.
+- Publish workflow hardening from [#23](https://github.com/kooiei-in4a/amane-mailer/issues/23) is **completed and closed**. Do not reopen #23 or describe it as incomplete. Follow-on release-path improvements are tracked by later issues (for example #504–#507), not by treating #23 as unfinished.
+- For v1.2.0, public OCI publish used **P-OCI-PROMOTE** with `EXTERNAL_PROVENANCE` (no registry attestation manifests). See [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md) and [release artifact verification](docs/ops/release-artifact-verification.md).
 
 ## Documentation map
 
