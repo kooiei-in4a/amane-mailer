@@ -350,6 +350,32 @@ jobs:
             exit 1
           fi
 
+
+  oci-promote-self-test:
+    name: OCI promote digest-preservation self-test
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/main' ||
+      github.base_ref == 'main' ||
+      startsWith(github.head_ref, 'release-infra/') ||
+      startsWith(github.ref_name, 'release-infra/')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+
+      - name: Run candidate-run validator self-test (fixtures)
+        run: bash scripts/validate-candidate-oci-run-self-test.sh
+
+      - name: Run promote self-test (local registry)
+        run: bash scripts/promote-candidate-oci-self-test.sh
+
   local-compose-fresh-data:
     name: Local compose fresh data dir
     if: >-

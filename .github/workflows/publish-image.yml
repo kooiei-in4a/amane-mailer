@@ -67,6 +67,15 @@ jobs:
             exit 1
           fi
 
+          package_version="${release_tag#v}"
+
+          # v1.2.0 must use digest-preserving P-OCI-PROMOTE (promote-qualified-oci.yml).
+          # This rebuild-and-push path cannot guarantee candidate/public OCI index identity.
+          if [ "${package_version}" = "1.2.0" ] || [ "${release_tag}" = "v1.2.0" ]; then
+            echo "::error::v1.2.0 image publish must use P-OCI-PROMOTE (promote-qualified-oci.yml), not publish-image.yml rebuild."
+            exit 1
+          fi
+
           tags="${IMAGE_NAME}:sha-${revision}"
           tags="${tags}"$'\n'"${IMAGE_NAME}:${release_tag}"
 
@@ -74,7 +83,7 @@ jobs:
             echo "release_tag=${release_tag}"
             echo "revision=${revision}"
             echo "sha_tag=sha-${revision}"
-            echo "package_version=${release_tag#v}"
+            echo "package_version=${package_version}"
             echo "tags<<EOF"
             echo "${tags}"
             echo "EOF"

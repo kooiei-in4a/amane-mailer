@@ -1,0 +1,10 @@
+{
+  "total_count": 1,
+  "artifacts": [
+    {
+      "id": 900001,
+      "name": "setup-release-candidate-oci",
+      "expired": false
+    }
+  ]
+}

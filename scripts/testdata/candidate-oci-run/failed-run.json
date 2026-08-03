@@ -1,0 +1,11 @@
+{
+  "id": 4550001,
+  "name": "Generate Setup Release Candidate",
+  "path": ".github/workflows/generate-setup-release-candidate.yml",
+  "event": "workflow_dispatch",
+  "head_branch": "release/v1.2.0-rc",
+  "head_sha": "013dd6741c2825f518a78d5b28cc1c4718dba5df",
+  "run_attempt": 1,
+  "status": "completed",
+  "conclusion": "failure"
+}
