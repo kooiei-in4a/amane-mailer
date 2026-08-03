@@ -62,29 +62,29 @@ public static class Spike526TokenBufferProcessor
                         switch (json.TokenType)
                         {
                             case JsonTokenType.StartObject:
-                            {
-                                var isAttachment = inAttachmentsArray && frames.Count == 1;
-                                frames.Push(new ObjectFrame(isAttachment));
-                                currentProperty = null;
-                                break;
-                            }
+                                {
+                                    var isAttachment = inAttachmentsArray && frames.Count == 1;
+                                    frames.Push(new ObjectFrame(isAttachment));
+                                    currentProperty = null;
+                                    break;
+                                }
                             case JsonTokenType.EndObject:
-                            {
-                                if (frames.Count == 0)
                                 {
-                                    throw new JsonException("Unexpected object terminator.");
-                                }
+                                    if (frames.Count == 0)
+                                    {
+                                        throw new JsonException("Unexpected object terminator.");
+                                    }
 
-                                var frame = frames.Pop();
-                                if (frame.IsAttachment)
-                                {
-                                    ValidateAttachment(frame.Attachment!);
-                                    attachmentCount++;
-                                }
+                                    var frame = frames.Pop();
+                                    if (frame.IsAttachment)
+                                    {
+                                        ValidateAttachment(frame.Attachment!);
+                                        attachmentCount++;
+                                    }
 
-                                currentProperty = null;
-                                break;
-                            }
+                                    currentProperty = null;
+                                    break;
+                                }
                             case JsonTokenType.StartArray:
                                 if (string.Equals(currentProperty, "attachments", StringComparison.Ordinal)
                                     && frames.Count == 1)
@@ -103,60 +103,60 @@ public static class Spike526TokenBufferProcessor
                                 currentProperty = null;
                                 break;
                             case JsonTokenType.PropertyName:
-                            {
-                                if (frames.Count == 0)
                                 {
-                                    throw new JsonException("Property outside object.");
-                                }
+                                    if (frames.Count == 0)
+                                    {
+                                        throw new JsonException("Property outside object.");
+                                    }
 
-                                currentProperty = json.GetString()
-                                    ?? throw new JsonException("Property name was null.");
-                                if (!frames.Peek().Properties.Add(currentProperty))
-                                {
-                                    throw new JsonException("Duplicate JSON property: " + currentProperty);
-                                }
+                                    currentProperty = json.GetString()
+                                        ?? throw new JsonException("Property name was null.");
+                                    if (!frames.Peek().Properties.Add(currentProperty))
+                                    {
+                                        throw new JsonException("Duplicate JSON property: " + currentProperty);
+                                    }
 
-                                break;
-                            }
+                                    break;
+                                }
                             case JsonTokenType.String:
-                            {
-                                if (frames.TryPeek(out var stringFrame) && stringFrame.IsAttachment)
                                 {
-                                    var attachment = stringFrame.Attachment!;
-                                    if (string.Equals(currentProperty, "content_sha256", StringComparison.Ordinal))
+                                    if (frames.TryPeek(out var stringFrame) && stringFrame.IsAttachment)
                                     {
-                                        attachment.DeclaredSha256 = json.GetString();
-                                    }
-                                    else if (string.Equals(currentProperty, "content_base64", StringComparison.Ordinal))
-                                    {
-                                        if (attachment.Base64Seen)
+                                        var attachment = stringFrame.Attachment!;
+                                        if (string.Equals(currentProperty, "content_sha256", StringComparison.Ordinal))
                                         {
-                                            throw new JsonException("Duplicate attachment content_base64.");
+                                            attachment.DeclaredSha256 = json.GetString();
                                         }
+                                        else if (string.Equals(currentProperty, "content_base64", StringComparison.Ordinal))
+                                        {
+                                            if (attachment.Base64Seen)
+                                            {
+                                                throw new JsonException("Duplicate attachment content_base64.");
+                                            }
 
-                                        attachment.Base64Seen = true;
-                                        var tokenBytes = json.HasValueSequence
-                                            ? checked((int)json.ValueSequence.Length)
-                                            : json.ValueSpan.Length;
-                                        peakRetainedTokenBytes = Math.Max(peakRetainedTokenBytes, tokenBytes);
-                                        var decode = DecodeBase64Token(
-                                            ref json,
-                                            tempStore,
-                                            options,
-                                            totalDecoded,
-                                            cancellationToken);
-                                        attachment.ActualLength = decode.DecodedBytes;
-                                        attachment.ActualSha256 = decode.Sha256;
-                                        attachment.TempPath = decode.TempPath;
-                                        totalDecoded += decode.DecodedBytes;
-                                        currentTempBytes += decode.DecodedBytes;
-                                        peakTempBytes = Math.Max(peakTempBytes, currentTempBytes);
+                                            attachment.Base64Seen = true;
+                                            var tokenBytes = json.HasValueSequence
+                                                ? checked((int)json.ValueSequence.Length)
+                                                : json.ValueSpan.Length;
+                                            peakRetainedTokenBytes = Math.Max(peakRetainedTokenBytes, tokenBytes);
+                                            var decode = DecodeBase64Token(
+                                                ref json,
+                                                tempStore,
+                                                options,
+                                                totalDecoded,
+                                                cancellationToken);
+                                            attachment.ActualLength = decode.DecodedBytes;
+                                            attachment.ActualSha256 = decode.Sha256;
+                                            attachment.TempPath = decode.TempPath;
+                                            totalDecoded += decode.DecodedBytes;
+                                            currentTempBytes += decode.DecodedBytes;
+                                            peakTempBytes = Math.Max(peakTempBytes, currentTempBytes);
+                                        }
                                     }
-                                }
 
-                                currentProperty = null;
-                                break;
-                            }
+                                    currentProperty = null;
+                                    break;
+                                }
                             case JsonTokenType.Number:
                                 if (frames.TryPeek(out var numberFrame)
                                     && numberFrame.IsAttachment
