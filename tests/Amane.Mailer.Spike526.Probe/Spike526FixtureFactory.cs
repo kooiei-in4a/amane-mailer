@@ -172,8 +172,10 @@ public static class Spike526FixtureFactory
         }
 
         const string unit = "A境界<>&\"\\";
-        var builder = new StringBuilder(requestedUtf8Bytes);
-        while (Encoding.UTF8.GetByteCount(builder.ToString()) < requestedUtf8Bytes)
+        var unitBytes = Encoding.UTF8.GetByteCount(unit);
+        var repeatCount = checked((requestedUtf8Bytes + unitBytes - 1) / unitBytes);
+        var builder = new StringBuilder(checked(repeatCount * unit.Length));
+        for (var index = 0; index < repeatCount; index++)
         {
             builder.Append(unit);
         }
