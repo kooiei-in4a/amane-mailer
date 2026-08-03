@@ -6,7 +6,11 @@
 
 Windows x64 / Linux x64 / Linux arm64 向け Easy Setup **release-candidate** 配布
 bundle の生成手順です。公開（tag / GHCR / GitHub Release）は
-[#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) の所有です。
+[#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) が所有して完了しました。
+公開済み v1.2.0 の消費は [setup-guide](setup-guide.md)、
+[release record](../releases/v1.2.0.md)、
+[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0)
+（Windows / Linux x64 / Linux arm64 archive + checksum / provenance 添付）を使います。
 
 詳細（構成、manifest schemaVersion 1 additive、`payloadTreeSha256` /
 `archiveSha256`、OCI descriptor graph + Buildx digest↔`index.json` `manifests[]`

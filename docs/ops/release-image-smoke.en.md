@@ -2,8 +2,8 @@
 
 # Clean-state smoke for the published release image
 
-After v1.1.0 is published, this runbook pulls the GHCR runtime image (default
-`ghcr.io/kooiei-in4a/amane-mailer:v1.1.0`) from a clean state, starts Mailer +
+After v1.2.0 is published, this runbook pulls the GHCR runtime image (default
+`ghcr.io/kooiei-in4a/amane-mailer:v1.2.0`) from a clean state, starts Mailer +
 Mailpit, and smokes the release runtime path.
 
 Unlike `infra/docker/docker-compose.local.yml` (which builds from source), this smoke
@@ -18,8 +18,8 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 - On Windows: PowerShell 5.1+ and Docker Desktop (same Docker CLI context as PowerShell).
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
-- For the v1.1.0 release, the default smoke tag `v1.1.0` is expected to be a
-  **multi-arch** GHCR runtime image after publish
+- For the v1.2.0 release, the default smoke tag `v1.2.0` is a
+  **multi-arch** GHCR runtime image
   (`linux/amd64` and `linux/arm64`). For smoke runs, confirm the platform in the
   release notes or Docker manifest, then set `MAILER_IMAGE_PLATFORM=linux/amd64` or
   `MAILER_IMAGE_PLATFORM=linux/arm64`.
@@ -72,7 +72,7 @@ If startup itself fails, the script prints `docker compose ps` and recent logs.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | Image repository |
-| `MAILER_IMAGE_TAG` | `v1.1.0` | Tag under test |
+| `MAILER_IMAGE_TAG` | `v1.2.0` | Tag under test |
 | `MAILER_IMAGE_PLATFORM` | `linux/amd64` | Mailer runtime image platform to smoke. For multi-arch releases, run once per release-noted platform such as `linux/amd64` and `linux/arm64`. |
 | `MAILER_PULL_POLICY` | `always` | Set `missing` to reuse a local image |
 | `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image. The default `latest` is intentional; override it when a tag / digest pin is needed. |
@@ -98,8 +98,9 @@ intentional `latest` usage and how to pin it when needed.
 
 ## Recorded smoke results
 
-Value-free smoke results for `v1.1.0` (digest, date, environment, per-check pass/fail)
-are recorded in [docs/releases/v1.1.0.md](../releases/v1.1.0.md) after publish.
+Value-free smoke results for `v1.2.0` (digest, date, environment, per-check pass/fail)
+are recorded in [docs/releases/v1.2.0.md](../releases/v1.2.0.md).
+Previous `v1.1.0` results remain in [docs/releases/v1.1.0.md](../releases/v1.1.0.md).
 Previous `v1.0.1` results remain in [docs/releases/v1.0.1.md](../releases/v1.0.1.md),
 and `v1.0.0` results in [docs/releases/v1.0.0.md](../releases/v1.0.0.md).
 Previous `v0.9.2` results remain in [docs/releases/v0.9.2.md](../releases/v0.9.2.md).

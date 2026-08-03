@@ -7,7 +7,7 @@ const root = process.cwd();
 const errors = [];
 
 // Update this constant when the latest published release tag changes.
-const expectedImageTag = 'v1.1.0';
+const expectedImageTag = 'v1.2.0';
 const expectedSupportedVersion = expectedImageTag.slice(1);
 
 function read(relativePath) {
