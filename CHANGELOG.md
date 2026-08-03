@@ -15,15 +15,20 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
-## [1.2.0] - 2026-08-01
+## [1.2.0] - 2026-08-03
 
-Minor release (version prep on `develop`; tag / publish / public smoke **not**
-completed in this prep PR). Ships Easy Setup (modes 1–4) for first-time
-Mailpit / ACS configuration, keeps Manual / Hardened paths, and **INCLUDEs**
-already-merged SQLite migrations `012` / `013` (bounce durability / poison
-queue isolation). Mode 5 remains Manual only. Public HTTP request / response
-schemas and Contracts DTO shapes are unchanged; package and OpenAPI
-`info.version` move to `1.2.0`.
+Minor release. Ships Easy Setup (modes 1–4) for first-time Mailpit / ACS
+configuration, keeps Manual / Hardened paths, and **INCLUDEs** SQLite migrations
+`012_provider_event_inbox_details.sql` / `013_provider_queue_dead_letters.sql`
+(bounce durability / poison queue isolation). Mode 5 remains Manual only.
+Public HTTP request / response schemas and Contracts DTO shapes are unchanged;
+package and OpenAPI `info.version` move to `1.2.0`.
+
+Published identities (tag target `c173db1…`, OCI index digest, NuGet, GitHub
+Release assets) are recorded in [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md)
+and <https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0>. Publish
+path: **P-OCI-PROMOTE** / `EXTERNAL_PROVENANCE` (no registry attestation
+manifests). Qualification: #456 attempt 13 sealed / `GO_ELIGIBLE` + `APPROVE`.
 
 ### Added
 
@@ -32,13 +37,12 @@ schemas and Contracts DTO shapes are unchanged; package and OpenAPI
 - Admin read-only `/admin/setup-status` and typed Admin bootstrap ownership
   (#454, #459).
 - Setup release-candidate packaging workflow and bundle tooling (#455).
-- Qualification plan for Easy Setup release evidence (#456 plan Rev.12 on
-  `develop`; qualification execution still pending).
+- Qualification evidence for Easy Setup release (#456 attempt 13 sealed).
 
 ### Changed
 
 - `Amane.Mailer.Contracts` and OpenAPI `info.version` aligned on `1.2.0`.
-- Release execution plan for v1.2.0 (#458 plan Rev.8 on `develop`).
+- Release execution and publish for v1.2.0 (#458).
 - Single setup entry docs retain Manual / Hardened routes (#457).
 
 ### Fixed
@@ -57,7 +61,8 @@ schemas and Contracts DTO shapes are unchanged; package and OpenAPI
 
 ### Documentation
 
-- Draft release record `docs/releases/v1.2.0.md` (pre-tag; digests PENDING).
+- Release record `docs/releases/v1.2.0.md` (published identities + dual-arch
+  public smoke).
 - Setup vs upgrade: Easy Setup targets fresh / managed setup; existing Manual
   deployments upgrade via normal image / migration apply — not a silent
   re-bootstrap of Admin.

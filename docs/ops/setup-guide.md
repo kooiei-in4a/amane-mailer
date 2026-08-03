@@ -17,7 +17,8 @@ Parent tracking: [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445) 
 | `docs/ops/` 配下の runbook | 詳細手順（リンクのみ。全文複製しない） |
 | [ADR 0021](../adr/0021-easy-setup-boundaries.md) | Easy Setup の Design authority |
 | [setup-release-bundle](setup-release-bundle.md) | maintainer 向け packaging / candidate handoff |
-| [implementation-status](../implementation-status.json) | 機能実装状況（Easy Setup は #458 まで `partial`） |
+| [implementation-status](../implementation-status.json) | 機能実装状況（Easy Setup は v1.2.0 で `implemented`） |
+| [v1.2.0 release record](../releases/v1.2.0.md) | 公開 identities / digest / migration / smoke 証跡 |
 | 候補 `README-SETUP.md` | 展開後の最小入口。候補の `sourceCommitSha` で本ガイドへリンク |
 
 ## 経路の選び方
@@ -25,14 +26,14 @@ Parent tracking: [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445) 
 | 経路 | 選ぶとき | 注意 |
 |------|----------|------|
 | **Easy Setup（推奨）** | Windows Docker Desktop または Linux Docker Engine / VPS。mode 1–4 | host の `setup assistant` / 任意の non-interactive Main apply。mode 5 は Manual |
-| **Manual Deployment** | Managed bundle なしで既存 runbook / CLI を使う | mode 1–5 を維持。下の v1.1.0 公開イメージ記述は正直に残す |
+| **Manual Deployment** | Managed bundle なしで既存 runbook / CLI を使う | mode 1–5 を維持。現行公開イメージは **v1.2.0**（前版 v1.1.0 も残置） |
 | **Hardened Deployment** | file secret / owner-only / Managed metadata なしを厳密に | Easy Setup assistant は**使わない**。Manual 契約が土台 |
 
 ---
 
 ## Easy Setup（推奨）
 
-Easy Setup は既存の `.env` / `tenants.json` / file secret / deploy compose 契約を、host 上の local Web または terminal assistant で包みます（[ADR 0021](../adr/0021-easy-setup-boundaries.md)）。実装状況は [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) まで **partial** です。Managed 活性化なしで今日完遂したい場合は Manual 経路を使ってください。
+Easy Setup は既存の `.env` / `tenants.json` / file secret / deploy compose 契約を、host 上の local Web または terminal assistant で包みます（[ADR 0021](../adr/0021-easy-setup-boundaries.md)）。**v1.2.0 で `implemented`**（[#445](https://github.com/kooiei-in4a/amane-mailer/issues/445) / [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458)）。Managed 活性化なしで進めたい場合は Manual 経路を使ってください。
 
 ### プラットフォーム別の開始
 
@@ -70,9 +71,9 @@ Easy Setup **release-candidate** host bundle（公開 GitHub Release ではな�
 
 packaging maintainer 手順: [setup-release-bundle](setup-release-bundle.md)。オペレーター判断の正本は本ガイドです。
 
-#### 公開リリース利用者（#458 以降）
+#### 公開リリース利用者
 
-公開後は GitHub Release の checksum / release record / 公開 image digest を使います。candidate handoff と公開リリース検証を混同しないでください。
+公開済み **v1.2.0** は GitHub Release の checksum / [release record](../releases/v1.2.0.md) / 公開 image digest を使います（<https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0>）。candidate handoff と公開リリース検証を混同しないでください。Windows x64 / Linux x64 / Linux arm64 の host archive が添付されています。
 
 ### Managed 境界
 
@@ -157,7 +158,14 @@ Easy Setup は reverse proxy・証明書・DNS を**自動構築しない**。Pr
 | remote Docker / Kubernetes / Podman / macOS 正式配布 | 対象外 |
 | Consumer bounced Webhook [#307](https://github.com/kooiei-in4a/amane-mailer/issues/307) | v1.2.0 対象外（v1.5.0 以降） |
 
-**setup と upgrade は別操作です。** 製品 upgrade / publish は後続 Issue（#458）。
+**setup と upgrade は別操作です。** Easy Setup は初回／managed のセットアップ向けです。既存 Manual / Hardened 配備の製品 upgrade は、公開イメージの pull と通常の SQLite migration 適用で行います（Admin の silent re-bootstrap ではありません）。
+
+**v1.1.0 → v1.2.0 の DB migration（INCLUDE）:** backup のうえ、ランタイムが次を適用します（`none` / 省略は不可）。
+
+- `012_provider_event_inbox_details.sql`
+- `013_provider_queue_dead_letters.sql`
+
+詳細 identities: [docs/releases/v1.2.0.md](../releases/v1.2.0.md)。
 
 ### backup / rollback / recovery（概要）
 
@@ -188,7 +196,7 @@ qualification（#456）で本ガイドまたは候補 `README-SETUP.md` の文�
 
 ## Manual Deployment
 
-Manual Deployment は第一級の経路のままです。以下は v1.1.0 時代の mode 1–5 runbook 順、完遂可否の意味、公開 **v1.1.0** イメージに関する正直な記述を維持します。すべての `v1.1.0` を無批判に `v1.2.0` へ置換しないでください。
+Manual Deployment は第一級の経路のままです。以下は mode 1–5 の runbook 順と完遂可否の意味を維持します。**現行の推奨公開イメージは v1.2.0** です。bounce Queue 採用など v1.1.0 由来の機能境界の説明は歴史的事実として残します。
 
 コンテナ one-shot の effective inspection（`Amane.Mailer setup inspect-effective --format json`、[#447](https://github.com/kooiei-in4a/amane-mailer/issues/447)）は Managed host 向けに実装済みです。stdout は JSON のみ。recorded／effective／mountAttestation は分離し、one-shot 単独では最終 `bundleIntegrity=matched` を主張しません。host assistant／ACTIVE 適用は、この Manual 手順を削除しません。
 
@@ -205,7 +213,7 @@ Manual Deployment は第一級の経路のままです。以下は v1.1.0 時代
 | [event-grid config check](event-grid-config-check-runbook.md) | Event Grid / Queue の read-only 構成確認 | environment 別。到着は保証しない |
 | [verify-delivery-report](verify-delivery-report-runbook.md) | Delivery Report の Queue 到着 E2E | **Staging 限定**。production 証拠にしない |
 | [設定 README](../../config/mailer/README.md) | tenant / env / preflight | 全モードの設定 shape 正本 |
-| [release-image-smoke](release-image-smoke.md) | 公開イメージ smoke | 公開済みタグ向け。`v1.1.0` 未公開時はその検証にならない |
+| [release-image-smoke](release-image-smoke.md) | 公開イメージ smoke | 公開済みタグ向け。既定は `v1.2.0` |
 
 ### 読む前に（安全）
 
@@ -215,13 +223,19 @@ Manual Deployment は第一級の経路のままです。以下は v1.1.0 時代
 - v1.1.0 の bounce transport は **Storage Queue Pull のみ**（`MAILER_BOUNCE_INGESTION=queue`）。
 - **実バウンスの発生確認は、通常セットアップの完了条件にしない。**
 
-### v1.1.0 公開イメージについて
+### 公開イメージについて（現行 v1.2.0）
 
-公開 GitHub release / GHCR タグ `v1.1.0` と migration `011` を含むイメージが利用可能です。
-最終確認の証跡は [docs/releases/v1.1.0.md](../releases/v1.1.0.md)（release-image smoke 含む）を参照してください。
+**現行推奨:** 公開 GitHub release / GHCR タグ `v1.2.0`。Easy Setup と Manual の両方でこのタグを正とします。
+証跡は [docs/releases/v1.2.0.md](../releases/v1.2.0.md)（release-image smoke 含む）および
+<https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0> を参照してください。
+
+v1.1.0 配備から upgrade する場合は、イメージ pull の前に DB backup を取り、ランタイム migration で
+`012_provider_event_inbox_details.sql` と `013_provider_queue_dead_letters.sql` が適用されることを想定してください（INCLUDE。省略不可）。
+
+**前版:** `v1.1.0`（migration `011` まで）の証跡は [docs/releases/v1.1.0.md](../releases/v1.1.0.md) に残します。
 local build や develop 由来の成果物で手順を追う場合はその旨を運用記録に残してください。
 
-[release-image-smoke](release-image-smoke.md) の既定タグは公開済み release（`v1.1.0`）向けです。
+[release-image-smoke](release-image-smoke.md) の既定タグは公開済み release（`v1.2.0`）向けです。
 
 ### 現時点で完了できない構成（正直な境界）
 
@@ -263,7 +277,7 @@ production ACS + Queue（mode 5）は [`infra/deploy/compose.yml`](../../infra/d
 | production ACS secret 未登録（確認フレーズ取り違え含む） | Available（手順はある） | `[FAIL]` または `[ACTION]`（`Production` 確認の register-acs） |
 | bounce mode / Queue secret / Queue 名の不足（mode 5） | Available（手順はある） | `[FAIL]` または `[ACTION]`（compose 経由の設定） |
 | Queue poller は動くが Event Grid 到着未確認 | （モードによる） | `[WARN]` または `[ACTION]` |
-| 公開 v1.1.0 イメージ未検証 | （モードによる） | 公開後は [v1.1.0 release record](../releases/v1.1.0.md) を参照。未追従ホストは `[WARN]` / `[ACTION]` |
+| 公開 v1.2.0 イメージ未検証 | （モードによる） | [v1.2.0 release record](../releases/v1.2.0.md) を参照。未追従ホストは `[WARN]` / `[ACTION]` |
 
 secret 値・宛先平文・接続文字列・raw provider error を結果に含めない。不足は「どの設定キー / どの権限能力が欠けているか」だけを示す。
 
@@ -337,7 +351,7 @@ production オペレーターに、production 作業なのに確認欄へ `Stagi
 
 #### 情報
 
-- [ ] 使う構成モード（上表の 1 つ）。mode 4 / 5 は production 固有の安全境界（専用 token / ACS・Queue 分離、Push 非採用）を理解したうえでの選択。公開イメージは `v1.1.0` を正とする（[release record](../releases/v1.1.0.md)）
+- [ ] 使う構成モード（上表の 1 つ）。mode 4 / 5 は production 固有の安全境界（専用 token / ACS・Queue 分離、Push 非採用）を理解したうえでの選択。公開イメージは `v1.2.0` を正とする（[release record](../releases/v1.2.0.md)）
 - [ ] tenant JSON の置き場所（example をコピーした **未コミット** ファイル）
 - [ ] 各 tenant の `token_env` 名と、対応する環境変数を設定する場所
 - [ ] 実効 provider（tenant JSON または `MAILER_PROVIDER`）
@@ -451,10 +465,10 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 4. Setup（backup・任意）: [バックアップ運用](backup-operations.md)、[リストア手順](restore-procedure.md)、[リストア検証](restore-verification.md)
 5. Setup（ACS secret）: [register-acs CLI runbook](register-acs-cli-runbook.md)（確認フレーズ **`Production`**。CLI 引数に secret を渡さない）
 6. Setup doctor（再実行）: `setup doctor --mode production-acs`。`[PASS] platform_sender_environment`（expected `production`）を確認してから live send へ進む。`Staging` 確認で登録した場合はここで `[FAIL]`
-7. Verification: `/healthz` `/readyz`、承認済み sender での明示 live send。公開 release イメージ smoke は [release-image-smoke](release-image-smoke.md)（既定タグ `v1.1.0`。証跡は [v1.1.0 release record](../releases/v1.1.0.md)）
+7. Verification: `/healthz` `/readyz`、承認済み sender での明示 live send。公開 release イメージ smoke は [release-image-smoke](release-image-smoke.md)（既定タグ `v1.2.0`。証跡は [v1.2.0 release record](../releases/v1.2.0.md)）
 8. bounce 取り込みが必要なら mode 5 へ進む（不要ならここで完了してよい）
 
-**完了の目安:** deploy 形・tenant / env preflight・`Production` 確認付き secret 登録・doctor 再実行での `platform_sender_environment` PASS・health/ready・承認済み live send を `[PASS]` にし得る。公開イメージは `v1.1.0`（[release record](../releases/v1.1.0.md)）。
+**完了の目安:** deploy 形・tenant / env preflight・`Production` 確認付き secret 登録・doctor 再実行での `platform_sender_environment` PASS・health/ready・承認済み live send を `[PASS]` にし得る。公開イメージは `v1.2.0`（[release record](../releases/v1.2.0.md)）。
 
 #### 5. production ACS + Event Grid / Storage Queue
 
@@ -468,7 +482,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 4. Setup（bounce）: [bounce ingestion runbook](bounce-ingestion-runbook.md) に従い、`.env` で `MAILER_BOUNCE_INGESTION=queue` と `MAILER_BOUNCE_QUEUE_NAME` を設定し、Queue 接続文字列を `${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH}/queue_connection_string` に置く（CLI 引数に secret を渡さない）
 5. Setup（Azure）: Delivery Report → Event Grid → **Storage Queue**（Push ではない）。`setup check-event-grid`（[#427](https://github.com/kooiei-in4a/amane-mailer/issues/427)）で read-only 構成確認
 6. Setup doctor（再実行）: `setup doctor --mode production-queue`。`[PASS] compose_bounce_wiring` / `mode_bounce_queue` / `bounce_queue` を確認
-7. Verification: `/healthz` `/readyz`、承認済み live send。Staging での Delivery Report 到着確認は `setup verify-delivery-report`（[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)）— production 実行済みの証拠にはしない。公開イメージは `v1.1.0`（[release record](../releases/v1.1.0.md)）
+7. Verification: `/healthz` `/readyz`、承認済み live send。Staging での Delivery Report 到着確認は `setup verify-delivery-report`（[#428](https://github.com/kooiei-in4a/amane-mailer/issues/428)）— production 実行済みの証拠にはしない。公開イメージは `v1.2.0`（[release record](../releases/v1.2.0.md)）
 
 **結果の付け方**
 
@@ -477,7 +491,7 @@ deploy host では、Docker CLI と公開 host port の意味が正確になる�
 - [#428](https://github.com/kooiei-in4a/amane-mailer/issues/428) は **Staging 限定**。#428 の結果を production 実行済みの証拠として扱わない
 - **実バウンスは完了条件にしない**
 
-**完了の目安:** mode 4 の完了条件に加え、compose 経由の `queue` 設定・Queue file secret・Queue 名・Event Grid → Queue の構成確認を `[PASS]` / 人手確認できること。公開イメージは `v1.1.0`（[release record](../releases/v1.1.0.md)）。
+**完了の目安:** mode 4 の完了条件に加え、compose 経由の `queue` 設定・Queue file secret・Queue 名・Event Grid → Queue の構成確認を `[PASS]` / 人手確認できること。公開イメージは `v1.2.0`（[release record](../releases/v1.2.0.md)）。
 
 ### Manual 確認機能の提供状況
 

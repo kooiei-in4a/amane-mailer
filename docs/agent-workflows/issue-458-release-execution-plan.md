@@ -1,5 +1,13 @@
 # Issue #458 Release Execution Plan (v1.2.0)
 
+> **Completion (historical plan):** v1.2.0 was published. Tag target
+> `c173db1d03725e754c4432d02b7c43ceed98c3c0`; GitHub Release
+> <https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0>;
+> release record [docs/releases/v1.2.0.md](../releases/v1.2.0.md).
+> Issues #445 / #456 / #458 are **closed**. Do **not** treat the plan-only /
+> PENDING / Phase-forbidden wording below as the current product status.
+> Follow-ups #504–#507 are separate next work, not v1.2.0 incompleteness.
+
 | Field | Value |
 |-------|-------|
 | **Status** | **plan-only** (planning round). Release ops are **not** authorized by this document alone. |
