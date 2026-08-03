@@ -115,9 +115,12 @@ jobs:
             echo "path=artifacts/promote-oci" >> "$GITHUB_OUTPUT"
           elif [[ -f artifacts/promote-oci/oci/oci-layout ]]; then
             echo "path=artifacts/promote-oci/oci" >> "$GITHUB_OUTPUT"
+          elif [[ -f artifacts/promote-oci/setup-release-candidate-oci/oci/oci-layout ]]; then
+            # download-artifact may keep the uploaded artifact folder name
+            echo "path=artifacts/promote-oci/setup-release-candidate-oci/oci" >> "$GITHUB_OUTPUT"
           else
             echo "::error::OCI layout (oci-layout) not found in artifact"
-            find artifacts/promote-oci -maxdepth 3 -type f | head -n 50
+            find artifacts/promote-oci -maxdepth 4 -type f | head -n 80
             exit 1
           fi
 
