@@ -22,38 +22,38 @@ try
             await MeasureAsync(args[1], args[2], emitResult: true);
             return 0;
         case "orphan-create" when args.Length == 2:
-        {
-            var store = new Spike526TempStore(args[1]);
-            var path = store.CreateFilePath();
-            await File.WriteAllBytesAsync(path, new byte[4096]);
-            Console.Error.WriteLine("spike526 orphan fixture created; exiting without cleanup");
-            Environment.Exit(ExpectedOrphanExit);
-            return ExpectedOrphanExit;
-        }
+            {
+                var store = new Spike526TempStore(args[1]);
+                var path = store.CreateFilePath();
+                await File.WriteAllBytesAsync(path, new byte[4096]);
+                Console.Error.WriteLine("spike526 orphan fixture created; exiting without cleanup");
+                Environment.Exit(ExpectedOrphanExit);
+                return ExpectedOrphanExit;
+            }
         case "cleanup" when args.Length is 2 or 3:
-        {
-            var store = new Spike526TempStore(args[1]);
-            var report = store.CleanupAndReport(args.Length == 3 ? args[2] : null);
-            Console.WriteLine(JsonSerializer.Serialize(
-                report,
-                Spike526JsonContext.Default.Spike526CleanupResult));
-            return report.RemainingFiles == 0 && report.OutsideFilePreserved ? 0 : 1;
-        }
+            {
+                var store = new Spike526TempStore(args[1]);
+                var report = store.CleanupAndReport(args.Length == 3 ? args[2] : null);
+                Console.WriteLine(JsonSerializer.Serialize(
+                    report,
+                    Spike526JsonContext.Default.Spike526CleanupResult));
+                return report.RemainingFiles == 0 && report.OutsideFilePreserved ? 0 : 1;
+            }
         case "self-check" when args.Length == 1:
-        {
-            var fixture = Spike526FixtureFactory.Create("F01");
-            var bytes = Spike526FixtureFactory.SerializeRequest(fixture);
-            var root = Path.Combine(Path.GetTempPath(), "amane-mailer-spike526-self-check", Guid.NewGuid().ToString("N"));
-            var store = new Spike526TempStore(root);
-            await using var stream = new MemoryStream(bytes, writable: false);
-            var result = await Spike526TokenBufferProcessor.ProcessAsync(
-                fixture.Id,
-                stream,
-                store,
-                DefaultOptions(bytes.LongLength));
-            Directory.Delete(root, recursive: true);
-            return result.CleanupComplete ? 0 : 1;
-        }
+            {
+                var fixture = Spike526FixtureFactory.Create("F01");
+                var bytes = Spike526FixtureFactory.SerializeRequest(fixture);
+                var root = Path.Combine(Path.GetTempPath(), "amane-mailer-spike526-self-check", Guid.NewGuid().ToString("N"));
+                var store = new Spike526TempStore(root);
+                await using var stream = new MemoryStream(bytes, writable: false);
+                var result = await Spike526TokenBufferProcessor.ProcessAsync(
+                    fixture.Id,
+                    stream,
+                    store,
+                    DefaultOptions(bytes.LongLength));
+                Directory.Delete(root, recursive: true);
+                return result.CleanupComplete ? 0 : 1;
+            }
         default:
             WriteUsage();
             return UsageError;
