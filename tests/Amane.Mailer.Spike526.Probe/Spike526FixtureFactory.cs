@@ -15,15 +15,15 @@ public static class Spike526FixtureFactory
     {
         var definition = fixtureId switch
         {
-            "F00" => new Definition(0, 0, 32, 1, validBase64: true, metadataMatch: true),
-            "F01" => new Definition(1, 1 * MiB, 32, 1, validBase64: true, metadataMatch: true),
-            "F02" => new Definition(1, (5 * MiB) - 1024, 32, 1, validBase64: true, metadataMatch: true),
-            "F03" => new Definition(5, 6 * MiB, 32, 1, validBase64: true, metadataMatch: true),
-            "F04" => new Definition(5, 6 * MiB, 256 * 1024, 20, validBase64: true, metadataMatch: true),
-            "F05" => new Definition(5, 6 * MiB, 512 * 1024, 20, validBase64: true, metadataMatch: true),
-            "F06" => new Definition(5, 7 * MiB, 768 * 1024, 20, validBase64: true, metadataMatch: true),
-            "F07" => new Definition(1, 1 * MiB, 32, 1, validBase64: true, metadataMatch: false),
-            "F08" => new Definition(1, 128 * 1024, 32, 1, validBase64: false, metadataMatch: true),
+            "F00" => new Definition(0, 0, 32, 1, ValidBase64: true, MetadataMatch: true),
+            "F01" => new Definition(1, 1 * MiB, 32, 1, ValidBase64: true, MetadataMatch: true),
+            "F02" => new Definition(1, (5 * MiB) - 1024, 32, 1, ValidBase64: true, MetadataMatch: true),
+            "F03" => new Definition(5, 6 * MiB, 32, 1, ValidBase64: true, MetadataMatch: true),
+            "F04" => new Definition(5, 6 * MiB, 256 * 1024, 20, ValidBase64: true, MetadataMatch: true),
+            "F05" => new Definition(5, 6 * MiB, 512 * 1024, 20, ValidBase64: true, MetadataMatch: true),
+            "F06" => new Definition(5, 7 * MiB, 768 * 1024, 20, ValidBase64: true, MetadataMatch: true),
+            "F07" => new Definition(1, 1 * MiB, 32, 1, ValidBase64: true, MetadataMatch: false),
+            "F08" => new Definition(1, 128 * 1024, 32, 1, ValidBase64: false, MetadataMatch: true),
             _ => throw new ArgumentOutOfRangeException(nameof(fixtureId), fixtureId, "Unknown #526 fixture."),
         };
 
