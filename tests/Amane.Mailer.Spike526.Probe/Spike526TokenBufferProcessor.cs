@@ -444,4 +444,4 @@ public static class Spike526TokenBufferProcessor
     }
 }
 
-public sealed class Spike526LimitException(string message) : InvalidDataException(message);
+public sealed class Spike526LimitException(string message) : IOException(message);
