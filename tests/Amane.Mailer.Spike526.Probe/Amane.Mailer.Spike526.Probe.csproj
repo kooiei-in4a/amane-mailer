@@ -20,4 +20,24 @@
     <PackageReference Include="Azure.Communication.Email" />
   </ItemGroup>
 
+  <Target Name="CopySpike526ProbeToTestsOutput" AfterTargets="Build">
+    <PropertyGroup>
+      <_Spike526TestsOutDir>$(MSBuildThisFileDirectory)..\Amane.Mailer.Tests\bin\$(Configuration)\$(TargetFramework)\</_Spike526TestsOutDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_Spike526ProbeCopy Include="$(TargetPath)" />
+      <_Spike526ProbeCopy Include="$(TargetDir)$(AssemblyName).deps.json" />
+      <_Spike526ProbeCopy Include="$(TargetDir)$(AssemblyName).runtimeconfig.json" />
+      <_Spike526ProbeCopy Include="$(TargetDir)$(AssemblyName).exe"
+                          Condition="Exists('$(TargetDir)$(AssemblyName).exe')" />
+      <_Spike526ProbeCopy Include="$(TargetDir)$(AssemblyName)"
+                          Condition="Exists('$(TargetDir)$(AssemblyName)')" />
+    </ItemGroup>
+    <MakeDir Directories="$(_Spike526TestsOutDir)" />
+    <Copy SourceFiles="@(_Spike526ProbeCopy)"
+          DestinationFolder="$(_Spike526TestsOutDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_Spike526ProbeCopy)' != ''" />
+  </Target>
+
 </Project>
