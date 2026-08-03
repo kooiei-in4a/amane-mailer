@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using static SQLitePCL.raw;
 
 namespace Amane.Mailer.Data.Sqlite;
 
@@ -18,6 +19,9 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
         {
             ConnectionCreatedForTests?.Invoke(connection);
             await connection.OpenAsync(cancellationToken);
+            // Pooled handles left mid-transaction (raw BEGIN not tracked by ADO.NET) make
+            // PRAGMA synchronous fail with "Safety level may not be changed inside a transaction".
+            await EnsureAutocommitAsync(connection, cancellationToken);
             await ApplyPragmasAsync(connection, cancellationToken);
             return connection;
         }
@@ -329,6 +333,26 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
                 await afterPragma(pragma, cancellationToken);
             }
         }
+    }
+
+    /// <summary>
+    /// Rolls back a residual SQLite transaction on a pooled handle before connection-scoped
+    /// PRAGMAs run. Microsoft.Data.Sqlite only auto-rolls back ADO.NET-tracked transactions on
+    /// Close; a raw BEGIN left open survives pool reuse (#474).
+    /// </summary>
+    private static async Task EnsureAutocommitAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        var handle = connection.Handle;
+        if (handle is null || sqlite3_get_autocommit(handle) != 0)
+        {
+            return;
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "ROLLBACK;";
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task DisposeOwnedConnectionAsync(SqliteConnection connection)
