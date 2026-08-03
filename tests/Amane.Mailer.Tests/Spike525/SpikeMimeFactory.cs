@@ -8,10 +8,15 @@ namespace Amane.Mailer.Tests.Spike525;
 /// no attachments) so this spike never exercises or pre-commits a public CC/BCC/attachment
 /// contract. Used only to probe ACS/Mailpit provider mechanics.
 ///
-/// BCC handling follows the safe pattern this spike recommends back to #519: Bcc recipients
-/// are never added to <see cref="MimeMessage.Bcc"/> (which MimeKit would serialize into the
-/// wire header); they are only added to the explicit SMTP envelope recipient list passed to
-/// MailKit's <c>SmtpClient.SendAsync(message, sender, recipients, ...)</c> overload.
+/// BCC handling here uses the explicit-envelope pattern (Bcc recipients added only to the
+/// envelope recipient list passed to MailKit's
+/// <c>SmtpClient.SendAsync(message, sender, recipients, ...)</c> overload, never to
+/// <see cref="MimeMessage.Bcc"/>) for S-02. Per #525 Agent B review follow-up (S-02b),
+/// populating <see cref="MimeMessage.Bcc"/> directly and sending via the actual production
+/// single-argument <c>SendAsync(message, ct)</c> path was separately verified NOT to leak a
+/// Bcc header onto the wire either — MailKit's single-argument overload already omits Bcc from
+/// the serialized DATA while still using it to compute the envelope. Both patterns are
+/// wire-safe for Mailpit/SMTP; see Spike525MailpitEnvelopeTests for both verifications.
 /// </summary>
 internal static class SpikeMimeFactory
 {

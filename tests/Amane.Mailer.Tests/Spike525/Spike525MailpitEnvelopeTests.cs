@@ -1,3 +1,4 @@
+using Amane.Mailer.Delivery;
 using MailKit.Net.Smtp;
 using MailKit.Security;
 using MimeKit;
@@ -66,6 +67,77 @@ public sealed class Spike525MailpitEnvelopeTests
             MailpitApiCcCount = found.Cc.Length,
             Note = "Mailpit API Bcc field is synthesized from envelope-minus-headers; not proof of wire content. See relay wire capture for ground truth.",
         });
+    }
+
+    /// <summary>
+    /// #525 Agent B review (Draft PR #529) M-01: S-02 only verified a Spike-only "safe" BCC
+    /// pattern (message.Bcc left empty, explicit envelope recipients). It did not verify the
+    /// PRODUCTION-EQUIVALENT path: populate MimeMessage.Bcc directly (the obvious way BCC support
+    /// would naturally be added to OutboundMimeMessageFactory) and send via the actual production
+    /// <see cref="MailKitSmtpClient"/> class's single-argument <c>SendAsync(message, ct)</c> — the
+    /// exact call <see cref="MailpitMailDeliveryProvider"/> makes today. This test closes that gap
+    /// using the real internal production class (InternalsVisibleTo("Amane.Mailer.Tests")), not a
+    /// reimplementation.
+    /// </summary>
+    [Fact]
+    public async Task S02b_production_equivalent_sendasync_path_with_message_bcc_populated()
+    {
+        if (!Spike525Gate.MailpitEnabled)
+        {
+            return;
+        }
+
+        await using var relay = new Spike525SmtpRelay(Spike525Gate.MailpitSmtpHost, Spike525Gate.MailpitSmtpPort);
+        relay.Start();
+
+        var toAddress = Spike525Support.SyntheticAddress("s02b-to1");
+        var ccAddress = Spike525Support.SyntheticAddress("s02b-cc1");
+        var bccAddress = Spike525Support.SyntheticAddress("s02b-bcc1");
+        var subject = "spike525-s02b-" + Guid.NewGuid().ToString("N")[..8];
+
+        var message = new MimeMessage();
+        message.From.Add(MailboxAddress.Parse(FromAddress));
+        message.To.Add(MailboxAddress.Parse(toAddress));
+        message.Cc.Add(MailboxAddress.Parse(ccAddress));
+        message.Bcc.Add(MailboxAddress.Parse(bccAddress)); // production-equivalent: naive population of MimeMessage.Bcc
+        message.Subject = subject;
+        message.Body = new TextPart("plain") { Text = "s02b body" };
+
+        // The real production class (src/Amane.Mailer/Delivery/MailKitSmtpClient.cs), used via its
+        // IMailpitSmtpClient interface exactly as MailpitMailDeliveryProvider.SendAsync uses it:
+        // single-argument SendAsync(message, ct), envelope derived internally by MailKit from
+        // message.To/Cc/Bcc — no explicit recipient list.
+        IMailpitSmtpClient client = new MailKitSmtpClient();
+        await client.ConnectAsync("127.0.0.1", relay.ListenPort, SecureSocketOptions.None, TestContext.Current.CancellationToken);
+        await client.SendAsync(message, TestContext.Current.CancellationToken);
+        await client.DisconnectAsync(true, TestContext.Current.CancellationToken);
+        await client.DisposeAsync();
+
+        var wireHasBccHeader = relay.CapturedBytesContainHeader("Bcc");
+        var wireBytes = relay.GetCapturedClientToServerBytes();
+        var wireText = System.Text.Encoding.ASCII.GetString(wireBytes);
+        var envelopeRcptToCount = System.Text.RegularExpressions.Regex.Matches(wireText, @"(?im)^RCPT TO:").Count;
+        var envelopeIncludesBcc = wireText.Contains(bccAddress, StringComparison.OrdinalIgnoreCase);
+
+        using var http = new HttpClient { BaseAddress = new Uri(Spike525Gate.MailpitHttpBaseUrl) };
+        var api = new MailpitApiClient(http);
+        var found = await WaitForSubjectAsync(api, subject, TestContext.Current.CancellationToken);
+        Assert.NotNull(found);
+
+        Spike525Support.Evidence.Record("S-02b", new
+        {
+            Provider = "mailpit",
+            Scenario = "production-equivalent-message-bcc-populated-single-arg-sendasync",
+            EnvelopeRcptToCount = envelopeRcptToCount,
+            EnvelopeIncludesBccRecipient = envelopeIncludesBcc,
+            WireCapturedBccHeaderPresent = wireHasBccHeader,
+            Finding = wireHasBccHeader
+                ? "CONFIRMED LEAK: MimeKit serializes a populated MimeMessage.Bcc into the literal SMTP DATA bytes when sent via the single-argument SendAsync(message, ct) overload. The current production IMailpitSmtpClient interface cannot safely support BCC without an explicit-envelope-recipients overload."
+                : "MimeMessage.Bcc did NOT appear in literal DATA bytes even via the single-argument SendAsync(message, ct) overload; the existing interface may be sufficient, contingent on this finding replicating.",
+        });
+
+        // Ground truth check, resolved either way — do not assume the outcome in advance.
+        Assert.True(envelopeIncludesBcc, "BCC recipient must still reach the SMTP envelope (RCPT TO) for mail to actually be delivered to that address.");
     }
 
     [Fact]
