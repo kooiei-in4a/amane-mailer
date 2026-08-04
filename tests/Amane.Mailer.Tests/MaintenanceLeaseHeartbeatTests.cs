@@ -1,5 +1,6 @@
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 
 namespace Amane.Mailer.Tests;
@@ -13,17 +14,18 @@ namespace Amane.Mailer.Tests;
 public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
 {
     private string? _root;
+    private string? _databasePath;
     private MailerMaintenanceLeaseStore? _leaseStore;
 
     public async ValueTask InitializeAsync()
     {
         _root = Path.Combine(Path.GetTempPath(), "amane-mailer-lease-heartbeat-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_root);
-        var databasePath = Path.Combine(_root, "mailer.db");
+        _databasePath = Path.Combine(_root, "mailer.db");
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                ["ConnectionStrings:Mailer"] = $"Data Source={_databasePath}",
             })
             .Build();
         var factory = new SqliteConnectionFactory(configuration);
@@ -33,7 +35,7 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
 
     public ValueTask DisposeAsync()
     {
-        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+        SqliteConnection.ClearAllPools();
         if (_root is not null && Directory.Exists(_root))
         {
             Directory.Delete(_root, recursive: true);
@@ -52,10 +54,11 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
         var renewInterval = TimeSpan.FromMilliseconds(60);
         var now = DateTimeOffset.UtcNow;
 
-        Assert.True(await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, now, ct));
+        var acquired = await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, now, ct);
+        Assert.True(acquired.Acquired);
 
         await using (new MaintenanceLeaseHeartbeat(
-            _leaseStore, leaseName, owner, leaseDuration, renewInterval, TimeProvider.System))
+            _leaseStore, leaseName, owner, acquired.FencingToken, leaseDuration, renewInterval, TimeProvider.System))
         {
             // Longer than the original 300ms duration: without renewal this would have expired.
             await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
@@ -74,20 +77,55 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
         var renewInterval = TimeSpan.FromMilliseconds(400);
         var now = DateTimeOffset.UtcNow;
 
-        Assert.True(await _leaseStore!.TryAcquireAsync(leaseName, ownerA, leaseDuration, now, ct));
+        var acquiredA = await _leaseStore!.TryAcquireAsync(leaseName, ownerA, leaseDuration, now, ct);
+        Assert.True(acquiredA.Acquired);
 
         await using var heartbeat = new MaintenanceLeaseHeartbeat(
-            _leaseStore, leaseName, ownerA, leaseDuration, renewInterval, TimeProvider.System);
+            _leaseStore, leaseName, ownerA, acquiredA.FencingToken, leaseDuration, renewInterval, TimeProvider.System);
 
         // Let ownerA's lease actually expire (renewInterval is deliberately longer than
         // leaseDuration here), then have a different owner reclaim it -- simulating a real
         // heartbeat failure/delay long enough for someone else to legitimately step in.
         await Task.Delay(TimeSpan.FromMilliseconds(200), ct);
-        Assert.True(await _leaseStore.TryAcquireAsync(
-            leaseName, ownerB, TimeSpan.FromMinutes(5), DateTimeOffset.UtcNow, ct));
+        var acquiredB = await _leaseStore.TryAcquireAsync(
+            leaseName, ownerB, TimeSpan.FromMinutes(5), DateTimeOffset.UtcNow, ct);
+        Assert.True(acquiredB.Acquired);
 
         // Give the heartbeat's next tick a chance to observe the reclaim.
         await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+        Assert.False(heartbeat.IsHealthy);
+    }
+
+    [Fact]
+    public async Task IsHealthy_latches_false_when_a_renewal_throws()
+    {
+        // Simulates a transient DB failure (SQLite busy / I/O error) during renewal by dropping
+        // the lease table out from under the heartbeat -- the next RenewAsync call throws
+        // instead of returning false, and the heartbeat must still fail closed rather than
+        // leaving IsHealthy at its last-known-good value (post-merge review of #533/PR #537).
+        var ct = TestContext.Current.CancellationToken;
+        const string leaseName = "test-lease";
+        var owner = Guid.NewGuid();
+        var leaseDuration = TimeSpan.FromMilliseconds(300);
+        var renewInterval = TimeSpan.FromMilliseconds(60);
+        var now = DateTimeOffset.UtcNow;
+
+        var acquired = await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, now, ct);
+        Assert.True(acquired.Acquired);
+
+        await using var heartbeat = new MaintenanceLeaseHeartbeat(
+            _leaseStore, leaseName, owner, acquired.FencingToken, leaseDuration, renewInterval, TimeProvider.System);
+
+        SqliteConnection.ClearAllPools();
+        await using (var connection = new SqliteConnection($"Data Source={_databasePath}"))
+        {
+            await connection.OpenAsync(ct);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "DROP TABLE mailer_maintenance_leases;";
+            await command.ExecuteNonQueryAsync(ct);
+        }
+
+        await Task.Delay(TimeSpan.FromMilliseconds(400), ct);
         Assert.False(heartbeat.IsHealthy);
     }
 
@@ -101,10 +139,11 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
         var renewInterval = TimeSpan.FromMilliseconds(50);
         var now = DateTimeOffset.UtcNow;
 
-        Assert.True(await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, now, ct));
+        var acquired = await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, now, ct);
+        Assert.True(acquired.Acquired);
 
         var heartbeat = new MaintenanceLeaseHeartbeat(
-            _leaseStore, leaseName, owner, leaseDuration, renewInterval, TimeProvider.System);
+            _leaseStore, leaseName, owner, acquired.FencingToken, leaseDuration, renewInterval, TimeProvider.System);
         await Task.Delay(TimeSpan.FromMilliseconds(120), ct);
         await heartbeat.DisposeAsync();
 

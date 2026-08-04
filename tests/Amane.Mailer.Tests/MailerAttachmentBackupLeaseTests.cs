@@ -83,26 +83,180 @@ public sealed class MailerAttachmentBackupLeaseTests(MailerAdminDbOpsFixture dbO
         var ownerA = Guid.NewGuid();
         var ownerB = Guid.NewGuid();
 
-        Assert.True(await leaseStore.TryAcquireAsync(
-            MailerMaintenanceLeaseStore.BackupLeaseName, ownerA, TimeSpan.FromMinutes(10), now, ct));
+        var acquiredA = await leaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerA, TimeSpan.FromMinutes(10), now, ct);
+        Assert.True(acquiredA.Acquired);
 
         // A different owner cannot acquire while the first lease is still valid.
-        Assert.False(await leaseStore.TryAcquireAsync(
-            MailerMaintenanceLeaseStore.BackupLeaseName, ownerB, TimeSpan.FromMinutes(10), now.AddSeconds(1), ct));
+        Assert.False((await leaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerB, TimeSpan.FromMinutes(10), now.AddSeconds(1), ct)).Acquired);
 
-        await leaseStore.ReleaseAsync(MailerMaintenanceLeaseStore.BackupLeaseName, ownerA, now.AddSeconds(2), ct);
+        await leaseStore.ReleaseAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerA, acquiredA.FencingToken, now.AddSeconds(2), ct);
         Assert.False(await leaseStore.IsHeldAsync(
             MailerMaintenanceLeaseStore.BackupLeaseName, now.AddSeconds(3), ct));
 
         // A fresh owner can now acquire.
-        Assert.True(await leaseStore.TryAcquireAsync(
-            MailerMaintenanceLeaseStore.BackupLeaseName, ownerB, TimeSpan.FromMinutes(10), now.AddSeconds(4), ct));
+        var acquiredB = await leaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerB, TimeSpan.FromMinutes(10), now.AddSeconds(4), ct);
+        Assert.True(acquiredB.Acquired);
 
         // A stale (never-released) lease is reclaimable once its expiry has passed.
-        Assert.False(await leaseStore.TryAcquireAsync(
-            MailerMaintenanceLeaseStore.BackupLeaseName, ownerA, TimeSpan.FromMinutes(10), now.AddSeconds(5), ct));
-        Assert.True(await leaseStore.TryAcquireAsync(
-            MailerMaintenanceLeaseStore.BackupLeaseName, ownerA, TimeSpan.FromMinutes(10), now.AddMinutes(11), ct));
+        Assert.False((await leaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerA, TimeSpan.FromMinutes(10), now.AddSeconds(5), ct)).Acquired);
+        Assert.True((await leaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerA, TimeSpan.FromMinutes(10), now.AddMinutes(11), ct)).Acquired);
+    }
+
+    [Fact]
+    public async Task RenewAsync_succeeds_within_validity_and_fails_after_expiry()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var leaseStore = dbOpsFixture.Factory.Services.GetRequiredService<MailerMaintenanceLeaseStore>();
+        var now = DateTimeOffset.UtcNow;
+        var owner = Guid.NewGuid();
+
+        var acquired = await leaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, owner, TimeSpan.FromSeconds(30), now, ct);
+        Assert.True(acquired.Acquired);
+
+        // Renewing while still within the lease's validity extends it.
+        Assert.True(await leaseStore.RenewAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName,
+            owner,
+            acquired.FencingToken,
+            TimeSpan.FromMinutes(10),
+            now.AddSeconds(10),
+            ct));
+        Assert.True(await leaseStore.IsHeldAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, now.AddMinutes(5), ct));
+
+        // Once the lease has actually lapsed, the same owner/fencing token can never revive it
+        // via RenewAsync -- only a fresh TryAcquireAsync (which bumps the fencing token) can.
+        var lapsedAt = now.AddSeconds(10).AddMinutes(11);
+        Assert.False(await leaseStore.RenewAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName,
+            owner,
+            acquired.FencingToken,
+            TimeSpan.FromMinutes(10),
+            lapsedAt,
+            ct));
+        Assert.False(await leaseStore.IsHeldAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, lapsedAt, ct));
+    }
+
+    [Fact]
+    public async Task RenewAsync_fails_when_the_fencing_token_does_not_match()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var leaseStore = dbOpsFixture.Factory.Services.GetRequiredService<MailerMaintenanceLeaseStore>();
+        var now = DateTimeOffset.UtcNow;
+        var owner = Guid.NewGuid();
+
+        var acquired = await leaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, owner, TimeSpan.FromMinutes(10), now, ct);
+        Assert.True(acquired.Acquired);
+
+        // Same owner token, but a fencing token that does not match the row -- renewal must
+        // fail even though the lease is otherwise still valid.
+        Assert.False(await leaseStore.RenewAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName,
+            owner,
+            acquired.FencingToken + 1,
+            TimeSpan.FromMinutes(10),
+            now.AddSeconds(1),
+            ct));
+    }
+
+    [Fact]
+    public async Task Reclaim_by_a_new_owner_after_expiry_blocks_the_old_owners_renew_and_release()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var leaseStore = dbOpsFixture.Factory.Services.GetRequiredService<MailerMaintenanceLeaseStore>();
+        var now = DateTimeOffset.UtcNow;
+        var ownerA = Guid.NewGuid();
+        var ownerB = Guid.NewGuid();
+
+        var acquiredA = await leaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerA, TimeSpan.FromSeconds(5), now, ct);
+        Assert.True(acquiredA.Acquired);
+
+        var afterExpiry = now.AddSeconds(10);
+        var acquiredB = await leaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerB, TimeSpan.FromMinutes(10), afterExpiry, ct);
+        Assert.True(acquiredB.Acquired);
+        Assert.NotEqual(acquiredA.FencingToken, acquiredB.FencingToken);
+
+        // Owner A's renew, using its own (now-stale) fencing token, must fail.
+        Assert.False(await leaseStore.RenewAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName,
+            ownerA,
+            acquiredA.FencingToken,
+            TimeSpan.FromMinutes(10),
+            afterExpiry.AddSeconds(1),
+            ct));
+
+        // Owner A's release must not affect owner B's lease.
+        await leaseStore.ReleaseAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName,
+            ownerA,
+            acquiredA.FencingToken,
+            afterExpiry.AddSeconds(2),
+            ct);
+        Assert.True(await leaseStore.IsHeldAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, afterExpiry.AddSeconds(3), ct));
+    }
+
+    [Fact]
+    public async Task RunBackupAsync_never_publishes_when_the_lease_is_reclaimed_just_before_publish()
+    {
+        // The narrow-window equivalent of a heartbeat renewal that hasn't fired yet: something
+        // else takes the lease (e.g. a stale owner's clock skew, or the lease genuinely
+        // expiring) between the snapshot finishing and the atomic publish. The DB-side
+        // ownership/fencing/expiry re-check right before publish must catch this even when the
+        // heartbeat itself hasn't observed it yet.
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAttachmentRequestAsync(MailRequestState.Delivered, ct);
+
+        // Establish a known-good prior backup so we can prove it is never overwritten.
+        var service = dbOpsFixture.Factory.Services.GetRequiredService<AdminDbOpsService>();
+        var firstBackup = await service.RunBackupAsync(ct);
+        Assert.Equal(AdminDbOpsStatus.Succeeded, firstBackup.Status);
+        var backupPath = Path.Combine(dbOpsFixture.BackupDirectory, firstBackup.BackupFileName!);
+        var originalBytes = await File.ReadAllBytesAsync(backupPath, ct);
+
+        var connectionFactory = dbOpsFixture.Factory.Services.GetRequiredService<SqliteConnectionFactory>();
+        connectionFactory.BeforeAtomicReplaceForTests = async _ =>
+        {
+            // Simulate the lease being reclaimed by a different owner in the narrow window
+            // between the snapshot completing and the atomic publish -- bump owner_token and
+            // fencing_token directly, without touching the in-flight backup's own row otherwise.
+            await using var connection = new SqliteConnection(dbOpsFixture.ConnectionString);
+            await connection.OpenAsync(CancellationToken.None);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                UPDATE mailer_maintenance_leases
+                SET owner_token = @NewOwner, fencing_token = fencing_token + 1
+                WHERE lease_name = @LeaseName;
+                """;
+            command.Parameters.AddWithValue("@NewOwner", Guid.NewGuid().ToString("D"));
+            command.Parameters.AddWithValue("@LeaseName", MailerMaintenanceLeaseStore.BackupLeaseName);
+            await command.ExecuteNonQueryAsync(CancellationToken.None);
+        };
+
+        try
+        {
+            var result = await service.RunBackupAsync(ct);
+            Assert.Equal(AdminDbOpsStatus.Failed, result.Status);
+            Assert.Equal("BackupMaintenanceLeaseLost", result.ErrorDetail);
+        }
+        finally
+        {
+            connectionFactory.BeforeAtomicReplaceForTests = null;
+        }
+
+        var afterBytes = await File.ReadAllBytesAsync(backupPath, ct);
+        Assert.Equal(originalBytes, afterBytes);
     }
 
     [Fact]
@@ -116,7 +270,7 @@ public sealed class MailerAttachmentBackupLeaseTests(MailerAdminDbOpsFixture dbO
             TimeSpan.FromMinutes(5),
             DateTimeOffset.UtcNow,
             ct);
-        Assert.True(acquired);
+        Assert.True(acquired.Acquired);
 
         using var client = dbOpsFixture.Factory.CreateClient();
         client.DefaultRequestHeaders.Authorization =

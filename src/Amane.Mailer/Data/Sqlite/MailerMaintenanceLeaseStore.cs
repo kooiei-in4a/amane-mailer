@@ -1,17 +1,37 @@
 namespace Amane.Mailer.Data.Sqlite;
 
 /// <summary>
+/// Result of <see cref="MailerMaintenanceLeaseStore.TryAcquireAsync"/>: whether the lease was
+/// acquired, and (when acquired) the <c>fencing_token</c> now on the row. Callers must present
+/// this same fencing token on every subsequent <c>RenewAsync</c>/<c>ReleaseAsync</c>/publish-time
+/// validity check for the duration of their hold.
+/// </summary>
+public readonly record struct LeaseAcquireResult(bool Acquired, long FencingToken)
+{
+    public static LeaseAcquireResult NotAcquired { get; } = new(false, 0);
+}
+
+/// <summary>
 /// Durable cross-process maintenance lease shared by Admin backup, CLI backup, and the
 /// attachment acceptance gate (ADR 0022 D-09). <see cref="TryAcquireAsync"/> is a single atomic
 /// UPSERT: it only takes the lease when absent or already expired, incrementing
 /// <c>fencing_token</c> only on a genuine new acquire (never on renewal), so a stale holder's
 /// renewal attempt can be told apart from a fresh acquire after expiry.
+///
+/// <c>fencing_token</c> is the fencing token for this lease: every holder must present the
+/// exact token it received from <see cref="TryAcquireAsync"/> to renew, release, or validate
+/// the lease. This closes the "expired lease revived" gap in <c>owner_token</c>-only fencing --
+/// an owner token can only ever be reused if the caller's <see cref="Guid"/> generator produces
+/// a collision, but relying on that alone still let a renewal succeed with no expiry check at
+/// all (post-merge review of #533/PR #537). Requiring both owner and fencing token, plus an
+/// explicit <c>expires_at &gt; @Now</c> check on renewal, makes an expired lease unrecoverable
+/// by its original holder even if it presents the correct owner token.
 /// </summary>
 public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connections)
 {
     public const string BackupLeaseName = "backup";
 
-    public async Task<bool> TryAcquireAsync(
+    public async Task<LeaseAcquireResult> TryAcquireAsync(
         string leaseName,
         Guid ownerToken,
         TimeSpan duration,
@@ -21,7 +41,9 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
         // Two-step fenced UPDATE then insert-if-absent (same idiom as the rest of this codebase's
         // lease claims, e.g. MailAttachmentSubmissionStore.TryInsertStartedAsync's
         // INSERT ... WHERE NOT EXISTS): reclaim an expired lease via a fenced UPDATE, or create
-        // the row fresh if none exists yet. Either branch affecting a row means "acquired."
+        // the row fresh if none exists yet. Either branch affecting a row means "acquired," and
+        // RETURNING hands back the fencing_token now on the row so the caller can present it on
+        // every subsequent renew/release/validity check.
         const string reclaimExpiredSql = """
             UPDATE mailer_maintenance_leases
             SET
@@ -30,7 +52,8 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
                 expires_at = @ExpiresAt,
                 acquired_at = @Now,
                 updated_at = @Now
-            WHERE lease_name = @LeaseName AND expires_at <= @Now;
+            WHERE lease_name = @LeaseName AND expires_at <= @Now
+            RETURNING fencing_token;
             """;
 
         const string insertIfAbsentSql = """
@@ -39,7 +62,8 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
             SELECT @LeaseName, @OwnerToken, 1, @ExpiresAt, @Now, @Now
             WHERE NOT EXISTS (
                 SELECT 1 FROM mailer_maintenance_leases WHERE lease_name = @LeaseName
-            );
+            )
+            RETURNING fencing_token;
             """;
 
         var nowStorage = SqliteTime.ToStorageUtc(now);
@@ -49,7 +73,7 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
         try
         {
-            int affected;
+            long? fencingToken = null;
             await using (var reclaim = connection.CreateCommand())
             {
                 reclaim.CommandText = reclaimExpiredSql;
@@ -57,10 +81,14 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
                 reclaim.Parameters.AddWithValue("@OwnerToken", ownerToken.ToString("D"));
                 reclaim.Parameters.AddWithValue("@ExpiresAt", expiresAtStorage);
                 reclaim.Parameters.AddWithValue("@Now", nowStorage);
-                affected = await reclaim.ExecuteNonQueryAsync(cancellationToken);
+                await using var reader = await reclaim.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    fencingToken = reader.GetInt64(0);
+                }
             }
 
-            if (affected == 0)
+            if (fencingToken is null)
             {
                 await using var insert = connection.CreateCommand();
                 insert.CommandText = insertIfAbsentSql;
@@ -68,11 +96,15 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
                 insert.Parameters.AddWithValue("@OwnerToken", ownerToken.ToString("D"));
                 insert.Parameters.AddWithValue("@ExpiresAt", expiresAtStorage);
                 insert.Parameters.AddWithValue("@Now", nowStorage);
-                affected = await insert.ExecuteNonQueryAsync(cancellationToken);
+                await using var reader = await insert.ExecuteReaderAsync(cancellationToken);
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    fencingToken = reader.GetInt64(0);
+                }
             }
 
             await transaction.CommitAsync(cancellationToken);
-            return affected > 0;
+            return fencingToken is { } token ? new LeaseAcquireResult(true, token) : LeaseAcquireResult.NotAcquired;
         }
         catch
         {
@@ -81,9 +113,17 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
         }
     }
 
+    /// <summary>
+    /// Renews the lease's <c>expires_at</c>, fenced on <c>owner_token</c>, <c>fencing_token</c>,
+    /// and <c>expires_at &gt; @Now</c> all matching at once -- an already-expired lease can never
+    /// be revived by a renewal, even by its original owner presenting the correct tokens; only a
+    /// fresh <see cref="TryAcquireAsync"/> can reclaim it (and that bumps the fencing token,
+    /// which the stale holder does not have).
+    /// </summary>
     public async Task<bool> RenewAsync(
         string leaseName,
         Guid ownerToken,
+        long fencingToken,
         TimeSpan duration,
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
@@ -91,7 +131,10 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
         const string sql = """
             UPDATE mailer_maintenance_leases
             SET expires_at = @ExpiresAt, updated_at = @Now
-            WHERE lease_name = @LeaseName AND owner_token = @OwnerToken;
+            WHERE lease_name = @LeaseName
+              AND owner_token = @OwnerToken
+              AND fencing_token = @FencingToken
+              AND expires_at > @Now;
             """;
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
@@ -99,6 +142,7 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
         command.CommandText = sql;
         command.Parameters.AddWithValue("@LeaseName", leaseName);
         command.Parameters.AddWithValue("@OwnerToken", ownerToken.ToString("D"));
+        command.Parameters.AddWithValue("@FencingToken", fencingToken);
         command.Parameters.AddWithValue("@ExpiresAt", SqliteTime.ToStorageUtc(now.Add(duration)));
         command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
         var affected = await command.ExecuteNonQueryAsync(cancellationToken);
@@ -106,20 +150,21 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
     }
 
     /// <summary>
-    /// Releases the lease by expiring it immediately, fenced on the caller's own owner token so
-    /// a lease already reclaimed by someone else (this holder's renewal having lapsed) is never
-    /// released out from under its new owner.
+    /// Releases the lease by expiring it immediately, fenced on the caller's own owner token and
+    /// fencing token so a lease already reclaimed by someone else (this holder's renewal having
+    /// lapsed) is never released out from under its new owner.
     /// </summary>
     public async Task ReleaseAsync(
         string leaseName,
         Guid ownerToken,
+        long fencingToken,
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
         const string sql = """
             UPDATE mailer_maintenance_leases
             SET expires_at = @Now, updated_at = @Now
-            WHERE lease_name = @LeaseName AND owner_token = @OwnerToken;
+            WHERE lease_name = @LeaseName AND owner_token = @OwnerToken AND fencing_token = @FencingToken;
             """;
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
@@ -127,6 +172,7 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
         command.CommandText = sql;
         command.Parameters.AddWithValue("@LeaseName", leaseName);
         command.Parameters.AddWithValue("@OwnerToken", ownerToken.ToString("D"));
+        command.Parameters.AddWithValue("@FencingToken", fencingToken);
         command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -160,6 +206,42 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
     {
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         return await IsHeldWithinTransactionAsync(connection, leaseName, now, cancellationToken);
+    }
+
+    /// <summary>
+    /// True only if <paramref name="ownerToken"/> and <paramref name="fencingToken"/> both still
+    /// match the current row and the lease has not expired -- the publish-time gate a backup
+    /// must pass immediately before an artifact is treated as a successful backup (ADR 0022
+    /// D-09). Distinct from <see cref="MaintenanceLeaseHeartbeat.IsHealthy"/>: the heartbeat
+    /// only proves the last renewal it attempted succeeded, not that nothing has changed in the
+    /// DB since (e.g. a renewal that hasn't fired yet after a slow snapshot).
+    /// </summary>
+    public async Task<bool> IsLeaseCurrentlyValidAsync(
+        string leaseName,
+        Guid ownerToken,
+        long fencingToken,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT EXISTS(
+                SELECT 1 FROM mailer_maintenance_leases
+                WHERE lease_name = @LeaseName
+                  AND owner_token = @OwnerToken
+                  AND fencing_token = @FencingToken
+                  AND expires_at > @Now
+            );
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("@LeaseName", leaseName);
+        command.Parameters.AddWithValue("@OwnerToken", ownerToken.ToString("D"));
+        command.Parameters.AddWithValue("@FencingToken", fencingToken);
+        command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is long value && value == 1L;
     }
 
     /// <summary>
