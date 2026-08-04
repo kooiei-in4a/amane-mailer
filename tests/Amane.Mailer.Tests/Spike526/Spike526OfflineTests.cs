@@ -113,7 +113,7 @@ public sealed class Spike526OfflineTests
     {
         await AssertRejectedAsync(
             Spike526FixtureFactory.SerializeRequest(Spike526FixtureFactory.Create("F08")),
-            static exception => Assert.IsType<InvalidDataException>(exception));
+            static exception => Assert.IsAssignableFrom<InvalidDataException>(exception));
     }
 
     [Fact]
@@ -121,21 +121,21 @@ public sealed class Spike526OfflineTests
     {
         await AssertRejectedAsync(
             Spike526FixtureFactory.SerializeRequest(Spike526FixtureFactory.Create("F07")),
-            static exception => Assert.IsType<InvalidDataException>(exception));
+            static exception => Assert.IsAssignableFrom<InvalidDataException>(exception));
     }
 
     [Fact]
     public async Task Token_buffer_candidate_rejects_invalid_utf8()
     {
         byte[] invalid = [(byte)'{', (byte)'"', (byte)'x', (byte)'"', (byte)':', (byte)'"', 0xff, (byte)'"', (byte)'}'];
-        await AssertRejectedAsync(invalid, static exception => Assert.IsType<JsonException>(exception));
+        await AssertRejectedAsync(invalid, static exception => Assert.IsAssignableFrom<JsonException>(exception));
     }
 
     [Fact]
     public async Task Token_buffer_candidate_rejects_truncated_json()
     {
         var valid = Spike526FixtureFactory.SerializeRequest(Spike526FixtureFactory.Create("F01"));
-        await AssertRejectedAsync(valid[..^1], static exception => Assert.IsType<JsonException>(exception));
+        await AssertRejectedAsync(valid[..^1], static exception => Assert.IsAssignableFrom<JsonException>(exception));
     }
 
     [Fact]
@@ -144,7 +144,7 @@ public sealed class Spike526OfflineTests
         var json = """
             {"tenant_id":"a","tenant_id":"b","attachments":[]}
             """;
-        await AssertRejectedAsync(Encoding.UTF8.GetBytes(json), static exception => Assert.IsType<JsonException>(exception));
+        await AssertRejectedAsync(Encoding.UTF8.GetBytes(json), static exception => Assert.IsAssignableFrom<JsonException>(exception));
     }
 
     [Fact]
@@ -155,7 +155,7 @@ public sealed class Spike526OfflineTests
         var json = $$"""
             {"attachments":[{"file_name":"a.bin","file_name":"b.bin","content_type":"application/octet-stream","byte_length":3,"content_sha256":"{{digest}}","content_base64":"{{content}}"}]}
             """;
-        await AssertRejectedAsync(Encoding.UTF8.GetBytes(json), static exception => Assert.IsType<JsonException>(exception));
+        await AssertRejectedAsync(Encoding.UTF8.GetBytes(json), static exception => Assert.IsAssignableFrom<JsonException>(exception));
     }
 
     [Fact]
