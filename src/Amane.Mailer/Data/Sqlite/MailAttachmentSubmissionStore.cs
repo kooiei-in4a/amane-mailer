@@ -47,6 +47,13 @@ public sealed class MailAttachmentSubmissionStore(SqliteConnectionFactory connec
     /// provider invocation boundary step 3). Returns false without creating a row if evidence
     /// for this request already exists -- the caller must never create a second submission
     /// lifecycle and must instead converge from the existing evidence.
+    ///
+    /// Also fenced on the request row still being <c>Processing</c> under this exact
+    /// <paramref name="lockToken"/> at insert time: without this, a claim whose lease expired
+    /// (or whose row was manually cancelled while no evidence existed yet) could still create a
+    /// Started marker and go on to invoke the provider for a request it no longer legitimately
+    /// owns. A caller that loses this race gets `false` with no evidence found by
+    /// <see cref="FindAsync"/>, which the Worker already treats as "back off, do nothing".
     /// </summary>
     public async Task<bool> TryInsertStartedAsync(
         Guid requestId,
@@ -62,6 +69,10 @@ public sealed class MailAttachmentSubmissionStore(SqliteConnectionFactory connec
             SELECT @RequestId, @Started, @Provider, @Now, @LockToken, NULL, NULL, @Now, @Now
             WHERE NOT EXISTS (
                 SELECT 1 FROM mail_attachment_submissions WHERE request_id = @RequestId
+            )
+            AND EXISTS (
+                SELECT 1 FROM mail_requests
+                WHERE id = @RequestId AND status = @ProcessingStatus AND lock_token = @LockToken
             );
             """;
 
@@ -78,6 +89,7 @@ public sealed class MailAttachmentSubmissionStore(SqliteConnectionFactory connec
             command.Parameters.AddWithValue("@Provider", provider);
             command.Parameters.AddWithValue("@Now", nowStorage);
             command.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
+            command.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
 
             var affected = await command.ExecuteNonQueryAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
