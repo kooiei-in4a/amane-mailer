@@ -87,7 +87,10 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task BackupToAsync(string absoluteDestinationPath, CancellationToken cancellationToken = default)
+    public async Task BackupToAsync(
+        string absoluteDestinationPath,
+        CancellationToken cancellationToken = default,
+        Func<CancellationToken, Task<bool>>? verifyBeforePublish = null)
     {
         if (!Path.IsPathRooted(absoluteDestinationPath))
         {
@@ -143,6 +146,14 @@ public sealed class SqliteConnectionFactory(IConfiguration configuration)
             if (BeforeAtomicReplaceForTests is { } beforeReplace)
             {
                 await beforeReplace(cancellationToken);
+            }
+
+            // ADR 0022 D-09: a caller holding the backup maintenance lease for the operation's
+            // duration passes this to confirm the lease was never lost (e.g. to a heartbeat
+            // renewal failure) before the snapshot is published as the real backup file.
+            if (verifyBeforePublish is not null && !await verifyBeforePublish(cancellationToken))
+            {
+                throw new BackupMaintenanceLeaseLostException();
             }
 
             cancellationToken.ThrowIfCancellationRequested();

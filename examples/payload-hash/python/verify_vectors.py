@@ -9,9 +9,7 @@ from pathlib import Path
 
 from mail_payload_hash import (
     build_delivery_payload_json,
-    canonicalize,
     compute_delivery_payload_sha256_hex,
-    compute_sha256_hex,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -29,17 +27,18 @@ def main() -> int:
     for vector in vectors:
         name = vector["name"]
         payload = vector["input"]
+        attachments = vector.get("attachments")
         expected_canonical = vector["expected_canonical_json"]
         expected_hash = vector["expected_sha256_hex"]
 
-        actual_canonical = canonicalize(payload)
+        actual_canonical = build_delivery_payload_json(payload, attachments)
         if actual_canonical != expected_canonical:
             print(f"[FAIL] {name}: canonical JSON mismatch")
             print(f"  expected: {expected_canonical}")
             print(f"  actual:   {actual_canonical}")
             return 1
 
-        actual_hash = compute_sha256_hex(payload)
+        actual_hash = compute_delivery_payload_sha256_hex(payload, attachments)
         if actual_hash != expected_hash:
             print(f"[FAIL] {name}: SHA-256 mismatch")
             print(f"  expected: {expected_hash}")
@@ -52,14 +51,14 @@ def main() -> int:
             "payload_hash": "caller-provided-placeholder",
             **payload,
         }
-        delivery_json = build_delivery_payload_json(envelope_request)
+        delivery_json = build_delivery_payload_json(envelope_request, attachments)
         if delivery_json != expected_canonical:
             print(f"[FAIL] {name}: delivery payload JSON mismatch")
             print(f"  expected: {expected_canonical}")
             print(f"  actual:   {delivery_json}")
             return 1
 
-        delivery_hash = compute_delivery_payload_sha256_hex(envelope_request)
+        delivery_hash = compute_delivery_payload_sha256_hex(envelope_request, attachments)
         if delivery_hash != expected_hash:
             print(f"[FAIL] {name}: delivery payload hash mismatch")
             print(f"  expected: {expected_hash}")

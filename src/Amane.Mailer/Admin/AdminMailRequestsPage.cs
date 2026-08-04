@@ -185,6 +185,7 @@ public static class AdminMailRequestsPage
         AppendOption(html, "failed", "Failed", selectedStatus);
         AppendOption(html, "deadlettered", "DeadLettered", selectedStatus);
         AppendOption(html, "cancelled", "Cancelled", selectedStatus);
+        AppendOption(html, "deliveryunknown", "DeliveryUnknown", selectedStatus);
 
         html.AppendLine("""
                       </select>
@@ -369,6 +370,7 @@ public static class AdminMailRequestsPage
             "failed" => (int)MailRequestState.Failed,
             "deadlettered" => (int)MailRequestState.DeadLettered,
             "cancelled" => (int)MailRequestState.Cancelled,
+            "deliveryunknown" => (int)MailRequestState.DeliveryUnknown,
             _ => null,
         };
 
@@ -388,6 +390,7 @@ public static class AdminMailRequestsPage
             (int)MailRequestState.Failed => "Failed",
             (int)MailRequestState.DeadLettered => "DeadLettered",
             (int)MailRequestState.Cancelled => "Cancelled",
+            (int)MailRequestState.DeliveryUnknown => "DeliveryUnknown",
             _ => "Unknown",
         };
 
@@ -400,6 +403,7 @@ public static class AdminMailRequestsPage
             (int)MailRequestState.Failed => "status-failed",
             (int)MailRequestState.DeadLettered => "status-deadlettered",
             (int)MailRequestState.Cancelled => "status-cancelled",
+            (int)MailRequestState.DeliveryUnknown => "status-deliveryunknown",
             _ => "status-unknown",
         };
 

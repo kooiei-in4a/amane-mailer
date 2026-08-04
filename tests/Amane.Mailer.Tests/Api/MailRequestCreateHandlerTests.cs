@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Amane.Mailer.Api;
+using Amane.Mailer.Attachments.Spool;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
@@ -18,6 +19,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
 {
     private string? _root;
     private MailerTenantRegistry? _registry;
+    private AttachmentSpool? _attachmentSpool;
 
     public async ValueTask InitializeAsync()
     {
@@ -25,6 +27,8 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         Directory.CreateDirectory(_root);
         var tenantsPath = Path.Combine(_root, "tenants.json");
         await File.WriteAllTextAsync(tenantsPath, TenantConfigJson);
+        _attachmentSpool = new AttachmentSpool(
+            new AttachmentSpoolOptions { RootDirectory = Path.Combine(_root, "attachment-spool") });
 
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -61,6 +65,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             new StubMailRequestRepository(),
             new MailRequestQueue(),
             _registry!,
+            _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
             CancellationToken.None);
@@ -84,6 +89,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             new StubMailRequestRepository(),
             new MailRequestQueue(),
             _registry!,
+            _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
             CancellationToken.None);
@@ -110,6 +116,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             new StubMailRequestRepository(),
             new MailRequestQueue(),
             _registry!,
+            _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
             CancellationToken.None);
@@ -142,6 +149,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             repository,
             new MailRequestQueue(),
             _registry!,
+            _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
             CancellationToken.None);
@@ -176,6 +184,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             repository,
             new MailRequestQueue(),
             _registry!,
+            _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
             CancellationToken.None);
@@ -205,6 +214,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             repository,
             new MailRequestQueue(),
             _registry!,
+            _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
             CancellationToken.None);
@@ -234,6 +244,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             repository,
             new MailRequestQueue(),
             _registry!,
+            _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
             CancellationToken.None);
@@ -258,6 +269,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             repository,
             new MailRequestQueue(),
             _registry!,
+            _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
             CancellationToken.None);
@@ -284,7 +296,9 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
                 acceptStore: null!,
                 consumerMutations: null!,
                 adminQueries: null!,
-                heartbeatStore: null!)
+                heartbeatStore: null!,
+                attachmentStore: null!,
+                attachmentSubmissionStore: null!)
         {
         }
 

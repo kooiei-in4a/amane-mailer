@@ -12,17 +12,24 @@ public static class MailRequestRequestReader
 {
     public const int MaxRequestBodyBytes = 256_000;
 
+    /// <summary>
+    /// Consumer HTTP envelope cap for the mail-request create endpoint, which accepts optional
+    /// attachments (ADR 0022 D-02). Other endpoints (reschedule, cancel) keep <see cref="MaxRequestBodyBytes"/>.
+    /// </summary>
+    public const int MaxAttachmentCapableRequestBodyBytes = 16 * 1024 * 1024;
+
     // Reject invalid UTF-8 instead of substituting U+FFFD (#343).
     private static readonly Encoding StrictUtf8 = new UTF8Encoding(
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
 
-    public static bool IsContentLengthTooLarge(HttpRequest request) =>
-        request.ContentLength > MaxRequestBodyBytes;
+    public static bool IsContentLengthTooLarge(HttpRequest request, int maxBytes = MaxRequestBodyBytes) =>
+        request.ContentLength > maxBytes;
 
     public static async Task<MailRequestBodyReadResult> ReadAsync(
         HttpRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int maxBytes = MaxRequestBodyBytes)
     {
         await using var buffer = new MemoryStream();
         var chunk = new byte[8192];
@@ -37,7 +44,7 @@ public static class MailRequestRequestReader
             }
 
             totalBytes += bytesRead;
-            if (totalBytes > MaxRequestBodyBytes)
+            if (totalBytes > maxBytes)
             {
                 return MailRequestBodyReadResult.TooLarge();
             }

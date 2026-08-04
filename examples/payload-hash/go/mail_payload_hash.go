@@ -20,6 +20,43 @@ var includedFields = map[string]struct{}{
 	"text_body":      {},
 	"reply_to":       {},
 	"metadata":       {},
+	"attachments":    {},
+}
+
+// attachmentsFieldName is included with a special projection (ADR 0022 D-03): absent or an
+// empty slice omits the field entirely from the hash document; a non-empty slice is
+// re-projected to exactly file_name, content_type, byte_length, content_sha256, and a
+// zero-based order generated from slice position -- never the raw content_base64 or an
+// unverified declared content_type.
+//
+// Unlike the C#/Python/TypeScript reference implementations (the ADR 0022 D-03 parity set),
+// this Go example does not perform Unicode NFC normalization on file_name: the Go standard
+// library has no built-in normalizer, and adding golang.org/x/text as a dependency is out of
+// scope for this dependency-free reference file. Callers must pass an already NFC-normalized
+// file_name (the shared test vectors use precomposed Japanese text, so this does not affect
+// vector parity here).
+const attachmentsFieldName = "attachments"
+
+// Attachment is the verified (not Consumer-declared) shape used for the hash projection.
+type Attachment struct {
+	FileName      string
+	ContentType   string
+	ByteLength    int64
+	ContentSHA256 string
+}
+
+func projectAttachments(attachments []Attachment) []any {
+	projected := make([]any, 0, len(attachments))
+	for order, attachment := range attachments {
+		projected = append(projected, map[string]any{
+			"file_name":      attachment.FileName,
+			"content_type":   attachment.ContentType,
+			"byte_length":    attachment.ByteLength,
+			"content_sha256": attachment.ContentSHA256,
+			"order":          order,
+		})
+	}
+	return projected
 }
 
 func EscapeJSONString(value string) string {
@@ -68,6 +105,10 @@ func Canonicalize(value any) (string, error) {
 		return canonicalizeNumber(typed)
 	case float64:
 		return canonicalizeFloat(typed)
+	case int:
+		return fmt.Sprintf("%d", typed), nil
+	case int64:
+		return fmt.Sprintf("%d", typed), nil
 	case []any:
 		parts := make([]string, 0, len(typed))
 		for _, item := range typed {
@@ -148,11 +189,25 @@ func canonicalizeFloat(value float64) (string, error) {
 }
 
 func BuildDeliveryPayloadJSON(request map[string]any) (string, error) {
+	return BuildDeliveryPayloadJSONWithAttachments(request, nil)
+}
+
+// BuildDeliveryPayloadJSONWithAttachments builds the canonical hash document, projecting
+// attachments (ADR 0022 D-03) when non-empty. The raw "attachments" key on request, if any,
+// is never used directly (it may carry content_base64 and an unverified declared
+// content_type); pass the verified attachments explicitly instead.
+func BuildDeliveryPayloadJSONWithAttachments(request map[string]any, attachments []Attachment) (string, error) {
 	filtered := make(map[string]any)
 	for key, value := range request {
+		if key == attachmentsFieldName {
+			continue
+		}
 		if _, ok := includedFields[key]; ok {
 			filtered[key] = value
 		}
+	}
+	if len(attachments) > 0 {
+		filtered[attachmentsFieldName] = projectAttachments(attachments)
 	}
 	return canonicalizeObject(filtered)
 }
@@ -167,7 +222,11 @@ func ComputeSHA256Hex(value any) (string, error) {
 }
 
 func ComputeDeliveryPayloadSHA256Hex(request map[string]any) (string, error) {
-	deliveryJSON, err := BuildDeliveryPayloadJSON(request)
+	return ComputeDeliveryPayloadSHA256HexWithAttachments(request, nil)
+}
+
+func ComputeDeliveryPayloadSHA256HexWithAttachments(request map[string]any, attachments []Attachment) (string, error) {
+	deliveryJSON, err := BuildDeliveryPayloadJSONWithAttachments(request, attachments)
 	if err != nil {
 		return "", err
 	}

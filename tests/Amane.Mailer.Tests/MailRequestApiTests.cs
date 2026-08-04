@@ -595,10 +595,12 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     [Fact]
     public async Task Oversized_request_body_returns_413()
     {
+        // /internal/mail-requests accepts attachments (ADR 0022 D-02), so its cap is
+        // MailAttachmentLimits.MaxConsumerHttpEnvelopeBytes (16 MiB), not the base 256,000 bytes.
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
         using var content = new StringContent(
-            "{\"html_body\":\"" + new string('x', 260_000) + "\"}",
+            "{\"html_body\":\"" + new string('x', 16 * 1024 * 1024) + "\"}",
             Encoding.UTF8,
             "application/json");
 
@@ -619,7 +621,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
         using var content = new UnknownLengthStringContent(
-            "{\"html_body\":\"" + new string('x', 260_000) + "\"}",
+            "{\"html_body\":\"" + new string('x', 16 * 1024 * 1024) + "\"}",
             Encoding.UTF8,
             "application/json");
 
@@ -722,7 +724,9 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
                                 sp.GetRequiredService<MailRequestAcceptStore>(),
                                 sp.GetRequiredService<MailRequestConsumerMutations>(),
                                 sp.GetRequiredService<MailRequestAdminQueries>(),
-                                sp.GetRequiredService<WorkerHeartbeatStore>()));
+                                sp.GetRequiredService<WorkerHeartbeatStore>(),
+                                sp.GetRequiredService<MailRequestAttachmentStore>(),
+                                sp.GetRequiredService<MailAttachmentSubmissionStore>()));
                     });
                 });
 
@@ -824,8 +828,17 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         MailRequestAcceptStore acceptStore,
         MailRequestConsumerMutations consumerMutations,
         MailRequestAdminQueries adminQueries,
-        WorkerHeartbeatStore heartbeatStore)
-        : MailRequestRepository(claimStore, acceptStore, consumerMutations, adminQueries, heartbeatStore)
+        WorkerHeartbeatStore heartbeatStore,
+        MailRequestAttachmentStore attachmentStore,
+        MailAttachmentSubmissionStore attachmentSubmissionStore)
+        : MailRequestRepository(
+            claimStore,
+            acceptStore,
+            consumerMutations,
+            adminQueries,
+            heartbeatStore,
+            attachmentStore,
+            attachmentSubmissionStore)
     {
         public override Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
             Guid tenantId,

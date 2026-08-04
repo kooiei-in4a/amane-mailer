@@ -2,6 +2,7 @@ using Azure;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
 using AcsEmailAddress = Azure.Communication.Email.EmailAddress;
+using AcsEmailAttachment = Azure.Communication.Email.EmailAttachment;
 using AcsEmailClient = Azure.Communication.Email.EmailClient;
 using AcsEmailContent = Azure.Communication.Email.EmailContent;
 using AcsEmailMessage = Azure.Communication.Email.EmailMessage;
@@ -45,6 +46,33 @@ public sealed class AcsMailDeliveryProvider(MailerOptions options)
             if (!string.IsNullOrWhiteSpace(job.ReplyTo))
             {
                 message.ReplyTo.Add(new AcsEmailAddress(job.ReplyTo));
+            }
+
+            if (job.Attachments is { Count: > 0 })
+            {
+                foreach (var attachment in job.Attachments)
+                {
+                    byte[] bytes;
+                    try
+                    {
+                        bytes = await File.ReadAllBytesAsync(attachment.FilePath, cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        // A file-not-found/access exception message embeds the private spool
+                        // path (ADR 0022 D-08/D-14); never let it reach the generic sanitizer
+                        // below, which only masks credentials/URLs/tokens/emails, not paths.
+                        return MailDeliveryResult.Failure(
+                            MailDeliveryErrorCodes.AttachmentStorageMissing,
+                            "Attachment spool file could not be read.",
+                            retryable: false);
+                    }
+
+                    message.Attachments.Add(new AcsEmailAttachment(
+                        attachment.FileName,
+                        attachment.ContentType,
+                        BinaryData.FromBytes(bytes)));
+                }
             }
 
             var operationId = AcsOperationIdFactory.Create(

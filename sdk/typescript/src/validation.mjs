@@ -18,8 +18,13 @@ export const MAIL_REQUEST_JSON_FIELDS = new Set([
   'reply_to',
   'metadata',
   'scheduled_at',
+  'attachments',
   'payload_hash',
 ]);
+
+// ADR 0022 D-01 fixed MVP limit. Mailer is the authority; this is a client-side fail-fast check
+// only, not a substitute for server-side validation.
+export const MAX_ATTACHMENTS = 5;
 
 export class MailRequestValidationError extends Error {
   constructor(message) {
@@ -109,6 +114,35 @@ export function assertScheduledAt(value) {
   }
 }
 
+export function assertAttachments(attachments) {
+  if (attachments === null || attachments === undefined) {
+    return;
+  }
+  if (!Array.isArray(attachments)) {
+    throw new MailRequestValidationError('attachments must be an array when provided.');
+  }
+  if (attachments.length > MAX_ATTACHMENTS) {
+    throw new MailRequestValidationError(
+      `attachments must contain at most ${MAX_ATTACHMENTS} entries.`,
+    );
+  }
+  attachments.forEach((attachment, index) => {
+    if (!attachment || typeof attachment !== 'object') {
+      throw new MailRequestValidationError(`attachments[${index}] must be an object.`);
+    }
+    for (const field of ['file_name', 'content_type', 'content_base64', 'content_sha256']) {
+      if (typeof attachment[field] !== 'string' || attachment[field].length === 0) {
+        throw new MailRequestValidationError(`attachments[${index}].${field} is required.`);
+      }
+    }
+    if (!Number.isInteger(attachment.byte_length) || attachment.byte_length < 0) {
+      throw new MailRequestValidationError(
+        `attachments[${index}].byte_length must be a non-negative integer.`,
+      );
+    }
+  });
+}
+
 export function validateMailRequestDraft(draft) {
   assertUuid(draft.tenant_id, 'tenant_id');
   assertUuid(draft.mail_request_id, 'mail_request_id');
@@ -139,5 +173,8 @@ export function validateMailRequestDraft(draft) {
   assertMetadata(draft.metadata);
   if (Object.prototype.hasOwnProperty.call(draft, 'scheduled_at')) {
     assertScheduledAt(draft.scheduled_at);
+  }
+  if (Object.prototype.hasOwnProperty.call(draft, 'attachments')) {
+    assertAttachments(draft.attachments);
   }
 }

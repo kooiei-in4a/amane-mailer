@@ -29,9 +29,14 @@ MAIL_REQUEST_JSON_FIELDS = frozenset(
         "reply_to",
         "metadata",
         "scheduled_at",
+        "attachments",
         "payload_hash",
     }
 )
+
+# ADR 0022 D-01 fixed MVP limit. Mailer is the authority; this is a client-side fail-fast check
+# only, not a substitute for server-side validation.
+MAX_ATTACHMENTS = 5
 
 
 class MailRequestValidationError(ValueError):
@@ -90,6 +95,27 @@ def _assert_scheduled_at(value: Any) -> None:
         ) from exc
 
 
+def _assert_attachments(attachments: list[dict[str, Any]] | None) -> None:
+    if attachments is None:
+        return
+    if not isinstance(attachments, list):
+        raise MailRequestValidationError("attachments must be an array when provided.")
+    if len(attachments) > MAX_ATTACHMENTS:
+        raise MailRequestValidationError(
+            f"attachments must contain at most {MAX_ATTACHMENTS} entries.",
+        )
+    for index, attachment in enumerate(attachments):
+        if not isinstance(attachment, dict):
+            raise MailRequestValidationError(f"attachments[{index}] must be an object.")
+        for field in ("file_name", "content_type", "content_base64", "content_sha256"):
+            if not isinstance(attachment.get(field), str) or not attachment[field]:
+                raise MailRequestValidationError(f"attachments[{index}].{field} is required.")
+        if not isinstance(attachment.get("byte_length"), int) or attachment["byte_length"] < 0:
+            raise MailRequestValidationError(
+                f"attachments[{index}].byte_length must be a non-negative integer.",
+            )
+
+
 def validate_mail_request_draft(draft: dict[str, Any]) -> None:
     _assert_uuid(draft["tenant_id"], "tenant_id")
     _assert_uuid(draft["mail_request_id"], "mail_request_id")
@@ -120,3 +146,5 @@ def validate_mail_request_draft(draft: dict[str, Any]) -> None:
     _assert_metadata(draft.get("metadata"))
     if "scheduled_at" in draft:
         _assert_scheduled_at(draft["scheduled_at"])
+    if "attachments" in draft:
+        _assert_attachments(draft["attachments"])

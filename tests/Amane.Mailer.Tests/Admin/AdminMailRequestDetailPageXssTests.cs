@@ -86,6 +86,24 @@ public sealed class AdminMailRequestDetailPageXssTests
         Assert.Contains("John Doe", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Attachment_filename_and_content_type_are_escaped_even_when_masked()
+    {
+        var attachment = new AttachmentMetadataRow(
+            Order: 0,
+            FileName: "<script>alert(1)</script>.pdf",
+            ContentType: "<img src=x onerror=alert(1)>",
+            ByteLength: 1,
+            ContentSha256: new string('a', 64),
+            SpoolKey: Guid.NewGuid());
+
+        var html = AdminMailRequestDetailPage.RenderHtml(CreateDetail(), [], [attachment], [], NoMaskOptions);
+
+        Assert.DoesNotContain("<script>", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("<img", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("<script>alert(1)</script>.pdf", html, StringComparison.Ordinal);
+    }
+
     private static AdminMailRequestDetail CreateDetail(
         string? htmlBody = null,
         string? textBody = null,
@@ -111,11 +129,13 @@ public sealed class AdminMailRequestDetailPageXssTests
             Status: MailRequestState.Queued,
             AttemptCount: 0,
             MaxAttempts: 3,
+            AttachmentCount: 0,
             NextAttemptAt: null,
             LockToken: null,
             LockExpiresAt: null,
             DeliveredAt: null,
             FailedAt: null,
+            DeliveryUnknownAt: null,
             LastErrorMessage: lastErrorMessage,
             AcceptedAt: now,
             CreatedAt: now,

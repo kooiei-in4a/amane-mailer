@@ -9,7 +9,14 @@ export const INCLUDED_FIELDS = new Set([
   'text_body',
   'reply_to',
   'metadata',
+  'attachments',
 ]);
+
+// attachments is included with a special projection (ADR 0022 D-03): absent or an empty array
+// omits the field entirely from the hash document; a non-empty array is re-projected to exactly
+// file_name (NFC), content_type, byte_length, content_sha256, and a zero-based order generated
+// from array position -- never the raw content_base64 or an unverified declared content_type.
+const ATTACHMENTS_FIELD_NAME = 'attachments';
 
 export function escapeJsonString(value) {
   let result = '"';
@@ -77,11 +84,30 @@ export function canonicalize(value) {
   throw new TypeError(`Unsupported JSON value type: ${typeof value}`);
 }
 
-export function buildDeliveryPayloadJson(request) {
-  const properties = Object.keys(request)
-    .filter((key) => INCLUDED_FIELDS.has(key))
+function projectAttachments(attachments) {
+  return attachments.map((attachment, order) => ({
+    file_name: attachment.file_name.normalize('NFC'),
+    content_type: attachment.content_type,
+    byte_length: attachment.byte_length,
+    content_sha256: attachment.content_sha256,
+    order,
+  }));
+}
+
+export function buildDeliveryPayloadJson(request, attachments = null) {
+  const filtered = {};
+  for (const key of Object.keys(request)) {
+    if (INCLUDED_FIELDS.has(key) && key !== ATTACHMENTS_FIELD_NAME) {
+      filtered[key] = request[key];
+    }
+  }
+  if (attachments && attachments.length > 0) {
+    filtered[ATTACHMENTS_FIELD_NAME] = projectAttachments(attachments);
+  }
+
+  const properties = Object.keys(filtered)
     .sort()
-    .map((key) => `${escapeJsonString(key)}:${canonicalize(request[key])}`);
+    .map((key) => `${escapeJsonString(key)}:${canonicalize(filtered[key])}`);
   return `{${properties.join(',')}}`;
 }
 
@@ -90,7 +116,7 @@ export function computeSha256Hex(jsonValue) {
   return createHash('sha256').update(canonicalJson, 'utf8').digest('hex');
 }
 
-export function computeDeliveryPayloadSha256Hex(request) {
-  const deliveryJson = buildDeliveryPayloadJson(request);
+export function computeDeliveryPayloadSha256Hex(request, attachments = null) {
+  const deliveryJson = buildDeliveryPayloadJson(request, attachments);
   return computeSha256Hex(JSON.parse(deliveryJson));
 }

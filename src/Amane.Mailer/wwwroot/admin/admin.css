@@ -264,6 +264,11 @@ body {
   color: #252b34;
 }
 
+.status-deliveryunknown {
+  background: #ede1ff;
+  color: #5a2a9e;
+}
+
 .pager {
   display: flex;
   justify-content: flex-end;

@@ -489,6 +489,61 @@
           "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupNonInteractiveTestSupport.cs"
         ]
       }
+    },
+    {
+      "id": "attachment-mvp",
+      "status": "implemented",
+      "trackingIssue": 533,
+      "lastVerified": "2026-08-05",
+      "relatedAdrs": [
+        "0022"
+      ],
+      "notes": "Public attachments contract (max 5 files, 2 MiB/file, 5 MiB total decoded), bounded-decode acceptance pipeline with structural file-type validation (PDF/JPEG/PNG/DOCX/XLSX/CSV/TXT), durable short-lived spool with startup+periodic reconciliation, request-unique provider submission evidence (at-most-once invocation, explicit ADR 0015 attempt_number exception), DeliveryUnknown terminal state, attachment manual-retry/cancel prohibition, shared SQLite backup maintenance lease, ACS/SMTP provider mapping with forced Base64 CTE, and Admin filename masking with an audited reveal action. Native AOT publish smoke could not run on this Windows dev host (cross-OS AOT compilation is unsupported); CI (ubuntu) performs it on the PR. Crash-window fault-injection and 256/512 MiB Docker/cgroup resource qualification were not performed in this environment.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Data/Migrations/014_mail_request_delivery_unknown_status.sql",
+          "src/Amane.Mailer/Data/Migrations/015_attachment_spool_and_submission_evidence.sql",
+          "src/Amane.Mailer/Attachments/Validation/AttachmentAcceptanceValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/AttachmentFilenameValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/PdfStructureValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/JpegStructureValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/PngStructureValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/OfficeOpenXmlStructureValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/TextContentValidator.cs",
+          "src/Amane.Mailer/Attachments/Spool/AttachmentSpool.cs",
+          "src/Amane.Mailer/Attachments/Spool/BoundedAttachmentDecoder.cs",
+          "src/Amane.Mailer/Attachments/Provider/AttachmentEnvelopeEstimator.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailAttachmentSubmissionStore.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailerMaintenanceLeaseStore.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailRequestAcceptStore.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailRequestClaimStore.cs",
+          "src/Amane.Mailer/Worker/AttachmentProviderResultClassifier.cs",
+          "src/Amane.Mailer/Worker/AttachmentSpoolReconciliationService.cs",
+          "src/Amane.Mailer/Worker/MailRequestWorker.cs",
+          "src/Amane.Mailer/Delivery/OutboundMimeMessageFactory.cs",
+          "src/Amane.Mailer/Delivery/AcsMailDeliveryProvider.cs",
+          "src/Amane.Mailer/Admin/AdminMailRequestAttachmentFilenamePage.cs",
+          "src/Amane.Mailer/Admin/AdminDbOpsService.cs",
+          "src/Amane.Mailer/Operations/DbBackupCommand.cs",
+          "src/Amane.Mailer.Contracts/MailRequests/MailAttachmentDto.cs",
+          "src/Amane.Mailer.Contracts/MailRequests/MailAttachmentLimits.cs",
+          "src/Amane.Mailer.Contracts/Security/MailPayloadHasher.cs",
+          "docs/api/openapi.yaml",
+          "docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/Attachments/Validation/AttachmentValidatorsTests.cs",
+          "tests/Amane.Mailer.Tests/MailRequestWorkerAttachmentTests.cs",
+          "tests/Amane.Mailer.Tests/OutboundMimeMessageFactoryAttachmentTests.cs",
+          "tests/Amane.Mailer.Tests/MailerAttachmentBackupLeaseTests.cs",
+          "tests/Amane.Mailer.Tests/AttachmentSpoolReconciliationServiceTests.cs",
+          "tests/Amane.Mailer.Tests/MailerAdminManualMutationTests.cs",
+          "tests/Amane.Mailer.Tests/MailerMetricsTests.cs",
+          "tests/Amane.Mailer.Contracts.Tests/MailPayloadHasherTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminMailRequestDetailPageRenderTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminMailRequestDetailPageXssTests.cs"
+        ]
+      }
     }
   ]
 }

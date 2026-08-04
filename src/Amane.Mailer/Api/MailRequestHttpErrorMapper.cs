@@ -79,6 +79,7 @@ public static class MailRequestHttpErrorMapper
             MailRequestState.Failed => MailRequestStatus.Failed,
             MailRequestState.DeadLettered => MailRequestStatus.DeadLettered,
             MailRequestState.Cancelled => MailRequestStatus.Cancelled,
+            MailRequestState.DeliveryUnknown => MailRequestStatus.DeliveryUnknown,
             _ => throw new ArgumentOutOfRangeException(nameof(status), status, null),
         };
 }

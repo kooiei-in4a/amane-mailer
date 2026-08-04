@@ -28,6 +28,37 @@ internal static class OutboundMimeMessageFactory
             builder.HtmlBody = job.HtmlBody;
         }
 
+        if (job.Attachments is { Count: > 0 })
+        {
+            foreach (var attachment in job.Attachments)
+            {
+                byte[] content;
+                try
+                {
+                    content = File.ReadAllBytes(attachment.FilePath);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    throw new AttachmentSpoolFileReadException();
+                }
+
+                var part = builder.Attachments.Add(
+                    attachment.FileName,
+                    content,
+                    ContentType.Parse(attachment.ContentType));
+
+                // Force Base64 regardless of MimeKit's content-based auto-selection (#525 S-15
+                // finding: MimeKit picks 7bit for text-safe content, and 7bit/8bit/quoted-
+                // printable transport canonicalizes line endings (LF -> CRLF), silently changing
+                // the decoded byte digest for attachments whose original bytes used bare LF.
+                // Base64 is the only encoding here that is a pure binary-safe round trip.)
+                if (part is MimePart mimePart)
+                {
+                    mimePart.ContentTransferEncoding = ContentEncoding.Base64;
+                }
+            }
+        }
+
         message.Body = builder.ToMessageBody();
         return message;
     }

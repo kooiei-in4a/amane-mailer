@@ -157,9 +157,9 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
                 id, tenant_id, source_service, mail_request_id, purpose,
                 payload_json, payload_hash, subject, html_body, text_body, reply_to,
                 recipient_email, recipient_display_name, metadata_json,
-                status, attempt_count, max_attempts,
+                status, attempt_count, max_attempts, attachment_count,
                 next_attempt_at, lock_token, lock_expires_at,
-                delivered_at, failed_at, last_error_message,
+                delivered_at, failed_at, delivery_unknown_at, last_error_message,
                 accepted_at, created_at, updated_at, completed_at
             FROM mail_requests
             {{where}}
@@ -189,16 +189,18 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
             Status: (MailRequestState)reader.GetInt32(14),
             AttemptCount: reader.GetInt32(15),
             MaxAttempts: reader.GetInt32(16),
-            NextAttemptAt: reader.IsDBNull(17) ? null : SqliteTime.FromStorage(reader.GetString(17)),
-            LockToken: reader.IsDBNull(18) ? null : reader.GetString(18),
-            LockExpiresAt: reader.IsDBNull(19) ? null : SqliteTime.FromStorage(reader.GetString(19)),
-            DeliveredAt: reader.IsDBNull(20) ? null : SqliteTime.FromStorage(reader.GetString(20)),
-            FailedAt: reader.IsDBNull(21) ? null : SqliteTime.FromStorage(reader.GetString(21)),
-            LastErrorMessage: reader.IsDBNull(22) ? null : reader.GetString(22),
-            AcceptedAt: SqliteTime.FromStorage(reader.GetString(23)),
-            CreatedAt: SqliteTime.FromStorage(reader.GetString(24)),
-            UpdatedAt: SqliteTime.FromStorage(reader.GetString(25)),
-            CompletedAt: reader.IsDBNull(26) ? null : SqliteTime.FromStorage(reader.GetString(26)));
+            AttachmentCount: reader.GetInt32(17),
+            NextAttemptAt: reader.IsDBNull(18) ? null : SqliteTime.FromStorage(reader.GetString(18)),
+            LockToken: reader.IsDBNull(19) ? null : reader.GetString(19),
+            LockExpiresAt: reader.IsDBNull(20) ? null : SqliteTime.FromStorage(reader.GetString(20)),
+            DeliveredAt: reader.IsDBNull(21) ? null : SqliteTime.FromStorage(reader.GetString(21)),
+            FailedAt: reader.IsDBNull(22) ? null : SqliteTime.FromStorage(reader.GetString(22)),
+            DeliveryUnknownAt: reader.IsDBNull(23) ? null : SqliteTime.FromStorage(reader.GetString(23)),
+            LastErrorMessage: reader.IsDBNull(24) ? null : reader.GetString(24),
+            AcceptedAt: SqliteTime.FromStorage(reader.GetString(25)),
+            CreatedAt: SqliteTime.FromStorage(reader.GetString(26)),
+            UpdatedAt: SqliteTime.FromStorage(reader.GetString(27)),
+            CompletedAt: reader.IsDBNull(28) ? null : SqliteTime.FromStorage(reader.GetString(28)));
     }
 
     public async Task<IReadOnlyList<AdminMailAttemptRow>> ListAttemptsForAdminAsync(

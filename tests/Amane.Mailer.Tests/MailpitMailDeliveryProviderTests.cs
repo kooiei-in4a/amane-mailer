@@ -157,7 +157,38 @@ public sealed class MailpitMailDeliveryProviderTests
             StringComparison.Ordinal);
     }
 
-    private static MailSendJob CreateJob()
+    [Fact]
+    public async Task SendAsync_returns_fixed_error_without_the_spool_path_when_attachment_file_is_missing()
+    {
+        var smtp = new ScriptedMailpitSmtpClient(connect: null, send: null, disconnect: null);
+        var provider = new MailpitMailDeliveryProvider(
+            new MailerOptions
+            {
+                MailpitSmtpHost = "127.0.0.1",
+                MailpitSmtpPort = 1025,
+                MailpitUseSsl = false,
+            },
+            NullLogger<MailpitMailDeliveryProvider>.Instance,
+            () => smtp);
+
+        var missingFilePath = Path.Combine(Path.GetTempPath(), "amane-mailer-mailpit-missing-attachment-tests", Guid.NewGuid().ToString("N") + ".bin");
+        var job = CreateJob(missingFilePath);
+
+        var result = await provider.SendAsync(
+            job,
+            CreateTenant(),
+            "mailpit",
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.Retryable);
+        Assert.Equal(MailDeliveryErrorCodes.AttachmentStorageMissing, result.ErrorCode);
+        Assert.DoesNotContain(missingFilePath, result.ErrorMessage ?? string.Empty, StringComparison.Ordinal);
+        // The factory throws before ever touching the SMTP client.
+        Assert.Equal(0, smtp.ConnectCount);
+    }
+
+    private static MailSendJob CreateJob(string? missingAttachmentFilePath = null)
     {
         var request = MailRequestTestData.CreateRequest();
         return new MailSendJob(
@@ -168,7 +199,10 @@ public sealed class MailpitMailDeliveryProviderTests
             request.TextBody,
             request.ReplyTo,
             request.To[0].Email,
-            request.To[0].DisplayName);
+            request.To[0].DisplayName,
+            Attachments: missingAttachmentFilePath is null
+                ? null
+                : [new MailSendAttachment("notes.txt", "text/plain", 10, missingAttachmentFilePath)]);
     }
 
     private static MailerTenant CreateTenant() =>

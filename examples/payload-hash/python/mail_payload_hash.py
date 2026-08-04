@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from typing import Any
 
 INCLUDED_FIELDS = frozenset(
@@ -16,8 +17,15 @@ INCLUDED_FIELDS = frozenset(
         "text_body",
         "reply_to",
         "metadata",
+        "attachments",
     ]
 )
+
+# attachments is included with a special projection (ADR 0022 D-03): absent or an empty list
+# omits the field entirely from the hash document; a non-empty list is re-projected to exactly
+# file_name (NFC), content_type, byte_length, content_sha256, and a zero-based order generated
+# from list position -- never the raw content_base64 or an unverified declared content_type.
+ATTACHMENTS_FIELD_NAME = "attachments"
 
 
 def escape_json_string(value: str) -> str:
@@ -83,8 +91,31 @@ def _canonicalize_object(value: dict[str, Any]) -> str:
     return "{" + ",".join(parts) + "}"
 
 
-def build_delivery_payload_json(request: dict[str, Any]) -> str:
-    filtered = {key: value for key, value in request.items() if key in INCLUDED_FIELDS}
+def _project_attachments(attachments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Projects verified attachment values to the fixed 5-field hash object (ADR 0022 D-03)."""
+    return [
+        {
+            "file_name": unicodedata.normalize("NFC", attachment["file_name"]),
+            "content_type": attachment["content_type"],
+            "byte_length": attachment["byte_length"],
+            "content_sha256": attachment["content_sha256"],
+            "order": order,
+        }
+        for order, attachment in enumerate(attachments)
+    ]
+
+
+def build_delivery_payload_json(
+    request: dict[str, Any],
+    attachments: list[dict[str, Any]] | None = None,
+) -> str:
+    filtered = {
+        key: value
+        for key, value in request.items()
+        if key in INCLUDED_FIELDS and key != ATTACHMENTS_FIELD_NAME
+    }
+    if attachments:
+        filtered[ATTACHMENTS_FIELD_NAME] = _project_attachments(attachments)
     return _canonicalize_object(filtered)
 
 
@@ -93,6 +124,9 @@ def compute_sha256_hex(json_value: Any) -> str:
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
-def compute_delivery_payload_sha256_hex(request: dict[str, Any]) -> str:
-    delivery_json = build_delivery_payload_json(request)
+def compute_delivery_payload_sha256_hex(
+    request: dict[str, Any],
+    attachments: list[dict[str, Any]] | None = None,
+) -> str:
+    delivery_json = build_delivery_payload_json(request, attachments)
     return compute_sha256_hex(json.loads(delivery_json))

@@ -30,6 +30,8 @@ public sealed class MailerContractsJsonContextInventoryTests
         typeof(MailDeliveryEventPayload),
         typeof(MailRecipientDto),
         typeof(MailRecipientDto[]),
+        typeof(MailAttachmentDto),
+        typeof(MailAttachmentDto[]),
         typeof(Dictionary<string, string>),
     ];
 

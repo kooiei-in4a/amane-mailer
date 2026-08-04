@@ -5,8 +5,12 @@ namespace Amane.Mailer.Admin;
 public sealed class AdminDbOpsService(
     SqliteConnectionFactory connections,
     MailerAdminDbOpsOptions options,
+    MailerMaintenanceLeaseStore maintenanceLeaseStore,
     TimeProvider timeProvider) : IDisposable
 {
+    private static readonly TimeSpan BackupLeaseDuration = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan BackupLeaseRenewInterval = TimeSpan.FromMinutes(3);
+
     private readonly SemaphoreSlim _operationLock = new(1, 1);
     private bool _disposed;
 
@@ -45,12 +49,49 @@ public sealed class AdminDbOpsService(
         if (!await _operationLock.WaitAsync(0, cancellationToken))
             return AdminDbOpsBackupResult.LockHeld();
 
+        // ADR 0022 D-09 backup sequence: acquire the durable cross-process lease first (this
+        // also blocks new attachment acceptance for its duration), then verify no non-terminal
+        // attachment row exists before snapshotting. A successful routine backup must never
+        // capture a non-terminal attachment row without its spool.
+        var ownerToken = Guid.NewGuid();
+        var now = timeProvider.GetUtcNow();
+        if (!await maintenanceLeaseStore.TryAcquireAsync(
+                MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, BackupLeaseDuration, now, cancellationToken))
+        {
+            _operationLock.Release();
+            return AdminDbOpsBackupResult.LockHeld();
+        }
+
         try
         {
+            if (await maintenanceLeaseStore.HasActiveAttachmentRequestsAsync(cancellationToken))
+            {
+                return AdminDbOpsBackupResult.Failed("ActiveAttachmentRequests");
+            }
+
             var fileName = BuildBackupFileName(timeProvider.GetUtcNow());
             var destinationPath = ResolveBackupDestinationPath(fileName);
-            await connections.BackupToAsync(destinationPath, cancellationToken);
+
+            // ADR 0022 D-09: renew the lease periodically for the snapshot's full duration so a
+            // backup slower than BackupLeaseDuration can never let expires_at lapse mid-flight
+            // and reopen the acceptance race the lease exists to close.
+            await using var heartbeat = new MaintenanceLeaseHeartbeat(
+                maintenanceLeaseStore,
+                MailerMaintenanceLeaseStore.BackupLeaseName,
+                ownerToken,
+                BackupLeaseDuration,
+                BackupLeaseRenewInterval,
+                timeProvider);
+
+            await connections.BackupToAsync(
+                destinationPath,
+                cancellationToken,
+                verifyBeforePublish: _ => Task.FromResult(heartbeat.IsHealthy));
             return AdminDbOpsBackupResult.Succeeded(fileName);
+        }
+        catch (BackupMaintenanceLeaseLostException)
+        {
+            return AdminDbOpsBackupResult.Failed("BackupMaintenanceLeaseLost");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -58,6 +99,8 @@ public sealed class AdminDbOpsService(
         }
         finally
         {
+            await maintenanceLeaseStore.ReleaseAsync(
+                MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, timeProvider.GetUtcNow(), CancellationToken.None);
             _operationLock.Release();
         }
     }
