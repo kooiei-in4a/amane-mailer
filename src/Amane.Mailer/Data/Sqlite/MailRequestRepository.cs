@@ -252,9 +252,11 @@ public class MailRequestRepository
 
     public Task<bool> FinalizeAttachmentSubmissionAsync(
         Guid id,
-        Guid lockToken,
+        Guid requestLockToken,
+        Guid submissionLockToken,
         DateTimeOffset now,
-        AttachmentSubmissionState submissionTerminalState,
+        AttachmentSubmissionState expectedSubmissionState,
+        AttachmentSubmissionState targetSubmissionState,
         string? providerMessageId,
         MailRequestState requestTerminalState,
         string? lastErrorMessage,
@@ -262,9 +264,11 @@ public class MailRequestRepository
         CancellationToken cancellationToken = default) =>
         _claimStore.FinalizeAttachmentSubmissionAsync(
             id,
-            lockToken,
+            requestLockToken,
+            submissionLockToken,
             now,
-            submissionTerminalState,
+            expectedSubmissionState,
+            targetSubmissionState,
             providerMessageId,
             requestTerminalState,
             lastErrorMessage,
