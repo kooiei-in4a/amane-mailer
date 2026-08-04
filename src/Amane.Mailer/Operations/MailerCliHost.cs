@@ -170,7 +170,7 @@ public static class MailerCliHost
         CancellationToken cancellationToken)
     {
         var factory = new SqliteConnectionFactory(configuration);
-        var command = new DbBackupCommand(factory, new MailerMaintenanceLeaseStore(factory), TimeProvider.System);
+        var command = new DbBackupCommand(factory, new MailerMaintenanceLeaseStore(factory, TimeProvider.System), TimeProvider.System);
         return await command.ExecuteAsync(["db", "backup", destinationPath], output, error, cancellationToken);
     }
 

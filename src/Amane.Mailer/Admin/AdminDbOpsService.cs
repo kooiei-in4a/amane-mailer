@@ -54,9 +54,8 @@ public sealed class AdminDbOpsService(
         // attachment row exists before snapshotting. A successful routine backup must never
         // capture a non-terminal attachment row without its spool.
         var ownerToken = Guid.NewGuid();
-        var now = timeProvider.GetUtcNow();
         var acquired = await maintenanceLeaseStore.TryAcquireAsync(
-            MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, BackupLeaseDuration, now, cancellationToken);
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, BackupLeaseDuration, cancellationToken);
         if (!acquired.Acquired)
         {
             _operationLock.Release();
@@ -123,7 +122,6 @@ public sealed class AdminDbOpsService(
             MailerMaintenanceLeaseStore.BackupLeaseName,
             ownerToken,
             fencingToken,
-            timeProvider.GetUtcNow(),
             cancellationToken);
 
     internal static string BuildBackupFileName(DateTimeOffset utcNow) =>

@@ -48,7 +48,8 @@ public class MailRequestRepository
     public static MailRequestRepository CreateStandalone(
         SqliteConnectionFactory connections,
         MailerRuntimeMetrics? runtimeMetrics = null,
-        Amane.Mailer.Attachments.Spool.AttachmentSpool? attachmentSpool = null) =>
+        Amane.Mailer.Attachments.Spool.AttachmentSpool? attachmentSpool = null,
+        TimeProvider? timeProvider = null) =>
         new(
             new MailRequestClaimStore(connections, runtimeMetrics),
             new MailRequestAcceptStore(connections, attachmentSpool, runtimeMetrics),
@@ -56,7 +57,7 @@ public class MailRequestRepository
             new MailRequestAdminQueries(connections),
             new WorkerHeartbeatStore(connections),
             new MailRequestAttachmentStore(connections),
-            new MailAttachmentSubmissionStore(connections));
+            new MailAttachmentSubmissionStore(connections, timeProvider ?? TimeProvider.System));
 
     public Task<AdminMailRequestListPage> ListForAdminAsync(
         AdminMailRequestListQuery query,
@@ -246,9 +247,8 @@ public class MailRequestRepository
         Guid requestId,
         string provider,
         Guid lockToken,
-        DateTimeOffset now,
         CancellationToken cancellationToken = default) =>
-        _attachmentSubmissionStore.TryInsertStartedAsync(requestId, provider, lockToken, now, cancellationToken);
+        _attachmentSubmissionStore.TryInsertStartedAsync(requestId, provider, lockToken, cancellationToken);
 
     public Task<bool> FinalizeAttachmentSubmissionAsync(
         Guid id,

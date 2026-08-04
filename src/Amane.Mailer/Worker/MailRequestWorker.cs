@@ -470,15 +470,13 @@ public sealed class MailRequestWorker : BackgroundService
 
         // Durable submission marker committed before any provider call (ADR 0022 D-08 provider
         // invocation boundary). TryInsertStartedAsync fails closed on a PK conflict, an
-        // expired lease, or a superseded lock token. The fencing "now" is read fresh right here
-        // -- not reused from startedAt, which was captured before tenant lookup and envelope
-        // estimation -- so the lease-expiry check reflects the actual moment of the write.
-        var submissionStartedAt = _timeProvider.GetUtcNow();
+        // expired lease, or a superseded lock token. The fencing timestamp is read inside the
+        // store only after BEGIN IMMEDIATE has established write ownership -- a pre-call
+        // GetUtcNow here would still be stale across SQLite busy wait on the write lock.
         var started = await _repository.TryInsertAttachmentSubmissionStartedAsync(
             row.Id,
             providerName,
             row.LockToken,
-            submissionStartedAt,
             stoppingToken);
 
         if (!started)

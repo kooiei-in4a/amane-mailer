@@ -50,9 +50,8 @@ public sealed class DbBackupCommand(
         // CLI backup share one gate against concurrent backups and against new attachment
         // acceptance, and both verify no non-terminal attachment row exists before snapshotting.
         var ownerToken = Guid.NewGuid();
-        var now = timeProvider.GetUtcNow();
         var acquired = await maintenanceLeaseStore.TryAcquireAsync(
-            MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, BackupLeaseDuration, now, cancellationToken);
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, BackupLeaseDuration, cancellationToken);
         if (!acquired.Acquired)
         {
             await error.WriteLineAsync("Backup maintenance lease is held by another backup in progress.");
@@ -93,7 +92,6 @@ public sealed class DbBackupCommand(
                         MailerMaintenanceLeaseStore.BackupLeaseName,
                         ownerToken,
                         fencingToken,
-                        timeProvider.GetUtcNow(),
                         ct));
             await output.WriteLineAsync($"Database backup written to {destinationPath}");
             return SuccessExitCode;

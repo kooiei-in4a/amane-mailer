@@ -24,10 +24,14 @@ public readonly record struct LeaseAcquireResult(bool Acquired, long FencingToke
 /// an owner token can only ever be reused if the caller's <see cref="Guid"/> generator produces
 /// a collision, but relying on that alone still let a renewal succeed with no expiry check at
 /// all (post-merge review of #533/PR #537). Requiring both owner and fencing token, plus an
-/// explicit <c>expires_at &gt; @Now</c> check on renewal, makes an expired lease unrecoverable
-/// by its original holder even if it presents the correct owner token.
+/// explicit <c>expires_at &gt; @Now</c> check on renewal (with <c>@Now</c> read only after
+/// write ownership is established), makes an expired lease unrecoverable by its original holder
+/// even if it presents the correct owner token -- including when the lease expires while the
+/// renewer is waiting on the SQLite write lock.
 /// </summary>
-public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connections)
+public sealed class MailerMaintenanceLeaseStore(
+    SqliteConnectionFactory connections,
+    TimeProvider timeProvider)
 {
     public const string BackupLeaseName = "backup";
 
@@ -35,7 +39,6 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
         string leaseName,
         Guid ownerToken,
         TimeSpan duration,
-        DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
         // Two-step fenced UPDATE then insert-if-absent (same idiom as the rest of this codebase's
@@ -66,13 +69,16 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
             RETURNING fencing_token;
             """;
 
-        var nowStorage = SqliteTime.ToStorageUtc(now);
-        var expiresAtStorage = SqliteTime.ToStorageUtc(now.Add(duration));
-
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
         try
         {
+            // Fresh after write ownership: reclaim-vs-held decisions must not use a timestamp
+            // captured before connection open / PRAGMA / busy wait on BEGIN IMMEDIATE.
+            var now = timeProvider.GetUtcNow();
+            var nowStorage = SqliteTime.ToStorageUtc(now);
+            var expiresAtStorage = SqliteTime.ToStorageUtc(now.Add(duration));
+
             long? fencingToken = null;
             await using (var reclaim = connection.CreateCommand())
             {
@@ -118,14 +124,15 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
     /// and <c>expires_at &gt; @Now</c> all matching at once -- an already-expired lease can never
     /// be revived by a renewal, even by its original owner presenting the correct tokens; only a
     /// fresh <see cref="TryAcquireAsync"/> can reclaim it (and that bumps the fencing token,
-    /// which the stale holder does not have).
+    /// which the stale holder does not have). <c>@Now</c> is read only after
+    /// <c>BEGIN IMMEDIATE</c> so a lease that expires while this method waits on the write lock
+    /// cannot be revived with a stale pre-wait timestamp.
     /// </summary>
     public async Task<bool> RenewAsync(
         string leaseName,
         Guid ownerToken,
         long fencingToken,
         TimeSpan duration,
-        DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
         const string sql = """
@@ -138,15 +145,26 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
             """;
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.Parameters.AddWithValue("@LeaseName", leaseName);
-        command.Parameters.AddWithValue("@OwnerToken", ownerToken.ToString("D"));
-        command.Parameters.AddWithValue("@FencingToken", fencingToken);
-        command.Parameters.AddWithValue("@ExpiresAt", SqliteTime.ToStorageUtc(now.Add(duration)));
-        command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
-        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
-        return affected > 0;
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            var now = timeProvider.GetUtcNow();
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.Parameters.AddWithValue("@LeaseName", leaseName);
+            command.Parameters.AddWithValue("@OwnerToken", ownerToken.ToString("D"));
+            command.Parameters.AddWithValue("@FencingToken", fencingToken);
+            command.Parameters.AddWithValue("@ExpiresAt", SqliteTime.ToStorageUtc(now.Add(duration)));
+            command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
+            var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return affected > 0;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 
     /// <summary>
@@ -214,13 +232,14 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
     /// must pass immediately before an artifact is treated as a successful backup (ADR 0022
     /// D-09). Distinct from <see cref="MaintenanceLeaseHeartbeat.IsHealthy"/>: the heartbeat
     /// only proves the last renewal it attempted succeeded, not that nothing has changed in the
-    /// DB since (e.g. a renewal that hasn't fired yet after a slow snapshot).
+    /// DB since (e.g. a renewal that hasn't fired yet after a slow snapshot). The fencing
+    /// timestamp is read after write ownership so a lease that expires while this check waits
+    /// on the SQLite write lock cannot pass with a stale pre-wait <c>now</c>.
     /// </summary>
     public async Task<bool> IsLeaseCurrentlyValidAsync(
         string leaseName,
         Guid ownerToken,
         long fencingToken,
-        DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
         const string sql = """
@@ -234,14 +253,27 @@ public sealed class MailerMaintenanceLeaseStore(SqliteConnectionFactory connecti
             """;
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        command.Parameters.AddWithValue("@LeaseName", leaseName);
-        command.Parameters.AddWithValue("@OwnerToken", ownerToken.ToString("D"));
-        command.Parameters.AddWithValue("@FencingToken", fencingToken);
-        command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is long value && value == 1L;
+        // BEGIN IMMEDIATE so publish validation serializes with renew/reclaim and so a held
+        // write lock forces this check to wait -- then read fresh now after ownership.
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            var nowStorage = SqliteTime.ToStorageUtc(timeProvider.GetUtcNow());
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.Parameters.AddWithValue("@LeaseName", leaseName);
+            command.Parameters.AddWithValue("@OwnerToken", ownerToken.ToString("D"));
+            command.Parameters.AddWithValue("@FencingToken", fencingToken);
+            command.Parameters.AddWithValue("@Now", nowStorage);
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return result is long value && value == 1L;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 
     /// <summary>

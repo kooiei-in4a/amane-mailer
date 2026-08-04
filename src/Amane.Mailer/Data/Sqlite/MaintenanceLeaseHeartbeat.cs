@@ -69,7 +69,6 @@ public sealed class MaintenanceLeaseHeartbeat : IAsyncDisposable
                         _ownerToken,
                         _fencingToken,
                         _leaseDuration,
-                        _timeProvider.GetUtcNow(),
                         cancellationToken);
                 }
                 catch (OperationCanceledException)

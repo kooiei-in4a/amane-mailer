@@ -30,7 +30,7 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
             .Build();
         var factory = new SqliteConnectionFactory(configuration);
         await new SqlMigrationRunner(factory).ApplyPendingAsync(TestContext.Current.CancellationToken);
-        _leaseStore = new MailerMaintenanceLeaseStore(factory);
+        _leaseStore = new MailerMaintenanceLeaseStore(factory, TimeProvider.System);
     }
 
     public ValueTask DisposeAsync()
@@ -52,9 +52,8 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
         var owner = Guid.NewGuid();
         var leaseDuration = TimeSpan.FromMilliseconds(300);
         var renewInterval = TimeSpan.FromMilliseconds(60);
-        var now = DateTimeOffset.UtcNow;
 
-        var acquired = await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, now, ct);
+        var acquired = await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, ct);
         Assert.True(acquired.Acquired);
 
         await using (new MaintenanceLeaseHeartbeat(
@@ -75,9 +74,8 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
         var ownerB = Guid.NewGuid();
         var leaseDuration = TimeSpan.FromMilliseconds(150);
         var renewInterval = TimeSpan.FromMilliseconds(400);
-        var now = DateTimeOffset.UtcNow;
 
-        var acquiredA = await _leaseStore!.TryAcquireAsync(leaseName, ownerA, leaseDuration, now, ct);
+        var acquiredA = await _leaseStore!.TryAcquireAsync(leaseName, ownerA, leaseDuration, ct);
         Assert.True(acquiredA.Acquired);
 
         await using var heartbeat = new MaintenanceLeaseHeartbeat(
@@ -88,7 +86,7 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
         // heartbeat failure/delay long enough for someone else to legitimately step in.
         await Task.Delay(TimeSpan.FromMilliseconds(200), ct);
         var acquiredB = await _leaseStore.TryAcquireAsync(
-            leaseName, ownerB, TimeSpan.FromMinutes(5), DateTimeOffset.UtcNow, ct);
+            leaseName, ownerB, TimeSpan.FromMinutes(5), ct);
         Assert.True(acquiredB.Acquired);
 
         // Give the heartbeat's next tick a chance to observe the reclaim.
@@ -108,9 +106,8 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
         var owner = Guid.NewGuid();
         var leaseDuration = TimeSpan.FromMilliseconds(300);
         var renewInterval = TimeSpan.FromMilliseconds(60);
-        var now = DateTimeOffset.UtcNow;
 
-        var acquired = await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, now, ct);
+        var acquired = await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, ct);
         Assert.True(acquired.Acquired);
 
         await using var heartbeat = new MaintenanceLeaseHeartbeat(
@@ -137,9 +134,8 @@ public sealed class MaintenanceLeaseHeartbeatTests : IAsyncLifetime
         var owner = Guid.NewGuid();
         var leaseDuration = TimeSpan.FromMilliseconds(300);
         var renewInterval = TimeSpan.FromMilliseconds(50);
-        var now = DateTimeOffset.UtcNow;
 
-        var acquired = await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, now, ct);
+        var acquired = await _leaseStore!.TryAcquireAsync(leaseName, owner, leaseDuration, ct);
         Assert.True(acquired.Acquired);
 
         var heartbeat = new MaintenanceLeaseHeartbeat(

@@ -8,7 +8,9 @@ namespace Amane.Mailer.Data.Sqlite;
 /// a request can never have more than one submission lifecycle: <see cref="TryInsertStartedAsync"/>
 /// fails closed (returns false, no row created) if evidence already exists.
 /// </summary>
-public sealed class MailAttachmentSubmissionStore(SqliteConnectionFactory connections)
+public sealed class MailAttachmentSubmissionStore(
+    SqliteConnectionFactory connections,
+    TimeProvider timeProvider)
 {
     public async Task<AttachmentSubmissionRow?> FindAsync(
         Guid requestId,
@@ -49,22 +51,18 @@ public sealed class MailAttachmentSubmissionStore(SqliteConnectionFactory connec
     /// lifecycle and must instead converge from the existing evidence.
     ///
     /// Also fenced on the request row still being <c>Processing</c> under this exact
-    /// <paramref name="lockToken"/>, with a lease that has not yet expired, at insert time:
-    /// without the lock-token check, a claim whose row was manually cancelled while no evidence
-    /// existed yet could still create a Started marker and go on to invoke the provider for a
-    /// request it no longer legitimately owns; without the lease-expiry check, a claim whose
-    /// lease already expired -- but that no other worker has reclaimed yet -- could do the same
-    /// during that narrow window. <paramref name="now"/> must be read immediately before this
-    /// call (not reused from an earlier point in request processing) so the expiry comparison
-    /// reflects the actual moment of the write. A caller that loses this race gets `false` with
-    /// no evidence found by <see cref="FindAsync"/>, which the Worker already treats as "back
-    /// off, do nothing".
+    /// <paramref name="lockToken"/>, with a lease that has not yet expired, at the actual write
+    /// moment: the fencing timestamp is read only after <c>BEGIN IMMEDIATE</c> has established
+    /// write ownership, so a claim whose lease expires while this method is waiting on the
+    /// SQLite write lock (busy_timeout) cannot create a Started marker with a stale pre-wait
+    /// <c>now</c>. A caller that loses this race gets <see langword="false"/> with no evidence
+    /// found by <see cref="FindAsync"/>, which the Worker already treats as "back off, do
+    /// nothing".
     /// </summary>
     public async Task<bool> TryInsertStartedAsync(
         Guid requestId,
         string provider,
         Guid lockToken,
-        DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
         const string sql = """
@@ -85,12 +83,14 @@ public sealed class MailAttachmentSubmissionStore(SqliteConnectionFactory connec
             );
             """;
 
-        var nowStorage = SqliteTime.ToStorageUtc(now);
-
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
         try
         {
+            // Fresh after write ownership: never reuse a caller timestamp captured before
+            // connection open / PRAGMA / busy wait on BEGIN IMMEDIATE.
+            var nowStorage = SqliteTime.ToStorageUtc(timeProvider.GetUtcNow());
+
             await using var command = connection.CreateCommand();
             command.CommandText = sql;
             command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
