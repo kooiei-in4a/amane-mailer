@@ -296,7 +296,9 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
                 acceptStore: null!,
                 consumerMutations: null!,
                 adminQueries: null!,
-                heartbeatStore: null!)
+                heartbeatStore: null!,
+                attachmentStore: null!,
+                attachmentSubmissionStore: null!)
         {
         }
 

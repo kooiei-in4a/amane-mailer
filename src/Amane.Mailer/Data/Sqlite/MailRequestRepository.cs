@@ -15,6 +15,8 @@ public class MailRequestRepository
     private readonly MailRequestConsumerMutations _consumerMutations;
     private readonly MailRequestAdminQueries _adminQueries;
     private readonly WorkerHeartbeatStore _heartbeatStore;
+    private readonly MailRequestAttachmentStore _attachmentStore;
+    private readonly MailAttachmentSubmissionStore _attachmentSubmissionStore;
 
     internal const string OperatorCancelledLastErrorMessage =
         MailRequestConsumerMutations.OperatorCancelledLastErrorMessage;
@@ -30,13 +32,17 @@ public class MailRequestRepository
         MailRequestAcceptStore acceptStore,
         MailRequestConsumerMutations consumerMutations,
         MailRequestAdminQueries adminQueries,
-        WorkerHeartbeatStore heartbeatStore)
+        WorkerHeartbeatStore heartbeatStore,
+        MailRequestAttachmentStore attachmentStore,
+        MailAttachmentSubmissionStore attachmentSubmissionStore)
     {
         _claimStore = claimStore;
         _acceptStore = acceptStore;
         _consumerMutations = consumerMutations;
         _adminQueries = adminQueries;
         _heartbeatStore = heartbeatStore;
+        _attachmentStore = attachmentStore;
+        _attachmentSubmissionStore = attachmentSubmissionStore;
     }
 
     public static MailRequestRepository CreateStandalone(
@@ -48,7 +54,9 @@ public class MailRequestRepository
             new MailRequestAcceptStore(connections, attachmentSpool, runtimeMetrics),
             new MailRequestConsumerMutations(connections),
             new MailRequestAdminQueries(connections),
-            new WorkerHeartbeatStore(connections));
+            new WorkerHeartbeatStore(connections),
+            new MailRequestAttachmentStore(connections),
+            new MailAttachmentSubmissionStore(connections));
 
     public Task<AdminMailRequestListPage> ListForAdminAsync(
         AdminMailRequestListQuery query,
@@ -223,4 +231,43 @@ public class MailRequestRepository
     public Task<IReadOnlyList<WorkerHeartbeat>> GetHeartbeatsAsync(
         CancellationToken cancellationToken = default) =>
         _heartbeatStore.GetHeartbeatsAsync(cancellationToken);
+
+    public Task<IReadOnlyList<AttachmentMetadataRow>> ListAttachmentsAsync(
+        Guid requestId,
+        CancellationToken cancellationToken = default) =>
+        _attachmentStore.ListByRequestIdAsync(requestId, cancellationToken);
+
+    public Task<AttachmentSubmissionRow?> FindAttachmentSubmissionAsync(
+        Guid requestId,
+        CancellationToken cancellationToken = default) =>
+        _attachmentSubmissionStore.FindAsync(requestId, cancellationToken);
+
+    public Task<bool> TryInsertAttachmentSubmissionStartedAsync(
+        Guid requestId,
+        string provider,
+        Guid lockToken,
+        DateTimeOffset now,
+        CancellationToken cancellationToken = default) =>
+        _attachmentSubmissionStore.TryInsertStartedAsync(requestId, provider, lockToken, now, cancellationToken);
+
+    public Task<bool> FinalizeAttachmentSubmissionAsync(
+        Guid id,
+        Guid lockToken,
+        DateTimeOffset now,
+        AttachmentSubmissionState submissionTerminalState,
+        string? providerMessageId,
+        MailRequestState requestTerminalState,
+        string? lastErrorMessage,
+        MailAttemptInsert attempt,
+        CancellationToken cancellationToken = default) =>
+        _claimStore.FinalizeAttachmentSubmissionAsync(
+            id,
+            lockToken,
+            now,
+            submissionTerminalState,
+            providerMessageId,
+            requestTerminalState,
+            lastErrorMessage,
+            attempt,
+            cancellationToken);
 }

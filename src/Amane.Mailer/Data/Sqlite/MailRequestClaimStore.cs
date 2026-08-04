@@ -66,7 +66,7 @@ public sealed class MailRequestClaimStore(
                 id, tenant_id, source_service, mail_request_id,
                 subject, html_body, text_body, reply_to,
                 recipient_email, recipient_display_name,
-                attempt_count, max_attempts, lock_token, lock_expires_at;
+                attempt_count, max_attempts, lock_token, lock_expires_at, attachment_count;
             """;
 
         var nowStorage = SqliteTime.ToStorageUtc(now);
@@ -366,6 +366,127 @@ public sealed class MailRequestClaimStore(
             await transaction.CommitAsync(cancellationToken);
             _runtimeMetrics?.RecordAttemptCompleted(attempt);
             return true;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Terminal commit for an attachment request (ADR 0022 D-08): the submission evidence
+    /// terminal state, the mail_attempts history row, and the mail_requests terminal state
+    /// commit in one SQLite transaction. Fenced on <c>status = Processing AND lock_token =
+    /// @LockToken</c> only -- unlike the ordinary <see cref="FinalizeAsync"/>, it deliberately
+    /// does not also require <c>lock_expires_at &gt; @Now</c>: once durable submission evidence
+    /// exists, that evidence (not the lease timer) is the source of truth for whether this
+    /// claim is still allowed to finalize. A losing/expired attempt's fenced updates simply
+    /// affect 0 rows once a later reclaim has already converged the row.
+    /// </summary>
+    public async Task<bool> FinalizeAttachmentSubmissionAsync(
+        Guid id,
+        Guid lockToken,
+        DateTimeOffset now,
+        AttachmentSubmissionState submissionTerminalState,
+        string? providerMessageId,
+        MailRequestState requestTerminalState,
+        string? lastErrorMessage,
+        MailAttemptInsert attempt,
+        CancellationToken cancellationToken = default)
+    {
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+
+        const string updateRequestSql = """
+            UPDATE mail_requests
+            SET
+                status = @NewStatus,
+                next_attempt_at = NULL,
+                lock_token = NULL,
+                lock_expires_at = NULL,
+                updated_at = @Now,
+                completed_at = @Now,
+                delivered_at = @DeliveredAt,
+                failed_at = @FailedAt,
+                delivery_unknown_at = @DeliveryUnknownAt,
+                last_error_message = @LastErrorMessage
+            WHERE id = @Id
+              AND status = @ProcessingStatus
+              AND lock_token = @LockToken;
+            """;
+
+        const string updateSubmissionSql = """
+            UPDATE mail_attachment_submissions
+            SET
+                submission_state = @SubmissionState,
+                provider_message_id = @ProviderMessageId,
+                completed_at = @Now,
+                updated_at = @Now
+            WHERE request_id = @Id
+              AND submission_state = @StartedState;
+            """;
+
+        const string insertAttemptSql = """
+            INSERT INTO mail_attempts (
+                request_id, attempt_number, provider, status,
+                provider_message_id, error_code, error_message, retryable,
+                lock_token, started_at, completed_at)
+            VALUES (
+                @RequestId, @AttemptNumber, @Provider, @AttemptStatus,
+                @ProviderMessageId, @ErrorCode, @ErrorMessage, @Retryable,
+                @LockToken, @StartedAt, @CompletedAt);
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            bool requestUpdated;
+            await using (var update = connection.CreateCommand())
+            {
+                update.CommandText = updateRequestSql;
+                update.Parameters.AddWithValue("@NewStatus", (int)requestTerminalState);
+                update.Parameters.AddWithValue("@Now", nowStorage);
+                update.Parameters.AddWithValue(
+                    "@DeliveredAt",
+                    requestTerminalState == MailRequestState.Delivered ? nowStorage : (object)DBNull.Value);
+                update.Parameters.AddWithValue(
+                    "@FailedAt",
+                    requestTerminalState == MailRequestState.Failed ? nowStorage : (object)DBNull.Value);
+                update.Parameters.AddWithValue(
+                    "@DeliveryUnknownAt",
+                    requestTerminalState == MailRequestState.DeliveryUnknown ? nowStorage : (object)DBNull.Value);
+                update.Parameters.AddWithValue("@LastErrorMessage", (object?)lastErrorMessage ?? DBNull.Value);
+                update.Parameters.AddWithValue("@Id", id.ToString("D"));
+                update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+                update.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
+
+                requestUpdated = await update.ExecuteNonQueryAsync(cancellationToken) > 0;
+            }
+
+            await using (var updateSubmission = connection.CreateCommand())
+            {
+                updateSubmission.CommandText = updateSubmissionSql;
+                updateSubmission.Parameters.AddWithValue("@SubmissionState", (int)submissionTerminalState);
+                updateSubmission.Parameters.AddWithValue("@ProviderMessageId", (object?)providerMessageId ?? DBNull.Value);
+                updateSubmission.Parameters.AddWithValue("@Now", nowStorage);
+                updateSubmission.Parameters.AddWithValue("@Id", id.ToString("D"));
+                updateSubmission.Parameters.AddWithValue("@StartedState", (int)AttachmentSubmissionState.Started);
+                await updateSubmission.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (requestUpdated)
+            {
+                await InsertMailAttemptAsync(connection, insertAttemptSql, attempt, cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            if (requestUpdated)
+            {
+                _runtimeMetrics?.RecordAttemptCompleted(attempt);
+            }
+
+            return requestUpdated;
         }
         catch
         {
@@ -772,6 +893,7 @@ public sealed class MailRequestClaimStore(
             MaxAttempts = reader.GetInt32(11),
             LockToken = Guid.Parse(reader.GetString(12)),
             LockExpiresAt = SqliteTime.FromStorage(reader.GetString(13)),
+            AttachmentCount = reader.GetInt32(14),
             Status = MailRequestState.Processing,
         };
 

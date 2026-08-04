@@ -31,4 +31,7 @@ public sealed class MailRequestRow
     public Guid LockToken { get; init; }
 
     public DateTimeOffset LockExpiresAt { get; init; }
+
+    /// <summary>0 for ordinary requests; &gt;0 marks an ADR 0022 attachment request (D-08).</summary>
+    public int AttachmentCount { get; init; }
 }
