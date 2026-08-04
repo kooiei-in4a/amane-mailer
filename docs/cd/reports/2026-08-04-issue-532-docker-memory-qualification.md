@@ -134,10 +134,11 @@ Consumer HTTP envelopeとACS provider envelopeは別々に測定した(Q03: Cons
 
 ## Cleanup確認
 
-- 正常完了(PASS)32ケース中32ケースでtemp残存0件
-- validation reject(Q01X/Q02X)全12ケースでtemp残存0件、provider invoked: false
+- 正常完了(PASS)16ケース中16ケースでtemp残存0件
+- validation reject(Q01X/Q02X)全8ケースでtemp残存0件、provider invoked: false
 - provider envelope oversize reject(Q03X)全4ケースでprovider invocation前に拒否、temp残存0件、provider invoked: false
 - managed `OutOfMemoryException`(256 MiB Q03、4ケース)でもtemp残存0件
+- 全32 container実行の内訳: PASS 16件 / 期待されたboundary reject(Q01X/Q02X/Q03X)12件 / managed `OutOfMemoryException` 4件
 - 実cgroup SIGKILL(OOM-kill)は本qualificationでは発生しなかったため、その経路のcleanup挙動は本Evidenceの対象外。PR #531で確認済みのcrash/restart orphan cleanup(`orphan-create`/`cleanup` CLIコマンド、`Restart_cleanup_removes_only_spike_owned_orphans`テスト)は、SIGKILLによるprocess強制終了を模擬しており、cgroup OOM-killも同じくSIGKILLでprocessを終了させるため、その既存Evidenceが適用されると評価する。
 
 ## Privacy確認
