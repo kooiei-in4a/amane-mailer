@@ -135,17 +135,24 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
         Assert.Equal(AdminAuditLog.ErrorCodes.LockHeld, audit.Value.ErrorCode);
     }
 
-    [Fact]
-    public async Task Manual_retry_rejects_deadlettered_attachment_request_with_fixed_reason_code()
+    [Theory]
+    [InlineData(MailRequestState.DeadLettered)]
+    [InlineData(MailRequestState.Failed)]
+    [InlineData(MailRequestState.Delivered)]
+    [InlineData(MailRequestState.Cancelled)]
+    [InlineData(MailRequestState.DeliveryUnknown)]
+    public async Task Manual_retry_rejects_attachment_request_from_every_terminal_state_with_fixed_reason_code(
+        MailRequestState terminalStatus)
     {
         var ct = TestContext.Current.CancellationToken;
-        var internalId = await SeedAttachmentMailRequestAsync(MailRequestState.DeadLettered, TenantA, ct);
+        var internalId = await SeedAttachmentMailRequestAsync(terminalStatus, TenantA, ct);
+        // A dummy non-attachment DeadLettered row guarantees /admin/dead-letters renders a
+        // retry form regardless of which terminal status is under test in this iteration --
+        // tokens are session-scoped, not tied to the page or row that issued them.
+        await SeedMailRequestAsync(MailRequestState.DeadLettered, TenantA, ct);
 
         var client = CreateClient();
         await LoginAsync(client, ct);
-        // The detail page no longer renders a retry form for an attachment-bearing DeadLettered
-        // request (it is never retryable), so source the CSRF token from a page that still has
-        // one -- tokens are session-scoped, not tied to the page or row that issued them.
         var csrf = await ReadCsrfTokenFromAdminPageAsync(client, "/admin/dead-letters", ct);
 
         using var response = await client.PostAsync(
@@ -157,9 +164,9 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
         var body = await response.Content.ReadAsStringAsync(ct);
         Assert.Contains("ATTACHMENT_MANUAL_RETRY_NOT_SUPPORTED", body, StringComparison.Ordinal);
 
-        // Never reverted to Queued: the request stays DeadLettered exactly as ADR 0022 D-08 requires.
+        // Never mutated back to Queued: the request stays exactly as ADR 0022 D-08 requires.
         var state = await ReadStatusAsync(internalId, ct);
-        Assert.Equal(MailRequestState.DeadLettered, state.Status);
+        Assert.Equal(terminalStatus, state.Status);
 
         var audit = await ReadLatestAuditAsync(internalId, AdminAuditLog.EventTypes.ManualRetryRequested, ct);
         Assert.NotNull(audit);
@@ -470,6 +477,7 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
             or MailRequestState.Failed
             or MailRequestState.DeadLettered
             or MailRequestState.Cancelled
+            or MailRequestState.DeliveryUnknown
             ? nowStorage
             : (string?)null;
         var lockToken = Guid.NewGuid();

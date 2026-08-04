@@ -109,9 +109,12 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
                 status = ManualMailRequestMutationStatus.NotFound;
                 errorCode = AdminAuditLog.ErrorCodes.NotFound;
             }
-            else if (current.Value.AttachmentCount > 0
-                && current.Value.Status is MailRequestState.DeadLettered or MailRequestState.Failed)
+            else if (current.Value.AttachmentCount > 0 && IsTerminal(current.Value.Status))
             {
+                // ADR 0022 D-08: prohibited from every terminal state, not just the two the
+                // retry UPDATE above actually targets (DeadLettered/Failed) -- Delivered,
+                // Cancelled, and DeliveryUnknown must return the same fixed reason code rather
+                // than falling through to a generic InvalidState.
                 status = ManualMailRequestMutationStatus.AttachmentManualRetryNotSupported;
                 errorCode = AdminAuditLog.ErrorCodes.AttachmentManualRetryNotSupported;
             }
@@ -427,4 +430,11 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
             throw;
         }
     }
+
+    private static bool IsTerminal(MailRequestState status) =>
+        status is MailRequestState.Delivered
+            or MailRequestState.Failed
+            or MailRequestState.DeadLettered
+            or MailRequestState.Cancelled
+            or MailRequestState.DeliveryUnknown;
 }
