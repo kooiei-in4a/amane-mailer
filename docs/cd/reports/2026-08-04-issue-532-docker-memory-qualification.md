@@ -178,14 +178,18 @@ scripts/spike-532-docker-qualify.ps1 -MemoryMiB 512                             
 
 **PASS**
 
-現在確定しているMVP添付上限(1ファイル2 MiB、合計5 MiB、5件、ACS provider envelope 8 MiB)と、添付本体をメモリ上でのみ処理する方式(Candidate A token-buffer)は、**production runtime container memoryを512 MiB以上に設定すること**を条件に、実Docker/cgroup total-memory制限下で安定して成立することを確認した。
+現在確定しているMVP添付上限(1ファイル2 MiB、合計5 MiB、5件、ACS provider envelope 8 MiB)と、添付本体をメモリ上でのみ処理する方式(Candidate A token-buffer)は、**512 MiB以上で全添付上限を含めて安定して成立する**ことを実Docker/cgroup total-memory制限下で確認した。
 
 - 512 MiB: 最大条件(Q03、concurrency 2)を含む全受理候補が3回repeatとも安定PASS。全reject候補がprovider invocation前に正しく拒否。
-- 256 MiBは、典型的なサイズ(Q00-Q02)では安定してPASSするが、8 MiB近傍のACS provider envelopeを伴う最大条件(Q03)ではmanaged OutOfMemoryExceptionで一貫して失敗した(3回repeatとも再現)。256 MiBはproduction minimumとして推奨しない。
+- 256 MiB: Q00-Q02の軽量・通常条件はPASSしたためruntime自体は動作可能。ただし、8 MiB近傍のACS provider envelopeを伴う最大条件(Q03)はmanaged OutOfMemoryExceptionで失敗するため、公開添付上限の完全サポート対象外とする。
 
-## Production minimum memory recommendation
+## Memory requirements
 
-**512 MiB以上**
+- Minimum runnable memory: **256 MiB**
+- Minimum memory for full attachment-limit support: **512 MiB**
+- Recommended production memory: **512 MiB以上**
+
+256 MiBでは最大添付条件および8 MiB近傍のprovider envelopeを保証しない。
 
 ## 明記事項
 
