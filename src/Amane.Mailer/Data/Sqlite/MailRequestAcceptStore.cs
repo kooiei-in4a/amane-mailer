@@ -1,4 +1,5 @@
 using Amane.Mailer.Admin;
+using Amane.Mailer.Attachments.Spool;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
 using Microsoft.Data.Sqlite;
@@ -8,6 +9,7 @@ namespace Amane.Mailer.Data.Sqlite;
 
 public sealed class MailRequestAcceptStore(
     SqliteConnectionFactory connections,
+    AttachmentSpool? attachmentSpool = null,
     MailerRuntimeMetrics? runtimeMetrics = null)
 {
     private readonly MailerRuntimeMetrics? _runtimeMetrics = runtimeMetrics;
@@ -119,50 +121,92 @@ public sealed class MailRequestAcceptStore(
                 id, tenant_id, source_service, mail_request_id, purpose,
                 payload_json, payload_hash, subject, html_body, text_body, reply_to,
                 recipient_email, recipient_display_name, metadata_json,
-                status, attempt_count, max_attempts, scheduled_at,
+                status, attempt_count, max_attempts, scheduled_at, attachment_count,
                 accepted_at, created_at, updated_at)
             VALUES (
                 @Id, @TenantId, @SourceService, @MailRequestId, @Purpose,
                 @PayloadJson, @PayloadHash, @Subject, @HtmlBody, @TextBody, @ReplyTo,
                 @RecipientEmail, @RecipientDisplayName, @MetadataJson,
-                @Status, 0, @MaxAttempts, @ScheduledAt,
+                @Status, 0, @MaxAttempts, @ScheduledAt, @AttachmentCount,
                 @AcceptedAt, @CreatedAt, @UpdatedAt);
             """;
 
+        const string insertAttachmentSql = """
+            INSERT INTO mail_request_attachments (
+                id, request_id, attachment_order, file_name, content_type,
+                byte_length, content_sha256, spool_key, created_at)
+            VALUES (
+                @Id, @RequestId, @Order, @FileName, @ContentType,
+                @ByteLength, @ContentSha256, @SpoolKey, @CreatedAt);
+            """;
+
         var nowStorage = SqliteTime.ToStorageUtc(insert.AcceptedAt);
+        var attachments = insert.Attachments;
+
+        // Spool commit (atomic staging -> committed rename) happens before the SQLite
+        // transaction opens (ADR 0022 D-08 steps 4-5). If the transaction below fails after
+        // this succeeds, the committed directory is an orphan with no DB row -- reconciliation
+        // (D-08) cleans it up; it is never treated as a source of truth on its own.
+        if (attachments is { Count: > 0 } && attachmentSpool is not null)
+        {
+            attachmentSpool.CommitStagingToCommitted(insert.Id);
+        }
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
         try
         {
-            await using var command = connection.CreateCommand();
-            command.CommandText = sql;
-            command.Parameters.AddWithValue("@Id", insert.Id.ToString("D"));
-            command.Parameters.AddWithValue("@TenantId", insert.TenantId.ToString("D"));
-            command.Parameters.AddWithValue("@SourceService", insert.SourceService);
-            command.Parameters.AddWithValue("@MailRequestId", insert.MailRequestId.ToString("D"));
-            command.Parameters.AddWithValue("@Purpose", insert.Purpose);
-            command.Parameters.AddWithValue("@PayloadJson", insert.PayloadJson);
-            command.Parameters.AddWithValue("@PayloadHash", insert.PayloadHash);
-            command.Parameters.AddWithValue("@Subject", insert.Subject);
-            command.Parameters.AddWithValue("@HtmlBody", (object?)insert.HtmlBody ?? DBNull.Value);
-            command.Parameters.AddWithValue("@TextBody", (object?)insert.TextBody ?? DBNull.Value);
-            command.Parameters.AddWithValue("@ReplyTo", (object?)insert.ReplyTo ?? DBNull.Value);
-            command.Parameters.AddWithValue("@RecipientEmail", insert.RecipientEmail);
-            command.Parameters.AddWithValue("@RecipientDisplayName", (object?)insert.RecipientDisplayName ?? DBNull.Value);
-            command.Parameters.AddWithValue("@MetadataJson", (object?)insert.MetadataJson ?? DBNull.Value);
-            command.Parameters.AddWithValue("@Status", (int)MailRequestState.Queued);
-            command.Parameters.AddWithValue("@MaxAttempts", insert.MaxAttempts);
-            command.Parameters.AddWithValue(
-                "@ScheduledAt",
-                insert.ScheduledAt is null
-                    ? DBNull.Value
-                    : SqliteTime.ToStorageUtc(insert.ScheduledAt.Value));
-            command.Parameters.AddWithValue("@AcceptedAt", nowStorage);
-            command.Parameters.AddWithValue("@CreatedAt", nowStorage);
-            command.Parameters.AddWithValue("@UpdatedAt", nowStorage);
+            await using (var command = connection.CreateCommand())
+            {
+                command.CommandText = sql;
+                command.Parameters.AddWithValue("@Id", insert.Id.ToString("D"));
+                command.Parameters.AddWithValue("@TenantId", insert.TenantId.ToString("D"));
+                command.Parameters.AddWithValue("@SourceService", insert.SourceService);
+                command.Parameters.AddWithValue("@MailRequestId", insert.MailRequestId.ToString("D"));
+                command.Parameters.AddWithValue("@Purpose", insert.Purpose);
+                command.Parameters.AddWithValue("@PayloadJson", insert.PayloadJson);
+                command.Parameters.AddWithValue("@PayloadHash", insert.PayloadHash);
+                command.Parameters.AddWithValue("@Subject", insert.Subject);
+                command.Parameters.AddWithValue("@HtmlBody", (object?)insert.HtmlBody ?? DBNull.Value);
+                command.Parameters.AddWithValue("@TextBody", (object?)insert.TextBody ?? DBNull.Value);
+                command.Parameters.AddWithValue("@ReplyTo", (object?)insert.ReplyTo ?? DBNull.Value);
+                command.Parameters.AddWithValue("@RecipientEmail", insert.RecipientEmail);
+                command.Parameters.AddWithValue("@RecipientDisplayName", (object?)insert.RecipientDisplayName ?? DBNull.Value);
+                command.Parameters.AddWithValue("@MetadataJson", (object?)insert.MetadataJson ?? DBNull.Value);
+                command.Parameters.AddWithValue("@Status", (int)MailRequestState.Queued);
+                command.Parameters.AddWithValue("@MaxAttempts", insert.MaxAttempts);
+                command.Parameters.AddWithValue(
+                    "@ScheduledAt",
+                    insert.ScheduledAt is null
+                        ? DBNull.Value
+                        : SqliteTime.ToStorageUtc(insert.ScheduledAt.Value));
+                command.Parameters.AddWithValue("@AttachmentCount", attachments?.Count ?? 0);
+                command.Parameters.AddWithValue("@AcceptedAt", nowStorage);
+                command.Parameters.AddWithValue("@CreatedAt", nowStorage);
+                command.Parameters.AddWithValue("@UpdatedAt", nowStorage);
 
-            await command.ExecuteNonQueryAsync(cancellationToken);
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            if (attachments is { Count: > 0 })
+            {
+                foreach (var attachment in attachments)
+                {
+                    await using var attachmentCommand = connection.CreateCommand();
+                    attachmentCommand.CommandText = insertAttachmentSql;
+                    attachmentCommand.Parameters.AddWithValue("@Id", Guid.CreateVersion7(insert.AcceptedAt).ToString("D"));
+                    attachmentCommand.Parameters.AddWithValue("@RequestId", insert.Id.ToString("D"));
+                    attachmentCommand.Parameters.AddWithValue("@Order", attachment.Order);
+                    attachmentCommand.Parameters.AddWithValue("@FileName", attachment.FileName);
+                    attachmentCommand.Parameters.AddWithValue("@ContentType", attachment.ContentType);
+                    attachmentCommand.Parameters.AddWithValue("@ByteLength", attachment.ByteLength);
+                    attachmentCommand.Parameters.AddWithValue("@ContentSha256", attachment.Sha256Hex);
+                    attachmentCommand.Parameters.AddWithValue("@SpoolKey", attachment.SpoolKey.ToString("D"));
+                    attachmentCommand.Parameters.AddWithValue("@CreatedAt", nowStorage);
+                    await attachmentCommand.ExecuteNonQueryAsync(cancellationToken);
+                }
+            }
+
             await transaction.CommitAsync(cancellationToken);
             _runtimeMetrics?.RecordRequestAccepted();
         }

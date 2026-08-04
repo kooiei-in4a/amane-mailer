@@ -1,4 +1,5 @@
 using Amane.Mailer.Admin;
+using Amane.Mailer.Attachments.Spool;
 using Amane.Mailer.Bounce;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
@@ -119,6 +120,17 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<SqliteConnectionFactory>();
         services.AddSingleton<MailerDbStatsReader>();
         services.AddSingleton<MailerDbStorageInfoReader>();
+
+        services.AddSingleton(provider => AttachmentSpoolOptions.Resolve(
+            provider.GetRequiredService<IConfiguration>(),
+            provider.GetRequiredService<SqliteConnectionFactory>()));
+        services.AddSingleton(provider =>
+        {
+            var spool = new AttachmentSpool(provider.GetRequiredService<AttachmentSpoolOptions>());
+            spool.EnsureRootDirectoriesExist();
+            return spool;
+        });
+        services.AddSingleton<MailRequestAttachmentStore>();
 
         services.AddSingleton<MailRequestClaimStore>();
         services.AddSingleton<MailRequestAcceptStore>();

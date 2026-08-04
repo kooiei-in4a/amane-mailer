@@ -41,10 +41,11 @@ public class MailRequestRepository
 
     public static MailRequestRepository CreateStandalone(
         SqliteConnectionFactory connections,
-        MailerRuntimeMetrics? runtimeMetrics = null) =>
+        MailerRuntimeMetrics? runtimeMetrics = null,
+        Amane.Mailer.Attachments.Spool.AttachmentSpool? attachmentSpool = null) =>
         new(
             new MailRequestClaimStore(connections, runtimeMetrics),
-            new MailRequestAcceptStore(connections, runtimeMetrics),
+            new MailRequestAcceptStore(connections, attachmentSpool, runtimeMetrics),
             new MailRequestConsumerMutations(connections),
             new MailRequestAdminQueries(connections),
             new WorkerHeartbeatStore(connections));

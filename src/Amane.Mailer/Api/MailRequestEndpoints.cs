@@ -154,17 +154,23 @@ public static class MailRequestEndpoints
         MailRequestRepository repository,
         IMailRequestQueue queue,
         MailerTenantRegistry tenantRegistry,
+        Amane.Mailer.Attachments.Spool.AttachmentSpool attachmentSpool,
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         var logger = loggerFactory.CreateLogger("MailRequestEndpoints");
-        if (MailRequestRequestReader.IsContentLengthTooLarge(httpRequest))
+        if (MailRequestRequestReader.IsContentLengthTooLarge(
+                httpRequest,
+                MailRequestRequestReader.MaxAttachmentCapableRequestBodyBytes))
         {
             return MailRequestHttpErrorMapper.FromBodyReadFailure(MailRequestBodyReadFailure.TooLarge);
         }
 
-        var bodyRead = await MailRequestRequestReader.ReadAsync(httpRequest, cancellationToken);
+        var bodyRead = await MailRequestRequestReader.ReadAsync(
+            httpRequest,
+            cancellationToken,
+            MailRequestRequestReader.MaxAttachmentCapableRequestBodyBytes);
         if (!bodyRead.Succeeded)
         {
             return MailRequestHttpErrorMapper.FromBodyReadFailure(bodyRead.Failure!.Value);
@@ -185,6 +191,7 @@ public static class MailRequestEndpoints
             repository,
             queue,
             tenantRegistry,
+            attachmentSpool,
             timeProvider,
             logger,
             cancellationToken);

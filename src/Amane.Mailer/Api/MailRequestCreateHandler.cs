@@ -1,6 +1,9 @@
 using System.Net.Mail;
 using System.Text;
 using System.Text.Json;
+using Amane.Mailer.Attachments.Provider;
+using Amane.Mailer.Attachments.Spool;
+using Amane.Mailer.Attachments.Validation;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Contracts.Security;
@@ -13,7 +16,8 @@ using Microsoft.Data.Sqlite;
 namespace Amane.Mailer.Api;
 
 /// <summary>
-/// Create mail-request use-case: validation, idempotency, insert, and queue signal.
+/// Create mail-request use-case: validation, attachment acceptance, idempotency, insert, and
+/// queue signal.
 /// </summary>
 public static class MailRequestCreateHandler
 {
@@ -24,6 +28,7 @@ public static class MailRequestCreateHandler
         MailRequestRepository repository,
         IMailRequestQueue queue,
         MailerTenantRegistry tenantRegistry,
+        AttachmentSpool attachmentSpool,
         TimeProvider timeProvider,
         ILogger logger,
         CancellationToken cancellationToken)
@@ -41,13 +46,71 @@ public static class MailRequestCreateHandler
         }
 
         var now = timeProvider.GetUtcNow();
-        var validationError = ValidateRequest(request, requestBody, tenant!, now);
+        var validationError = ValidateRequest(request, tenant!, now);
         if (validationError is not null)
         {
             return validationError;
         }
 
         var scheduledAtUtc = request.ScheduledAt?.ToUniversalTime();
+        var requestId = Guid.CreateVersion7(now);
+
+        // ADR 0022 D-04 steps 3-7: attachment count, bounded decode, per-file/total size,
+        // digest/length, filename, and file-type validation. On failure the request-scoped
+        // staging directory is already deleted by the validator; nothing else to clean up.
+        var attachmentResult = AttachmentAcceptanceResult.NoAttachments();
+        if (request.Attachments is { Count: > 0 })
+        {
+            attachmentResult = await AttachmentAcceptanceValidator.ValidateAndStageAsync(
+                request.Attachments,
+                requestId,
+                attachmentSpool,
+                cancellationToken);
+
+            if (attachmentResult.Status == AttachmentAcceptanceStatus.Failure)
+            {
+                return MailRequestHttpErrorMapper.Error(
+                    StatusCodes.Status422UnprocessableEntity,
+                    attachmentResult.FailureCode!);
+            }
+        }
+
+        var attachmentHashInputs = ToHashInputs(attachmentResult.Attachments);
+
+        // D-04 step 8: canonical metadata + payload_hash recompute. Attachment-bearing requests
+        // hash the *verified* attachment values, never the raw declared content_type/content_base64.
+        string computedHash;
+        try
+        {
+            computedHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(requestBody, attachmentHashInputs);
+        }
+        catch (JsonException)
+        {
+            attachmentSpool.TryDeleteStaging(requestId);
+            return MailerJsonResults.ValidationError(
+                MailerErrorCodes.InvalidRequest,
+                "Request body is not valid JSON.",
+                StatusCodes.Status400BadRequest);
+        }
+
+        if (!string.Equals(computedHash, request.PayloadHash, StringComparison.Ordinal))
+        {
+            attachmentSpool.TryDeleteStaging(requestId);
+            return MailRequestHttpErrorMapper.Error(
+                StatusCodes.Status422UnprocessableEntity,
+                MailerErrorCodes.InvalidPayloadHash);
+        }
+
+        // D-04 step 10: provider envelope pre-check (best-effort estimate; the authoritative
+        // gate is re-checked at Worker dispatch time with exact pre-serialization).
+        if (attachmentResult.Attachments is { Count: > 0 }
+            && !IsWithinProviderEnvelopeEstimate(request, tenant!, attachmentResult.Attachments))
+        {
+            attachmentSpool.TryDeleteStaging(requestId);
+            return MailRequestHttpErrorMapper.Error(
+                StatusCodes.Status422UnprocessableEntity,
+                MailerErrorCodes.MailPayloadTooLarge);
+        }
 
         MailRequestIdempotencyRow? existing;
         try
@@ -60,15 +123,22 @@ public static class MailRequestCreateHandler
         }
         catch (Exception ex) when (MailRequestHttpErrorMapper.IsStorageFullDatabaseException(ex))
         {
+            attachmentSpool.TryDeleteStaging(requestId);
             return MailRequestHttpErrorMapper.StorageFull();
         }
         catch (Exception ex) when (MailRequestHttpErrorMapper.IsTransientDatabaseException(ex))
         {
+            attachmentSpool.TryDeleteStaging(requestId);
             return MailRequestHttpErrorMapper.ServiceUnavailable();
         }
 
         if (existing is not null)
         {
+            // Idempotent repost (ADR 0022 D-08): the new staging is discarded; if identity
+            // matches, the already-committed request stands. Decode/digest/type validation
+            // above was never skipped just because an existing row was found (D-04).
+            attachmentSpool.TryDeleteStaging(requestId);
+
             if (!string.Equals(existing.PayloadHash, request.PayloadHash, StringComparison.Ordinal))
             {
                 return MailRequestHttpErrorMapper.Error(
@@ -88,7 +158,7 @@ public static class MailRequestCreateHandler
         var recipient = request.To[0];
         var insert = new AcceptedMailRequestInsert
         {
-            Id = Guid.CreateVersion7(now),
+            Id = requestId,
             TenantId = request.TenantId,
             SourceService = request.SourceService,
             MailRequestId = request.MailRequestId,
@@ -107,6 +177,7 @@ public static class MailRequestCreateHandler
             MaxAttempts = tenant!.Retry.MaxAttempts,
             AcceptedAt = now,
             ScheduledAt = scheduledAtUtc,
+            Attachments = attachmentResult.Attachments,
         };
 
         try
@@ -115,6 +186,12 @@ public static class MailRequestCreateHandler
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
+            // The spool commit (staging -> committed) already ran before this transaction
+            // opened; our internal id lost the (tenant, source_service, mail_request_id) race,
+            // so it will never be referenced by a DB row. Clean it up promptly rather than
+            // waiting for reconciliation.
+            attachmentSpool.TryDeleteCommitted(requestId);
+
             MailRequestIdempotencyRow? duplicate;
             try
             {
@@ -216,9 +293,44 @@ public static class MailRequestCreateHandler
         }
     }
 
+    private static IReadOnlyList<MailAttachmentHashInput>? ToHashInputs(
+        IReadOnlyList<CanonicalAttachmentMetadata>? attachments) =>
+        attachments is { Count: > 0 }
+            ? attachments
+                .Select(attachment => new MailAttachmentHashInput(
+                    attachment.FileName,
+                    attachment.ContentType,
+                    attachment.ByteLength,
+                    attachment.Sha256Hex))
+                .ToArray()
+            : null;
+
+    private static bool IsWithinProviderEnvelopeEstimate(
+        MailRequestCreateRequest request,
+        MailerTenant tenant,
+        IReadOnlyList<CanonicalAttachmentMetadata> attachments)
+    {
+        var recipient = request.To[0];
+        var estimate = AttachmentEnvelopeEstimator.EstimateUpperBound(new AttachmentEnvelopeInput(
+            tenant.DefaultFrom.Email,
+            recipient.Email,
+            recipient.DisplayName,
+            request.Subject,
+            request.TextBody,
+            request.HtmlBody,
+            request.ReplyTo,
+            attachments
+                .Select(attachment => new AttachmentEnvelopeAttachment(
+                    attachment.FileName,
+                    attachment.ContentType,
+                    attachment.ByteLength))
+                .ToArray()));
+
+        return estimate <= MailAttachmentLimits.MaxProviderEnvelopeBytes;
+    }
+
     private static IResult? ValidateRequest(
         MailRequestCreateRequest request,
-        string requestBody,
         MailerTenant tenant,
         DateTimeOffset now)
     {
@@ -271,30 +383,18 @@ public static class MailRequestCreateHandler
                 MailerErrorCodes.InvalidMetadata);
         }
 
+        if (request.Attachments is { Count: > 0 } attachments
+            && attachments.Count > MailAttachmentLimits.MaxAttachmentCount)
+        {
+            return MailRequestHttpErrorMapper.Error(
+                StatusCodes.Status422UnprocessableEntity,
+                MailerErrorCodes.TooManyAttachments);
+        }
+
         var scheduleError = MailRequestScheduleValidator.ValidateScheduledAt(request.ScheduledAt, now);
         if (scheduleError is not null)
         {
             return scheduleError;
-        }
-
-        string computedHash;
-        try
-        {
-            computedHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(requestBody);
-        }
-        catch (JsonException)
-        {
-            return MailerJsonResults.ValidationError(
-                MailerErrorCodes.InvalidRequest,
-                "Request body is not valid JSON.",
-                StatusCodes.Status400BadRequest);
-        }
-
-        if (!string.Equals(computedHash, request.PayloadHash, StringComparison.Ordinal))
-        {
-            return MailRequestHttpErrorMapper.Error(
-                StatusCodes.Status422UnprocessableEntity,
-                MailerErrorCodes.InvalidPayloadHash);
         }
 
         return null;
