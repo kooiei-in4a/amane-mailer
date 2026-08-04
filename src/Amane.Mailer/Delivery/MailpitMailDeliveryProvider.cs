@@ -71,6 +71,15 @@ public sealed class MailpitMailDeliveryProvider
 
             return MailDeliveryResult.Success();
         }
+        catch (AttachmentSpoolFileReadException)
+        {
+            // Never let the underlying file I/O exception (which embeds the private spool path,
+            // ADR 0022 D-08/D-14) reach the generic sanitizer below.
+            return MailDeliveryResult.Failure(
+                MailDeliveryErrorCodes.AttachmentStorageMissing,
+                "Attachment spool file could not be read.",
+                retryable: false);
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             var (errorCode, retryable) = ProviderErrorClassifier.Classify(ex);

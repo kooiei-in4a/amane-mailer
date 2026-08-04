@@ -88,6 +88,33 @@ public sealed class OutboundMimeMessageFactoryAttachmentTests : IDisposable
     }
 
     [Fact]
+    public void Create_throws_a_path_free_exception_when_the_spool_file_is_missing()
+    {
+        // Simulates the crash window between the Worker's own File.Exists pre-flight check and
+        // this factory's actual read (ADR 0022 D-08): a file-not-found exception message
+        // embeds the private spool path, so it must never surface as the exception's Message.
+        var missingFilePath = Path.Combine(_tempDirectory, "gone.bin");
+
+        var job = new MailSendJob(
+            Guid.NewGuid(),
+            "example-service",
+            "Subject",
+            HtmlBody: null,
+            TextBody: "body",
+            ReplyTo: null,
+            RecipientEmail: "recipient@example.com",
+            RecipientDisplayName: null,
+            Attachments: [new MailSendAttachment("notes.txt", "text/plain", 10, missingFilePath)]);
+        var tenant = CreateTenant();
+
+        var ex = Assert.Throws<AttachmentSpoolFileReadException>(() => OutboundMimeMessageFactory.Create(job, tenant));
+
+        Assert.DoesNotContain(missingFilePath, ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(_tempDirectory, ex.Message, StringComparison.Ordinal);
+        Assert.Null(ex.InnerException);
+    }
+
+    [Fact]
     public void Create_without_attachments_produces_no_attachment_parts()
     {
         var job = new MailSendJob(

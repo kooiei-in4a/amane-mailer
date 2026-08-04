@@ -32,7 +32,16 @@ internal static class OutboundMimeMessageFactory
         {
             foreach (var attachment in job.Attachments)
             {
-                var content = File.ReadAllBytes(attachment.FilePath);
+                byte[] content;
+                try
+                {
+                    content = File.ReadAllBytes(attachment.FilePath);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    throw new AttachmentSpoolFileReadException();
+                }
+
                 var part = builder.Attachments.Add(
                     attachment.FileName,
                     content,

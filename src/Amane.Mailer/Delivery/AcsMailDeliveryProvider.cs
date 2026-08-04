@@ -52,7 +52,22 @@ public sealed class AcsMailDeliveryProvider(MailerOptions options)
             {
                 foreach (var attachment in job.Attachments)
                 {
-                    var bytes = await File.ReadAllBytesAsync(attachment.FilePath, cancellationToken);
+                    byte[] bytes;
+                    try
+                    {
+                        bytes = await File.ReadAllBytesAsync(attachment.FilePath, cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        // A file-not-found/access exception message embeds the private spool
+                        // path (ADR 0022 D-08/D-14); never let it reach the generic sanitizer
+                        // below, which only masks credentials/URLs/tokens/emails, not paths.
+                        return MailDeliveryResult.Failure(
+                            MailDeliveryErrorCodes.AttachmentStorageMissing,
+                            "Attachment spool file could not be read.",
+                            retryable: false);
+                    }
+
                     message.Attachments.Add(new AcsEmailAttachment(
                         attachment.FileName,
                         attachment.ContentType,
