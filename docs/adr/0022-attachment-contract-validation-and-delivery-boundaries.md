@@ -1,7 +1,8 @@
 # ADR 0022: 添付ファイルの公開契約・検証・短期spool配送境界
 
-- **Status:** Draft
+- **Status:** Accepted
 - **Date:** 2026-08-04
+- **Accepted:** 2026-08-04（Koo承認。Agent B独立再レビュー `APPROVE`、reviewed head `ae8e89674813e8bc50bd1acb652403767bb20b6e`）
 - **Tracks:** [#523](https://github.com/kooiei-in4a/amane-mailer/issues/523)
 - **Planning:** [#517](https://github.com/kooiei-in4a/amane-mailer/issues/517)
 - **Implementation prerequisite:** [#533](https://github.com/kooiei-in4a/amane-mailer/issues/533)
@@ -555,17 +556,17 @@ Admin binary downloadは非目標。
 
 ### D-15. Implementation gate
 
-本ADRがDraftの間、production implementationはHOLDする。
+本ADRは2026-08-04にAcceptedとなった。production implementationはIssue #533で実施し、PR #536のmerge前には開始しない。
 
-Accepted前に必要:
+Accepted判断で確認済み:
 
-1. B-01、M-01、M-02、M-03、M-04反映後の独立再レビュー。
-2. M-04について、`(request_id, attempt_number)` identityが削除され、request単位で一意なsubmission evidence、添付requestの全terminal manual retry禁止、Started後のmanual cancel禁止、ADR 0015の通常メール契約維持が確認されること。
-3. provider submission marker、DeliveryUnknown state、backup maintenance leaseの実証計画。
-4. hash vectors、filename、file type、ZIP上限、failure categoryの確認。
-5. KooによるADR Accepted。
+1. B-01、M-01、M-02、M-03、M-04反映後の独立再レビューが `APPROVE`。
+2. M-04について、`(request_id, attempt_number)` identityが削除され、request単位で一意なsubmission evidence、添付requestの全terminal manual retry禁止、Started後のmanual cancel禁止、ADR 0015の通常メール契約維持を確認。
+3. provider submission marker、DeliveryUnknown state、backup maintenance leaseの実証計画をIssue #533へ同期。
+4. hash vectors、filename、file type、ZIP上限、failure categoryをDecisionへ固定。
+5. KooがADR Acceptedを承認。
 
-Accepted後の推奨順:
+実装の推奨順:
 
 1. domain／DB state: DeliveryUnknown、request単位submission state、backup maintenance lease。
 2. #533 spool core／reconciliation／backup coordinator。
@@ -576,7 +577,7 @@ Accepted後の推奨順:
 7. Admin PII表示／SDK／docs。
 8. production Docker／Native AOT／provider qualification。
 
-Acceptedだけでlive ACS、release、publish、tagを許可しない。
+AcceptedだけでPR Ready、merge、Issue #533実装開始、live ACS、release、publish、tagを許可しない。
 
 ## Consequences
 
