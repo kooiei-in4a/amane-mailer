@@ -30,12 +30,41 @@ public sealed class Spike526OfflineTests
     [Theory]
     [InlineData("F00")]
     [InlineData("F01")]
+    [InlineData("F02")]
     [InlineData("F03")]
     [InlineData("F04")]
+    [InlineData("F05")]
+    [InlineData("F06")]
     public async Task Acs_capture_uses_real_sdk_serialization_and_estimator_does_not_underestimate(string fixtureId)
     {
         var fixture = Spike526FixtureFactory.Create(fixtureId);
+        await AssertAcsCaptureDoesNotUnderestimateAsync(fixtureId, fixture);
+    }
 
+    // Rev.2 requires the estimator upper-bound qualification to include a
+    // generated boundary family (JSON escaping-heavy strings, multibyte UTF-8,
+    // max-length fields, provider-boundary-near binary sizes) crossed with
+    // 1-attachment/5-attachment variants, in addition to the F00-F06 fixtures
+    // above. F07/F08 are intentionally invalid (declared-metadata mismatch /
+    // malformed Base64) and are exercised by the token-buffer rejection tests
+    // instead, not by ACS send capture.
+    [Theory]
+    [InlineData("G01-1")]
+    [InlineData("G01-5")]
+    [InlineData("G02-1")]
+    [InlineData("G02-5")]
+    [InlineData("G03-1")]
+    [InlineData("G03-5")]
+    [InlineData("G05-1")]
+    [InlineData("G05-5")]
+    public async Task Acs_capture_generated_boundary_family_does_not_underestimate(string fixtureId)
+    {
+        var fixture = Spike526GeneratedFixtures.Create(fixtureId);
+        await AssertAcsCaptureDoesNotUnderestimateAsync(fixtureId, fixture);
+    }
+
+    private static async Task AssertAcsCaptureDoesNotUnderestimateAsync(string fixtureId, Spike526Fixture fixture)
+    {
         var capture = await Spike526AcsEnvelopeCapture.CaptureAsync(
             fixture,
             TestContext.Current.CancellationToken);
@@ -257,6 +286,34 @@ public sealed class Spike526OfflineTests
             if (File.Exists(outside))
             {
                 File.Delete(outside);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Probe_failure_output_never_contains_the_triggering_absolute_path()
+    {
+        // Passing an existing FILE as the temp root makes Spike526TempStore's
+        // Directory.CreateDirectory throw an IOException whose default .Message
+        // embeds that absolute path. The probe must classify the failure instead
+        // of ever writing the raw exception message to stdout/stderr.
+        var root = CreateTempRoot();
+        Directory.CreateDirectory(Directory.GetParent(root)!.FullName);
+        await File.WriteAllTextAsync(root, "not a directory", TestContext.Current.CancellationToken);
+        try
+        {
+            var result = await RunProbeAsync("cleanup", root);
+
+            Assert.Equal(1, result.ExitCode);
+            Assert.DoesNotContain(root, result.Stdout, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(root, result.Stderr, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Spike526 probe failed: IO_ERROR", result.Stderr);
+        }
+        finally
+        {
+            if (File.Exists(root))
+            {
+                File.Delete(root);
             }
         }
     }

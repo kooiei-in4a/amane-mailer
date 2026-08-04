@@ -121,7 +121,7 @@ public static class Spike526FixtureFactory
         return result;
     }
 
-    private static (List<Spike526Recipient> To, List<Spike526Recipient> Cc, List<Spike526Recipient> Bcc)
+    internal static (List<Spike526Recipient> To, List<Spike526Recipient> Cc, List<Spike526Recipient> Bcc)
         CreateRecipients(int count)
     {
         var to = new List<Spike526Recipient>();
@@ -153,7 +153,7 @@ public static class Spike526FixtureFactory
         return (to, cc, bcc);
     }
 
-    private static byte[] CreateSyntheticBytes(int length, int seed)
+    internal static byte[] CreateSyntheticBytes(int length, int seed)
     {
         var bytes = GC.AllocateUninitializedArray<byte>(length);
         for (var index = 0; index < bytes.Length; index++)
@@ -162,6 +162,19 @@ public static class Spike526FixtureFactory
         }
 
         return bytes;
+    }
+
+    internal static Spike526Attachment CreateAttachment(string fileName, string contentType, byte[] bytes)
+    {
+        var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        return new Spike526Attachment
+        {
+            FileName = fileName,
+            ContentType = contentType,
+            ByteLength = bytes.LongLength,
+            ContentSha256 = digest,
+            ContentBase64 = Convert.ToBase64String(bytes),
+        };
     }
 
     private static string CreateRepeatedBody(int requestedUtf8Bytes)
@@ -183,7 +196,7 @@ public static class Spike526FixtureFactory
         return builder.ToString();
     }
 
-    private static Guid DeterministicGuid(string fixtureId)
+    internal static Guid DeterministicGuid(string fixtureId)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes("amane-mailer-spike526:" + fixtureId));
         return new Guid(hash.AsSpan(0, 16));

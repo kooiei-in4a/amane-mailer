@@ -29,6 +29,7 @@
   <ItemGroup>
     <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526AcsEnvelopeCapture.cs" Link="Spike526Probe\Spike526AcsEnvelopeCapture.cs" />
     <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526FixtureFactory.cs" Link="Spike526Probe\Spike526FixtureFactory.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526GeneratedFixtures.cs" Link="Spike526Probe\Spike526GeneratedFixtures.cs" />
     <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526Models.cs" Link="Spike526Probe\Spike526Models.cs" />
     <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526TempStore.cs" Link="Spike526Probe\Spike526TempStore.cs" />
     <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526TokenBufferProcessor.cs" Link="Spike526Probe\Spike526TokenBufferProcessor.cs" />
