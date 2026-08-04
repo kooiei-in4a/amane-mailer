@@ -85,10 +85,21 @@ class MailRequestBuilder:
             self._explicit_nulls.discard("scheduled_at")
         return self
 
+    def attachments(self, value: list[dict[str, Any]] | None) -> MailRequestBuilder:
+        """Sets attachments (ADR 0022 D-01). Each dict needs file_name, content_type,
+        content_base64, content_sha256, and byte_length. Unspecified/None and an empty list
+        are equivalent ("no attachments")."""
+        self._fields["attachments"] = value
+        if value is None:
+            self._explicit_nulls.add("attachments")
+        else:
+            self._explicit_nulls.discard("attachments")
+        return self
+
     def build(self) -> dict[str, Any]:
         draft = deepcopy(self._fields)
 
-        for key in ("html_body", "text_body", "reply_to", "metadata", "scheduled_at"):
+        for key in ("html_body", "text_body", "reply_to", "metadata", "scheduled_at", "attachments"):
             if key not in draft:
                 continue
             if draft[key] is None and key not in self._explicit_nulls:
@@ -97,5 +108,9 @@ class MailRequestBuilder:
         validate_mail_request_draft(draft)
 
         hash_input = {**draft, "payload_hash": "placeholder"}
-        draft["payload_hash"] = compute_delivery_payload_sha256_hex(hash_input)
+        attachments_for_hash = draft.get("attachments") or None
+        draft["payload_hash"] = compute_delivery_payload_sha256_hex(
+            hash_input,
+            attachments_for_hash,
+        )
         return draft

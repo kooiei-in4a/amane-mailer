@@ -1,6 +1,7 @@
 using Amane.Mailer.Contracts.Json;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Contracts.Security;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -77,10 +78,91 @@ public sealed class MailPayloadHasherTests
         foreach (var vector in vectors)
         {
             var json = vector.Input.GetRawText();
+            var attachments = vector.Attachments?
+                .Select(attachment => new MailAttachmentHashInput(
+                    attachment.FileName,
+                    attachment.ContentType,
+                    attachment.ByteLength,
+                    attachment.ContentSha256))
+                .ToArray();
 
-            Assert.Equal(vector.ExpectedCanonicalJson, MailPayloadHasher.Canonicalize(json));
-            Assert.Equal(vector.ExpectedSha256Hex, MailPayloadHasher.ComputeSha256Hex(json));
+            Assert.Equal(
+                vector.ExpectedCanonicalJson,
+                MailPayloadHasher.BuildDeliveryPayloadJson(json, attachments));
+            Assert.Equal(
+                vector.ExpectedSha256Hex,
+                MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(json, attachments));
         }
+    }
+
+    [Fact]
+    public void BuildDeliveryPayloadJson_omits_attachments_for_null_and_empty_alike()
+    {
+        const string requestJson = """
+            {
+              "source_service": "example-service",
+              "purpose": "FormResponseNotification",
+              "subject": "New response",
+              "to": [
+                { "email": "admin@example.com" }
+              ],
+              "text_body": "A new response arrived."
+            }
+            """;
+
+        var withoutAttachmentsList = MailPayloadHasher.BuildDeliveryPayloadJson(requestJson, null);
+        var withEmptyAttachmentsList = MailPayloadHasher.BuildDeliveryPayloadJson(
+            requestJson,
+            Array.Empty<MailAttachmentHashInput>());
+
+        Assert.Equal(withoutAttachmentsList, withEmptyAttachmentsList);
+        Assert.DoesNotContain("attachments", withoutAttachmentsList, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildDeliveryPayloadJson_projects_only_the_five_canonical_attachment_fields()
+    {
+        const string requestJson = """
+            {
+              "source_service": "example-service",
+              "purpose": "FormResponseNotification",
+              "subject": "Invoice",
+              "to": [
+                { "email": "admin@example.com" }
+              ],
+              "text_body": "See attached.",
+              "attachments": [
+                {
+                  "file_name": "invoice.pdf",
+                  "content_type": "application/octet-stream",
+                  "content_base64": "AAAA",
+                  "content_sha256": "0000000000000000000000000000000000000000000000000000000000000",
+                  "byte_length": 999
+                }
+              ]
+            }
+            """;
+
+        var attachments = new[]
+        {
+            new MailAttachmentHashInput(
+                "invoice.pdf",
+                "application/pdf",
+                4,
+                "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+        };
+
+        var json = MailPayloadHasher.BuildDeliveryPayloadJson(requestJson, attachments);
+
+        // The verified projection (application/pdf, byte_length 4) wins; the raw JSON's
+        // Consumer-declared content_type/byte_length and content_base64 are never used.
+        Assert.Contains("\"content_type\":\"application/pdf\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"byte_length\":4", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("application/octet-stream", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("999", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("content_base64", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("AAAA", json, StringComparison.Ordinal);
+        Assert.Contains("\"order\":0", json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -250,10 +332,33 @@ public sealed class MailPayloadHasherTests
         [JsonPropertyName("input")]
         public required JsonElement Input { get; init; }
 
+        /// <summary>
+        /// Verified attachment values to project into the hash (ADR 0022 D-03). Absent for the
+        /// pre-attachment vectors (no attachments-property call site at all); an explicit empty
+        /// array is a distinct fixture case that must still omit "attachments" from the hash.
+        /// </summary>
+        [JsonPropertyName("attachments")]
+        public IReadOnlyList<PayloadHashVectorAttachment>? Attachments { get; init; }
+
         [JsonPropertyName("expected_canonical_json")]
         public required string ExpectedCanonicalJson { get; init; }
 
         [JsonPropertyName("expected_sha256_hex")]
         public required string ExpectedSha256Hex { get; init; }
+    }
+
+    private sealed record PayloadHashVectorAttachment
+    {
+        [JsonPropertyName("file_name")]
+        public required string FileName { get; init; }
+
+        [JsonPropertyName("content_type")]
+        public required string ContentType { get; init; }
+
+        [JsonPropertyName("byte_length")]
+        public required long ByteLength { get; init; }
+
+        [JsonPropertyName("content_sha256")]
+        public required string ContentSha256 { get; init; }
     }
 }

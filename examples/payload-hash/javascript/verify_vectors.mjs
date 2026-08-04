@@ -4,9 +4,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import {
   buildDeliveryPayloadJson,
-  canonicalize,
   computeDeliveryPayloadSha256Hex,
-  computeSha256Hex,
 } from './mail_payload_hash.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -17,9 +15,15 @@ const vectorsPath = path.join(
 const vectors = JSON.parse(readFileSync(vectorsPath, 'utf8'));
 
 for (const vector of vectors) {
-  const { name, input, expected_canonical_json: expectedCanonical, expected_sha256_hex: expectedHash } = vector;
+  const {
+    name,
+    input,
+    attachments = null,
+    expected_canonical_json: expectedCanonical,
+    expected_sha256_hex: expectedHash,
+  } = vector;
 
-  const actualCanonical = canonicalize(input);
+  const actualCanonical = buildDeliveryPayloadJson(input, attachments);
   if (actualCanonical !== expectedCanonical) {
     console.error(`[FAIL] ${name}: canonical JSON mismatch`);
     console.error(`  expected: ${expectedCanonical}`);
@@ -27,7 +31,7 @@ for (const vector of vectors) {
     process.exit(1);
   }
 
-  const actualHash = computeSha256Hex(input);
+  const actualHash = computeDeliveryPayloadSha256Hex(input, attachments);
   if (actualHash !== expectedHash) {
     console.error(`[FAIL] ${name}: SHA-256 mismatch`);
     console.error(`  expected: ${expectedHash}`);
@@ -41,13 +45,13 @@ for (const vector of vectors) {
     payload_hash: 'caller-provided-placeholder',
     ...input,
   };
-  const deliveryJson = buildDeliveryPayloadJson(envelopeRequest);
+  const deliveryJson = buildDeliveryPayloadJson(envelopeRequest, attachments);
   if (deliveryJson !== expectedCanonical) {
     console.error(`[FAIL] ${name}: delivery payload JSON mismatch`);
     process.exit(1);
   }
 
-  const deliveryHash = computeDeliveryPayloadSha256Hex(envelopeRequest);
+  const deliveryHash = computeDeliveryPayloadSha256Hex(envelopeRequest, attachments);
   if (deliveryHash !== expectedHash) {
     console.error(`[FAIL] ${name}: delivery payload hash mismatch`);
     process.exit(1);

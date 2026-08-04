@@ -41,10 +41,15 @@ paths:
       summary: メール送信依頼を受け付ける
       description: >-
         送信依頼を Mailer DB に永続化し 202 を返す（ACS 送信完了ではない）。
-        実際の送信は Worker が非同期に行う。リクエストボディ上限は 256,000 バイト。
+        実際の送信は Worker が非同期に行う。リクエストボディ上限は 16,777,216 バイト
+        （16 MiB。添付なし依頼も同じ上限を共有する）。
         ボディは strict UTF-8 として解釈し、無効な byte sequence は置換せず 400 で拒否する。
         202 は受付の成功のみを表し、実メール配送の exactly-once は保証しない
         （at-least-once。詳細は docs/service-spec.md の「配送一意性（実送信の保証）」節）。
+        添付ありの依頼は ADR 0022 の明示的例外として provider invocation 開始後は
+        自動再送しない（at-most-once）。添付ファイルの検証・上限・spool・
+        provider mapping・DeliveryUnknown の詳細は
+        docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md を参照。
       operationId: createMailRequest
       security:
         - tenantBearer: []
@@ -93,14 +98,14 @@ paths:
               examples:
                 conflict: { value: { code: IDEMPOTENCY_CONFLICT } }
         '413':
-          description: リクエストボディが上限（256,000 バイト）超過
+          description: リクエストボディが上限（16,777,216 バイト）超過
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 tooLarge: { value: { code: REQUEST_TOO_LARGE } }
         '422':
-          description: バリデーション失敗
+          description: バリデーション失敗(添付検証・上限を含む)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -111,16 +116,31 @@ paths:
                 invalidRecipient: { value: { code: INVALID_REQUEST, message: "A valid recipient is required." } }
                 scheduledAtInPast: { value: { code: SCHEDULED_AT_IN_PAST } }
                 scheduledAtTooFar: { value: { code: SCHEDULED_AT_TOO_FAR } }
+                tooManyAttachments: { value: { code: TOO_MANY_ATTACHMENTS } }
+                attachmentTooLarge: { value: { code: ATTACHMENT_TOO_LARGE } }
+                attachmentTotalTooLarge: { value: { code: ATTACHMENT_TOTAL_TOO_LARGE } }
+                mailPayloadTooLarge: { value: { code: MAIL_PAYLOAD_TOO_LARGE } }
+                attachmentInvalidBase64: { value: { code: ATTACHMENT_INVALID_BASE64 } }
+                attachmentDigestMismatch: { value: { code: ATTACHMENT_DIGEST_MISMATCH } }
+                attachmentLengthMismatch: { value: { code: ATTACHMENT_LENGTH_MISMATCH } }
+                attachmentFilenameInvalid: { value: { code: ATTACHMENT_FILENAME_INVALID } }
+                attachmentDuplicateFilename: { value: { code: ATTACHMENT_DUPLICATE_FILENAME } }
+                attachmentTypeNotAllowed: { value: { code: ATTACHMENT_TYPE_NOT_ALLOWED } }
+                attachmentContentMismatch: { value: { code: ATTACHMENT_CONTENT_MISMATCH } }
+                attachmentEncrypted: { value: { code: ATTACHMENT_ENCRYPTED } }
         '503':
           description: >-
             DB 障害等。busy/locked 等の一過性障害は `MAILER_TEMPORARILY_UNAVAILABLE`
             (retryable=true)。SQLITE_FULL（disk 枯渇）は `STORAGE_FULL`（retryable=false）。
+            backup maintenance lease 保持中の添付 acceptance は `ATTACHMENT_STORAGE_UNAVAILABLE`
+            （retryable=true。ADR 0022 D-09）。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
                 storageFull: { value: { code: STORAGE_FULL, retryable: false } }
+                attachmentStorageUnavailable: { value: { code: ATTACHMENT_STORAGE_UNAVAILABLE, retryable: true } }
 
   /internal/mail-requests/{mail_request_id}/cancel:
     post:
@@ -517,6 +537,21 @@ components:
             Consumer は secret、Bearer token、パスワード、リセット URL のクエリ secret 等を
             metadata 値に入れないこと。subject / body / reply_to と同様、metadata は PII や
             user-controlled データを含みうる。
+        attachments:
+          type: [array, "null"]
+          description: >-
+            添付ファイル（ADR 0022）。未指定または空配列は添付なし（両者は同義）。
+            配列順は添付順であり payload identity の一部。最大 5 件、超過は 422
+            TOO_MANY_ATTACHMENTS。decoded binary は 1 ファイル最大 2,097,152 バイト
+            （超過は 422 ATTACHMENT_TOO_LARGE）、合計最大 5,242,880 バイト（超過は 422
+            ATTACHMENT_TOTAL_TOO_LARGE）。Consumer 申告の content_type / content_sha256 /
+            byte_length は信用せず、Mailer が decoded binary から再検証する
+            （不一致は 422 ATTACHMENT_DIGEST_MISMATCH / ATTACHMENT_LENGTH_MISMATCH）。
+            許可 file type、filename 契約、spool、DeliveryUnknown、manual retry 禁止の詳細は
+            docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md を参照。
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/MailAttachment'
         scheduled_at:
           type: [string, "null"]
           format: date-time
@@ -533,15 +568,22 @@ components:
             同一 mail_request_id で hash が違えば 409。
             hash 対象は MailPayloadHashContract.IncludedFields と同じ
             source_service, purpose, to, subject, html_body, text_body,
-            reply_to, metadata。tenant_id, mail_request_id, payload_hash, scheduled_at は
-            routing / scheduling envelope / 自己参照のため除外する。
+            reply_to, metadata, attachments。tenant_id, mail_request_id, payload_hash,
+            scheduled_at は routing / scheduling envelope / 自己参照のため除外する。
             計算手順: 対象フィールドのみ抽出する。任意フィールドは payload JSON に
             存在する場合だけ含め、明示的な null は null として含める。
             省略された任意フィールドは hash 対象外。キーをアルファベット昇順でソートし、スペースなし canonical JSON
             （MailPayloadHasher.BuildDeliveryPayloadJson() の独自エスケープ）へ
             直列化する。UTF-8 エンコード後に SHA-256 を計算し、小文字 hex で出力する。
+            attachments は未指定・空配列のいずれでも hash document から省略する
+            （添付なし ADR 0012 hash とバイト同一）。1 件以上ある場合だけ、各要素を
+            file_name（NFC）、content_type（ADR 0022 D-06 canonical 値）、byte_length、
+            content_sha256（小文字 hex）、order（0 始まり、配列位置から生成）の 5 項目へ
+            射影して含める。content_base64 と Consumer 申告の content_type は
+            hash に含めない（ADR 0022 D-03）。
             テストベクトルは tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json。
-            ADR は docs/adr/0012-mail-via-mailer-microservice.md D-05。
+            ADR は docs/adr/0012-mail-via-mailer-microservice.md D-05 および
+            docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md D-03。
             .NET Consumer は MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request) を使用し、
             送信 JSON は null 任意フィールドを省略する設定に合わせる。
       example:
@@ -570,6 +612,52 @@ components:
         display_name:
           type: [string, "null"]
 
+    MailAttachment:
+      type: object
+      additionalProperties: false
+      description: >-
+        ADR 0022 D-01。Mailer は content_type / content_sha256 / byte_length を
+        decoded binary から再検証し、file type / filename を D-05/D-06 に従って検証する。
+      required:
+        - file_name
+        - content_type
+        - content_base64
+        - content_sha256
+        - byte_length
+      properties:
+        file_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: >-
+            表示・provider 送信用 filename。NFC 正規化後 UTF-8 1〜255 バイト。
+            empty / "." / ".." / "/" / "\" / NUL / control character / trailing dot・space /
+            Windows 予約名 / 同一メール内 case-insensitive 重複は 422
+            ATTACHMENT_FILENAME_INVALID または ATTACHMENT_DUPLICATE_FILENAME で拒否。
+            path として使用しない。potential PII として扱う（ADR 0022 D-14）。
+        content_type:
+          type: string
+          description: >-
+            Consumer 申告値。Mailer が拡張子・構造検証結果と突き合わせ、
+            一致しない場合は 422 ATTACHMENT_TYPE_NOT_ALLOWED。許可 type は
+            application/pdf, image/jpeg, image/png,
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document,
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,
+            text/csv, text/plain（ADR 0022 D-06）。
+        content_base64:
+          type: string
+          contentEncoding: base64
+          description: RFC 4648 標準 Base64。whitespace 不可。
+        content_sha256:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: decoded binary の SHA-256（64 文字小文字 hex）。Mailer が再計算し照合する。
+        byte_length:
+          type: integer
+          minimum: 0
+          maximum: 2097152
+          description: decoded binary のバイト数。Mailer が再計算し照合する。
+
     MailRequestCreateResponse:
       type: object
       required: [mail_request_id, status]
@@ -596,8 +684,12 @@ components:
           format: uuid
         status:
           type: string
-          enum: [queued, processing, delivered, failed, dead_lettered, cancelled]
-          description: Worker 配送ステータス（API 受付ステータス accepted / already_accepted とは別）。
+          enum: [queued, processing, delivered, failed, dead_lettered, cancelled, delivery_unknown]
+          description: >-
+            Worker 配送ステータス（API 受付ステータス accepted / already_accepted とは別）。
+            delivery_unknown は添付依頼専用の終端ステータスで、provider submission marker
+            commit 後に受理可否を証明できなかったことを表す（ADR 0022 D-08）。failed とは
+            区別され、自動・手動いずれの再送も行わない。
         attempt_count:
           type: integer
           minimum: 0
@@ -624,7 +716,11 @@ components:
           description: 配送成功時刻（UTC）。status が delivered の場合のみ。
         last_error_code:
           type: [string, "null"]
-          description: 直近試行の stable delivery error code（`MailDeliveryErrorCodes`。例: ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN, RECIPIENT_SUPPRESSED。raw provider message / exception 型名は含めない）。
+          description: >-
+            直近試行の stable delivery error code（`MailDeliveryErrorCodes`。例:
+            ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN, RECIPIENT_SUPPRESSED,
+            ATTACHMENT_STORAGE_MISSING, DELIVERY_UNKNOWN。raw provider message / exception
+            型名は含めない）。
 
     MailRequestRescheduleRequest:
       type: object
@@ -661,7 +757,7 @@ components:
           description: イベント一意 ID。Webhook 再送時も同一値。
         event_type:
           type: string
-          enum: [delivered, failed, dead_lettered, cancelled]
+          enum: [delivered, failed, dead_lettered, cancelled, delivery_unknown]
         occurred_at:
           type: string
           format: date-time
@@ -676,14 +772,18 @@ components:
           format: uuid
         status:
           type: string
-          enum: [delivered, failed, dead_lettered, cancelled]
+          enum: [delivered, failed, dead_lettered, cancelled, delivery_unknown]
           description: 配送結果ステータス（#216 ステータス API と同一モデル）。
         attempt_count:
           type: integer
           minimum: 0
         last_error_code:
           type: [string, "null"]
-          description: 最新 attempt の stable delivery error code（`MailDeliveryErrorCodes`。例: ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN, RECIPIENT_SUPPRESSED。PII / exception 型名を含まない分類コード）。
+          description: >-
+            最新 attempt の stable delivery error code（`MailDeliveryErrorCodes`。例:
+            ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN, RECIPIENT_SUPPRESSED,
+            ATTACHMENT_STORAGE_MISSING, DELIVERY_UNKNOWN。PII / exception 型名を含まない
+            分類コード）。
 
     Error:
       type: object
@@ -706,6 +806,19 @@ components:
             - SCHEDULED_AT_IN_PAST
             - SCHEDULED_AT_TOO_FAR
             - INVALID_STATE
+            - TOO_MANY_ATTACHMENTS
+            - ATTACHMENT_TOO_LARGE
+            - ATTACHMENT_TOTAL_TOO_LARGE
+            - MAIL_PAYLOAD_TOO_LARGE
+            - ATTACHMENT_INVALID_BASE64
+            - ATTACHMENT_DIGEST_MISMATCH
+            - ATTACHMENT_LENGTH_MISMATCH
+            - ATTACHMENT_FILENAME_INVALID
+            - ATTACHMENT_DUPLICATE_FILENAME
+            - ATTACHMENT_TYPE_NOT_ALLOWED
+            - ATTACHMENT_CONTENT_MISMATCH
+            - ATTACHMENT_ENCRYPTED
+            - ATTACHMENT_STORAGE_UNAVAILABLE
         message:
           type: string
         retryable:
@@ -713,3 +826,5 @@ components:
           description: >-
             true の場合、呼び出し側はバックオフ後にリトライしてよい。
             STORAGE_FULL は disk 解放や retention 調整が必要な構造的事象のため false。
+            ATTACHMENT_STORAGE_UNAVAILABLE は backup maintenance lease 保持中の一時的な
+            503 のため true（ADR 0022 D-09）。

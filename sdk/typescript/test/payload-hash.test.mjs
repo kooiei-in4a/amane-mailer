@@ -6,9 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   buildDeliveryPayloadJson,
-  canonicalize,
   computeDeliveryPayloadSha256Hex,
-  computeSha256Hex,
 } from '../src/payload-hash.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -20,15 +18,21 @@ const vectors = JSON.parse(readFileSync(vectorsPath, 'utf8'));
 
 test('payload_hash matches official test vectors', () => {
   for (const vector of vectors) {
-    const { name, input, expected_canonical_json: expectedCanonical, expected_sha256_hex: expectedHash } = vector;
+    const {
+      name,
+      input,
+      attachments = null,
+      expected_canonical_json: expectedCanonical,
+      expected_sha256_hex: expectedHash,
+    } = vector;
 
     assert.equal(
-      canonicalize(input),
+      buildDeliveryPayloadJson(input, attachments),
       expectedCanonical,
       `${name}: canonical JSON mismatch`,
     );
     assert.equal(
-      computeSha256Hex(input),
+      computeDeliveryPayloadSha256Hex(input, attachments),
       expectedHash,
       `${name}: SHA-256 mismatch`,
     );
@@ -41,12 +45,12 @@ test('payload_hash matches official test vectors', () => {
     };
 
     assert.equal(
-      buildDeliveryPayloadJson(envelopeRequest),
+      buildDeliveryPayloadJson(envelopeRequest, attachments),
       expectedCanonical,
       `${name}: delivery payload JSON mismatch`,
     );
     assert.equal(
-      computeDeliveryPayloadSha256Hex(envelopeRequest),
+      computeDeliveryPayloadSha256Hex(envelopeRequest, attachments),
       expectedHash,
       `${name}: delivery payload hash mismatch`,
     );

@@ -20,6 +20,22 @@ Hash covers delivery payload fields only:
 - `text_body`
 - `reply_to`
 - `metadata`
+- `attachments` (special projection — see below)
+
+## Attachments (ADR 0022 D-03)
+
+`attachments` is included with a different rule from the other optional fields: it is omitted
+from the hash document whenever it is unspecified **or** an empty array (both are equivalent —
+"no attachments"). When one or more attachments are present, each element is re-projected to
+exactly five fields before hashing: `file_name` (Unicode NFC), `content_type` (ADR 0022 D-06
+canonical MIME type — not necessarily the value you declared), `byte_length`, `content_sha256`
+(lowercase hex), and a zero-based `order` generated from array position. `content_base64` and
+your declared `content_type` are never part of the hash; Mailer re-verifies both from the
+decoded binary. Each example's `build_delivery_payload_json` / `buildDeliveryPayloadJson` /
+`BuildDeliveryPayloadJSONWithAttachments` function takes the verified attachment list as a
+second argument — pass `None` / `null` / `nil` for attachment-free requests. See
+[docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md](../../docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md)
+D-03.
 
 ## Excluded fields
 

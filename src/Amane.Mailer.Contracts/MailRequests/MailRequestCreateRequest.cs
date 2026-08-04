@@ -52,6 +52,15 @@ public sealed record MailRequestCreateRequest
     [JsonPropertyName("scheduled_at")]
     public DateTimeOffset? ScheduledAt { get; init; }
 
+    /// <summary>
+    /// Optional attachments (ADR 0022 D-01). Unspecified or an empty array means no attachment;
+    /// both are equivalent and omitted from payload_hash (ADR 0022 D-03). Array order is
+    /// submission order and part of payload identity; at most
+    /// <see cref="MailAttachmentLimits.MaxAttachmentCount"/> entries are accepted.
+    /// </summary>
+    [JsonPropertyName("attachments")]
+    public IReadOnlyList<MailAttachmentDto>? Attachments { get; init; }
+
     [JsonPropertyName("payload_hash")]
     public required string PayloadHash { get; init; }
 }

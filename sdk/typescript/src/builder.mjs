@@ -107,10 +107,25 @@ export class MailRequestBuilder {
     return this;
   }
 
+  /**
+   * Sets attachments (ADR 0022 D-01). Each entry needs file_name, content_type,
+   * content_base64, content_sha256, and byte_length. Unspecified/null and an empty array are
+   * equivalent ("no attachments").
+   */
+  attachments(value) {
+    this.#fields.attachments = value;
+    if (value === null) {
+      this.#explicitNulls.add('attachments');
+    } else {
+      this.#explicitNulls.delete('attachments');
+    }
+    return this;
+  }
+
   build() {
     const draft = { ...this.#fields };
 
-    for (const key of ['html_body', 'text_body', 'reply_to', 'metadata', 'scheduled_at']) {
+    for (const key of ['html_body', 'text_body', 'reply_to', 'metadata', 'scheduled_at', 'attachments']) {
       if (draft[key] === undefined) {
         delete draft[key];
       } else if (draft[key] === null && !this.#explicitNulls.has(key)) {
@@ -120,10 +135,13 @@ export class MailRequestBuilder {
 
     validateMailRequestDraft(draft);
 
-    draft.payload_hash = computeDeliveryPayloadSha256Hex({
-      ...draft,
-      payload_hash: 'placeholder',
-    });
+    const attachmentsForHash = draft.attachments && draft.attachments.length > 0
+      ? draft.attachments
+      : null;
+    draft.payload_hash = computeDeliveryPayloadSha256Hex(
+      { ...draft, payload_hash: 'placeholder' },
+      attachmentsForHash,
+    );
 
     return Object.freeze({ ...draft });
   }

@@ -397,10 +397,13 @@ public sealed class SqlMigrationRunner
                     'mail_requests',
                     'mail_attempts',
                     'worker_heartbeats',
-                    'delivery_events');
+                    'delivery_events',
+                    'mail_request_attachments',
+                    'mail_attachment_submissions',
+                    'mailer_maintenance_leases');
                 """;
             var tableCount = await tables.ExecuteScalarAsync(cancellationToken);
-            if (tableCount is not long count || count != 5L)
+            if (tableCount is not long count || count != 8L)
             {
                 return false;
             }
@@ -408,16 +411,25 @@ public sealed class SqlMigrationRunner
 
         await using var columns = connection.CreateCommand();
         columns.CommandText = "PRAGMA table_info(mail_requests);";
-        await using var reader = await columns.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
+        var hasScheduledAt = false;
+        var hasAttachmentCount = false;
+        await using (var reader = await columns.ExecuteReaderAsync(cancellationToken))
         {
-            if (string.Equals(reader.GetString(1), "scheduled_at", StringComparison.Ordinal))
+            while (await reader.ReadAsync(cancellationToken))
             {
-                return true;
+                var columnName = reader.GetString(1);
+                if (string.Equals(columnName, "scheduled_at", StringComparison.Ordinal))
+                {
+                    hasScheduledAt = true;
+                }
+                else if (string.Equals(columnName, "attachment_count", StringComparison.Ordinal))
+                {
+                    hasAttachmentCount = true;
+                }
             }
         }
 
-        return false;
+        return hasScheduledAt && hasAttachmentCount;
     }
 
     private static async Task<bool> HasChecksumColumnAsync(

@@ -295,6 +295,7 @@ Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する
 | **3** | `Failed` | 非 retryable な provider 失敗（終端） |
 | **4** | `DeadLettered` | 最大試行超過等で打ち切り（終端） |
 | **5** | `Cancelled` | 運用者による手動キャンセル（終端） |
+| **6** | `DeliveryUnknown` | 添付依頼専用（[ADR 0022](adr/0022-attachment-contract-validation-and-delivery-boundaries.md) D-08）。provider submission marker commit 後、受理可否を証明できなかった終端。`Failed` とは区別し、自動・手動いずれの再送も行わない |
 
 **Worker 自動遷移:**
 

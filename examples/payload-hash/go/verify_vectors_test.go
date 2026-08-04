@@ -8,11 +8,32 @@ import (
 	"testing"
 )
 
+type attachmentVectorEntry struct {
+	FileName      string `json:"file_name"`
+	ContentType   string `json:"content_type"`
+	ByteLength    int64  `json:"byte_length"`
+	ContentSHA256 string `json:"content_sha256"`
+}
+
 type payloadHashVector struct {
-	Name                  string          `json:"name"`
-	Input                 json.RawMessage `json:"input"`
-	ExpectedCanonicalJSON string          `json:"expected_canonical_json"`
-	ExpectedSHA256Hex     string          `json:"expected_sha256_hex"`
+	Name                  string                   `json:"name"`
+	Input                 json.RawMessage          `json:"input"`
+	Attachments           []attachmentVectorEntry  `json:"attachments"`
+	ExpectedCanonicalJSON string                   `json:"expected_canonical_json"`
+	ExpectedSHA256Hex     string                   `json:"expected_sha256_hex"`
+}
+
+func toAttachments(entries []attachmentVectorEntry) []Attachment {
+	attachments := make([]Attachment, 0, len(entries))
+	for _, entry := range entries {
+		attachments = append(attachments, Attachment{
+			FileName:      entry.FileName,
+			ContentType:   entry.ContentType,
+			ByteLength:    entry.ByteLength,
+			ContentSHA256: entry.ContentSHA256,
+		})
+	}
+	return attachments
 }
 
 func TestSharedTestVectorsMatchCanonicalJSONAndHash(t *testing.T) {
@@ -36,12 +57,13 @@ func TestSharedTestVectorsMatchCanonicalJSONAndHash(t *testing.T) {
 
 	for _, vector := range vectors {
 		t.Run(vector.Name, func(t *testing.T) {
-			var input any
-			if err := json.Unmarshal(vector.Input, &input); err != nil {
-				t.Fatalf("parse input: %v", err)
+			var payload map[string]any
+			if err := json.Unmarshal(vector.Input, &payload); err != nil {
+				t.Fatalf("parse payload map: %v", err)
 			}
+			attachments := toAttachments(vector.Attachments)
 
-			actualCanonical, err := Canonicalize(input)
+			actualCanonical, err := BuildDeliveryPayloadJSONWithAttachments(payload, attachments)
 			if err != nil {
 				t.Fatalf("canonicalize: %v", err)
 			}
@@ -49,7 +71,7 @@ func TestSharedTestVectorsMatchCanonicalJSONAndHash(t *testing.T) {
 				t.Fatalf("canonical mismatch\nexpected: %s\nactual:   %s", vector.ExpectedCanonicalJSON, actualCanonical)
 			}
 
-			actualHash, err := ComputeSHA256Hex(input)
+			actualHash, err := ComputeDeliveryPayloadSHA256HexWithAttachments(payload, attachments)
 			if err != nil {
 				t.Fatalf("hash: %v", err)
 			}
@@ -62,15 +84,11 @@ func TestSharedTestVectorsMatchCanonicalJSONAndHash(t *testing.T) {
 				"mail_request_id": "00000000-0000-0000-0000-000000000201",
 				"payload_hash":    "caller-provided-placeholder",
 			}
-			var payload map[string]any
-			if err := json.Unmarshal(vector.Input, &payload); err != nil {
-				t.Fatalf("parse payload map: %v", err)
-			}
 			for key, value := range payload {
 				envelope[key] = value
 			}
 
-			deliveryJSON, err := BuildDeliveryPayloadJSON(envelope)
+			deliveryJSON, err := BuildDeliveryPayloadJSONWithAttachments(envelope, attachments)
 			if err != nil {
 				t.Fatalf("delivery json: %v", err)
 			}
@@ -78,7 +96,7 @@ func TestSharedTestVectorsMatchCanonicalJSONAndHash(t *testing.T) {
 				t.Fatalf("delivery json mismatch\nexpected: %s\nactual:   %s", vector.ExpectedCanonicalJSON, deliveryJSON)
 			}
 
-			deliveryHash, err := ComputeDeliveryPayloadSHA256Hex(envelope)
+			deliveryHash, err := ComputeDeliveryPayloadSHA256HexWithAttachments(envelope, attachments)
 			if err != nil {
 				t.Fatalf("delivery hash: %v", err)
 			}

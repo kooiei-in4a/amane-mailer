@@ -556,7 +556,9 @@ public sealed class MailRequestClaimStore(
         const string selectBatchSql = """
             SELECT id, tenant_id, source_service, mail_request_id
             FROM mail_requests
-            WHERE status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus)
+            WHERE status IN (
+                    @DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus,
+                    @DeliveryUnknownStatus)
               AND completed_at IS NOT NULL
               AND completed_at < @CompletedBefore
             ORDER BY completed_at ASC, id ASC
@@ -580,6 +582,7 @@ public sealed class MailRequestClaimStore(
                 select.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
                 select.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
                 select.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
+                select.Parameters.AddWithValue("@DeliveryUnknownStatus", (int)MailRequestState.DeliveryUnknown);
                 select.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
                 select.Parameters.AddWithValue("@BatchSize", effectiveBatchSize);
 

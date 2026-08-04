@@ -9,11 +9,15 @@ namespace Amane.Mailer.Contracts.Security;
 
 public static class MailPayloadHasher
 {
+    private const string AttachmentsFieldName = "attachments";
+
     private static readonly ISet<string> IncludedFieldSet =
         MailPayloadHashContract.IncludedFields.ToHashSet(StringComparer.Ordinal);
 
-    public static string ComputeDeliveryPayloadSha256Hex(string requestJson) =>
-        ComputeSha256Hex(BuildDeliveryPayloadJson(requestJson));
+    public static string ComputeDeliveryPayloadSha256Hex(
+        string requestJson,
+        IReadOnlyList<MailAttachmentHashInput>? attachments = null) =>
+        ComputeSha256Hex(BuildDeliveryPayloadJson(requestJson, attachments));
 
     /// <summary>
     /// Builds a delivery payload from a DTO constructed by the App before sending. Null optional fields are omitted.
@@ -22,7 +26,17 @@ public static class MailPayloadHasher
     public static string ComputeDeliveryPayloadSha256Hex(MailRequestCreateRequest request) =>
         ComputeSha256Hex(BuildDeliveryPayloadJson(request));
 
-    public static string BuildDeliveryPayloadJson(string requestJson)
+    /// <summary>
+    /// Builds the canonical hash document from raw request JSON. The <c>attachments</c> JSON
+    /// property itself is never used for hashing (it carries content_base64 and an unverified
+    /// declared content_type): callers that need attachments reflected in the hash must pass the
+    /// Mailer-verified <paramref name="attachments"/> list (ADR 0022 D-03/D-04 step 12), computed
+    /// from decoded binaries after validation. A null or empty list omits <c>attachments</c> from
+    /// the hash document entirely, matching the pre-attachment ADR 0012 hash.
+    /// </summary>
+    public static string BuildDeliveryPayloadJson(
+        string requestJson,
+        IReadOnlyList<MailAttachmentHashInput>? attachments = null)
     {
         using var document = JsonDocument.Parse(requestJson);
         if (document.RootElement.ValueKind != JsonValueKind.Object)
@@ -31,11 +45,22 @@ public static class MailPayloadHasher
         }
 
         var properties = document.RootElement.EnumerateObject()
-            .Where(property => IncludedFieldSet.Contains(property.Name))
-            .OrderBy(property => property.Name, StringComparer.Ordinal)
-            .Select(property => $"{EscapeJsonString(property.Name)}:{Canonicalize(property.Value)}");
+            .Where(property =>
+                IncludedFieldSet.Contains(property.Name)
+                && !string.Equals(property.Name, AttachmentsFieldName, StringComparison.Ordinal))
+            .Select(property => (property.Name, CanonicalValue: Canonicalize(property.Value)))
+            .ToList();
 
-        return "{" + string.Join(",", properties) + "}";
+        if (attachments is { Count: > 0 })
+        {
+            properties.Add((AttachmentsFieldName, CanonicalizeAttachments(attachments)));
+        }
+
+        return "{" + string.Join(
+            ",",
+            properties
+                .OrderBy(property => property.Name, StringComparer.Ordinal)
+                .Select(property => $"{EscapeJsonString(property.Name)}:{property.CanonicalValue}")) + "}";
     }
 
     /// <summary>
@@ -71,6 +96,18 @@ public static class MailPayloadHasher
         if (request.Metadata is not null)
         {
             properties.Add(("metadata", CanonicalizeMetadata(request.Metadata)));
+        }
+
+        if (request.Attachments is { Count: > 0 })
+        {
+            var attachmentInputs = request.Attachments
+                .Select(attachment => new MailAttachmentHashInput(
+                    attachment.FileName,
+                    attachment.ContentType,
+                    attachment.ByteLength,
+                    attachment.ContentSha256))
+                .ToArray();
+            properties.Add((AttachmentsFieldName, CanonicalizeAttachments(attachmentInputs)));
         }
 
         return "{" + string.Join(
@@ -141,6 +178,35 @@ public static class MailPayloadHasher
         using var document = JsonDocument.Parse(
             JsonSerializer.Serialize(value, MailerContractsJsonContext.Default.MailRecipientDtoArray));
         return Canonicalize(document.RootElement);
+    }
+
+    /// <summary>
+    /// Projects verified attachment values to the fixed 5-field hash object (ADR 0022 D-03):
+    /// file_name (NFC), content_type (D-06 canonical), byte_length, content_sha256 (lowercase
+    /// hex), and a zero-based order generated from list position. Object keys are sorted
+    /// ordinally per field, matching RFC 8785 JCS key ordering.
+    /// </summary>
+    private static string CanonicalizeAttachments(IReadOnlyList<MailAttachmentHashInput> attachments)
+    {
+        var items = attachments.Select((attachment, index) =>
+        {
+            var fields = new (string Name, string Value)[]
+            {
+                ("byte_length", attachment.ByteLength.ToString(CultureInfo.InvariantCulture)),
+                ("content_sha256", EscapeJsonString(attachment.ContentSha256)),
+                ("content_type", EscapeJsonString(attachment.ContentType)),
+                ("file_name", EscapeJsonString(attachment.FileName.Normalize(NormalizationForm.FormC))),
+                ("order", index.ToString(CultureInfo.InvariantCulture)),
+            };
+
+            return "{" + string.Join(
+                ",",
+                fields
+                    .OrderBy(field => field.Name, StringComparer.Ordinal)
+                    .Select(field => $"{EscapeJsonString(field.Name)}:{field.Value}")) + "}";
+        });
+
+        return "[" + string.Join(",", items) + "]";
     }
 
     private static string CanonicalizeMetadata(IReadOnlyDictionary<string, string> value)
