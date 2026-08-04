@@ -1,5 +1,6 @@
 using Amane.Mailer.Attachments.Spool;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Operations;
 
 namespace Amane.Mailer.Worker;
 
@@ -15,6 +16,7 @@ public sealed class AttachmentSpoolReconciliationService(
     AttachmentSpool spool,
     SqliteConnectionFactory connections,
     TimeProvider timeProvider,
+    MailerRuntimeMetrics runtimeMetrics,
     ILogger<AttachmentSpoolReconciliationService> logger) : BackgroundService
 {
     private static readonly TimeSpan ReconciliationInterval = TimeSpan.FromMinutes(5);
@@ -55,9 +57,12 @@ public sealed class AttachmentSpoolReconciliationService(
 
     private void CleanupAllStaging()
     {
+        // EnumerateStagingDirectories only yields directories that currently exist, so each
+        // iteration here is a genuine cleanup, not a no-op probe.
         foreach (var directory in spool.EnumerateStagingDirectories())
         {
             TryDeleteDirectory(directory);
+            runtimeMetrics.RecordAttachmentSpoolCleanup("staging_startup");
         }
     }
 
@@ -69,6 +74,7 @@ public sealed class AttachmentSpoolReconciliationService(
             if (SafeLastWriteTimeUtc(directory) < cutoffUtc)
             {
                 TryDeleteDirectory(directory);
+                runtimeMetrics.RecordAttachmentSpoolCleanup("staging_stale");
             }
         }
     }
@@ -91,6 +97,7 @@ public sealed class AttachmentSpoolReconciliationService(
                 if (IsTerminal(status))
                 {
                     spool.TryDeleteCommitted(requestId);
+                    runtimeMetrics.RecordAttachmentSpoolCleanup("committed_terminal");
                 }
 
                 continue;
@@ -102,6 +109,7 @@ public sealed class AttachmentSpoolReconciliationService(
             if (SafeLastWriteTimeUtc(directory) < orphanCutoffUtc)
             {
                 spool.TryDeleteCommitted(requestId);
+                runtimeMetrics.RecordAttachmentSpoolCleanup("committed_orphan");
             }
         }
     }

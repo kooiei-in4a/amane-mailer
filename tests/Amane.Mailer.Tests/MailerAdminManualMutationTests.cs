@@ -143,7 +143,10 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
 
         var client = CreateClient();
         await LoginAsync(client, ct);
-        var csrf = await ReadCsrfTokenFromAdminPageAsync(client, $"/admin/mail-requests/{internalId:D}", ct);
+        // The detail page no longer renders a retry form for an attachment-bearing DeadLettered
+        // request (it is never retryable), so source the CSRF token from a page that still has
+        // one -- tokens are session-scoped, not tied to the page or row that issued them.
+        var csrf = await ReadCsrfTokenFromAdminPageAsync(client, "/admin/dead-letters", ct);
 
         using var response = await client.PostAsync(
             $"/admin/mail-requests/{internalId:D}/retry",
@@ -209,6 +212,80 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         var state = await ReadStatusAsync(internalId, ct);
         Assert.Equal(MailRequestState.Processing, state.Status);
+    }
+
+    [Fact]
+    public async Task Attachment_filename_is_masked_by_default_and_reveal_is_audited()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        const string rawFileName = "quarterly-report.pdf";
+        var internalId = await SeedAttachmentMailRequestWithMetadataAsync(
+            MailRequestState.Delivered, TenantA, rawFileName, ct);
+
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+
+        using var detailResponse = await client.GetAsync($"/admin/mail-requests/{internalId:D}", ct);
+        var detailHtml = await detailResponse.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
+        Assert.DoesNotContain(rawFileName, detailHtml, StringComparison.Ordinal);
+        Assert.Contains("q***.pdf", detailHtml, StringComparison.Ordinal);
+        Assert.Contains($"/admin/mail-requests/{internalId:D}/attachments/0/filename", detailHtml, StringComparison.Ordinal);
+
+        using var revealResponse = await client.GetAsync(
+            $"/admin/mail-requests/{internalId:D}/attachments/0/filename", ct);
+        var revealHtml = await revealResponse.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.OK, revealResponse.StatusCode);
+        Assert.Contains(rawFileName, revealHtml, StringComparison.Ordinal);
+
+        var audit = await ReadLatestAuditAsync(
+            internalId, AdminAuditLog.EventTypes.AttachmentFilenameRevealed, ct);
+        Assert.NotNull(audit);
+        Assert.Equal(AdminAuditLog.Results.Success, audit.Value.Result);
+
+        var fieldName = await ReadLatestAuditFieldNameAsync(
+            internalId, AdminAuditLog.EventTypes.AttachmentFilenameRevealed, ct);
+        Assert.Equal("attachments[0].file_name", fieldName);
+        Assert.DoesNotContain(rawFileName, fieldName ?? string.Empty, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Dead_lettered_attachment_request_hides_retry_and_cancel_actions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var internalId = await SeedAttachmentMailRequestAsync(MailRequestState.DeadLettered, TenantA, ct);
+
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync($"/admin/mail-requests/{internalId:D}", ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.DoesNotContain($"/admin/mail-requests/{internalId:D}/retry", html, StringComparison.Ordinal);
+        Assert.DoesNotContain($"/admin/mail-requests/{internalId:D}/cancel", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DeliveryUnknown_status_renders_distinctly_from_failed_in_admin()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var internalId = await SeedAttachmentMailRequestAsync(MailRequestState.DeliveryUnknown, TenantA, ct);
+
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+
+        using var detailResponse = await client.GetAsync($"/admin/mail-requests/{internalId:D}", ct);
+        var detailHtml = await detailResponse.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
+        Assert.Contains("status-deliveryunknown", detailHtml, StringComparison.Ordinal);
+        Assert.Contains(">DeliveryUnknown<", detailHtml, StringComparison.Ordinal);
+
+        using var listResponse = await client.GetAsync("/admin/mail-requests?status=deliveryunknown", ct);
+        var listHtml = await listResponse.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        Assert.Contains(internalId.ToString("D"), listHtml, StringComparison.Ordinal);
+        Assert.Contains("status-deliveryunknown", listHtml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -455,6 +532,36 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
         return internalId;
     }
 
+    private async Task<Guid> SeedAttachmentMailRequestWithMetadataAsync(
+        MailRequestState status,
+        Guid tenantId,
+        string fileName,
+        CancellationToken cancellationToken)
+    {
+        var internalId = await SeedAttachmentMailRequestAsync(status, tenantId, cancellationToken);
+
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO mail_request_attachments (
+                id, request_id, attachment_order, file_name, content_type,
+                byte_length, content_sha256, spool_key, created_at)
+            VALUES (
+                @Id, @RequestId, 0, @FileName, 'application/pdf',
+                1024, @Sha256, @SpoolKey, @Now);
+            """;
+        command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@RequestId", internalId.ToString("D"));
+        command.Parameters.AddWithValue("@FileName", fileName);
+        command.Parameters.AddWithValue("@Sha256", new string('e', 64));
+        command.Parameters.AddWithValue("@SpoolKey", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(SqliteTime.UtcNow));
+        await command.ExecuteNonQueryAsync(cancellationToken);
+
+        return internalId;
+    }
+
     private async Task SeedScopedAdminAsync(IReadOnlyList<Guid> tenantIds, CancellationToken cancellationToken) =>
         await fixture.Factory.Services.GetRequiredService<AdminUserRepository>()
             .CreateOrUpdateScopedUserAsync(
@@ -511,5 +618,29 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
             reader.GetString(0),
             reader.GetString(1),
             reader.IsDBNull(2) ? null : reader.GetString(2));
+    }
+
+    private async Task<string?> ReadLatestAuditFieldNameAsync(
+        Guid internalId,
+        string eventType,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT field_name
+            FROM admin_audit_events
+            WHERE target_id = @TargetId AND event_type = @EventType
+            ORDER BY id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@TargetId", internalId.ToString("D"));
+        command.Parameters.AddWithValue("@EventType", eventType);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+
+        return reader.IsDBNull(0) ? null : reader.GetString(0);
     }
 }

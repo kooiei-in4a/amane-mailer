@@ -593,6 +593,7 @@ public sealed class MailRequestWorker : BackgroundService
         // Best-effort prompt cleanup after the durable terminal commit above (ADR 0022 D-08
         // spool lifecycle); AttachmentSpoolReconciliationService is the safety net on failure.
         _attachmentSpool.TryDeleteCommitted(row.Id);
+        _runtimeMetrics.RecordAttachmentSpoolCleanup("committed_prompt");
     }
 
     private async Task FinalizeAttachmentResultAsync(
@@ -682,6 +683,7 @@ public sealed class MailRequestWorker : BackgroundService
         // Best-effort prompt cleanup after the durable terminal commit above (ADR 0022 D-08
         // spool lifecycle); AttachmentSpoolReconciliationService is the safety net on failure.
         _attachmentSpool.TryDeleteCommitted(row.Id);
+        _runtimeMetrics.RecordAttachmentSpoolCleanup("committed_prompt");
     }
 
     private async Task FinalizeDeliveryResultAsync(
@@ -862,6 +864,7 @@ public sealed class MailRequestWorker : BackgroundService
         if (row.AttachmentCount > 0)
         {
             _attachmentSpool.TryDeleteCommitted(row.Id);
+            _runtimeMetrics.RecordAttachmentSpoolCleanup("committed_prompt");
         }
 
         return true;

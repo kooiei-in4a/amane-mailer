@@ -10,6 +10,7 @@ using Amane.Mailer.Contracts.Security;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Json;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Queue;
 using Microsoft.Data.Sqlite;
 
@@ -31,7 +32,8 @@ public static class MailRequestCreateHandler
         AttachmentSpool attachmentSpool,
         TimeProvider timeProvider,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        MailerRuntimeMetrics? runtimeMetrics = null)
     {
         var bearerToken = TenantRequestAuthorizer.ReadBearerToken(httpRequest);
         if (!TenantRequestAuthorizer.TryAuthorizeCreate(
@@ -46,7 +48,7 @@ public static class MailRequestCreateHandler
         }
 
         var now = timeProvider.GetUtcNow();
-        var validationError = ValidateRequest(request, tenant!, now);
+        var validationError = ValidateRequest(request, tenant!, now, runtimeMetrics);
         if (validationError is not null)
         {
             return validationError;
@@ -69,6 +71,7 @@ public static class MailRequestCreateHandler
 
             if (attachmentResult.Status == AttachmentAcceptanceStatus.Failure)
             {
+                runtimeMetrics?.RecordAttachmentValidationRejected(attachmentResult.FailureCode!);
                 return MailRequestHttpErrorMapper.Error(
                     StatusCodes.Status422UnprocessableEntity,
                     attachmentResult.FailureCode!);
@@ -107,6 +110,7 @@ public static class MailRequestCreateHandler
             && !IsWithinProviderEnvelopeEstimate(request, tenant!, attachmentResult.Attachments))
         {
             attachmentSpool.TryDeleteStaging(requestId);
+            runtimeMetrics?.RecordAttachmentValidationRejected(MailerErrorCodes.MailPayloadTooLarge);
             return MailRequestHttpErrorMapper.Error(
                 StatusCodes.Status422UnprocessableEntity,
                 MailerErrorCodes.MailPayloadTooLarge);
@@ -340,7 +344,8 @@ public static class MailRequestCreateHandler
     private static IResult? ValidateRequest(
         MailRequestCreateRequest request,
         MailerTenant tenant,
-        DateTimeOffset now)
+        DateTimeOffset now,
+        MailerRuntimeMetrics? runtimeMetrics)
     {
         if (request.To is null)
         {
@@ -394,6 +399,7 @@ public static class MailRequestCreateHandler
         if (request.Attachments is { Count: > 0 } attachments
             && attachments.Count > MailAttachmentLimits.MaxAttachmentCount)
         {
+            runtimeMetrics?.RecordAttachmentValidationRejected(MailerErrorCodes.TooManyAttachments);
             return MailRequestHttpErrorMapper.Error(
                 StatusCodes.Status422UnprocessableEntity,
                 MailerErrorCodes.TooManyAttachments);

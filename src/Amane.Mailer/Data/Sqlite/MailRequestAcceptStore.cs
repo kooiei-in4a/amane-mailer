@@ -223,6 +223,10 @@ public sealed class MailRequestAcceptStore(
 
             await transaction.CommitAsync(cancellationToken);
             _runtimeMetrics?.RecordRequestAccepted();
+            if (attachments is { Count: > 0 })
+            {
+                _runtimeMetrics?.RecordAttachmentRequestAccepted();
+            }
         }
         catch
         {

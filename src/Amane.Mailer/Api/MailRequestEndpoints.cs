@@ -3,6 +3,7 @@ using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Json;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Queue;
 using Amane.Mailer.Webhooks;
 
@@ -155,6 +156,7 @@ public static class MailRequestEndpoints
         IMailRequestQueue queue,
         MailerTenantRegistry tenantRegistry,
         Amane.Mailer.Attachments.Spool.AttachmentSpool attachmentSpool,
+        MailerRuntimeMetrics runtimeMetrics,
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -194,7 +196,8 @@ public static class MailRequestEndpoints
             attachmentSpool,
             timeProvider,
             logger,
-            cancellationToken);
+            cancellationToken,
+            runtimeMetrics);
     }
 
     // Test seam retained for scheduled dispatch characterization tests.

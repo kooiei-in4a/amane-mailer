@@ -29,6 +29,7 @@ public sealed class AdminMailRequestDetailBounceRenderTests
         var html = AdminMailRequestDetailPage.RenderHtml(
             CreateDetail(),
             [],
+            [],
             [bounce],
             NoMaskOptions);
 
@@ -40,7 +41,7 @@ public sealed class AdminMailRequestDetailBounceRenderTests
     [Fact]
     public void Empty_bounce_section_shows_placeholder()
     {
-        var html = AdminMailRequestDetailPage.RenderHtml(CreateDetail(), [], [], NoMaskOptions);
+        var html = AdminMailRequestDetailPage.RenderHtml(CreateDetail(), [], [], [], NoMaskOptions);
 
         Assert.Contains("バウンス履歴はありません", html, StringComparison.Ordinal);
     }
@@ -64,11 +65,13 @@ public sealed class AdminMailRequestDetailBounceRenderTests
             Status: MailRequestState.Delivered,
             AttemptCount: 1,
             MaxAttempts: 3,
+            AttachmentCount: 0,
             NextAttemptAt: null,
             LockToken: null,
             LockExpiresAt: null,
             DeliveredAt: DateTimeOffset.UtcNow,
             FailedAt: null,
+            DeliveryUnknownAt: null,
             LastErrorMessage: null,
             AcceptedAt: DateTimeOffset.UtcNow,
             CreatedAt: DateTimeOffset.UtcNow,
