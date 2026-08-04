@@ -55,7 +55,9 @@ public sealed class AttachmentSpoolReconciliationService(
         }
     }
 
-    private void CleanupAllStaging()
+    /// <summary>Internal for direct invocation from tests -- the real periodic loop only fires
+    /// on a 5-minute wall-clock timer, which a test cannot wait out.</summary>
+    internal void CleanupAllStaging()
     {
         // EnumerateStagingDirectories only yields directories that currently exist, so each
         // iteration here is a genuine cleanup, not a no-op probe.
@@ -66,7 +68,7 @@ public sealed class AttachmentSpoolReconciliationService(
         }
     }
 
-    private void CleanupStaleStaging()
+    internal void CleanupStaleStaging()
     {
         var cutoffUtc = timeProvider.GetUtcNow().UtcDateTime - StagingGracePeriod;
         foreach (var directory in spool.EnumerateStagingDirectories())
@@ -79,7 +81,7 @@ public sealed class AttachmentSpoolReconciliationService(
         }
     }
 
-    private async Task ReconcileCommittedSpoolAsync(CancellationToken cancellationToken)
+    internal async Task ReconcileCommittedSpoolAsync(CancellationToken cancellationToken)
     {
         var requestIds = spool.EnumerateCommittedRequestIds().ToList();
         if (requestIds.Count == 0)
