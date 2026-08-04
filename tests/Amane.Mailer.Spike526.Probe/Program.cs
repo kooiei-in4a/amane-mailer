@@ -95,6 +95,15 @@ static string ClassifyFailure(Exception ex) => ex switch
 // exclude. `concurrency` requests then run as concurrent Tasks inside the same
 // process, sharing the same GC/heap, so the peak sampled during that window
 // reflects genuine concurrent load rather than two independent cold processes.
+//
+// GcHeapBeforeBytes/GcHeapPeakBytes/GcHeapAfterBytes report the .NET managed
+// GC heap only (GC.GetTotalMemory), which is what a caller-set
+// DOTNET_GCHeapHardLimit constrains. PeakWorkingSetBytes reports the whole
+// process's OS working set (managed heap + native allocations + loaded
+// assemblies + thread stacks, etc.) and is not bounded by that same
+// environment variable. Neither figure -- nor a DOTNET_GCHeapHardLimit run --
+// is a substitute for measuring against a real container/cgroup total-memory
+// limit; that qualification has not been performed by this probe.
 static async Task<Spike526ProbeResult> ProfileAsync(string fixtureId, string mode, int concurrency)
 {
     await RunOnceAsync(fixtureId, mode, MakeRoot("profile-warmup"));
@@ -215,7 +224,7 @@ static async Task<Spike526RunOnceResult> RunOnceAsync(string fixtureId, string m
     finally
     {
         // Runs even on failure (including OutOfMemoryException under a
-        // constrained container-memory profile) so a failed measurement never
+        // constrained managed-GC-heap profile) so a failed measurement never
         // leaves a Spike526-owned temp root behind.
         store.CleanupOwnedFiles();
         if (Directory.Exists(root))

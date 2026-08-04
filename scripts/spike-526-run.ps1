@@ -5,12 +5,15 @@ param(
     [string[]]$Mode = @('buffered','token'),
     [ValidateSet(1,2)]
     [int[]]$Concurrency = @(1,2),
-    # Additional GC heap hard-limit profiles (MiB) to run at concurrency 2, on
-    # top of the unconstrained passes above. DOTNET_GCHeapHardLimit approximates
-    # a container memory ceiling without requiring Docker: .NET enforces it the
-    # same way it enforces a real cgroup memory limit. Off by default because
-    # some fixture/mode cells are expected to fail closed (OUT_OF_MEMORY) at the
-    # smaller profiles by design -- that is Evidence, not a script bug.
+    # Additional managed GC heap hard-limit profiles (MiB) to run at
+    # concurrency 2, on top of the unconstrained passes above. This constrains
+    # only the .NET managed GC heap (DOTNET_GCHeapHardLimit), not the
+    # process's total working set or the OS/container's total memory -- it is
+    # a managed-heap-pressure approximation, not a substitute for a real
+    # Docker/cgroup total-memory qualification (which this script does not
+    # perform; see the probe's Program.cs remarks). Off by default because
+    # some fixture/mode cells are expected to fail closed (OUT_OF_MEMORY) at
+    # the smaller profiles by design -- that is Evidence, not a script bug.
     [int[]]$ContainerProfileMiB = @(),
     # Independent cold-process repeats per fixture/mode/concurrency cell. Each
     # repeat is a fresh `dotnet run` process (its own warm-up + measured pass),
@@ -39,7 +42,7 @@ for ($run = 1; $run -le $Repeat; $run++) {
 
 foreach ($miB in $ContainerProfileMiB) {
     $hex = '{0:X}' -f ([long]$miB * 1MB)
-    Write-Host "--- container profile: ${miB} MiB heap hard limit (concurrency 2) ---"
+    Write-Host "--- managed GC heap hard-limit profile: ${miB} MiB (concurrency 2; not a container/cgroup total-memory qualification) ---"
     foreach ($fixtureId in $Fixture) {
         foreach ($modeName in $Mode) {
             $env:DOTNET_GCHeapHardLimit = $hex

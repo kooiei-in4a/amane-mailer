@@ -28,18 +28,21 @@ for ((run = 1; run <= repeat; run++)); do
 done
 set +e
 
-# Optional GC heap hard-limit profiles (space-separated MiB values, e.g.
-# CONTAINER_PROFILES_MIB="256 512"), run at concurrency 2 on top of the
-# unconstrained passes above. DOTNET_GCHeapHardLimit approximates a container
-# memory ceiling without requiring Docker: .NET enforces it the same way it
-# enforces a real cgroup memory limit. Off by default because some
-# fixture/mode cells are expected to fail closed (OUT_OF_MEMORY) at the
-# smaller profiles by design -- that is Evidence, not a script bug, so
-# non-zero exit codes from this section are intentionally not fatal.
+# Optional managed GC heap hard-limit profiles (space-separated MiB values,
+# e.g. CONTAINER_PROFILES_MIB="256 512"), run at concurrency 2 on top of the
+# unconstrained passes above. This constrains only the .NET managed GC heap
+# (DOTNET_GCHeapHardLimit), not the process's total working set or the
+# OS/container's total memory -- it is a managed-heap-pressure approximation,
+# not a substitute for a real Docker/cgroup total-memory qualification (which
+# this script does not perform; see the probe's Program.cs remarks). Off by
+# default because some fixture/mode cells are expected to fail closed
+# (OUT_OF_MEMORY) at the smaller profiles by design -- that is Evidence, not
+# a script bug, so non-zero exit codes from this section are intentionally
+# not fatal.
 if [[ -n "${CONTAINER_PROFILES_MIB:-}" ]]; then
   for mib in ${CONTAINER_PROFILES_MIB}; do
     hex=$(printf '%X' $((mib * 1024 * 1024)))
-    echo "--- container profile: ${mib} MiB heap hard limit (concurrency 2) ---"
+    echo "--- managed GC heap hard-limit profile: ${mib} MiB (concurrency 2; not a container/cgroup total-memory qualification) ---"
     for fixture in ${fixtures[*]}; do
       for mode in "${modes[@]}"; do
         DOTNET_GCHeapHardLimit="$hex" dotnet run --project "$project" -c "$configuration" --no-launch-profile -- measure "$fixture" "$mode" 2
