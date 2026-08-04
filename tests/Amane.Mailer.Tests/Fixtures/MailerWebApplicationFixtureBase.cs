@@ -72,6 +72,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
             DELETE FROM admin_login_throttle;
             DELETE FROM admin_sessions;
             DELETE FROM admin_config;
+            DELETE FROM mailer_maintenance_leases;
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }

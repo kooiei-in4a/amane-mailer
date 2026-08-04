@@ -184,6 +184,14 @@ public static class MailRequestCreateHandler
         {
             await repository.InsertAcceptedAsync(insert, cancellationToken);
         }
+        catch (AttachmentStorageUnavailableException)
+        {
+            // ADR 0022 D-09: a backup maintenance lease is held. The committed spool for this
+            // attempt was already removed inside InsertAcceptedAsync's own catch block.
+            return MailRequestHttpErrorMapper.Error(
+                StatusCodes.Status503ServiceUnavailable,
+                MailerErrorCodes.AttachmentStorageUnavailable);
+        }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
             // The spool commit (staging -> committed) already ran before this transaction

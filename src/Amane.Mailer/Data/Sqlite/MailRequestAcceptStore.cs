@@ -10,7 +10,8 @@ namespace Amane.Mailer.Data.Sqlite;
 public sealed class MailRequestAcceptStore(
     SqliteConnectionFactory connections,
     AttachmentSpool? attachmentSpool = null,
-    MailerRuntimeMetrics? runtimeMetrics = null)
+    MailerRuntimeMetrics? runtimeMetrics = null,
+    MailerMaintenanceLeaseStore? maintenanceLeaseStore = null)
 {
     private readonly MailerRuntimeMetrics? _runtimeMetrics = runtimeMetrics;
 
@@ -156,6 +157,19 @@ public sealed class MailRequestAcceptStore(
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
         try
         {
+            // ADR 0022 D-09: the acceptance transaction checks the backup maintenance lease
+            // inside the same SQLite transaction as the insert. A held lease means a backup
+            // snapshot may be in flight; spool/DB commit does not proceed, and the caller must
+            // surface 503 ATTACHMENT_STORAGE_UNAVAILABLE without leaving a committed spool
+            // orphan (the exception path below removes it).
+            if (attachments is { Count: > 0 } && maintenanceLeaseStore is not null
+                && await MailerMaintenanceLeaseStore.IsHeldWithinTransactionAsync(
+                    connection, MailerMaintenanceLeaseStore.BackupLeaseName, insert.AcceptedAt, cancellationToken))
+            {
+                throw new AttachmentStorageUnavailableException(
+                    "Attachment acceptance is temporarily unavailable while a backup is in progress.");
+            }
+
             await using (var command = connection.CreateCommand())
             {
                 command.CommandText = sql;
@@ -213,6 +227,15 @@ public sealed class MailRequestAcceptStore(
         catch
         {
             await transaction.RollbackAsync(cancellationToken);
+
+            // The spool commit above ran before this transaction; on any failure here (lease
+            // held, or any other exception) the committed directory is now an orphan with no DB
+            // row, so remove it immediately rather than waiting for reconciliation.
+            if (attachments is { Count: > 0 })
+            {
+                attachmentSpool?.TryDeleteCommitted(insert.Id);
+            }
+
             throw;
         }
     }

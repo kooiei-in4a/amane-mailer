@@ -131,6 +131,8 @@ public static class AmaneMailerServiceCollectionExtensions
             return spool;
         });
         services.AddSingleton<MailRequestAttachmentStore>();
+        services.AddSingleton<MailAttachmentSubmissionStore>();
+        services.AddSingleton<MailerMaintenanceLeaseStore>();
 
         services.AddSingleton<MailRequestClaimStore>();
         services.AddSingleton<MailRequestAcceptStore>();
@@ -183,6 +185,7 @@ public static class AmaneMailerServiceCollectionExtensions
             services.AddHostedService<MailerWalCheckpointShutdownService>();
             services.AddHostedService<MailRequestWorker>();
             services.AddHostedService<WebhookDeliveryWorker>();
+            services.AddHostedService<AttachmentSpoolReconciliationService>();
 
             if (MailerBounceIngestionOptions.IsEnabled(configuration))
             {
