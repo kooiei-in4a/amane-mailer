@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net.Mail;
 using System.Text;
 using System.Text.Json;
@@ -167,7 +168,13 @@ public static class MailRequestCreateHandler
             SourceService = request.SourceService,
             MailRequestId = request.MailRequestId,
             Purpose = request.Purpose,
-            PayloadJson = requestBody,
+            // ADR 0022 D-04: the raw request body is stored for audit/debugging, but it must
+            // never carry attachment content_base64 into SQLite (and its backups) -- attachment
+            // binaries live only in the short-lived spool. payload_hash (compared for
+            // idempotency) is computed from requestBody above, before this redaction.
+            PayloadJson = attachmentResult.Attachments is { Count: > 0 }
+                ? RedactAttachmentContentBase64(requestBody)
+                : requestBody,
             PayloadHash = request.PayloadHash,
             Subject = request.Subject,
             HtmlBody = request.HtmlBody,
@@ -316,6 +323,68 @@ public static class MailRequestCreateHandler
                     attachment.Sha256Hex))
                 .ToArray()
             : null;
+
+    /// <summary>
+    /// Rewrites the top-level <c>attachments</c> array (if any) to drop each element's
+    /// <c>content_base64</c> before the request body is persisted (ADR 0022 D-04/D-14: raw
+    /// attachment content must never land in SQLite or its backups). Every other field --
+    /// including the rest of each attachment's declared metadata -- passes through unchanged.
+    /// </summary>
+    internal static string RedactAttachmentContentBase64(string requestBody)
+    {
+        using var document = JsonDocument.Parse(requestBody);
+        var bufferWriter = new ArrayBufferWriter<byte>(requestBody.Length);
+        using (var writer = new Utf8JsonWriter(bufferWriter))
+        {
+            writer.WriteStartObject();
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.NameEquals("attachments") && property.Value.ValueKind == JsonValueKind.Array)
+                {
+                    writer.WritePropertyName(property.Name);
+                    writer.WriteStartArray();
+                    foreach (var attachment in property.Value.EnumerateArray())
+                    {
+                        WriteAttachmentWithoutContentBase64(attachment, writer);
+                    }
+
+                    writer.WriteEndArray();
+                }
+                else
+                {
+                    writer.WritePropertyName(property.Name);
+                    property.Value.WriteTo(writer);
+                }
+            }
+
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(bufferWriter.WrittenSpan);
+    }
+
+    private static void WriteAttachmentWithoutContentBase64(JsonElement attachment, Utf8JsonWriter writer)
+    {
+        if (attachment.ValueKind != JsonValueKind.Object)
+        {
+            attachment.WriteTo(writer);
+            return;
+        }
+
+        writer.WriteStartObject();
+        foreach (var property in attachment.EnumerateObject())
+        {
+            if (property.NameEquals("content_base64"))
+            {
+                continue;
+            }
+
+            writer.WritePropertyName(property.Name);
+            property.Value.WriteTo(writer);
+        }
+
+        writer.WriteEndObject();
+    }
 
     private static bool IsWithinProviderEnvelopeEstimate(
         MailRequestCreateRequest request,
