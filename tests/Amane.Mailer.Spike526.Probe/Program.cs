@@ -5,6 +5,14 @@ using Amane.Mailer.Spike526.Probe;
 const int UsageError = 2;
 const int ExpectedOrphanExit = 73;
 
+// #523 Koo-confirmed MVP limits, qualified for real Docker/cgroup total-memory
+// behavior by #532. These are deliberately smaller than #526's earlier
+// DefaultOptions candidate (5 MiB/file, 8 MiB total) and only apply to the
+// Q00-Q03X fixtures below.
+const long Issue532MaxPerFileDecodedBytes = 2 * 1024 * 1024;
+const long Issue532MaxTotalDecodedBytes = 5 * 1024 * 1024;
+const long Issue532MaxAcsEnvelopeBytes = 8 * 1024 * 1024;
+
 if (args.Length == 0)
 {
     WriteUsage();
@@ -171,7 +179,7 @@ static async Task SampleHeapPeakAsync(Action<long> reportPeak, CancellationToken
 
 static async Task<Spike526RunOnceResult> RunOnceAsync(string fixtureId, string mode, string root)
 {
-    var fixture = Spike526FixtureFactory.Create(fixtureId);
+    var fixture = ResolveFixture(fixtureId);
     var consumer = Spike526FixtureFactory.MeasureConsumerEnvelope(fixture);
     var requestBytes = Spike526FixtureFactory.SerializeRequest(fixture);
     var store = new Spike526TempStore(root);
@@ -193,12 +201,15 @@ static async Task<Spike526RunOnceResult> RunOnceAsync(string fixtureId, string m
         }
         else if (string.Equals(mode, "token", StringComparison.Ordinal))
         {
+            var options = IsIssue532Fixture(fixture.Id)
+                ? Mvp532Options(requestBytes.LongLength)
+                : DefaultOptions(requestBytes.LongLength);
             await using var stream = new MemoryStream(requestBytes, writable: false);
             var tokenResult = await Spike526TokenBufferProcessor.ProcessAsync(
                 fixture.Id,
                 stream,
                 store,
-                DefaultOptions(requestBytes.LongLength));
+                options);
             peakTemp = tokenResult.PeakTempBytes;
             cleanupComplete = tokenResult.CleanupComplete;
         }
@@ -210,6 +221,20 @@ static async Task<Spike526RunOnceResult> RunOnceAsync(string fixtureId, string m
         var acsBytes = 0L;
         if (fixture.ExpectedValidBase64 && fixture.ExpectedDeclaredMetadataMatch)
         {
+            // Issue #532's 8 MiB ACS provider-envelope policy is enforced here using
+            // the estimator already qualified against exact SDK capture with zero
+            // underestimation across 15 #526 cases (Spike526AcsEnvelopeCapture
+            // remarks): oversize is rejected before the offline fake transport is
+            // ever invoked, matching the "reject before provider invocation"
+            // requirement without adding a second, differently-implemented size
+            // check. This gate only applies to #532 fixtures; #526's F00-F08/G01-G05
+            // behavior (always capture when otherwise valid) is unchanged.
+            if (IsIssue532Fixture(fixture.Id)
+                && Spike526AcsEnvelopeCapture.EstimateUpperBound(fixture) > Issue532MaxAcsEnvelopeBytes)
+            {
+                throw new Spike526LimitException("ACS provider envelope estimate exceeds the #523 8 MiB policy budget.");
+            }
+
             var capture = await Spike526AcsEnvelopeCapture.CaptureAsync(fixture);
             acsBytes = capture.RequestBodyBytes;
         }
@@ -243,9 +268,23 @@ static Spike526TokenBufferOptions DefaultOptions(long requestBytes) =>
         MaxPerFileDecodedBytes: 5 * 1024 * 1024,
         MaxTotalDecodedBytes: 8 * 1024 * 1024);
 
+static Spike526TokenBufferOptions Mvp532Options(long requestBytes) =>
+    new(
+        MaxRequestBytes: Math.Max(requestBytes + 1, 16 * 1024 * 1024),
+        MaxPerFileDecodedBytes: Issue532MaxPerFileDecodedBytes,
+        MaxTotalDecodedBytes: Issue532MaxTotalDecodedBytes);
+
+static bool IsIssue532Fixture(string fixtureId) =>
+    fixtureId.StartsWith("Q", StringComparison.Ordinal);
+
+static Spike526Fixture ResolveFixture(string fixtureId) =>
+    IsIssue532Fixture(fixtureId)
+        ? Spike532Fixtures.Create(fixtureId)
+        : Spike526FixtureFactory.Create(fixtureId);
+
 static void WriteUsage() => Console.Error.WriteLine(
     "Usage: Amane.Mailer.Spike526.Probe " +
-    "<warmup|measure> <F00..F08> <buffered|token> [concurrency: measure only, 1|2] | " +
+    "<warmup|measure> <F00..F08|Q00..Q03X> <buffered|token> [concurrency: measure only, 1|2] | " +
     "orphan-create <temp-root> | cleanup <temp-root> [outside-file] | self-check");
 
 internal sealed record Spike526RunOnceResult(
