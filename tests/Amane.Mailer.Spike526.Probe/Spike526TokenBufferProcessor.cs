@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Text;
 using System.IO.Pipelines;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace Amane.Mailer.Spike526.Probe;
@@ -15,6 +16,16 @@ public sealed record Spike526TokenBufferOptions(
 
 public static class Spike526TokenBufferProcessor
 {
+    // Utf8JsonReader validates JSON syntax (quotes, escapes, control characters)
+    // but does not itself require string token bytes to form valid UTF-8, and
+    // json.GetString() falls back to lossy replacement rather than rejecting
+    // invalid bytes. Every JSON string/property-name token is fed through this
+    // strict, fail-closed decoder before its bytes are trusted, independent of
+    // whether the token belongs to a recognized/attachment property.
+    private static readonly UTF8Encoding StrictUtf8Decoder = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+
     public static async Task<Spike526TokenBufferResult> ProcessAsync(
         string fixtureId,
         Stream source,
@@ -109,6 +120,7 @@ public static class Spike526TokenBufferProcessor
                                         throw new JsonException("Property outside object.");
                                     }
 
+                                    ValidateUtf8Token(ref json);
                                     currentProperty = json.GetString()
                                         ?? throw new JsonException("Property name was null.");
                                     if (!frames.Peek().Properties.Add(currentProperty))
@@ -120,6 +132,7 @@ public static class Spike526TokenBufferProcessor
                                 }
                             case JsonTokenType.String:
                                 {
+                                    ValidateUtf8Token(ref json);
                                     if (frames.TryPeek(out var stringFrame) && stringFrame.IsAttachment)
                                     {
                                         var attachment = stringFrame.Attachment!;
@@ -315,6 +328,51 @@ public static class Spike526TokenBufferProcessor
         {
             ArrayPool<byte>.Shared.Return(encoded, clearArray: true);
             ArrayPool<byte>.Shared.Return(decoded, clearArray: true);
+        }
+    }
+
+    // Validates the raw (still-escaped) bytes of a completed JSON string token as
+    // strict UTF-8. Escape sequences (\n, \", \uXXXX, ...) are pure ASCII, so they
+    // do not interfere with validating the literal bytes for well-formedness.
+    // A stateful Decoder is fed each underlying ReadOnlySequence segment in turn
+    // with flush left false, so a multi-byte character split across a PipeReader
+    // segment boundary (or across Utf8JsonReader's internal chunking) is carried
+    // forward correctly instead of being misjudged as invalid at the seam. A
+    // final empty flush call forces resolution of any still-pending sequence, so
+    // a truncated multi-byte sequence at the very end of the token fails closed.
+    private static void ValidateUtf8Token(ref Utf8JsonReader reader)
+    {
+        var decoder = StrictUtf8Decoder.GetDecoder();
+        Span<char> charBuffer = stackalloc char[256];
+        try
+        {
+            if (reader.HasValueSequence)
+            {
+                foreach (var segment in reader.ValueSequence)
+                {
+                    DecodeAllNonFlushing(decoder, segment.Span, charBuffer);
+                }
+            }
+            else
+            {
+                DecodeAllNonFlushing(decoder, reader.ValueSpan, charBuffer);
+            }
+
+            decoder.Convert(ReadOnlySpan<byte>.Empty, charBuffer, flush: true, out _, out _, out _);
+        }
+        catch (DecoderFallbackException ex)
+        {
+            throw new JsonException("Invalid UTF-8 byte sequence in JSON string.", ex);
+        }
+    }
+
+    private static void DecodeAllNonFlushing(Decoder decoder, ReadOnlySpan<byte> bytes, Span<char> charBuffer)
+    {
+        var remaining = bytes;
+        while (!remaining.IsEmpty)
+        {
+            decoder.Convert(remaining, charBuffer, flush: false, out var bytesUsed, out _, out _);
+            remaining = remaining[bytesUsed..];
         }
     }
 

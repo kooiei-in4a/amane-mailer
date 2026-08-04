@@ -41,8 +41,14 @@ public sealed class Spike526OfflineTests
             TestContext.Current.CancellationToken);
         var estimate = Spike526AcsEnvelopeCapture.EstimateUpperBound(fixture);
 
+        // ACS SDK 1.1.0's Operation<T>.Value is populated only on a terminal
+        // Succeeded poll (see Spike526AcsEnvelopeCapture remarks); WaitUntil.Started
+        // plus one explicit UpdateStatusAsync poll against a deterministic fake
+        // "Succeeded" status-check response proves the SDK parses both the initial
+        // send response and the status-check response through its own real
+        // deserialization path, without switching to WaitUntil.Completed.
         Assert.True(capture.ResponseParsed);
-        Assert.Equal("Running", capture.OperationStatus);
+        Assert.Equal("Succeeded", capture.OperationStatus);
         Assert.True(capture.RequestBodyBytes > 0);
         Assert.Equal(64, capture.RequestBodySha256.Length);
         Assert.True(estimate >= capture.RequestBodyBytes,
@@ -129,6 +135,55 @@ public sealed class Spike526OfflineTests
     {
         byte[] invalid = [(byte)'{', (byte)'"', (byte)'x', (byte)'"', (byte)':', (byte)'"', 0xff, (byte)'"', (byte)'}'];
         await AssertRejectedAsync(invalid, static exception => Assert.IsAssignableFrom<JsonException>(exception));
+    }
+
+    [Fact]
+    public async Task Token_buffer_candidate_rejects_truncated_multibyte_utf8_sequence()
+    {
+        // 0xE0 0xA0 is the first two bytes of a valid 3-byte UTF-8 sequence with the
+        // final continuation byte missing: the JSON string itself closes cleanly,
+        // but the byte content is not a complete UTF-8 character.
+        byte[] invalid =
+        [
+            (byte)'{', (byte)'"', (byte)'x', (byte)'"', (byte)':',
+            (byte)'"', 0xE0, 0xA0, (byte)'"', (byte)'}',
+        ];
+        await AssertRejectedAsync(invalid, static exception => Assert.IsAssignableFrom<JsonException>(exception));
+    }
+
+    [Fact]
+    public async Task Token_buffer_candidate_rejects_invalid_utf8_split_across_segment_boundary()
+    {
+        // Same malformed lead-plus-continuation prefix as the truncated-sequence
+        // case, but followed by an ASCII byte (0x41) that is not a valid UTF-8
+        // continuation byte, fed through a stream that returns at most 1 byte per
+        // read so the sequence is guaranteed to straddle a PipeReader segment
+        // boundary rather than arriving in one contiguous chunk.
+        byte[] invalid =
+        [
+            (byte)'{', (byte)'"', (byte)'x', (byte)'"', (byte)':',
+            (byte)'"', 0xE0, 0xA0, 0x41, (byte)'"', (byte)'}',
+        ];
+        var root = CreateTempRoot();
+        try
+        {
+            var store = new Spike526TempStore(root);
+            await using var segmented = new SegmentedReadStream(invalid, maximumRead: 1);
+            var exception = await Record.ExceptionAsync(() => Spike526TokenBufferProcessor.ProcessAsync(
+                "negative-segmented",
+                segmented,
+                store,
+                Options(invalid.LongLength),
+                TestContext.Current.CancellationToken));
+
+            Assert.NotNull(exception);
+            Assert.IsAssignableFrom<JsonException>(exception);
+            Assert.Equal(0, store.CountOwnedFiles());
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
     }
 
     [Fact]

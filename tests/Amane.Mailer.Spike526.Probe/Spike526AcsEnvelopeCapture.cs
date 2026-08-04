@@ -21,6 +21,16 @@ public static class Spike526AcsEnvelopeCapture
     private const string FakeConnectionString =
         "endpoint=https://spike526.example.invalid/;accesskey=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
+    // ACS SDK 1.1.0's EmailSendOperation (Azure.Core Operation<T> LRO pattern) only
+    // populates Value/HasValue when the polled status reaches a terminal Succeeded
+    // state (see EmailSendOperation.IOperation<T>.UpdateStateAsync, which maps
+    // Running/NotStarted to OperationState<T>.Pending -- deliberately value-less).
+    // WaitUntil.Started never calls that poll on its own, so the initial POST
+    // response alone can never surface a status through operation.Value. To prove
+    // the SDK genuinely parses our deterministic fake responses end-to-end without
+    // switching to WaitUntil.Completed, the capture issues one explicit
+    // UpdateStatusAsync poll (the SDK's own public, documented mechanism for
+    // WaitUntil.Started callers) against a second deterministic fake response.
     public static async Task<Spike526AcsCaptureResult> CaptureAsync(
         Spike526Fixture fixture,
         CancellationToken cancellationToken = default)
@@ -41,12 +51,20 @@ public static class Spike526AcsEnvelopeCapture
 
         var capture = handler.Capture
             ?? throw new InvalidOperationException("ACS request content was not captured.");
+
+        var initialOperationId = operation.Id == DeterministicOperationId;
+
+        // WaitUntil.Started alone never reaches HasValue == true (see remark above).
+        // Poll once through the SDK's own public API to prove the fake status-check
+        // response is parsed by the real SDK deserializer, not by test-side parsing.
+        await operation.UpdateStatusAsync(cancellationToken);
+
         return new Spike526AcsCaptureResult(
             fixture.Id,
             capture.Bytes,
             capture.Sha256,
             operation.HasValue ? operation.Value.Status.ToString() : "no-value",
-            operation.Id == DeterministicOperationId);
+            initialOperationId);
     }
 
     public static long EstimateUpperBound(Spike526Fixture fixture)
@@ -113,35 +131,95 @@ public static class Spike526AcsEnvelopeCapture
 
     private sealed class CaptureHandler : HttpMessageHandler
     {
+        // ACS SDK 1.1.0 issues two distinct calls for WaitUntil.Started + one
+        // explicit poll: POST .../emails:send (the message body we measure) and
+        // GET .../emails/operations/{id} (the status poll, no request body).
+        // Both must return deterministic, parseable, value-free fake JSON.
+        private const string InitialSendResponseBody =
+            "{\"id\":\"00000000-0000-0000-0000-000000000526\",\"status\":\"Running\"}";
+        private const string StatusPollResponseBody =
+            "{\"id\":\"00000000-0000-0000-0000-000000000526\",\"status\":\"Succeeded\"}";
+
         internal Capture? Capture { get; private set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            if (request.Content is null)
+            if (request.Method == HttpMethod.Post)
             {
-                throw new InvalidOperationException("ACS SDK request had no content.");
+                if (request.Content is null)
+                {
+                    throw new InvalidOperationException("ACS SDK send request had no content.");
+                }
+
+                await using var sink = new CountingHashStream();
+                await request.Content.CopyToAsync(sink, cancellationToken);
+                Capture = sink.Complete();
+
+                return BuildResponse(request, HttpStatusCode.Accepted, InitialSendResponseBody);
             }
 
-            await using var sink = new CountingHashStream();
-            await request.Content.CopyToAsync(sink, cancellationToken);
-            Capture = sink.Complete();
-
-            var response = new HttpResponseMessage(HttpStatusCode.Accepted)
+            if (request.Method == HttpMethod.Get)
             {
-                Content = new StringContent(
-                    "{\"id\":\"00000000-0000-0000-0000-000000000526\",\"status\":\"Running\"}",
-                    Encoding.UTF8,
-                    "application/json"),
+                return BuildResponse(request, HttpStatusCode.OK, StatusPollResponseBody);
+            }
+
+            throw new InvalidOperationException($"Unexpected ACS SDK request method: {request.Method}");
+        }
+
+        private static HttpResponseMessage BuildResponse(
+            HttpRequestMessage request,
+            HttpStatusCode statusCode,
+            string body)
+        {
+            var response = new HttpResponseMessage(statusCode)
+            {
+                Content = new UndisposableJsonContent(body),
                 RequestMessage = request,
             };
             response.Headers.TryAddWithoutValidation("x-ms-request-id", "spike526-offline");
-            response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json")
-            {
-                CharSet = "utf-8",
-            };
             return response;
+        }
+    }
+
+    // Azure.Core's HttpMessage.Dispose() (invoked by the SDK's own `using var message0`
+    // around each REST call) disposes the pipeline Response, which cascades into
+    // HttpResponseMessage.Dispose() -> HttpContent.Dispose(). The BCL's HttpContent
+    // base implementation disposes its own cached ReadAsStreamAsync() result as part
+    // of that cascade. For a real network transport this happens after the SDK has
+    // already finished reading the body, but with an offline in-process fake transport
+    // the SDK's own subsequent JsonDocument.ParseAsync(rawResponse.ContentStream, ...)
+    // races that disposal and can observe an already-closed stream (matches a known
+    // upstream report against this same client/transport combination: Azure SDK for
+    // .NET issue #52503). This content type holds only a plain in-memory buffer with
+    // no unmanaged resources, so it intentionally skips disposal to keep the response
+    // body safely re-readable for the SDK's real parse path.
+    private sealed class UndisposableJsonContent : HttpContent
+    {
+        private readonly byte[] _bytes;
+
+        internal UndisposableJsonContent(string json)
+        {
+            _bytes = Encoding.UTF8.GetBytes(json);
+            Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            stream.WriteAsync(_bytes).AsTask();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = _bytes.Length;
+            return true;
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new MemoryStream(_bytes, writable: false));
+
+        protected override void Dispose(bool disposing)
+        {
+            // Intentionally not calling base.Dispose(disposing); see remarks above.
         }
     }
 
