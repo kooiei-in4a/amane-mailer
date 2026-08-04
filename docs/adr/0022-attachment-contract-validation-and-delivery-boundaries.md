@@ -19,7 +19,7 @@ Amane Mailer v1.3.0 では、Consumer が `POST /internal/mail-requests` に添�
 - `payload_hash` と個別添付 digest の責任分離
 - filename と file type の安全な検証
 - provider ごとの transport 差
-- 添付本体の保存、retry、ambiguous delivery の扱い
+- 添付本体の保存、processing handoff、retry、ambiguous delivery の扱い
 - 実コンテナで成立するメモリ条件
 - ログ、DB、Admin、metrics への値漏洩防止
 
@@ -47,7 +47,7 @@ Issue #523 で Koo が確定した MVP 条件と、#525／#526／#532 の実測�
 
 ### Resource evidence
 
-#532／PR #535 では実 Docker／cgroup total-memory limit を使って検証した。
+#532／PR #535 では実 Docker／cgroup total-memory limit を使ってACS JSON envelope経路を検証した。
 
 | memory | 結果 |
 |---|---|
@@ -60,7 +60,23 @@ Issue #523 で Koo が確定した MVP 条件と、#525／#526／#532 の実測�
 - Minimum memory for full attachment-limit support: **512 MiB**
 - Recommended production memory: **512 MiB以上**
 
-256 MiB では最大添付条件と 8 MiB 近傍の provider envelope を保証しない。
+256 MiB では最大添付条件と 8 MiB 近傍の provider envelope を保証しない。SMTP／MIME経路とproduction runtimeは実装後に再qualificationする。
+
+### Draft blocker: durable processing handoff
+
+既存契約（ADR 0012 D-05a）は、POSTの `202 Accepted` を「Mailerが依頼をDBへ永続化した」と定義し、その後にWorkerがproviderへ送信する。現行実装は送信に必要なpayloadをDBから再取得できることを前提とする。
+
+一方、本Issueで確定したMVP方針は、attachment binaryとraw Base64をDB／file storageへ永続保存しない。この2つをそのまま組み合わせると、POST完了後またはprocess restart後にWorkerがattachmentを再取得できず、既存のdurable async handoffは成立しない。
+
+したがって、次のprocessing contractは **ADR Accepted前の未解決ブロッカー** とする。実装Issueへ推測させない。
+
+| option | 概要 | 主な影響 |
+|---|---|---|
+| A. request-lifetime send | attachmentメールだけPOST処理中にprovider outcomeまで進める | ADR 0012 D-05aの202意味論、timeout、Consumer retry、API latencyを改訂する必要がある |
+| B. bounded process-local handoff | binaryをprocess memory内のbounded queueへ渡す | crashで喪失するため、202をdurable acceptanceとして返せない。明示的な非耐久契約が必要 |
+| C. durable spool/storage | binaryを一時file／DB／object storageへ保存しWorkerが取得する | v1.3.0非目標の#533／#524を前倒しし、retention／cleanup／backup境界を決める必要がある |
+
+本DraftはA〜Cを選択しない。Koo決定と独立レビューを経てprocessing handoffを一意にした後でのみAccepted化できる。
 
 ## Decision drivers
 
@@ -71,6 +87,7 @@ Issue #523 で Koo が確定した MVP 条件と、#525／#526／#532 の実測�
 5. Windows／Linux、ACS／SMTPで filename と binary identity の意味を揃える。
 6. attachment content、Base64、private path、PII、secret、provider raw responseを観測面へ出さない。
 7. 一時ファイルspool、自動再送、malware scannerをv1.3.0の必須条件へしない。
+8. durable acceptanceを装いながらbinaryを喪失する設計を許可しない。
 
 ## Decision
 
@@ -103,12 +120,14 @@ MiB は `1 MiB = 1,048,576 bytes` とする。
 |---|---:|---|---|
 | per-file decoded binary | 2,097,152 | Base64 decode後のbinary byte数 | decode中に上限+1 byteで拒否 |
 | total decoded binary | 5,242,880 | 1メール内のdecoded attachment合計 | running totalで拒否 |
-| ACS provider envelope | 8,388,608 | ACS SDK／RESTへ渡すUTF-8 JSON request body。HTTP headerは除外 | qualified estimatorでprovider invocation前に拒否 |
+| provider envelope | 8,388,608 | 選択providerへ渡すserialized request／message body。transport headerは除外 | provider固有のqualified estimatorまたはexact pre-serializationで呼出前に拒否 |
 | Consumer HTTP envelope | 16,777,216 | `POST /internal/mail-requests` のHTTP request body bytes。HTTP headerは除外 | `Content-Length`早期拒否＋capped read |
 
-Consumer HTTP envelope と ACS provider envelope は同じ値にしない。Base64、JSON property、本文、宛先、metadataによりConsumer envelopeの方が大きくなり得る。#532の最大受理fixtureでは、Consumer envelope 8,679,497 bytes、ACS provider envelope 8,191,324 bytesだった。
+Consumer HTTP envelope と provider envelope は同じ値にしない。Base64、JSON property、本文、宛先、metadataによりConsumer envelopeの方が大きくなり得る。#532のACS最大受理fixtureでは、Consumer envelope 8,679,497 bytes、ACS provider envelope 8,191,324 bytesだった。
 
 実装は request body 全体を上限なしにbufferしてから判定してはならない。`Content-Length` が存在する場合はread前に拒否し、存在しない／信用できない場合もcapped streamで上限+1 byteまでに制限する。
+
+8 MiB provider policyはACSとSMTP／MIMEの両経路へ適用する。ACSは#532 Evidenceを持つ。SMTP／MIMEはBase64 CTE、header folding、line wrappingを含むserialized message sizeを実装時にoffline exact captureし、release前に同じ境界をqualificationする。
 
 ### D-03. Attachment integrity と request identity を分離する
 
@@ -145,7 +164,7 @@ order          … attachments配列位置
 7. Mailer側で `payload_hash` を再計算する。
 8. 同一 `mail_request_id` の既存identityと比較する。
 9. provider envelope estimatorを適用する。
-10. 全条件を通過した場合だけprovider mappingへ進む。
+10. D-08aで確定するprocessing handoffへ進む。
 
 同一 `mail_request_id` でも、attachment binary、metadata、orderのいずれかが異なる場合は `IDEMPOTENCY_CONFLICT` とする。既存requestがあることを理由にdecode／digest／length検証を省略しない。
 
@@ -231,7 +250,20 @@ v1.3.0 productionでは添付本体を送信処理中のみ扱い、次を永続
 - delivery unknown state／flag
 - relevant timestamps
 
+既存 `payload_json` または同等のdurable payloadへ `content_base64` を含めてはならない。attachment metadataだけを持つsanitized persistence projectionを使用する。
+
 #526／#532のtest-only probeが一時ファイルを使用した事実は、production spool方式の承認を意味しない。production temp-file spoolはv1.3.0非目標であり、将来#533で判断する。
+
+### D-08a. Processing handoff はAccepted前に確定する
+
+D-08の非永続化方針とADR 0012のdurable asynchronous workerを両立させるprocessing handoffは未決定である。
+
+- attachment binaryを取得できない状態で既存Workerへ依頼を残してはならない。
+- binaryが失われ得るのに、既存と同じdurable `202 accepted` を返してはならない。
+- process-local handoffを採る場合も、response時点、crash semantics、backpressure、shutdown drainを一意にする。
+- storage／spoolを採る場合は#524／#533を前倒しし、Kooの「v1.3.0では保存しない」決定を明示的に改訂する。
+
+A〜Cの選択とHTTP結果／status state machineへの影響を、Koo決定コメントと本ADR更新で固定するまでproduction実装はHOLDとする。
 
 ### D-09. Runtime memory contract
 
@@ -245,9 +277,9 @@ v1.3.0 productionでは添付本体を送信処理中のみ扱い、次を永続
 
 256 MiB構成はMailer runtimeの起動と軽量・通常条件を対象とする。最大5 MiB添付＋8 MiB近傍provider envelopeはサポート保証外とする。
 
-512 MiB以上では、2 MiB/file、5 MiB total、5 files、8 MiB provider envelope、concurrency 2をfull support対象とする。
+512 MiB以上では、2 MiB/file、5 MiB total、5 files、8 MiB provider envelope、concurrency 2をfull support候補とする。
 
-本ADRのメモリ判断はtest-only probeのEvidenceである。production実装後、実Mailer runtimeを対象に同じ256／512 MiBとconcurrency 2をrelease qualificationで再実行する。
+本ADRのメモリ判断はtest-only ACS probeのEvidenceである。production実装後、実Mailer runtimeを対象に256／512 MiB、concurrency 2、ACS／SMTPの両provider pathをrelease qualificationで再実行する。
 
 ### D-10. Provider mapping と provider envelope gate
 
@@ -256,6 +288,7 @@ v1.3.0 productionでは添付本体を送信処理中のみ扱い、次を永続
 - attachment `Content-Transfer-Encoding` はBase64へ明示的に固定する。
 - provider libraryの自動encoding選択へ委ねない。
 - filename、Content-Type、orderをvalidated canonical metadataから設定する。
+- MIME header、boundary、Base64 line wrappingを含むserialized messageを8 MiB policyに対してprovider呼出前に判定する。
 
 #### ACS
 
@@ -264,11 +297,11 @@ v1.3.0 productionでは添付本体を送信処理中のみ扱い、次を永続
 - PDF／PNG／TXT、複数attachment、NFC日本語filenameのrequest-side mappingは#525 Evidenceで承認済み。
 - delivered-side decoded digest、length、filename、Content-Type、orderの受信箱検証はKoo決定によりdescope済み。将来必要になった場合は別Issueで再評価する。
 
-ACS provider invocation前に、PR #531でunderestimate 0件を確認したestimatorと同等以上の保守的estimatorを適用する。
+provider invocation前にprovider固有の保守的estimatorを適用する。
 
 - estimateが8 MiBを超える場合はproviderを呼ばず拒否する。
-- estimatorはactual request bodyを過小評価してはならない。
-- SDK version、serialization、mappingが変わるPRではexact offline captureとの比較testを更新する。
+- estimatorはactual serialized envelopeを過小評価してはならない。
+- SDK／MimeKit version、serialization、mappingが変わるPRではexact offline captureとの比較testを更新する。
 - estimatorが安全に維持できない場合は、exact pre-serializationまたはより保守的な固定capへ切り替える。
 
 ### D-11. Failure と `DELIVERY_UNKNOWN`
@@ -362,14 +395,17 @@ Adminからattachment binaryをdownloadする機能はv1.3.0非目標とする�
 
 本ADRがDraftの間、許可するのは文書、hash vector案、test fixture案、offline Spikeのみとする。
 
-本ADRの独立レビューで修正必須の問題がなく、KooがAcceptedへ変更した後に、次の順でproduction実装Issueを進める。
+本ADRは、D-08aのprocessing handoffがKoo決定で一意になり、独立レビューで修正必須の問題がなく、KooがAcceptedへ変更した後にのみproduction implementationを許可する。
+
+Accepted後の推奨順:
 
 1. Contracts／OpenAPI／SDK hash vectors
 2. request cap、Base64、digest／length、filename、file type validation
-3. attachment metadata DB schema／migration
-4. ACS／SMTP provider mapping、provider envelope gate、`DELIVERY_UNKNOWN`
-5. Admin／SDK／docs
-6. production Docker／Native AOT／provider release qualification
+3. D-08aで決定したprocessing handoffと必要なstatus／HTTP semantics
+4. attachment metadata DB schema／migration
+5. ACS／SMTP provider mapping、provider envelope gate、`DELIVERY_UNKNOWN`
+6. Admin／SDK／docs
+7. production Docker／Native AOT／provider release qualification
 
 Acceptedだけでlive ACS、release、publish、tagを許可しない。各実装Issueとrelease qualificationの明示許可が必要である。
 
@@ -382,12 +418,14 @@ Acceptedだけでlive ACS、release、publish、tagを許可しない。各実�
 - binaryを保存しないため、v1.3.0でbinary retention／purge／backup責任を追加しない。
 - 256 MiBの最低動作と512 MiBの完全サポートを誤解なく区別できる。
 - SMTP／ACSのtransport差を隠さず、provider固有の正しいmappingを維持できる。
+- durable handoffとの矛盾を実装へ持ち込まず、Accepted前に判断できる。
 
 ### Negative
 
 - Base64によりConsumer requestがdecoded binaryより大きくなる。
 - 512 MiB未満では公開最大条件を保証できない。
-- binaryを保存しないため、自動再送には利用者の再添付が必要になる。
+- binaryを保存しないため、既存のdurable asynchronous Workerをそのまま利用できない。
+- processing handoffの選択により、HTTP semantics変更または#533前倒しが必要になる可能性がある。
 - strict validationにより、構造的に曖昧なファイルや一部の寛容なviewerで開けるファイルを拒否する場合がある。
 - DOCX／XLSXの構造validationとPDF parserはNative AOT、license、bounded resourceを満たす実装選定が必要になる。
 
@@ -395,11 +433,11 @@ Acceptedだけでlive ACS、release、publish、tagを許可しない。各実�
 
 ### A. 添付本体をDBへ保存する
 
-不採用。DB materializationだけではprovider送信時のpeak memoryが必ず下がるとは限らず、retention、purge、backup、encryption、retry reuseの責任が増える。将来storage判断は#524で行う。
+現時点では不採用。DB materializationだけではprovider送信時のpeak memoryが必ず下がるとは限らず、retention、purge、backup、encryption、retry reuseの責任が増える。ただしD-08aでdurable handoffを選ぶ場合は#524で再評価する。
 
 ### B. v1.3.0からproduction temp-file spoolを採用する
 
-不採用。512 MiBで現行上限が成立したためMVPをblockしない。より大きな添付、高いconcurrency、256 MiBでの完全サポートが必要になった場合に#533で再評価する。
+現時点では不採用。512 MiBでACS現行上限が成立したためmemory理由だけではMVPをblockしない。ただしD-08aでdurable handoffが必要なら#533前倒し候補となる。
 
 ### C. 添付メールを通常メールと同じように自動再送する
 
@@ -417,7 +455,10 @@ Acceptedだけでlive ACS、release、publish、tagを許可しない。各実�
 
 独立レビューでは、少なくとも次を確認する。
 
+- D-08aのprocessing handoffが既存202／Worker契約と矛盾せず、一意に決定されているか
+- binaryを失い得るのにdurable acceptedを返す経路がないか
 - 16 MiB Consumer HTTP envelope capが5 MiB decoded／8 MiB provider条件を安全に受け付けるか
+- 8 MiB provider policyがACS／SMTPで測定可能か
 - `byte_length`／`order`を数値としてJCSへ追加するADR 0012 D-05改訂がSDK間で一意か
 - filename 255 UTF-8 bytes、case-insensitive duplicate拒否がWindows／Linux／providerで一貫するか
 - PDF／JPEG／PNGのtrailing payload方針が実装可能か
