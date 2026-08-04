@@ -40,6 +40,27 @@ public sealed class MailAttachmentSubmissionStoreFencingTests(MailerAdminDbOpsFi
     }
 
     [Fact]
+    public async Task Fails_closed_when_the_lease_has_already_expired()
+    {
+        // The lease timer expired but no other worker has reclaimed the row yet -- the stale
+        // claim must not be able to create the Started marker during that narrow window even
+        // though its lock_token still matches (post-merge review of #533/PR #537).
+        var ct = TestContext.Current.CancellationToken;
+        var now = DateTimeOffset.UtcNow;
+        var lockToken = Guid.NewGuid();
+        var requestId = await SeedAttachmentRequestAsync(
+            MailRequestState.Processing, lockToken, now, ct, leaseExpiresAt: now.AddSeconds(-1));
+
+        var repository = fixture.Factory.Services.GetRequiredService<MailRequestRepository>();
+        var started = await repository.TryInsertAttachmentSubmissionStartedAsync(
+            requestId, "mailpit", lockToken, now, ct);
+
+        Assert.False(started);
+        var evidence = await repository.FindAttachmentSubmissionAsync(requestId, ct);
+        Assert.Null(evidence);
+    }
+
+    [Fact]
     public async Task Fails_closed_when_the_row_was_cancelled_before_any_evidence_existed()
     {
         // Mirrors what MailRequestConsumerMutations.TryManualCancelAsync does to a stale
@@ -84,7 +105,8 @@ public sealed class MailAttachmentSubmissionStoreFencingTests(MailerAdminDbOpsFi
         MailRequestState status,
         Guid? lockToken,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTimeOffset? leaseExpiresAt = null)
     {
         var requestId = Guid.NewGuid();
         var nowStorage = SqliteTime.ToStorageUtc(now);
@@ -114,7 +136,7 @@ public sealed class MailAttachmentSubmissionStoreFencingTests(MailerAdminDbOpsFi
         command.Parameters.AddWithValue("@LockToken", lockToken is null ? DBNull.Value : lockToken.Value.ToString("D"));
         command.Parameters.AddWithValue(
             "@LockExpiresAt",
-            lockToken is null ? DBNull.Value : SqliteTime.ToStorageUtc(now.AddMinutes(5)));
+            lockToken is null ? DBNull.Value : SqliteTime.ToStorageUtc(leaseExpiresAt ?? now.AddMinutes(5)));
         command.Parameters.AddWithValue("@Now", nowStorage);
         await command.ExecuteNonQueryAsync(cancellationToken);
         return requestId;

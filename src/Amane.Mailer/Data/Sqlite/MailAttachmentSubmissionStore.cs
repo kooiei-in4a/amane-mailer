@@ -49,11 +49,16 @@ public sealed class MailAttachmentSubmissionStore(SqliteConnectionFactory connec
     /// lifecycle and must instead converge from the existing evidence.
     ///
     /// Also fenced on the request row still being <c>Processing</c> under this exact
-    /// <paramref name="lockToken"/> at insert time: without this, a claim whose lease expired
-    /// (or whose row was manually cancelled while no evidence existed yet) could still create a
-    /// Started marker and go on to invoke the provider for a request it no longer legitimately
-    /// owns. A caller that loses this race gets `false` with no evidence found by
-    /// <see cref="FindAsync"/>, which the Worker already treats as "back off, do nothing".
+    /// <paramref name="lockToken"/>, with a lease that has not yet expired, at insert time:
+    /// without the lock-token check, a claim whose row was manually cancelled while no evidence
+    /// existed yet could still create a Started marker and go on to invoke the provider for a
+    /// request it no longer legitimately owns; without the lease-expiry check, a claim whose
+    /// lease already expired -- but that no other worker has reclaimed yet -- could do the same
+    /// during that narrow window. <paramref name="now"/> must be read immediately before this
+    /// call (not reused from an earlier point in request processing) so the expiry comparison
+    /// reflects the actual moment of the write. A caller that loses this race gets `false` with
+    /// no evidence found by <see cref="FindAsync"/>, which the Worker already treats as "back
+    /// off, do nothing".
     /// </summary>
     public async Task<bool> TryInsertStartedAsync(
         Guid requestId,
@@ -72,7 +77,11 @@ public sealed class MailAttachmentSubmissionStore(SqliteConnectionFactory connec
             )
             AND EXISTS (
                 SELECT 1 FROM mail_requests
-                WHERE id = @RequestId AND status = @ProcessingStatus AND lock_token = @LockToken
+                WHERE id = @RequestId
+                  AND status = @ProcessingStatus
+                  AND lock_token = @LockToken
+                  AND lock_expires_at IS NOT NULL
+                  AND lock_expires_at > @Now
             );
             """;
 
