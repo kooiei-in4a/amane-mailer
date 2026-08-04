@@ -71,6 +71,9 @@ public static class AdminAuditLog
         public const string InvalidState = "invalid_state";
         public const string LockHeld = "lock_held";
         public const string OperationFailed = "operation_failed";
+
+        /// <summary>ADR 0022 D-08/D-12 fixed reason code (kept uppercase to match the ADR verbatim).</summary>
+        public const string AttachmentManualRetryNotSupported = "ATTACHMENT_MANUAL_RETRY_NOT_SUPPORTED";
     }
 
     public static class FieldNames

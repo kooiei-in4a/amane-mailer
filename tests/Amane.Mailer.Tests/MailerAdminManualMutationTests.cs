@@ -136,6 +136,82 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
     }
 
     [Fact]
+    public async Task Manual_retry_rejects_deadlettered_attachment_request_with_fixed_reason_code()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var internalId = await SeedAttachmentMailRequestAsync(MailRequestState.DeadLettered, TenantA, ct);
+
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+        var csrf = await ReadCsrfTokenFromAdminPageAsync(client, $"/admin/mail-requests/{internalId:D}", ct);
+
+        using var response = await client.PostAsync(
+            $"/admin/mail-requests/{internalId:D}/retry",
+            CreateCsrfContent(csrf),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        Assert.Contains("ATTACHMENT_MANUAL_RETRY_NOT_SUPPORTED", body, StringComparison.Ordinal);
+
+        // Never reverted to Queued: the request stays DeadLettered exactly as ADR 0022 D-08 requires.
+        var state = await ReadStatusAsync(internalId, ct);
+        Assert.Equal(MailRequestState.DeadLettered, state.Status);
+
+        var audit = await ReadLatestAuditAsync(internalId, AdminAuditLog.EventTypes.ManualRetryRequested, ct);
+        Assert.NotNull(audit);
+        Assert.Equal(AdminAuditLog.Results.Failure, audit.Value.Result);
+        Assert.Equal(AdminAuditLog.ErrorCodes.AttachmentManualRetryNotSupported, audit.Value.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Manual_cancel_allows_queued_attachment_request_without_submission_evidence()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var internalId = await SeedAttachmentMailRequestAsync(MailRequestState.Queued, TenantA, ct);
+
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+        var csrf = await ReadCsrfTokenFromAdminPageAsync(client, $"/admin/mail-requests/{internalId:D}", ct);
+
+        using var response = await client.PostAsync(
+            $"/admin/mail-requests/{internalId:D}/cancel",
+            CreateCsrfContent(csrf),
+            ct);
+
+        Assert.Equal(HttpStatusCode.SeeOther, response.StatusCode);
+        var state = await ReadStatusAsync(internalId, ct);
+        Assert.Equal(MailRequestState.Cancelled, state.Status);
+    }
+
+    [Fact]
+    public async Task Manual_cancel_rejects_attachment_request_once_submission_evidence_exists()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        // Expired lease so the *only* thing standing between this row and an ADR 0015-style
+        // stale-Processing cancel is the ADR 0022 D-08 submission-evidence boundary.
+        var internalId = await SeedAttachmentMailRequestAsync(
+            MailRequestState.Processing,
+            TenantA,
+            ct,
+            lockExpiresAt: SqliteTime.UtcNow.AddMinutes(-5),
+            withSubmissionEvidence: true);
+
+        var client = CreateClient();
+        await LoginAsync(client, ct);
+        var csrf = await ReadCsrfTokenFromAdminPageAsync(client, $"/admin/mail-requests/{internalId:D}", ct);
+
+        using var response = await client.PostAsync(
+            $"/admin/mail-requests/{internalId:D}/cancel",
+            CreateCsrfContent(csrf),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var state = await ReadStatusAsync(internalId, ct);
+        Assert.Equal(MailRequestState.Processing, state.Status);
+    }
+
+    [Fact]
     public async Task Dead_letters_page_enables_retry_form()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -300,6 +376,82 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
         command.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(lockExpiresAt));
         command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now));
         await command.ExecuteNonQueryAsync(cancellationToken);
+        return internalId;
+    }
+
+    private async Task<Guid> SeedAttachmentMailRequestAsync(
+        MailRequestState status,
+        Guid tenantId,
+        CancellationToken cancellationToken,
+        DateTimeOffset? lockExpiresAt = null,
+        bool withSubmissionEvidence = false)
+    {
+        var internalId = Guid.NewGuid();
+        var now = SqliteTime.UtcNow;
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+        var completedAt = status is MailRequestState.Delivered
+            or MailRequestState.Failed
+            or MailRequestState.DeadLettered
+            or MailRequestState.Cancelled
+            ? nowStorage
+            : (string?)null;
+        var lockToken = Guid.NewGuid();
+
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                INSERT INTO mail_requests (
+                    id, tenant_id, source_service, mail_request_id, purpose,
+                    payload_json, payload_hash, subject, recipient_email,
+                    status, attempt_count, max_attempts, attachment_count,
+                    lock_token, lock_expires_at,
+                    accepted_at, created_at, updated_at, completed_at, last_error_message)
+                VALUES (
+                    @Id, @TenantId, 'manual-mutation-test', @MailRequestId, 'test',
+                    '{}', @PayloadHash, 'subject', 'user@example.com',
+                    @Status, @AttemptCount, 3, 1,
+                    @LockToken, @LockExpiresAt,
+                    @Now, @Now, @Now, @CompletedAt, @LastErrorMessage);
+                """;
+            command.Parameters.AddWithValue("@Id", internalId.ToString("D"));
+            command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+            command.Parameters.AddWithValue("@MailRequestId", Guid.NewGuid().ToString("D"));
+            command.Parameters.AddWithValue("@PayloadHash", new string('c', 64));
+            command.Parameters.AddWithValue("@Status", (int)status);
+            command.Parameters.AddWithValue("@AttemptCount", status == MailRequestState.DeadLettered ? 3 : 1);
+            command.Parameters.AddWithValue(
+                "@LockToken",
+                status == MailRequestState.Processing ? lockToken.ToString("D") : (object)DBNull.Value);
+            command.Parameters.AddWithValue(
+                "@LockExpiresAt",
+                status == MailRequestState.Processing
+                    ? SqliteTime.ToStorageUtc(lockExpiresAt ?? now.AddMinutes(5))
+                    : (object)DBNull.Value);
+            command.Parameters.AddWithValue("@Now", nowStorage);
+            command.Parameters.AddWithValue("@CompletedAt", (object?)completedAt ?? DBNull.Value);
+            command.Parameters.AddWithValue(
+                "@LastErrorMessage",
+                status == MailRequestState.DeadLettered ? "provider failed" : DBNull.Value);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (withSubmissionEvidence)
+        {
+            await using var evidenceCommand = connection.CreateCommand();
+            evidenceCommand.CommandText = """
+                INSERT INTO mail_attachment_submissions (
+                    request_id, submission_state, provider, submission_started_at,
+                    lock_token, created_at, updated_at)
+                VALUES (@RequestId, 0, 'mailpit', @Now, @LockToken, @Now, @Now);
+                """;
+            evidenceCommand.Parameters.AddWithValue("@RequestId", internalId.ToString("D"));
+            evidenceCommand.Parameters.AddWithValue("@Now", nowStorage);
+            evidenceCommand.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
+            await evidenceCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         return internalId;
     }
 
