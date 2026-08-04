@@ -8,11 +8,13 @@ public sealed class DbBackupCommand(
     TimeProvider timeProvider)
 {
     private static readonly TimeSpan BackupLeaseDuration = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan BackupLeaseRenewInterval = TimeSpan.FromMinutes(3);
 
     public const int SuccessExitCode = 0;
     public const int UsageErrorExitCode = 2;
     public const int LeaseHeldExitCode = 3;
     public const int ActiveAttachmentRequestsExitCode = 4;
+    public const int BackupMaintenanceLeaseLostExitCode = 5;
 
     public static bool IsDbBackupCommand(IReadOnlyList<string> args) =>
         args.Count >= 2
@@ -65,9 +67,29 @@ public sealed class DbBackupCommand(
                 return ActiveAttachmentRequestsExitCode;
             }
 
-            await connections.BackupToAsync(destinationPath, cancellationToken);
+            // ADR 0022 D-09: renew the lease periodically for the snapshot's full duration so a
+            // backup slower than BackupLeaseDuration can never let expires_at lapse mid-flight
+            // and reopen the acceptance race the lease exists to close.
+            await using var heartbeat = new MaintenanceLeaseHeartbeat(
+                maintenanceLeaseStore,
+                MailerMaintenanceLeaseStore.BackupLeaseName,
+                ownerToken,
+                BackupLeaseDuration,
+                BackupLeaseRenewInterval,
+                timeProvider);
+
+            await connections.BackupToAsync(
+                destinationPath,
+                cancellationToken,
+                verifyBeforePublish: _ => Task.FromResult(heartbeat.IsHealthy));
             await output.WriteLineAsync($"Database backup written to {destinationPath}");
             return SuccessExitCode;
+        }
+        catch (BackupMaintenanceLeaseLostException)
+        {
+            await error.WriteLineAsync(
+                "Backup aborted: the maintenance lease was lost before the snapshot could be published.");
+            return BackupMaintenanceLeaseLostExitCode;
         }
         finally
         {

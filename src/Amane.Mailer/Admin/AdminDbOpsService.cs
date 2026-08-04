@@ -9,6 +9,7 @@ public sealed class AdminDbOpsService(
     TimeProvider timeProvider) : IDisposable
 {
     private static readonly TimeSpan BackupLeaseDuration = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan BackupLeaseRenewInterval = TimeSpan.FromMinutes(3);
 
     private readonly SemaphoreSlim _operationLock = new(1, 1);
     private bool _disposed;
@@ -70,8 +71,27 @@ public sealed class AdminDbOpsService(
 
             var fileName = BuildBackupFileName(timeProvider.GetUtcNow());
             var destinationPath = ResolveBackupDestinationPath(fileName);
-            await connections.BackupToAsync(destinationPath, cancellationToken);
+
+            // ADR 0022 D-09: renew the lease periodically for the snapshot's full duration so a
+            // backup slower than BackupLeaseDuration can never let expires_at lapse mid-flight
+            // and reopen the acceptance race the lease exists to close.
+            await using var heartbeat = new MaintenanceLeaseHeartbeat(
+                maintenanceLeaseStore,
+                MailerMaintenanceLeaseStore.BackupLeaseName,
+                ownerToken,
+                BackupLeaseDuration,
+                BackupLeaseRenewInterval,
+                timeProvider);
+
+            await connections.BackupToAsync(
+                destinationPath,
+                cancellationToken,
+                verifyBeforePublish: _ => Task.FromResult(heartbeat.IsHealthy));
             return AdminDbOpsBackupResult.Succeeded(fileName);
+        }
+        catch (BackupMaintenanceLeaseLostException)
+        {
+            return AdminDbOpsBackupResult.Failed("BackupMaintenanceLeaseLost");
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

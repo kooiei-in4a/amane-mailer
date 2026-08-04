@@ -153,6 +153,39 @@ public sealed class SqliteBackupAtomicityTests
         }
     }
 
+    [Fact]
+    public async Task BackupToAsync_verify_before_publish_returning_false_preserves_destination_and_cleans_temp()
+    {
+        // ADR 0022 D-09: if the caller's lease-heartbeat check reports the lease was lost during
+        // a long-running snapshot, the snapshot must never be published as the real backup file.
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-backup-lease-lost", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+        var backupPath = Path.Combine(root, "backups", "mailer.db");
+
+        try
+        {
+            var factory = CreateFactory(databasePath);
+            await new SqlMigrationRunner(factory).ApplyPendingAsync(ct);
+            await SeedMarkerAsync(databasePath, "good-backup", ct);
+            await factory.BackupToAsync(backupPath, ct);
+
+            await SeedMarkerAsync(databasePath, "should-not-land", ct);
+
+            await Assert.ThrowsAsync<BackupMaintenanceLeaseLostException>(
+                () => factory.BackupToAsync(backupPath, ct, verifyBeforePublish: _ => Task.FromResult(false)));
+
+            Assert.Equal("good-backup", await ReadMarkerAsync(backupPath, ct));
+            Assert.Empty(ListTempBackupArtifacts(backupPath));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static SqliteConnectionFactory CreateFactory(string databasePath)
     {
         var configuration = new ConfigurationBuilder()
