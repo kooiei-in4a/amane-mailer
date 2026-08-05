@@ -117,7 +117,7 @@ public sealed class RecipientPersistenceMigrationTests
             cancellationToken: cancellationToken);
         await database.InsertAttemptAsync(
             attachmentUnknown,
-            MailRequestState.Failed,
+            MailRequestState.DeliveryUnknown,
             MailDeliveryErrorCodes.DeliveryUnknown,
             cancellationToken);
         await database.InsertAttachmentSubmissionAsync(
@@ -292,6 +292,144 @@ public sealed class RecipientPersistenceMigrationTests
             attachmentCount: 1,
             failedAt: database.Now,
             cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            requestId,
+            MailRequestState.Failed,
+            MailDeliveryErrorCodes.ProviderTimeout,
+            cancellationToken);
+        await database.InsertAttachmentSubmissionAsync(
+            requestId,
+            AttachmentSubmissionState.Succeeded,
+            cancellationToken);
+        await database.Copy016Async();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            database.Runner.ApplyPendingAsync(cancellationToken));
+
+        await database.Assert016RolledBackAsync(cancellationToken);
+    }
+
+    [Fact]
+    public async Task Migration_016_uses_current_dispatch_cycle_for_definitive_failure()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre016Async(cancellationToken);
+        var requestId = await database.InsertRequestAsync(
+            status: MailRequestState.Failed,
+            attemptCount: 1,
+            attachmentCount: 0,
+            failedAt: database.Now,
+            cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            requestId,
+            MailRequestState.Failed,
+            MailDeliveryErrorCodes.AcsSendFailed,
+            cancellationToken,
+            completedAt: SqliteTime.ToStorageUtc(DateTimeOffset.UtcNow.AddMinutes(-2)),
+            attemptNumber: 3);
+        await database.InsertAttemptAsync(
+            requestId,
+            MailRequestState.Failed,
+            MailDeliveryErrorCodes.ProviderTimeout,
+            cancellationToken,
+            attemptNumber: 1);
+        await database.Copy016Async();
+
+        await database.Runner.ApplyPendingAsync(cancellationToken);
+
+        Assert.Equal(
+            MailRequestState.DeliveryUnknown,
+            await database.ReadRequestStatusAsync(requestId, cancellationToken));
+        Assert.Equal(
+            ((int)MailPlainSubmissionEvidenceState.Unknown, (int)MailPlainSubmissionEvidenceOrigin.LegacyBackfill),
+            await database.ReadPlainEvidenceAsync(requestId, cancellationToken));
+        AssertRecipient(await database.ReadRecipientAsync(requestId, cancellationToken), 6);
+    }
+
+    [Theory]
+    [InlineData(AttachmentSubmissionState.Succeeded, MailRequestState.Delivered, MailRequestState.Failed)]
+    [InlineData(AttachmentSubmissionState.DefinitiveFailed, MailRequestState.Failed, MailRequestState.Delivered)]
+    [InlineData(AttachmentSubmissionState.Unknown, MailRequestState.DeliveryUnknown, MailRequestState.Failed)]
+    public async Task Migration_016_fails_closed_for_attachment_attempt_state_mismatch(
+        AttachmentSubmissionState submissionState,
+        MailRequestState requestStatus,
+        MailRequestState attemptStatus)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre016Async(cancellationToken);
+        var requestId = await database.InsertRequestAsync(
+            status: requestStatus,
+            attemptCount: 1,
+            attachmentCount: 1,
+            deliveredAt: requestStatus == MailRequestState.Delivered ? database.Now : null,
+            failedAt: requestStatus == MailRequestState.Failed ? database.Now : null,
+            deliveryUnknownAt: requestStatus == MailRequestState.DeliveryUnknown ? database.Now : null,
+            cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            requestId,
+            attemptStatus,
+            attemptStatus == MailRequestState.Failed
+                ? MailDeliveryErrorCodes.ProviderTimeout
+                : null,
+            cancellationToken);
+        await database.InsertAttachmentSubmissionAsync(
+            requestId,
+            submissionState,
+            cancellationToken);
+        await database.Copy016Async();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            database.Runner.ApplyPendingAsync(cancellationToken));
+
+        await database.Assert016RolledBackAsync(cancellationToken);
+    }
+
+    [Fact]
+    public async Task Migration_016_fails_closed_for_attachment_terminal_attempt_timestamp_mismatch()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre016Async(cancellationToken);
+        var requestId = await database.InsertRequestAsync(
+            status: MailRequestState.Delivered,
+            attemptCount: 1,
+            attachmentCount: 1,
+            deliveredAt: database.Now,
+            cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            requestId,
+            MailRequestState.Delivered,
+            null,
+            cancellationToken,
+            completedAt: SqliteTime.ToStorageUtc(DateTimeOffset.UtcNow.AddMinutes(-1)));
+        await database.InsertAttachmentSubmissionAsync(
+            requestId,
+            AttachmentSubmissionState.Succeeded,
+            cancellationToken);
+        await database.Copy016Async();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            database.Runner.ApplyPendingAsync(cancellationToken));
+
+        await database.Assert016RolledBackAsync(cancellationToken);
+    }
+
+    [Fact]
+    public async Task Migration_016_fails_closed_for_attachment_terminal_attempt_number_mismatch()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre016Async(cancellationToken);
+        var requestId = await database.InsertRequestAsync(
+            status: MailRequestState.Delivered,
+            attemptCount: 2,
+            attachmentCount: 1,
+            deliveredAt: database.Now,
+            cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            requestId,
+            MailRequestState.Delivered,
+            null,
+            cancellationToken,
+            attemptNumber: 1);
         await database.InsertAttachmentSubmissionAsync(
             requestId,
             AttachmentSubmissionState.Succeeded,
@@ -426,7 +564,8 @@ public sealed class RecipientPersistenceMigrationTests
             MailRequestState status,
             string? errorCode,
             CancellationToken cancellationToken,
-            string? completedAt = null)
+            string? completedAt = null,
+            int attemptNumber = 1)
         {
             await using var connection = await Factory.OpenConnectionAsync(cancellationToken);
             await using var command = connection.CreateCommand();
@@ -435,10 +574,11 @@ public sealed class RecipientPersistenceMigrationTests
                     request_id, attempt_number, provider, status, error_code, error_message,
                     retryable, lock_token, started_at, completed_at)
                 VALUES (
-                    @RequestId, 1, 'mailpit', @Status, @ErrorCode, NULL,
+                    @RequestId, @AttemptNumber, 'mailpit', @Status, @ErrorCode, NULL,
                     0, @LockToken, @Now, @CompletedAt);
                 """;
             command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+            command.Parameters.AddWithValue("@AttemptNumber", attemptNumber);
             command.Parameters.AddWithValue("@Status", (int)status);
             command.Parameters.AddWithValue("@ErrorCode", (object?)errorCode ?? DBNull.Value);
             command.Parameters.AddWithValue("@LockToken", Guid.NewGuid().ToString("D"));

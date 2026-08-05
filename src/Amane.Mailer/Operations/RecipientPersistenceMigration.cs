@@ -40,10 +40,49 @@ internal static class RecipientPersistenceMigration
         string? CompletedAt,
         string CreatedAt);
 
-    private sealed record AttemptSummary(
-        int Count,
-        IReadOnlySet<string> DeliveredAttemptCompletedAt,
-        string? LastAttemptErrorCode);
+    private sealed record AttemptEvidence(
+        int AttemptNumber,
+        MailRequestState Status,
+        string? ErrorCode,
+        string? CompletedAt);
+
+    private sealed record AttemptSummary(IReadOnlyList<AttemptEvidence> Entries)
+    {
+        public int Count => Entries.Count;
+
+        public bool HasDeliveredAttemptAt(string? completedAt) =>
+            completedAt is not null
+            && Entries.Any(attempt =>
+                attempt.Status == MailRequestState.Delivered
+                && !string.Equals(
+                    attempt.ErrorCode,
+                    MailRequestConsumerMutations.SupersededByManualRetryErrorCode,
+                    StringComparison.Ordinal)
+                && string.Equals(attempt.CompletedAt, completedAt, StringComparison.Ordinal));
+
+        public bool HasDefinitiveFailureAttempt(
+            int attemptNumber,
+            string? failedAt,
+            string? completedAt) =>
+            failedAt is not null
+            && completedAt is not null
+            && Entries.Any(attempt =>
+                attempt.AttemptNumber == attemptNumber
+                && attempt.Status == MailRequestState.Failed
+                && string.Equals(attempt.ErrorCode, MailDeliveryErrorCodes.AcsSendFailed, StringComparison.Ordinal)
+                && string.Equals(attempt.CompletedAt, failedAt, StringComparison.Ordinal)
+                && string.Equals(attempt.CompletedAt, completedAt, StringComparison.Ordinal));
+
+        public bool HasTerminalAttempt(
+            int attemptNumber,
+            MailRequestState status,
+            string? completedAt) =>
+            completedAt is not null
+            && Entries.Any(attempt =>
+                attempt.AttemptNumber == attemptNumber
+                && attempt.Status == status
+                && string.Equals(attempt.CompletedAt, completedAt, StringComparison.Ordinal));
+    }
 
     private sealed record AttachmentSubmission(
         int State,
@@ -51,30 +90,23 @@ internal static class RecipientPersistenceMigration
 
     private sealed class AttemptSummaryAccumulator
     {
-        public int Count { get; private set; }
+        private readonly List<AttemptEvidence> entries = [];
 
-        private readonly HashSet<string> deliveredAttemptCompletedAt = new(StringComparer.Ordinal);
-
-        public string? LastAttemptErrorCode { get; private set; }
-
-        public void Add(int status, string? errorCode, string? completedAt)
+        public void Add(
+            int attemptNumber,
+            int status,
+            string? errorCode,
+            string? completedAt)
         {
-            Count++;
-            if (status == (int)MailRequestState.Delivered
-                && !string.Equals(
-                    errorCode,
-                    MailRequestConsumerMutations.SupersededByManualRetryErrorCode,
-                    StringComparison.Ordinal)
-                && completedAt is not null)
-            {
-                deliveredAttemptCompletedAt.Add(completedAt);
-            }
-
-            LastAttemptErrorCode = errorCode;
+            entries.Add(new AttemptEvidence(
+                attemptNumber,
+                (MailRequestState)status,
+                errorCode,
+                completedAt));
         }
 
         public AttemptSummary ToSummary() =>
-            new(Count, deliveredAttemptCompletedAt, LastAttemptErrorCode);
+            new(entries);
     }
 
     private static async Task ValidatePreconditionBeforeScriptAsync(
@@ -234,7 +266,7 @@ internal static class RecipientPersistenceMigration
         if (request.Status == MailRequestState.Delivered
             && request.DeliveredAt is not null
             && string.Equals(request.CompletedAt, request.DeliveredAt, StringComparison.Ordinal)
-            && attempts?.DeliveredAttemptCompletedAt.Contains(request.DeliveredAt) == true)
+            && attempts?.HasDeliveredAttemptAt(request.DeliveredAt) == true)
         {
             return PlainEvidenceClassification.Accepted;
         }
@@ -242,10 +274,10 @@ internal static class RecipientPersistenceMigration
         if (request.Status == MailRequestState.Failed
             && request.FailedAt is not null
             && string.Equals(request.CompletedAt, request.FailedAt, StringComparison.Ordinal)
-            && string.Equals(
-                attempts?.LastAttemptErrorCode,
-                MailDeliveryErrorCodes.AcsSendFailed,
-                StringComparison.Ordinal))
+            && attempts?.HasDefinitiveFailureAttempt(
+                request.AttemptCount,
+                request.FailedAt,
+                request.CompletedAt) == true)
         {
             return PlainEvidenceClassification.DefinitelyRejected;
         }
@@ -346,6 +378,15 @@ internal static class RecipientPersistenceMigration
         {
             throw new InvalidOperationException(
                 $"Migration 016 found an attachment submission/request aggregate mismatch for {stateName} state.");
+        }
+
+        if (attempts?.HasTerminalAttempt(
+                request.AttemptCount,
+                expectedStatus,
+                expectedTimestamp) != true)
+        {
+            throw new InvalidOperationException(
+                $"Migration 016 found an attachment submission/request attempt history mismatch for {stateName} state.");
         }
     }
 
@@ -597,6 +638,7 @@ internal static class RecipientPersistenceMigration
             }
 
             accumulator.Add(
+                reader.GetInt32(1),
                 reader.GetInt32(2),
                 reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.IsDBNull(4) ? null : reader.GetString(4));
