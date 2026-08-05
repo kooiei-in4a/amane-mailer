@@ -8,6 +8,16 @@ namespace Amane.Mailer.Operations;
 
 public sealed class SqlMigrationRunner
 {
+    internal sealed record MigrationTransactionStep(
+        Func<SqliteConnection, CancellationToken, Task> ValidatePreconditionBeforeScriptAsync,
+        Func<SqliteConnection, CancellationToken, Task> ApplyDataMigrationAfterScriptAsync);
+
+    private static readonly IReadOnlyDictionary<string, MigrationTransactionStep> KnownTransactionSteps =
+        new Dictionary<string, MigrationTransactionStep>(StringComparer.Ordinal)
+        {
+            [RecipientPersistenceMigration.MigrationVersion] = RecipientPersistenceMigration.Step,
+        };
+
     private readonly SqliteConnectionFactory _connections;
     private readonly string _migrationDirectory;
 
@@ -262,10 +272,22 @@ public sealed class SqlMigrationRunner
             var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
             try
             {
+                // Migration 016 order: BEGIN IMMEDIATE -> precondition -> schema script ->
+                // backfill/classification/assertion -> schema_migrations record -> COMMIT.
+                if (KnownTransactionSteps.TryGetValue(migration.Version, out var transactionStep))
+                {
+                    await transactionStep.ValidatePreconditionBeforeScriptAsync(connection, cancellationToken);
+                }
+
                 await using (var script = connection.CreateCommand())
                 {
                     script.CommandText = migration.Sql;
                     await script.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                if (KnownTransactionSteps.TryGetValue(migration.Version, out transactionStep))
+                {
+                    await transactionStep.ApplyDataMigrationAfterScriptAsync(connection, cancellationToken);
                 }
 
                 await using (var record = connection.CreateCommand())
@@ -400,10 +422,12 @@ public sealed class SqlMigrationRunner
                     'delivery_events',
                     'mail_request_attachments',
                     'mail_attachment_submissions',
-                    'mailer_maintenance_leases');
+                    'mailer_maintenance_leases',
+                    'mail_request_recipients',
+                    'mail_plain_submissions');
                 """;
             var tableCount = await tables.ExecuteScalarAsync(cancellationToken);
-            if (tableCount is not long count || count != 8L)
+            if (tableCount is not long count || count != 10L)
             {
                 return false;
             }

@@ -186,6 +186,7 @@ public static class MailRequestCreateHandler
             ReplyTo = request.ReplyTo,
             RecipientEmail = recipient.Address,
             RecipientDisplayName = recipient.DisplayName,
+            Recipients = canonicalRecipients.All,
             MetadataJson = request.Metadata is null
                 ? null
                 : JsonSerializer.Serialize(request.Metadata, MailerJsonContext.Default.DictionaryStringString),
