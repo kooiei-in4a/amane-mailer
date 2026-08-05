@@ -228,12 +228,12 @@
       "id": "bounce-ingestion-and-suppression",
       "status": "implemented",
       "trackingIssue": 306,
-      "lastVerified": "2026-07-28",
+      "lastVerified": "2026-08-05",
       "relatedAdrs": [
         "0020",
         "0013"
       ],
-      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. #460 persists sanitized status_message and Event Grid eventTime on provider_event_inbox through bounce_events. #461 isolates poison Storage Queue envelopes via provider_queue_dead_letters after DequeueCount threshold (internal constant 5) without storing raw payload. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
+      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. #460 persists sanitized status_message and Event Grid eventTime on provider_event_inbox through bounce_events. #461 isolates poison Storage Queue envelopes via provider_queue_dead_letters after DequeueCount threshold (internal constant 5) without storing raw payload. #530 classifies ACS Suppressed as a suppression outcome alongside Bounced without schema or migration changes. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Data/Migrations/011_bounce_ingestion.sql",

@@ -44,6 +44,30 @@ public sealed class AcsEventParserTests
     }
 
     [Fact]
+    public void ParseOne_keeps_suppressed_delivery_report()
+    {
+        var json = """
+            {
+              "id": "eg-suppressed",
+              "eventType": "Microsoft.Communication.EmailDeliveryReportReceived",
+              "eventTime": "2026-07-26T00:00:00Z",
+              "data": {
+                "messageId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "status": "Suppressed",
+                "recipient": "User@Example.COM"
+              }
+            }
+            """;
+
+        var result = AcsEventParser.ParseOne(json);
+
+        Assert.Equal(AcsEventParseOutcome.DeliveryReport, result.Outcome);
+        Assert.NotNull(result.Report);
+        Assert.Equal("Suppressed", result.Report.Status);
+        Assert.Equal("User@Example.COM", result.Report.Recipient);
+    }
+
+    [Fact]
     public void ParseOne_ignores_delivered_and_non_delivery_report_types()
     {
         var delivered = """
@@ -73,11 +97,17 @@ public sealed class AcsEventParserTests
     }
 
     [Fact]
-    public void BounceClassifier_hard_bounce_is_bounced_only()
+    public void BounceClassifier_suppresses_bounced_and_suppressed_only()
     {
         Assert.True(BounceClassifier.IsHardBounce("Bounced"));
+        Assert.False(BounceClassifier.IsHardBounce("Suppressed"));
+        Assert.True(BounceClassifier.IsSuppressed("Suppressed"));
+        Assert.True(BounceClassifier.ShouldSuppress("Bounced"));
+        Assert.True(BounceClassifier.ShouldSuppress("Suppressed"));
         Assert.False(BounceClassifier.IsHardBounce("Suspended"));
         Assert.False(BounceClassifier.IsHardBounce("Failed"));
+        Assert.False(BounceClassifier.ShouldSuppress("Failed"));
+        Assert.False(BounceClassifier.ShouldSuppress("Quarantined"));
         Assert.True(BounceClassifier.ShouldRecordBounceEvent("Failed"));
         Assert.False(BounceClassifier.ShouldRecordBounceEvent("Delivered"));
     }
@@ -112,6 +142,30 @@ public sealed class BounceIngestionWorkerTests
         Assert.Equal(0, metrics.CaptureSnapshot().BounceUnmatchedTotal);
         Assert.True(await new BounceEventRepository(db.Factory).ExistsAsync(
             await FindBounceEventIdAsync(db.Factory, "event-ok", ct), ct));
+        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
+        Assert.False(await inbox.HasPendingWorkAsync(FixedNow.AddMinutes(1), ct));
+    }
+
+    [Fact]
+    public async Task Correlated_suppressed_status_records_event_and_suppression()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await OpenMigratedAsync(ct);
+        await SeedDeliveredRequestAsync(db.Factory, ProviderMessageId, Recipient, ct);
+
+        var inbox = new ProviderEventInboxRepository(db.Factory);
+        Assert.True(await inbox.TryInsertAsync(NewInboxInsert("event-suppressed", ProviderMessageId, "Suppressed", Recipient), ct));
+        var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
+        Assert.NotNull(claimed);
+
+        var metrics = new MailerRuntimeMetrics();
+        var worker = CreateWorker(db.Factory, metrics);
+        await worker.ProcessClaimedEventForTestsAsync(claimed, ct);
+
+        Assert.Equal(1, metrics.CaptureSnapshot().BounceEventsTotal);
+        Assert.Equal(0, metrics.CaptureSnapshot().BounceUnmatchedTotal);
+        Assert.True(await new BounceEventRepository(db.Factory).ExistsAsync(
+            await FindBounceEventIdAsync(db.Factory, "event-suppressed", ct), ct));
         Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
         Assert.False(await inbox.HasPendingWorkAsync(FixedNow.AddMinutes(1), ct));
     }
@@ -368,8 +422,10 @@ public sealed class BounceIngestionWorkerTests
         Assert.False(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
     }
 
-    [Fact]
-    public async Task Soft_status_records_bounce_without_suppression()
+    [Theory]
+    [InlineData("Failed")]
+    [InlineData("Quarantined")]
+    public async Task Unconfirmed_status_records_bounce_without_suppression(string deliveryStatus)
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await OpenMigratedAsync(ct);
@@ -377,7 +433,7 @@ public sealed class BounceIngestionWorkerTests
 
         var inbox = new ProviderEventInboxRepository(db.Factory);
         Assert.True(await inbox.TryInsertAsync(
-            NewInboxInsert("event-soft", ProviderMessageId, "Failed", Recipient),
+            NewInboxInsert($"event-soft-{deliveryStatus.ToLowerInvariant()}", ProviderMessageId, deliveryStatus, Recipient),
             ct));
         var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
         Assert.NotNull(claimed);
