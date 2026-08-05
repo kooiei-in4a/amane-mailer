@@ -66,7 +66,7 @@ public sealed class MailPlainSubmissionStore(
             var nowUtc = timeProvider.GetUtcNow();
             var nowStorage = SqliteTime.ToStorageUtc(nowUtc);
 
-            if (!await IsFencedProcessingAsync(connection, requestId, lockToken, nowStorage, cancellationToken))
+            if (!await RecipientSuppressionSupport.IsFencedProcessingAsync(connection, requestId, lockToken, nowStorage, cancellationToken))
             {
                 await transaction.CommitAsync(cancellationToken);
                 return new PlainProviderInvocationResult(PlainProviderInvocationOutcome.FenceFailed);
@@ -86,7 +86,18 @@ public sealed class MailPlainSubmissionStore(
                 requestId,
                 cancellationToken);
 
-            var suppressedKeys = await FindSuppressedAddressKeysAsync(
+            // Fail-closed integrity check (Issue #546 review finding F5): a fenced, claimed
+            // request with zero canonical recipient rows indicates schema drift, a corrupted
+            // accept, or an incomplete migration backfill -- never proceed to invoke the
+            // provider with an empty envelope.
+            if (recipients.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Mail request {requestId:D} has no canonical recipient rows; refusing to " +
+                    "invoke the provider.");
+            }
+
+            var suppressedKeys = await RecipientSuppressionSupport.FindSuppressedAddressKeysAsync(
                 connection,
                 tenantId,
                 recipients,
@@ -104,10 +115,11 @@ public sealed class MailPlainSubmissionStore(
                     resolvedAtStorage: nowStorage,
                     cancellationToken);
 
-                await ApplySuppressionRecipientStatesAsync(
+                await RecipientSuppressionSupport.ApplySuppressionRecipientStatesAsync(
                     connection,
                     requestId,
                     suppressedKeys,
+                    expectedRecipientCount: recipients.Count,
                     nowStorage,
                     cancellationToken);
 
@@ -125,9 +137,9 @@ public sealed class MailPlainSubmissionStore(
                     StartedAt = nowUtc,
                     CompletedAt = nowUtc,
                 };
-                await InsertAttemptAsync(connection, attempt, cancellationToken);
+                await RecipientSuppressionSupport.InsertAttemptAsync(connection, attempt, cancellationToken);
 
-                if (!await TryUpdateRequestTerminalAsync(
+                if (!await RecipientSuppressionSupport.TryUpdateRequestTerminalAsync(
                         connection,
                         requestId,
                         lockToken,
@@ -185,12 +197,27 @@ public sealed class MailPlainSubmissionStore(
     /// <paramref name="expectedEvidenceState"/> fence the <c>mail_plain_submissions</c> row
     /// against the exact evidence version the caller observed -- these differ from
     /// <paramref name="requestLockToken"/> on a recovery/converge call (a fresh reclaim
-    /// finalizing <c>Started</c> evidence created by a prior, crashed claim), exactly as in
-    /// <see cref="MailRequestClaimStore.FinalizeAttachmentSubmissionAsync"/>. If the request
-    /// update affects 0 rows, ownership was already lost and neither the evidence row nor
-    /// recipients nor attempt history are touched. If the evidence update then affects 0 rows,
-    /// the evidence read by the caller was stale; the whole transaction (including the request
-    /// update) is rolled back rather than committing a mismatch.
+    /// finalizing <c>Started</c> evidence created by a prior, crashed claim).
+    ///
+    /// Unlike <see cref="MailRequestClaimStore.FinalizeAttachmentSubmissionAsync"/>, the request
+    /// update here also requires <c>lock_expires_at &gt; @FenceNow</c> (Issue #546 review finding
+    /// F3): ADR 0023 D-04 states terminal finalize for plain requests must be fenced on "current
+    /// claim token AND unexpired lease", stricter than ADR 0022's attachment wording. A finalize
+    /// that loses this race converges via the ordinary Started-only recovery path
+    /// (<c>ConvergeFromPlainEvidenceAsync</c>) to Unknown/DeliveryUnknown on the next reclaim
+    /// instead -- safe under ADR 0023's "prefer Unknown over risking duplicate delivery"
+    /// principle, even though it may discard a true Accepted/DefinitelyRejected outcome the
+    /// stale claim actually observed. <paramref name="now"/> is used only for the stored
+    /// timestamps (completed_at, delivered_at, etc.) and the evidence's resolved_at; the fence
+    /// check reads <see cref="TimeProvider.GetUtcNow"/> fresh after BEGIN IMMEDIATE has
+    /// established write ownership, so a lease that expires while this call waited on the
+    /// SQLite write lock is caught here rather than racing a later reclaim.
+    ///
+    /// If the request update affects 0 rows, ownership was already lost (superseded token or
+    /// expired lease) and neither the evidence row nor recipients nor attempt history are
+    /// touched. If the evidence update then affects 0 rows, the evidence read by the caller was
+    /// stale; the whole transaction (including the request update) is rolled back rather than
+    /// committing a mismatch.
     /// </summary>
     public async Task<bool> FinalizeAsync(
         Guid requestId,
@@ -223,7 +250,9 @@ public sealed class MailPlainSubmissionStore(
                 last_error_message = @LastErrorMessage
             WHERE id = @Id
               AND status = @ProcessingStatus
-              AND lock_token = @RequestLockToken;
+              AND lock_token = @RequestLockToken
+              AND lock_expires_at IS NOT NULL
+              AND lock_expires_at > @FenceNow;
             """;
 
         const string updateEvidenceSql = """
@@ -242,12 +271,19 @@ public sealed class MailPlainSubmissionStore(
         await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
         try
         {
+            // Fresh after write ownership (Issue #546 review finding F3): the lease-fence
+            // comparison must not reuse a pre-BEGIN-IMMEDIATE `now`, which can be stale across a
+            // SQLite busy-wait on the write lock -- mirrors the fencing idiom already used in
+            // TryPrepareProviderInvocationAsync and MailAttachmentSubmissionStore.TryInsertStartedAsync.
+            var fenceNowStorage = SqliteTime.ToStorageUtc(timeProvider.GetUtcNow());
+
             bool requestUpdated;
             await using (var update = connection.CreateCommand())
             {
                 update.CommandText = updateRequestSql;
                 update.Parameters.AddWithValue("@NewStatus", (int)requestTerminalState);
                 update.Parameters.AddWithValue("@Now", nowStorage);
+                update.Parameters.AddWithValue("@FenceNow", fenceNowStorage);
                 update.Parameters.AddWithValue(
                     "@DeliveredAt",
                     requestTerminalState == MailRequestState.Delivered ? nowStorage : (object)DBNull.Value);
@@ -298,7 +334,7 @@ public sealed class MailPlainSubmissionStore(
                 await UpdateAllRecipientsAsync(connection, requestId, state, nowStorage, cancellationToken);
             }
 
-            await InsertAttemptAsync(connection, attempt, cancellationToken);
+            await RecipientSuppressionSupport.InsertAttemptAsync(connection, attempt, cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
             runtimeMetrics?.RecordAttemptCompleted(attempt);
@@ -344,81 +380,6 @@ public sealed class MailPlainSubmissionStore(
             reader.IsDBNull(7) ? null : SqliteTime.FromStorage(reader.GetString(7)));
     }
 
-    private static async Task<bool> IsFencedProcessingAsync(
-        SqliteConnection connection,
-        Guid requestId,
-        Guid lockToken,
-        string nowStorage,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT 1
-            FROM mail_requests
-            WHERE id = @Id
-              AND status = @ProcessingStatus
-              AND lock_token = @LockToken
-              AND lock_expires_at IS NOT NULL
-              AND lock_expires_at > @Now
-            LIMIT 1;
-            """;
-        command.Parameters.AddWithValue("@Id", requestId.ToString("D"));
-        command.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
-        command.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
-        command.Parameters.AddWithValue("@Now", nowStorage);
-        var result = await command.ExecuteScalarAsync(cancellationToken);
-        return result is not null;
-    }
-
-    /// <summary>
-    /// Tenant-scoped only (ADR 0020 D-06 / Issue #546 maintainer decision): <c>mail_suppressions</c>
-    /// has no source_service dimension, so this never widens or narrows that existing contract.
-    /// Compares against <c>address_key</c> (trim + lowercase-invariant), the same normalization
-    /// <see cref="MailSuppressionRepository"/> and <see cref="MailRequestAcceptStore"/> already
-    /// use -- never the legacy <c>mail_requests.recipient_email</c> shadow.
-    /// </summary>
-    private static async Task<HashSet<string>> FindSuppressedAddressKeysAsync(
-        SqliteConnection connection,
-        Guid tenantId,
-        IReadOnlyList<MailRequestRecipientRow> recipients,
-        CancellationToken cancellationToken)
-    {
-        var distinctKeys = recipients
-            .Select(recipient => recipient.AddressKey)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        if (distinctKeys.Count == 0)
-        {
-            return [];
-        }
-
-        await using var command = connection.CreateCommand();
-        var parameterNames = new string[distinctKeys.Count];
-        for (var i = 0; i < distinctKeys.Count; i++)
-        {
-            var name = $"@Key{i}";
-            parameterNames[i] = name;
-            command.Parameters.AddWithValue(name, distinctKeys[i]);
-        }
-
-        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
-        command.CommandText = $"""
-            SELECT recipient_email
-            FROM mail_suppressions
-            WHERE tenant_id = @TenantId
-              AND recipient_email IN ({string.Join(", ", parameterNames)});
-            """;
-
-        var suppressed = new HashSet<string>(StringComparer.Ordinal);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            suppressed.Add(reader.GetString(0));
-        }
-
-        return suppressed;
-    }
-
     private static async Task InsertEvidenceAsync(
         SqliteConnection connection,
         Guid requestId,
@@ -449,6 +410,11 @@ public sealed class MailPlainSubmissionStore(
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Issue #546 review finding F5: fail-closed on a partial or zero-row bulk update. This
+    /// method self-counts the request's canonical recipients rather than trusting a caller-
+    /// supplied count, since some callers (finalize) do not otherwise read the recipient list.
+    /// </summary>
     private static async Task UpdateAllRecipientsAsync(
         SqliteConnection connection,
         Guid requestId,
@@ -456,6 +422,14 @@ public sealed class MailPlainSubmissionStore(
         string nowStorage,
         CancellationToken cancellationToken)
     {
+        var expectedCount = await CountRecipientsAsync(connection, requestId, cancellationToken);
+        if (expectedCount == 0)
+        {
+            throw new InvalidOperationException(
+                $"Mail request {requestId:D} has no canonical recipient rows; refusing to " +
+                "finalize recipient state.");
+        }
+
         await using var command = connection.CreateCommand();
         command.CommandText = """
             UPDATE mail_request_recipients
@@ -465,93 +439,25 @@ public sealed class MailPlainSubmissionStore(
         command.Parameters.AddWithValue("@State", (int)state);
         command.Parameters.AddWithValue("@Now", nowStorage);
         command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    private static async Task ApplySuppressionRecipientStatesAsync(
-        SqliteConnection connection,
-        Guid requestId,
-        IReadOnlySet<string> suppressedKeys,
-        string nowStorage,
-        CancellationToken cancellationToken)
-    {
-        await using var command = connection.CreateCommand();
-        var parameterNames = new string[suppressedKeys.Count];
-        var i = 0;
-        foreach (var key in suppressedKeys)
+        var affected = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (affected != expectedCount)
         {
-            var name = $"@Key{i}";
-            parameterNames[i] = name;
-            command.Parameters.AddWithValue(name, key);
-            i++;
+            throw new InvalidOperationException(
+                $"Mail request {requestId:D} recipient bulk update affected {affected} rows; " +
+                $"expected {expectedCount}.");
         }
-
-        command.Parameters.AddWithValue("@SuppressedState", (int)MailRecipientDeliveryState.Suppressed);
-        command.Parameters.AddWithValue("@NotSentState", (int)MailRecipientDeliveryState.NotSent);
-        command.Parameters.AddWithValue("@Now", nowStorage);
-        command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
-        command.CommandText = $"""
-            UPDATE mail_request_recipients
-            SET
-                delivery_state = CASE
-                    WHEN address_key IN ({string.Join(", ", parameterNames)}) THEN @SuppressedState
-                    ELSE @NotSentState
-                END,
-                updated_at = @Now
-            WHERE request_id = @RequestId;
-            """;
-        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private static async Task<bool> TryUpdateRequestTerminalAsync(
+    private static async Task<int> CountRecipientsAsync(
         SqliteConnection connection,
         Guid requestId,
-        Guid lockToken,
-        MailRequestState terminalState,
-        string nowStorage,
-        string lastErrorMessage,
         CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE mail_requests
-            SET
-                status = @NewStatus,
-                next_attempt_at = NULL,
-                lock_token = NULL,
-                lock_expires_at = NULL,
-                updated_at = @Now,
-                completed_at = @Now,
-                failed_at = @Now,
-                last_error_message = @LastErrorMessage
-            WHERE id = @Id
-              AND status = @ProcessingStatus
-              AND lock_token = @LockToken;
-            """;
-        command.Parameters.AddWithValue("@NewStatus", (int)terminalState);
-        command.Parameters.AddWithValue("@Now", nowStorage);
-        command.Parameters.AddWithValue("@LastErrorMessage", lastErrorMessage);
-        command.Parameters.AddWithValue("@Id", requestId.ToString("D"));
-        command.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
-        command.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
-        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        command.CommandText = "SELECT COUNT(*) FROM mail_request_recipients WHERE request_id = @RequestId;";
+        command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is long count ? (int)count : Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
     }
 
-    private static Task InsertAttemptAsync(
-        SqliteConnection connection,
-        MailAttemptInsert attempt,
-        CancellationToken cancellationToken)
-    {
-        const string insertAttemptSql = """
-            INSERT INTO mail_attempts (
-                request_id, attempt_number, provider, status,
-                provider_message_id, error_code, error_message, retryable,
-                lock_token, started_at, completed_at)
-            VALUES (
-                @RequestId, @AttemptNumber, @Provider, @AttemptStatus,
-                @ProviderMessageId, @ErrorCode, @ErrorMessage, @Retryable,
-                @LockToken, @StartedAt, @CompletedAt);
-            """;
-        return MailRequestClaimStore.InsertMailAttemptAsync(connection, insertAttemptSql, attempt, cancellationToken);
-    }
 }

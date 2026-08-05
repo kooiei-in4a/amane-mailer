@@ -183,8 +183,16 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         Assert.True(attempt.Retryable);
     }
 
+    // ADR 0023 D-04 / Issue #546 review finding F3 replaced the old #238 "ignore lease expiry
+    // under the same lock token" finalize fallback with strict fencing (current claim token AND
+    // unexpired lease) for plain requests. Combined with finding F1 (a plain request with durable
+    // evidence is always reclaimable to converge from that evidence, even at max_attempts, since
+    // the reclaim never re-invokes the provider), a send that completes after its lease has
+    // expired can no longer finalize directly to Delivered: it loses the fencing race, and the
+    // request instead recovers via reclaim + existing-evidence convergence to DeliveryUnknown.
+    // This replaces the old Worker_marks_delivered_when_send_succeeds_after_lease_expiry_at_max_attempts.
     [Fact]
-    public async Task Worker_marks_delivered_when_send_succeeds_after_lease_expiry_at_max_attempts()
+    public async Task Worker_converges_to_delivery_unknown_when_lease_expires_at_max_attempts()
     {
         var ct = TestContext.Current.CancellationToken;
         fixture.DeliveryProvider.HoldNextSendIgnoringCancellation();
@@ -199,18 +207,23 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         await ExpireProcessingLeaseAsync(processing.Id, ct);
         fixture.DeliveryProvider.ReleaseHeldSend();
 
-        var delivered = await WaitUntilStatusAsync(
+        // The sweep service only polls every 30s (MailerWorkerFixture does not override
+        // Mailer:Sweep:IntervalSeconds); signal the worker directly so the reclaim happens
+        // within this test's wait window instead of depending on sweep timing.
+        SignalWorker();
+
+        var converged = await WaitUntilStatusAsync(
             request.MailRequestId,
-            MailRequestState.Delivered,
-            minAttemptCount: 3,
+            MailRequestState.DeliveryUnknown,
+            minAttemptCount: 4,
             ct);
         Assert.Single(fixture.DeliveryProvider.Sent);
 
-        var attempts = await ListAttemptsAsync(delivered.Id, ct);
+        var attempts = await ListAttemptsAsync(converged.Id, ct);
         Assert.Contains(
             attempts,
-            attempt => attempt.Status == MailRequestState.Delivered
-                && !string.IsNullOrWhiteSpace(attempt.ProviderMessageId));
+            attempt => attempt.Status == MailRequestState.DeliveryUnknown
+                && attempt.ErrorCode == MailDeliveryErrorCodes.DeliveryUnknown);
     }
 
     [Fact]
@@ -313,8 +326,14 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         Assert.DoesNotContain("example.com", stored.LastErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ADR 0023 D-04 / Issue #546 review finding F3 replaced the old #238 "ignore lease expiry
+    // under the same lock token" finalize fallback with strict fencing (current claim token AND
+    // unexpired lease) for plain requests: a send that completes after its lease has expired can
+    // no longer finalize directly to Delivered, even under the same, still-current lock token.
+    // This replaces the old Worker_skips_finalize_when_lock_token_is_stale, which asserted the
+    // pre-ADR-0023 best-effort-Delivered behavior.
     [Fact]
-    public async Task Worker_skips_finalize_when_lock_token_is_stale()
+    public async Task Worker_converges_to_delivery_unknown_when_finalize_loses_the_expired_lease_race()
     {
         var ct = TestContext.Current.CancellationToken;
         fixture.DeliveryProvider.HoldNextSend();
@@ -329,51 +348,28 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
 
         var processing = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Processing, minAttemptCount: 1, ct);
         Assert.NotNull(processing.LockToken);
-        var staleToken = processing.LockToken!.Value;
 
-        // Expire the lease but keep the same lock_token. Releasing the held send
-        // lets the first worker finish provider delivery; strict lease fencing fails,
-        // but success evidence is persisted and the request converges to Delivered (#238).
+        // Expire the lease but keep the same lock_token, then release the held send: the
+        // original worker iteration finishes provider delivery, but strict lease fencing
+        // (F3) rejects its finalize. The request is left in Processing with its Started
+        // evidence intact until a reclaim converges it.
         await ExpireProcessingLeaseAsync(processing.Id, ct);
         fixture.DeliveryProvider.ReleaseHeldSend();
 
-        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 1, ct);
-        Assert.Equal(MailRequestState.Delivered, delivered.Status);
+        // The sweep service only polls every 30s (MailerWorkerFixture does not override
+        // Mailer:Sweep:IntervalSeconds); signal the worker directly so the reclaim happens
+        // within this test's wait window instead of depending on sweep timing.
+        SignalWorker();
+
+        var converged = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.DeliveryUnknown, minAttemptCount: 2, ct);
+        Assert.Equal(MailRequestState.DeliveryUnknown, converged.Status);
         Assert.Single(fixture.DeliveryProvider.Sent);
 
-        var attempts = await ListAttemptsAsync(delivered.Id, ct);
+        var attempts = await ListAttemptsAsync(converged.Id, ct);
         Assert.Contains(
             attempts,
-            attempt => attempt.Status == MailRequestState.Delivered
-                && !string.IsNullOrWhiteSpace(attempt.ProviderMessageId));
-
-        await using var scope = fixture.Factory.Services.CreateAsyncScope();
-        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
-        var fenced = await repository.FinalizeAsync(
-            delivered.Id,
-            staleToken,
-            DateTimeOffset.UtcNow,
-            MailRequestFinalizeOutcome.Delivered,
-            nextAttemptAt: null,
-            lastErrorMessage: null,
-            new MailAttemptInsert
-            {
-                RequestId = delivered.Id,
-                AttemptNumber = 99,
-                Provider = "mailpit",
-                Status = MailRequestState.Delivered,
-                LockToken = staleToken,
-                Retryable = false,
-                StartedAt = DateTimeOffset.UtcNow,
-                CompletedAt = DateTimeOffset.UtcNow,
-            },
-            ct);
-        Assert.False(fenced);
-
-        var afterStaleFinalize = await FindDispatchStateAsync(request.MailRequestId, ct);
-        Assert.NotNull(afterStaleFinalize);
-        Assert.Equal(MailRequestState.Delivered, afterStaleFinalize!.Status);
-        Assert.Equal(1, afterStaleFinalize.AttemptCount);
+            attempt => attempt.Status == MailRequestState.DeliveryUnknown
+                && attempt.ErrorCode == MailDeliveryErrorCodes.DeliveryUnknown);
     }
 
     // ADR 0023 D-04 (Issue #546) replaced the old #238 mechanism (scan mail_attempts for a

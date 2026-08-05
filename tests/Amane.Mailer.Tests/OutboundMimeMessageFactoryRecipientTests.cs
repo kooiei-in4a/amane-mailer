@@ -6,11 +6,12 @@ namespace Amane.Mailer.Tests;
 
 /// <summary>
 /// Canonical To/Cc/Bcc provider mapping at the MIME message level (ADR 0023 D-01, Issue #546).
-/// Covers role shapes, role-internal ordinal order, the To -&gt; Cc -&gt; Bcc global order, and
-/// that Bcc is never folded into To/Cc on the constructed <see cref="MimeMessage"/> itself.
-/// Whether Bcc is excluded from the transmitted SMTP DATA (as opposed to this in-memory object)
-/// is a MailKit/MailpitMailDeliveryProvider concern, covered separately in
-/// <see cref="MailpitMailDeliveryProviderTests"/>.
+/// Covers role shapes, role-internal ordinal order, and the To -&gt; Cc -&gt; Bcc global order.
+/// Since Issue #546 review finding F4, Bcc is never added to the constructed
+/// <see cref="MimeMessage"/> at all (see <see cref="OutboundMimeMessageFactory.Create"/>) -- it
+/// is represented only in <see cref="OutboundMimeMessageFactory.BuildEnvelopeRecipients"/>'s
+/// separate SMTP envelope list, verified here. End-to-end wire behavior (real MailKit send, real
+/// SMTP listener) is covered separately in <see cref="MailpitMailDeliveryProviderTests"/>.
 /// </summary>
 public sealed class OutboundMimeMessageFactoryRecipientTests
 {
@@ -47,7 +48,8 @@ public sealed class OutboundMimeMessageFactoryRecipientTests
 
         Assert.Empty(message.To);
         Assert.Empty(message.Cc);
-        Assert.Equal(["bcc@example.com"], AddressesOf(message.Bcc));
+        Assert.Empty(message.Bcc);
+        Assert.Equal(["bcc@example.com"], OutboundMimeMessageFactory.BuildEnvelopeRecipients(job).Select(r => r.Address));
     }
 
     [Fact]
@@ -75,7 +77,10 @@ public sealed class OutboundMimeMessageFactoryRecipientTests
 
         Assert.Equal(["to@example.com"], AddressesOf(message.To));
         Assert.Empty(message.Cc);
-        Assert.Equal(["bcc@example.com"], AddressesOf(message.Bcc));
+        Assert.Empty(message.Bcc);
+        Assert.Equal(
+            ["to@example.com", "bcc@example.com"],
+            OutboundMimeMessageFactory.BuildEnvelopeRecipients(job).Select(r => r.Address));
     }
 
     [Fact]
@@ -90,9 +95,12 @@ public sealed class OutboundMimeMessageFactoryRecipientTests
 
         Assert.Equal(["to@example.com"], AddressesOf(message.To));
         Assert.Equal(["cc@example.com"], AddressesOf(message.Cc));
-        Assert.Equal(["bcc-secret@example.com"], AddressesOf(message.Bcc));
+        Assert.Empty(message.Bcc);
         Assert.DoesNotContain("bcc-secret@example.com", AddressesOf(message.To));
         Assert.DoesNotContain("bcc-secret@example.com", AddressesOf(message.Cc));
+        Assert.Equal(
+            ["to@example.com", "cc@example.com", "bcc-secret@example.com"],
+            OutboundMimeMessageFactory.BuildEnvelopeRecipients(job).Select(r => r.Address));
     }
 
     [Fact]
@@ -120,21 +128,45 @@ public sealed class OutboundMimeMessageFactoryRecipientTests
     }
 
     [Fact]
-    public void Create_does_not_write_a_literal_bcc_header_string_before_transmission()
+    public void Create_never_adds_a_bcc_header_to_the_message_itself()
     {
-        // MimeMessage.WriteTo() itself DOES include a "Bcc:" header by default -- exclusion from
-        // the transmitted SMTP DATA happens inside MailKit's SmtpClient.SendAsync(MimeMessage),
-        // not in this factory or in MimeMessage.WriteTo. This test documents that the raw
-        // in-memory header is present here (so nobody "fixes" this factory to strip it, which
-        // would break the RCPT TO envelope), while MailpitMailDeliveryProviderTests verifies the
-        // real transmitted-DATA exclusion end-to-end.
+        // Issue #546 review finding F4: MimeMessage.WriteTo() would include a literal "Bcc:"
+        // header (with the raw address) verbatim once message.Bcc is populated -- relying on a
+        // downstream transport to strip it before transmission was deemed too fragile (a direct
+        // WriteTo() call, a future MailKit change, or a different send path could all leak it).
+        // Bcc is therefore never added to this MimeMessage at all; the SMTP envelope recipient
+        // list (including Bcc) is built separately by BuildEnvelopeRecipients and passed to
+        // MailKit's explicit-envelope SendAsync(message, sender, recipients, ct) overload
+        // (MailpitMailDeliveryProvider), which computes RCPT TO independently of message headers.
         var job = CreateJob(
             to: [new MailSendRecipient("to@example.com", null)],
             bcc: [new MailSendRecipient("bcc-secret@example.com", null)]);
 
         using var message = OutboundMimeMessageFactory.Create(job, CreateTenant());
 
-        Assert.NotNull(message.Headers[HeaderId.Bcc]);
+        Assert.Null(message.Headers[HeaderId.Bcc]);
+        Assert.Empty(message.Bcc);
+
+        using var stream = new MemoryStream();
+        message.WriteTo(stream);
+        var raw = System.Text.Encoding.UTF8.GetString(stream.ToArray());
+        Assert.DoesNotContain("Bcc", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("bcc-secret@example.com", raw, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildEnvelopeRecipients_returns_to_then_cc_then_bcc_in_role_order()
+    {
+        var job = CreateJob(
+            to: [new MailSendRecipient("to@example.com", null)],
+            cc: [new MailSendRecipient("cc@example.com", null)],
+            bcc: [new MailSendRecipient("bcc-secret@example.com", null)]);
+
+        var recipients = OutboundMimeMessageFactory.BuildEnvelopeRecipients(job);
+
+        Assert.Equal(
+            ["to@example.com", "cc@example.com", "bcc-secret@example.com"],
+            recipients.Select(r => r.Address));
     }
 
     private static MailSendJob CreateJob(

@@ -15,8 +15,12 @@ internal sealed class MailKitSmtpClient : IMailpitSmtpClient
         CancellationToken cancellationToken) =>
         _client.ConnectAsync(host, port, socketOptions, cancellationToken);
 
-    public Task SendAsync(MimeMessage message, CancellationToken cancellationToken) =>
-        _client.SendAsync(message, cancellationToken);
+    public Task SendAsync(
+        MimeMessage message,
+        MailboxAddress sender,
+        IReadOnlyList<MailboxAddress> recipients,
+        CancellationToken cancellationToken) =>
+        _client.SendAsync(message, sender, recipients, cancellationToken);
 
     public Task DisconnectAsync(bool quit, CancellationToken cancellationToken) =>
         _client.DisconnectAsync(quit, cancellationToken);

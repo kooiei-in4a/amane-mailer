@@ -399,8 +399,7 @@ public static class MailRequestCreateHandler
     {
         var estimate = AttachmentEnvelopeEstimator.EstimateUpperBound(new AttachmentEnvelopeInput(
             tenant.DefaultFrom.Email,
-            recipient.Address,
-            recipient.DisplayName,
+            [new AttachmentEnvelopeRecipient(recipient.Address, recipient.DisplayName)],
             request.Subject,
             request.TextBody,
             request.HtmlBody,

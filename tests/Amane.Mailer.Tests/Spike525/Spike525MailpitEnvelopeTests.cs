@@ -70,17 +70,21 @@ public sealed class Spike525MailpitEnvelopeTests
     }
 
     /// <summary>
-    /// #525 Agent B review (Draft PR #529) M-01: S-02 only verified a Spike-only "safe" BCC
-    /// pattern (message.Bcc left empty, explicit envelope recipients). It did not verify the
-    /// PRODUCTION-EQUIVALENT path: populate MimeMessage.Bcc directly (the obvious way BCC support
-    /// would naturally be added to OutboundMimeMessageFactory) and send via the actual production
-    /// <see cref="MailKitSmtpClient"/> class's single-argument <c>SendAsync(message, ct)</c> — the
-    /// exact call <see cref="MailpitMailDeliveryProvider"/> makes today. This test closes that gap
-    /// using the real internal production class (InternalsVisibleTo("Amane.Mailer.Tests")), not a
-    /// reimplementation.
+    /// #525 Agent B review (Draft PR #529) M-01 originally found: populating
+    /// <c>MimeMessage.Bcc</c> directly and sending it through the single-argument
+    /// <c>SendAsync(message, ct)</c> overload leaks a literal "Bcc:" header onto the wire, and
+    /// concluded "the current production <see cref="IMailpitSmtpClient"/> interface cannot
+    /// safely support BCC without an explicit-envelope-recipients overload." Issue #546 review
+    /// finding F4 implemented exactly that fix: <see cref="IMailpitSmtpClient.SendAsync"/> now
+    /// requires an explicit <c>sender</c>/<c>recipients</c> envelope, and
+    /// <c>OutboundMimeMessageFactory.Create</c> never adds Bcc to the <see cref="MimeMessage"/>
+    /// at all -- the single-argument overload this test used to call no longer exists on the
+    /// interface, so the leak this test documented is no longer reachable through production
+    /// code at the type level. This test now verifies the fixed interface against the same
+    /// naive-population scenario as a regression guard.
     /// </summary>
     [Fact]
-    public async Task S02b_production_equivalent_sendasync_path_with_message_bcc_populated()
+    public async Task S02b_fixed_interface_does_not_leak_bcc_even_with_message_bcc_populated()
     {
         if (!Spike525Gate.MailpitEnabled)
         {
@@ -99,17 +103,20 @@ public sealed class Spike525MailpitEnvelopeTests
         message.From.Add(MailboxAddress.Parse(FromAddress));
         message.To.Add(MailboxAddress.Parse(toAddress));
         message.Cc.Add(MailboxAddress.Parse(ccAddress));
-        message.Bcc.Add(MailboxAddress.Parse(bccAddress)); // production-equivalent: naive population of MimeMessage.Bcc
+        // Naive population of MimeMessage.Bcc, exactly as the original M-01 finding did -- even
+        // this must be safe now, since the fixed interface computes the envelope explicitly and
+        // never reads message.Bcc at send time.
+        message.Bcc.Add(MailboxAddress.Parse(bccAddress));
         message.Subject = subject;
         message.Body = new TextPart("plain") { Text = "s02b body" };
 
         // The real production class (src/Amane.Mailer/Delivery/MailKitSmtpClient.cs), used via its
-        // IMailpitSmtpClient interface exactly as MailpitMailDeliveryProvider.SendAsync uses it:
-        // single-argument SendAsync(message, ct), envelope derived internally by MailKit from
-        // message.To/Cc/Bcc — no explicit recipient list.
+        // fixed IMailpitSmtpClient interface: explicit sender/recipients envelope, independent of
+        // whatever message.To/Cc/Bcc happen to contain.
+        var envelopeRecipients = new[] { MailboxAddress.Parse(toAddress), MailboxAddress.Parse(ccAddress), MailboxAddress.Parse(bccAddress) };
         IMailpitSmtpClient client = new MailKitSmtpClient();
         await client.ConnectAsync("127.0.0.1", relay.ListenPort, SecureSocketOptions.None, TestContext.Current.CancellationToken);
-        await client.SendAsync(message, TestContext.Current.CancellationToken);
+        await client.SendAsync(message, MailboxAddress.Parse(FromAddress), envelopeRecipients, TestContext.Current.CancellationToken);
         await client.DisconnectAsync(true, TestContext.Current.CancellationToken);
         await client.DisposeAsync();
 
@@ -127,16 +134,16 @@ public sealed class Spike525MailpitEnvelopeTests
         Spike525Support.Evidence.Record("S-02b", new
         {
             Provider = "mailpit",
-            Scenario = "production-equivalent-message-bcc-populated-single-arg-sendasync",
+            Scenario = "issue-546-f4-fixed-interface-explicit-envelope-with-naive-message-bcc-populated",
             EnvelopeRcptToCount = envelopeRcptToCount,
             EnvelopeIncludesBccRecipient = envelopeIncludesBcc,
             WireCapturedBccHeaderPresent = wireHasBccHeader,
             Finding = wireHasBccHeader
-                ? "CONFIRMED LEAK: MimeKit serializes a populated MimeMessage.Bcc into the literal SMTP DATA bytes when sent via the single-argument SendAsync(message, ct) overload. The current production IMailpitSmtpClient interface cannot safely support BCC without an explicit-envelope-recipients overload."
-                : "MimeMessage.Bcc did NOT appear in literal DATA bytes even via the single-argument SendAsync(message, ct) overload; the existing interface may be sufficient, contingent on this finding replicating.",
+                ? "REGRESSION: the fixed explicit-envelope IMailpitSmtpClient.SendAsync still leaked a literal Bcc header even with an explicit recipients list -- OutboundMimeMessageFactory.Create must be re-audited for any Bcc header path."
+                : "CONFIRMED FIXED (Issue #546 F4): the explicit-envelope SendAsync(message, sender, recipients, ct) overload never leaks a Bcc header onto the wire, even when message.Bcc is naively populated -- the fix does not depend on OutboundMimeMessageFactory omitting message.Bcc.Add(), it holds at the MailKit send-call level too.",
         });
 
-        // Ground truth check, resolved either way — do not assume the outcome in advance.
+        Assert.False(wireHasBccHeader, "Bcc header must never appear in the literal SMTP DATA bytes, even via the fixed interface with message.Bcc naively populated.");
         Assert.True(envelopeIncludesBcc, "BCC recipient must still reach the SMTP envelope (RCPT TO) for mail to actually be delivered to that address.");
     }
 

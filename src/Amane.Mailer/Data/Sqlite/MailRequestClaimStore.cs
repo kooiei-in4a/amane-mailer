@@ -25,6 +25,35 @@ public sealed class MailRequestClaimStore(
         AND (scheduled_at IS NULL OR scheduled_at <= @Now)
         """;
 
+    /// <summary>
+    /// Ordinary expired-Processing reclaim: bounded by <c>attempt_count &lt; max_attempts</c> so
+    /// automatic-retry-eligible rows do not reclaim forever.
+    /// </summary>
+    private const string ExpiredProcessingRetryEligiblePredicate = """
+        status = @ProcessingStatus
+        AND lock_expires_at IS NOT NULL
+        AND lock_expires_at <= @Now
+        AND attempt_count < max_attempts
+        """;
+
+    /// <summary>
+    /// ADR 0023 D-04 / Issue #546 review finding F1: a plain request with durable evidence
+    /// (Started or later) must always be reclaimable to converge from that evidence -- even past
+    /// max_attempts -- because such a reclaim never re-invokes the provider (it only reads
+    /// existing evidence and finalizes). Without this, a Started marker committed on the final
+    /// attempt before a crash would leave the row stuck: too old to reclaim under the ordinary
+    /// predicate, yet excluded from the max-attempts reaper (see
+    /// <see cref="DeadLetterExpiredProcessingAtMaxAttemptsAsync"/>), so evidence would never
+    /// resolve. Reclaiming converges it to a terminal state on the very next dispatch, so this
+    /// can never reclaim indefinitely.
+    /// </summary>
+    private const string ExpiredProcessingWithPlainEvidencePredicate = """
+        status = @ProcessingStatus
+        AND lock_expires_at IS NOT NULL
+        AND lock_expires_at <= @Now
+        AND EXISTS (SELECT 1 FROM mail_plain_submissions s WHERE s.request_id = mail_requests.id)
+        """;
+
     public async Task<MailRequestRow?> TryClaimOneAsync(
         DateTimeOffset now,
         TimeSpan leaseDuration,
@@ -44,23 +73,15 @@ public sealed class MailRequestClaimStore(
                 FROM mail_requests
                 WHERE
                     ({QueuedReadyPredicate})
-                    OR (
-                        status = @ProcessingStatus
-                        AND lock_expires_at IS NOT NULL
-                        AND lock_expires_at <= @Now
-                        AND attempt_count < max_attempts
-                    )
+                    OR ({ExpiredProcessingRetryEligiblePredicate})
+                    OR ({ExpiredProcessingWithPlainEvidencePredicate})
                 ORDER BY created_at ASC
                 LIMIT 1
             )
               AND (
                     ({QueuedReadyPredicate})
-                    OR (
-                        status = @ProcessingStatus
-                        AND lock_expires_at IS NOT NULL
-                        AND lock_expires_at <= @Now
-                        AND attempt_count < max_attempts
-                    )
+                    OR ({ExpiredProcessingRetryEligiblePredicate})
+                    OR ({ExpiredProcessingWithPlainEvidencePredicate})
                   )
             RETURNING
                 id, tenant_id, source_service, mail_request_id,
@@ -108,6 +129,12 @@ public sealed class MailRequestClaimStore(
         int batchSize,
         CancellationToken cancellationToken = default)
     {
+        // NOT EXISTS mail_plain_submissions (Issue #546 review finding F1): a plain request with
+        // durable evidence must never be dead-lettered by this generic max-attempts reaper --
+        // ExpiredProcessingWithPlainEvidencePredicate in TryClaimOneAsync instead reclaims it so
+        // the Worker can converge from the existing evidence (Started -> Unknown/DeliveryUnknown,
+        // never re-invoking the provider). Dead-lettering it here would strand the evidence row
+        // permanently unresolved.
         const string selectSql = """
             SELECT id, tenant_id, mail_request_id, attempt_count, lock_token, updated_at
             FROM mail_requests
@@ -116,6 +143,9 @@ public sealed class MailRequestClaimStore(
               AND lock_expires_at IS NOT NULL
               AND lock_expires_at <= @Now
               AND attempt_count >= max_attempts
+              AND NOT EXISTS (
+                    SELECT 1 FROM mail_plain_submissions s WHERE s.request_id = mail_requests.id
+                  )
             ORDER BY lock_expires_at ASC, created_at ASC
             LIMIT @BatchSize;
             """;
@@ -624,12 +654,8 @@ public sealed class MailRequestClaimStore(
                 FROM mail_requests
                 WHERE
                     ({QueuedReadyPredicate})
-                    OR (
-                        status = @ProcessingStatus
-                        AND lock_expires_at IS NOT NULL
-                        AND lock_expires_at <= @Now
-                        AND attempt_count < max_attempts
-                    )
+                    OR ({ExpiredProcessingRetryEligiblePredicate})
+                    OR ({ExpiredProcessingWithPlainEvidencePredicate})
                 LIMIT 1
             );
             """;

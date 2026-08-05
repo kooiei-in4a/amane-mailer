@@ -296,7 +296,11 @@ public sealed class MailpitMailDeliveryProviderTests
             return Task.CompletedTask;
         }
 
-        public Task SendAsync(MimeMessage message, CancellationToken cancellationToken)
+        public Task SendAsync(
+            MimeMessage message,
+            MailboxAddress sender,
+            IReadOnlyList<MailboxAddress> recipients,
+            CancellationToken cancellationToken)
         {
             SendCount++;
             if (send is not null)

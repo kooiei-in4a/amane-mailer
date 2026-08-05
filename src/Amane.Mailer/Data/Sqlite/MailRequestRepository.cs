@@ -64,7 +64,7 @@ public class MailRequestRepository
             new WorkerHeartbeatStore(connections),
             new MailRequestAttachmentStore(connections),
             new MailAttachmentSubmissionStore(connections, timeProvider ?? TimeProvider.System),
-            new MailRequestRecipientStore(connections),
+            new MailRequestRecipientStore(connections, timeProvider ?? TimeProvider.System, runtimeMetrics),
             new MailPlainSubmissionStore(connections, timeProvider ?? TimeProvider.System, runtimeMetrics));
 
     public Task<AdminMailRequestListPage> ListForAdminAsync(
@@ -287,6 +287,14 @@ public class MailRequestRepository
         Guid requestId,
         CancellationToken cancellationToken = default) =>
         _recipientStore.ListByRequestIdAsync(requestId, cancellationToken);
+
+    public Task<AttachmentSuppressionPrecheckResult> TryApplyAttachmentSuppressionPrecheckAsync(
+        Guid requestId,
+        Guid tenantId,
+        Guid lockToken,
+        int attemptNumber,
+        CancellationToken cancellationToken = default) =>
+        _recipientStore.TryApplySuppressionPrecheckAsync(requestId, tenantId, lockToken, attemptNumber, cancellationToken);
 
     public Task<MailPlainSubmissionRow?> FindPlainSubmissionAsync(
         Guid requestId,

@@ -15,7 +15,6 @@ public sealed class MailRequestWorker : BackgroundService
 {
     private readonly IMailRequestQueue _queue;
     private readonly MailRequestRepository _repository;
-    private readonly MailSuppressionRepository _suppressions;
     private readonly MailerTenantRegistry _tenants;
     private readonly MailerOptions _mailerOptions;
     private readonly MailerWorkerOptions _workerOptions;
@@ -34,7 +33,6 @@ public sealed class MailRequestWorker : BackgroundService
     public MailRequestWorker(
         IMailRequestQueue queue,
         MailRequestRepository repository,
-        MailSuppressionRepository suppressions,
         MailerTenantRegistry tenants,
         MailerOptions mailerOptions,
         MailerWorkerOptions workerOptions,
@@ -50,7 +48,6 @@ public sealed class MailRequestWorker : BackgroundService
     {
         _queue = queue;
         _repository = repository;
-        _suppressions = suppressions;
         _tenants = tenants;
         _mailerOptions = mailerOptions;
         _workerOptions = workerOptions;
@@ -585,16 +582,39 @@ public sealed class MailRequestWorker : BackgroundService
             return;
         }
 
-        if (await _suppressions.ExistsAsync(row.TenantId, row.RecipientEmail, stoppingToken))
+        // Canonical recipient suppression precheck (ADR 0023 D-03/D-05, Issue #546 review finding
+        // F2): checks every To/Cc/Bcc recipient, not only the legacy single-To shadow column. A
+        // suppression hit converges the whole request to Failed atomically inside the precheck
+        // itself (mirroring the plain path's suppression branch); this method never calls
+        // FinalizeTerminalFailureAsync for that case because the store already committed it.
+        var suppressionPrecheck = await _repository.TryApplyAttachmentSuppressionPrecheckAsync(
+            row.Id,
+            row.TenantId,
+            row.LockToken,
+            row.AttemptCount,
+            stoppingToken);
+
+        switch (suppressionPrecheck.Outcome)
         {
-            await FinalizeTerminalFailureAsync(
-                row,
-                startedAt,
-                provider: "none",
-                errorCode: MailDeliveryErrorCodes.RecipientSuppressed,
-                errorMessage: "Recipient is on the suppression list.");
-            return;
+            case AttachmentSuppressionPrecheckOutcome.FenceFailed:
+                // Lease expired or lock token superseded before we could act: leave Processing
+                // for lease reclaim -- never call the provider under a claim we no longer hold.
+                return;
+
+            case AttachmentSuppressionPrecheckOutcome.Suppressed:
+                _logger.LogWarning(
+                    "Mail request {MailRequestId} failed terminally before provider invocation because at least one recipient is suppressed. RequestId={RequestId}; TenantId={TenantId}",
+                    row.MailRequestId,
+                    row.Id,
+                    row.TenantId);
+                await _deliveryEventEnqueuer.TryEnqueueAfterCommitAsync(row.Id);
+                return;
+
+            case AttachmentSuppressionPrecheckOutcome.NotSuppressed:
+                break;
         }
+
+        var recipients = suppressionPrecheck.Recipients!;
 
         var attachmentRows = await _repository.ListAttachmentsAsync(row.Id, stoppingToken);
         var sendAttachments = new List<MailSendAttachment>(attachmentRows.Count);
@@ -640,8 +660,9 @@ public sealed class MailRequestWorker : BackgroundService
         // pre-serialization against the real provider request is a known gap (see report).
         var envelopeEstimate = AttachmentEnvelopeEstimator.EstimateUpperBound(new AttachmentEnvelopeInput(
             tenant.DefaultFrom.Email,
-            row.RecipientEmail,
-            row.RecipientDisplayName,
+            recipients
+                .Select(r => new AttachmentEnvelopeRecipient(r.Address, r.DisplayName))
+                .ToArray(),
             row.Subject,
             row.TextBody,
             row.HtmlBody,
@@ -682,20 +703,12 @@ public sealed class MailRequestWorker : BackgroundService
             return;
         }
 
-        // Attachment requests stay single-To (ADR 0022 predates canonical multi-recipient
-        // mapping and the IsLegacySingleTo gate keeps every reachable request single-To);
-        // canonical recipient mapping/suppression precheck across To/Cc/Bcc is Issue #546's
-        // plain-request scope only, so the legacy shadow columns are used here unchanged.
-        var job = MailSendJob.ForSingleRecipient(
-            row.MailRequestId,
-            row.SourceService,
-            row.Subject,
-            row.HtmlBody,
-            row.TextBody,
-            row.ReplyTo,
-            row.RecipientEmail,
-            row.RecipientDisplayName,
-            sendAttachments);
+        // Canonical recipient mapping (ADR 0023 D-03, Issue #546 review finding F2): the shared
+        // BuildMailSendJob helper maps every To/Cc/Bcc recipient row, matching the plain path.
+        // The IsLegacySingleTo gate still keeps every reachable request single-To in practice
+        // today, but the provider envelope is now built from canonical recipients rather than
+        // the legacy shadow columns.
+        var job = BuildMailSendJob(row, recipients, sendAttachments);
 
         MailDeliveryResult result;
         try
