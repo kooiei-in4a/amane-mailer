@@ -55,6 +55,12 @@ evidence stateはStarted、DefinitelyNotSubmitted、Accepted、DefinitelyRejecte
 
 DefinitelyNotSubmittedからの再送だけは、同じunique evidence rowを明示的なretry transitionでStartedへ戻した場合に限り許可する。Started、Accepted、DefinitelyRejected、Unknownからのautomatic／manual retryとprovider再呼出しは許可しない。
 
+018のupgradeでは、新しいevidence rowの不存在をprovider未呼出しの証明として扱わない。旧Worker停止、in-flight provider invocation=0、Processing request=0を満たしたatomic migrationで、provider attempt履歴がないrequestだけをNoEvidence、Deliveredでacceptanceが確定するrequestをAccepted、履歴があるがacceptance／definite rejectionを証明できないrequestをUnknownへbackfillする。Unknownへ分類したrequestはDeliveryUnknownとし、自動／whole-request manual retryを禁止する。分類不能時はmigrationとWorker readinessをfail-closedにする。
+
+Started insertは、`BEGIN IMMEDIATE`相当のtransaction内で、`request.status=Processing`、current claim token、`lock_expires_at > actual now`、plain request、evidence row不存在を条件とするconditional insertとする。affected rowsが0ならrollbackしproviderを呼び出さない。DefinitelyNotSubmitted→Startedも、同じrequestのevidence state、Processing、current claim token、lease未期限切れを条件としたconditional updateに限定する。
+
+terminal finalizeは、expected `evidence_state=Started`、Processing、current claim token、lease未期限切れを条件に、evidence、request、mail_attempt、canonical recipientのPending／NotSentを同じtransactionで更新する。fenced updateが0 rows、または部分更新が失敗した場合は全体をrollbackし、Startedをrecoveryへ残す。lease expiry後のstale WorkerはStarted commit／finalizeを成功できず、reclaim後のWorkerは同じevidenceを読み、Started以上ならproviderを再呼出ししない。
+
 ### D-07 Bounce／suppression
 
 BouncedとSuppressedはbounce eventを記録し、canonical address keyをsuppressionへ登録する。Failed、Quarantined、unknown statusは記録のみでsuppressionしない。相関はprovider message ID exact matchからcanonical recipient row照合までtenant scope内で行う。
@@ -78,4 +84,4 @@ bcc_recipient_revealを独立capabilityとし、default deny、general operator 
 
 ## Acceptance gate
 
-Koo承認、ADR amendment patchの承認、Contracts／OpenAPI／SDK inventory、migration 016／017／018 design、plain requestのcrash／stale-lease recovery、SMTP／ACS disposition、BCC capability、NotSent／Pending summary、attachment compatibility、Agent B M-03再レビューを完了してからAccepted化を判断する。
+Koo承認、ADR amendment patchの承認、Contracts／OpenAPI／SDK inventory、migration 016／017／018 designと既存履歴分類、plain requestのcrash／stale-lease recovery、claim／lease fence、SMTP／ACS disposition、BCC capability、NotSent／Pending summary、attachment compatibility、Agent B M-03再レビューを完了してからAccepted化を判断する。

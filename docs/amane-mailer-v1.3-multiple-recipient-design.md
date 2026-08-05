@@ -187,7 +187,12 @@ SQLは本作業では実装しない。設計上はmigration 016でrecipient tab
 - attachment metadata／spool reference
 - submission evidence
 
-018のupgrade preconditionとして、migration開始前に旧Workerを停止し、in-flight provider invocationとProcessing requestを0件にする。Processing requestを安全にdrainできない場合はmigrationを適用せずfail-closedとする。Queued／retry待ちrequestはNoEvidenceのままv1.3 Workerへ引き渡す。
+018のupgrade preconditionとして、migration開始前に旧Workerを停止し、in-flight provider invocationとProcessing requestを0件にする。Processing requestを安全にdrainできない場合はmigrationを適用せずfail-closedとする。migrationは既存plain requestを、`mail_attempts`を含む履歴と既存request stateから一括分類する。新しいevidence rowがないことだけでは、旧Workerがproviderを呼び出していない証明にならない。
+
+- provider attempt履歴が存在せず、provider invocationまたはacceptance／rejectionの記録がないrequestは、evidence rowを作成せずNoEvidenceとする。Queued／retry待ちでこの分類になったrequestだけが、v1.3 Workerの初回送信対象になり得る。
+- Deliveredでprovider acceptanceが既存履歴から確定できるrequestは、provider／attempt／message identityを可能な限り保持してAccepted evidenceをbackfillする。
+- `mail_attempts`の履歴が存在するQueued、retry待ち、Failed、DeadLettered、Cancelledを含め、provider acceptance／definite rejectionのいずれも証明できないrequestは、Unknown evidenceをbackfillし、requestをDeliveryUnknownへ収束させ、自動retryとwhole-request manual retryを禁止する。manual retry前に`attempt_count`が0へ戻されていても、履歴行があればこの分類を優先する。
+- 履歴の分類またはbackfillを一つのatomic migrationとして完了できない場合は、018とv1.3 Worker readinessを成立させずfail-closedとする。分類済みの既存`mail_attempts`、request、attempt、delivery event、attachment、bounce、suppressionは削除しない。
 
 fresh DBとmigration 015適用済みDBのschema一致、attempt／attachment／evidence保持、plain request evidenceのunique constraint、old binary readiness拒否、matching restoreをqualificationする。Down migrationは提供せず、migration前backupを復旧境界とする。
 
@@ -237,6 +242,15 @@ re-queryはresponse lossごとに最大1回、5秒後に開始、provider API ti
 provider呼出し前に、request単位でevidence_state=Startedとprovider-specific operation identityをdurably commitする。Started commitに成功しなければproviderを呼出してはならない。
 
 通常応答が戻った場合は、evidence terminal stateとrequest／attempt finalizeを同一DB transactionで保存する。processがそのtransaction前にcrashした場合、DBに残るStartedをrecoveryが処理する。
+
+この境界はclaim／lease fencingを含む。実装はDBの書込み時刻を評価する`BEGIN IMMEDIATE`相当のtransactionで、現在のclaim tokenを持つWorkerだけが次を実行できるようにする。
+
+- 初回のNoEvidence→Startedは、`request.status=Processing`、`lock_token=current claim token`、`lock_expires_at IS NOT NULL`、`lock_expires_at > actual now`、plain request、evidence row不存在を同一transaction内で条件にしたinsertとする。条件付きinsertのaffected rowsが0ならtransactionをrollbackし、providerを呼び出さない。cancelがStarted insertより先に確定した場合も同じ境界でprovider invocationは0回となる。
+- DefinitelyNotSubmitted→Startedは、同じunique evidence rowに対し、`evidence_state=DefinitelyNotSubmitted`、`request.status=Processing`、current claim token、lease未期限切れを条件にしたconditional updateとする。affected rowsが0ならproviderを呼び出さない。
+- terminal finalizeは、evidence state、request state、mail_attempt、canonical recipientのPending／NotSentを同一transactionで更新し、`request.status=Processing`、current claim token、`lock_expires_at > actual now`、expected `evidence_state=Started`を必須条件とする。いずれかのfenced updateが0 rows、または同一transaction内の書込みが失敗した場合は全体をrollbackし、Started evidenceを後続recoveryへ残す。
+- lease expiry後のstale WorkerはStarted commitもterminal finalizeも成功できない。reclaim後のWorkerは新しいclaim tokenでevidenceを先に読み、Started以上ならproviderを再呼び出ししない。
+
+したがって、provider呼出し開始前の証拠作成、provider呼出し、finalize、stale claim／startup／periodic recovery、manual retryは、同じrequest単位evidenceとclaim／lease fenceを参照する。provider呼出し後にfinalizeが失敗しても、証拠なしの再送には遷移しない。
 
 | evidence state | SMTP recovery | ACS recovery | provider再呼出し |
 |---|---|---|---|
@@ -385,7 +399,7 @@ ASCII accept、IDN reject、Unicode local reject、raw address非表示、既存
 
 ### Provider disposition
 
-SMTP connect前、RCPT拒否、DATA前、DATA accepted、DATA後response loss、accepted後disconnect、stage不明timeout、ACS拒否、success、re-query success／failure、plain requestのprocess crash、stale Processing reclaim、startup recovery、periodic sweep、unknown後再呼出しなし。
+SMTP connect前、RCPT拒否、DATA前、DATA accepted、DATA後response loss、accepted後disconnect、stage不明timeout、ACS拒否、success、re-query success／failure、plain requestのprocess crash、stale Processing reclaim、startup recovery、periodic sweep、unknown後再呼出しなしに加え、Started insert前のcancel、lease expiry中のStarted insert、stale／reclaimed Workerの競合、二重Started遷移、claim lost時のfinalize、partial finalize failure、fence failure時のprovider invocation 0回をqualificationする。
 
 ### Recipient summary
 
@@ -397,7 +411,7 @@ general operator deny、normal PII deny、dedicated capability allow、tenant sc
 
 ### Migration／recovery
 
-v1.2 DB、migration 015 DB、single row backfill、attempt／attachment／plain submission evidence／bounce／suppression保持、migration 018 precondition、fresh／upgrade一致、old binary拒否、rollback禁止、matching restore。
+v1.2 DB、migration 015 DB、single row backfill、attempt／attachment／plain submission evidence／bounce／suppression保持、migration 018 precondition、既存`mail_attempts`履歴の有無・Delivered・Queued／retry・Failed・DeadLettered・Cancelledの分類、manual retry後に`attempt_count=0`となった履歴のUnknown化、migration後の自動／manual retry禁止、fresh／upgrade一致、old binary拒否、rollback禁止、matching restore。
 
 ### Platform／RC
 
@@ -427,7 +441,7 @@ G. integration／platform／RC qualification
 
 D1はmultiple-recipient本体へ混ぜない。実装順はD0完了後にD1、D1完了後にAとする。D1の実装準備とAの設計inventory作成は並列可能だが、Aのproduction implementationはD1完了後に開始する。FはA確定後に一部並列可能。A前にB、B前にC／D、B／D前にE、全項目前にGを開始してはならない。
 
-Bはmigration 016／017に加えてplain request submission evidence用の018、unique request_id、NoEvidence／Started／terminal evidence、upgrade precondition、stale claim recoveryを所有する。Cはprovider adapterのnormal response分類とevidence transaction finalizeを所有し、Dはstartup／periodic sweepのrecipient／request収束を所有する。
+Bはmigration 016／017に加えてplain request submission evidence用の018、unique request_id、既存履歴のatomic分類、NoEvidence／Started／terminal evidence、upgrade precondition、claim／lease fenceを所有する。Cはprovider adapterのnormal response分類とfenced evidence transaction finalizeを所有し、Dはstartup／periodic sweepのrecipient／request収束を同じevidenceとfenceで所有する。
 
 ## 16. Dependency graph
 
@@ -454,7 +468,7 @@ G: integration／platform／RC
 
 1. IDN／suppression mismatch: ASCII-only reject、既存key維持、re-keyなしで解消。
 2. DeliveryUnknown authority conflict: ADR 0012／0022／Draft ADR 0023／Contracts／OpenAPI／Consumer GET／Adminへ一般定義を反映するpatchを作成。
-3. Provider retry ambiguity: SMTP／ACSのstage table、4 disposition、request単位durable evidence、crash／lease recovery、bounded re-query、unknown時no reinvokeを固定。
+3. Provider retry ambiguity: SMTP／ACSのstage table、4 disposition、request単位durable evidence、既存履歴のmigration分類、claim／lease fence、crash／lease recovery、bounded re-query、unknown時no reinvokeを固定。
 4. BCC capability未定義: registry、explicit grant、scope、audit-before-serve、fail-closedをDraft ADRへ反映。
 5. Pending／NotSent ambiguity: NotSentをpublic summary stateとして追加し、事前suppressionではSuppressed／NotSentを返す。
 
@@ -466,15 +480,15 @@ G: integration／platform／RC
 - provider未知statusはUnknownへ寄せ、自動suppressionしない。
 - IDN／SMTPUTF8はv1.3非対応であり、将来導入には別ADRが必要。
 
-Major未解決事項はないため、設計状態はREVIEW_READYとする。
+設計状態は、今回の修正を含むM-03限定再レビュー待ちのREVIEW_READYとする。Accepted ADR化および実装開始を意味しない。
 
 ## 19. HOLD解除条件
 
 1. #519 Draft ADRがKoo承認を経てAccepted化されること。
-2. ADR 0012／0013／0014／0020／0022のDraft amendmentが各正本と整合すること。
+2. ADR 0012／0013／0014／0015／0020／0022のDraft amendmentが各正本と整合すること。
 3. ASCII-only、既存suppression key、INVALID_REQUESTがContracts／OpenAPI／SDK／vectorsへ反映されること。
 4. DeliveryUnknown一般化とattachment固有制約が全public surfaceで一致すること。
-5. provider disposition、request-level durable evidence、stage recovery、ACS bounded re-queryが確定すること。
+5. provider disposition、request-level durable evidence、既存provider履歴のmigration分類、claim／lease fence、stage recovery、ACS bounded re-queryが確定し、M-03限定再レビューで承認されること。
 6. bcc_recipient_revealのgrant、tenant scope、audit-before-serve、fail-closedが確定すること。
 7. NotSent／Pendingの意味がConsumer GET、Admin、summaryで一致すること。
 8. fresh／upgrade DB、old binary拒否、restore、attachment／bounce／suppression保持のqualification計画が承認されること。
@@ -503,6 +517,8 @@ Major未解決事項はないため、設計状態はREVIEW_READYとする。
 3. provider dispositionとSMTP／ACS stage判定がpost-submission再送を防げるか。
 4. bcc_recipient_revealのdefault deny、explicit grant、tenant scope、audit-before-serve、fail-closed、raw BCC非記録がauthorityになっているか。
 5. NotSentとPendingが定義され、事前suppression時にConsumer GET／Admin／summaryでPendingを表示しないか。
+6. migration 018が既存`mail_attempts`履歴を分類し、NoEvidenceと証明できないrequestをUnknown／DeliveryUnknownへ収束させるか。
+7. Started insert、DefinitelyNotSubmitted→Started、terminal finalizeがclaim／lease fenceとaffected rows検査を持ち、競合時にprovider再呼出しと部分更新を防ぐか。
 
 設計、Draft ADR、authority patch、Contracts／OpenAPI inventoryだけをレビューし、production code、migration SQL、test codeの実装レビューは行わないこと。判定はAPPROVE_DESIGN_WITH_GATES、CHANGES_REQUIRED、HOLDのいずれかとする。
 
