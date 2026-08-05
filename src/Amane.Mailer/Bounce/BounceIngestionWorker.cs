@@ -203,7 +203,7 @@ public sealed class BounceIngestionWorker(
             return;
         }
 
-        var suppress = BounceClassifier.IsHardBounce(row.DeliveryStatus);
+        var suppress = BounceClassifier.ShouldSuppress(row.DeliveryStatus);
         stageTracker(FailureStageFinalize);
         var persisted = await ingestionStore.PersistCorrelatedAsync(
             row,
