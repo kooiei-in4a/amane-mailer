@@ -52,14 +52,77 @@ public sealed class RecipientPersistenceMigrationTests
             MailDeliveryErrorCodes.ProviderTimeout,
             cancellationToken);
 
+        var acceptedWithMismatchedAttemptTimestamp = await database.InsertRequestAsync(
+            status: MailRequestState.Delivered,
+            attemptCount: 1,
+            attachmentCount: 0,
+            deliveredAt: database.Now,
+            cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            acceptedWithMismatchedAttemptTimestamp,
+            MailRequestState.Delivered,
+            null,
+            cancellationToken,
+            completedAt: SqliteTime.ToStorageUtc(DateTimeOffset.UtcNow.AddMinutes(-1)));
+
+        var acceptedWithSupersededAttempt = await database.InsertRequestAsync(
+            status: MailRequestState.Delivered,
+            attemptCount: 1,
+            attachmentCount: 0,
+            deliveredAt: database.Now,
+            cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            acceptedWithSupersededAttempt,
+            MailRequestState.Delivered,
+            MailRequestRepository.SupersededByManualRetryErrorCode,
+            cancellationToken);
+
         var attachmentSucceeded = await database.InsertRequestAsync(
             status: MailRequestState.Delivered,
             attemptCount: 1,
             attachmentCount: 1,
+            deliveredAt: database.Now,
             cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            attachmentSucceeded,
+            MailRequestState.Delivered,
+            null,
+            cancellationToken);
         await database.InsertAttachmentSubmissionAsync(
             attachmentSucceeded,
             AttachmentSubmissionState.Succeeded,
+            cancellationToken);
+
+        var attachmentDefinitelyFailed = await database.InsertRequestAsync(
+            status: MailRequestState.Failed,
+            attemptCount: 1,
+            attachmentCount: 1,
+            failedAt: database.Now,
+            cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            attachmentDefinitelyFailed,
+            MailRequestState.Failed,
+            MailDeliveryErrorCodes.AcsSendFailed,
+            cancellationToken);
+        await database.InsertAttachmentSubmissionAsync(
+            attachmentDefinitelyFailed,
+            AttachmentSubmissionState.DefinitiveFailed,
+            cancellationToken);
+
+        var attachmentUnknown = await database.InsertRequestAsync(
+            status: MailRequestState.DeliveryUnknown,
+            attemptCount: 1,
+            attachmentCount: 1,
+            deliveryUnknownAt: database.Now,
+            cancellationToken: cancellationToken);
+        await database.InsertAttemptAsync(
+            attachmentUnknown,
+            MailRequestState.Failed,
+            MailDeliveryErrorCodes.DeliveryUnknown,
+            cancellationToken);
+        await database.InsertAttachmentSubmissionAsync(
+            attachmentUnknown,
+            AttachmentSubmissionState.Unknown,
             cancellationToken);
 
         var attachmentWithoutEvidence = await database.InsertRequestAsync(
@@ -80,7 +143,18 @@ public sealed class RecipientPersistenceMigrationTests
         AssertRecipient(await database.ReadRecipientAsync(definitelyRejected, cancellationToken), 5);
         AssertRecipient(await database.ReadRecipientAsync(unknown, cancellationToken), 6);
         AssertRecipient(await database.ReadRecipientAsync(attachmentSucceeded, cancellationToken), 1);
+        AssertRecipient(await database.ReadRecipientAsync(attachmentDefinitelyFailed, cancellationToken), 5);
+        AssertRecipient(await database.ReadRecipientAsync(attachmentUnknown, cancellationToken), 6);
         AssertRecipient(await database.ReadRecipientAsync(attachmentWithoutEvidence, cancellationToken), 0);
+        Assert.Equal(
+            MailRequestState.DeliveryUnknown,
+            await database.ReadRequestStatusAsync(unknown, cancellationToken));
+        Assert.Equal(
+            MailRequestState.DeliveryUnknown,
+            await database.ReadRequestStatusAsync(acceptedWithMismatchedAttemptTimestamp, cancellationToken));
+        Assert.Equal(
+            MailRequestState.DeliveryUnknown,
+            await database.ReadRequestStatusAsync(acceptedWithSupersededAttempt, cancellationToken));
 
         Assert.Null(await database.ReadPlainEvidenceAsync(noEvidence, cancellationToken));
         Assert.Equal(
@@ -92,6 +166,12 @@ public sealed class RecipientPersistenceMigrationTests
         Assert.Equal(
             ((int)MailPlainSubmissionEvidenceState.Unknown, (int)MailPlainSubmissionEvidenceOrigin.LegacyBackfill),
             await database.ReadPlainEvidenceAsync(unknown, cancellationToken));
+        Assert.Equal(
+            ((int)MailPlainSubmissionEvidenceState.Unknown, (int)MailPlainSubmissionEvidenceOrigin.LegacyBackfill),
+            await database.ReadPlainEvidenceAsync(acceptedWithMismatchedAttemptTimestamp, cancellationToken));
+        Assert.Equal(
+            ((int)MailPlainSubmissionEvidenceState.Unknown, (int)MailPlainSubmissionEvidenceOrigin.LegacyBackfill),
+            await database.ReadPlainEvidenceAsync(acceptedWithSupersededAttempt, cancellationToken));
         Assert.Null(await database.ReadPlainEvidenceAsync(attachmentSucceeded, cancellationToken));
         Assert.Null(await database.ReadPlainEvidenceAsync(attachmentWithoutEvidence, cancellationToken));
 
@@ -113,8 +193,8 @@ public sealed class RecipientPersistenceMigrationTests
 
         var secondApply = await database.Runner.ApplyPendingAsync(cancellationToken);
         Assert.Empty(secondApply);
-        Assert.Equal(6L, await database.ReadCountAsync("SELECT COUNT(*) FROM mail_request_recipients;", cancellationToken));
-        Assert.Equal(3L, await database.ReadCountAsync("SELECT COUNT(*) FROM mail_plain_submissions;", cancellationToken));
+        Assert.Equal(10L, await database.ReadCountAsync("SELECT COUNT(*) FROM mail_request_recipients;", cancellationToken));
+        Assert.Equal(5L, await database.ReadCountAsync("SELECT COUNT(*) FROM mail_plain_submissions;", cancellationToken));
 
         await File.AppendAllTextAsync(
             Path.Combine(database.MigrationDirectory, "016_recipient_persistence_and_plain_submission_evidence.sql"),
@@ -174,6 +254,48 @@ public sealed class RecipientPersistenceMigrationTests
             attachmentCount: 0,
             recipientEmail: "invalid-recipient",
             cancellationToken: cancellationToken);
+        await database.Copy016Async();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            database.Runner.ApplyPendingAsync(cancellationToken));
+
+        await database.Assert016RolledBackAsync(cancellationToken);
+    }
+
+    [Fact]
+    public async Task Migration_016_fails_closed_for_non_initial_attachment_without_submission()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre016Async(cancellationToken);
+        await database.InsertRequestAsync(
+            status: MailRequestState.Delivered,
+            attemptCount: 1,
+            attachmentCount: 1,
+            deliveredAt: database.Now,
+            cancellationToken: cancellationToken);
+        await database.Copy016Async();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            database.Runner.ApplyPendingAsync(cancellationToken));
+
+        await database.Assert016RolledBackAsync(cancellationToken);
+    }
+
+    [Fact]
+    public async Task Migration_016_fails_closed_for_attachment_submission_request_state_mismatch()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre016Async(cancellationToken);
+        var requestId = await database.InsertRequestAsync(
+            status: MailRequestState.Failed,
+            attemptCount: 1,
+            attachmentCount: 1,
+            failedAt: database.Now,
+            cancellationToken: cancellationToken);
+        await database.InsertAttachmentSubmissionAsync(
+            requestId,
+            AttachmentSubmissionState.Succeeded,
+            cancellationToken);
         await database.Copy016Async();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -253,6 +375,8 @@ public sealed class RecipientPersistenceMigrationTests
             int attachmentCount,
             string? deliveredAt = null,
             string? failedAt = null,
+            string? deliveryUnknownAt = null,
+            string? completedAt = null,
             string? recipientEmail = null,
             CancellationToken cancellationToken = default)
         {
@@ -266,12 +390,14 @@ public sealed class RecipientPersistenceMigrationTests
                     id, tenant_id, source_service, mail_request_id, purpose,
                     payload_json, payload_hash, subject, recipient_email, recipient_display_name,
                     status, attempt_count, max_attempts, delivered_at, failed_at,
-                    attachment_count, accepted_at, created_at, updated_at)
+                    attachment_count, accepted_at, created_at, updated_at, completed_at,
+                    delivery_unknown_at)
                 VALUES (
                     @Id, @TenantId, @SourceService, @MailRequestId, 'test',
                     '{}', @PayloadHash, 'subject', @RecipientEmail, NULL,
                     @Status, @AttemptCount, 3, @DeliveredAt, @FailedAt,
-                    @AttachmentCount, @Now, @Now, @Now);
+                    @AttachmentCount, @Now, @Now, @Now, @CompletedAt,
+                    @DeliveryUnknownAt);
                 """;
             command.Parameters.AddWithValue("@Id", id.ToString("D"));
             command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
@@ -285,6 +411,10 @@ public sealed class RecipientPersistenceMigrationTests
             command.Parameters.AddWithValue("@FailedAt", (object?)failedAt ?? DBNull.Value);
             command.Parameters.AddWithValue("@AttachmentCount", attachmentCount);
             command.Parameters.AddWithValue("@Now", Now);
+            command.Parameters.AddWithValue(
+                "@CompletedAt",
+                (object?)(completedAt ?? deliveredAt ?? failedAt ?? deliveryUnknownAt) ?? DBNull.Value);
+            command.Parameters.AddWithValue("@DeliveryUnknownAt", (object?)deliveryUnknownAt ?? DBNull.Value);
             await command.ExecuteNonQueryAsync(cancellationToken);
 
             requestMetadata[id] = new RequestMetadata(tenantId, mailRequestId);
@@ -295,7 +425,8 @@ public sealed class RecipientPersistenceMigrationTests
             Guid requestId,
             MailRequestState status,
             string? errorCode,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? completedAt = null)
         {
             await using var connection = await Factory.OpenConnectionAsync(cancellationToken);
             await using var command = connection.CreateCommand();
@@ -305,20 +436,22 @@ public sealed class RecipientPersistenceMigrationTests
                     retryable, lock_token, started_at, completed_at)
                 VALUES (
                     @RequestId, 1, 'mailpit', @Status, @ErrorCode, NULL,
-                    0, @LockToken, @Now, @Now);
+                    0, @LockToken, @Now, @CompletedAt);
                 """;
             command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
             command.Parameters.AddWithValue("@Status", (int)status);
             command.Parameters.AddWithValue("@ErrorCode", (object?)errorCode ?? DBNull.Value);
             command.Parameters.AddWithValue("@LockToken", Guid.NewGuid().ToString("D"));
             command.Parameters.AddWithValue("@Now", Now);
+            command.Parameters.AddWithValue("@CompletedAt", completedAt ?? Now);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
         public async Task InsertAttachmentSubmissionAsync(
             Guid requestId,
             AttachmentSubmissionState state,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? completedAt = null)
         {
             await using var connection = await Factory.OpenConnectionAsync(cancellationToken);
             await using var command = connection.CreateCommand();
@@ -327,12 +460,13 @@ public sealed class RecipientPersistenceMigrationTests
                     request_id, submission_state, provider, submission_started_at,
                     lock_token, provider_message_id, completed_at, created_at, updated_at)
                 VALUES (
-                    @RequestId, @State, 'mailpit', @Now, @LockToken, NULL, @Now, @Now, @Now);
+                    @RequestId, @State, 'mailpit', @Now, @LockToken, NULL, @CompletedAt, @Now, @Now);
                 """;
             command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
             command.Parameters.AddWithValue("@State", (int)state);
             command.Parameters.AddWithValue("@Now", Now);
             command.Parameters.AddWithValue("@LockToken", Guid.NewGuid().ToString("D"));
+            command.Parameters.AddWithValue("@CompletedAt", (object?)completedAt ?? Now);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -399,6 +533,23 @@ public sealed class RecipientPersistenceMigrationTests
             return await reader.ReadAsync(cancellationToken)
                 ? (reader.GetInt32(0), reader.GetInt32(1))
                 : null;
+        }
+
+        public async Task<MailRequestState> ReadRequestStatusAsync(
+            Guid requestId,
+            CancellationToken cancellationToken)
+        {
+            await using var connection = await Factory.OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT status
+                FROM mail_requests
+                WHERE id = @RequestId;
+                """;
+            command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+            return (MailRequestState)Convert.ToInt32(
+                await command.ExecuteScalarAsync(cancellationToken),
+                System.Globalization.CultureInfo.InvariantCulture);
         }
 
         public async Task<long> ReadCountAsync(string sql, CancellationToken cancellationToken)

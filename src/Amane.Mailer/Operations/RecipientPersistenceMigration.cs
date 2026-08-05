@@ -9,6 +9,9 @@ internal static class RecipientPersistenceMigration
 {
     public const string MigrationVersion = "016_recipient_persistence_and_plain_submission_evidence.sql";
 
+    private const string DeliveryUnknownConvergenceErrorMessage =
+        "Provider acceptance could not be confirmed during recovery.";
+
     public static readonly SqlMigrationRunner.MigrationTransactionStep Step = new(
         ValidatePreconditionBeforeScriptAsync,
         ApplyDataMigrationAfterScriptAsync);
@@ -34,30 +37,44 @@ internal static class RecipientPersistenceMigration
         string? DeliveredAt,
         string? FailedAt,
         string? DeliveryUnknownAt,
+        string? CompletedAt,
         string CreatedAt);
 
     private sealed record AttemptSummary(
         int Count,
-        bool HasDeliveredAttempt,
+        IReadOnlySet<string> DeliveredAttemptCompletedAt,
         string? LastAttemptErrorCode);
+
+    private sealed record AttachmentSubmission(
+        int State,
+        string? CompletedAt);
 
     private sealed class AttemptSummaryAccumulator
     {
         public int Count { get; private set; }
 
-        public bool HasDeliveredAttempt { get; private set; }
+        private readonly HashSet<string> deliveredAttemptCompletedAt = new(StringComparer.Ordinal);
 
         public string? LastAttemptErrorCode { get; private set; }
 
-        public void Add(int status, string? errorCode)
+        public void Add(int status, string? errorCode, string? completedAt)
         {
             Count++;
-            HasDeliveredAttempt |= status == (int)MailRequestState.Delivered;
+            if (status == (int)MailRequestState.Delivered
+                && !string.Equals(
+                    errorCode,
+                    MailRequestConsumerMutations.SupersededByManualRetryErrorCode,
+                    StringComparison.Ordinal)
+                && completedAt is not null)
+            {
+                deliveredAttemptCompletedAt.Add(completedAt);
+            }
+
             LastAttemptErrorCode = errorCode;
         }
 
         public AttemptSummary ToSummary() =>
-            new(Count, HasDeliveredAttempt, LastAttemptErrorCode);
+            new(Count, deliveredAttemptCompletedAt, LastAttemptErrorCode);
     }
 
     private static async Task ValidatePreconditionBeforeScriptAsync(
@@ -95,6 +112,18 @@ internal static class RecipientPersistenceMigration
         var attachmentSubmissionStates = await LoadAttachmentSubmissionStatesAsync(
             connection,
             cancellationToken);
+        var requestsById = requests.ToDictionary(request => request.Id, StringComparer.Ordinal);
+        foreach (var requestId in attachmentSubmissionStates.Keys)
+        {
+            if (!requestsById.TryGetValue(requestId, out var request)
+                || request.AttachmentCount == 0)
+            {
+                throw new InvalidOperationException(
+                    "Migration 016 found attachment submission evidence for a non-attachment request.");
+            }
+        }
+
+        var migrationNow = SqliteTime.ToStorageUtc(DateTimeOffset.UtcNow);
 
         var noEvidenceCount = 0;
         var acceptedCount = 0;
@@ -120,15 +149,14 @@ internal static class RecipientPersistenceMigration
                     "Migration 016 found an invalid legacy recipient value.");
             }
 
+            var attempts = attemptSummaries.TryGetValue(request.Id, out var summary)
+                ? summary
+                : null;
             var classification = request.AttachmentCount == 0
-                ? ClassifyPlainRequest(
-                    request,
-                    attemptSummaries.TryGetValue(request.Id, out var summary)
-                        ? summary
-                        : null,
-                    attachmentSubmissionStates.ContainsKey(request.Id))
+                ? ClassifyPlainRequest(request, attempts)
                 : ClassifyAttachmentRequest(
-                    request.Id,
+                    request,
+                    attempts,
                     attachmentSubmissionStates);
 
             if (request.AttachmentCount == 0)
@@ -146,6 +174,11 @@ internal static class RecipientPersistenceMigration
                         break;
                     case PlainEvidenceClassification.Unknown:
                         unknownCount++;
+                        await ConvergeLegacyUnknownRequestAsync(
+                            connection,
+                            request,
+                            migrationNow,
+                            cancellationToken);
                         break;
                     default:
                         throw new InvalidOperationException("Migration 016 produced an unknown evidence classification.");
@@ -185,8 +218,7 @@ internal static class RecipientPersistenceMigration
 
     private static PlainEvidenceClassification ClassifyPlainRequest(
         LegacyRequest request,
-        AttemptSummary? attempts,
-        bool hasAttachmentSubmission)
+        AttemptSummary? attempts)
     {
         if (request.Status == MailRequestState.Queued
             && request.AttemptCount == 0
@@ -194,18 +226,22 @@ internal static class RecipientPersistenceMigration
             && request.DeliveredAt is null
             && request.FailedAt is null
             && request.DeliveryUnknownAt is null
-            && !hasAttachmentSubmission)
+            && request.CompletedAt is null)
         {
             return PlainEvidenceClassification.NoEvidence;
         }
 
         if (request.Status == MailRequestState.Delivered
-            && attempts?.HasDeliveredAttempt == true)
+            && request.DeliveredAt is not null
+            && string.Equals(request.CompletedAt, request.DeliveredAt, StringComparison.Ordinal)
+            && attempts?.DeliveredAttemptCompletedAt.Contains(request.DeliveredAt) == true)
         {
             return PlainEvidenceClassification.Accepted;
         }
 
         if (request.Status == MailRequestState.Failed
+            && request.FailedAt is not null
+            && string.Equals(request.CompletedAt, request.FailedAt, StringComparison.Ordinal)
             && string.Equals(
                 attempts?.LastAttemptErrorCode,
                 MailDeliveryErrorCodes.AcsSendFailed,
@@ -218,22 +254,132 @@ internal static class RecipientPersistenceMigration
     }
 
     private static PlainEvidenceClassification ClassifyAttachmentRequest(
-        string requestId,
-        IReadOnlyDictionary<string, int> submissionStates)
+        LegacyRequest request,
+        AttemptSummary? attempts,
+        IReadOnlyDictionary<string, AttachmentSubmission> submissionStates)
     {
-        if (!submissionStates.TryGetValue(requestId, out var submissionState))
+        if (!submissionStates.TryGetValue(request.Id, out var submission))
         {
+            if (request.Status != MailRequestState.Queued
+                || request.AttemptCount != 0
+                || (attempts?.Count ?? 0) != 0
+                || request.DeliveredAt is not null
+                || request.FailedAt is not null
+                || request.DeliveryUnknownAt is not null
+                || request.CompletedAt is not null)
+            {
+                throw new InvalidOperationException(
+                    "Migration 016 found an attachment request without submission evidence that is not in its initial Queued state.");
+            }
+
             return PlainEvidenceClassification.NoEvidence;
         }
 
-        return submissionState switch
+        if (submission.State == (int)AttachmentSubmissionState.Started)
         {
-            (int)AttachmentSubmissionState.Started => PlainEvidenceClassification.NoEvidence,
-            (int)AttachmentSubmissionState.Succeeded => PlainEvidenceClassification.Accepted,
-            (int)AttachmentSubmissionState.DefinitiveFailed => PlainEvidenceClassification.DefinitelyRejected,
-            (int)AttachmentSubmissionState.Unknown => PlainEvidenceClassification.Unknown,
-            _ => throw new InvalidOperationException("Migration 016 found an unsupported attachment submission state."),
-        };
+            throw new InvalidOperationException(
+                "Migration 016 found a Started attachment submission after its precondition check.");
+        }
+
+        if (submission.CompletedAt is null
+            || request.CompletedAt is null
+            || !string.Equals(submission.CompletedAt, request.CompletedAt, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Migration 016 found an attachment submission/request completion timestamp mismatch.");
+        }
+
+        switch (submission.State)
+        {
+            case (int)AttachmentSubmissionState.Succeeded:
+                ValidateAttachmentRequestAggregate(
+                    request,
+                    attempts,
+                    MailRequestState.Delivered,
+                    request.DeliveredAt,
+                    request.FailedAt,
+                    request.DeliveryUnknownAt,
+                    "delivered");
+                return PlainEvidenceClassification.Accepted;
+            case (int)AttachmentSubmissionState.DefinitiveFailed:
+                ValidateAttachmentRequestAggregate(
+                    request,
+                    attempts,
+                    MailRequestState.Failed,
+                    request.FailedAt,
+                    request.DeliveredAt,
+                    request.DeliveryUnknownAt,
+                    "failed");
+                return PlainEvidenceClassification.DefinitelyRejected;
+            case (int)AttachmentSubmissionState.Unknown:
+                ValidateAttachmentRequestAggregate(
+                    request,
+                    attempts,
+                    MailRequestState.DeliveryUnknown,
+                    request.DeliveryUnknownAt,
+                    request.DeliveredAt,
+                    request.FailedAt,
+                    "delivery_unknown");
+                return PlainEvidenceClassification.Unknown;
+            default:
+                throw new InvalidOperationException(
+                    "Migration 016 found an unsupported attachment submission state.");
+        }
+    }
+
+    private static void ValidateAttachmentRequestAggregate(
+        LegacyRequest request,
+        AttemptSummary? attempts,
+        MailRequestState expectedStatus,
+        string? expectedTimestamp,
+        string? conflictingTimestamp1,
+        string? conflictingTimestamp2,
+        string stateName)
+    {
+        if (request.Status != expectedStatus
+            || request.AttemptCount <= 0
+            || (attempts?.Count ?? 0) == 0
+            || expectedTimestamp is null
+            || conflictingTimestamp1 is not null
+            || conflictingTimestamp2 is not null
+            || !string.Equals(request.CompletedAt, expectedTimestamp, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Migration 016 found an attachment submission/request aggregate mismatch for {stateName} state.");
+        }
+    }
+
+    private static async Task ConvergeLegacyUnknownRequestAsync(
+        SqliteConnection connection,
+        LegacyRequest request,
+        string migrationNow,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE mail_requests
+            SET status = @DeliveryUnknownStatus,
+                next_attempt_at = NULL,
+                lock_token = NULL,
+                lock_expires_at = NULL,
+                completed_at = @Now,
+                delivered_at = NULL,
+                failed_at = NULL,
+                delivery_unknown_at = @Now,
+                last_error_message = @LastErrorMessage,
+                updated_at = @Now
+            WHERE id = @Id;
+            """;
+        command.Parameters.AddWithValue("@DeliveryUnknownStatus", (int)MailRequestState.DeliveryUnknown);
+        command.Parameters.AddWithValue("@Now", migrationNow);
+        command.Parameters.AddWithValue("@LastErrorMessage", DeliveryUnknownConvergenceErrorMessage);
+        command.Parameters.AddWithValue("@Id", request.Id);
+
+        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+        {
+            throw new InvalidOperationException(
+                "Migration 016 could not converge a legacy Unknown request.");
+        }
     }
 
     private static MailRecipientDeliveryState MapRecipientDeliveryState(
@@ -318,7 +464,9 @@ internal static class RecipientPersistenceMigration
         command.Parameters.AddWithValue("@RecipientRole", (int)MailRecipientRole.To);
         command.Parameters.AddWithValue("@Ordinal", 0);
         command.Parameters.AddWithValue("@Address", recipient.Address);
-        command.Parameters.AddWithValue("@AddressKey", recipient.AddressKey);
+        command.Parameters.AddWithValue(
+            "@AddressKey",
+            RecipientEmailNormalizer.Normalize(recipient.Address));
         AddNullableParameter(command, "@DisplayName", recipient.DisplayName);
         command.Parameters.AddWithValue("@DeliveryState", (int)deliveryState);
         command.Parameters.AddWithValue("@CreatedAt", request.CreatedAt);
@@ -398,7 +546,7 @@ internal static class RecipientPersistenceMigration
         command.CommandText = """
             SELECT id, tenant_id, source_service, mail_request_id, recipient_email,
                    recipient_display_name, attachment_count, status, attempt_count,
-                   delivered_at, failed_at, delivery_unknown_at, created_at
+                   delivered_at, failed_at, delivery_unknown_at, completed_at, created_at
             FROM mail_requests
             ORDER BY id;
             """;
@@ -419,7 +567,8 @@ internal static class RecipientPersistenceMigration
                 DeliveredAt: reader.IsDBNull(9) ? null : reader.GetString(9),
                 FailedAt: reader.IsDBNull(10) ? null : reader.GetString(10),
                 DeliveryUnknownAt: reader.IsDBNull(11) ? null : reader.GetString(11),
-                CreatedAt: reader.GetString(12)));
+                CompletedAt: reader.IsDBNull(12) ? null : reader.GetString(12),
+                CreatedAt: reader.GetString(13)));
         }
 
         return requests;
@@ -432,7 +581,7 @@ internal static class RecipientPersistenceMigration
         var accumulators = new Dictionary<string, AttemptSummaryAccumulator>(StringComparer.Ordinal);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT request_id, attempt_number, status, error_code
+            SELECT request_id, attempt_number, status, error_code, completed_at
             FROM mail_attempts
             ORDER BY request_id, attempt_number, id;
             """;
@@ -449,7 +598,8 @@ internal static class RecipientPersistenceMigration
 
             accumulator.Add(
                 reader.GetInt32(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3));
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4));
         }
 
         return accumulators.ToDictionary(
@@ -479,21 +629,25 @@ internal static class RecipientPersistenceMigration
         return keys;
     }
 
-    private static async Task<IReadOnlyDictionary<string, int>> LoadAttachmentSubmissionStatesAsync(
+    private static async Task<IReadOnlyDictionary<string, AttachmentSubmission>> LoadAttachmentSubmissionStatesAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
-        var states = new Dictionary<string, int>(StringComparer.Ordinal);
+        var states = new Dictionary<string, AttachmentSubmission>(StringComparer.Ordinal);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT request_id, submission_state
+            SELECT request_id, submission_state, completed_at
             FROM mail_attachment_submissions;
             """;
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            states.Add(reader.GetString(0), reader.GetInt32(1));
+            states.Add(
+                reader.GetString(0),
+                new AttachmentSubmission(
+                    reader.GetInt32(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2)));
         }
 
         return states;

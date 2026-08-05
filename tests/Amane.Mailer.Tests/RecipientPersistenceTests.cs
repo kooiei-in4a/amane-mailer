@@ -26,7 +26,7 @@ public sealed class RecipientPersistenceTests
                 Recipient(MailRecipientRole.To, 1, "to-two@example.com", "Second To"),
             },
             new[] { Recipient(MailRecipientRole.Cc, 0, "cc@example.com", null) },
-            new[] { Recipient(MailRecipientRole.Bcc, 0, "bcc@example.com", null) },
+            new[] { Recipient(MailRecipientRole.Bcc, 0, "bcc@example.com", "Private BCC") },
             new[]
             {
                 Recipient(MailRecipientRole.To, 0, "to-cc@example.com", null),
@@ -73,7 +73,58 @@ public sealed class RecipientPersistenceTests
                      row.AddressKey,
                      row.DisplayName,
                      row.State)));
+
+            var legacyShadow = await ReadLegacyShadowAsync(
+                database.Factory,
+                requestId,
+                cancellationToken);
+            if (recipients.All(recipient => recipient.Role == MailRecipientRole.Bcc))
+            {
+                Assert.Equal(
+                    new LegacyShadow(
+                        MailRequestLegacyShadow.BccOnlyRecipientEmail,
+                        MailRequestLegacyShadow.BccOnlyRecipientDisplayName),
+                    legacyShadow);
+                Assert.DoesNotContain(
+                    recipients.Select(recipient => recipient.Address),
+                    address => string.Equals(legacyShadow.Email, address, StringComparison.Ordinal));
+                Assert.DoesNotContain(
+                    recipients.Where(recipient => recipient.DisplayName is not null)
+                        .Select(recipient => recipient.DisplayName!),
+                    displayName => string.Equals(legacyShadow.DisplayName, displayName, StringComparison.Ordinal));
+            }
+            else
+            {
+                Assert.Equal(
+                    new LegacyShadow(recipients[0].Address, recipients[0].DisplayName),
+                    legacyShadow);
+            }
         }
+    }
+
+    [Fact]
+    public async Task Accept_store_recalculates_address_key_from_address_before_insert()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var database = await TestDatabase.CreateAsync(cancellationToken);
+        var repository = MailRequestRepository.CreateStandalone(database.Factory);
+        var requestId = Guid.NewGuid();
+        var recipient = new CanonicalMailRecipient
+        {
+            Role = MailRecipientRole.To,
+            Ordinal = 0,
+            Address = "  MixedCase@example.com  ",
+            AddressKey = "forged-key-must-not-be-stored",
+            DisplayName = null,
+        };
+
+        await repository.InsertAcceptedAsync(
+            CreateInsert(requestId, [recipient]),
+            cancellationToken);
+
+        var persisted = await ReadRecipientsAsync(database.Factory, requestId, cancellationToken);
+        var row = Assert.Single(persisted);
+        Assert.Equal(RecipientEmailNormalizer.Normalize(recipient.Address), row.AddressKey);
     }
 
     [Fact]
@@ -175,6 +226,27 @@ public sealed class RecipientPersistenceTests
         return rows;
     }
 
+    private static async Task<LegacyShadow> ReadLegacyShadowAsync(
+        SqliteConnectionFactory factory,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT recipient_email, recipient_display_name
+            FROM mail_requests
+            WHERE id = @RequestId;
+            """;
+        command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        Assert.True(await reader.ReadAsync(cancellationToken));
+        return new LegacyShadow(
+            reader.GetString(0),
+            reader.IsDBNull(1) ? null : reader.GetString(1));
+    }
+
     private static async Task<long> ReadScalarAsync(
         SqliteConnectionFactory factory,
         string sql,
@@ -201,6 +273,8 @@ public sealed class RecipientPersistenceTests
         string AddressKey,
         string? DisplayName,
         int State);
+
+    private sealed record LegacyShadow(string Email, string? DisplayName);
 
     private sealed class TestDatabase : IAsyncDisposable
     {
