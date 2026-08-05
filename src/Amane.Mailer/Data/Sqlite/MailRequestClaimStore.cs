@@ -837,7 +837,7 @@ public sealed class MailRequestClaimStore(
         }
     }
 
-    private static async Task InsertMailAttemptAsync(
+    internal static async Task InsertMailAttemptAsync(
         SqliteConnection connection,
         string insertAttemptSql,
         MailAttemptInsert attempt,

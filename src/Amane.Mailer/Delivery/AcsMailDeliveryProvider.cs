@@ -6,6 +6,7 @@ using AcsEmailAttachment = Azure.Communication.Email.EmailAttachment;
 using AcsEmailClient = Azure.Communication.Email.EmailClient;
 using AcsEmailContent = Azure.Communication.Email.EmailContent;
 using AcsEmailMessage = Azure.Communication.Email.EmailMessage;
+using AcsEmailRecipients = Azure.Communication.Email.EmailRecipients;
 using AcsEmailSendStatus = Azure.Communication.Email.EmailSendStatus;
 
 namespace Amane.Mailer.Delivery;
@@ -38,9 +39,17 @@ public sealed class AcsMailDeliveryProvider(MailerOptions options)
                 Html = job.HtmlBody,
             };
 
+            // Global provider order To -> Cc -> Bcc (ADR 0023 D-01). ACS's EmailRecipients keeps
+            // To/Cc/Bcc as distinct lists -- there is no shared header to leak Bcc into, unlike
+            // SMTP; ACS never sees a merged recipient list.
+            var recipients = new AcsEmailRecipients(
+                to: job.To.Select(ToAcsAddress),
+                cc: job.Cc.Count > 0 ? job.Cc.Select(ToAcsAddress) : null,
+                bcc: job.Bcc.Count > 0 ? job.Bcc.Select(ToAcsAddress) : null);
+
             var message = new AcsEmailMessage(
                 senderAddress: tenant.DefaultFrom.Email,
-                recipientAddress: job.RecipientEmail,
+                recipients: recipients,
                 content: content);
 
             if (!string.IsNullOrWhiteSpace(job.ReplyTo))
@@ -114,4 +123,9 @@ public sealed class AcsMailDeliveryProvider(MailerOptions options)
                 retryable);
         }
     }
+
+    private static AcsEmailAddress ToAcsAddress(MailSendRecipient recipient) =>
+        string.IsNullOrWhiteSpace(recipient.DisplayName)
+            ? new AcsEmailAddress(recipient.Address)
+            : new AcsEmailAddress(recipient.Address, recipient.DisplayName);
 }

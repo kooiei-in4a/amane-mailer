@@ -280,42 +280,54 @@ public sealed class MailRequestWorker : BackgroundService
             return;
         }
 
-        // A prior provider success may exist when finalize lost the lease race (#238).
-        // Converge to Delivered without resending. Evidence superseded by Admin manual retry
-        // (#268) is ignored so a new dispatch cycle still performs real sends.
-        if (row.AttemptCount > 1)
-        {
-            var priorSuccess = await _repository.FindSuccessfulDeliveryAttemptAsync(row.Id, stoppingToken);
-            if (priorSuccess is not null)
-            {
-                await ConvergeDeliveredFromPriorSuccessAsync(row, priorSuccess, startedAt);
-                return;
-            }
-        }
-
-        // Send-time suppression check (#303). Uses the same RecipientEmailNormalizer as
-        // store (#301) and removal CLI (#400). Point lookup on UNIQUE (tenant_id, email).
-        if (await _suppressions.ExistsAsync(row.TenantId, row.RecipientEmail, stoppingToken))
-        {
-            await FinalizeTerminalFailureAsync(
-                row,
-                startedAt,
-                provider: "none",
-                errorCode: MailDeliveryErrorCodes.RecipientSuppressed,
-                errorMessage: "Recipient is on the suppression list.");
-            return;
-        }
-
         var providerName = _mailerOptions.ResolveProvider(tenant);
-        var job = new MailSendJob(
-            row.MailRequestId,
-            row.SourceService,
-            row.Subject,
-            row.HtmlBody,
-            row.TextBody,
-            row.ReplyTo,
-            row.RecipientEmail,
-            row.RecipientDisplayName);
+
+        // Provider invocation boundary + suppression precheck (ADR 0023 D-03/D-04/D-05,
+        // Issue #546): a durable Started evidence row commits, and all canonical recipients move
+        // to Pending, before any provider call. A suppression hit converges the whole request to
+        // Failed/DefinitelyNotSubmitted with zero provider invocations, all in one fenced SQLite
+        // transaction. Every reachable path (fresh dispatch, expired-lease reclaim, startup
+        // recovery, periodic sweep) goes through TryClaimOneAsync and lands here, so checking
+        // existing evidence first -- before touching the provider -- implements recovery without
+        // a separate reconciliation pass, mirroring SendAttachmentRequestAndFinalizeAsync's ADR
+        // 0022 evidence-first design below.
+        var invocation = await _repository.TryPreparePlainProviderInvocationAsync(
+            row.Id,
+            row.TenantId,
+            providerName,
+            row.LockToken,
+            row.AttemptCount,
+            stoppingToken);
+
+        switch (invocation.Outcome)
+        {
+            case PlainProviderInvocationOutcome.FenceFailed:
+                // Lease expired or lock token superseded before we could act: leave Processing
+                // for lease reclaim -- never call the provider under a claim we no longer hold.
+                return;
+
+            case PlainProviderInvocationOutcome.Suppressed:
+                // Terminal Failed/DefinitelyNotSubmitted already committed atomically with the
+                // suppression check itself; zero provider invocations (Issue #546 maintainer
+                // decision). Nothing further to finalize here.
+                _logger.LogWarning(
+                    "Mail request {MailRequestId} failed terminally before provider invocation because at least one recipient is suppressed. RequestId={RequestId}; TenantId={TenantId}",
+                    row.MailRequestId,
+                    row.Id,
+                    row.TenantId);
+                await _deliveryEventEnqueuer.TryEnqueueAfterCommitAsync(row.Id);
+                return;
+
+            case PlainProviderInvocationOutcome.ExistingEvidence:
+                await ConvergeFromPlainEvidenceAsync(row, invocation.ExistingEvidence!, startedAt);
+                return;
+
+            case PlainProviderInvocationOutcome.Started:
+                break;
+        }
+
+        var recipients = invocation.Recipients!;
+        var job = BuildMailSendJob(row, recipients, attachments: null);
 
         MailDeliveryResult result;
         try
@@ -326,6 +338,9 @@ public sealed class MailRequestWorker : BackgroundService
         }
         catch (OperationCanceledException)
         {
+            // Cannot disprove provider acceptance after a timeout -- Unknown, not retryable
+            // (ADR 0023 D-04: timeout/network/protocol loss must never be classified as
+            // DefinitelyNotSubmitted or DefinitelyRejected on retryability alone).
             result = MailDeliveryResult.Failure(
                 MailDeliveryErrorCodes.SendTimeout,
                 $"Mail delivery exceeded {_workerOptions.SendTimeoutSeconds} seconds.",
@@ -333,28 +348,117 @@ public sealed class MailRequestWorker : BackgroundService
         }
 
         var completedAt = _timeProvider.GetUtcNow();
-        await FinalizeDeliveryResultAsync(row, tenant, providerName, result, startedAt, completedAt);
+
+        // Shared tri-state classifier (Succeeded/DefinitiveFailed/Ambiguous) already used for
+        // attachment requests (ADR 0022 D-08): identical MailDeliveryResult inputs must classify
+        // identically regardless of whether the request carries attachments. See Issue #546:
+        // ACS's exact-operation-ID-reuse 400 (from #525/PR #529) must not be extrapolated into a
+        // general "retries are safe" rule -- this classifier already keys off the actual ACS/SMTP
+        // error code and retryability, not an assumption about retries.
+        var outcome = AttachmentProviderResultClassifier.Classify(result);
+        await FinalizePlainDeliveryResultAsync(row, providerName, result, outcome, startedAt, completedAt);
     }
 
-    private async Task ConvergeDeliveredFromPriorSuccessAsync(
+    private static MailSendJob BuildMailSendJob(
         MailRequestRow row,
-        SuccessfulDeliveryAttempt priorSuccess,
+        IReadOnlyList<MailRequestRecipientRow> recipients,
+        IReadOnlyList<MailSendAttachment>? attachments) =>
+        new(
+            row.MailRequestId,
+            row.SourceService,
+            row.Subject,
+            row.HtmlBody,
+            row.TextBody,
+            row.ReplyTo,
+            To: SelectRole(recipients, MailRecipientRole.To),
+            Cc: SelectRole(recipients, MailRecipientRole.Cc),
+            Bcc: SelectRole(recipients, MailRecipientRole.Bcc),
+            Attachments: attachments);
+
+    private static IReadOnlyList<MailSendRecipient> SelectRole(
+        IReadOnlyList<MailRequestRecipientRow> recipients,
+        MailRecipientRole role)
+    {
+        List<MailSendRecipient>? mapped = null;
+        foreach (var recipient in recipients)
+        {
+            if (recipient.Role != role)
+            {
+                continue;
+            }
+
+            (mapped ??= []).Add(new MailSendRecipient(recipient.Address, recipient.DisplayName));
+        }
+
+        return mapped ?? [];
+    }
+
+    /// <summary>
+    /// Recovery table (ADR 0023 D-04, mirrors <see cref="ConvergeFromAttachmentEvidenceAsync"/>):
+    /// Accepted -&gt; Delivered, DefinitelyRejected -&gt; Failed, Started-only or Unknown -&gt;
+    /// DeliveryUnknown. The provider is never re-invoked here. A DefinitelyNotSubmitted read here
+    /// would only ever be the suppression-terminal combination (Issue #546 maintainer decision),
+    /// which always coincides with request Failed in the same transaction it was written in and
+    /// is therefore never observed back in Processing/reclaimable in the first place.
+    /// </summary>
+    private async Task ConvergeFromPlainEvidenceAsync(
+        MailRequestRow row,
+        MailPlainSubmissionRow evidence,
         DateTimeOffset now)
     {
+        var (requestState, recipientState) = evidence.EvidenceState switch
+        {
+            MailPlainSubmissionEvidenceState.Accepted =>
+                (MailRequestState.Delivered, (MailRecipientDeliveryState?)null),
+            MailPlainSubmissionEvidenceState.DefinitelyRejected =>
+                (MailRequestState.Failed, MailRecipientDeliveryState.Failed),
+            _ => (MailRequestState.DeliveryUnknown, MailRecipientDeliveryState.Unknown),
+        };
+
+        var isUnknownConvergence = requestState == MailRequestState.DeliveryUnknown;
+        var errorMessage = isUnknownConvergence
+            ? "Provider acceptance could not be confirmed during recovery."
+            : null;
+
+        var targetEvidenceState = evidence.EvidenceState == MailPlainSubmissionEvidenceState.Started
+            ? MailPlainSubmissionEvidenceState.Unknown
+            : evidence.EvidenceState;
+
+        var attempt = new MailAttemptInsert
+        {
+            RequestId = row.Id,
+            AttemptNumber = row.AttemptCount,
+            Provider = evidence.Provider ?? "none",
+            Status = requestState,
+            ProviderMessageId = evidence.ProviderMessageId,
+            ErrorCode = isUnknownConvergence ? MailDeliveryErrorCodes.DeliveryUnknown : null,
+            ErrorMessage = errorMessage,
+            Retryable = false,
+            LockToken = row.LockToken,
+            StartedAt = now,
+            CompletedAt = now,
+        };
+
         using var finalizeTimeout = new CancellationTokenSource(_workerOptions.FinalizeTimeout);
-        var finalized = await _repository.TryMarkDeliveredAsync(
+        var finalized = await _repository.FinalizePlainSubmissionAsync(
             row.Id,
-            row.LockToken,
+            requestLockToken: row.LockToken,
+            evidenceClaimToken: evidence.ClaimToken ?? row.LockToken,
+            expectedEvidenceState: evidence.EvidenceState,
             now,
+            targetEvidenceState,
+            evidence.ProviderMessageId,
+            requestState,
+            recipientState,
+            errorMessage,
+            attempt,
             finalizeTimeout.Token);
 
         if (!finalized)
         {
-            _runtimeMetrics.RecordFinalizeSkipped();
             _logger.LogWarning(
-                "Skipped delivered converge for mail request {MailRequestId} with prior provider message id {ProviderMessageId} because the lock token expired or was superseded. RequestId={RequestId}; TenantId={TenantId}",
+                "Skipped plain evidence convergence for mail request {MailRequestId} because the lock token expired or was superseded. RequestId={RequestId}; TenantId={TenantId}",
                 row.MailRequestId,
-                priorSuccess.ProviderMessageId,
                 row.Id,
                 row.TenantId);
             return;
@@ -362,13 +466,101 @@ public sealed class MailRequestWorker : BackgroundService
 
         await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
         _logger.LogInformation(
-            "Converged mail request {MailRequestId} to Delivered from prior provider success without resending. RequestId={RequestId}; TenantId={TenantId}; PriorAttempt={PriorAttemptNumber}; Provider={Provider}; ProviderMessageId={ProviderMessageId}",
+            "Converged mail request {MailRequestId} to {RequestState} from existing plain submission evidence ({EvidenceState}) without invoking the provider. RequestId={RequestId}; TenantId={TenantId}",
             row.MailRequestId,
+            requestState,
+            evidence.EvidenceState,
             row.Id,
-            row.TenantId,
-            priorSuccess.AttemptNumber,
-            priorSuccess.Provider,
-            priorSuccess.ProviderMessageId);
+            row.TenantId);
+    }
+
+    private async Task FinalizePlainDeliveryResultAsync(
+        MailRequestRow row,
+        string providerName,
+        MailDeliveryResult result,
+        AttachmentProviderOutcome outcome,
+        DateTimeOffset startedAt,
+        DateTimeOffset completedAt)
+    {
+        var (targetEvidenceState, requestState, recipientState) = outcome switch
+        {
+            AttachmentProviderOutcome.Succeeded =>
+                (MailPlainSubmissionEvidenceState.Accepted, MailRequestState.Delivered, (MailRecipientDeliveryState?)null),
+            AttachmentProviderOutcome.DefinitiveFailed =>
+                (MailPlainSubmissionEvidenceState.DefinitelyRejected, MailRequestState.Failed, MailRecipientDeliveryState.Failed),
+            _ => (MailPlainSubmissionEvidenceState.Unknown, MailRequestState.DeliveryUnknown, MailRecipientDeliveryState.Unknown),
+        };
+
+        var sanitizedError = result.ErrorMessage is null
+            ? null
+            : ProviderErrorSanitizer.Sanitize(result.ErrorMessage);
+        var isUnknown = outcome == AttachmentProviderOutcome.Ambiguous;
+
+        var attempt = new MailAttemptInsert
+        {
+            RequestId = row.Id,
+            AttemptNumber = row.AttemptCount,
+            Provider = providerName,
+            Status = requestState,
+            ProviderMessageId = result.ProviderMessageId,
+            ErrorCode = isUnknown ? MailDeliveryErrorCodes.DeliveryUnknown : result.ErrorCode,
+            ErrorMessage = sanitizedError,
+            Retryable = false,
+            LockToken = row.LockToken,
+            StartedAt = startedAt,
+            CompletedAt = completedAt,
+        };
+
+        using var finalizeTimeout = new CancellationTokenSource(_workerOptions.FinalizeTimeout);
+        var finalized = await _repository.FinalizePlainSubmissionAsync(
+            row.Id,
+            requestLockToken: row.LockToken,
+            evidenceClaimToken: row.LockToken,
+            expectedEvidenceState: MailPlainSubmissionEvidenceState.Started,
+            completedAt,
+            targetEvidenceState,
+            result.ProviderMessageId,
+            requestState,
+            recipientState,
+            sanitizedError,
+            attempt,
+            finalizeTimeout.Token);
+
+        if (!finalized)
+        {
+            _logger.LogWarning(
+                "Skipped plain finalize for mail request {MailRequestId} with provider message id {ProviderMessageId} because the lock token expired or was superseded. RequestId={RequestId}; TenantId={TenantId}",
+                row.MailRequestId,
+                result.ProviderMessageId,
+                row.Id,
+                row.TenantId);
+            return;
+        }
+
+        await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
+
+        if (requestState == MailRequestState.DeliveryUnknown)
+        {
+            _logger.LogWarning(
+                "Mail request {MailRequestId} converged to DeliveryUnknown after attempt {AttemptNumber} via provider {Provider}: provider acceptance could not be proven or disproven. RequestId={RequestId}; TenantId={TenantId}",
+                row.MailRequestId,
+                row.AttemptCount,
+                providerName,
+                row.Id,
+                row.TenantId);
+        }
+        else if (requestState == MailRequestState.Failed)
+        {
+            _logger.LogWarning(
+                "Mail request {MailRequestId} failed terminally after attempt {AttemptNumber} via provider {Provider}. RequestId={RequestId}; TenantId={TenantId}; ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
+                row.MailRequestId,
+                row.AttemptCount,
+                providerName,
+                row.Id,
+                row.TenantId,
+                result.ErrorCode,
+                sanitizedError);
+        }
     }
 
     /// <summary>
@@ -490,7 +682,11 @@ public sealed class MailRequestWorker : BackgroundService
             return;
         }
 
-        var job = new MailSendJob(
+        // Attachment requests stay single-To (ADR 0022 predates canonical multi-recipient
+        // mapping and the IsLegacySingleTo gate keeps every reachable request single-To);
+        // canonical recipient mapping/suppression precheck across To/Cc/Bcc is Issue #546's
+        // plain-request scope only, so the legacy shadow columns are used here unchanged.
+        var job = MailSendJob.ForSingleRecipient(
             row.MailRequestId,
             row.SourceService,
             row.Subject,
@@ -691,116 +887,6 @@ public sealed class MailRequestWorker : BackgroundService
         _runtimeMetrics.RecordAttachmentSpoolCleanup("committed_prompt");
     }
 
-    private async Task FinalizeDeliveryResultAsync(
-        MailRequestRow row,
-        MailerTenant tenant,
-        string providerName,
-        MailDeliveryResult result,
-        DateTimeOffset startedAt,
-        DateTimeOffset completedAt)
-    {
-        MailRequestFinalizeOutcome outcome;
-        DateTimeOffset? nextAttemptAt = null;
-        MailRequestState attemptStatus;
-
-        if (result.Succeeded)
-        {
-            outcome = MailRequestFinalizeOutcome.Delivered;
-            attemptStatus = MailRequestState.Delivered;
-        }
-        else if (result.Retryable && row.AttemptCount < row.MaxAttempts)
-        {
-            outcome = MailRequestFinalizeOutcome.RetryScheduled;
-            attemptStatus = MailRequestState.Failed;
-            nextAttemptAt = ComputeNextAttemptAt(tenant, row.AttemptCount, completedAt);
-        }
-        else
-        {
-            outcome = result.Retryable
-                ? MailRequestFinalizeOutcome.DeadLettered
-                : MailRequestFinalizeOutcome.Failed;
-            attemptStatus = outcome == MailRequestFinalizeOutcome.DeadLettered
-                ? MailRequestState.DeadLettered
-                : MailRequestState.Failed;
-        }
-
-        // Defense-in-depth: sanitize before persisting or logging even though
-        // provider catch blocks already sanitize. This guards against callers
-        // (e.g. test stubs) that pass raw messages into MailDeliveryResult.Failure.
-        var sanitizedError = result.ErrorMessage is null
-            ? null
-            : ProviderErrorSanitizer.Sanitize(result.ErrorMessage);
-
-        var attempt = new MailAttemptInsert
-        {
-            RequestId = row.Id,
-            AttemptNumber = row.AttemptCount,
-            Provider = providerName,
-            Status = attemptStatus,
-            ProviderMessageId = result.ProviderMessageId,
-            ErrorCode = result.ErrorCode,
-            ErrorMessage = sanitizedError,
-            Retryable = result.Retryable,
-            LockToken = row.LockToken,
-            StartedAt = startedAt,
-            CompletedAt = completedAt,
-        };
-
-        using var finalizeTimeout = new CancellationTokenSource(_workerOptions.FinalizeTimeout);
-        var finalized = await _repository.FinalizeAsync(
-            row.Id,
-            row.LockToken,
-            completedAt,
-            outcome,
-            nextAttemptAt,
-            sanitizedError,
-            attempt,
-            finalizeTimeout.Token);
-
-        if (!finalized)
-        {
-            _logger.LogWarning(
-                "Skipped finalize for mail request {MailRequestId} with provider message id {ProviderMessageId} because the lock token expired or was superseded. RequestId={RequestId}; TenantId={TenantId}",
-                row.MailRequestId,
-                result.ProviderMessageId,
-                row.Id,
-                row.TenantId);
-            return;
-        }
-
-        if (outcome is MailRequestFinalizeOutcome.Delivered
-            or MailRequestFinalizeOutcome.Failed
-            or MailRequestFinalizeOutcome.DeadLettered)
-        {
-            await _deliveryEventEnqueuer.TryEnqueueForInternalRequestAsync(row.Id, CancellationToken.None);
-        }
-
-        if (outcome == MailRequestFinalizeOutcome.DeadLettered)
-        {
-            _logger.LogError(
-                "Mail request {MailRequestId} was dead-lettered after attempt {AttemptNumber} via provider {Provider}. RequestId={RequestId}; TenantId={TenantId}; ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
-                row.MailRequestId,
-                row.AttemptCount,
-                providerName,
-                row.Id,
-                row.TenantId,
-                result.ErrorCode,
-                sanitizedError);
-        }
-        else if (outcome == MailRequestFinalizeOutcome.Failed)
-        {
-            _logger.LogWarning(
-                "Mail request {MailRequestId} failed terminally after attempt {AttemptNumber} via provider {Provider}. RequestId={RequestId}; TenantId={TenantId}; ErrorCode={ErrorCode}; ErrorMessage={ErrorMessage}",
-                row.MailRequestId,
-                row.AttemptCount,
-                providerName,
-                row.Id,
-                row.TenantId,
-                result.ErrorCode,
-                sanitizedError);
-        }
-    }
-
     private async Task<bool> FinalizeTerminalFailureAsync(
         MailRequestRow row,
         DateTimeOffset now,
@@ -873,17 +959,6 @@ public sealed class MailRequestWorker : BackgroundService
         }
 
         return true;
-    }
-
-    private static DateTimeOffset ComputeNextAttemptAt(
-        MailerTenant tenant,
-        int attemptCount,
-        DateTimeOffset completedAt)
-    {
-        var delaySeconds = Math.Min(
-            tenant.Retry.MaxDelaySeconds,
-            tenant.Retry.InitialDelaySeconds * Math.Pow(2, Math.Max(0, attemptCount - 1)));
-        return completedAt.AddSeconds(delaySeconds);
     }
 
     public override void Dispose()

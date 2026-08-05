@@ -33,6 +33,14 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
         // carrying canonical attachment metadata can never be retried from any terminal state,
         // regardless of status. attachment_count is a DB-only column set once at accept time
         // from verified metadata -- never re-derived from public input (D-08).
+        //
+        // NOT EXISTS mail_plain_submissions is the ADR 0023 D-04/D-07 boundary (Issue #546): once
+        // any plain submission evidence exists for a request -- Started, the suppression-terminal
+        // DefinitelyNotSubmitted+Failed combination, Accepted, DefinitelyRejected, or Unknown --
+        // provider re-invocation is prohibited, so whole-request manual retry is denied
+        // regardless of mail_requests.status. Issue #546 does not implement any producer of the
+        // ordinary resumable DefinitelyNotSubmitted (Queued + fenced transition only); every
+        // plain evidence row this codebase can currently create is therefore retry-blocking.
         const string updateSql = """
             UPDATE mail_requests
             SET
@@ -48,6 +56,9 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
             WHERE id = @Id
               AND status IN (@DeadLetteredStatus, @FailedStatus)
               AND attachment_count = 0
+              AND NOT EXISTS (
+                    SELECT 1 FROM mail_plain_submissions s WHERE s.request_id = mail_requests.id
+                  )
             """;
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
@@ -155,11 +166,13 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
 
         var nowStorage = SqliteTime.ToStorageUtc(now);
 
-        // ADR 0022 D-08 manual cancel boundary: once request-unique submission evidence exists
-        // (Started or later), cancel is prohibited outright -- provider invocation may already
-        // be underway or complete, and a Cancelled overwrite could race a real send. Requests
-        // with no evidence row (including ordinary non-attachment requests, which never get one)
-        // keep the existing ADR 0015 first-writer-wins boundary unchanged.
+        // ADR 0022 D-08 / ADR 0023 D-04 manual cancel boundary: once request-unique submission
+        // evidence exists (Started or later, including the ADR 0023/Issue #546 plain evidence
+        // table), cancel is prohibited outright -- provider invocation may already be underway or
+        // complete, and a Cancelled overwrite could race a real send or permanently strand
+        // unresolved evidence. Requests with no evidence row at all (including ordinary
+        // non-attachment requests before their first claim) keep the existing ADR 0015
+        // first-writer-wins boundary unchanged.
         const string updateSql = """
             UPDATE mail_requests
             SET
@@ -182,6 +195,9 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
                   )
               AND NOT EXISTS (
                     SELECT 1 FROM mail_attachment_submissions s WHERE s.request_id = mail_requests.id
+                  )
+              AND NOT EXISTS (
+                    SELECT 1 FROM mail_plain_submissions p WHERE p.request_id = mail_requests.id
                   )
             """;
 

@@ -9,7 +9,14 @@ internal static class OutboundMimeMessageFactory
     {
         var message = new MimeMessage();
         message.From.Add(ToMailboxAddress(tenant.DefaultFrom.Email, tenant.DefaultFrom.DisplayName));
-        message.To.Add(ToMailboxAddress(job.RecipientEmail, job.RecipientDisplayName));
+
+        // Global provider order To -> Cc -> Bcc (ADR 0023 D-01). MimeKit/MailKit compute the SMTP
+        // envelope RCPT TO from To+Cc+Bcc but omit the "Bcc:" header from the transmitted DATA by
+        // default -- confirmed against MailKit 4.17's SmtpClient.SendAsync(MimeMessage) before
+        // relying on it here. Never fold Bcc into To/Cc.
+        AddRecipients(message.To, job.To);
+        AddRecipients(message.Cc, job.Cc);
+        AddRecipients(message.Bcc, job.Bcc);
         message.Subject = job.Subject;
 
         if (!string.IsNullOrWhiteSpace(job.ReplyTo))
@@ -61,6 +68,14 @@ internal static class OutboundMimeMessageFactory
 
         message.Body = builder.ToMessageBody();
         return message;
+    }
+
+    private static void AddRecipients(InternetAddressList list, IReadOnlyList<MailSendRecipient> recipients)
+    {
+        foreach (var recipient in recipients)
+        {
+            list.Add(ToMailboxAddress(recipient.Address, recipient.DisplayName));
+        }
     }
 
     private static MailboxAddress ToMailboxAddress(string email, string? displayName) =>

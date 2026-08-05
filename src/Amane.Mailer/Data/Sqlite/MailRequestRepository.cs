@@ -17,6 +17,8 @@ public class MailRequestRepository
     private readonly WorkerHeartbeatStore _heartbeatStore;
     private readonly MailRequestAttachmentStore _attachmentStore;
     private readonly MailAttachmentSubmissionStore _attachmentSubmissionStore;
+    private readonly MailRequestRecipientStore _recipientStore;
+    private readonly MailPlainSubmissionStore _plainSubmissionStore;
 
     internal const string OperatorCancelledLastErrorMessage =
         MailRequestConsumerMutations.OperatorCancelledLastErrorMessage;
@@ -34,7 +36,9 @@ public class MailRequestRepository
         MailRequestAdminQueries adminQueries,
         WorkerHeartbeatStore heartbeatStore,
         MailRequestAttachmentStore attachmentStore,
-        MailAttachmentSubmissionStore attachmentSubmissionStore)
+        MailAttachmentSubmissionStore attachmentSubmissionStore,
+        MailRequestRecipientStore recipientStore,
+        MailPlainSubmissionStore plainSubmissionStore)
     {
         _claimStore = claimStore;
         _acceptStore = acceptStore;
@@ -43,6 +47,8 @@ public class MailRequestRepository
         _heartbeatStore = heartbeatStore;
         _attachmentStore = attachmentStore;
         _attachmentSubmissionStore = attachmentSubmissionStore;
+        _recipientStore = recipientStore;
+        _plainSubmissionStore = plainSubmissionStore;
     }
 
     public static MailRequestRepository CreateStandalone(
@@ -57,7 +63,9 @@ public class MailRequestRepository
             new MailRequestAdminQueries(connections),
             new WorkerHeartbeatStore(connections),
             new MailRequestAttachmentStore(connections),
-            new MailAttachmentSubmissionStore(connections, timeProvider ?? TimeProvider.System));
+            new MailAttachmentSubmissionStore(connections, timeProvider ?? TimeProvider.System),
+            new MailRequestRecipientStore(connections),
+            new MailPlainSubmissionStore(connections, timeProvider ?? TimeProvider.System, runtimeMetrics));
 
     public Task<AdminMailRequestListPage> ListForAdminAsync(
         AdminMailRequestListQuery query,
@@ -271,6 +279,58 @@ public class MailRequestRepository
             targetSubmissionState,
             providerMessageId,
             requestTerminalState,
+            lastErrorMessage,
+            attempt,
+            cancellationToken);
+
+    public Task<IReadOnlyList<MailRequestRecipientRow>> ListRecipientsAsync(
+        Guid requestId,
+        CancellationToken cancellationToken = default) =>
+        _recipientStore.ListByRequestIdAsync(requestId, cancellationToken);
+
+    public Task<MailPlainSubmissionRow?> FindPlainSubmissionAsync(
+        Guid requestId,
+        CancellationToken cancellationToken = default) =>
+        _plainSubmissionStore.FindAsync(requestId, cancellationToken);
+
+    public Task<PlainProviderInvocationResult> TryPreparePlainProviderInvocationAsync(
+        Guid requestId,
+        Guid tenantId,
+        string provider,
+        Guid lockToken,
+        int attemptNumber,
+        CancellationToken cancellationToken = default) =>
+        _plainSubmissionStore.TryPrepareProviderInvocationAsync(
+            requestId,
+            tenantId,
+            provider,
+            lockToken,
+            attemptNumber,
+            cancellationToken);
+
+    public Task<bool> FinalizePlainSubmissionAsync(
+        Guid requestId,
+        Guid requestLockToken,
+        Guid evidenceClaimToken,
+        MailPlainSubmissionEvidenceState expectedEvidenceState,
+        DateTimeOffset now,
+        MailPlainSubmissionEvidenceState targetEvidenceState,
+        string? providerMessageId,
+        MailRequestState requestTerminalState,
+        MailRecipientDeliveryState? recipientTargetState,
+        string? lastErrorMessage,
+        MailAttemptInsert attempt,
+        CancellationToken cancellationToken = default) =>
+        _plainSubmissionStore.FinalizeAsync(
+            requestId,
+            requestLockToken,
+            evidenceClaimToken,
+            expectedEvidenceState,
+            now,
+            targetEvidenceState,
+            providerMessageId,
+            requestTerminalState,
+            recipientTargetState,
             lastErrorMessage,
             attempt,
             cancellationToken);

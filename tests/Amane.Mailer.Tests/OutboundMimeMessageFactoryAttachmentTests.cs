@@ -32,16 +32,16 @@ public sealed class OutboundMimeMessageFactoryAttachmentTests : IDisposable
         var filePath = Path.Combine(_tempDirectory, "attachment.bin");
         File.WriteAllBytes(filePath, originalBytes);
 
-        var job = new MailSendJob(
+        var job = MailSendJob.ForSingleRecipient(
             Guid.NewGuid(),
             "example-service",
             "Subject",
-            HtmlBody: null,
-            TextBody: "body",
-            ReplyTo: null,
-            RecipientEmail: "recipient@example.com",
-            RecipientDisplayName: null,
-            Attachments:
+            htmlBody: null,
+            textBody: "body",
+            replyTo: null,
+            recipientEmail: "recipient@example.com",
+            recipientDisplayName: null,
+            attachments:
             [
                 new MailSendAttachment("notes.txt", "text/plain", originalBytes.Length, filePath),
             ]);
@@ -69,16 +69,16 @@ public sealed class OutboundMimeMessageFactoryAttachmentTests : IDisposable
         File.WriteAllBytes(filePath, bytes);
         var fileName = "請求書.pdf".Normalize(NormalizationForm.FormC);
 
-        var job = new MailSendJob(
+        var job = MailSendJob.ForSingleRecipient(
             Guid.NewGuid(),
             "example-service",
             "Subject",
-            HtmlBody: null,
-            TextBody: "body",
-            ReplyTo: null,
-            RecipientEmail: "recipient@example.com",
-            RecipientDisplayName: null,
-            Attachments: [new MailSendAttachment(fileName, "application/pdf", bytes.Length, filePath)]);
+            htmlBody: null,
+            textBody: "body",
+            replyTo: null,
+            recipientEmail: "recipient@example.com",
+            recipientDisplayName: null,
+            attachments: [new MailSendAttachment(fileName, "application/pdf", bytes.Length, filePath)]);
         var tenant = CreateTenant();
 
         using var message = OutboundMimeMessageFactory.Create(job, tenant);
@@ -95,16 +95,16 @@ public sealed class OutboundMimeMessageFactoryAttachmentTests : IDisposable
         // embeds the private spool path, so it must never surface as the exception's Message.
         var missingFilePath = Path.Combine(_tempDirectory, "gone.bin");
 
-        var job = new MailSendJob(
+        var job = MailSendJob.ForSingleRecipient(
             Guid.NewGuid(),
             "example-service",
             "Subject",
-            HtmlBody: null,
-            TextBody: "body",
-            ReplyTo: null,
-            RecipientEmail: "recipient@example.com",
-            RecipientDisplayName: null,
-            Attachments: [new MailSendAttachment("notes.txt", "text/plain", 10, missingFilePath)]);
+            htmlBody: null,
+            textBody: "body",
+            replyTo: null,
+            recipientEmail: "recipient@example.com",
+            recipientDisplayName: null,
+            attachments: [new MailSendAttachment("notes.txt", "text/plain", 10, missingFilePath)]);
         var tenant = CreateTenant();
 
         var ex = Assert.Throws<AttachmentSpoolFileReadException>(() => OutboundMimeMessageFactory.Create(job, tenant));
@@ -117,15 +117,15 @@ public sealed class OutboundMimeMessageFactoryAttachmentTests : IDisposable
     [Fact]
     public void Create_without_attachments_produces_no_attachment_parts()
     {
-        var job = new MailSendJob(
+        var job = MailSendJob.ForSingleRecipient(
             Guid.NewGuid(),
             "example-service",
             "Subject",
-            HtmlBody: null,
-            TextBody: "body",
-            ReplyTo: null,
-            RecipientEmail: "recipient@example.com",
-            RecipientDisplayName: null);
+            htmlBody: null,
+            textBody: "body",
+            replyTo: null,
+            recipientEmail: "recipient@example.com",
+            recipientDisplayName: null);
         var tenant = CreateTenant();
 
         using var message = OutboundMimeMessageFactory.Create(job, tenant);
