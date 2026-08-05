@@ -2,6 +2,27 @@
 
 `payload_hash` is computed over the delivery payload, not the routing envelope.
 
+## Two fixture files
+
+Vectors are split across two files by contract generation:
+
+- **`payload-hash-vectors.json`** (baseline): pre-ADR-0023 single-To/attachment vectors. Content
+  and hash values are frozen. Also read directly by the Python/TypeScript SDK conformance tests
+  (`sdk/python/tests/test_payload_hash.py`, `sdk/typescript/test/payload-hash.test.mjs`), which
+  implement only the single-To contract until issue
+  [#542](https://github.com/kooiei-in4a/amane-mailer/issues/542) lands.
+- **`payload-hash-recipient-v1.3-vectors.json`** (recipient v1.3): ADR 0023 `to`/`cc`/`bcc`
+  conformance vectors. **Not** read by the SDK conformance tests yet, since the Python/TypeScript
+  SDK production code does not implement `cc`/`bcc`/optional-`to` until #542.
+
+Both files are validated by `MailPayloadHasherTests` (`Shared_test_vectors_match_canonical_json_and_hash`
+for the baseline, `Recipient_v1_3_test_vectors_match_canonical_json_and_hash` for recipient v1.3)
+and by the non-.NET reference verifiers under `examples/payload-hash/`. A third test,
+`Baseline_and_recipient_v1_3_vectors_do_not_share_names`, asserts vector names never collide
+across the two files. See
+[examples/payload-hash/README.md](../../../examples/payload-hash/README.md#vector-fixtures-baseline-vs-recipient-v13)
+for the full rationale.
+
 Included fields:
 
 - `source_service`

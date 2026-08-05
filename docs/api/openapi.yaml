@@ -621,7 +621,10 @@ components:
             content_sha256（小文字 hex）、order（0 始まり、配列位置から生成）の 5 項目へ
             射影して含める。content_base64 と Consumer 申告の content_type は
             hash に含めない（ADR 0022 D-03）。
-            テストベクトルは tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json。
+            テストベクトルは tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json
+            （single-To baseline）および
+            tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json
+            （ADR 0023 recipient conformance。詳細は examples/payload-hash/README.md を参照）。
             ADR は docs/adr/0012-mail-via-mailer-microservice.md D-05 および
             docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md D-03。
             .NET Consumer は MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request) を使用し、

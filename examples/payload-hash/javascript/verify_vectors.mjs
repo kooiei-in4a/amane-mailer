@@ -8,11 +8,16 @@ import {
 } from './mail_payload_hash.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const vectorsPath = path.join(
-  root,
-  'tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json',
-);
-const vectors = JSON.parse(readFileSync(vectorsPath, 'utf8'));
+const vectorsDir = path.join(root, 'tests/Amane.Mailer.Contracts.Tests/TestVectors');
+// Baseline: pre-ADR-0023 single-To/attachment fixture, also read by the Python/TypeScript SDK
+// test suites (sdk/python, sdk/typescript), which do not yet implement cc/bcc (issue #542).
+// Recipient v1.3: ADR 0023 to/cc/bcc conformance vectors, verified here and by the .NET
+// Contracts layer, but intentionally NOT read by the SDK test suites until #542 lands.
+const vectorFiles = [
+  path.join(vectorsDir, 'payload-hash-vectors.json'),
+  path.join(vectorsDir, 'payload-hash-recipient-v1.3-vectors.json'),
+];
+const vectors = vectorFiles.flatMap((vectorsPath) => JSON.parse(readFileSync(vectorsPath, 'utf8')));
 
 for (const vector of vectors) {
   const {
