@@ -469,13 +469,14 @@ public sealed class MailRequestWorker : BackgroundService
         }
 
         // Durable submission marker committed before any provider call (ADR 0022 D-08 provider
-        // invocation boundary). TryInsertStartedAsync fails closed on a PK conflict, so a
-        // concurrent/duplicate attempt never creates a second lifecycle.
+        // invocation boundary). TryInsertStartedAsync fails closed on a PK conflict, an
+        // expired lease, or a superseded lock token. The fencing timestamp is read inside the
+        // store only after BEGIN IMMEDIATE has established write ownership -- a pre-call
+        // GetUtcNow here would still be stale across SQLite busy wait on the write lock.
         var started = await _repository.TryInsertAttachmentSubmissionStartedAsync(
             row.Id,
             providerName,
             row.LockToken,
-            startedAt,
             stoppingToken);
 
         if (!started)
@@ -562,9 +563,11 @@ public sealed class MailRequestWorker : BackgroundService
         using var finalizeTimeout = new CancellationTokenSource(_workerOptions.FinalizeTimeout);
         var finalized = await _repository.FinalizeAttachmentSubmissionAsync(
             row.Id,
-            row.LockToken,
+            requestLockToken: row.LockToken,
+            submissionLockToken: evidence.LockToken,
             now,
-            submissionTerminalState,
+            expectedSubmissionState: evidence.SubmissionState,
+            targetSubmissionState: submissionTerminalState,
             evidence.ProviderMessageId,
             requestState,
             errorMessage,
@@ -636,9 +639,11 @@ public sealed class MailRequestWorker : BackgroundService
         using var finalizeTimeout = new CancellationTokenSource(_workerOptions.FinalizeTimeout);
         var finalized = await _repository.FinalizeAttachmentSubmissionAsync(
             row.Id,
-            row.LockToken,
+            requestLockToken: row.LockToken,
+            submissionLockToken: row.LockToken,
             completedAt,
-            submissionState,
+            expectedSubmissionState: AttachmentSubmissionState.Started,
+            targetSubmissionState: submissionState,
             result.ProviderMessageId,
             requestState,
             sanitizedError,

@@ -375,20 +375,44 @@ public sealed class MailRequestClaimStore(
     }
 
     /// <summary>
-    /// Terminal commit for an attachment request (ADR 0022 D-08): the submission evidence
-    /// terminal state, the mail_attempts history row, and the mail_requests terminal state
-    /// commit in one SQLite transaction. Fenced on <c>status = Processing AND lock_token =
-    /// @LockToken</c> only -- unlike the ordinary <see cref="FinalizeAsync"/>, it deliberately
-    /// does not also require <c>lock_expires_at &gt; @Now</c>: once durable submission evidence
-    /// exists, that evidence (not the lease timer) is the source of truth for whether this
-    /// claim is still allowed to finalize. A losing/expired attempt's fenced updates simply
-    /// affect 0 rows once a later reclaim has already converged the row.
+    /// Terminal commit for an attachment request (ADR 0022 D-08): the request terminal state,
+    /// the submission evidence terminal state, and the mail_attempts history row commit
+    /// atomically in one SQLite transaction -- request, submission, and attempt history must
+    /// never be left partially updated (post-merge review of #533/PR #537).
+    ///
+    /// <paramref name="requestLockToken"/> fences the <c>mail_requests</c> update, exactly as
+    /// before: <c>status = Processing AND lock_token = @RequestLockToken</c> only -- unlike the
+    /// ordinary <see cref="FinalizeAsync"/>, it deliberately does not also require
+    /// <c>lock_expires_at &gt; @Now</c>, since once durable submission evidence exists, that
+    /// evidence (not the lease timer) is the source of truth for whether this claim is still
+    /// allowed to finalize. If this update affects 0 rows, ownership was already lost (expired
+    /// lease reclaimed, or a later cycle terminalized the row first) and neither submission
+    /// evidence nor attempt history is touched.
+    ///
+    /// <paramref name="submissionLockToken"/> and <paramref name="expectedSubmissionState"/>
+    /// fence the <c>mail_attachment_submissions</c> update against the exact evidence version
+    /// the caller observed when it decided what to write. The submission row's own
+    /// <c>lock_token</c> is set once at <see cref="MailAttachmentSubmissionStore.TryInsertStartedAsync"/>
+    /// time and is never rewritten by a reclaim, so it is <em>not</em> always equal to
+    /// <paramref name="requestLockToken"/>: a fresh send-then-finalize call passes the same
+    /// token for both (it just created the Started row itself), while a recovery/convergence
+    /// call passes the request's current claim token for <paramref name="requestLockToken"/>
+    /// but the evidence's own token/state (as read by <c>FindAttachmentSubmissionAsync</c>) for
+    /// <paramref name="submissionLockToken"/> / <paramref name="expectedSubmissionState"/> --
+    /// which lets recovery idempotently re-affirm already-terminal evidence
+    /// (Succeeded/DefinitiveFailed/Unknown), not only a fresh Started marker. If the submission
+    /// update affects 0 rows after the request update already succeeded, the evidence the
+    /// caller read is stale (state changed or lock token superseded) and the whole transaction
+    /// -- including the request update -- is rolled back rather than committing a
+    /// request/evidence mismatch; the next dispatch cycle re-reads fresh evidence and retries.
     /// </summary>
     public async Task<bool> FinalizeAttachmentSubmissionAsync(
         Guid id,
-        Guid lockToken,
+        Guid requestLockToken,
+        Guid submissionLockToken,
         DateTimeOffset now,
-        AttachmentSubmissionState submissionTerminalState,
+        AttachmentSubmissionState expectedSubmissionState,
+        AttachmentSubmissionState targetSubmissionState,
         string? providerMessageId,
         MailRequestState requestTerminalState,
         string? lastErrorMessage,
@@ -412,18 +436,19 @@ public sealed class MailRequestClaimStore(
                 last_error_message = @LastErrorMessage
             WHERE id = @Id
               AND status = @ProcessingStatus
-              AND lock_token = @LockToken;
+              AND lock_token = @RequestLockToken;
             """;
 
         const string updateSubmissionSql = """
             UPDATE mail_attachment_submissions
             SET
-                submission_state = @SubmissionState,
+                submission_state = @TargetSubmissionState,
                 provider_message_id = @ProviderMessageId,
                 completed_at = @Now,
                 updated_at = @Now
             WHERE request_id = @Id
-              AND submission_state = @StartedState;
+              AND submission_state = @ExpectedSubmissionState
+              AND lock_token = @SubmissionLockToken;
             """;
 
         const string insertAttemptSql = """
@@ -459,34 +484,44 @@ public sealed class MailRequestClaimStore(
                 update.Parameters.AddWithValue("@LastErrorMessage", (object?)lastErrorMessage ?? DBNull.Value);
                 update.Parameters.AddWithValue("@Id", id.ToString("D"));
                 update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
-                update.Parameters.AddWithValue("@LockToken", lockToken.ToString("D"));
+                update.Parameters.AddWithValue("@RequestLockToken", requestLockToken.ToString("D"));
 
                 requestUpdated = await update.ExecuteNonQueryAsync(cancellationToken) > 0;
             }
 
+            if (!requestUpdated)
+            {
+                // Ownership already lost under this exact claim: never touch submission
+                // evidence or attempt history for a request this caller no longer owns.
+                await transaction.CommitAsync(cancellationToken);
+                return false;
+            }
+
+            bool submissionUpdated;
             await using (var updateSubmission = connection.CreateCommand())
             {
                 updateSubmission.CommandText = updateSubmissionSql;
-                updateSubmission.Parameters.AddWithValue("@SubmissionState", (int)submissionTerminalState);
+                updateSubmission.Parameters.AddWithValue("@TargetSubmissionState", (int)targetSubmissionState);
                 updateSubmission.Parameters.AddWithValue("@ProviderMessageId", (object?)providerMessageId ?? DBNull.Value);
                 updateSubmission.Parameters.AddWithValue("@Now", nowStorage);
                 updateSubmission.Parameters.AddWithValue("@Id", id.ToString("D"));
-                updateSubmission.Parameters.AddWithValue("@StartedState", (int)AttachmentSubmissionState.Started);
-                await updateSubmission.ExecuteNonQueryAsync(cancellationToken);
+                updateSubmission.Parameters.AddWithValue("@ExpectedSubmissionState", (int)expectedSubmissionState);
+                updateSubmission.Parameters.AddWithValue("@SubmissionLockToken", submissionLockToken.ToString("D"));
+                submissionUpdated = await updateSubmission.ExecuteNonQueryAsync(cancellationToken) > 0;
             }
 
-            if (requestUpdated)
+            if (!submissionUpdated)
             {
-                await InsertMailAttemptAsync(connection, insertAttemptSql, attempt, cancellationToken);
+                throw new InvalidOperationException(
+                    $"Attachment submission evidence for request {id:D} was not in the expected " +
+                    $"state '{expectedSubmissionState}' under the observed lock token during finalize.");
             }
+
+            await InsertMailAttemptAsync(connection, insertAttemptSql, attempt, cancellationToken);
 
             await transaction.CommitAsync(cancellationToken);
-            if (requestUpdated)
-            {
-                _runtimeMetrics?.RecordAttemptCompleted(attempt);
-            }
-
-            return requestUpdated;
+            _runtimeMetrics?.RecordAttemptCompleted(attempt);
+            return true;
         }
         catch
         {

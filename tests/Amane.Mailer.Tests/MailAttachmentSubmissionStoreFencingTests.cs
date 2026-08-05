@@ -11,7 +11,10 @@ namespace Amane.Mailer.Tests;
 /// TryInsertStartedAsync only checked "no evidence exists yet" and never checked the request
 /// row's own status/lock_token, so a stale claim (expired lease, or a row cancelled out from
 /// under it before any evidence existed) could still create a Started marker and go on to call
-/// the provider for a request it no longer owns.
+/// the provider for a request it no longer owns. A later review of PR #538 required the fencing
+/// timestamp itself to be read only after BEGIN IMMEDIATE write ownership, so a claim whose
+/// lease expires while the insert waits on the SQLite write lock cannot slip through with a
+/// stale pre-wait now.
 /// </summary>
 [Collection(MailerTestCollection.Name)]
 public sealed class MailAttachmentSubmissionStoreFencingTests(MailerAdminDbOpsFixture fixture)
@@ -31,12 +34,33 @@ public sealed class MailAttachmentSubmissionStoreFencingTests(MailerAdminDbOpsFi
 
         var repository = fixture.Factory.Services.GetRequiredService<MailRequestRepository>();
         var started = await repository.TryInsertAttachmentSubmissionStartedAsync(
-            requestId, "mailpit", lockToken, now, ct);
+            requestId, "mailpit", lockToken, ct);
 
         Assert.True(started);
         var evidence = await repository.FindAttachmentSubmissionAsync(requestId, ct);
         Assert.NotNull(evidence);
         Assert.Equal(AttachmentSubmissionState.Started, evidence!.SubmissionState);
+    }
+
+    [Fact]
+    public async Task Fails_closed_when_the_lease_has_already_expired()
+    {
+        // The lease timer expired but no other worker has reclaimed the row yet -- the stale
+        // claim must not be able to create the Started marker during that narrow window even
+        // though its lock_token still matches (post-merge review of #533/PR #537).
+        var ct = TestContext.Current.CancellationToken;
+        var now = DateTimeOffset.UtcNow;
+        var lockToken = Guid.NewGuid();
+        var requestId = await SeedAttachmentRequestAsync(
+            MailRequestState.Processing, lockToken, now, ct, leaseExpiresAt: now.AddSeconds(-1));
+
+        var repository = fixture.Factory.Services.GetRequiredService<MailRequestRepository>();
+        var started = await repository.TryInsertAttachmentSubmissionStartedAsync(
+            requestId, "mailpit", lockToken, ct);
+
+        Assert.False(started);
+        var evidence = await repository.FindAttachmentSubmissionAsync(requestId, ct);
+        Assert.Null(evidence);
     }
 
     [Fact]
@@ -53,7 +77,7 @@ public sealed class MailAttachmentSubmissionStoreFencingTests(MailerAdminDbOpsFi
 
         // The stale worker doesn't know it lost the row -- it still presents its own lock token.
         var started = await repository.TryInsertAttachmentSubmissionStartedAsync(
-            requestId, "mailpit", staleLockToken, now, ct);
+            requestId, "mailpit", staleLockToken, ct);
 
         Assert.False(started);
         var evidence = await repository.FindAttachmentSubmissionAsync(requestId, ct);
@@ -73,18 +97,68 @@ public sealed class MailAttachmentSubmissionStoreFencingTests(MailerAdminDbOpsFi
 
         var repository = fixture.Factory.Services.GetRequiredService<MailRequestRepository>();
         var started = await repository.TryInsertAttachmentSubmissionStartedAsync(
-            requestId, "mailpit", staleLockToken, now, ct);
+            requestId, "mailpit", staleLockToken, ct);
 
         Assert.False(started);
         var evidence = await repository.FindAttachmentSubmissionAsync(requestId, ct);
         Assert.Null(evidence);
     }
 
+    [Fact]
+    public async Task Fails_closed_when_the_lease_expires_while_waiting_on_the_write_lock()
+    {
+        // Reproduces the stale-now gap: caller (or a pre-lock GetUtcNow) would still see a valid
+        // lease, but by the time BEGIN IMMEDIATE succeeds the lease has expired. The fencing
+        // timestamp must be read after write ownership so Started is refused and no evidence
+        // row is created (PR #538 Major review).
+        var ct = TestContext.Current.CancellationToken;
+        var start = new DateTimeOffset(2024, 6, 1, 12, 0, 0, TimeSpan.Zero);
+        var time = new ControllableTimeProvider(start);
+        var connections = fixture.Factory.Services.GetRequiredService<SqliteConnectionFactory>();
+        var store = new MailAttachmentSubmissionStore(connections, time);
+
+        var lockToken = Guid.NewGuid();
+        var requestId = await SeedAttachmentRequestAsync(
+            MailRequestState.Processing,
+            lockToken,
+            start,
+            ct,
+            leaseExpiresAt: start.AddSeconds(30));
+
+        // Hold the write lock via the same factory path production uses (WAL + busy_timeout).
+        await using var lockConnection = await connections.OpenConnectionAsync(ct);
+        await using (var begin = lockConnection.CreateCommand())
+        {
+            begin.CommandText = "BEGIN IMMEDIATE;";
+            await begin.ExecuteNonQueryAsync(ct);
+        }
+
+        // BeginTransaction waits synchronously on the write lock; run off the test thread so we
+        // can advance virtual time while it is blocked.
+        var insertTask = Task.Run(
+            () => store.TryInsertStartedAsync(requestId, "mailpit", lockToken, CancellationToken.None),
+            ct);
+
+        await Task.Delay(100, ct);
+        Assert.False(insertTask.IsCompleted);
+        time.Advance(TimeSpan.FromSeconds(60));
+
+        await using (var rollback = lockConnection.CreateCommand())
+        {
+            rollback.CommandText = "ROLLBACK;";
+            await rollback.ExecuteNonQueryAsync(ct);
+        }
+
+        Assert.False(await insertTask);
+        Assert.Null(await store.FindAsync(requestId, ct));
+    }
+
     private async Task<Guid> SeedAttachmentRequestAsync(
         MailRequestState status,
         Guid? lockToken,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTimeOffset? leaseExpiresAt = null)
     {
         var requestId = Guid.NewGuid();
         var nowStorage = SqliteTime.ToStorageUtc(now);
@@ -114,7 +188,7 @@ public sealed class MailAttachmentSubmissionStoreFencingTests(MailerAdminDbOpsFi
         command.Parameters.AddWithValue("@LockToken", lockToken is null ? DBNull.Value : lockToken.Value.ToString("D"));
         command.Parameters.AddWithValue(
             "@LockExpiresAt",
-            lockToken is null ? DBNull.Value : SqliteTime.ToStorageUtc(now.AddMinutes(5)));
+            lockToken is null ? DBNull.Value : SqliteTime.ToStorageUtc(leaseExpiresAt ?? now.AddMinutes(5)));
         command.Parameters.AddWithValue("@Now", nowStorage);
         await command.ExecuteNonQueryAsync(cancellationToken);
         return requestId;

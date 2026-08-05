@@ -50,14 +50,15 @@ public sealed class DbBackupCommand(
         // CLI backup share one gate against concurrent backups and against new attachment
         // acceptance, and both verify no non-terminal attachment row exists before snapshotting.
         var ownerToken = Guid.NewGuid();
-        var now = timeProvider.GetUtcNow();
-        if (!await maintenanceLeaseStore.TryAcquireAsync(
-                MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, BackupLeaseDuration, now, cancellationToken))
+        var acquired = await maintenanceLeaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, BackupLeaseDuration, cancellationToken);
+        if (!acquired.Acquired)
         {
             await error.WriteLineAsync("Backup maintenance lease is held by another backup in progress.");
             return LeaseHeldExitCode;
         }
 
+        var fencingToken = acquired.FencingToken;
         try
         {
             if (await maintenanceLeaseStore.HasActiveAttachmentRequestsAsync(cancellationToken))
@@ -74,6 +75,7 @@ public sealed class DbBackupCommand(
                 maintenanceLeaseStore,
                 MailerMaintenanceLeaseStore.BackupLeaseName,
                 ownerToken,
+                fencingToken,
                 BackupLeaseDuration,
                 BackupLeaseRenewInterval,
                 timeProvider);
@@ -81,7 +83,16 @@ public sealed class DbBackupCommand(
             await connections.BackupToAsync(
                 destinationPath,
                 cancellationToken,
-                verifyBeforePublish: _ => Task.FromResult(heartbeat.IsHealthy));
+                // ADR 0022 D-09 publish gate: re-check DB-side ownership/fencing/expiry
+                // immediately before the artifact is treated as a successful backup, not just
+                // the heartbeat's last-known renewal outcome (post-merge review of #533/PR #537).
+                verifyBeforePublish: async ct =>
+                    heartbeat.IsHealthy
+                    && await maintenanceLeaseStore.IsLeaseCurrentlyValidAsync(
+                        MailerMaintenanceLeaseStore.BackupLeaseName,
+                        ownerToken,
+                        fencingToken,
+                        ct));
             await output.WriteLineAsync($"Database backup written to {destinationPath}");
             return SuccessExitCode;
         }
@@ -94,7 +105,11 @@ public sealed class DbBackupCommand(
         finally
         {
             await maintenanceLeaseStore.ReleaseAsync(
-                MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, timeProvider.GetUtcNow(), CancellationToken.None);
+                MailerMaintenanceLeaseStore.BackupLeaseName,
+                ownerToken,
+                fencingToken,
+                timeProvider.GetUtcNow(),
+                CancellationToken.None);
         }
     }
 }

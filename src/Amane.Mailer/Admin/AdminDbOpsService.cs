@@ -54,14 +54,15 @@ public sealed class AdminDbOpsService(
         // attachment row exists before snapshotting. A successful routine backup must never
         // capture a non-terminal attachment row without its spool.
         var ownerToken = Guid.NewGuid();
-        var now = timeProvider.GetUtcNow();
-        if (!await maintenanceLeaseStore.TryAcquireAsync(
-                MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, BackupLeaseDuration, now, cancellationToken))
+        var acquired = await maintenanceLeaseStore.TryAcquireAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, BackupLeaseDuration, cancellationToken);
+        if (!acquired.Acquired)
         {
             _operationLock.Release();
             return AdminDbOpsBackupResult.LockHeld();
         }
 
+        var fencingToken = acquired.FencingToken;
         try
         {
             if (await maintenanceLeaseStore.HasActiveAttachmentRequestsAsync(cancellationToken))
@@ -79,6 +80,7 @@ public sealed class AdminDbOpsService(
                 maintenanceLeaseStore,
                 MailerMaintenanceLeaseStore.BackupLeaseName,
                 ownerToken,
+                fencingToken,
                 BackupLeaseDuration,
                 BackupLeaseRenewInterval,
                 timeProvider);
@@ -86,7 +88,11 @@ public sealed class AdminDbOpsService(
             await connections.BackupToAsync(
                 destinationPath,
                 cancellationToken,
-                verifyBeforePublish: _ => Task.FromResult(heartbeat.IsHealthy));
+                // ADR 0022 D-09 publish gate: the heartbeat only proves the last renewal it
+                // attempted succeeded -- re-check DB-side ownership/fencing/expiry immediately
+                // before the artifact is treated as a successful backup (post-merge review of
+                // #533/PR #537).
+                verifyBeforePublish: ct => IsLeaseStillValidForPublishAsync(ownerToken, fencingToken, heartbeat, ct));
             return AdminDbOpsBackupResult.Succeeded(fileName);
         }
         catch (BackupMaintenanceLeaseLostException)
@@ -100,10 +106,23 @@ public sealed class AdminDbOpsService(
         finally
         {
             await maintenanceLeaseStore.ReleaseAsync(
-                MailerMaintenanceLeaseStore.BackupLeaseName, ownerToken, timeProvider.GetUtcNow(), CancellationToken.None);
+                MailerMaintenanceLeaseStore.BackupLeaseName,
+                ownerToken,
+                fencingToken,
+                timeProvider.GetUtcNow(),
+                CancellationToken.None);
             _operationLock.Release();
         }
     }
+
+    private async Task<bool> IsLeaseStillValidForPublishAsync(
+        Guid ownerToken, long fencingToken, MaintenanceLeaseHeartbeat heartbeat, CancellationToken cancellationToken) =>
+        heartbeat.IsHealthy
+        && await maintenanceLeaseStore.IsLeaseCurrentlyValidAsync(
+            MailerMaintenanceLeaseStore.BackupLeaseName,
+            ownerToken,
+            fencingToken,
+            cancellationToken);
 
     internal static string BuildBackupFileName(DateTimeOffset utcNow) =>
         "mailer-" + utcNow.ToUniversalTime().ToString("yyyyMMdd'T'HHmmssfff'Z'", System.Globalization.CultureInfo.InvariantCulture) + ".db";
