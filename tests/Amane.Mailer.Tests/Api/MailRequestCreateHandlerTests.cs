@@ -163,6 +163,57 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HandleAsync_persists_the_validated_canonical_recipient_not_the_raw_request_value()
+    {
+        // ADR 0023 D-02: the stored/delivered recipient must match the value MailPayloadHasher
+        // hashed (trimmed address, whitespace-only display name normalized to absent) -- not
+        // the raw request DTO -- so payload_hash always describes the actual delivery payload.
+        var draft = new MailRequestCreateRequest
+        {
+            TenantId = MailerWebApplicationFixtureBase.TenantId,
+            SourceService = MailerWebApplicationFixtureBase.SourceService,
+            MailRequestId = Guid.NewGuid(),
+            Purpose = "FormResponseNotification",
+            To =
+            [
+                new MailRecipientDto
+                {
+                    Email = "  user@example.com  ",
+                    DisplayName = "   ",
+                },
+            ],
+            Subject = "Form response received",
+            TextBody = "Hello from Mailer tests",
+            PayloadHash = new string('0', 64),
+        };
+        var request = draft with
+        {
+            PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(draft),
+        };
+        var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
+        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
+        var repository = new StubMailRequestRepository();
+
+        var result = await MailRequestCreateHandler.HandleAsync(
+            httpRequest,
+            request,
+            body,
+            repository,
+            new MailRequestQueue(),
+            _registry!,
+            _attachmentSpool!,
+            TimeProvider.System,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        var (statusCode, _) = MailRequestHttpResultAssertions.Inspect(result);
+        Assert.Equal(StatusCodes.Status202Accepted, statusCode);
+        Assert.Equal(1, repository.InsertCount);
+        Assert.Equal("user@example.com", repository.LastInsert!.RecipientEmail);
+        Assert.Null(repository.LastInsert!.RecipientDisplayName);
+    }
+
+    [Fact]
     public async Task HandleAsync_returns_409_for_idempotency_conflict()
     {
         var request = MailRequestTestData.CreateRequest();
@@ -373,6 +424,8 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
 
         public int InsertCount { get; private set; }
 
+        public AcceptedMailRequestInsert? LastInsert { get; private set; }
+
         public override Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
             Guid tenantId,
             string sourceService,
@@ -392,6 +445,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             CancellationToken cancellationToken = default)
         {
             InsertCount++;
+            LastInsert = insert;
             return Task.CompletedTask;
         }
     }

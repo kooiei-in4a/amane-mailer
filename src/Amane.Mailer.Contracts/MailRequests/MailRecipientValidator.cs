@@ -203,11 +203,17 @@ public static class MailRecipientValidator
 
     /// <summary>
     /// Whitespace-only display names normalize to absent/null. Otherwise rejects control
-    /// characters (including CR/LF/NUL); Unicode (e.g. Japanese) display names are allowed.
+    /// characters -- both C0 (U+0000-U+001F, U+007F; includes CR/LF/NUL) and C1
+    /// (U+0080-U+009F; e.g. NEL U+0085) -- via <see cref="char.IsControl(char)"/>. Unicode
+    /// (e.g. Japanese) display names are allowed. The control-character check runs before the
+    /// whitespace-only check: some C1 controls (notably NEL, U+0085) are classified as
+    /// whitespace by <see cref="string.IsNullOrWhiteSpace(string?)"/>, and a value made up
+    /// entirely of such characters must be rejected as invalid input, not silently normalized
+    /// to absent.
     /// </summary>
     private static bool TryValidateDisplayName(string? rawDisplayName, out string? displayName)
     {
-        if (string.IsNullOrWhiteSpace(rawDisplayName))
+        if (rawDisplayName is null)
         {
             displayName = null;
             return true;
@@ -215,11 +221,17 @@ public static class MailRecipientValidator
 
         foreach (var character in rawDisplayName)
         {
-            if (character < 0x20 || character == 0x7F)
+            if (char.IsControl(character))
             {
                 displayName = null;
                 return false;
             }
+        }
+
+        if (string.IsNullOrWhiteSpace(rawDisplayName))
+        {
+            displayName = null;
+            return true;
         }
 
         displayName = rawDisplayName;

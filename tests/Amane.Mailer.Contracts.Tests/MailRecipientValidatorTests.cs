@@ -347,6 +347,8 @@ public sealed class MailRecipientValidatorTests
     [Theory]
     [InlineData("Name\r\nInjected")]
     [InlineData("Name\0Injected")]
+    [InlineData("Name\u0085Injected")] // C1 control (NEL) embedded in otherwise-valid text
+    [InlineData("\u0085")] // C1 control (NEL) alone -- must reject, not normalize to absent
     public void TryValidate_rejects_control_characters_in_display_name(string displayName)
     {
         var succeeded = MailRecipientValidator.TryValidate(

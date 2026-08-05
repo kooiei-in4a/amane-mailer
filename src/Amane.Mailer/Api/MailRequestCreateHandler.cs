@@ -49,7 +49,7 @@ public static class MailRequestCreateHandler
         }
 
         var now = timeProvider.GetUtcNow();
-        var validationError = ValidateRequest(request, tenant!, now, runtimeMetrics);
+        var validationError = ValidateRequest(request, tenant!, now, runtimeMetrics, out var canonicalRecipients);
         if (validationError is not null)
         {
             return validationError;
@@ -108,7 +108,7 @@ public static class MailRequestCreateHandler
         // D-04 step 10: provider envelope pre-check (best-effort estimate; the authoritative
         // gate is re-checked at Worker dispatch time with exact pre-serialization).
         if (attachmentResult.Attachments is { Count: > 0 }
-            && !IsWithinProviderEnvelopeEstimate(request, tenant!, attachmentResult.Attachments))
+            && !IsWithinProviderEnvelopeEstimate(request, canonicalRecipients!.To[0], tenant!, attachmentResult.Attachments))
         {
             attachmentSpool.TryDeleteStaging(requestId);
             runtimeMetrics?.RecordAttachmentValidationRejected(MailerErrorCodes.MailPayloadTooLarge);
@@ -161,8 +161,10 @@ public static class MailRequestCreateHandler
         }
 
         // Guaranteed by the legacy-shape gate in ValidateRequest (IsLegacySingleTo): exactly one
-        // To recipient, no Cc/Bcc.
-        var recipient = request.To![0];
+        // To recipient, no Cc/Bcc. Use the validated canonical recipient (trimmed address;
+        // whitespace-only display name normalized to null) -- the same value MailPayloadHasher
+        // hashed -- not the raw request DTO, so the stored/delivered recipient matches payload_hash.
+        var recipient = canonicalRecipients!.To[0];
         var insert = new AcceptedMailRequestInsert
         {
             Id = requestId,
@@ -182,7 +184,7 @@ public static class MailRequestCreateHandler
             HtmlBody = request.HtmlBody,
             TextBody = request.TextBody,
             ReplyTo = request.ReplyTo,
-            RecipientEmail = recipient.Email,
+            RecipientEmail = recipient.Address,
             RecipientDisplayName = recipient.DisplayName,
             MetadataJson = request.Metadata is null
                 ? null
@@ -390,14 +392,13 @@ public static class MailRequestCreateHandler
 
     private static bool IsWithinProviderEnvelopeEstimate(
         MailRequestCreateRequest request,
+        CanonicalMailRecipient recipient,
         MailerTenant tenant,
         IReadOnlyList<CanonicalAttachmentMetadata> attachments)
     {
-        // Guaranteed by the legacy-shape gate in ValidateRequest (IsLegacySingleTo).
-        var recipient = request.To![0];
         var estimate = AttachmentEnvelopeEstimator.EstimateUpperBound(new AttachmentEnvelopeInput(
             tenant.DefaultFrom.Email,
-            recipient.Email,
+            recipient.Address,
             recipient.DisplayName,
             request.Subject,
             request.TextBody,
@@ -417,13 +418,14 @@ public static class MailRequestCreateHandler
         MailRequestCreateRequest request,
         MailerTenant tenant,
         DateTimeOffset now,
-        MailerRuntimeMetrics? runtimeMetrics)
+        MailerRuntimeMetrics? runtimeMetrics,
+        out CanonicalMailRecipientSet? canonicalRecipients)
     {
         if (!MailRecipientValidator.TryValidate(
                 request.To,
                 request.Cc,
                 request.Bcc,
-                out var canonicalRecipients,
+                out canonicalRecipients,
                 out var recipientFailure))
         {
             return recipientFailure == MailRecipientValidationFailure.TooManyRecipients
