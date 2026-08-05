@@ -189,10 +189,11 @@ SQLは本作業では実装しない。設計上はmigration 016でrecipient tab
 
 018のupgrade preconditionとして、migration開始前に旧Workerを停止し、in-flight provider invocationとProcessing requestを0件にする。Processing requestを安全にdrainできない場合はmigrationを適用せずfail-closedとする。migrationは既存plain requestを、`mail_attempts`を含む履歴と既存request stateから一括分類する。新しいevidence rowがないことだけでは、旧Workerがproviderを呼び出していない証明にならない。
 
-- provider attempt履歴が存在せず、provider invocationまたはacceptance／rejectionの記録がないrequestは、evidence rowを作成せずNoEvidenceとする。Queued／retry待ちでこの分類になったrequestだけが、v1.3 Workerの初回送信対象になり得る。
-- Deliveredでprovider acceptanceが既存履歴から確定できるrequestは、provider／attempt／message identityを可能な限り保持してAccepted evidenceをbackfillする。
-- `mail_attempts`の履歴が存在するQueued、retry待ち、Failed、DeadLettered、Cancelledを含め、provider acceptance／definite rejectionのいずれも証明できないrequestは、Unknown evidenceをbackfillし、requestをDeliveryUnknownへ収束させ、自動retryとwhole-request manual retryを禁止する。manual retry前に`attempt_count`が0へ戻されていても、履歴行があればこの分類を優先する。
-- 履歴の分類またはbackfillを一つのatomic migrationとして完了できない場合は、018とv1.3 Worker readinessを成立させずfail-closedとする。分類済みの既存`mail_attempts`、request、attempt、delivery event、attachment、bounce、suppressionは削除しない。
+- NoEvidenceとして扱えるのは、attachmentを持たないplain requestで、`request.status=Queued`、`attempt_count=0`、`mail_attempts=0`、`provider_message_id`等のprovider結果記録なし、attachment submission evidenceなし、plain submission evidenceなしをすべて満たすrequestだけである。この条件を満たすrequestだけがv1.3 Workerの初回provider invocation対象になり得る。plain submission evidence rowの不存在だけではNoEvidenceと判定しない。
+- Deliveredでprovider acceptanceが既存request stateと履歴から確定できるrequestは、存在するprovider、attempt、provider message ID等だけを保持してAccepted evidenceをbackfillする。存在しない値を推測・生成しない。
+- v1.2の既存情報だけでprovider未受理の明示拒否を一意に証明できるrequestに限りDefinitelyRejectedへbackfillできる。provider別の新しいlegacy判定は設けず、証明できないrequestはUnknown evidenceをbackfillする。
+- 上記のNoEvidence、Accepted、DefinitelyRejectedのいずれにも一意に分類できないrequestはUnknown evidenceをbackfillし、requestをDeliveryUnknownへ収束させ、自動retryとwhole-request manual retryを禁止する。これには`attempt_count>0`（`mail_attempts=0`でも該当）、`mail_attempts`が1件以上、Failed、DeadLettered、Cancelled、manual retry後に`attempt_count=0`へ戻されたが履歴があるrequestを含む。
+- 既存rowを一意に分類できない、backfillが一部しか成功しない、request stateとevidence stateが不整合になる、または分類transactionが完了しない場合は、018とv1.3 Worker readinessを成立させずfail-closedとする。分類済みの既存`mail_attempts`、request、attempt、delivery event、attachment、bounce、suppressionは削除しない。
 
 fresh DBとmigration 015適用済みDBのschema一致、attempt／attachment／evidence保持、plain request evidenceのunique constraint、old binary readiness拒否、matching restoreをqualificationする。Down migrationは提供せず、migration前backupを復旧境界とする。
 
@@ -411,7 +412,7 @@ general operator deny、normal PII deny、dedicated capability allow、tenant sc
 
 ### Migration／recovery
 
-v1.2 DB、migration 015 DB、single row backfill、attempt／attachment／plain submission evidence／bounce／suppression保持、migration 018 precondition、既存`mail_attempts`履歴の有無・Delivered・Queued／retry・Failed・DeadLettered・Cancelledの分類、manual retry後に`attempt_count=0`となった履歴のUnknown化、migration後の自動／manual retry禁止、fresh／upgrade一致、old binary拒否、rollback禁止、matching restore。
+v1.2 DB、migration 015 DB、single row backfill、attempt／attachment／plain submission evidence／bounce／suppression保持、migration 018 precondition、既存request分類をqualificationする。最低限、Queued + `attempt_count=0` + `mail_attempts`なしはNoEvidence、Queued + `attempt_count>0` + `mail_attempts`なしはUnknown、Failed + `attempt_count>0` + `mail_attempts`なしはUnknown、DeadLettered + `attempt_count>0` + `mail_attempts`なしはUnknown、Cancelled + `attempt_count>0` + `mail_attempts`なしはUnknown、`attempt_count=0` + `mail_attempts`ありはUnknown、DeliveredはAccepted、分類不能rowはmigration／readiness FAILとする。あわせてmigration後の自動／manual retry禁止、fresh／upgrade一致、old binary拒否、rollback禁止、matching restoreを確認する。
 
 ### Platform／RC
 

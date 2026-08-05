@@ -55,7 +55,13 @@ evidence stateはStarted、DefinitelyNotSubmitted、Accepted、DefinitelyRejecte
 
 DefinitelyNotSubmittedからの再送だけは、同じunique evidence rowを明示的なretry transitionでStartedへ戻した場合に限り許可する。Started、Accepted、DefinitelyRejected、Unknownからのautomatic／manual retryとprovider再呼出しは許可しない。
 
-018のupgradeでは、新しいevidence rowの不存在をprovider未呼出しの証明として扱わない。旧Worker停止、in-flight provider invocation=0、Processing request=0を満たしたatomic migrationで、provider attempt履歴がないrequestだけをNoEvidence、Deliveredでacceptanceが確定するrequestをAccepted、履歴があるがacceptance／definite rejectionを証明できないrequestをUnknownへbackfillする。Unknownへ分類したrequestはDeliveryUnknownとし、自動／whole-request manual retryを禁止する。分類不能時はmigrationとWorker readinessをfail-closedにする。
+018のupgradeでは、新しいevidence rowの不存在をprovider未呼出しの証明として扱わない。NoEvidenceは、attachmentを持たないplain request、`request.status=Queued`、`attempt_count=0`、`mail_attempts=0`、provider結果記録なし、attachment submission evidenceなし、plain submission evidenceなしをすべて満たすrequestに限定する。旧Worker停止、in-flight provider invocation=0、Processing request=0を満たしたatomic migrationで、Deliveredかつacceptanceが既存情報から確定するrequestは存在するprovider、attempt、provider message ID等だけを保持してAcceptedへbackfillする。
+
+v1.2の既存情報だけでprovider未受理の明示拒否を一意に証明できる場合だけDefinitelyRejectedへbackfillし、それ以外でNoEvidenceまたはAcceptedに分類できないrequestはUnknownへbackfillする。これには`attempt_count>0`（`mail_attempts=0`でも該当）、`mail_attempts`が1件以上、Failed、DeadLettered、Cancelled、manual retry後に`attempt_count=0`へ戻されたが履歴があるrequestを含む。Unknownへ分類したrequestはDeliveryUnknownとし、自動／whole-request manual retryを禁止する。provider別の新しいlegacy判定は設けない。
+
+既存rowを一意に分類できない、backfillが一部しか成功しない、request stateとevidence stateが不整合になる、または分類transactionが完了しない場合はmigrationとWorker readinessをfail-closedにする。
+
+最低限のmigration qualificationは、Queued + `attempt_count=0` + `mail_attempts`なし→NoEvidence、Queued + `attempt_count>0` + `mail_attempts`なし→Unknown、Failed + `attempt_count>0` + `mail_attempts`なし→Unknown、DeadLettered + `attempt_count>0` + `mail_attempts`なし→Unknown、Cancelled + `attempt_count>0` + `mail_attempts`なし→Unknown、`attempt_count=0` + `mail_attempts`あり→Unknown、Delivered→Accepted、分類不能row→migration／readiness FAILとする。
 
 Started insertは、`BEGIN IMMEDIATE`相当のtransaction内で、`request.status=Processing`、current claim token、`lock_expires_at > actual now`、plain request、evidence row不存在を条件とするconditional insertとする。affected rowsが0ならrollbackしproviderを呼び出さない。DefinitelyNotSubmitted→Startedも、同じrequestのevidence state、Processing、current claim token、lease未期限切れを条件としたconditional updateに限定する。
 
