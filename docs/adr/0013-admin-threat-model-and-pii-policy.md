@@ -3,6 +3,11 @@
 - **Status:** Accepted
 - **Date:** 2026-06-24
 - **適用範囲:** Amane.Mailer 管理画面
+- **Amended by:** [ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md)（2026-08-05）
+- **Related PR:** [#539](https://github.com/kooiei-in4a/amane-mailer/pull/539)
+- **Related issues:** [#519](https://github.com/kooiei-in4a/amane-mailer/issues/519)、[#517](https://github.com/kooiei-in4a/amane-mailer/issues/517)
+- **Decision owner:** Koo
+- **Design approval:** 2026-08-05（production implementationは未承認・未実施）
 
 ## Context
 
@@ -149,6 +154,18 @@ ADR 0012 D-04a と `infra/deploy/compose.yml` の形に合わせ、現在の SQL
 session、login throttle、tenant scope、監査ログ、DB 操作ロックの正本は Mailer SQLite DB に置く。単一プロセス内のメモリキャッシュや `SemaphoreSlim` は最適化には使えるが、正本にはしない。将来 Mailer API / Admin API を複数プロセスで動かす場合は、session 失効確認、login throttle、checkpoint / backup の二重実行防止を SQLite transaction または分散ロックで成立させる設計に更新する。
 
 PBKDF2 の 600,000 回以上という下限は AOT 互換性・負荷検証で低リソース環境の CPU 負荷も測る。検証では、ログイン失敗の連打が配送 worker、HTTP readiness、healthcheck に与える影響を確認し、必要ならログイン endpoint の並列数制限を管理画面基盤要件に含める。
+
+### D-12. ADR 0023 amendment: recipient PII and BCC high-confidentiality boundary
+
+recipient addressとrecipient display nameはPIIであり、BCCは高機密recipient情報として扱う。[ADR 0023 D-09](0023-multiple-recipient-contract-and-delivery-semantics.md#d-09-bcc-privacycapabilityaudit) をBCCの詳細正本とし、本ADRのAdmin threat model、到達制限、既存PII policyを維持する。
+
+通常のAdmin list、search、generic API、export、metrics、trace、一般log、screenshot data、support diagnostics、generic auditではBCCをmaskし、raw BCCを返さない。BCC revealは専用 `bcc_recipient_reveal` capabilityを必要とし、default deny、general operator deny、通常のunmasked PII capabilityからの流用禁止とする。
+
+revealはAdmin authentication、tenant scope、source_service scope、専用capability、durable audit save、audit成功後serveの順序を強制する。scope不明、capability不明、audit保存失敗はfail-closedとする。auditへBCC本文、raw address、display name、BCC一覧を保存せず、admin identity、tenant、request、日時、actionなどの最小メタデータだけを記録する。
+
+tenant scopeはrecipient情報にも適用し、cross-tenant取得を禁止する。source service scopeが指定される場合はcross-source-service取得も禁止する。存在有無を漏らさない既存Admin query境界を維持する。
+
+本amendmentは設計承認のみを記録する。BCC capability、Admin reveal、auditのproduction implementationはPR #539では行わず、Issue分割後に実施する。
 
 ## Alternatives Considered
 

@@ -1,14 +1,14 @@
 # amane-mailer v1.3.0 multiple To／CC／BCC 設計修正版
 
-DESIGN_STATUS: REVIEW_READY
+DESIGN_STATUS: ACCEPTED_DESIGN
 
 - Repository: kooiei-in4a/amane-mailer
 - Reviewed develop: df118647d18a578ff44afdd8c60a17931cb488e3
 - Baseline tag: v1.2.0 / c173db1d03725e754c4432d02b7c43ceed98c3c0
 - Target: v1.3.0 multiple To／CC／BCC
-- Scope: design document and Draft ADR only
+- Scope: accepted design authority and ADR amendments; implementation not authorized
 
-> 本書はAgent BのMajor finding 5件を反映したDraft修正版である。REVIEW_READYはIMPLEMENTATION_READYを意味しない。production code、migration SQL、test code、ADR Accepted化は本作業の対象外である。
+> 本書はAgent BのMajor finding 5件を反映した設計文書であり、Kooが2026-08-05に設計判断を承認した。ACCEPTED_DESIGNはIMPLEMENTATION_READYを意味しない。production code、migration SQL、test code、Contracts、OpenAPI、SDK、releaseは本作業の対象外である。
 
 ## 1. 変更した設計判断
 
@@ -449,7 +449,7 @@ Bはmigration 016／017に加えてplain request submission evidence用の018、
 ~~~text
 #513
   ↓
-D0: #519 Draft ADR + amendment patch
+D0: #519 Accepted ADR + formal amendments
   ├─→ D1: #530
   └─→ A: Contracts／hash／validation
           ↓
@@ -468,9 +468,9 @@ G: integration／platform／RC
 ## 17. Major finding対応
 
 1. IDN／suppression mismatch: ASCII-only reject、既存key維持、re-keyなしで解消。
-2. DeliveryUnknown authority conflict: ADR 0012／0022／Draft ADR 0023／Contracts／OpenAPI／Consumer GET／Adminへ一般定義を反映するpatchを作成。
+2. DeliveryUnknown authority conflict: ADR 0012／0022／ADR 0023／Contracts／OpenAPI／Consumer GET／Adminの実装時に一致させるauthorityを固定。
 3. Provider retry ambiguity: SMTP／ACSのstage table、4 disposition、request単位durable evidence、既存履歴のmigration分類、claim／lease fence、crash／lease recovery、bounded re-query、unknown時no reinvokeを固定。
-4. BCC capability未定義: registry、explicit grant、scope、audit-before-serve、fail-closedをDraft ADRへ反映。
+4. BCC capability未定義: registry、explicit grant、scope、audit-before-serve、fail-closedをAccepted ADRへ反映。
 5. Pending／NotSent ambiguity: NotSentをpublic summary stateとして追加し、事前suppressionではSuppressed／NotSentを返す。
 
 ## 18. Residual risks
@@ -481,12 +481,12 @@ G: integration／platform／RC
 - provider未知statusはUnknownへ寄せ、自動suppressionしない。
 - IDN／SMTPUTF8はv1.3非対応であり、将来導入には別ADRが必要。
 
-設計状態は、今回の修正を含むM-03限定再レビュー待ちのREVIEW_READYとする。Accepted ADR化および実装開始を意味しない。
+設計状態は、Kooの2026-08-05承認とADR 0023／関連ADR amendmentの正式反映を含むACCEPTED_DESIGNとする。これはIMPLEMENTATION_READY、production implementation、migration SQL、release承認を意味しない。
 
-## 19. HOLD解除条件
+## 19. Implementation hold conditions
 
-1. #519 Draft ADRがKoo承認を経てAccepted化されること。
-2. ADR 0012／0013／0014／0015／0020／0022のDraft amendmentが各正本と整合すること。
+1. production implementation開始前に、#519のAccepted ADRと関連amendmentを正本として参照すること。
+2. ADR 0012／0013／0014／0015／0020／0022のamendmentとADR 0023が整合すること。
 3. ASCII-only、既存suppression key、INVALID_REQUESTがContracts／OpenAPI／SDK／vectorsへ反映されること。
 4. DeliveryUnknown一般化とattachment固有制約が全public surfaceで一致すること。
 5. provider disposition、request-level durable evidence、既存provider履歴のmigration分類、claim／lease fence、stage recovery、ACS bounded re-queryが確定し、M-03限定再レビューで承認されること。
@@ -504,7 +504,7 @@ G: integration／platform／RC
 | BCC capability | Koo D-04 | 1、12 |
 | NotSent | Koo D-05 | 1、9 |
 | limits／duplicate／role order | #519 | 2、4 |
-| canonical recipient table | #519／ADR patch | 4、5、6 |
+| canonical recipient table | #519／ADR 0023 | 4、5、6 |
 | Bounced／Suppressed | #519／#530 | 11 |
 | attachment at-most-once | ADR 0022／PR #537／#538 | 1、10、14 |
 | plain submission evidence／recovery | Agent B M-03／ADR 0012 D-07／ADR 0015 | 4.5、6、8.3、9.1、10 |
@@ -521,7 +521,7 @@ G: integration／platform／RC
 6. migration 018が既存`mail_attempts`履歴を分類し、NoEvidenceと証明できないrequestをUnknown／DeliveryUnknownへ収束させるか。
 7. Started insert、DefinitelyNotSubmitted→Started、terminal finalizeがclaim／lease fenceとaffected rows検査を持ち、競合時にprovider再呼出しと部分更新を防ぐか。
 
-設計、Draft ADR、authority patch、Contracts／OpenAPI inventoryだけをレビューし、production code、migration SQL、test codeの実装レビューは行わないこと。判定はAPPROVE_DESIGN_WITH_GATES、CHANGES_REQUIRED、HOLDのいずれかとする。
+設計、Accepted ADR、Contracts／OpenAPI inventoryだけをレビューし、production code、migration SQL、test codeの実装レビューは行わないこと。判定はAPPROVE_DESIGN_WITH_GATES、CHANGES_REQUIRED、HOLDのいずれかとする。
 
 ## 22. Operation result
 
@@ -533,7 +533,7 @@ Test implementation: NOT PERFORMED
 
 Issue mutation: NOT PERFORMED
 
-ADR acceptance: NOT PERFORMED
+ADR acceptance: RECORDED (design approval only)
 
 PR Ready／merge: NOT PERFORMED
 
