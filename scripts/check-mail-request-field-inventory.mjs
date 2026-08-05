@@ -16,6 +16,15 @@ import path from 'node:path';
 const root = process.cwd();
 const defaultExceptionsPath = 'scripts/mail-request-field-inventory-exceptions.json';
 
+const KNOWN_LAYERS = [
+  'python-builder',
+  'typescript-builder',
+  'python-validation',
+  'typescript-validation',
+  'python-payload-hash',
+  'typescript-payload-hash',
+];
+
 const defaultPaths = {
   requestDto: 'src/Amane.Mailer.Contracts/MailRequests/MailRequestCreateRequest.cs',
   openApi: 'docs/api/openapi.yaml',
@@ -488,6 +497,11 @@ function loadExceptions(relativePath, errors) {
     }
     if (typeof entry.layer !== 'string' || entry.layer.length === 0) {
       errors.push(`${label}.layer must be a non-empty string.`);
+    } else if (!KNOWN_LAYERS.includes(entry.layer)) {
+      errors.push(
+        `${label}.layer '${entry.layer}' is not a known layer `
+        + `(expected one of: ${KNOWN_LAYERS.join(', ')}).`,
+      );
     }
     if (typeof entry.reason !== 'string' || entry.reason.length === 0) {
       errors.push(`${label}.reason must be a non-empty string.`);
@@ -638,14 +652,14 @@ function checkInventory(paths = defaultPaths) {
   assertSameSet(
     errors,
     'Python SDK INCLUDED_FIELDS vs Contracts IncludedFields',
-    pythonIncluded,
-    includedHashFields,
+    withoutExceptedFields(pythonIncluded, exceptions, 'python-payload-hash'),
+    withoutExceptedFields(includedHashFields, exceptions, 'python-payload-hash'),
   );
   assertSameSet(
     errors,
     'TypeScript SDK INCLUDED_FIELDS vs Contracts IncludedFields',
-    tsIncluded,
-    includedHashFields,
+    withoutExceptedFields(tsIncluded, exceptions, 'typescript-payload-hash'),
+    withoutExceptedFields(includedHashFields, exceptions, 'typescript-payload-hash'),
   );
 
   return errors;
@@ -1097,6 +1111,104 @@ function runSelfTest() {
               {
                 field: 'scheduled_at',
                 layer: 'python-builder',
+                reason: 'temporary SDK lag fixture for self-test',
+                trackingIssue: 352,
+                expiresOn,
+              },
+              {
+                field: 'scheduled_at',
+                layer: 'python-validation',
+                reason: 'temporary SDK lag fixture for self-test',
+                trackingIssue: 352,
+                expiresOn,
+              },
+            ],
+          }, null, 2);
+        }),
+      },
+      {
+        name: 'exception-expired-fails',
+        expectPass: false,
+        needle: 'expired on',
+        files: mutateBaseline(baselineFixtureFiles(), (files) => {
+          files['builder.py'] = files['builder.py']
+            .replace(/def scheduled_at[\s\S]*?return self\n\n/, '')
+            .replace(', "scheduled_at"', '');
+          files['validation.py'] = files['validation.py'].replace(/\n\s*"scheduled_at",/, '');
+          const expiresOn = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+          files['exceptions.json'] = JSON.stringify({
+            version: 1,
+            exceptions: [
+              {
+                field: 'scheduled_at',
+                layer: 'python-builder',
+                reason: 'temporary SDK lag fixture for self-test',
+                trackingIssue: 352,
+                expiresOn,
+              },
+              {
+                field: 'scheduled_at',
+                layer: 'python-validation',
+                reason: 'temporary SDK lag fixture for self-test',
+                trackingIssue: 352,
+                expiresOn,
+              },
+            ],
+          }, null, 2);
+        }),
+      },
+      {
+        name: 'exception-missing-tracking-issue-fails',
+        expectPass: false,
+        needle: 'trackingIssue must be an integer',
+        files: mutateBaseline(baselineFixtureFiles(), (files) => {
+          files['builder.py'] = files['builder.py']
+            .replace(/def scheduled_at[\s\S]*?return self\n\n/, '')
+            .replace(', "scheduled_at"', '');
+          files['validation.py'] = files['validation.py'].replace(/\n\s*"scheduled_at",/, '');
+          const expiresOn = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+          files['exceptions.json'] = JSON.stringify({
+            version: 1,
+            exceptions: [
+              {
+                field: 'scheduled_at',
+                layer: 'python-builder',
+                reason: 'temporary SDK lag fixture for self-test',
+                expiresOn,
+              },
+              {
+                field: 'scheduled_at',
+                layer: 'python-validation',
+                reason: 'temporary SDK lag fixture for self-test',
+                trackingIssue: 352,
+                expiresOn,
+              },
+            ],
+          }, null, 2);
+        }),
+      },
+      {
+        name: 'exception-unknown-layer-fails',
+        expectPass: false,
+        needle: 'is not a known layer',
+        files: mutateBaseline(baselineFixtureFiles(), (files) => {
+          files['builder.py'] = files['builder.py']
+            .replace(/def scheduled_at[\s\S]*?return self\n\n/, '')
+            .replace(', "scheduled_at"', '');
+          files['validation.py'] = files['validation.py'].replace(/\n\s*"scheduled_at",/, '');
+          const expiresOn = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .slice(0, 10);
+          files['exceptions.json'] = JSON.stringify({
+            version: 1,
+            exceptions: [
+              {
+                field: 'scheduled_at',
+                layer: 'python-builder-typo',
                 reason: 'temporary SDK lag fixture for self-test',
                 trackingIssue: 352,
                 expiresOn,

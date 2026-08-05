@@ -50,6 +50,9 @@ paths:
         自動再送しない（at-most-once）。添付ファイルの検証・上限・spool・
         provider mapping・DeliveryUnknown の詳細は
         docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md を参照。
+        `to`／`cc`／`bcc` は ADR 0023 D-01 の複数宛先契約を受理・検証・payload_hash 化するが、
+        recipient persistence（ADR 0023 D-11 issue B）実装までは single To 以外の形状を
+        暫定的に 422 INVALID_REQUEST で拒否する（`to` schema の説明を参照）。
       operationId: createMailRequest
       security:
         - tenantBearer: []
@@ -114,6 +117,7 @@ paths:
                 invalidMetadata: { value: { code: INVALID_METADATA } }
                 invalidPayloadHash: { value: { code: INVALID_PAYLOAD_HASH } }
                 invalidRecipient: { value: { code: INVALID_REQUEST, message: "A valid recipient is required." } }
+                multiRecipientNotYetSupported: { value: { code: INVALID_REQUEST, message: "Only a single To recipient is currently accepted." } }
                 scheduledAtInPast: { value: { code: SCHEDULED_AT_IN_PAST } }
                 scheduledAtTooFar: { value: { code: SCHEDULED_AT_TOO_FAR } }
                 tooManyAttachments: { value: { code: TOO_MANY_ATTACHMENTS } }
@@ -486,7 +490,6 @@ components:
         - source_service
         - mail_request_id
         - purpose
-        - to
         - subject
         - payload_hash
       properties:
@@ -508,10 +511,41 @@ components:
           description: 用途識別（例 FormResponseNotification）。
           example: FormResponseNotification
         to:
-          type: array
-          description: 宛先。配列形は前方互換のため。MVP は最大 1 件（超過は 422 TOO_MANY_RECIPIENTS）。
-          minItems: 1
-          maxItems: 1
+          type: [array, "null"]
+          description: >-
+            主要宛先（ADR 0023 D-01）。未指定・null・空配列は同義（To 0 件）。
+            `to`／`cc`／`bcc` はそれぞれ 0〜10 件、全 role 合計は 1〜20 件。
+            全 role 合計 0 件は 422 INVALID_REQUEST、role 別上限または合計上限超過は
+            422 TOO_MANY_RECIPIENTS。role 内・role 間の重複（trim + 大文字小文字を無視した
+            アドレス一致）は 422 INVALID_REQUEST で拒否する。display name の違いは
+            重複判定に影響しない。配列順を保持し、provider への送信順は To、Cc、Bcc の順。
+            単一 To のみ（Cc／Bcc 未指定）の request は既存 v1.2 契約・payload hash と
+            byte-identical。**現時点の runtime は暫定 gate により single To のみ受理し、
+            それ以外の形状（To 2 件以上、または Cc／Bcc 指定）は DB 書き込み・添付 staging・
+            queue 発火の前で 422 INVALID_REQUEST
+            (`Only a single To recipient is currently accepted.`) として拒否する**
+            （recipient persistence 実装 issue 完了までの一時的境界。ADR 0023 D-11 issue B）。
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/MailRecipient'
+        cc:
+          type: [array, "null"]
+          description: >-
+            CC 宛先（ADR 0023 D-01）。未指定・null・空配列は同義（Cc 0 件）で
+            payload_hash から省略される。role 上限・重複規則は `to` と同じ。
+            **現時点の runtime は暫定 gate により指定すると 422 INVALID_REQUEST で拒否する**
+            （`to` の説明を参照）。
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/MailRecipient'
+        bcc:
+          type: [array, "null"]
+          description: >-
+            BCC 宛先（ADR 0023 D-01）。未指定・null・空配列は同義（Bcc 0 件）で
+            payload_hash から省略される。role 上限・重複規則は `to` と同じ。
+            **現時点の runtime は暫定 gate により指定すると 422 INVALID_REQUEST で拒否する**
+            （`to` の説明を参照）。
+          maxItems: 10
           items:
             $ref: '#/components/schemas/MailRecipient'
         subject:
@@ -567,7 +601,7 @@ components:
             配送ペイロードの SHA-256（hex）。サーバー側で再計算し不一致なら 422。
             同一 mail_request_id で hash が違えば 409。
             hash 対象は MailPayloadHashContract.IncludedFields と同じ
-            source_service, purpose, to, subject, html_body, text_body,
+            source_service, purpose, to, cc, bcc, subject, html_body, text_body,
             reply_to, metadata, attachments。tenant_id, mail_request_id, payload_hash,
             scheduled_at は routing / scheduling envelope / 自己参照のため除外する。
             計算手順: 対象フィールドのみ抽出する。任意フィールドは payload JSON に
@@ -575,6 +609,12 @@ components:
             省略された任意フィールドは hash 対象外。キーをアルファベット昇順でソートし、スペースなし canonical JSON
             （MailPayloadHasher.BuildDeliveryPayloadJson() の独自エスケープ）へ
             直列化する。UTF-8 エンコード後に SHA-256 を計算し、小文字 hex で出力する。
+            to／cc／bcc は同一の省略規則に従う（ADR 0023 D-02）: 未指定・null・空配列は
+            同義でそのrole propertyをhash documentから省略する（CC-only requestでも
+            "to" キーは一切出ない）。1 件以上の場合だけ role プロパティを含め、各要素を
+            role 内配列順のまま、受理済み canonical recipient（trim 済み・大文字小文字保持の
+            address、空白のみの display name は省略）で反映する。単一 To のみの request は
+            既存 v1.2 single-To hash vector と byte-identical。
             attachments は未指定・空配列のいずれでも hash document から省略する
             （添付なし ADR 0012 hash とバイト同一）。1 件以上ある場合だけ、各要素を
             file_name（NFC）、content_type（ADR 0022 D-06 canonical 値）、byte_length、
@@ -604,13 +644,27 @@ components:
     MailRecipient:
       type: object
       additionalProperties: false
+      description: >-
+        ADR 0023 D-01。MailRecipientValidator が検証・正規化する。role 内・role 間の
+        重複判定は trim + 大文字小文字を無視した address（address_key）で行うが、
+        address_key 自体は payload / hash に出さない。
       required: [email]
       properties:
         email:
           type: string
           format: email
+          maxLength: 254
+          description: >-
+            ASCII local-part + ASCII domain のみ受理（IDN、Punycode、xn-- ラベル、
+            Unicode local-part は拒否）。local-part は最大 64 octet、full address は
+            最大 254 byte。CR/LF/NUL/control 文字、空白、`<`／`>` を含む値は拒否。
+            前後の空白は trim 後の値が受理・delivery・payload hash に使われる
+            （address_key の大文字小文字正規化は重複判定専用で hash には出ない）。
         display_name:
           type: [string, "null"]
+          description: >-
+            CR/LF/control 文字は拒否。日本語等 Unicode は許可。空白のみの値は
+            未指定（null）として扱われ payload hash にも出ない。
 
     MailAttachment:
       type: object

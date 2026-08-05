@@ -59,6 +59,28 @@ CI validates OpenAPI structure with `scripts/validate-openapi.mjs` and runs Cont
 
 When intentionally changing the contract, update the DTOs / constants / payload hash contract in `src/Amane.Mailer.Contracts/` first, then synchronize runtime behavior, [openapi.yaml](api/openapi.yaml), related tests, and the Python / TypeScript SDK builder, validation, and payload_hash field inventories in the same change. There is no separate generated snapshot to refresh today; the drift check derives expected DTO / constant shape from source. Recompute the OpenAPI example `payload_hash` when it changes, and update `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` when canonicalization fixtures change. Validate locally with `node scripts/validate-openapi.mjs docs/api/openapi.yaml`, `node scripts/check-contract-drift.mjs`, and `node scripts/check-mail-request-field-inventory.mjs`. See the "Versioning Policy" section for Contracts package / API versioning policy.
 
+### Recipient contract (to / cc / bcc, ADR 0023 D-01)
+
+`to`, `cc`, and `bcc` each accept 0-10 entries; the combined total across all three must be
+1-20. Unspecified, `null`, and an empty array are equivalent (zero recipients for that role).
+A combined total of 0 is 422 `INVALID_REQUEST`; exceeding a per-role or combined limit is 422
+`TOO_MANY_RECIPIENTS`. Duplicates within a role or across roles are rejected as 422
+`INVALID_REQUEST`, judged by a trim + lowercase-invariant address match (`address_key`);
+differing display names do not affect duplicate detection. Addresses accept ASCII local-part +
+ASCII domain only, rejecting IDN/Punycode/Unicode local-part and CR/LF/NUL/control characters
+(local-part max 64 octets, full address max 254 bytes). Display names reject CR/LF/control
+characters; a whitespace-only value is treated as unspecified. Array order is preserved within
+each role, and the provider submission order is To, Cc, Bcc. A request with a single To entry
+and no Cc/Bcc is byte-identical to the existing v1.2 contract and payload hash.
+
+**The current runtime accepts only a single To recipient via a temporary gate.** Two or more
+To entries, or any Cc/Bcc entry, are rejected as 422 `INVALID_REQUEST`
+(`Only a single To recipient is currently accepted.`) before any DB write, attachment staging,
+or queue signal. This is a temporary boundary pending recipient persistence/migration (ADR 0023
+D-11 issue B) and is independent of the Contracts/OpenAPI/payload hash/validation layer (this
+issue's scope) already accepting and validating multiple recipients. See
+[docs/adr/0023-multiple-recipient-contract-and-delivery-semantics.md](adr/0023-multiple-recipient-contract-and-delivery-semantics.md).
+
 ### Acceptance Responses
 
 | Situation | HTTP | code / status |
@@ -70,7 +92,8 @@ When intentionally changing the contract, update the DTOs / constants / payload 
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Same ID, different content | 409 | `IDEMPOTENCY_CONFLICT` |
 | Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
-| Multiple recipients / metadata / hash mismatch | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
+| Per-role or combined recipient limit exceeded | 422 | `TOO_MANY_RECIPIENTS` |
+| Invalid/duplicate recipient, non-single-To shape (temporary gate) / metadata / hash mismatch | 422 | `INVALID_REQUEST` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` |
 | Past `scheduled_at` / beyond max schedule horizon | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
@@ -242,7 +265,7 @@ Canonical DDL: `src/Amane.Mailer/Data/Migrations/001_initial.sql`
 | `payload_json` | TEXT | Received JSON verbatim |
 | `payload_hash` | TEXT | SHA-256 hex (64 characters) |
 | `subject` / `html_body` / `text_body` / `reply_to` | TEXT | Delivery content |
-| `recipient_email` / `recipient_display_name` | TEXT | Recipient (current API accepts one recipient) |
+| `recipient_email` / `recipient_display_name` | TEXT | Recipient (runtime currently accepts only a single To recipient; temporary boundary pending ADR 0023 D-01/D-11 issue B) |
 | `metadata_json` | TEXT NULL | Optional metadata |
 | `status` | INTEGER | State (see table below) |
 | `attempt_count` / `max_attempts` | INTEGER | Attempt counts |

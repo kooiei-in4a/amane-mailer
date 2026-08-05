@@ -14,13 +14,35 @@ Hash covers delivery payload fields only:
 
 - `source_service`
 - `purpose`
-- `to`
+- `to` (special projection — see below)
+- `cc` (special projection — see below)
+- `bcc` (special projection — see below)
 - `subject`
 - `html_body`
 - `text_body`
 - `reply_to`
 - `metadata`
 - `attachments` (special projection — see below)
+
+## Recipients: to / cc / bcc (ADR 0023 D-01/D-02)
+
+`to`, `cc`, and `bcc` follow the same omission rule as `attachments`, applied independently per
+role: unspecified, `null`, and an empty array are all equivalent ("zero recipients in this
+role") and the role is omitted from the hash document entirely — a CC-only request has no `to`
+key at all, and a BCC-only request has neither a `to` nor a `cc` key. When a role has one or
+more recipients, each element is re-projected to the *validated canonical* recipient value, not
+the raw request bytes: `email` is trimmed (case is preserved — addresses are not
+lowercased for hashing), and `display_name` is included only when present and not
+whitespace-only (a whitespace-only `display_name` is treated the same as an absent one and
+omitted from the projected object). Role array order is preserved. Each example's
+`build_delivery_payload_json` / `buildDeliveryPayloadJson` / `BuildDeliveryPayloadJSONWithAttachments`
+function performs this projection automatically from whatever `to`/`cc`/`bcc` shape is present
+on the request object you pass in — you do not need to pre-trim addresses or drop whitespace-only
+display names yourself, but the request you actually POST must be one Mailer would accept (a
+request with a leading/trailing-whitespace or invalid address will still be rejected by Mailer's
+own validation even though these examples can compute *a* hash for it). See
+[docs/adr/0023-multiple-recipient-contract-and-delivery-semantics.md](../../docs/adr/0023-multiple-recipient-contract-and-delivery-semantics.md)
+D-01/D-02.
 
 ## Attachments (ADR 0022 D-03)
 
@@ -160,7 +182,7 @@ previous request. Typical causes:
 1. **Included vs. excluded fields mixed up.** Hashing `tenant_id`,
    `mail_request_id`, `payload_hash`, or `scheduled_at` (routing/schedule/self-reference fields), or
    omitting one of the delivery fields (`source_service`, `purpose`, `to`,
-   `subject`, `html_body`, `text_body`, `reply_to`, `metadata`) that is
+   `cc`, `bcc`, `subject`, `html_body`, `text_body`, `reply_to`, `metadata`) that is
    actually present in the request JSON from the hash input.
 2. **Omitted vs. explicit `null` mismatch.** Computing the hash as if an
    optional field were omitted, then POSTing it as `"reply_to": null` (or the

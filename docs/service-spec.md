@@ -59,6 +59,27 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 
 契約を意図的に変更する場合は、まず `src/Amane.Mailer.Contracts/` の DTO / constants / payload hash contract を更新し、同じ変更で runtime 実装、[openapi.yaml](api/openapi.yaml)、関連テスト、および Python / TypeScript SDK の builder・validation・payload_hash field inventory を同期する。現時点では再生成が必要な別 snapshot はなく、drift check は DTO / constants の期待値を source から導出する。OpenAPI example の `payload_hash` が変わる場合は再計算し、canonicalization fixture が変わる場合は `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` も更新する。ローカル確認は `node scripts/validate-openapi.mjs docs/api/openapi.yaml`、`node scripts/check-contract-drift.mjs`、`node scripts/check-mail-request-field-inventory.mjs` を実行する。Contracts package / API versioning policy については「バージョニングポリシー」節を参照。
 
+### 宛先契約（to / cc / bcc、ADR 0023 D-01）
+
+`to`／`cc`／`bcc` はそれぞれ 0〜10 件、全 role 合計は 1〜20 件を受理する。未指定・`null`・空配列は
+そのrole 0 件として同義に扱う。全 role 合計 0 件は 422 `INVALID_REQUEST`、role 別上限または
+全体上限超過は 422 `TOO_MANY_RECIPIENTS`。role 内・role 間の重複は trim + 大文字小文字を
+無視したアドレス一致（`address_key`）で判定し 422 `INVALID_REQUEST` とする（display name の
+違いは重複判定に影響しない）。address は ASCII local-part + ASCII domain のみ受理し、IDN /
+Punycode / Unicode local-part / CR・LF・NUL・control 文字を拒否する（local-part 最大 64
+octet、full address 最大 254 byte）。display name は CR/LF/control を拒否し、空白のみの値は
+未指定として扱う。配列順は role 内で保持し、provider への送信順は To、Cc、Bcc の順。単一 To
+のみ（Cc／Bcc 未指定）の request は既存 v1.2 契約・payload hash と byte-identical。
+
+**現時点の runtime は暫定 gate により single To のみ受理する。** To 2 件以上、または
+Cc／Bcc の指定は、DB 書き込み・添付 staging・queue 発火より前で 422 `INVALID_REQUEST`
+(`Only a single To recipient is currently accepted.`) として拒否する。これは recipient
+persistence／migration（ADR 0023 D-11 issue B）が実装されるまでの一時的な境界であり、
+Contracts／OpenAPI／payload hash／validation（本 issue #540 のスコープ）が複数宛先を
+受理・検証できることとは独立している。詳細は
+[docs/adr/0023-multiple-recipient-contract-and-delivery-semantics.md](adr/0023-multiple-recipient-contract-and-delivery-semantics.md)
+を参照。
+
 ### 受付レスポンス
 
 | 状況 | HTTP | code / status |
@@ -70,7 +91,8 @@ CI は `scripts/validate-openapi.mjs` で OpenAPI の構造を検証し、`scrip
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 同一ID・内容差異 | 409 | `IDEMPOTENCY_CONFLICT` |
 | ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
-| 宛先複数 / メタデータ / hash 不一致 | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
+| 宛先 role 別／合計上限超過 | 422 | `TOO_MANY_RECIPIENTS` |
+| 宛先不正・重複・単一 To 以外の形状（暫定 gate） / メタデータ / hash 不一致 | 422 | `INVALID_REQUEST` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` |
 | 過去の `scheduled_at` / 最大予約期間超過 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
@@ -240,7 +262,7 @@ Contracts package の TFM を引き上げる場合は、CHANGELOG のリリー�
 | `payload_json` | TEXT | 受信 JSON 原文 |
 | `payload_hash` | TEXT | SHA-256 hex（64 文字） |
 | `subject` / `html_body` / `text_body` / `reply_to` | TEXT | 配送内容 |
-| `recipient_email` / `recipient_display_name` | TEXT | 宛先（現在の API は 1 件） |
+| `recipient_email` / `recipient_display_name` | TEXT | 宛先（runtime は現時点で single To のみ受理。ADR 0023 D-01/D-11 issue B 完了までの暫定境界） |
 | `metadata_json` | TEXT NULL | 任意 metadata |
 | `status` | INTEGER | 状態（下表） |
 | `attempt_count` / `max_attempts` | INTEGER | 試行回数 |
