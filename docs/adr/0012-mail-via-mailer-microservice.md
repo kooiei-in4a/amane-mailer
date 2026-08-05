@@ -3,6 +3,11 @@
 - **Status:** Approved
 - **Date:** 2026-06-18
 - **Approved:** 2026-06-19
+- **Amended by:** [ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md)（2026-08-05）
+- **Related PR:** [#539](https://github.com/kooiei-in4a/amane-mailer/pull/539)
+- **Related issues:** [#519](https://github.com/kooiei-in4a/amane-mailer/issues/519)、[#517](https://github.com/kooiei-in4a/amane-mailer/issues/517)
+- **Decision owner:** Koo
+- **Design approval:** 2026-08-05（production implementationは未承認・未実施）
 
 ## Context
 
@@ -114,6 +119,27 @@ Mailer API の `202 Accepted` は「Mailer が依頼を永続化した」こと�
 - 返却は PII を含まない最小セット（`mail_request_id`, Worker 配送 `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`）。
 - 存在しない ID および他 tenant の ID は **404 統一**（存在有無を漏らさない）。
 - Contracts 正本は `MailRequestStatusResponse`（`MailRequestCreateResponse.status` の acceptance 値と混同しない）。
+
+### D-09. ADR 0023 amendment: request-level provider submission evidence
+
+[ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md) は、本ADRの添付なし配送契約を全面的に書き直さず、v1.3.0の複数recipientとprovider submission uncertaintyに必要な境界だけをamendする。複数To／CC／BCCの公開契約、recipient canonical persistence、recipient feedback、BCC privacyの正本はADR 0023とし、本ADRの既存single-recipient契約は後方互換境界として維持する。
+
+添付なしのplain requestにもrequest単位のdurable provider submission evidenceを導入する。provider call前に `Started` をunique `request_id` でcommitし、Started以上のstartup recovery、stale claim recovery、periodic sweep、manual retryはproviderを再呼び出ししない。通常応答時はevidence terminal stateとrequest／attempt finalizeを同一transactionで保存し、provider acceptanceが不明なStartedは `Unknown` evidence、request `DeliveryUnknown`へ収束させる。
+
+evidence／dispositionの意味は次で固定する。
+
+| 分類 | 意味 |
+|---|---|
+| `NoEvidence` | ADR 0023 D-06の厳格な7条件を満たし、provider call前と証明できるrowなし。enum値として保存しない |
+| `Accepted` | provider acceptanceを確認可能な証拠がある。存在しないprovider情報を推測・生成しない |
+| `DefinitelyRejected` | provider未受理を明示的かつ一意に証明できる。単なるFailed、例外、timeout、履歴不足ではない |
+| `Unknown` | acceptanceも明示拒否も証明できない。requestは`DeliveryUnknown`へ収束 |
+
+`Unknown`／`DeliveryUnknown`はautomatic retry、whole-request manual retry、provider再呼び出しを禁止する。legacy requestのclassification不能もUnknownへ寄せ、migration 018とWorker readinessをfail-closedにする。migration 018はSQL実装を本PRで行わない。
+
+Started insert、DefinitelyNotSubmittedからStartedへのtransition、terminal finalizeはcurrent claim tokenと未期限切れleaseによるclaim／lease fencingを要求する。affected rowsが0ならproviderを呼ばず、partial finalizeはrollbackする。lease expiry後のstale WorkerはStarted commit／finalizeを成功できず、reclaim後も同じevidenceを先に読む。
+
+このamendmentのdesign approvalはproduction implementation、migration SQL、releaseを承認しない。既存の添付requestのStarted marker、request単位at-most-once、Started-only recovery、terminal後spool cleanupはADR 0022で正本化し、ADR 0023と矛盾しない範囲で参照する。
 
 ## Consequences
 

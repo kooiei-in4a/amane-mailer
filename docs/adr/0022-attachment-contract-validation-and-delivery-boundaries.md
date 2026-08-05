@@ -2,6 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-04
+- **Amended by:** [ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md)（2026-08-05）
+- **Related PR:** [#539](https://github.com/kooiei-in4a/amane-mailer/pull/539)
+- **Related issues:** [#519](https://github.com/kooiei-in4a/amane-mailer/issues/519)、[#517](https://github.com/kooiei-in4a/amane-mailer/issues/517)、[#523](https://github.com/kooiei-in4a/amane-mailer/issues/523)、[#533](https://github.com/kooiei-in4a/amane-mailer/issues/533)
+- **Decision owner:** Koo
+- **Design approval:** 2026-08-05（production implementationは未承認・未実施）
 - **Accepted:** 2026-08-04（Koo承認。Agent B独立再レビュー `APPROVE`、reviewed head `ae8e89674813e8bc50bd1acb652403767bb20b6e`）
 - **Tracks:** [#523](https://github.com/kooiei-in4a/amane-mailer/issues/523)
 - **Planning:** [#517](https://github.com/kooiei-in4a/amane-mailer/issues/517)
@@ -578,6 +583,14 @@ Accepted判断で確認済み:
 8. production Docker／Native AOT／provider qualification。
 
 AcceptedだけでPR Ready、merge、Issue #533実装開始、live ACS、release、publish、tagを許可しない。
+
+### D-16. ADR 0023 amendment: multiple recipient attachment integration
+
+v1.3.0のmultiple To／CC／BCC＋attachmentは、recipient結果が複数でもprovider invocationをrequest単位で最大1回とする。本ADRのStarted marker commit後だけprovider call、Started後のprovider再呼び出し禁止、Started-only recoveryはDeliveryUnknown、terminal durable commit後だけspool cleanup、backup maintenance lease、attachment requestの全terminal state manual retry禁止を維持する。
+
+一部recipient成功、一部recipient失敗、BCCだけの失敗、provider acceptance不明のいずれでも、同一attachment requestをwhole-requestとして再送しない。provider acceptance不明はDeliveryUnknownへ収束させ、spoolはrequest-level durable terminal commit前にcleanupしない。recipient-level feedbackはADR 0023／ADR 0020の正本へ関連付けるが、attachmentのat-most-once境界を弱めない。
+
+このamendmentは既存attachment MVP契約との接点だけを記録する。attachment automatic retry、long-term retention、malware scanning、Admin attachment download、external object storageはv1.3.0のCommitted scopeではなく、production implementation、migration SQL、releaseを承認しない。
 
 ## Consequences
 
