@@ -160,7 +160,9 @@ public static class MailRequestCreateHandler
             });
         }
 
-        var recipient = request.To[0];
+        // Guaranteed by the legacy-shape gate in ValidateRequest (IsLegacySingleTo): exactly one
+        // To recipient, no Cc/Bcc.
+        var recipient = request.To![0];
         var insert = new AcceptedMailRequestInsert
         {
             Id = requestId,
@@ -391,7 +393,8 @@ public static class MailRequestCreateHandler
         MailerTenant tenant,
         IReadOnlyList<CanonicalAttachmentMetadata> attachments)
     {
-        var recipient = request.To[0];
+        // Guaranteed by the legacy-shape gate in ValidateRequest (IsLegacySingleTo).
+        var recipient = request.To![0];
         var estimate = AttachmentEnvelopeEstimator.EstimateUpperBound(new AttachmentEnvelopeInput(
             tenant.DefaultFrom.Email,
             recipient.Email,
@@ -416,27 +419,34 @@ public static class MailRequestCreateHandler
         DateTimeOffset now,
         MailerRuntimeMetrics? runtimeMetrics)
     {
-        if (request.To is null)
+        if (!MailRecipientValidator.TryValidate(
+                request.To,
+                request.Cc,
+                request.Bcc,
+                out var canonicalRecipients,
+                out var recipientFailure))
+        {
+            return recipientFailure == MailRecipientValidationFailure.TooManyRecipients
+                ? MailRequestHttpErrorMapper.Error(
+                    StatusCodes.Status422UnprocessableEntity,
+                    MailerErrorCodes.TooManyRecipients)
+                : MailerJsonResults.ValidationError(
+                    MailerErrorCodes.InvalidRequest,
+                    "A valid recipient is required.",
+                    StatusCodes.Status422UnprocessableEntity);
+        }
+
+        // Temporary gate (ADR 0023 / issue #540): Contracts/OpenAPI/validation/hash accept
+        // multiple To and Cc/Bcc, but recipient persistence and delivery (a separate, not-yet-
+        // implemented follow-up) still only handle a single To recipient. Reject any other shape
+        // here -- before attachment staging, hash verification, or any DB write -- so a
+        // multi-recipient request is never silently reduced to one recipient. No recipient values
+        // are included in the response.
+        if (!canonicalRecipients!.IsLegacySingleTo)
         {
             return MailerJsonResults.ValidationError(
                 MailerErrorCodes.InvalidRequest,
-                "A valid recipient is required.",
-                StatusCodes.Status422UnprocessableEntity);
-        }
-
-        if (request.To.Count > 1)
-        {
-            return MailRequestHttpErrorMapper.Error(
-                StatusCodes.Status422UnprocessableEntity,
-                MailerErrorCodes.TooManyRecipients);
-        }
-
-        if (request.To.Count == 0
-            || request.To.Any(recipient => recipient is null || !MailAddress.TryCreate(recipient.Email, out _)))
-        {
-            return MailerJsonResults.ValidationError(
-                MailerErrorCodes.InvalidRequest,
-                "A valid recipient is required.",
+                "Only a single To recipient is currently accepted.",
                 StatusCodes.Status422UnprocessableEntity);
         }
 
