@@ -141,9 +141,33 @@ sentinelはreal addressではない。primary fenceはschema readinessによるv
 
 canonical tableとinstance backupにはraw BCCが存在し得る。backupはinstance-wide high-privilege operationとし、通常Admin、list、search、export、metrics、trace、logs、generic auditへ返さない。
 
+### 4.5 Plain request submission evidence
+
+添付なしrequestにもrequest単位のdurable submission evidenceを持たせる。attachment requestの既存submission evidenceとは共用せず、plain request専用の境界とする。
+
+~~~text
+mail_request_submission_evidence
+  request_id: unique primary key
+  evidence_state: Started / DefinitelyNotSubmitted / Accepted /
+                  DefinitelyRejected / Unknown
+  attempt_number
+  provider
+  provider_message_id: nullable
+  provider_operation_id: nullable
+  recovery_attempt_count
+  last_recovery_at: nullable
+  started_at
+  terminal_at: nullable
+  updated_at
+~~~
+
+NoEvidenceはrowが存在しない状態であり、enum値として保存しない。provider呼出し前のStarted commit後は、recoveryが証拠なしにproviderを再呼出ししてはならない。request_id uniqueにより、stale claim、startup recovery、periodic sweep、manual retryが同じ証拠rowを参照する。
+
 ## 5. Source of truth／payload snapshot
 
 payload snapshotはsanitized audit snapshotとし、top-level raw BCCとattachment content_base64を含めない。hashはsanitization前のaccepted requestから計算する。BCC canonical dataはrecipient tableだけに保存する。
+
+plain requestのprovider submission evidenceはpayload snapshotやrecipient summaryとは別のdurable operational factである。provider response、provider_message_id、provider_operation_idを通常log、metrics、trace、generic auditへ出さない。
 
 v1.2 binaryとv1.3 schema、v1.3 binaryとv1.2 schemaの混在を禁止する。simple rollbackは禁止する。readinessはbundled migration set、applied set、checksum、required schemaを一致検証し、不一致時はAPI／Workerを処理開始させない。
 
@@ -151,9 +175,9 @@ restoreはmatching binary、schema manifest、SQLite、attachment storage、back
 
 ## 6. Persistence／migration方針
 
-SQLは本作業では実装しない。設計上はmigration 016でrecipient table作成と既存To backfill、017でbounce eventのrecipient correlation metadata追加を行う。
+SQLは本作業では実装しない。設計上はmigration 016でrecipient table作成と既存To backfill、017でbounce eventのrecipient correlation metadata追加、018でplain request submission evidence table作成を行う。
 
-016／017は次を変更・削除しない。
+016〜018は次を変更・削除しない。
 
 - existing request
 - mail_attempts
@@ -163,7 +187,9 @@ SQLは本作業では実装しない。設計上はmigration 016でrecipient tab
 - attachment metadata／spool reference
 - submission evidence
 
-fresh DBとmigration 015適用済みDBのschema一致、attempt／attachment／evidence保持、old binary readiness拒否、matching restoreをqualificationする。Down migrationは提供せず、migration前backupを復旧境界とする。
+018のupgrade preconditionとして、migration開始前に旧Workerを停止し、in-flight provider invocationとProcessing requestを0件にする。Processing requestを安全にdrainできない場合はmigrationを適用せずfail-closedとする。Queued／retry待ちrequestはNoEvidenceのままv1.3 Workerへ引き渡す。
+
+fresh DBとmigration 015適用済みDBのschema一致、attempt／attachment／evidence保持、plain request evidenceのunique constraint、old binary readiness拒否、matching restoreをqualificationする。Down migrationは提供せず、migration前backupを復旧境界とする。
 
 ## 7. Provider mapping
 
@@ -206,11 +232,49 @@ timeoutを一律retryableとしない。
 
 re-queryはresponse lossごとに最大1回、5秒後に開始、provider API timeout 10秒で停止する。確認不能ならDeliveryUnknownへ収束し、provider再呼出しをしない。
 
+### 8.3 Durable evidence boundary
+
+provider呼出し前に、request単位でevidence_state=Startedとprovider-specific operation identityをdurably commitする。Started commitに成功しなければproviderを呼出してはならない。
+
+通常応答が戻った場合は、evidence terminal stateとrequest／attempt finalizeを同一DB transactionで保存する。processがそのtransaction前にcrashした場合、DBに残るStartedをrecoveryが処理する。
+
+| evidence state | SMTP recovery | ACS recovery | provider再呼出し |
+|---|---|---|---|
+| NoEvidence（rowなし） | 初回処理可能 | 初回処理可能 | 可 |
+| Started | DeliveryUnknownへ収束 | deterministic operation IDでbounded re-query | 不可 |
+| DefinitelyNotSubmitted | controlled retryだけ可 | controlled retryだけ可 | 状態遷移後だけ可 |
+| Accepted | request terminalへ収束 | request terminalへ収束 | 不可 |
+| DefinitelyRejected | Failedへ収束 | Failedへ収束 | 不可 |
+| Unknown | DeliveryUnknownへ収束 | DeliveryUnknownへ収束 | 不可 |
+
+SMTP DATA受理後、request finalize前にcrashした場合はAcceptedを推測せずStartedからDeliveryUnknownへ収束する。ACS受理後のcrashはStartedに保存済みのdeterministic operation IDでbounded re-queryし、SucceededならAccepted、明示失敗ならDefinitelyRejected、確認不能ならUnknownとする。
+
 ## 9. Request／recipient state
 
 request stateは既存のQueued、Processing、Delivered、Failed、DeadLettered、Cancelled、DeliveryUnknownを維持する。PartialFailureを追加しない。
 
 request DeliveredはMailerがprovider acceptanceを確認した意味、recipient Deliveredはrecipient-level delivery feedbackを確認した意味と明示する。
+
+### 9.1 Recovery state machine
+
+~~~text
+NoEvidence（rowなし）
+  → provider呼出し前にStarted commit
+  → provider call
+
+Started
+  → normal responseをterminal evidenceへtransactional finalize
+  → stale claim／startup／periodic sweepでは再呼出しせずrecovery
+
+DefinitelyNotSubmitted
+  → retry policyが許可する場合だけ同じevidence rowをStartedへ遷移
+
+Accepted／DefinitelyRejected／Unknown
+  → terminal evidenceとしてrequest stateへ収束
+  → recovery、manual retry、sweepからprovider再呼出しなし
+~~~
+
+stale ProcessingをreclaimするWorker、startup recovery、periodic sweep、manual retryはすべてこのevidence stateを先に読む。evidence rowがない場合だけprovider未呼出しと判断できる。Started以上ならproviderを呼出さず、SMTPはDeliveryUnknown、ACSはre-queryへ進む。
 
 | provider状況 | disposition | request state | recipient state | retry |
 |---|---|---|---|---|
@@ -257,7 +321,9 @@ provider submission後に受理可否を確定できないrequestはDeliveryUnkn
 
 attachment requestはStarted marker commit後、provider invocation最大1回、Started-only recovery DeliveryUnknown、terminal commit後だけspool cleanup、全terminal stateからmanual retry禁止を維持する。
 
-添付なしrequestはprovider未提出を明確に証明できる場合だけDefinitelyNotSubmittedとしてretryできる。
+添付なしrequestはprovider未提出を明確に証明できる場合だけDefinitelyNotSubmittedとしてretryできる。Failed／DeadLetteredのmanual retryも、evidenceがNoEvidenceまたはDefinitelyNotSubmittedの場合だけ許可する。Started、Accepted、DefinitelyRejected、UnknownからQueuedへ戻してはならない。
+
+provider未提出を証明できないままstale Processing、startup recovery、periodic sweepへ入った場合は、plain requestでもDeliveryUnknownへ収束する。evidenceなしの再処理は、Started commitより前にprovider invocationがなかったことがtransaction境界で保証される場合だけ許可する。
 
 ## 11. Bounce／suppression
 
@@ -319,7 +385,7 @@ ASCII accept、IDN reject、Unicode local reject、raw address非表示、既存
 
 ### Provider disposition
 
-SMTP connect前、RCPT拒否、DATA前、DATA accepted、DATA後response loss、accepted後disconnect、stage不明timeout、ACS拒否、success、re-query success／failure、unknown後再呼出しなし。
+SMTP connect前、RCPT拒否、DATA前、DATA accepted、DATA後response loss、accepted後disconnect、stage不明timeout、ACS拒否、success、re-query success／failure、plain requestのprocess crash、stale Processing reclaim、startup recovery、periodic sweep、unknown後再呼出しなし。
 
 ### Recipient summary
 
@@ -331,7 +397,7 @@ general operator deny、normal PII deny、dedicated capability allow、tenant sc
 
 ### Migration／recovery
 
-v1.2 DB、migration 015 DB、single row backfill、attempt／attachment／submission evidence／bounce／suppression保持、fresh／upgrade一致、old binary拒否、rollback禁止、matching restore。
+v1.2 DB、migration 015 DB、single row backfill、attempt／attachment／plain submission evidence／bounce／suppression保持、migration 018 precondition、fresh／upgrade一致、old binary拒否、rollback禁止、matching restore。
 
 ### Platform／RC
 
@@ -361,6 +427,8 @@ G. integration／platform／RC qualification
 
 D1はmultiple-recipient本体へ混ぜない。実装順はD0完了後にD1、D1完了後にAとする。D1の実装準備とAの設計inventory作成は並列可能だが、Aのproduction implementationはD1完了後に開始する。FはA確定後に一部並列可能。A前にB、B前にC／D、B／D前にE、全項目前にGを開始してはならない。
 
+Bはmigration 016／017に加えてplain request submission evidence用の018、unique request_id、NoEvidence／Started／terminal evidence、upgrade precondition、stale claim recoveryを所有する。Cはprovider adapterのnormal response分類とevidence transaction finalizeを所有し、Dはstartup／periodic sweepのrecipient／request収束を所有する。
+
 ## 16. Dependency graph
 
 ~~~text
@@ -386,7 +454,7 @@ G: integration／platform／RC
 
 1. IDN／suppression mismatch: ASCII-only reject、既存key維持、re-keyなしで解消。
 2. DeliveryUnknown authority conflict: ADR 0012／0022／Draft ADR 0023／Contracts／OpenAPI／Consumer GET／Adminへ一般定義を反映するpatchを作成。
-3. Provider retry ambiguity: SMTP／ACSのstage table、4 disposition、bounded re-query、unknown時no reinvokeを固定。
+3. Provider retry ambiguity: SMTP／ACSのstage table、4 disposition、request単位durable evidence、crash／lease recovery、bounded re-query、unknown時no reinvokeを固定。
 4. BCC capability未定義: registry、explicit grant、scope、audit-before-serve、fail-closedをDraft ADRへ反映。
 5. Pending／NotSent ambiguity: NotSentをpublic summary stateとして追加し、事前suppressionではSuppressed／NotSentを返す。
 
@@ -406,7 +474,7 @@ Major未解決事項はないため、設計状態はREVIEW_READYとする。
 2. ADR 0012／0013／0014／0020／0022のDraft amendmentが各正本と整合すること。
 3. ASCII-only、既存suppression key、INVALID_REQUESTがContracts／OpenAPI／SDK／vectorsへ反映されること。
 4. DeliveryUnknown一般化とattachment固有制約が全public surfaceで一致すること。
-5. provider dispositionとstage evidence、ACS bounded re-queryが確定すること。
+5. provider disposition、request-level durable evidence、stage recovery、ACS bounded re-queryが確定すること。
 6. bcc_recipient_revealのgrant、tenant scope、audit-before-serve、fail-closedが確定すること。
 7. NotSent／Pendingの意味がConsumer GET、Admin、summaryで一致すること。
 8. fresh／upgrade DB、old binary拒否、restore、attachment／bounce／suppression保持のqualification計画が承認されること。
@@ -424,6 +492,7 @@ Major未解決事項はないため、設計状態はREVIEW_READYとする。
 | canonical recipient table | #519／ADR patch | 4、5、6 |
 | Bounced／Suppressed | #519／#530 | 11 |
 | attachment at-most-once | ADR 0022／PR #537／#538 | 1、10、14 |
+| plain submission evidence／recovery | Agent B M-03／ADR 0012 D-07／ADR 0015 | 4.5、6、8.3、9.1、10 |
 
 ## 21. Agent B再レビュー依頼プロンプト
 

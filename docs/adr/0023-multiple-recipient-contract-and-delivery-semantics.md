@@ -47,6 +47,14 @@ ADR 0015のFailed／DeadLettered manual retry境界は維持する。ただしDe
 
 internal dispositionはDefinitelyNotSubmitted、Accepted、DefinitelyRejected、UnknownAfterSubmission。SMTPではDATA後またはstage不明のtimeout／network lossをUnknownAfterSubmissionとする。ACSはresponse loss後に最大1回のbounded re-queryを行い、5秒後開始、10秒timeout、確認不能はUnknownAfterSubmissionとする。
 
+### D-06a Plain request submission evidence
+
+添付なしrequestにもrequest単位のdurable submission evidenceを持たせる。NoEvidenceはrowなし、provider呼出し前にStartedをunique request_idでcommitする。Started commit後はstale claim、startup recovery、periodic sweep、manual retryが証拠なしにproviderを再呼出ししてはならない。
+
+evidence stateはStarted、DefinitelyNotSubmitted、Accepted、DefinitelyRejected、Unknownとする。通常応答時はevidence terminal stateとrequest／attempt finalizeを同一transactionで保存する。SMTP DATA後のcrashはStartedからDeliveryUnknownへ収束し、ACSは保存済みoperation IDでbounded re-queryする。
+
+DefinitelyNotSubmittedからの再送だけは、同じunique evidence rowを明示的なretry transitionでStartedへ戻した場合に限り許可する。Started、Accepted、DefinitelyRejected、Unknownからのautomatic／manual retryとprovider再呼出しは許可しない。
+
 ### D-07 Bounce／suppression
 
 BouncedとSuppressedはbounce eventを記録し、canonical address keyをsuppressionへ登録する。Failed、Quarantined、unknown statusは記録のみでsuppressionしない。相関はprovider message ID exact matchからcanonical recipient row照合までtenant scope内で行う。
@@ -65,8 +73,9 @@ bcc_recipient_revealを独立capabilityとし、default deny、general operator 
 - recipient table migrationが必要になる。
 - canonical tableと高権限backupにはraw BCCが残り得るため、通常Admin／export／auditから厳格に分離する。
 - provider stage不明時はretryを諦め、duplicate送信防止を優先する。
+- plain requestにもsubmission evidenceとcrash／lease recoveryが必要になる。
 - v1.2 binaryとのrolling upgradeとsimple rollbackは提供しない。
 
 ## Acceptance gate
 
-Koo承認、ADR amendment patchの承認、Contracts／OpenAPI／SDK inventory、migration design、SMTP／ACS disposition、BCC capability、NotSent／Pending summary、attachment compatibility、Agent B再レビューを完了してからAccepted化を判断する。
+Koo承認、ADR amendment patchの承認、Contracts／OpenAPI／SDK inventory、migration 016／017／018 design、plain requestのcrash／stale-lease recovery、SMTP／ACS disposition、BCC capability、NotSent／Pending summary、attachment compatibility、Agent B M-03再レビューを完了してからAccepted化を判断する。
