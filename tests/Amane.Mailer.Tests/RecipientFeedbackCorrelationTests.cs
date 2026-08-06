@@ -74,6 +74,83 @@ public sealed class RecipientFeedbackCorrelationTests
     }
 
     [Theory]
+    [InlineData("single-to", MailRecipientRole.To, 0, "to-0@example.com")]
+    [InlineData("multiple-to", MailRecipientRole.To, 1, "to-1@example.com")]
+    [InlineData("cc-only", MailRecipientRole.Cc, 0, "cc-0@example.com")]
+    [InlineData("bcc-only", MailRecipientRole.Bcc, 0, "bcc-0@example.com")]
+    [InlineData("to-cc", MailRecipientRole.Cc, 0, "cc-0@example.com")]
+    [InlineData("to-bcc", MailRecipientRole.Bcc, 0, "bcc-0@example.com")]
+    [InlineData("to-cc-bcc", MailRecipientRole.Bcc, 0, "bcc-0@example.com")]
+    public async Task Correlation_supports_every_approved_role_shape_and_updates_only_the_target(
+        string shape,
+        MailRecipientRole targetRole,
+        int targetOrdinal,
+        string targetAddress)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await TestDatabase.CreateAsync(ct);
+        IReadOnlyList<RecipientSeed> recipients = shape switch
+        {
+            "single-to" =>
+                [new(MailRecipientRole.To, 0, "to-0@example.com", MailRecipientDeliveryState.Pending)],
+            "multiple-to" =>
+                [
+                    new(MailRecipientRole.To, 0, "to-0@example.com", MailRecipientDeliveryState.Pending),
+                    new(MailRecipientRole.To, 1, "to-1@example.com", MailRecipientDeliveryState.Pending),
+                ],
+            "cc-only" =>
+                [new(MailRecipientRole.Cc, 0, "cc-0@example.com", MailRecipientDeliveryState.Pending)],
+            "bcc-only" =>
+                [new(MailRecipientRole.Bcc, 0, "bcc-0@example.com", MailRecipientDeliveryState.Pending)],
+            "to-cc" =>
+                [
+                    new(MailRecipientRole.To, 0, "to-0@example.com", MailRecipientDeliveryState.Pending),
+                    new(MailRecipientRole.Cc, 0, "cc-0@example.com", MailRecipientDeliveryState.Pending),
+                ],
+            "to-bcc" =>
+                [
+                    new(MailRecipientRole.To, 0, "to-0@example.com", MailRecipientDeliveryState.Pending),
+                    new(MailRecipientRole.Bcc, 0, "bcc-0@example.com", MailRecipientDeliveryState.Pending),
+                ],
+            "to-cc-bcc" =>
+                [
+                    new(MailRecipientRole.To, 0, "to-0@example.com", MailRecipientDeliveryState.Pending),
+                    new(MailRecipientRole.Cc, 0, "cc-0@example.com", MailRecipientDeliveryState.Pending),
+                    new(MailRecipientRole.Bcc, 0, "bcc-0@example.com", MailRecipientDeliveryState.Pending),
+                ],
+            _ => throw new ArgumentOutOfRangeException(nameof(shape)),
+        };
+        var seeded = await db.SeedRequestAsync(false, MailRequestState.Delivered, recipients, ct);
+
+        Assert.Equal(
+            RecipientFeedbackProcessResult.Processed,
+            await db.ProcessAsync(
+                seeded,
+                "event-" + shape,
+                "Bounced",
+                $"  {targetAddress.ToUpperInvariant()}  ",
+                FixedNow,
+                ct));
+
+        var history = Assert.Single(await db.ReadHistoryAsync(ct));
+        Assert.Equal((int)targetRole, history.Role);
+        Assert.Equal(targetOrdinal, history.Ordinal);
+        foreach (var recipient in recipients)
+        {
+            var expected = recipient.Role == targetRole && recipient.Ordinal == targetOrdinal
+                ? MailRecipientDeliveryState.Bounced
+                : MailRecipientDeliveryState.Pending;
+            Assert.Equal(
+                expected,
+                await db.ReadStateAsync(
+                    seeded.RequestId,
+                    (int)recipient.Role,
+                    recipient.Ordinal,
+                    ct));
+        }
+    }
+
+    [Theory]
     [InlineData(MailRecipientDeliveryState.Pending, "Delivered", MailRecipientDeliveryState.Delivered)]
     [InlineData(MailRecipientDeliveryState.Delivered, "Bounced", MailRecipientDeliveryState.Bounced)]
     [InlineData(MailRecipientDeliveryState.Delivered, "Suppressed", MailRecipientDeliveryState.Suppressed)]
@@ -218,7 +295,7 @@ public sealed class RecipientFeedbackCorrelationTests
     }
 
     [Fact]
-    public async Task Exact_provider_and_recipient_are_required()
+    public async Task Exact_provider_and_recipient_mismatches_roll_back()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await TestDatabase.CreateAsync(ct);
@@ -228,14 +305,58 @@ public sealed class RecipientFeedbackCorrelationTests
             [new RecipientSeed(MailRecipientRole.To, 0, "exact@example.com", MailRecipientDeliveryState.Pending)],
             ct);
 
-        Assert.Equal(
-            RecipientFeedbackProcessResult.Unmatched,
-            await db.ProcessAsync(seeded, "event-provider", "Bounced", "exact@example.com", FixedNow, ct, "mailpit"));
-        Assert.Equal(
-            RecipientFeedbackProcessResult.RecipientMismatch,
-            await db.ProcessAsync(seeded, "event-recipient", "Bounced", "other@example.com", FixedNow, ct));
+        var wrongProvider = await db.ClaimAsync(
+            seeded,
+            "event-provider",
+            "Bounced",
+            "exact@example.com",
+            FixedNow,
+            ct,
+            "mailpit");
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new BounceIngestionStore(db.Factory).ProcessClaimedAsync(wrongProvider, FixedNow, ct));
+
+        var wrongRecipient = await db.ClaimAsync(
+            seeded,
+            "event-recipient",
+            "Bounced",
+            "other@example.com",
+            FixedNow,
+            ct);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new BounceIngestionStore(db.Factory).ProcessClaimedAsync(wrongRecipient, FixedNow, ct));
+
         Assert.Equal(0, await db.CountAsync("recipient_delivery_events", ct));
+        Assert.Equal(ProviderEventInboxState.Processing, await db.ReadInboxStateAsync(wrongProvider.Id, ct));
+        Assert.Equal(ProviderEventInboxState.Processing, await db.ReadInboxStateAsync(wrongRecipient.Id, ct));
         Assert.False(await db.SuppressionExistsAsync(seeded.TenantId, "exact@example.com", ct));
+    }
+
+    [Fact]
+    public async Task Ambiguous_recipient_correlation_rolls_back()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await TestDatabase.CreateAsync(ct);
+        var seeded = await db.SeedRequestAsync(
+            false,
+            MailRequestState.Delivered,
+            [new RecipientSeed(MailRecipientRole.To, 0, "ambiguous@example.com", MailRecipientDeliveryState.Pending)],
+            ct);
+        await db.DuplicateRecipientByRebuildingWithoutUniqueConstraintAsync(seeded.RequestId, ct);
+        var claimed = await db.ClaimAsync(
+            seeded,
+            "event-ambiguous-recipient",
+            "Bounced",
+            "ambiguous@example.com",
+            FixedNow,
+            ct);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new BounceIngestionStore(db.Factory).ProcessClaimedAsync(claimed, FixedNow, ct));
+
+        Assert.Equal(0, await db.CountAsync("recipient_delivery_events", ct));
+        Assert.Equal(ProviderEventInboxState.Processing, await db.ReadInboxStateAsync(claimed.Id, ct));
+        Assert.False(await db.SuppressionExistsAsync(seeded.TenantId, "ambiguous@example.com", ct));
     }
 
     [Theory]
@@ -479,6 +600,26 @@ public sealed class RecipientFeedbackCorrelationTests
             await using var connection = await Factory.OpenConnectionAsync(cancellationToken);
             await using var command = connection.CreateCommand();
             command.CommandText = sql;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        public async Task DuplicateRecipientByRebuildingWithoutUniqueConstraintAsync(
+            Guid requestId,
+            CancellationToken cancellationToken)
+        {
+            await using var connection = await Factory.OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                PRAGMA foreign_keys = OFF;
+                CREATE TABLE mail_request_recipients_without_constraints
+                    AS SELECT * FROM mail_request_recipients;
+                DROP TABLE mail_request_recipients;
+                ALTER TABLE mail_request_recipients_without_constraints
+                    RENAME TO mail_request_recipients;
+                INSERT INTO mail_request_recipients
+                    SELECT * FROM mail_request_recipients WHERE request_id = @RequestId;
+                """;
+            command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 

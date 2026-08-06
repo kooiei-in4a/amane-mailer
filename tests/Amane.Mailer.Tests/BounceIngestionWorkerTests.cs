@@ -204,7 +204,7 @@ public sealed class BounceIngestionWorkerTests
     }
 
     [Fact]
-    public async Task Unmatched_message_id_is_discarded_with_metric()
+    public async Task Unmatched_message_id_rolls_back_without_feedback_side_effects()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await OpenMigratedAsync(ct);
@@ -217,16 +217,18 @@ public sealed class BounceIngestionWorkerTests
         var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
         Assert.NotNull(claimed);
 
-        var metrics = new MailerRuntimeMetrics();
-        await CreateWorker(db.Factory, metrics).ProcessClaimedEventForTestsAsync(claimed, ct);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new BounceIngestionStore(db.Factory).ProcessClaimedAsync(claimed, FixedNow, ct));
 
-        Assert.Equal(0, metrics.CaptureSnapshot().BounceEventsTotal);
-        Assert.Equal(1, metrics.CaptureSnapshot().BounceUnmatchedTotal);
+        Assert.Equal(0, await CountRecipientDeliveryEventsAsync(db.Factory, ct));
+        Assert.Equal(
+            ProviderEventInboxState.Processing,
+            await ReadInboxStateAsync(db.Factory, claimed.Id, ct));
         Assert.False(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
     }
 
     [Fact]
-    public async Task Recipient_mismatch_is_discarded_without_suppression()
+    public async Task Recipient_mismatch_rolls_back_without_feedback_side_effects()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await OpenMigratedAsync(ct);
@@ -239,11 +241,13 @@ public sealed class BounceIngestionWorkerTests
         var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
         Assert.NotNull(claimed);
 
-        var metrics = new MailerRuntimeMetrics();
-        await CreateWorker(db.Factory, metrics).ProcessClaimedEventForTestsAsync(claimed, ct);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new BounceIngestionStore(db.Factory).ProcessClaimedAsync(claimed, FixedNow, ct));
 
-        Assert.Equal(0, metrics.CaptureSnapshot().BounceEventsTotal);
-        Assert.Equal(1, metrics.CaptureSnapshot().BounceRecipientMismatchTotal);
+        Assert.Equal(0, await CountRecipientDeliveryEventsAsync(db.Factory, ct));
+        Assert.Equal(
+            ProviderEventInboxState.Processing,
+            await ReadInboxStateAsync(db.Factory, claimed.Id, ct));
         Assert.False(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
         Assert.False(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, "other@example.com", ct));
     }
@@ -262,11 +266,13 @@ public sealed class BounceIngestionWorkerTests
         var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
         Assert.NotNull(claimed);
 
-        var metrics = new MailerRuntimeMetrics();
-        await CreateWorker(db.Factory, metrics).ProcessClaimedEventForTestsAsync(claimed, ct);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new BounceIngestionStore(db.Factory).ProcessClaimedAsync(claimed, FixedNow, ct));
 
-        Assert.Equal(1, metrics.CaptureSnapshot().BounceUnmatchedTotal);
-        Assert.Equal(0, metrics.CaptureSnapshot().BounceEventsTotal);
+        Assert.Equal(0, await CountRecipientDeliveryEventsAsync(db.Factory, ct));
+        Assert.Equal(
+            ProviderEventInboxState.Processing,
+            await ReadInboxStateAsync(db.Factory, claimed.Id, ct));
     }
 
     [Fact]
@@ -810,6 +816,29 @@ public sealed class BounceIngestionWorkerTests
         command.Parameters.AddWithValue("@EventId", providerEventId);
         var value = await command.ExecuteScalarAsync(cancellationToken);
         return Guid.Parse((string)value!);
+    }
+
+    private static async Task<int> CountRecipientDeliveryEventsAsync(
+        SqliteConnectionFactory factory,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM recipient_delivery_events;";
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+    }
+
+    private static async Task<ProviderEventInboxState> ReadInboxStateAsync(
+        SqliteConnectionFactory factory,
+        Guid inboxId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT status FROM provider_event_inbox WHERE id = @Id;";
+        command.Parameters.AddWithValue("@Id", inboxId.ToString("D"));
+        return (ProviderEventInboxState)Convert.ToInt32(
+            await command.ExecuteScalarAsync(cancellationToken));
     }
 
     private static async Task<MigratedDb> OpenMigratedAsync(CancellationToken cancellationToken)

@@ -40,6 +40,101 @@ public sealed class RecipientDeliveryEventMigrationTests
     }
 
     [Fact]
+    public async Task Migration_017_backfills_delivered_but_keeps_negative_state_sticky()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre017Async(ct);
+        var delivered = await database.InsertRequestAsync(includeRecipient: true, ct);
+        await database.InsertLegacyEventAsync(delivered, "event-delivered", "Delivered", database.Now, ct);
+        var negative = await database.InsertRequestAsync(includeRecipient: true, ct);
+        await database.InsertLegacyEventAsync(negative, "event-negative", "Bounced", database.Now, ct);
+        await database.InsertLegacyEventAsync(negative, "event-late-delivered", "Delivered", database.Later, ct);
+        database.Copy017();
+
+        await database.Runner.ApplyPendingAsync(ct);
+
+        Assert.Equal(1L, await database.ReadCountAsync(
+            $"SELECT COUNT(*) FROM mail_request_recipients WHERE request_id = '{delivered.RequestId}' AND delivery_state = 2;",
+            ct));
+        Assert.Equal(1L, await database.ReadCountAsync(
+            "SELECT COUNT(*) FROM recipient_delivery_events WHERE provider_event_id = 'event-delivered' AND applied_delivery_state = 2;",
+            ct));
+        Assert.Equal(1L, await database.ReadCountAsync(
+            $"SELECT COUNT(*) FROM mail_request_recipients WHERE request_id = '{negative.RequestId}' AND delivery_state = 3;",
+            ct));
+        Assert.Equal(1L, await database.ReadCountAsync(
+            "SELECT COUNT(*) FROM recipient_delivery_events WHERE provider_event_id = 'event-late-delivered' AND applied_delivery_state IS NULL;",
+            ct));
+    }
+
+    [Fact]
+    public async Task Migration_017_rolls_back_when_request_is_missing()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre017Async(ct);
+        var missing = new RequestIdentity(
+            Guid.NewGuid().ToString("D"),
+            Guid.NewGuid().ToString("D"),
+            Guid.NewGuid().ToString("D"));
+        await database.InsertLegacyEventAsync(missing, "event-missing-request", "Bounced", database.Now, ct);
+        database.Copy017();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => database.Runner.ApplyPendingAsync(ct));
+
+        await database.Assert017RolledBackAsync(ct);
+    }
+
+    [Fact]
+    public async Task Migration_017_partial_backfill_failure_rolls_back_every_event()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre017Async(ct);
+        var valid = await database.InsertRequestAsync(includeRecipient: true, ct);
+        await database.InsertLegacyEventAsync(valid, "event-valid-before-failure", "Bounced", database.Now, ct);
+        var missing = new RequestIdentity(
+            Guid.NewGuid().ToString("D"),
+            Guid.NewGuid().ToString("D"),
+            Guid.NewGuid().ToString("D"));
+        await database.InsertLegacyEventAsync(missing, "event-invalid-after-valid", "Bounced", database.Later, ct);
+        database.Copy017();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => database.Runner.ApplyPendingAsync(ct));
+
+        await database.Assert017RolledBackAsync(ct);
+        Assert.Equal(2L, await database.ReadCountAsync("SELECT COUNT(*) FROM bounce_events;", ct));
+    }
+
+    [Fact]
+    public async Task Migration_017_rolls_back_when_migration_016_schema_is_incomplete()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre017Async(ct);
+        await database.RebuildPlainEvidenceWithoutProviderMessageIdAsync(ct);
+        database.Copy017();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => database.Runner.ApplyPendingAsync(ct));
+
+        await database.Assert017RolledBackAsync(ct);
+    }
+
+    [Fact]
+    public async Task Schema_readiness_requires_issue_d_indexes()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await MigrationDatabase.CreatePre017Async(ct);
+        database.Copy017();
+        await database.Runner.ApplyPendingAsync(ct);
+        Assert.True(await database.Runner.IsCurrentSchemaReadyAsync(ct));
+
+        await database.ExecuteAsync(
+            "DROP INDEX ix_recipient_delivery_events_provider_message;",
+            [],
+            ct);
+
+        Assert.False(await database.Runner.IsCurrentSchemaReadyAsync(ct));
+    }
+
+    [Fact]
     public async Task Migration_017_rolls_back_when_request_candidate_is_not_unique()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -331,6 +426,23 @@ public sealed class RecipientDeliveryEventMigrationTests
                 INSERT INTO mail_requests SELECT * FROM mail_requests WHERE id = @RequestId;
                 """;
             command.Parameters.AddWithValue("@RequestId", requestId);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        public async Task RebuildPlainEvidenceWithoutProviderMessageIdAsync(
+            CancellationToken cancellationToken)
+        {
+            await using var connection = await Factory.OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                PRAGMA foreign_keys = OFF;
+                CREATE TABLE mail_plain_submissions_incomplete AS
+                    SELECT request_id, evidence_state, evidence_origin, provider, claim_token,
+                           started_at, resolved_at, created_at, updated_at
+                    FROM mail_plain_submissions;
+                DROP TABLE mail_plain_submissions;
+                ALTER TABLE mail_plain_submissions_incomplete RENAME TO mail_plain_submissions;
+                """;
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 

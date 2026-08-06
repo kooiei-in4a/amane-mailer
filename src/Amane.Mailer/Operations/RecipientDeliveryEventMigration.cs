@@ -65,27 +65,44 @@ internal static class RecipientDeliveryEventMigration
             throw new InvalidOperationException("Migration 017 requires the complete migration 016 schema.");
         }
 
-        await using var columns = connection.CreateCommand();
-        columns.CommandText = "PRAGMA table_info(mail_request_recipients);";
-        var requiredColumns = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "request_id",
-            "recipient_role",
-            "ordinal",
-            "address",
-            "address_key",
-            "delivery_state",
-        };
-        await using var reader = await columns.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            requiredColumns.Remove(reader.GetString(1));
-        }
-
-        if (requiredColumns.Count != 0)
-        {
-            throw new InvalidOperationException("Migration 017 found an incomplete canonical recipient schema.");
-        }
+        await RequireColumnsAsync(
+            connection,
+            "mail_request_recipients",
+            [
+                "request_id", "recipient_role", "ordinal", "address", "address_key",
+                "display_name", "delivery_state", "provider_message_id",
+                "provider_status_detail", "created_at", "updated_at",
+            ],
+            "Migration 017 found an incomplete canonical recipient schema.",
+            cancellationToken);
+        await RequireColumnsAsync(
+            connection,
+            "mail_plain_submissions",
+            [
+                "request_id", "evidence_state", "evidence_origin", "provider", "claim_token",
+                "started_at", "provider_message_id", "resolved_at", "created_at", "updated_at",
+            ],
+            "Migration 017 found an incomplete plain submission evidence schema.",
+            cancellationToken);
+        await RequireColumnsAsync(
+            connection,
+            "mail_attachment_submissions",
+            [
+                "request_id", "submission_state", "provider", "submission_started_at",
+                "lock_token", "provider_message_id", "completed_at", "created_at", "updated_at",
+            ],
+            "Migration 017 found an incomplete attachment submission evidence schema.",
+            cancellationToken);
+        await RequireColumnsAsync(
+            connection,
+            "provider_event_inbox",
+            [
+                "id", "provider", "event_id", "provider_message_id", "delivery_status",
+                "recipient_email", "status", "lock_token", "lock_expires_at",
+                "status_message", "occurred_at",
+            ],
+            "Migration 017 found an incomplete provider event inbox schema.",
+            cancellationToken);
     }
 
     private static async Task ApplyDataMigrationAfterScriptAsync(
@@ -111,6 +128,7 @@ internal static class RecipientDeliveryEventMigration
 
         await ApplyLegacyNegativeWinnersAsync(connection, cancellationToken);
         await ClearLegacyLosingAppliedStatesAsync(connection, cancellationToken);
+        await ApplyLegacyDeliveredWinnerAsync(connection, cancellationToken);
         await ReconcileLegacyHistoryOnlyStatesAsync(connection, cancellationToken);
 
         await using (var drop = connection.CreateCommand())
@@ -280,7 +298,7 @@ internal static class RecipientDeliveryEventMigration
                     e.provider_event_id,
                     ROW_NUMBER() OVER (
                         PARTITION BY mr.id, e.recipient_role, e.recipient_ordinal
-                        ORDER BY e.occurred_at DESC, e.provider_event_id DESC
+                        ORDER BY e.occurred_at DESC, e.provider_event_id DESC, e.provider DESC
                     ) AS ordering_rank
                 FROM recipient_delivery_events e
                 JOIN mail_requests mr
@@ -342,9 +360,89 @@ internal static class RecipientDeliveryEventMigration
                     AND mr.mail_request_id = e.mail_request_id
                     AND rr.recipient_role = e.recipient_role
                     AND rr.ordinal = e.recipient_ordinal
-                    AND rr.last_feedback_event_id <> e.provider_event_id);
+                    AND (
+                        rr.last_feedback_provider <> e.provider
+                        OR rr.last_feedback_event_id <> e.provider_event_id));
             """;
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task ApplyLegacyDeliveredWinnerAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = """
+                WITH ranked AS (
+                    SELECT
+                        mr.id AS request_id,
+                        e.recipient_role,
+                        e.recipient_ordinal,
+                        e.occurred_at,
+                        e.provider,
+                        e.provider_event_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY mr.id, e.recipient_role, e.recipient_ordinal
+                            ORDER BY e.occurred_at ASC, e.provider_event_id ASC, e.provider ASC
+                        ) AS ordering_rank
+                    FROM recipient_delivery_events e
+                    JOIN mail_requests mr
+                      ON mr.tenant_id = e.tenant_id
+                     AND mr.source_service = e.source_service
+                     AND mr.mail_request_id = e.mail_request_id
+                    WHERE e.applied_delivery_state = 2
+                )
+                UPDATE mail_request_recipients
+                SET delivery_state = 2,
+                    last_feedback_occurred_at = (
+                        SELECT occurred_at FROM ranked
+                        WHERE ranked.request_id = mail_request_recipients.request_id
+                          AND ranked.recipient_role = mail_request_recipients.recipient_role
+                          AND ranked.recipient_ordinal = mail_request_recipients.ordinal
+                          AND ranked.ordering_rank = 1),
+                    last_feedback_provider = (
+                        SELECT provider FROM ranked
+                        WHERE ranked.request_id = mail_request_recipients.request_id
+                          AND ranked.recipient_role = mail_request_recipients.recipient_role
+                          AND ranked.recipient_ordinal = mail_request_recipients.ordinal
+                          AND ranked.ordering_rank = 1),
+                    last_feedback_event_id = (
+                        SELECT provider_event_id FROM ranked
+                        WHERE ranked.request_id = mail_request_recipients.request_id
+                          AND ranked.recipient_role = mail_request_recipients.recipient_role
+                          AND ranked.recipient_ordinal = mail_request_recipients.ordinal
+                          AND ranked.ordering_rank = 1)
+                WHERE delivery_state NOT IN (3, 4)
+                  AND EXISTS (
+                      SELECT 1 FROM ranked
+                      WHERE ranked.request_id = mail_request_recipients.request_id
+                        AND ranked.recipient_role = mail_request_recipients.recipient_role
+                        AND ranked.recipient_ordinal = mail_request_recipients.ordinal
+                        AND ranked.ordering_rank = 1);
+                """;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using var clear = connection.CreateCommand();
+        clear.CommandText = """
+            UPDATE recipient_delivery_events AS e
+            SET applied_delivery_state = NULL
+            WHERE e.applied_delivery_state = 2
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM mail_requests mr
+                  JOIN mail_request_recipients rr ON rr.request_id = mr.id
+                  WHERE mr.tenant_id = e.tenant_id
+                    AND mr.source_service = e.source_service
+                    AND mr.mail_request_id = e.mail_request_id
+                    AND rr.recipient_role = e.recipient_role
+                    AND rr.ordinal = e.recipient_ordinal
+                    AND rr.delivery_state = 2
+                    AND rr.last_feedback_provider = e.provider
+                    AND rr.last_feedback_event_id = e.provider_event_id);
+            """;
+        await clear.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task ReconcileLegacyHistoryOnlyStatesAsync(
@@ -394,6 +492,11 @@ internal static class RecipientDeliveryEventMigration
 
     private static MailRecipientDeliveryState? ClassifyAppliedState(string providerStatus)
     {
+        if (BounceClassifier.IsDelivered(providerStatus))
+        {
+            return MailRecipientDeliveryState.Delivered;
+        }
+
         if (BounceClassifier.IsHardBounce(providerStatus))
         {
             return MailRecipientDeliveryState.Bounced;
@@ -405,6 +508,28 @@ internal static class RecipientDeliveryEventMigration
         }
 
         return null;
+    }
+
+    private static async Task RequireColumnsAsync(
+        SqliteConnection connection,
+        string tableName,
+        IReadOnlyCollection<string> columns,
+        string errorMessage,
+        CancellationToken cancellationToken)
+    {
+        var requiredColumns = new HashSet<string>(columns, StringComparer.Ordinal);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({tableName});";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            requiredColumns.Remove(reader.GetString(1));
+        }
+
+        if (requiredColumns.Count != 0)
+        {
+            throw new InvalidOperationException(errorMessage);
+        }
     }
 
     private static async Task RequireZeroAsync(

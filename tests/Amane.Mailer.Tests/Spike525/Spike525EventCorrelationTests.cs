@@ -64,15 +64,24 @@ public sealed class Spike525EventCorrelationTests
                 "Bounced",
                 "to-a@example.com");
             await SeedInboxRowAsync(factory, row, ct);
-            var result = await store.ProcessClaimedAsync(row, DateTimeOffset.UtcNow, ct);
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => store.ProcessClaimedAsync(row, DateTimeOffset.UtcNow, ct));
+            var eventCount = await CountRowsAsync(factory, "recipient_delivery_events", ct);
+            var suppressionCount = await CountRowsAsync(factory, "mail_suppressions", ct);
+            var inboxState = await ReadInboxStateAsync(factory, row.Id, ct);
 
             Spike525Support.Evidence.Record("S-13", new
             {
                 Scenario = "unknown-message-id",
-                ProcessResult = result,
+                ProcessResult = "rolled-back-no-request-candidate",
+                EventCount = eventCount,
+                SuppressionCount = suppressionCount,
+                InboxState = inboxState,
             });
 
-            Assert.Equal(RecipientFeedbackProcessResult.Unmatched, result);
+            Assert.Equal(0, eventCount);
+            Assert.Equal(0, suppressionCount);
+            Assert.Equal(ProviderEventInboxState.Processing, inboxState);
         }
         finally
         {
@@ -375,6 +384,19 @@ public sealed class Spike525EventCorrelationTests
         command.CommandText = $"SELECT COUNT(*) FROM {table};";
         var result = await command.ExecuteScalarAsync(cancellationToken);
         return Convert.ToInt64(result);
+    }
+
+    private static async Task<ProviderEventInboxState> ReadInboxStateAsync(
+        SqliteConnectionFactory factory,
+        Guid inboxId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT status FROM provider_event_inbox WHERE id = @Id;";
+        command.Parameters.AddWithValue("@Id", inboxId.ToString("D"));
+        return (ProviderEventInboxState)Convert.ToInt32(
+            await command.ExecuteScalarAsync(cancellationToken));
     }
 
     private static async Task<(SqliteConnectionFactory Factory, Func<Task> Cleanup)> CreateMigratedDatabaseAsync(CancellationToken cancellationToken)
