@@ -1,33 +1,56 @@
 # Digest-preserving OCI promotion (P-OCI-PROMOTE)
 
-For v1.2.0, publish GHCR images are promoted from the qualified #455 OCI layout without rebuild.
+Official image publication is a version-independent promotion of the sealed,
+qualified candidate OCI layout. The promotion workflow never rebuilds the
+product image and never creates a replacement digest.
 
-## Decisions
-
-| Field | Value |
-|-------|-------|
-| `publishMethod` | `P-OCI-PROMOTE` |
-| `ociHandoffMode` | `SINGLE_WF_RUN_OPTION_A` |
-| `attestMode` | `EXTERNAL_PROVENANCE` |
+Dispatch the canonical workflow from `refs/heads/main`; the candidate's exact
+head branch/SHA is supplied as an input and validated separately.
 
 ## Authority
 
-- Script: `scripts/promote-candidate-oci.sh`
-- Workflow wrapper: `.github/workflows/promote-qualified-oci.yml`
-- Tool: pinned `crane` (`go-containerregistry` `v0.20.3`), checksum-verified via `scripts/install-pinned-crane.sh`
-- Candidate handoff identity: `#455` workflow run ID + artifact ID (name must match `setup-release-candidate-oci`)
-- Candidate run validator: `scripts/validate-candidate-oci-run.sh`
+- Canonical workflow: `.github/workflows/promote-qualified-oci.yml`
+- Promotion script: `scripts/promote-candidate-oci.sh`
+- Candidate validator: `scripts/validate-candidate-oci-run.sh`
+- Candidate handoff validator: `scripts/validate-candidate-oci-handoff.sh`
+- Qualification validator: `scripts/validate-qualification-handoff.sh`
+- Tool: pinned `crane` (`go-containerregistry` `v0.20.3`), checksum-verified by
+  `scripts/install-pinned-crane.sh`
+
+The candidate workflow run, run attempt, OCI artifact ID/name, handoff artifact
+ID/name, candidateId, qualificationRunId, releaseCommitSha, and OCI index digest
+are all compared before registry login. The qualification handoff must contain
+one immutable `binding.json`, an approved `decision/go-no-go.json`, and exactly
+one sealed run-status event. Any mismatch or missing field stops the workflow.
+
+The workflow generates `promote-proof.json` from the runtime destination
+digests and workflow identity after promotion, then uploads it as an artifact.
+External proof input is never trusted.
+
+## Digest and tag contract
+
+The source digest is the final image-index blob digest referenced by the OCI
+layout `index.json` (not the SHA-256 of `index.json`). The workflow pushes the
+same layout to the version tag (`vX.Y.Z`) and the immutable SHA tag
+(`sha-<releaseCommitSha>`), then verifies both destination digests equal the
+source digest. It does not publish `latest`.
+
+Attestation mode remains `EXTERNAL_PROVENANCE`; no registry attestation
+manifests are added by promotion.
 
 ## Local readiness proof
 
 ```bash
+bash scripts/validate-candidate-oci-run-self-test.sh
 bash scripts/promote-candidate-oci-self-test.sh
 ```
 
-Uses a disposable localhost `registry:2` container. Does **not** push to GHCR.
-Also executed in public CI as job `OCI promote digest-preservation self-test`.
-Candidate-run validator fixtures: `bash scripts/validate-candidate-oci-run-self-test.sh`.
+The tests use fixtures and a disposable localhost registry only. They do not
+log in to or push to GHCR, and do not build the product Native AOT image.
 
-## Legacy rebuild path
+## Legacy workflow
 
-`.github/workflows/publish-image.yml` rejects `v1.2.0` / package version `1.2.0` so the rebuild-and-push path cannot publish that release.
+`.github/workflows/publish-image.yml` is retained as a fail-closed tombstone.
+It intentionally stops before checkout, registry login, build, push, or tag
+creation and points operators to this canonical workflow. Future deletion is a
+separate change after all runbooks and operational references are migrated.
