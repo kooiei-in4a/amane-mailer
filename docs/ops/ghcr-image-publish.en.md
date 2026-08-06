@@ -7,6 +7,8 @@ P-OCI-PROMOTE. The canonical workflow is
 `.github/workflows/promote-qualified-oci.yml`.
 Dispatch it from `refs/heads/main`; the candidate ref is independently bound
 by the pre-login validator.
+The product ref owns candidate bytes and qualification; `main` owns only the
+release-infrastructure promotion wrapper and proof generation.
 
 ## Required handoff
 

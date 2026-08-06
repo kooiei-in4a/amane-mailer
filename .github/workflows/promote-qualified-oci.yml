@@ -148,6 +148,9 @@ jobs:
           [[ -n "${EXPECTED_HEAD_BRANCH}" ]] || { echo "::error::expected_head_branch is required"; exit 1; }
           [[ "${GITHUB_REF}" == "refs/heads/main" ]] \
             || { echo "::error::canonical promotion must be dispatched from refs/heads/main"; exit 1; }
+          expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/promote-qualified-oci.yml@refs/heads/main"
+          [[ "${GITHUB_WORKFLOW_REF}" == "${expected_workflow_ref}" ]] \
+            || { echo "::error::canonical promotion workflow identity mismatch"; exit 1; }
           bash scripts/validate-candidate-oci-run.sh
 
       - name: Validate qualification handoff identity

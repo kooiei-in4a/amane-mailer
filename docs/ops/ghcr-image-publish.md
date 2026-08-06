@@ -7,6 +7,8 @@
 `.github/workflows/promote-qualified-oci.yml` です。
 canonical workflowは `refs/heads/main` からdispatchし、candidateのrefは
 pre-login validatorで別途固定します。
+product refはcandidate bytesとqualificationを所有し、`main`はrelease-infrastructure
+のpromotion wrapperとproof生成だけを所有します。
 
 ## 必須 handoff
 

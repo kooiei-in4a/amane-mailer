@@ -7,6 +7,10 @@ product image and never creates a replacement digest.
 Dispatch the canonical workflow from `refs/heads/main`; the candidate's exact
 head branch/SHA is supplied as an input and validated separately.
 
+The product ref owns candidate bytes and qualification. The release
+infrastructure ref (`main`) owns only this promotion wrapper and proof
+generation; it never checks out and rebuilds product image bytes.
+
 ## Authority
 
 - Canonical workflow: `.github/workflows/promote-qualified-oci.yml`
