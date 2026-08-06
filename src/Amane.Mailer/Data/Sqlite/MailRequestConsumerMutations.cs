@@ -166,13 +166,13 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
 
         var nowStorage = SqliteTime.ToStorageUtc(now);
 
-        // ADR 0022 D-08 / ADR 0023 D-04 manual cancel boundary: once request-unique submission
-        // evidence exists (Started or later, including the ADR 0023/Issue #546 plain evidence
-        // table), cancel is prohibited outright -- provider invocation may already be underway or
-        // complete, and a Cancelled overwrite could race a real send or permanently strand
-        // unresolved evidence. Requests with no evidence row at all (including ordinary
-        // non-attachment requests before their first claim) keep the existing ADR 0015
-        // first-writer-wins boundary unchanged.
+        // Attachment submission evidence remains an absolute cancel boundary under ADR 0022
+        // D-08. Plain evidence keeps the ADR 0023 no-reinvocation boundary, but the Issue #546
+        // maintainer decision restores ADR 0015's Failed -> Cancelled administrative transition:
+        // a Failed plain request may be marked Cancelled without deleting or rewriting its
+        // evidence, recipient disposition, or attempt history and without invoking the provider.
+        // Every other state still requires no plain evidence, so queued/dead-lettered/stale-
+        // Processing cancellation cannot strand an unresolved submission lifecycle.
         const string updateSql = """
             UPDATE mail_requests
             SET
@@ -196,8 +196,11 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
               AND NOT EXISTS (
                     SELECT 1 FROM mail_attachment_submissions s WHERE s.request_id = mail_requests.id
                   )
-              AND NOT EXISTS (
-                    SELECT 1 FROM mail_plain_submissions p WHERE p.request_id = mail_requests.id
+              AND (
+                    status = @FailedStatus
+                    OR NOT EXISTS (
+                        SELECT 1 FROM mail_plain_submissions p WHERE p.request_id = mail_requests.id
+                    )
                   )
             """;
 
