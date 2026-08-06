@@ -7,6 +7,7 @@ namespace Amane.Mailer.ReleaseBundle;
 [JsonSerializable(typeof(OciManifestDocument))]
 [JsonSerializable(typeof(OciDescriptor))]
 [JsonSerializable(typeof(OciPlatform))]
+[JsonSerializable(typeof(BuildxMetadataDocument))]
 [JsonSerializable(typeof(ImageIdentityDocument))]
 [JsonSerializable(typeof(CandidateProvenanceDocument))]
 [JsonSerializable(typeof(CandidateArchiveProvenance))]

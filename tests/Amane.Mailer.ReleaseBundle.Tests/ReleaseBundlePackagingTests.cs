@@ -380,6 +380,96 @@ public sealed class ReleaseBundlePackagingTests
     }
 
     [Fact]
+    public void ValidateOciLayoutDirectory_accepts_explicit_single_platform_manifest_mode()
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "single-amd64");
+        var digest = CreateSinglePlatformOciLayout(oci, "amd64");
+        var metadata = new OciDescriptor
+        {
+            MediaType = "application/vnd.oci.image.manifest.v1+json",
+            Digest = digest,
+            Size = new FileInfo(Path.Combine(oci, "blobs", "sha256", digest["sha256:".Length..])).Length,
+        };
+
+        Assert.True(
+            ReleaseBundlePackaging.ValidateOciLayoutDirectory(
+                oci,
+                digest,
+                ["linux/amd64"],
+                metadata,
+                allowSinglePlatformImageManifest: true).Success);
+        Assert.False(
+            ReleaseBundlePackaging.ValidateOciLayoutDirectory(
+                oci,
+                digest,
+                ["linux/amd64"],
+                metadata).Success);
+    }
+
+    [Fact]
+    public void AssembleOciLayouts_writes_final_identity_metadata_and_deterministic_platform_order()
+    {
+        using var scratch = new TempDir();
+        var amd64Root = Path.Combine(scratch.Path, "amd64");
+        var arm64Root = Path.Combine(scratch.Path, "arm64");
+        var amd64Digest = CreateSinglePlatformOciLayout(amd64Root, "amd64");
+        var arm64Digest = CreateSinglePlatformOciLayout(arm64Root, "arm64");
+        var amd64Metadata = WriteBuildxMetadata(amd64Root, amd64Digest);
+        var arm64Metadata = WriteBuildxMetadata(arm64Root, arm64Digest);
+        var output = Path.Combine(scratch.Path, "assembled");
+
+        var result = ReleaseBundlePackaging.AssembleOciLayouts(
+            new ReleaseBundlePackaging.OciAssemblyRequest
+            {
+                Amd64LayoutDirectory = amd64Root,
+                Amd64MetadataPath = amd64Metadata,
+                Arm64LayoutDirectory = arm64Root,
+                Arm64MetadataPath = arm64Metadata,
+                OutputDirectory = output,
+                ImageRepository = "ghcr.io/kooiei-in4a/amane-mailer",
+                ImageTag = "sha-" + TestCommit,
+                SourceCommitSha = TestCommit,
+                MailerVersion = "1.2.0",
+            },
+            out var finalDigest);
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(finalDigest);
+        Assert.True(File.Exists(Path.Combine(output, "oci", "index.json")));
+        Assert.True(File.Exists(Path.Combine(output, "buildx-metadata.json")));
+        Assert.Equal(finalDigest + "\n", File.ReadAllText(Path.Combine(output, "oci-index.digest")));
+
+        var root = JsonSerializer.Deserialize(
+            File.ReadAllBytes(Path.Combine(output, "oci", "index.json")),
+            ReleaseBundleJsonContext.Default.OciIndexDocument)!;
+        var finalIndex = JsonSerializer.Deserialize(
+            File.ReadAllBytes(
+                Path.Combine(output, "oci", "blobs", "sha256", finalDigest!["sha256:".Length..])),
+            ReleaseBundleJsonContext.Default.OciIndexDocument)!;
+        Assert.Equal(finalDigest, root.Manifests![0].Digest);
+        Assert.Equal("amd64", finalIndex.Manifests![0].Platform!.Architecture);
+        Assert.Equal("arm64", finalIndex.Manifests[1].Platform!.Architecture);
+
+        var identity = JsonSerializer.Deserialize(
+            File.ReadAllBytes(Path.Combine(output, "image-identity.json")),
+            ReleaseBundleJsonContext.Default.ImageIdentityDocument)!;
+        Assert.Equal(["linux/amd64", "linux/arm64"], identity.Platforms!);
+        Assert.True(
+            ReleaseBundlePackaging.ValidateOciLayoutDirectory(
+                Path.Combine(output, "oci"),
+                finalDigest,
+                ReleaseBundlePackaging.RequiredOciPlatforms,
+                new OciDescriptor
+                {
+                    MediaType = "application/vnd.oci.image.index.v1+json",
+                    Digest = finalDigest,
+                    Size = new FileInfo(
+                        Path.Combine(output, "oci", "blobs", "sha256", finalDigest!["sha256:".Length..])).Length,
+                }).Success);
+    }
+
+    [Fact]
     public void ValidateOciLayoutDirectory_binds_buildx_digest_to_manifests_descriptor_not_index_json_bytes()
     {
         using var scratch = new TempDir();
@@ -1167,6 +1257,65 @@ public sealed class ReleaseBundlePackagingTests
             PayloadTreeSha256 = source.PayloadTreeSha256,
             Reproducibility = source.Reproducibility,
         };
+
+    private static string CreateSinglePlatformOciLayout(string directory, string architecture)
+    {
+        Directory.CreateDirectory(Path.Combine(directory, "blobs", "sha256"));
+        File.WriteAllText(
+            Path.Combine(directory, "oci-layout"),
+            "{\"imageLayoutVersion\":\"1.0.0\"}\n");
+
+        var configJson =
+            "{\"architecture\":\"" + architecture + "\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[]}}\n";
+        var configDigest = WriteBlob(directory, configJson);
+        var manifestJson =
+            "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\","
+            + "\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\""
+            + configDigest
+            + "\",\"size\":"
+            + Encoding.UTF8.GetByteCount(configJson)
+            + "},\"layers\":[]}\n";
+        var manifestDigest = WriteBlob(directory, manifestJson);
+        var layout = new OciIndexDocument
+        {
+            SchemaVersion = 2,
+            MediaType = "application/vnd.oci.image.index.v1+json",
+            Manifests =
+            [
+                new OciDescriptor
+                {
+                    MediaType = "application/vnd.oci.image.manifest.v1+json",
+                    Digest = manifestDigest,
+                    Size = Encoding.UTF8.GetByteCount(manifestJson),
+                    Platform = new OciPlatform { Os = "linux", Architecture = architecture },
+                },
+            ],
+        };
+        File.WriteAllBytes(
+            Path.Combine(directory, "index.json"),
+            JsonSerializer.SerializeToUtf8Bytes(layout, ReleaseBundleJsonContext.Default.OciIndexDocument));
+        return manifestDigest;
+    }
+
+    private static string WriteBuildxMetadata(string layoutRoot, string digest)
+    {
+        var blobPath = Path.Combine(layoutRoot, "blobs", "sha256", digest["sha256:".Length..]);
+        var metadataPath = Path.GetFullPath(layoutRoot) + ".buildx-metadata.json";
+        var metadata = new BuildxMetadataDocument
+        {
+            ContainerImageDescriptor = new OciDescriptor
+            {
+                MediaType = "application/vnd.oci.image.manifest.v1+json",
+                Digest = digest,
+                Size = new FileInfo(blobPath).Length,
+            },
+            ContainerImageDigest = digest,
+        };
+        File.WriteAllText(
+            metadataPath,
+            JsonSerializer.Serialize(metadata, ReleaseBundleJsonContext.Default.BuildxMetadataDocument) + "\n");
+        return metadataPath;
+    }
 
     private static string CreateMinimalOciLayout(
         string directory,
