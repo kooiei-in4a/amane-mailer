@@ -210,6 +210,212 @@ public sealed class MailPlainSubmissionStoreTests
     }
 
     [Fact]
+    public async Task Finalize_expired_lease_returns_false_without_mutating_started_lifecycle()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await TestDatabase.CreateAsync(ct);
+        var repository = MailRequestRepository.CreateStandalone(database.Factory);
+        var started = await SeedStartedRequestAsync(repository, database.Factory, ct);
+        await ExpireLeaseAsync(database.Factory, started.RequestId, ct);
+
+        var finalized = await FinalizeUnknownAsync(
+            repository,
+            started.RequestId,
+            started.LockToken,
+            started.EvidenceClaimToken,
+            ct);
+
+        Assert.False(finalized);
+        await AssertStartedLifecycleUnchangedAsync(
+            repository,
+            database.Factory,
+            started.RequestId,
+            started.EvidenceClaimToken,
+            ct);
+    }
+
+    [Fact]
+    public async Task Finalize_wrong_request_claim_token_returns_false_without_mutating_anything()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await TestDatabase.CreateAsync(ct);
+        var repository = MailRequestRepository.CreateStandalone(database.Factory);
+        var started = await SeedStartedRequestAsync(repository, database.Factory, ct);
+
+        var finalized = await FinalizeUnknownAsync(
+            repository,
+            started.RequestId,
+            Guid.NewGuid(),
+            started.EvidenceClaimToken,
+            ct);
+
+        Assert.False(finalized);
+        await AssertStartedLifecycleUnchangedAsync(
+            repository,
+            database.Factory,
+            started.RequestId,
+            started.EvidenceClaimToken,
+            ct);
+    }
+
+    [Fact]
+    public async Task Finalize_wrong_evidence_claim_token_rolls_back_request_update()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await TestDatabase.CreateAsync(ct);
+        var repository = MailRequestRepository.CreateStandalone(database.Factory);
+        var started = await SeedStartedRequestAsync(repository, database.Factory, ct);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => FinalizeUnknownAsync(
+            repository,
+            started.RequestId,
+            started.LockToken,
+            Guid.NewGuid(),
+            ct));
+
+        await AssertStartedLifecycleUnchangedAsync(
+            repository,
+            database.Factory,
+            started.RequestId,
+            started.EvidenceClaimToken,
+            ct);
+    }
+
+    [Fact]
+    public async Task Finalize_wrong_expected_evidence_state_rolls_back_request_update()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await TestDatabase.CreateAsync(ct);
+        var repository = MailRequestRepository.CreateStandalone(database.Factory);
+        var started = await SeedStartedRequestAsync(repository, database.Factory, ct);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.FinalizePlainSubmissionAsync(
+            started.RequestId,
+            started.LockToken,
+            started.EvidenceClaimToken,
+            MailPlainSubmissionEvidenceState.Accepted,
+            DateTimeOffset.UtcNow,
+            MailPlainSubmissionEvidenceState.Unknown,
+            providerMessageId: null,
+            requestTerminalState: MailRequestState.DeliveryUnknown,
+            recipientTargetState: MailRecipientDeliveryState.Unknown,
+            lastErrorMessage: "provider acceptance could not be confirmed",
+            UnknownAttempt(started.RequestId, started.LockToken, attemptNumber: 1),
+            ct));
+
+        await AssertStartedLifecycleUnchangedAsync(
+            repository,
+            database.Factory,
+            started.RequestId,
+            started.EvidenceClaimToken,
+            ct);
+    }
+
+    [Fact]
+    public async Task Finalize_recovery_uses_current_request_token_and_original_evidence_token()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await TestDatabase.CreateAsync(ct);
+        var repository = MailRequestRepository.CreateStandalone(database.Factory);
+        var started = await SeedStartedRequestAsync(repository, database.Factory, ct);
+        var recoveryRequestToken = Guid.NewGuid();
+        await ClaimAsProcessingAsync(
+            database.Factory,
+            started.RequestId,
+            recoveryRequestToken,
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            ct);
+
+        var finalized = await FinalizeUnknownAsync(
+            repository,
+            started.RequestId,
+            recoveryRequestToken,
+            started.EvidenceClaimToken,
+            ct,
+            attemptNumber: 2);
+
+        Assert.True(finalized);
+        var evidence = await repository.FindPlainSubmissionAsync(started.RequestId, ct);
+        Assert.NotNull(evidence);
+        Assert.Equal(MailPlainSubmissionEvidenceState.Unknown, evidence!.EvidenceState);
+        Assert.Equal(started.EvidenceClaimToken, evidence.ClaimToken);
+        Assert.Null(evidence.ProviderMessageId);
+        Assert.NotNull(evidence.ResolvedAt);
+
+        var (status, _) = await ReadRequestStatusAsync(database.Factory, started.RequestId, ct);
+        Assert.Equal(MailRequestState.DeliveryUnknown, status);
+        Assert.Equal(1L, await ReadScalarAsync(
+            database.Factory,
+            "SELECT COUNT(*) FROM mail_attempts WHERE request_id = @Id;",
+            ct,
+            ("@Id", started.RequestId.ToString("D"))));
+    }
+
+    [Fact]
+    public async Task Prepare_with_zero_canonical_recipients_rolls_back_evidence_and_request_terminal_update()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await TestDatabase.CreateAsync(ct);
+        var repository = MailRequestRepository.CreateStandalone(database.Factory);
+        var requestId = Guid.NewGuid();
+        var tenantId = Guid.NewGuid();
+        var lockToken = Guid.NewGuid();
+        await repository.InsertAcceptedAsync(
+            CreateInsert(requestId, tenantId, [Recipient(MailRecipientRole.To, 0, "to@example.com", null)]),
+            ct);
+        await DeleteCanonicalRecipientsAsync(database.Factory, requestId, ct);
+        await ClaimAsProcessingAsync(database.Factory, requestId, lockToken, DateTimeOffset.UtcNow.AddMinutes(5), ct);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.TryPreparePlainProviderInvocationAsync(
+            requestId,
+            tenantId,
+            "mailpit",
+            lockToken,
+            attemptNumber: 1,
+            ct));
+
+        var (status, _) = await ReadRequestStatusAsync(database.Factory, requestId, ct);
+        Assert.Equal(MailRequestState.Processing, status);
+        Assert.Null(await repository.FindPlainSubmissionAsync(requestId, ct));
+        Assert.Equal(0L, await ReadScalarAsync(
+            database.Factory,
+            "SELECT COUNT(*) FROM mail_attempts WHERE request_id = @Id;",
+            ct,
+            ("@Id", requestId.ToString("D"))));
+    }
+
+    [Fact]
+    public async Task Finalize_with_zero_canonical_recipients_rolls_back_request_and_evidence_updates()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await TestDatabase.CreateAsync(ct);
+        var repository = MailRequestRepository.CreateStandalone(database.Factory);
+        var started = await SeedStartedRequestAsync(repository, database.Factory, ct);
+        await DeleteCanonicalRecipientsAsync(database.Factory, started.RequestId, ct);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => FinalizeUnknownAsync(
+            repository,
+            started.RequestId,
+            started.LockToken,
+            started.EvidenceClaimToken,
+            ct));
+
+        var (status, _) = await ReadRequestStatusAsync(database.Factory, started.RequestId, ct);
+        Assert.Equal(MailRequestState.Processing, status);
+        var evidence = await repository.FindPlainSubmissionAsync(started.RequestId, ct);
+        Assert.NotNull(evidence);
+        Assert.Equal(MailPlainSubmissionEvidenceState.Started, evidence!.EvidenceState);
+        Assert.Equal(started.EvidenceClaimToken, evidence.ClaimToken);
+        Assert.Null(evidence.ProviderMessageId);
+        Assert.Null(evidence.ResolvedAt);
+        Assert.Equal(0L, await ReadScalarAsync(
+            database.Factory,
+            "SELECT COUNT(*) FROM mail_attempts WHERE request_id = @Id;",
+            ct,
+            ("@Id", started.RequestId.ToString("D"))));
+    }
+
+    [Fact]
     public async Task Finalize_accepted_leaves_recipients_pending_and_moves_request_to_delivered()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -463,6 +669,116 @@ public sealed class MailPlainSubmissionStoreTests
             ct);
 
         Assert.NotEqual(ManualMailRequestMutationStatus.Succeeded, cancelResult.Status);
+    }
+
+    private static async Task<(Guid RequestId, Guid LockToken, Guid EvidenceClaimToken)> SeedStartedRequestAsync(
+        MailRequestRepository repository,
+        SqliteConnectionFactory factory,
+        CancellationToken cancellationToken)
+    {
+        var requestId = Guid.NewGuid();
+        var tenantId = Guid.NewGuid();
+        var lockToken = Guid.NewGuid();
+        await repository.InsertAcceptedAsync(
+            CreateInsert(requestId, tenantId, [Recipient(MailRecipientRole.To, 0, "to@example.com", null)]),
+            cancellationToken);
+        await ClaimAsProcessingAsync(
+            factory,
+            requestId,
+            lockToken,
+            DateTimeOffset.UtcNow.AddMinutes(5),
+            cancellationToken);
+
+        var prepared = await repository.TryPreparePlainProviderInvocationAsync(
+            requestId,
+            tenantId,
+            "mailpit",
+            lockToken,
+            attemptNumber: 1,
+            cancellationToken);
+        Assert.Equal(PlainProviderInvocationOutcome.Started, prepared.Outcome);
+
+        var evidence = await repository.FindPlainSubmissionAsync(requestId, cancellationToken);
+        Assert.NotNull(evidence);
+        Assert.Equal(MailPlainSubmissionEvidenceState.Started, evidence!.EvidenceState);
+        Assert.Equal(lockToken, evidence.ClaimToken);
+        return (requestId, lockToken, evidence.ClaimToken!.Value);
+    }
+
+    private static async Task<bool> FinalizeUnknownAsync(
+        MailRequestRepository repository,
+        Guid requestId,
+        Guid requestLockToken,
+        Guid evidenceClaimToken,
+        CancellationToken cancellationToken,
+        int attemptNumber = 1) =>
+        await repository.FinalizePlainSubmissionAsync(
+            requestId,
+            requestLockToken,
+            evidenceClaimToken,
+            MailPlainSubmissionEvidenceState.Started,
+            DateTimeOffset.UtcNow,
+            MailPlainSubmissionEvidenceState.Unknown,
+            providerMessageId: null,
+            requestTerminalState: MailRequestState.DeliveryUnknown,
+            recipientTargetState: MailRecipientDeliveryState.Unknown,
+            lastErrorMessage: "provider acceptance could not be confirmed",
+            UnknownAttempt(requestId, requestLockToken, attemptNumber),
+            cancellationToken);
+
+    private static MailAttemptInsert UnknownAttempt(Guid requestId, Guid lockToken, int attemptNumber)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new MailAttemptInsert
+        {
+            RequestId = requestId,
+            AttemptNumber = attemptNumber,
+            Provider = "mailpit",
+            Status = MailRequestState.DeliveryUnknown,
+            ErrorCode = MailDeliveryErrorCodes.DeliveryUnknown,
+            Retryable = false,
+            LockToken = lockToken,
+            StartedAt = now,
+            CompletedAt = now,
+        };
+    }
+
+    private static async Task AssertStartedLifecycleUnchangedAsync(
+        MailRequestRepository repository,
+        SqliteConnectionFactory factory,
+        Guid requestId,
+        Guid evidenceClaimToken,
+        CancellationToken cancellationToken)
+    {
+        var (status, _) = await ReadRequestStatusAsync(factory, requestId, cancellationToken);
+        Assert.Equal(MailRequestState.Processing, status);
+
+        var evidence = await repository.FindPlainSubmissionAsync(requestId, cancellationToken);
+        Assert.NotNull(evidence);
+        Assert.Equal(MailPlainSubmissionEvidenceState.Started, evidence!.EvidenceState);
+        Assert.Equal(evidenceClaimToken, evidence.ClaimToken);
+        Assert.Null(evidence.ProviderMessageId);
+        Assert.Null(evidence.ResolvedAt);
+
+        var recipientStates = await ReadRecipientStatesAsync(factory, requestId, cancellationToken);
+        Assert.All(recipientStates.Values, state => Assert.Equal(MailRecipientDeliveryState.Pending, state));
+        Assert.Equal(0L, await ReadScalarAsync(
+            factory,
+            "SELECT COUNT(*) FROM mail_attempts WHERE request_id = @Id;",
+            cancellationToken,
+            ("@Id", requestId.ToString("D"))));
+    }
+
+    private static async Task DeleteCanonicalRecipientsAsync(
+        SqliteConnectionFactory factory,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM mail_request_recipients WHERE request_id = @RequestId;";
+        command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static CanonicalMailRecipient Recipient(

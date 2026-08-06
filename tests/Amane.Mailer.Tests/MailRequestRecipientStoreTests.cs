@@ -108,6 +108,62 @@ public sealed class MailRequestRecipientStoreTests
     }
 
     [Fact]
+    public async Task Suppression_recipient_partial_update_rolls_back_when_affected_rows_do_not_match()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var database = await TestDatabase.CreateAsync(ct);
+        var repository = MailRequestRepository.CreateStandalone(database.Factory);
+        var tenantId = Guid.NewGuid();
+        var requestId = Guid.NewGuid();
+        var lockToken = Guid.NewGuid();
+        const string suppressedBcc = "bcc-suppressed@example.com";
+
+        await repository.InsertAcceptedAsync(
+            CreateInsert(
+                requestId,
+                tenantId,
+                [
+                    Recipient(MailRecipientRole.Bcc, 0, suppressedBcc, null),
+                    Recipient(MailRecipientRole.Bcc, 1, "bcc-other@example.com", null),
+                ]),
+            ct);
+        await SeedSuppressionAsync(database.Factory, tenantId, suppressedBcc, ct);
+        await ClaimAsProcessingAsync(database.Factory, requestId, lockToken, DateTimeOffset.UtcNow.AddMinutes(5), ct);
+
+        // SQLite's RAISE(IGNORE) gives the UPDATE a safe, production-independent seam that
+        // skips one canonical row. The bulk helper must see affected=1 versus expected=2 and
+        // roll back the already-started recipient update and terminalization.
+        await ExecuteAsync(
+            database.Factory,
+            $"""
+            CREATE TRIGGER skip_one_suppression_recipient_update
+            BEFORE UPDATE ON mail_request_recipients
+            WHEN NEW.request_id = '{requestId:D}' AND NEW.ordinal = 1
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END;
+            """,
+            ct);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.TryApplyAttachmentSuppressionPrecheckAsync(
+            requestId,
+            tenantId,
+            lockToken,
+            attemptNumber: 1,
+            ct));
+
+        var (status, _) = await ReadRequestStatusAsync(database.Factory, requestId, ct);
+        Assert.Equal(MailRequestState.Processing, status);
+        var recipientStates = await ReadRecipientStatesAsync(database.Factory, requestId, ct);
+        Assert.All(recipientStates.Values, state => Assert.Equal(MailRecipientDeliveryState.NotSent, state));
+        Assert.Equal(0L, await ReadScalarAsync(
+            database.Factory,
+            "SELECT COUNT(*) FROM mail_attempts WHERE request_id = @Id;",
+            ct,
+            ("@Id", requestId.ToString("D"))));
+    }
+
+    [Fact]
     public async Task Fence_failed_when_lease_has_already_expired_and_writes_nothing()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -184,6 +240,17 @@ public sealed class MailRequestRecipientStoreTests
                 CreatedAt = DateTimeOffset.UtcNow,
             },
             cancellationToken));
+    }
+
+    private static async Task ExecuteAsync(
+        SqliteConnectionFactory factory,
+        string sql,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await factory.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task ClaimAsProcessingAsync(

@@ -608,6 +608,12 @@ public sealed class MailRequestWorker : BackgroundService
                     row.Id,
                     row.TenantId);
                 await _deliveryEventEnqueuer.TryEnqueueAfterCommitAsync(row.Id);
+
+                // The suppression precheck already committed the terminal request transaction.
+                // Clean up only after that commit; the reconciliation service remains the safety
+                // net if this best-effort delete cannot remove the committed spool immediately.
+                _attachmentSpool.TryDeleteCommitted(row.Id);
+                _runtimeMetrics.RecordAttachmentSpoolCleanup("committed_prompt");
                 return;
 
             case AttachmentSuppressionPrecheckOutcome.NotSuppressed:

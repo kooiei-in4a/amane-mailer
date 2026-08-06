@@ -80,9 +80,65 @@ public sealed class MailRequestWorkerAttachmentCanonicalRecipientMappingTests(Ma
         Assert.NotEqual(realBccAddress, legacyShadow);
     }
 
+    [Fact]
+    public async Task Worker_suppresses_attachment_recipient_after_terminal_commit_and_cleans_committed_spool()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        const string suppressedBcc = "bcc-suppressed@example.com";
+        const string otherBcc = "bcc-other@example.com";
+
+        var metrics = fixture.Factory.Services.GetRequiredService<Amane.Mailer.Operations.MailerRuntimeMetrics>();
+        metrics.ClearForTests();
+        var mailRequestId = await SeedAndDispatchAsync(
+            ct,
+            [
+                Recipient(MailRecipientRole.Bcc, 0, suppressedBcc, null),
+                Recipient(MailRecipientRole.Bcc, 1, otherBcc, null),
+            ],
+            suppressedAddress: suppressedBcc);
+
+        var stored = await WaitUntilStatusAsync(mailRequestId, MailRequestState.Failed, ct);
+        Assert.Equal(MailRequestState.Failed, stored.Status);
+        Assert.Empty(fixture.DeliveryProvider.Sent);
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var recipientRows = await repository.ListRecipientsAsync(stored.Id, ct);
+        Assert.Equal(MailRecipientDeliveryState.Suppressed, recipientRows.Single(row => row.Ordinal == 0).DeliveryState);
+        Assert.Equal(MailRecipientDeliveryState.NotSent, recipientRows.Single(row => row.Ordinal == 1).DeliveryState);
+        Assert.Null(await repository.FindAttachmentSubmissionAsync(stored.Id, ct));
+
+        var spool = scope.ServiceProvider.GetRequiredService<AttachmentSpool>();
+        await ConditionWait.UntilAsync(
+            _ => Task.FromResult(
+                !spool.CommittedDirectoryExists(stored.Id)
+                && metrics.CaptureSnapshot().AttachmentSpoolCleanups.Count(
+                    entry => entry.Kind == "committed_prompt" && entry.Count == 1) == 1),
+            ConditionWait.DefaultTimeout,
+            ct);
+
+        Assert.False(spool.CommittedDirectoryExists(stored.Id));
+        var cleanup = Assert.Single(
+            metrics.CaptureSnapshot().AttachmentSpoolCleanups,
+            entry => entry.Kind == "committed_prompt");
+        Assert.Equal(1, cleanup.Count);
+        Assert.Equal(
+            0L,
+            await ReadScalarAsync(
+                fixture.ConnectionString,
+                "SELECT COUNT(*) FROM mail_attachment_submissions WHERE request_id = @Id;",
+                ct,
+                ("@Id", stored.Id.ToString("D"))));
+
+        var legacyShadow = await ReadLegacyShadowAsync(stored.Id, ct);
+        Assert.Equal(MailRequestLegacyShadow.BccOnlyRecipientEmail, legacyShadow);
+        Assert.NotEqual(suppressedBcc, legacyShadow);
+    }
+
     private async Task<Guid> SeedAndDispatchAsync(
         CancellationToken cancellationToken,
-        IReadOnlyList<CanonicalMailRecipient> recipients)
+        IReadOnlyList<CanonicalMailRecipient> recipients,
+        string? suppressedAddress = null)
     {
         var mailRequestId = Guid.NewGuid();
         var requestId = Guid.NewGuid();
@@ -96,6 +152,21 @@ public sealed class MailRequestWorkerAttachmentCanonicalRecipientMappingTests(Ma
             var spool = scope.ServiceProvider.GetRequiredService<AttachmentSpool>();
             spool.EnsureStagingDirectory(requestId);
             await File.WriteAllBytesAsync(spool.GetStagingFilePath(requestId, spoolKey), content, cancellationToken);
+
+            if (suppressedAddress is not null)
+            {
+                var suppressions = scope.ServiceProvider.GetRequiredService<MailSuppressionRepository>();
+                Assert.True(await suppressions.TryInsertAsync(
+                    new MailSuppressionInsert
+                    {
+                        Id = Guid.NewGuid(),
+                        TenantId = MailerWebApplicationFixtureBase.TenantId,
+                        RecipientEmail = suppressedAddress,
+                        Reason = MailSuppressionReasons.HardBounce,
+                        CreatedAt = now,
+                    },
+                    cancellationToken));
+            }
 
             var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
             await repository.InsertAcceptedAsync(
@@ -197,5 +268,25 @@ public sealed class MailRequestWorkerAttachmentCanonicalRecipientMappingTests(Ma
         command.CommandText = "SELECT recipient_email FROM mail_requests WHERE id = @Id;";
         command.Parameters.AddWithValue("@Id", requestId.ToString("D"));
         return (string)(await command.ExecuteScalarAsync(cancellationToken))!;
+    }
+
+    private static async Task<long> ReadScalarAsync(
+        string connectionString,
+        string sql,
+        CancellationToken cancellationToken,
+        params (string Name, object Value)[] parameters)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        foreach (var parameter in parameters)
+        {
+            command.Parameters.AddWithValue(parameter.Name, parameter.Value);
+        }
+
+        return Convert.ToInt64(
+            await command.ExecuteScalarAsync(cancellationToken),
+            System.Globalization.CultureInfo.InvariantCulture);
     }
 }

@@ -204,7 +204,24 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
             minAttemptCount: 3,
             ct);
 
+        await fixture.DeliveryProvider.WaitUntilHoldConsumedAsync(ct);
         await ExpireProcessingLeaseAsync(processing.Id, ct);
+
+        // The row is at max_attempts, but its Started evidence makes it a recovery claim rather
+        // than a generic max-attempt dead-letter candidate. Exercise both sides of F1 directly:
+        // the generic reaper must leave it Processing, and the normal claim path must still be
+        // able to reclaim it for no-provider-call convergence.
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var reaper = scope.ServiceProvider.GetRequiredService<Amane.Mailer.Worker.ExpiredProcessingReaper>();
+            await reaper.DeadLetterExpiredProcessingAtMaxAttemptsAsync(DateTimeOffset.UtcNow, ct);
+        }
+
+        var stillRecoverable = await FindDispatchStateAsync(request.MailRequestId, ct);
+        Assert.NotNull(stillRecoverable);
+        Assert.Equal(MailRequestState.Processing, stillRecoverable!.Status);
+        Assert.Equal(0, await CountAttemptsAsync(processing.Id, ct));
+
         fixture.DeliveryProvider.ReleaseHeldSend();
 
         // The sweep service only polls every 30s (MailerWorkerFixture does not override
@@ -224,6 +241,14 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
             attempts,
             attempt => attempt.Status == MailRequestState.DeliveryUnknown
                 && attempt.ErrorCode == MailDeliveryErrorCodes.DeliveryUnknown);
+        Assert.Single(attempts);
+
+        SignalWorker();
+        await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
+        var afterTerminalSignal = await FindDispatchStateAsync(request.MailRequestId, ct);
+        Assert.NotNull(afterTerminalSignal);
+        Assert.Equal(MailRequestState.DeliveryUnknown, afterTerminalSignal!.Status);
+        Assert.Equal(1, await CountAttemptsAsync(converged.Id, ct));
     }
 
     [Fact]
