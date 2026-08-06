@@ -110,6 +110,20 @@ Candidates build a local multi-arch OCI layout via
   EXTERNAL_PROVENANCE (no embedded Buildx attestation manifests)
 - This path **never** pushes to GHCR. #458 owns public image publish.
 
+### Native platform build and assemble route (#557)
+
+The workflow builds the candidate OCI graph in two independent native jobs:
+`linux/amd64` on `ubuntu-24.04` and `linux/arm64` on `ubuntu-24.04-arm`.
+Neither platform build uses QEMU, registry login, a push, or a cache. Each job
+uploads a single-platform OCI layout plus its Buildx metadata. The existing
+logical `build-oci` job remains the assemble authority: it copies the validated
+platform graph blobs, creates the deterministic amd64-then-arm64 image index,
+and generates the final `buildx-metadata.json`, `oci-index.digest`, and
+`image-identity.json` in the unchanged `setup-release-candidate-oci` artifact.
+The final digest is still the image-index blob referenced by `index.json`, not
+the digest of the layout entrypoint file. Host archive jobs consume only this
+final identity artifact and their contract is unchanged.
+
 Workflow OCI artifact name: **`setup-release-candidate-oci`**
 (`oci/` layout + `image-identity.json` + `buildx-metadata.json` +
 `oci-index.digest`).

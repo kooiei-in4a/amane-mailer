@@ -1,7 +1,8 @@
 name: Generate Setup Release Candidate
 
 # Easy Setup release-candidate packaging (#455).
-# Builds local multi-arch OCI layout + per-RID host Native AOT archives for qualification.
+# Builds native per-platform OCI layouts, assembles the final multi-arch layout,
+# and creates per-RID host Native AOT archives for qualification.
 # Does NOT create Git tags, push GHCR, or create GitHub Releases (#458).
 
 on:
@@ -63,8 +64,8 @@ jobs:
             exit 1
           fi
 
-  build-oci:
-    name: Build multi-arch OCI layout
+  build-oci-amd64:
+    name: Build OCI (linux/amd64)
     needs: validate-inputs
     runs-on: ubuntu-24.04
     steps:
@@ -78,8 +79,55 @@ jobs:
         with:
           global-json-file: global.json
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v3.12.0
+
+      - name: Restore
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Build packaging tool
+        run: dotnet build tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj -c ${{ env.CONFIGURATION }} --no-restore
+
+      - name: Build OCI layout (linux/amd64; native)
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          IMAGE_TAG: sha-${{ github.sha }}
+          REQUIRED_PLATFORMS: linux/amd64
+          WRITE_IMAGE_IDENTITY: "0"
+          OUT_ROOT: ${{ github.workspace }}/artifacts/platform-linux-amd64
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "${OUT_ROOT}"
+          export SOURCE_SHA="$(git rev-parse HEAD)"
+          bash scripts/build-candidate-oci-image.sh \
+            "${OUT_ROOT}/oci" \
+            "linux/amd64"
+
+      - name: Upload native amd64 OCI layout
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: setup-release-candidate-oci-linux-amd64
+          path: |
+            artifacts/platform-linux-amd64/oci/
+            artifacts/platform-linux-amd64/buildx-metadata.json
+            artifacts/platform-linux-amd64/oci-index.digest
+          if-no-files-found: error
+          retention-days: 14
+
+  build-oci-arm64:
+    name: Build OCI (linux/arm64)
+    needs: validate-inputs
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v3.12.0
@@ -90,19 +138,81 @@ jobs:
       - name: Build packaging tool
         run: dotnet build tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj -c ${{ env.CONFIGURATION }} --no-restore
 
-      - name: Build OCI layout (linux/amd64,linux/arm64)
+      - name: Build OCI layout (linux/arm64; native)
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          IMAGE_TAG: sha-${{ github.sha }}
+          REQUIRED_PLATFORMS: linux/arm64
+          WRITE_IMAGE_IDENTITY: "0"
+          OUT_ROOT: ${{ github.workspace }}/artifacts/platform-linux-arm64
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "${OUT_ROOT}"
+          export SOURCE_SHA="$(git rev-parse HEAD)"
+          bash scripts/build-candidate-oci-image.sh \
+            "${OUT_ROOT}/oci" \
+            "linux/arm64"
+
+      - name: Upload native arm64 OCI layout
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: setup-release-candidate-oci-linux-arm64
+          path: |
+            artifacts/platform-linux-arm64/oci/
+            artifacts/platform-linux-arm64/buildx-metadata.json
+            artifacts/platform-linux-arm64/oci-index.digest
+          if-no-files-found: error
+          retention-days: 14
+
+  build-oci:
+    name: Build multi-arch OCI layout
+    needs:
+      - build-oci-amd64
+      - build-oci-arm64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Amane.Mailer.slnx --locked-mode
+
+      - name: Build packaging tool
+        run: dotnet build tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj -c ${{ env.CONFIGURATION }} --no-restore
+
+      - name: Download native amd64 OCI layout
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: setup-release-candidate-oci-linux-amd64
+          path: artifacts/platform-linux-amd64
+
+      - name: Download native arm64 OCI layout
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: setup-release-candidate-oci-linux-arm64
+          path: artifacts/platform-linux-arm64
+
+      - name: Assemble final OCI layout (build-oci authority)
         env:
           SOURCE_SHA: ${{ github.sha }}
           IMAGE_TAG: sha-${{ github.sha }}
           OUT_ROOT: ${{ github.workspace }}/artifacts/setup-release-candidate
         run: |
           set -Eeuo pipefail
-          mkdir -p "${OUT_ROOT}"
-          # Prefer git rev-parse HEAD as sourceCommitSha authority.
           export SOURCE_SHA="$(git rev-parse HEAD)"
-          bash scripts/build-candidate-oci-image.sh \
-            "${OUT_ROOT}/oci" \
-            "linux/amd64,linux/arm64"
+          bash scripts/assemble-candidate-oci-image.sh \
+            "${GITHUB_WORKSPACE}/artifacts/platform-linux-amd64/oci" \
+            "${GITHUB_WORKSPACE}/artifacts/platform-linux-amd64/buildx-metadata.json" \
+            "${GITHUB_WORKSPACE}/artifacts/platform-linux-arm64/oci" \
+            "${GITHUB_WORKSPACE}/artifacts/platform-linux-arm64/buildx-metadata.json" \
+            "${OUT_ROOT}"
 
       - name: Upload OCI layout + image identity
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

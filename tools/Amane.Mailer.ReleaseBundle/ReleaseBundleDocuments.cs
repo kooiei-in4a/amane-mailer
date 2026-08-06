@@ -246,6 +246,15 @@ public sealed class OciManifestDocument
     public OciDescriptor[]? Manifests { get; init; }
 }
 
+public sealed class OciConfigDocument
+{
+    [JsonPropertyName("architecture")]
+    public string? Architecture { get; init; }
+
+    [JsonPropertyName("os")]
+    public string? Os { get; init; }
+}
+
 public sealed class OciDescriptor
 {
     [JsonPropertyName("mediaType")]
@@ -271,4 +280,13 @@ public sealed class OciPlatform
 
     [JsonPropertyName("variant")]
     public string? Variant { get; init; }
+}
+
+public sealed class BuildxMetadataDocument
+{
+    [JsonPropertyName("containerimage.descriptor")]
+    public OciDescriptor? ContainerImageDescriptor { get; init; }
+
+    [JsonPropertyName("containerimage.digest")]
+    public string? ContainerImageDigest { get; init; }
 }
