@@ -4,13 +4,18 @@ namespace Amane.Mailer.Attachments.Provider;
 
 public sealed record AttachmentEnvelopeInput(
     string SenderEmail,
-    string RecipientEmail,
-    string? RecipientDisplayName,
+    IReadOnlyList<AttachmentEnvelopeRecipient> Recipients,
     string Subject,
     string? TextBody,
     string? HtmlBody,
     string? ReplyTo,
     IReadOnlyList<AttachmentEnvelopeAttachment> Attachments);
+
+/// <summary>
+/// Canonical recipient (ADR 0023 D-03) used for the envelope size estimate (Issue #546 review
+/// finding F2) -- one entry per To/Cc/Bcc recipient, not only the legacy single-To shadow.
+/// </summary>
+public sealed record AttachmentEnvelopeRecipient(string Email, string? DisplayName);
 
 public sealed record AttachmentEnvelopeAttachment(string FileName, string ContentType, long ByteLength);
 
@@ -33,8 +38,11 @@ public static class AttachmentEnvelopeEstimator
         estimate += EncodedJsonBytes(input.TextBody ?? string.Empty) + 256;
         estimate += EncodedJsonBytes(input.HtmlBody ?? string.Empty) + 256;
         estimate += EncodedJsonBytes(input.ReplyTo ?? string.Empty) + 128;
-        estimate += EncodedJsonBytes(input.RecipientEmail)
-            + EncodedJsonBytes(input.RecipientDisplayName ?? string.Empty) + 512;
+        foreach (var recipient in input.Recipients)
+        {
+            estimate += EncodedJsonBytes(recipient.Email)
+                + EncodedJsonBytes(recipient.DisplayName ?? string.Empty) + 512;
+        }
 
         foreach (var attachment in input.Attachments)
         {

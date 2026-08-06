@@ -28,7 +28,7 @@ public sealed class AcsMailDeliveryProviderTests
         };
 
         var request = MailRequestTestData.CreateRequest();
-        var job = new MailSendJob(
+        var job = MailSendJob.ForSingleRecipient(
             request.MailRequestId,
             request.SourceService,
             request.Subject,
@@ -71,7 +71,7 @@ public sealed class AcsMailDeliveryProviderTests
 
         var missingFilePath = Path.Combine(Path.GetTempPath(), "amane-mailer-acs-missing-attachment-tests", Guid.NewGuid().ToString("N") + ".bin");
         var request = MailRequestTestData.CreateRequest();
-        var job = new MailSendJob(
+        var job = MailSendJob.ForSingleRecipient(
             request.MailRequestId,
             request.SourceService,
             request.Subject,
@@ -80,7 +80,7 @@ public sealed class AcsMailDeliveryProviderTests
             request.ReplyTo,
             request.To[0].Email,
             request.To[0].DisplayName,
-            Attachments: [new MailSendAttachment("notes.txt", "text/plain", 10, missingFilePath)]);
+            attachments: [new MailSendAttachment("notes.txt", "text/plain", 10, missingFilePath)]);
 
         var result = await provider.SendAsync(job, tenant, "acs", TestContext.Current.CancellationToken);
 
