@@ -109,14 +109,16 @@ public sealed class BounceAdminQueryTenantScopeTests
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO bounce_events (
+            INSERT INTO recipient_delivery_events (
                 id, tenant_id, source_service, mail_request_id,
+                recipient_role, recipient_ordinal,
                 provider, provider_event_id, provider_message_id,
-                delivery_status, status_message, occurred_at, created_at)
+                provider_status, applied_delivery_state, status_message, occurred_at, created_at)
             VALUES (
                 @Id, @TenantId, 'bounce-admin-scope', @MailRequestId,
+                0, 0,
                 'acs', @ProviderEventId, @ProviderMessageId,
-                'Bounced', 'sanitized', @Now, @Now);
+                'Bounced', 3, 'sanitized', @Now, @Now);
             """;
         command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("D"));
         command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
@@ -170,7 +172,7 @@ public sealed class BounceAdminQueryTenantScopeTests
             var root = Path.Combine(Path.GetTempPath(), "amane-mailer-bounce-admin", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
             var databasePath = Path.Combine(root, "mailer.db");
-            var connectionString = $"Data Source={databasePath}";
+            var connectionString = $"Data Source={databasePath};Pooling=False";
 
             var factory = new SqliteConnectionFactory(
                 new ConfigurationBuilder()
@@ -186,7 +188,6 @@ public sealed class BounceAdminQueryTenantScopeTests
 
         public ValueTask DisposeAsync()
         {
-            SqliteConnection.ClearAllPools();
             if (Directory.Exists(_root))
                 Directory.Delete(_root, recursive: true);
 

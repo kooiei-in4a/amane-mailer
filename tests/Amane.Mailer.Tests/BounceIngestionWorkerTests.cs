@@ -68,7 +68,7 @@ public sealed class AcsEventParserTests
     }
 
     [Fact]
-    public void ParseOne_ignores_delivered_and_non_delivery_report_types()
+    public void ParseOne_keeps_delivered_and_ignores_non_delivery_report_types()
     {
         var delivered = """
             {
@@ -78,7 +78,9 @@ public sealed class AcsEventParserTests
               "data": { "messageId": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "status": "Delivered", "recipient": "a@example.com" }
             }
             """;
-        Assert.Equal(AcsEventParseOutcome.Ignored, AcsEventParser.ParseOne(delivered).Outcome);
+        var deliveredResult = AcsEventParser.ParseOne(delivered);
+        Assert.Equal(AcsEventParseOutcome.DeliveryReport, deliveredResult.Outcome);
+        Assert.Equal("Delivered", deliveredResult.Report?.Status);
 
         var other = """
             {
@@ -97,6 +99,21 @@ public sealed class AcsEventParserTests
     }
 
     [Fact]
+    public void ParseOne_marks_missing_required_fields_unparseable()
+    {
+        var missingRequiredFields = new[]
+        {
+            """{"eventType":"Microsoft.Communication.EmailDeliveryReportReceived","data":{"messageId":"message","status":"Failed"}}""",
+            """{"id":"event","eventType":"Microsoft.Communication.EmailDeliveryReportReceived","data":{"status":"Failed"}}""",
+            """{"id":"event","eventType":"Microsoft.Communication.EmailDeliveryReportReceived","data":{"messageId":"message"}}""",
+        };
+
+        Assert.All(
+            missingRequiredFields,
+            json => Assert.Equal(AcsEventParseOutcome.Unparseable, AcsEventParser.ParseOne(json).Outcome));
+    }
+
+    [Fact]
     public void BounceClassifier_suppresses_bounced_and_suppressed_only()
     {
         Assert.True(BounceClassifier.IsHardBounce("Bounced"));
@@ -109,7 +126,23 @@ public sealed class AcsEventParserTests
         Assert.False(BounceClassifier.ShouldSuppress("Failed"));
         Assert.False(BounceClassifier.ShouldSuppress("Quarantined"));
         Assert.True(BounceClassifier.ShouldRecordBounceEvent("Failed"));
-        Assert.False(BounceClassifier.ShouldRecordBounceEvent("Delivered"));
+        Assert.True(BounceClassifier.ShouldRecordBounceEvent("Delivered"));
+    }
+
+    [Theory]
+    [InlineData("Delivered", MailRecipientDeliveryState.Delivered)]
+    [InlineData("Bounced", MailRecipientDeliveryState.Bounced)]
+    [InlineData("Suppressed", MailRecipientDeliveryState.Suppressed)]
+    [InlineData("Failed", null)]
+    [InlineData("Quarantined", null)]
+    [InlineData("Complaint", null)]
+    [InlineData("FutureProviderStatus", null)]
+    public void BounceClassifier_maps_only_approved_current_states(
+        string providerStatus,
+        MailRecipientDeliveryState? expected)
+    {
+        Assert.Equal(expected, BounceClassifier.AppliedRecipientState(providerStatus));
+        Assert.True(BounceClassifier.ShouldRecordBounceEvent(providerStatus));
     }
 }
 
@@ -244,29 +277,34 @@ public sealed class BounceIngestionWorkerTests
         await SeedDeliveredRequestAsync(db.Factory, ProviderMessageId, Recipient, ct);
 
         var inbox = new ProviderEventInboxRepository(db.Factory);
-        Assert.True(await inbox.TryInsertAsync(NewInboxInsert("event-sanitize", ProviderMessageId, "Bounced", Recipient), ct));
-        var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
-        Assert.NotNull(claimed);
-
-        var match = await new BounceIngestionStore(db.Factory).FindByProviderMessageIdAsync(ProviderMessageId, ct);
-        Assert.NotNull(match);
-
         const string raw =
             "550 5.1.10 RESOLVER.ADR.RecipientNotFound; recipient pii-canary-302@example.com "
             + "Bearer secret-token-do-not-store};'";
-        Assert.True(await new BounceIngestionStore(db.Factory).PersistCorrelatedAsync(
-            claimed,
-            match,
-            statusMessage: raw,
-            suppress: true,
-            FixedNow,
+        Assert.True(await inbox.TryInsertAsync(
+            new ProviderEventInboxInsert
+            {
+                Id = Guid.CreateVersion7(FixedNow),
+                Provider = "acs",
+                EventId = "event-sanitize",
+                ProviderMessageId = ProviderMessageId,
+                DeliveryStatus = "Bounced",
+                RecipientEmail = Recipient,
+                StatusMessage = raw,
+                MaxAttempts = 3,
+                CreatedAt = FixedNow,
+            },
             ct));
+        var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
+        Assert.NotNull(claimed);
+        Assert.Equal(
+            RecipientFeedbackProcessResult.Processed,
+            await new BounceIngestionStore(db.Factory).ProcessClaimedAsync(claimed, FixedNow, ct));
 
         await using var connection = await db.Factory.OpenConnectionAsync(ct);
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT status_message
-            FROM bounce_events
+            FROM recipient_delivery_events
             WHERE provider_event_id = @EventId
             LIMIT 1;
             """;
@@ -318,7 +356,7 @@ public sealed class BounceIngestionWorkerTests
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT status_message, occurred_at
-            FROM bounce_events
+            FROM recipient_delivery_events
             WHERE provider_event_id = @EventId
             LIMIT 1;
             """;
@@ -355,7 +393,7 @@ public sealed class BounceIngestionWorkerTests
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT occurred_at
-            FROM bounce_events
+            FROM recipient_delivery_events
             WHERE provider_event_id = @EventId
             LIMIT 1;
             """;
@@ -364,8 +402,10 @@ public sealed class BounceIngestionWorkerTests
         Assert.Equal(SqliteTime.ToStorageUtc(FixedNow), stored);
     }
 
-    [Fact]
-    public async Task Persist_fencing_failure_rolls_back_bounce_and_suppression()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Persist_fencing_failure_rolls_back_bounce_and_suppression(bool expireLease)
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await OpenMigratedAsync(ct);
@@ -391,33 +431,29 @@ public sealed class BounceIngestionWorkerTests
         var claimed = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
         Assert.NotNull(claimed);
 
-        // Expire the lease so finalize fencing fails inside the same transaction.
+        // Invalidate one half of the lease fence before the atomic processing transaction.
         await using (var connection = await db.Factory.OpenConnectionAsync(ct))
-        await using (var expire = connection.CreateCommand())
+        await using (var invalidate = connection.CreateCommand())
         {
-            expire.CommandText = """
-                UPDATE provider_event_inbox
-                SET lock_expires_at = @Expired
-                WHERE id = @Id;
-                """;
-            expire.Parameters.AddWithValue("@Expired", SqliteTime.ToStorageUtc(FixedNow.AddMinutes(-1)));
-            expire.Parameters.AddWithValue("@Id", claimed.Id.ToString("D"));
-            Assert.Equal(1, await expire.ExecuteNonQueryAsync(ct));
+            invalidate.CommandText = expireLease
+                ? "UPDATE provider_event_inbox SET lock_expires_at = @Value WHERE id = @Id;"
+                : "UPDATE provider_event_inbox SET lock_token = @Value WHERE id = @Id;";
+            invalidate.Parameters.AddWithValue(
+                "@Value",
+                expireLease
+                    ? SqliteTime.ToStorageUtc(FixedNow.AddMinutes(-1))
+                    : Guid.NewGuid().ToString("D"));
+            invalidate.Parameters.AddWithValue("@Id", claimed.Id.ToString("D"));
+            Assert.Equal(1, await invalidate.ExecuteNonQueryAsync(ct));
         }
 
-        var match = await new BounceIngestionStore(db.Factory).FindByProviderMessageIdAsync(ProviderMessageId, ct);
-        Assert.NotNull(match);
-        Assert.False(await new BounceIngestionStore(db.Factory).PersistCorrelatedAsync(
-            claimed,
-            match,
-            statusMessage: claimed.StatusMessage,
-            suppress: true,
-            FixedNow,
-            ct));
+        Assert.Equal(
+            RecipientFeedbackProcessResult.FenceFailed,
+            await new BounceIngestionStore(db.Factory).ProcessClaimedAsync(claimed, FixedNow, ct));
 
         await using var verify = await db.Factory.OpenConnectionAsync(ct);
         await using var bounceCount = verify.CreateCommand();
-        bounceCount.CommandText = "SELECT COUNT(*) FROM bounce_events WHERE provider_event_id = 'event-fence';";
+        bounceCount.CommandText = "SELECT COUNT(*) FROM recipient_delivery_events WHERE provider_event_id = 'event-fence';";
         Assert.Equal(0L, Convert.ToInt64(await bounceCount.ExecuteScalarAsync(ct)));
         Assert.False(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
     }
@@ -454,24 +490,53 @@ public sealed class BounceIngestionWorkerTests
 
         var inbox = new ProviderEventInboxRepository(db.Factory);
         var metrics = new MailerRuntimeMetrics();
-        var worker = CreateWorker(db.Factory, metrics);
-
         Assert.True(await inbox.TryInsertAsync(NewInboxInsert("event-dup", ProviderMessageId, "Bounced", Recipient), ct));
         var first = await inbox.TryClaimOneAsync(FixedNow, TimeSpan.FromMinutes(1), ct);
         Assert.NotNull(first);
-        await worker.ProcessClaimedEventForTestsAsync(first, ct);
 
-        // Re-insert same provider+event_id is rejected by inbox UNIQUE; simulate redelivery
-        // by inserting a new inbox row with same event_id after deleting is impossible,
-        // so re-run persist path via a second distinct inbox id is not applicable.
-        // Instead verify bounce UNIQUE absorbs a second correlated persist attempt via store.
-        var store = new BounceIngestionStore(db.Factory);
-        var match = await store.FindByProviderMessageIdAsync(ProviderMessageId, ct);
-        Assert.NotNull(match);
-        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
+        // Model a previously committed history row with an inbox row that must converge on replay.
+        await using (var connection = await db.Factory.OpenConnectionAsync(ct))
+        await using (var seed = connection.CreateCommand())
+        {
+            seed.CommandText = """
+                INSERT INTO recipient_delivery_events (
+                    id, tenant_id, source_service, mail_request_id,
+                    recipient_role, recipient_ordinal,
+                    provider, provider_event_id, provider_message_id, provider_status,
+                    applied_delivery_state, status_message, occurred_at, created_at)
+                VALUES (
+                    @Id, @TenantId, 'orders', @MailRequestId,
+                    0, 0,
+                    'acs', 'event-dup', @ProviderMessageId, 'Bounced',
+                    NULL, NULL, @Now, @Now);
+                """;
+            seed.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("D"));
+            seed.Parameters.AddWithValue("@TenantId", TenantId.ToString("D"));
+            seed.Parameters.AddWithValue("@MailRequestId", MailRequestId.ToString("D"));
+            seed.Parameters.AddWithValue("@ProviderMessageId", ProviderMessageId);
+            seed.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(FixedNow));
+            Assert.Equal(1, await seed.ExecuteNonQueryAsync(ct));
+        }
 
-        // Second suppress insert is DO NOTHING; bounce insert DO NOTHING — metrics only count worker path once.
-        Assert.Equal(1, metrics.CaptureSnapshot().BounceEventsTotal);
+        await CreateWorker(db.Factory, metrics).ProcessClaimedEventForTestsAsync(first, ct);
+
+        Assert.Equal(0, metrics.CaptureSnapshot().BounceEventsTotal);
+        Assert.False(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
+        await using var verify = await db.Factory.OpenConnectionAsync(ct);
+        await using var command = verify.CreateCommand();
+        command.CommandText = """
+            SELECT
+                (SELECT COUNT(*) FROM recipient_delivery_events WHERE provider_event_id = 'event-dup'),
+                (SELECT delivery_state FROM mail_request_recipients WHERE request_id = @RequestId),
+                (SELECT status FROM provider_event_inbox WHERE id = @InboxId);
+            """;
+        command.Parameters.AddWithValue("@RequestId", RequestRowId.ToString("D"));
+        command.Parameters.AddWithValue("@InboxId", first.Id.ToString("D"));
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        Assert.True(await reader.ReadAsync(ct));
+        Assert.Equal(1L, reader.GetInt64(0));
+        Assert.Equal((int)MailRecipientDeliveryState.Pending, reader.GetInt32(1));
+        Assert.Equal((int)ProviderEventInboxState.Processed, reader.GetInt32(2));
     }
 
     [Fact]
@@ -680,6 +745,33 @@ public sealed class BounceIngestionWorkerTests
         attempt.Parameters.AddWithValue("@LockToken", Guid.NewGuid().ToString("D"));
         attempt.Parameters.AddWithValue("@Now", now);
         await attempt.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var recipient = connection.CreateCommand();
+        recipient.CommandText = """
+            INSERT INTO mail_request_recipients (
+                request_id, recipient_role, ordinal, address, address_key, display_name,
+                delivery_state, created_at, updated_at)
+            VALUES (@RequestId, 0, 0, @Address, @AddressKey, NULL, 1, @Now, @Now);
+            """;
+        recipient.Parameters.AddWithValue("@RequestId", RequestRowId.ToString("D"));
+        recipient.Parameters.AddWithValue("@Address", recipientEmail);
+        recipient.Parameters.AddWithValue("@AddressKey", RecipientEmailNormalizer.Normalize(recipientEmail));
+        recipient.Parameters.AddWithValue("@Now", now);
+        await recipient.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var evidence = connection.CreateCommand();
+        evidence.CommandText = """
+            INSERT INTO mail_plain_submissions (
+                request_id, evidence_state, evidence_origin, provider, claim_token, started_at,
+                provider_message_id, resolved_at, created_at, updated_at)
+            VALUES (@RequestId, 2, 0, 'acs', @LockToken, @Now,
+                    @ProviderMessageId, @Now, @Now, @Now);
+            """;
+        evidence.Parameters.AddWithValue("@RequestId", RequestRowId.ToString("D"));
+        evidence.Parameters.AddWithValue("@LockToken", Guid.NewGuid().ToString("D"));
+        evidence.Parameters.AddWithValue("@ProviderMessageId", providerMessageId);
+        evidence.Parameters.AddWithValue("@Now", now);
+        await evidence.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task SeedExtraAttemptAsync(
@@ -713,7 +805,7 @@ public sealed class BounceIngestionWorkerTests
         await using var connection = await factory.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT id FROM bounce_events WHERE provider_event_id = @EventId LIMIT 1;
+            SELECT id FROM recipient_delivery_events WHERE provider_event_id = @EventId LIMIT 1;
             """;
         command.Parameters.AddWithValue("@EventId", providerEventId);
         var value = await command.ExecuteScalarAsync(cancellationToken);
@@ -728,7 +820,7 @@ public sealed class BounceIngestionWorkerTests
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                ["ConnectionStrings:Mailer"] = $"Data Source={databasePath};Pooling=False",
             })
             .Build();
         var factory = new SqliteConnectionFactory(configuration);
@@ -742,7 +834,6 @@ public sealed class BounceIngestionWorkerTests
 
         public async ValueTask DisposeAsync()
         {
-            SqliteConnection.ClearAllPools();
             await Task.Run(() => Directory.Delete(root, recursive: true));
         }
     }

@@ -136,7 +136,8 @@ public sealed class RecipientPersistenceMigrationTests
 
         var applied = await database.Runner.ApplyPendingAsync(cancellationToken);
         Assert.Contains("016_recipient_persistence_and_plain_submission_evidence.sql", applied);
-        Assert.True(await database.Runner.IsCurrentSchemaReadyAsync(cancellationToken));
+        // Migration 016 is internally complete, but the current binary also requires 017.
+        Assert.False(await database.Runner.IsCurrentSchemaReadyAsync(cancellationToken));
 
         AssertRecipient(await database.ReadRecipientAsync(noEvidence, cancellationToken), 0);
         AssertRecipient(await database.ReadRecipientAsync(accepted, cancellationToken), 3);
@@ -498,7 +499,7 @@ public sealed class RecipientPersistenceMigrationTests
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath};Pooling=False",
                 })
                 .Build();
             var factory = new SqliteConnectionFactory(configuration);
@@ -731,7 +732,6 @@ public sealed class RecipientPersistenceMigrationTests
 
         public ValueTask DisposeAsync()
         {
-            SqliteConnection.ClearAllPools();
             if (Directory.Exists(Root))
             {
                 Directory.Delete(Root, recursive: true);

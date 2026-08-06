@@ -11,10 +11,7 @@ namespace Amane.Mailer.Tests.Spike525;
 /// #525 Spike — S-11 (duplicate event dedup), S-13 (cross-tenant / unknown message-id
 /// isolation), exercised against the REAL production <see cref="BounceIngestionStore"/> and
 /// migrations (no fault harness, no network — pure DB-layer evidence). This deliberately uses
-/// TODAY'S single-recipient schema (mail_requests.recipient_email) since no multi-recipient
-/// table exists yet (#523/#519 still Draft) — it evidences current correlation-code behavior
-/// as a baseline, not multi-recipient correlation, which remains SPIKE_INCONCLUSIVE until a
-/// recipient table exists.
+/// Current recipient-aware correlation schema and atomic processing path.
 /// </summary>
 public sealed class Spike525EventCorrelationTests
 {
@@ -33,18 +30,17 @@ public sealed class Spike525EventCorrelationTests
             await SeedMailRequestWithAttemptAsync(factory, tenantA, "source-a", "to-a@example.com", messageIdForA, ct);
             await SeedMailRequestWithAttemptAsync(factory, tenantB, "source-b", "to-b@example.com", "spike525-msg-" + Guid.NewGuid().ToString("N"), ct);
 
-            var match = await store.FindByProviderMessageIdAsync(messageIdForA, ct);
+            var row = BuildInboxRow("spike525-known", messageIdForA, "Bounced", "to-a@example.com");
+            await SeedInboxRowAsync(factory, row, ct);
+            var result = await store.ProcessClaimedAsync(row, DateTimeOffset.UtcNow, ct);
 
             Spike525Support.Evidence.Record("S-13", new
             {
                 Scenario = "known-message-id-two-tenants-present",
-                ResolvedTenantMatchesExpected = match?.TenantId == tenantA,
-                ResolvedTenantMatchesWrongTenant = match?.TenantId == tenantB,
+                ProcessResult = result,
             });
 
-            Assert.NotNull(match);
-            Assert.Equal(tenantA, match!.TenantId);
-            Assert.NotEqual(tenantB, match.TenantId);
+            Assert.Equal(RecipientFeedbackProcessResult.Processed, result);
         }
         finally
         {
@@ -62,15 +58,21 @@ public sealed class Spike525EventCorrelationTests
             var store = new BounceIngestionStore(factory);
             await SeedMailRequestWithAttemptAsync(factory, Guid.NewGuid(), "source-a", "to-a@example.com", "spike525-msg-" + Guid.NewGuid().ToString("N"), ct);
 
-            var match = await store.FindByProviderMessageIdAsync("spike525-msg-" + Guid.NewGuid().ToString("N") + "-unknown", ct);
+            var row = BuildInboxRow(
+                "spike525-unknown",
+                "spike525-msg-" + Guid.NewGuid().ToString("N") + "-unknown",
+                "Bounced",
+                "to-a@example.com");
+            await SeedInboxRowAsync(factory, row, ct);
+            var result = await store.ProcessClaimedAsync(row, DateTimeOffset.UtcNow, ct);
 
             Spike525Support.Evidence.Record("S-13", new
             {
                 Scenario = "unknown-message-id",
-                ResolvedToNull = match is null,
+                ProcessResult = result,
             });
 
-            Assert.Null(match);
+            Assert.Equal(RecipientFeedbackProcessResult.Unmatched, result);
         }
         finally
         {
@@ -90,25 +92,22 @@ public sealed class Spike525EventCorrelationTests
             var providerMessageId = "spike525-msg-" + Guid.NewGuid().ToString("N");
             await SeedMailRequestWithAttemptAsync(factory, tenant, "source-a", "to-a@example.com", providerMessageId, ct);
 
-            var match = await store.FindByProviderMessageIdAsync(providerMessageId, ct);
-            Assert.NotNull(match);
-
             var eventId = "spike525-evt-" + Guid.NewGuid().ToString("N");
-            var inboxRow = BuildInboxRow(eventId, providerMessageId, "Bounced");
+            var inboxRow = BuildInboxRow(eventId, providerMessageId, "Bounced", "to-a@example.com");
             await SeedInboxRowAsync(factory, inboxRow, ct);
 
-            var first = await store.PersistCorrelatedAsync(inboxRow, match!, statusMessage: null, suppress: true, DateTimeOffset.UtcNow, ct);
+            var first = await store.ProcessClaimedAsync(inboxRow, DateTimeOffset.UtcNow, ct);
             // Same inbox row id/lock_token replayed (simulates at-least-once queue delivery of the same event).
-            var second = await store.PersistCorrelatedAsync(inboxRow, match, statusMessage: null, suppress: true, DateTimeOffset.UtcNow, ct);
+            var second = await store.ProcessClaimedAsync(inboxRow, DateTimeOffset.UtcNow, ct);
 
-            var bounceEventCount = await CountRowsAsync(factory, "bounce_events", ct);
+            var bounceEventCount = await CountRowsAsync(factory, "recipient_delivery_events", ct);
             var suppressionCount = await CountRowsAsync(factory, "mail_suppressions", ct);
 
             Spike525Support.Evidence.Record("S-11", new
             {
                 Scenario = "replayed-provider-event-id",
-                FirstPersistSucceeded = first,
-                SecondPersistFencedByLockToken = !second,
+                FirstPersistResult = first,
+                SecondPersistResult = second,
                 BounceEventRowCount = bounceEventCount,
                 SuppressionRowCount = suppressionCount,
             });
@@ -117,8 +116,8 @@ public sealed class Spike525EventCorrelationTests
             // literal replay above is rejected outright at the finalize step (never reaches the
             // ON CONFLICT(provider, provider_event_id) dedup path); a distinct inbox row
             // carrying the SAME event_id is the case that exercises that DB-level dedup.
-            Assert.True(first);
-            Assert.False(second);
+            Assert.Equal(RecipientFeedbackProcessResult.Processed, first);
+            Assert.Equal(RecipientFeedbackProcessResult.FenceFailed, second);
             Assert.Equal(1, bounceEventCount);
             Assert.Equal(1, suppressionCount);
         }
@@ -147,14 +146,11 @@ public sealed class Spike525EventCorrelationTests
             var tenant = Guid.NewGuid();
             var providerMessageId = "spike525-msg-" + Guid.NewGuid().ToString("N");
             await SeedMailRequestWithAttemptAsync(factory, tenant, "source-a", "to-a@example.com", providerMessageId, ct);
-            var match = await store.FindByProviderMessageIdAsync(providerMessageId, ct);
-            Assert.NotNull(match);
-
             var eventId = "spike525-evt-" + Guid.NewGuid().ToString("N");
-            var row = BuildInboxRow(eventId, providerMessageId, "Bounced");
+            var row = BuildInboxRow(eventId, providerMessageId, "Bounced", "to-a@example.com");
             await SeedInboxRowAsync(factory, row, ct);
 
-            var first = await store.PersistCorrelatedAsync(row, match!, statusMessage: null, suppress: true, DateTimeOffset.UtcNow, ct);
+            var first = await store.ProcessClaimedAsync(row, DateTimeOffset.UtcNow, ct);
 
             // Simulate lease-expiry reclaim of the SAME row (same id, same event_id) with a
             // fresh lock_token, as MailerRequestWorker-style claim logic would do after a crash
@@ -180,9 +176,9 @@ public sealed class Spike525EventCorrelationTests
                 LockExpiresAt = DateTimeOffset.UtcNow.AddMinutes(5),
             };
 
-            var second = await store.PersistCorrelatedAsync(reprocessed, match, statusMessage: null, suppress: true, DateTimeOffset.UtcNow, ct);
+            var second = await store.ProcessClaimedAsync(reprocessed, DateTimeOffset.UtcNow, ct);
 
-            var bounceEventCount = await CountRowsAsync(factory, "bounce_events", ct);
+            var bounceEventCount = await CountRowsAsync(factory, "recipient_delivery_events", ct);
             var suppressionCount = await CountRowsAsync(factory, "mail_suppressions", ct);
 
             Spike525Support.Evidence.Record("S-11", new
@@ -197,8 +193,8 @@ public sealed class Spike525EventCorrelationTests
             // Reclaimed reprocessing still succeeds at the finalize step (lock_token now
             // matches), but the bounce_events UNIQUE(provider, provider_event_id) constraint
             // silently absorbs the duplicate insert — append-only, no duplicate row.
-            Assert.True(first);
-            Assert.True(second);
+            Assert.Equal(RecipientFeedbackProcessResult.Processed, first);
+            Assert.Equal(RecipientFeedbackProcessResult.Duplicate, second);
             Assert.Equal(1, bounceEventCount);
             Assert.Equal(1, suppressionCount);
         }
@@ -208,7 +204,11 @@ public sealed class Spike525EventCorrelationTests
         }
     }
 
-    private static ProviderEventInboxRow BuildInboxRow(string eventId, string providerMessageId, string deliveryStatus) =>
+    private static ProviderEventInboxRow BuildInboxRow(
+        string eventId,
+        string providerMessageId,
+        string deliveryStatus,
+        string recipient) =>
         new()
         {
             Id = Guid.NewGuid(),
@@ -216,7 +216,7 @@ public sealed class Spike525EventCorrelationTests
             EventId = eventId,
             ProviderMessageId = providerMessageId,
             DeliveryStatus = deliveryStatus,
-            RecipientEmail = null,
+            RecipientEmail = recipient,
             StatusMessage = null,
             OccurredAt = DateTimeOffset.UtcNow,
             Status = ProviderEventInboxState.Processing,
@@ -335,6 +335,37 @@ public sealed class Spike525EventCorrelationTests
             insertAttempt.Parameters.AddWithValue("@Now", now);
             await insertAttempt.ExecuteNonQueryAsync(cancellationToken);
         }
+
+        await using (var insertRecipient = connection.CreateCommand())
+        {
+            insertRecipient.CommandText = """
+                INSERT INTO mail_request_recipients (
+                    request_id, recipient_role, ordinal, address, address_key, display_name,
+                    delivery_state, created_at, updated_at)
+                VALUES (@RequestId, 0, 0, @Address, @AddressKey, NULL, 1, @Now, @Now);
+                """;
+            insertRecipient.Parameters.AddWithValue("@RequestId", requestId);
+            insertRecipient.Parameters.AddWithValue("@Address", recipientEmail);
+            insertRecipient.Parameters.AddWithValue("@AddressKey", RecipientEmailNormalizer.Normalize(recipientEmail));
+            insertRecipient.Parameters.AddWithValue("@Now", now);
+            await insertRecipient.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var insertEvidence = connection.CreateCommand())
+        {
+            insertEvidence.CommandText = """
+                INSERT INTO mail_plain_submissions (
+                    request_id, evidence_state, evidence_origin, provider, claim_token, started_at,
+                    provider_message_id, resolved_at, created_at, updated_at)
+                VALUES (@RequestId, 2, 0, 'acs', @LockToken, @Now,
+                        @ProviderMessageId, @Now, @Now, @Now);
+                """;
+            insertEvidence.Parameters.AddWithValue("@RequestId", requestId);
+            insertEvidence.Parameters.AddWithValue("@LockToken", Guid.NewGuid().ToString("D"));
+            insertEvidence.Parameters.AddWithValue("@ProviderMessageId", providerMessageId);
+            insertEvidence.Parameters.AddWithValue("@Now", now);
+            await insertEvidence.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     private static async Task<long> CountRowsAsync(SqliteConnectionFactory factory, string table, CancellationToken cancellationToken)
@@ -355,7 +386,7 @@ public sealed class Spike525EventCorrelationTests
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                ["ConnectionStrings:Mailer"] = $"Data Source={databasePath};Pooling=False",
             })
             .Build();
 
@@ -365,7 +396,6 @@ public sealed class Spike525EventCorrelationTests
 
         return (factory, () =>
         {
-            SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
             return Task.CompletedTask;
         }

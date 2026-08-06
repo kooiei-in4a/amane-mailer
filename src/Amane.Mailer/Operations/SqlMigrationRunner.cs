@@ -16,6 +16,7 @@ public sealed class SqlMigrationRunner
         new Dictionary<string, MigrationTransactionStep>(StringComparer.Ordinal)
         {
             [RecipientPersistenceMigration.MigrationVersion] = RecipientPersistenceMigration.Step,
+            [RecipientDeliveryEventMigration.MigrationVersion] = RecipientDeliveryEventMigration.Step,
         };
 
     private readonly SqliteConnectionFactory _connections;
@@ -424,10 +425,11 @@ public sealed class SqlMigrationRunner
                     'mail_attachment_submissions',
                     'mailer_maintenance_leases',
                     'mail_request_recipients',
-                    'mail_plain_submissions');
+                    'mail_plain_submissions',
+                    'recipient_delivery_events');
                 """;
             var tableCount = await tables.ExecuteScalarAsync(cancellationToken);
-            if (tableCount is not long count || count != 10L)
+            if (tableCount is not long count || count != 11L)
             {
                 return false;
             }
@@ -453,7 +455,28 @@ public sealed class SqlMigrationRunner
             }
         }
 
-        return hasScheduledAt && hasAttachmentCount;
+        if (!hasScheduledAt || !hasAttachmentCount)
+        {
+            return false;
+        }
+
+        await using var recipientColumns = connection.CreateCommand();
+        recipientColumns.CommandText = "PRAGMA table_info(mail_request_recipients);";
+        var requiredRecipientColumns = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "last_feedback_occurred_at",
+            "last_feedback_provider",
+            "last_feedback_event_id",
+        };
+        await using (var reader = await recipientColumns.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                requiredRecipientColumns.Remove(reader.GetString(1));
+            }
+        }
+
+        return requiredRecipientColumns.Count == 0;
     }
 
     private static async Task<bool> HasChecksumColumnAsync(
