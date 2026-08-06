@@ -301,16 +301,13 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
       github.base_ref == 'main'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') && '{"include":[{"platform":"linux/amd64","tag_suffix":"linux-amd64"},{"platform":"linux/arm64","tag_suffix":"linux-arm64"}]}' || '{"include":[{"platform":"linux/amd64","tag_suffix":"linux-amd64"}]}') }}
+      matrix: ${{ fromJSON((github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main') && '{"include":[{"platform":"linux/amd64","runner":"ubuntu-24.04","tag_suffix":"linux-amd64"},{"platform":"linux/arm64","runner":"ubuntu-24.04-arm","tag_suffix":"linux-arm64"}]}' || '{"include":[{"platform":"linux/amd64","runner":"ubuntu-24.04","tag_suffix":"linux-amd64"}]}') }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
