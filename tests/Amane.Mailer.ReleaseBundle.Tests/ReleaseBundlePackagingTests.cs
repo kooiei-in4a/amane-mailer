@@ -407,6 +407,53 @@ public sealed class ReleaseBundlePackagingTests
                 metadata).Success);
     }
 
+    [Theory]
+    [InlineData("amd64", "arm64")]
+    [InlineData("arm64", "amd64")]
+    public void ValidateOciLayoutDirectory_rejects_missing_descriptor_platform_when_config_differs(
+        string requiredArchitecture,
+        string configArchitecture)
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "single-config-mismatch-" + requiredArchitecture);
+        _ = CreateSinglePlatformOciLayout(oci, requiredArchitecture);
+        var digest = RewriteSinglePlatformConfigAndDescriptor(
+            oci,
+            configArchitecture,
+            descriptorArchitecture: null);
+
+        var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(
+            oci,
+            digest,
+            ["linux/" + requiredArchitecture],
+            allowSinglePlatformImageManifest: true);
+        Assert.False(result.Success);
+        Assert.Equal("oci_config_platform_mismatch", result.ReasonCode);
+    }
+
+    [Theory]
+    [InlineData("amd64", "arm64")]
+    [InlineData("arm64", "amd64")]
+    public void ValidateOciLayoutDirectory_rejects_descriptor_platform_when_config_differs(
+        string requiredArchitecture,
+        string descriptorArchitecture)
+    {
+        using var scratch = new TempDir();
+        var oci = Path.Combine(scratch.Path, "single-descriptor-mismatch-" + requiredArchitecture);
+        _ = CreateSinglePlatformOciLayout(oci, requiredArchitecture);
+        var digest = RewriteSinglePlatformConfigAndDescriptor(
+            oci,
+            requiredArchitecture,
+            descriptorArchitecture);
+        var result = ReleaseBundlePackaging.ValidateOciLayoutDirectory(
+            oci,
+            digest,
+            ["linux/" + descriptorArchitecture],
+            allowSinglePlatformImageManifest: true);
+        Assert.False(result.Success);
+        Assert.Equal("oci_config_platform_mismatch", result.ReasonCode);
+    }
+
     [Fact]
     public void AssembleOciLayouts_writes_final_identity_metadata_and_deterministic_platform_order()
     {
@@ -450,6 +497,19 @@ public sealed class ReleaseBundlePackagingTests
         Assert.Equal(finalDigest, root.Manifests![0].Digest);
         Assert.Equal("amd64", finalIndex.Manifests![0].Platform!.Architecture);
         Assert.Equal("arm64", finalIndex.Manifests[1].Platform!.Architecture);
+        foreach (var descriptor in finalIndex.Manifests)
+        {
+            var manifest = JsonSerializer.Deserialize(
+                File.ReadAllBytes(
+                    Path.Combine(output, "oci", "blobs", "sha256", descriptor.Digest!["sha256:".Length..])),
+                ReleaseBundleJsonContext.Default.OciManifestDocument)!;
+            var config = JsonSerializer.Deserialize(
+                File.ReadAllBytes(
+                    Path.Combine(output, "oci", "blobs", "sha256", manifest.Config!.Digest!["sha256:".Length..])),
+                ReleaseBundleJsonContext.Default.OciConfigDocument)!;
+            Assert.Equal(descriptor.Platform!.Os, config.Os);
+            Assert.Equal(descriptor.Platform.Architecture, config.Architecture);
+        }
 
         var identity = JsonSerializer.Deserialize(
             File.ReadAllBytes(Path.Combine(output, "image-identity.json")),
@@ -1315,6 +1375,90 @@ public sealed class ReleaseBundlePackagingTests
             metadataPath,
             JsonSerializer.Serialize(metadata, ReleaseBundleJsonContext.Default.BuildxMetadataDocument) + "\n");
         return metadataPath;
+    }
+
+    private static string RewriteSinglePlatformConfigAndDescriptor(
+        string directory,
+        string configArchitecture,
+        string? descriptorArchitecture)
+    {
+        var rootPath = Path.Combine(directory, "index.json");
+        var root = JsonSerializer.Deserialize(
+            File.ReadAllBytes(rootPath),
+            ReleaseBundleJsonContext.Default.OciIndexDocument)!;
+        var rootDescriptor = root.Manifests!.Single();
+        var manifestPath = Path.Combine(
+            directory,
+            "blobs",
+            "sha256",
+            rootDescriptor.Digest!["sha256:".Length..]);
+        var manifest = JsonSerializer.Deserialize(
+            File.ReadAllBytes(manifestPath),
+            ReleaseBundleJsonContext.Default.OciManifestDocument)!;
+        var oldConfigPath = Path.Combine(
+            directory,
+            "blobs",
+            "sha256",
+            manifest.Config!.Digest!["sha256:".Length..]);
+        var configJson =
+            "{\"architecture\":\"" + configArchitecture + "\",\"os\":\"linux\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[]}}\n";
+        var configBytes = Encoding.UTF8.GetBytes(configJson);
+        var configDigest =
+            "sha256:" + Convert.ToHexString(SHA256.HashData(configBytes)).ToLowerInvariant();
+        var newConfigPath = Path.Combine(directory, "blobs", "sha256", configDigest["sha256:".Length..]);
+        File.WriteAllBytes(newConfigPath, configBytes);
+        if (!string.Equals(oldConfigPath, newConfigPath, StringComparison.OrdinalIgnoreCase))
+        {
+            File.Delete(oldConfigPath);
+        }
+
+        var updatedManifest = new OciManifestDocument
+        {
+            SchemaVersion = manifest.SchemaVersion,
+            MediaType = manifest.MediaType,
+            Config = new OciDescriptor
+            {
+                MediaType = manifest.Config.MediaType,
+                Digest = configDigest,
+                Size = configBytes.LongLength,
+            },
+            Layers = manifest.Layers,
+        };
+        var manifestBytes = JsonSerializer.SerializeToUtf8Bytes(
+            updatedManifest,
+            ReleaseBundleJsonContext.Default.OciManifestDocument);
+        var manifestDigest =
+            "sha256:" + Convert.ToHexString(SHA256.HashData(manifestBytes)).ToLowerInvariant();
+        var newManifestPath = Path.Combine(directory, "blobs", "sha256", manifestDigest["sha256:".Length..]);
+        File.WriteAllBytes(newManifestPath, manifestBytes);
+        if (!string.Equals(manifestPath, newManifestPath, StringComparison.OrdinalIgnoreCase))
+        {
+            File.Delete(manifestPath);
+        }
+
+        var updatedRoot = new OciIndexDocument
+        {
+            SchemaVersion = root.SchemaVersion,
+            MediaType = root.MediaType,
+            Manifests =
+            [
+                new OciDescriptor
+                {
+                    MediaType = rootDescriptor.MediaType,
+                    Digest = manifestDigest,
+                    Size = manifestBytes.LongLength,
+                    Platform = descriptorArchitecture is null
+                        ? null
+                        : new OciPlatform { Os = "linux", Architecture = descriptorArchitecture },
+                },
+            ],
+        };
+        File.WriteAllBytes(
+            rootPath,
+            JsonSerializer.SerializeToUtf8Bytes(
+                updatedRoot,
+                ReleaseBundleJsonContext.Default.OciIndexDocument));
+        return manifestDigest;
     }
 
     private static string CreateMinimalOciLayout(

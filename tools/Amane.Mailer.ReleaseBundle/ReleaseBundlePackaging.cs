@@ -1751,6 +1751,13 @@ public static partial class ReleaseBundlePackaging
                     platformIdentity = os + "/" + arch;
                 }
 
+                if (platformIdentity is null)
+                {
+                    return PackagingFail(
+                        "oci_platform_missing",
+                        "Image-manifest descriptors must declare a complete os/architecture platform.");
+                }
+
                 var recorded = platformOccurrences.RecordIndexPlatformManifest(
                     digest,
                     platformIdentity);
@@ -1841,6 +1848,15 @@ public static partial class ReleaseBundlePackaging
                     return configWalk;
                 }
 
+                var configPlatform = ValidateOciConfigPlatform(
+                    rootFull,
+                    manifest.Config,
+                    descriptor.Platform!);
+                if (!configPlatform.Success)
+                {
+                    return configPlatform;
+                }
+
                 if (manifest.Layers is { Length: > 0 })
                 {
                     var layerWalk = WalkOciDescriptors(
@@ -1868,6 +1884,54 @@ public static partial class ReleaseBundlePackaging
     {
         var hex = digest["sha256:".Length..].ToLowerInvariant();
         return Path.Combine(rootFull, "blobs", "sha256", hex);
+    }
+
+    private static PackagingValidationResult ValidateOciConfigPlatform(
+        string rootFull,
+        OciDescriptor configDescriptor,
+        OciPlatform expectedPlatform)
+    {
+        if (string.IsNullOrWhiteSpace(expectedPlatform.Os)
+            || string.IsNullOrWhiteSpace(expectedPlatform.Architecture))
+        {
+            return PackagingFail(
+                "oci_platform_missing",
+                "Image-manifest descriptors must declare a complete os/architecture platform.");
+        }
+
+        var configPath = BlobPath(rootFull, configDescriptor.Digest!);
+        OciConfigDocument? config;
+        try
+        {
+            config = JsonSerializer.Deserialize(
+                File.ReadAllBytes(configPath),
+                ReleaseBundleJsonContext.Default.OciConfigDocument);
+        }
+        catch
+        {
+            return PackagingFail(
+                "oci_config_unreadable",
+                "OCI config blob could not be parsed as JSON.");
+        }
+
+        if (config is null
+            || string.IsNullOrWhiteSpace(config.Os)
+            || string.IsNullOrWhiteSpace(config.Architecture))
+        {
+            return PackagingFail(
+                "oci_config_platform_missing",
+                "OCI config must declare non-empty os and architecture fields.");
+        }
+
+        if (!string.Equals(config.Os, expectedPlatform.Os, StringComparison.Ordinal)
+            || !string.Equals(config.Architecture, expectedPlatform.Architecture, StringComparison.Ordinal))
+        {
+            return PackagingFail(
+                "oci_config_platform_mismatch",
+                "OCI config os/architecture must match its image-manifest platform descriptor.");
+        }
+
+        return new PackagingValidationResult { Success = true };
     }
 
     public static PackagingValidationResult ScanStagedTreeForSecrets(string stagedRoot)

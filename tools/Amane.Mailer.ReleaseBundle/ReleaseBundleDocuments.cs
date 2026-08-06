@@ -246,6 +246,15 @@ public sealed class OciManifestDocument
     public OciDescriptor[]? Manifests { get; init; }
 }
 
+public sealed class OciConfigDocument
+{
+    [JsonPropertyName("architecture")]
+    public string? Architecture { get; init; }
+
+    [JsonPropertyName("os")]
+    public string? Os { get; init; }
+}
+
 public sealed class OciDescriptor
 {
     [JsonPropertyName("mediaType")]
