@@ -114,6 +114,59 @@ class ClientTests(unittest.TestCase):
             "22cee63ba2c526ce67078a838d1b9277f2ce089237dcc36ee28c6b4c086d06ac",
         )
 
+    def test_builder_preserves_multiple_recipient_order_and_limits(self) -> None:
+        request = (
+            MailRequestBuilder()
+            .tenant_id("00000000-0000-0000-0000-000000000101")
+            .source_service("example-service")
+            .mail_request_id("00000000-0000-0000-0000-000000000201")
+            .purpose("FormResponseNotification")
+            .to(email="to1@example.com")
+            .add_to(email="to2@example.com", display_name="To Two")
+            .cc(email="cc1@example.com")
+            .bcc(email="bcc1@example.com")
+            .add_bcc(email="bcc2@example.com")
+            .subject("All roles")
+            .text_body("All roles body.")
+            .build()
+        )
+
+        self.assertEqual(
+            request["to"],
+            [
+                {"email": "to1@example.com"},
+                {"email": "to2@example.com", "display_name": "To Two"},
+            ],
+        )
+        self.assertEqual(request["cc"], [{"email": "cc1@example.com"}])
+        self.assertEqual(
+            request["bcc"],
+            [{"email": "bcc1@example.com"}, {"email": "bcc2@example.com"}],
+        )
+        self.assertEqual(
+            request["payload_hash"],
+            "af1229397d1ac908b2cfb6d9267f6e03ba34927d22bd4efe97a1942123453da0",
+        )
+
+        maximum = (
+            MailRequestBuilder()
+            .tenant_id("00000000-0000-0000-0000-000000000101")
+            .source_service("example-service")
+            .mail_request_id("00000000-0000-0000-0000-000000000201")
+            .purpose("FormResponseNotification")
+            .to(email="to0@example.com")
+            .cc(email="cc0@example.com")
+            .subject("Maximum recipients")
+            .text_body("Maximum recipients body.")
+        )
+        for index in range(1, 10):
+            maximum.add_to(email=f"to{index}@example.com")
+            maximum.add_cc(email=f"cc{index}@example.com")
+        maximum_request = maximum.build()
+        self.assertEqual(len(maximum_request["to"]), 10)
+        self.assertEqual(len(maximum_request["cc"]), 10)
+        self.assertEqual(len(maximum_request["to"]) + len(maximum_request["cc"]), 20)
+
     def test_builder_omits_scheduled_at_when_unset(self) -> None:
         request = build_sample_request()
         self.assertNotIn("scheduled_at", request)

@@ -64,6 +64,51 @@ test('MailRequestBuilder supports cc and bcc without to', () => {
   assert.equal(request.payload_hash, '22cee63ba2c526ce67078a838d1b9277f2ce089237dcc36ee28c6b4c086d06ac');
 });
 
+test('MailRequestBuilder preserves multiple recipient order and limits', () => {
+  const request = MailRequestBuilder.create()
+    .tenantId('00000000-0000-0000-0000-000000000101')
+    .sourceService('example-service')
+    .mailRequestId('00000000-0000-0000-0000-000000000201')
+    .purpose('FormResponseNotification')
+    .to({ email: 'to1@example.com' })
+    .addTo({ email: 'to2@example.com', display_name: 'To Two' })
+    .cc({ email: 'cc1@example.com' })
+    .bcc({ email: 'bcc1@example.com' })
+    .addBcc({ email: 'bcc2@example.com' })
+    .subject('All roles')
+    .textBody('All roles body.')
+    .build();
+
+  assert.deepEqual(request.to, [
+    { email: 'to1@example.com' },
+    { email: 'to2@example.com', display_name: 'To Two' },
+  ]);
+  assert.deepEqual(request.cc, [{ email: 'cc1@example.com' }]);
+  assert.deepEqual(request.bcc, [
+    { email: 'bcc1@example.com' },
+    { email: 'bcc2@example.com' },
+  ]);
+  assert.equal(request.payload_hash, 'af1229397d1ac908b2cfb6d9267f6e03ba34927d22bd4efe97a1942123453da0');
+
+  const maximum = MailRequestBuilder.create()
+    .tenantId('00000000-0000-0000-0000-000000000101')
+    .sourceService('example-service')
+    .mailRequestId('00000000-0000-0000-0000-000000000201')
+    .purpose('FormResponseNotification')
+    .to({ email: 'to0@example.com' })
+    .cc({ email: 'cc0@example.com' })
+    .subject('Maximum recipients')
+    .textBody('Maximum recipients body.');
+  for (let index = 1; index < 10; index += 1) {
+    maximum.addTo({ email: `to${index}@example.com` });
+    maximum.addCc({ email: `cc${index}@example.com` });
+  }
+  const maximumRequest = maximum.build();
+  assert.equal(maximumRequest.to.length, 10);
+  assert.equal(maximumRequest.cc.length, 10);
+  assert.equal(maximumRequest.to.length + maximumRequest.cc.length, 20);
+});
+
 test('MailRequestBuilder omits scheduled_at when unset', () => {
   const request = buildSampleRequest();
   assert.equal(Object.hasOwn(request, 'scheduled_at'), false);

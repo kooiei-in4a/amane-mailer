@@ -46,6 +46,9 @@ class MailRequestBuilder:
         self._explicit_nulls.discard("to")
         return self
 
+    def add_to(self, *, email: str, display_name: str | None = None) -> MailRequestBuilder:
+        return self._add_recipient("to", email=email, display_name=display_name)
+
     def cc(self, *, email: str | None, display_name: str | None = None) -> MailRequestBuilder:
         if email is None:
             self._fields["cc"] = None
@@ -58,6 +61,9 @@ class MailRequestBuilder:
         self._explicit_nulls.discard("cc")
         return self
 
+    def add_cc(self, *, email: str, display_name: str | None = None) -> MailRequestBuilder:
+        return self._add_recipient("cc", email=email, display_name=display_name)
+
     def bcc(self, *, email: str | None, display_name: str | None = None) -> MailRequestBuilder:
         if email is None:
             self._fields["bcc"] = None
@@ -68,6 +74,27 @@ class MailRequestBuilder:
             recipient["display_name"] = display_name
         self._fields["bcc"] = [recipient]
         self._explicit_nulls.discard("bcc")
+        return self
+
+    def add_bcc(self, *, email: str, display_name: str | None = None) -> MailRequestBuilder:
+        return self._add_recipient("bcc", email=email, display_name=display_name)
+
+    def _add_recipient(
+        self,
+        field_name: str,
+        *,
+        email: str,
+        display_name: str | None,
+    ) -> MailRequestBuilder:
+        recipient: dict[str, Any] = {"email": email}
+        if display_name is not None:
+            recipient["display_name"] = display_name
+        role = self._fields.get(field_name)
+        if not isinstance(role, list):
+            role = []
+            self._fields[field_name] = role
+        role.append(recipient)
+        self._explicit_nulls.discard(field_name)
         return self
 
     def subject(self, value: str) -> MailRequestBuilder:

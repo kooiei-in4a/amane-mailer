@@ -10,6 +10,13 @@ function cloneRecipient(recipient) {
   return result;
 }
 
+function appendRecipient(fields, fieldName, recipient) {
+  if (!Array.isArray(fields[fieldName])) {
+    fields[fieldName] = [];
+  }
+  fields[fieldName].push(cloneRecipient(recipient));
+}
+
 export class MailRequestBuilder {
   static create() {
     return new MailRequestBuilder();
@@ -58,6 +65,12 @@ export class MailRequestBuilder {
     return this;
   }
 
+  addTo(recipient) {
+    appendRecipient(this.#fields, 'to', recipient);
+    this.#explicitNulls.delete('to');
+    return this;
+  }
+
   cc(recipient) {
     if (recipient === null) {
       this.#fields.cc = null;
@@ -69,6 +82,12 @@ export class MailRequestBuilder {
     return this;
   }
 
+  addCc(recipient) {
+    appendRecipient(this.#fields, 'cc', recipient);
+    this.#explicitNulls.delete('cc');
+    return this;
+  }
+
   bcc(recipient) {
     if (recipient === null) {
       this.#fields.bcc = null;
@@ -76,6 +95,12 @@ export class MailRequestBuilder {
       return this;
     }
     this.#fields.bcc = [cloneRecipient(recipient)];
+    this.#explicitNulls.delete('bcc');
+    return this;
+  }
+
+  addBcc(recipient) {
+    appendRecipient(this.#fields, 'bcc', recipient);
     this.#explicitNulls.delete('bcc');
     return this;
   }
