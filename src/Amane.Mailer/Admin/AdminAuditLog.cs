@@ -29,6 +29,7 @@ public static class AdminAuditLog
         /// <summary>ADR 0022 D-13 PII reveal action for an attachment's raw filename. Never
         /// carries the raw filename itself -- only actor/request-identity/attachment index.</summary>
         public const string AttachmentFilenameRevealed = "mail_request.attachment_filename_reveal";
+        public const string BccRecipientRevealed = "mail_request.bcc_recipient_reveal";
         public const string ManualRetryRequested = "mail_request.manual_retry_requested";
         public const string ManualCancelRequested = "mail_request.manual_cancel_requested";
         public const string LoginSucceeded = "auth.login_succeeded";
@@ -51,6 +52,7 @@ public static class AdminAuditLog
             MailRequestBodyViewed,
             BreakGlassMailRequestBodyViewed,
             AttachmentFilenameRevealed,
+            BccRecipientRevealed,
             ManualRetryRequested,
             ManualCancelRequested,
             LoginSucceeded,

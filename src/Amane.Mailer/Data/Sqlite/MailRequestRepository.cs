@@ -288,6 +288,19 @@ public class MailRequestRepository
         CancellationToken cancellationToken = default) =>
         _recipientStore.ListByRequestIdAsync(requestId, cancellationToken);
 
+    public Task<MailRequestRecipientRow?> FindBccRecipientForRevealAsync(
+        Guid requestId,
+        Guid tenantId,
+        string sourceService,
+        int ordinal,
+        CancellationToken cancellationToken = default) =>
+        _recipientStore.FindBccForRevealAsync(
+            requestId,
+            tenantId,
+            sourceService,
+            ordinal,
+            cancellationToken);
+
     public Task<AttachmentSuppressionPrecheckResult> TryApplyAttachmentSuppressionPrecheckAsync(
         Guid requestId,
         Guid tenantId,

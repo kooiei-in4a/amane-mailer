@@ -124,6 +124,50 @@ public sealed class MailRequestRecipientStore(
         return await ListWithinConnectionAsync(connection, requestId, cancellationToken);
     }
 
+    /// <summary>
+    /// Exact, tenant/source-scoped BCC lookup for the dedicated reveal endpoint. Callers must
+    /// perform authentication, session, and capability checks before invoking this method.
+    /// </summary>
+    public async Task<MailRequestRecipientRow?> FindBccForRevealAsync(
+        Guid requestId,
+        Guid tenantId,
+        string sourceService,
+        int ordinal,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT rr.recipient_role, rr.ordinal, rr.address, rr.address_key,
+                   rr.display_name, rr.delivery_state
+            FROM mail_request_recipients rr
+            INNER JOIN mail_requests mr ON mr.id = rr.request_id
+            WHERE mr.id = @RequestId
+              AND mr.tenant_id = @TenantId
+              AND mr.source_service = @SourceService
+              AND rr.recipient_role = @BccRole
+              AND rr.ordinal = @Ordinal
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+        command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+        command.Parameters.AddWithValue("@SourceService", sourceService);
+        command.Parameters.AddWithValue("@BccRole", (int)MailRecipientRole.Bcc);
+        command.Parameters.AddWithValue("@Ordinal", ordinal);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+            return null;
+
+        return new MailRequestRecipientRow(
+            (MailRecipientRole)reader.GetInt32(0),
+            reader.GetInt32(1),
+            reader.GetString(2),
+            reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            (MailRecipientDeliveryState)reader.GetInt32(5));
+    }
+
     internal static async Task<IReadOnlyList<MailRequestRecipientRow>> ListWithinConnectionAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
         Guid requestId,

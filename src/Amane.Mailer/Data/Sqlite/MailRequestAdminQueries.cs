@@ -1,4 +1,5 @@
 using Amane.Mailer.Admin;
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite.Models;
 using Microsoft.Data.Sqlite;
 using System.Text;
@@ -46,6 +47,8 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
                 .ToList();
         }
 
+        rows = await AttachRecipientSummariesAsync(connection, rows, cancellationToken);
+
         string? nextCursor = null;
         if (rows.Count > pageSize)
         {
@@ -87,7 +90,7 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
         command.CommandText = $$"""
             SELECT
                 id, tenant_id, source_service, mail_request_id,
-                recipient_email, subject, last_error_message,
+                subject, last_error_message,
                 attempt_count, max_attempts, completed_at
             FROM mail_requests
             {{where}}
@@ -104,13 +107,15 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
                 Guid.Parse(reader.GetString(1)),
                 reader.GetString(2),
                 Guid.Parse(reader.GetString(3)),
+                string.Empty,
                 reader.GetString(4),
-                reader.GetString(5),
-                reader.IsDBNull(6) ? null : reader.GetString(6),
+                reader.IsDBNull(5) ? null : reader.GetString(5),
+                reader.GetInt32(6),
                 reader.GetInt32(7),
-                reader.GetInt32(8),
-                SqliteTime.FromStorage(reader.GetString(9))));
+                SqliteTime.FromStorage(reader.GetString(8))));
         }
+
+        rows = await AttachDeadLetterRecipientSummariesAsync(connection, rows, cancellationToken);
 
         string? nextCursor = null;
         if (rows.Count > pageSize)
@@ -156,7 +161,7 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
             SELECT
                 id, tenant_id, source_service, mail_request_id, purpose,
                 payload_json, payload_hash, subject, html_body, text_body, reply_to,
-                recipient_email, recipient_display_name, metadata_json,
+                metadata_json,
                 status, attempt_count, max_attempts, attachment_count,
                 next_attempt_at, lock_token, lock_expires_at,
                 delivered_at, failed_at, delivery_unknown_at, last_error_message,
@@ -171,7 +176,7 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
         if (!await reader.ReadAsync(cancellationToken))
             return null;
 
-        return new AdminMailRequestDetail(
+        var detail = new AdminMailRequestDetail(
             Id: Guid.Parse(reader.GetString(0)),
             TenantId: Guid.Parse(reader.GetString(1)),
             SourceService: reader.GetString(2),
@@ -183,24 +188,29 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
             HtmlBody: reader.IsDBNull(8) ? null : reader.GetString(8),
             TextBody: reader.IsDBNull(9) ? null : reader.GetString(9),
             ReplyTo: reader.IsDBNull(10) ? null : reader.GetString(10),
-            RecipientEmail: reader.GetString(11),
-            RecipientDisplayName: reader.IsDBNull(12) ? null : reader.GetString(12),
-            MetadataJson: reader.IsDBNull(13) ? null : reader.GetString(13),
-            Status: (MailRequestState)reader.GetInt32(14),
-            AttemptCount: reader.GetInt32(15),
-            MaxAttempts: reader.GetInt32(16),
-            AttachmentCount: reader.GetInt32(17),
-            NextAttemptAt: reader.IsDBNull(18) ? null : SqliteTime.FromStorage(reader.GetString(18)),
-            LockToken: reader.IsDBNull(19) ? null : reader.GetString(19),
-            LockExpiresAt: reader.IsDBNull(20) ? null : SqliteTime.FromStorage(reader.GetString(20)),
-            DeliveredAt: reader.IsDBNull(21) ? null : SqliteTime.FromStorage(reader.GetString(21)),
-            FailedAt: reader.IsDBNull(22) ? null : SqliteTime.FromStorage(reader.GetString(22)),
-            DeliveryUnknownAt: reader.IsDBNull(23) ? null : SqliteTime.FromStorage(reader.GetString(23)),
-            LastErrorMessage: reader.IsDBNull(24) ? null : reader.GetString(24),
-            AcceptedAt: SqliteTime.FromStorage(reader.GetString(25)),
-            CreatedAt: SqliteTime.FromStorage(reader.GetString(26)),
-            UpdatedAt: SqliteTime.FromStorage(reader.GetString(27)),
-            CompletedAt: reader.IsDBNull(28) ? null : SqliteTime.FromStorage(reader.GetString(28)));
+            RecipientEmail: string.Empty,
+            RecipientDisplayName: null,
+            MetadataJson: reader.IsDBNull(11) ? null : reader.GetString(11),
+            Status: (MailRequestState)reader.GetInt32(12),
+            AttemptCount: reader.GetInt32(13),
+            MaxAttempts: reader.GetInt32(14),
+            AttachmentCount: reader.GetInt32(15),
+            NextAttemptAt: reader.IsDBNull(16) ? null : SqliteTime.FromStorage(reader.GetString(16)),
+            LockToken: reader.IsDBNull(17) ? null : reader.GetString(17),
+            LockExpiresAt: reader.IsDBNull(18) ? null : SqliteTime.FromStorage(reader.GetString(18)),
+            DeliveredAt: reader.IsDBNull(19) ? null : SqliteTime.FromStorage(reader.GetString(19)),
+            FailedAt: reader.IsDBNull(20) ? null : SqliteTime.FromStorage(reader.GetString(20)),
+            DeliveryUnknownAt: reader.IsDBNull(21) ? null : SqliteTime.FromStorage(reader.GetString(21)),
+            LastErrorMessage: reader.IsDBNull(22) ? null : reader.GetString(22),
+            AcceptedAt: SqliteTime.FromStorage(reader.GetString(23)),
+            CreatedAt: SqliteTime.FromStorage(reader.GetString(24)),
+            UpdatedAt: SqliteTime.FromStorage(reader.GetString(25)),
+            CompletedAt: reader.IsDBNull(26) ? null : SqliteTime.FromStorage(reader.GetString(26)));
+
+        return detail with
+        {
+            Recipients = await LoadRecipientSummariesAsync(connection, detail.Id, cancellationToken),
+        };
     }
 
     public async Task<IReadOnlyList<AdminMailAttemptRow>> ListAttemptsForAdminAsync(
@@ -281,7 +291,7 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
         command.CommandText = $$"""
             SELECT
                 id, tenant_id, source_service, mail_request_id,
-                recipient_email, subject, status, attempt_count, max_attempts,
+                subject, status, attempt_count, max_attempts,
                 updated_at
             FROM mail_requests
             {{where}}
@@ -299,14 +309,115 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
                 Guid.Parse(reader.GetString(1)),
                 reader.GetString(2),
                 Guid.Parse(reader.GetString(3)),
+                string.Empty,
                 reader.GetString(4),
-                reader.GetString(5),
-                (MailRequestState)reader.GetInt32(6),
+                (MailRequestState)reader.GetInt32(5),
+                reader.GetInt32(6),
                 reader.GetInt32(7),
-                reader.GetInt32(8),
-                SqliteTime.FromStorage(reader.GetString(9))));
+                SqliteTime.FromStorage(reader.GetString(8))));
         }
 
         return rows;
+    }
+
+    private static async Task<List<AdminMailRequestListRow>> AttachRecipientSummariesAsync(
+        SqliteConnection connection,
+        IReadOnlyList<AdminMailRequestListRow> rows,
+        CancellationToken cancellationToken)
+    {
+        if (rows.Count == 0)
+            return rows.ToList();
+
+        var summaries = await LoadRecipientSummariesAsync(
+            connection,
+            rows.Select(row => row.Id),
+            cancellationToken);
+        return rows
+            .Select(row => row with
+            {
+                Recipients = summaries.TryGetValue(row.Id, out var value) ? value : [],
+            })
+            .ToList();
+    }
+
+    private static async Task<List<AdminDeadLetterListRow>> AttachDeadLetterRecipientSummariesAsync(
+        SqliteConnection connection,
+        IReadOnlyList<AdminDeadLetterListRow> rows,
+        CancellationToken cancellationToken)
+    {
+        if (rows.Count == 0)
+            return rows.ToList();
+
+        var summaries = await LoadRecipientSummariesAsync(
+            connection,
+            rows.Select(row => row.Id),
+            cancellationToken);
+        return rows
+            .Select(row => row with
+            {
+                Recipients = summaries.TryGetValue(row.Id, out var value) ? value : [],
+            })
+            .ToList();
+    }
+
+    private static async Task<IReadOnlyList<AdminRecipientSummary>> LoadRecipientSummariesAsync(
+        SqliteConnection connection,
+        Guid requestId,
+        CancellationToken cancellationToken)
+    {
+        var map = await LoadRecipientSummariesAsync(connection, [requestId], cancellationToken);
+        return map.TryGetValue(requestId, out var summaries) ? summaries : [];
+    }
+
+    private static async Task<Dictionary<Guid, IReadOnlyList<AdminRecipientSummary>>> LoadRecipientSummariesAsync(
+        SqliteConnection connection,
+        IEnumerable<Guid> requestIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = requestIds.Distinct().ToArray();
+        var result = new Dictionary<Guid, List<AdminRecipientSummary>>();
+        if (ids.Length == 0)
+            return new Dictionary<Guid, IReadOnlyList<AdminRecipientSummary>>();
+
+        await using var command = connection.CreateCommand();
+        var parameterNames = new string[ids.Length];
+        for (var i = 0; i < ids.Length; i++)
+        {
+            parameterNames[i] = "@RequestId" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            command.Parameters.AddWithValue(parameterNames[i], ids[i].ToString("D"));
+        }
+
+        command.Parameters.AddWithValue("@BccRole", (int)MailRecipientRole.Bcc);
+        command.CommandText = $"""
+            SELECT request_id, recipient_role, ordinal,
+                   CASE WHEN recipient_role = @BccRole THEN NULL ELSE address END,
+                   CASE WHEN recipient_role = @BccRole THEN NULL ELSE display_name END,
+                   delivery_state
+            FROM mail_request_recipients
+            WHERE request_id IN ({string.Join(", ", parameterNames)})
+            ORDER BY request_id, recipient_role, ordinal;
+            """;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var requestId = Guid.Parse(reader.GetString(0));
+            if (!result.TryGetValue(requestId, out var list))
+            {
+                list = [];
+                result.Add(requestId, list);
+            }
+
+            list.Add(new AdminRecipientSummary(
+                (MailRecipientRole)reader.GetInt32(1),
+                reader.GetInt32(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                (MailRecipientDeliveryState)reader.GetInt32(5)));
+        }
+
+        return result.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<AdminRecipientSummary>)pair.Value);
     }
 }

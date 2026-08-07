@@ -1,3 +1,4 @@
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
@@ -140,6 +141,17 @@ public sealed class AdminMailRequestDetailPageXssTests
             AcceptedAt: now,
             CreatedAt: now,
             UpdatedAt: now,
-            CompletedAt: null);
+            CompletedAt: null)
+        {
+            Recipients =
+            [
+                new AdminRecipientSummary(
+                    MailRecipientRole.To,
+                    0,
+                    "test@example.com",
+                    recipientDisplayName,
+                    MailRecipientDeliveryState.NotSent),
+            ],
+        };
     }
 }

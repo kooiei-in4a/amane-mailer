@@ -405,7 +405,7 @@ public sealed class SqlMigrationRunner
         }
     }
 
-    private static async Task<bool> HasRequiredRuntimeSchemaObjectsAsync(
+    private async Task<bool> HasRequiredRuntimeSchemaObjectsAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
@@ -433,6 +433,16 @@ public sealed class SqlMigrationRunner
             {
                 return false;
             }
+        }
+
+        // Migration-specific test databases may intentionally stop at an earlier bundled
+        // migration (for example, the 017 backfill tests). The current production bundle
+        // includes 018, so its presence in this runner's directory makes the capability table
+        // a required runtime object without making an isolated 017 fixture claim it is current.
+        if (File.Exists(Path.Combine(_migrationDirectory, "018_admin_user_capabilities.sql"))
+            && !await HasTableAsync(connection, "admin_user_capabilities", cancellationToken))
+        {
+            return false;
         }
 
         await using var columns = connection.CreateCommand();
@@ -542,6 +552,25 @@ public sealed class SqlMigrationRunner
         }
 
         return false;
+    }
+
+    private static async Task<bool> HasTableAsync(
+        SqliteConnection connection,
+        string tableName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'table' AND name = @TableName);
+            """;
+        command.Parameters.AddWithValue("@TableName", tableName);
+        return Convert.ToInt32(
+                await command.ExecuteScalarAsync(cancellationToken),
+                System.Globalization.CultureInfo.InvariantCulture)
+            == 1;
     }
 
     private static async Task<bool> HasMissingChecksumAsync(

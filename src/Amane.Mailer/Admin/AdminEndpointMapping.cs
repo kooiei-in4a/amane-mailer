@@ -21,6 +21,10 @@ internal static class AdminEndpointMapping
         app.MapPost("/admin/ops/checkpoint", AdminDbOpsHandlers.CheckpointAsync).RequireAuthorization();
         app.MapPost("/admin/ops/backup", AdminDbOpsHandlers.BackupAsync).RequireAuthorization();
         app.MapGet("/admin/mail-requests/{id}", AdminMailRequestDetailPage.RenderAsync).RequireAuthorization();
+        app.MapGet(
+                "/admin/mail-requests/{id}/recipients/bcc/{ordinal:int}",
+                AdminBccRecipientRevealPage.RenderAsync)
+            .RequireAuthorization();
         app.MapGet("/admin/mail-requests/{id}/body", AdminMailRequestBodyPage.RenderAsync).RequireAuthorization();
         app.MapGet(
                 "/admin/mail-requests/{id}/attachments/{order:int}/filename",

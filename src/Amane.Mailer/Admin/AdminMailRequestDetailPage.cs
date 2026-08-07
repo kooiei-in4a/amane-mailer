@@ -37,6 +37,11 @@ public static class AdminMailRequestDetailPage
         if (detail is null)
             return Results.NotFound();
 
+        var canRevealBcc = await userRepository.HasCapabilityAsync(
+            AdminAuditLog.ResolveActor(context),
+            AdminCapabilities.BccRecipientReveal,
+            cancellationToken);
+
         var attempts = await repository.ListAttemptsForAdminAsync(
             requestId,
             access.AllowedTenantIdsForQuery,
@@ -66,7 +71,8 @@ public static class AdminMailRequestDetailPage
                 options,
                 deadLetterCount,
                 csrfToken,
-                timeProvider.GetUtcNow()),
+                timeProvider.GetUtcNow(),
+                canRevealBcc),
             "text/html; charset=utf-8");
     }
 
@@ -77,7 +83,7 @@ public static class AdminMailRequestDetailPage
         int deadLetterCount = 0,
         string csrfToken = "",
         DateTimeOffset? now = null) =>
-        RenderHtml(detail, attempts, [], [], options, deadLetterCount, csrfToken, now);
+        RenderHtml(detail, attempts, [], [], options, deadLetterCount, csrfToken, now, false);
 
     internal static string RenderHtml(
         AdminMailRequestDetail detail,
@@ -87,7 +93,8 @@ public static class AdminMailRequestDetailPage
         MailerAdminOptions options,
         int deadLetterCount = 0,
         string csrfToken = "",
-        DateTimeOffset? now = null)
+        DateTimeOffset? now = null,
+        bool canRevealBcc = false)
     {
         var html = new StringBuilder();
 
@@ -103,7 +110,7 @@ public static class AdminMailRequestDetailPage
                 </nav>
             """);
 
-        AppendDetailSection(html, detail, options);
+        AppendDetailSection(html, detail, options, canRevealBcc);
         AppendMutationActions(html, detail, csrfToken, now ?? DateTimeOffset.UtcNow);
         AppendAttemptsSection(html, attempts);
         AppendAttachmentsSection(html, detail.Id, attachments);
@@ -117,11 +124,9 @@ public static class AdminMailRequestDetailPage
     private static void AppendDetailSection(
         StringBuilder html,
         AdminMailRequestDetail detail,
-        MailerAdminOptions options)
+        MailerAdminOptions options,
+        bool canRevealBcc)
     {
-        var recipientEmail = options.MaskRecipients
-            ? MaskRecipient(detail.RecipientEmail)
-            : detail.RecipientEmail;
         var subject = options.MaskSubjects
             ? MaskSubject(detail.Subject)
             : detail.Subject;
@@ -148,9 +153,6 @@ public static class AdminMailRequestDetailPage
         if (detail.Status == MailRequestState.Processing && detail.LockExpiresAt.HasValue)
             AppendDetailRow(html, "lock_expires_at", FormatLocalTime(detail.LockExpiresAt.Value));
 
-        AppendDetailRow(html, "宛先メールアドレス", recipientEmail);
-        if (detail.RecipientDisplayName is not null && !options.MaskRecipients)
-            AppendDetailRow(html, "宛先表示名", detail.RecipientDisplayName);
         AppendDetailRow(html, "件名", subject);
         if (detail.ReplyTo is not null)
         {
@@ -187,6 +189,13 @@ public static class AdminMailRequestDetailPage
                   </tbody>
                 </table>
             """);
+
+        AdminRecipientSummaryRenderer.AppendDetailTable(
+            html,
+            detail.Id,
+            detail.Recipients,
+            options.MaskRecipients,
+            canRevealBcc);
 
         AppendBodyLink(html, detail.Id, "html_body", detail.HtmlBody);
         AppendBodyLink(html, detail.Id, "text_body", detail.TextBody);
