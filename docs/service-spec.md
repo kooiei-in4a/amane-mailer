@@ -104,7 +104,7 @@ recipient-aware処理の正本ではない。Bcc-only requestのshadowには固�
 
 | 状況 | HTTP | code / status |
 |---|---|---|
-| 自 tenant・許可 source_service の既存依頼 | 200 | Worker 配送 `status`（`queued` / `processing` / `delivered` / `failed` / `dead_lettered` / `cancelled`） |
+| 自 tenant・許可 source_service の既存依頼 | 200 | Worker 配送 `status`（`queued` / `processing` / `delivered` / `failed` / `dead_lettered` / `cancelled` / `delivery_unknown`） |
 | mail_request_id / tenant_id / source_service 不正・欠落 | 400 | `INVALID_REQUEST` |
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
@@ -180,19 +180,21 @@ OpenAPI・Contracts README・`SECURITY.md` と整合する。値の強制拒否�
 
 HTTP 受付の冪等性（上記「冪等性」節）と、**ACS/Mailpit 経由の実メール送信の一意性は別契約**である。Consumer は「同一 `mail_request_id` で必ず 1 通だけ届く（exactly-once）」と期待してはならない。
 
-Mailer の配送セマンティクスは **at-least-once**（同一依頼から複数通の実送信が起こりうる）である。以下は現在の実装に基づく保証の要約である。正本は [ADR 0012 D-07](adr/0012-mail-via-mailer-microservice.md) および本節。
+v1.3.0では plain／添付 request とも、provider invocation前にdurable submission evidenceを確立し、`Started` 以上のevidenceが存在する同一requestではproviderを再呼び出ししない。Mailer自身のprovider invocationはこの境界で**at-most-once**を優先する一方、providerが1回のsubmissionをどう処理したかまでexactly-onceを保証できないため、実メール到達そのものは**not exactly-once**である。受理可否を証明できない場合は安全側に `DeliveryUnknown` へ収束し、同一requestを自動・手動で再送しない。正本は [ADR 0023 D-04/D-07](adr/0023-multiple-recipient-contract-and-delivery-semantics.md) と、添付requestについては [ADR 0022 D-08](adr/0022-attachment-contract-validation-and-delivery-boundaries.md) である。
 
 | 対象 | 保証 | 備考 |
 |---|---|---|
 | HTTP 受付 | at-most-once 永続化 | 同一 `(tenant_id, source_service, mail_request_id)` は 1 行。再 POST は `already_accepted` |
-| 実メール配送（全体） | **not exactly-once** / at-least-once | 自動リトライ・手動再送・provider 挙動により重複しうる |
-| ACS (`provider=acs`) | 決定論的 operation id（UUIDv5）による**緩和のみ** | `tenant_id` + `source_service:mail_request_id` から生成（`AcsOperationIdFactory`）。ACS サーバ側の重複排除として機能する保証は本リポジトリでは検証・保証しない |
-| Mailpit (`provider=mailpit`) | **冪等性なし**（best-effort） | 再送のたびに SMTP 送信が発生しうる（開発/検証向け）。ただし SMTP DATA 受理後の disconnect 失敗だけを理由に再送スケジュールしない（#275） |
-| Worker 自動リトライ | at-least-once | retryable 失敗は `Queued` に戻り再配送 |
-| lease 失効後の finalize 競合（#238） | **再送抑止** | provider 送信成功の証跡を `mail_attempts` に残し、reclaim 時は実送信をスキップして `Delivered` へ収束。finalize skip は `mail_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)） |
-| wall-clock lease 補正（#276） | **絶対時刻比較** | mail / webhook lease は `TimeProvider.GetUtcNow()` 由来の `lock_expires_at` と `@Now` の比較。monotonic clock は使わない。大きな wall-clock 前進は early reclaim / strict finalize fencing 失敗、大きな後退は Processing / Delivering の回復遅延を起こし得る（詳細は次節） |
-| Admin 手動再送 | **意図的な再配送** | `DeadLettered` / `Failed` から `Queued` へ戻す（`attempt_count` を 0 リセット）。旧サイクルの Delivered 証跡は prior-success 収束に使わない（#268）。provider 送信が成功済みでも row が `Delivered` へ収束していなければ再送されうる（[ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) at-least-once 維持） |
-| 配送結果 Webhook | **first-wins**（同一 mail request 世代で高々 1 event）+ `event_id` による再 POST 冪等 | **実メール送信とは別契約**。最初に enqueue された終端状態のみ通知。Admin 手動再送後の別終端（例: `failed` → 再送 → `delivered`）は webhook を再送しない。Consumer は同一 `event_id` の再 POST を冪等に処理する（[webhook-verification.md](consumer/webhook-verification.md)） |
+| Mailer provider invocation | **at-most-once after `Started` evidence** | plain／添付ともprovider call開始前にdurable evidenceをcommit。`Started` / `Accepted` / `DefinitelyRejected` / `Unknown` からproviderを再呼び出ししない |
+| 実メール配送（全体） | **not exactly-once** | Mailerは重複provider invocationより欠落の可能性を安全側に選ぶ。provider内部の処理・配送結果まではexactly-onceを保証しない |
+| ACS (`provider=acs`) | 決定論的 operation id（UUIDv5）は補助防御 | `tenant_id` + `source_service:mail_request_id` から生成（`AcsOperationIdFactory`）。submission evidenceが主境界であり、ACSサーバ側dedupeを再送根拠にしない |
+| Mailpit (`provider=mailpit`) | provider-side冪等性なし | SMTP受理可否が曖昧な失敗は `DeliveryUnknown`。同一requestをSMTPへ再送してduplicateを避ける設計にはしない |
+| Worker 自動リトライ | **provider invocation後は再呼び出し禁止** | v1.3 plain送信では旧retryable provider failure→`Queued`の自動retry loopを廃止。`Started`後の曖昧結果は`DeliveryUnknown`へ収束 |
+| `DefinitelyNotSubmitted` | 条件付き再開のみ | provider未提出を明示証明し、同じevidence rowをfenced transitionできる場合だけ再開可能。suppression由来の`DefinitelyNotSubmitted + Failed`はterminalで再送禁止（ADR 0023 D-12） |
+| lease失効／crash recovery | **再送抑止** | `Started`だけがdurableに残ったplain requestはreclaim後に`Unknown` / `DeliveryUnknown`へ収束し、providerを再呼び出ししない。添付もADR 0022のStarted marker境界を維持 |
+| wall-clock lease 補正（#276） | **絶対時刻比較** | mail / webhook lease は `TimeProvider.GetUtcNow()` 由来の `lock_expires_at` と `@Now` の比較。大きなwall-clock前進はstrict finalize fencing失敗を起こし得るが、submission evidenceからproviderを再呼び出ししない |
+| Admin 手動再送 | **submission evidenceがない場合のみ** | `mail_plain_submissions` evidenceが存在するplain requestと添付requestはwhole-request manual retry禁止。再送が必要なら新しい`mail_request_id`を使う |
+| 配送結果 Webhook | **first-wins**（同一 mail request 世代で高々 1 event）+ `event_id` による再 POST 冪等 | **実メール送信とは別契約**。最初に enqueue された終端状態のみ通知。Consumer は同一 `event_id` の再 POST を冪等に処理する（[webhook-verification.md](consumer/webhook-verification.md)） |
 
 ### Worker / Webhook lease と wall clock（#276）
 
@@ -207,16 +209,16 @@ mail (`mail_requests`) と webhook (`delivery_events`) の lease は SQLite に�
 
 **緩和（現行）:**
 
-- mail: #238 により、provider 送信成功後に strict fencing が失敗しても Delivered 証跡を残し、reclaim 時は実送信をスキップして `Delivered` へ収束できる。完全な skew 解消ではない。
-- webhook: mail と同等の prior-success 収束パスはない。early reclaim 後は HTTP 再 POST が起き得る（Consumer 側は `event_id` 冪等が前提）。Webhook finalize fencing 失敗は `mail_webhook_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)）。
+- mail: provider invocation前のsubmission evidenceとclaim/lease fencingを主境界にする。plain requestで`Started`後にfinalizeできなかった場合、reclaim後はproviderを再呼び出しせず`Unknown` / `DeliveryUnknown`へ収束する。添付requestもADR 0022のStarted markerから再呼び出ししない。
+- webhook: mail と同等のprovider-submission evidenceはない。early reclaim 後は HTTP 再 POST が起き得る（Consumer 側は `event_id` 冪等が前提）。Webhook finalize fencing 失敗は `mail_webhook_finalize_skipped_total` で可観測（[metrics runbook](ops/metrics-and-alerts.md)）。
 
 **運用:** OS / コンテナの時刻同期は slew を優先し、大きな step を避ける。`mail_finalize_skipped_total` の急増は mail fencing 失敗（clock jump を含む）の観測材料になる。Webhook 側は `mail_webhook_finalize_skipped_total` を見る（[metrics runbook](ops/metrics-and-alerts.md)）。monotonic lease への再設計は別 ADR 候補であり、本仕様の短期方針ではない。
 
 **Consumer 向け推奨:**
 
-- 業務上の重複通知を避ける必要がある場合は、利用側で `mail_request_id` または独自の相関 ID で重複排除する。
-- `GET /internal/mail-requests/{mail_request_id}` で `delivered` を確認しても、既に複数通送信済みの可能性は排除できない（特に Mailpit・手動再送）。
-- Admin 手動再送後は status GET と webhook の終端状態が一致しないことがある（webhook は first-wins）。最新状態は status GET を正とする。
+- `delivery_unknown` は「未送信」や「retry可能」を意味しない。同一requestを再送せず、業務上どうしても再送が必要なら重複可能性を評価したうえで新しい `mail_request_id` の新規requestとして扱う。
+- `GET /internal/mail-requests/{mail_request_id}` の `delivered` はprovider acceptanceを確認できたrequest aggregateであり、recipient-level delivery feedbackとは別である。
+- webhook は first-wins であり、最新のrequest / recipient状態確認では status GET とAdmin/opsのcanonical dataを正とする。
 
 ### バージョニングポリシー
 
@@ -306,50 +308,50 @@ Worker と Sweep の BackgroundService がそれぞれ定期的に UPSERT する
 
 ### 3.4 状態遷移（`mail_requests.status`）
 
-状態値と Worker 自動遷移の正本は [ADR 0015: 手動再送・手動キャンセル状態遷移](adr/0015-manual-retry-cancel-state-transitions.md) を参照する。以下は service-spec 上の要約である。
+provider submission後の再呼び出し境界は [ADR 0023 D-04/D-07](adr/0023-multiple-recipient-contract-and-delivery-semantics.md) を正とする。添付requestは [ADR 0022 D-08](adr/0022-attachment-contract-validation-and-delivery-boundaries.md)、provider未呼び出し時のAdmin操作は [ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) も参照する。
 
 | 値 | 名前 | 意味 |
 |---|---|---|
 | **0** | `Queued` | 受付済み・配送待ち（`scheduled_at` と `next_attempt_at` の両方が到来で claim 対象） |
 | **1** | `Processing` | Worker がリース取得・送信中 |
-| **2** | `Delivered` | 配送成功（終端） |
-| **3** | `Failed` | 非 retryable な provider 失敗（終端） |
-| **4** | `DeadLettered` | 最大試行超過等で打ち切り（終端） |
-| **5** | `Cancelled` | 運用者による手動キャンセル（終端） |
-| **6** | `DeliveryUnknown` | 添付依頼専用（[ADR 0022](adr/0022-attachment-contract-validation-and-delivery-boundaries.md) D-08）。provider submission marker commit 後、受理可否を証明できなかった終端。`Failed` とは区別し、自動・手動いずれの再送も行わない |
+| **2** | `Delivered` | provider acceptanceを確認したrequest aggregate（終端） |
+| **3** | `Failed` | provider明示拒否、事前suppression、またはprovider未呼び出しのterminal failure |
+| **4** | `DeadLettered` | provider submission evidenceを作る前の最大試行超過等で打ち切り（終端） |
+| **5** | `Cancelled` | provider invocation前に許可されたキャンセル（終端） |
+| **6** | `DeliveryUnknown` | plain／添付requestでprovider invocation開始後、受理可否を証明できなかった終端（ADR 0023 D-04 / ADR 0022 D-08）。`Failed`とは区別し、自動・手動いずれの再送も行わない |
 
-**Worker 自動遷移:**
+**v1.3 Worker のprovider submission遷移:**
 
 ```
-0 Queued ──claim──▶ 1 Processing ──success──▶ 2 Delivered
+0 Queued ──claim──▶ 1 Processing
                          │
-                         ├──retryable fail──▶ 0 Queued (next_attempt_at)
-                         ├──terminal fail───▶ 3 Failed
-                         └──max attempts────▶ 4 DeadLettered
+                         ├──pre-provider suppression──▶ 3 Failed（provider call 0回）
+                         ├──provider Accepted────────▶ 2 Delivered
+                         ├──DefinitelyRejected───────▶ 3 Failed
+                         └──Unknown / Started recovery▶ 6 DeliveryUnknown
 ```
 
-retryable 失敗時は `status` を `Failed` (3) にせず **`Queued` (0) に戻し** `next_attempt_at` を設定する（runtime 実装どおり）。
+provider invocation前にplain requestでは `mail_plain_submissions.Started`、添付requestではADR 0022のStarted markerをdurably commitする。`Started`以上のevidenceから同一requestのproviderを再呼び出ししない。v1.2までの「retryable provider failureを`Queued`へ戻して自動再送」するplain pathはv1.3で廃止された。`DefinitelyNotSubmitted`からの再開はADR 0023 D-04のfenced control transitionが成立する場合だけで、suppression由来の`DefinitelyNotSubmitted + Failed`はterminalである。
 
-**Admin 手動操作（ADR 0015 要約）:**
+**Admin 手動操作:**
 
-| 操作 | 許可される遷移元 | 遷移先 |
+| 操作 | 許可境界 | 遷移先 |
 |---|---|---|
-| 手動再送 | `DeadLettered`, `Failed` | `Queued`（`attempt_count=0`, `next_attempt_at=NULL`） |
-| 手動キャンセル | `Queued`, `Failed`, `DeadLettered`, 期限切れ `Processing` | `Cancelled` |
+| 手動再送 | `Failed` / `DeadLettered` かつ添付なし・plain submission evidenceなし | `Queued`（`attempt_count=0`, `next_attempt_at=NULL`） |
+| 手動キャンセル | ADR 0015の許可状態。attachment submission evidenceがある場合は拒否。plain submission evidenceがある場合は `Failed` のみ既存の管理上の `Failed` → `Cancelled` を許可（evidence、recipient disposition、attempt historyを保持し、provider呼出しなし） | `Cancelled` |
 
-`Delivered` / 有効 lock 保持中の `Processing` / `Cancelled` からの手動操作は拒否する。詳細な競合ルール・監査・tenant 認可は ADR 0015 を正とする。
+`mail_plain_submissions` evidenceが存在するrequest、添付request、`DeliveryUnknown`、`Delivered`、有効lock保持中の`Processing`、`Cancelled`からwhole-request manual retryを行わない。再送が必要なら原則として新しい`mail_request_id`を使う（ADR 0023 D-07）。
+plain evidenceを持つ `Failed` requestのmanual cancelは、provider submissionの取消しや未送信を意味しない管理上の終端遷移であり、evidence、recipient disposition、attempt historyを変更せず、provider呼出しや同一requestの再送を発生させない。plain evidence付きの他の状態ではmanual cancelを拒否する。
 
 ### 3.5 配送結果 Webhook（outbound）
 
 テナント JSON の optional `webhook` 設定により、Mailer は terminal 状態
-（`delivered` / `failed` / `dead_lettered` / `cancelled`）到達時に
+（`delivered` / `failed` / `dead_lettered` / `cancelled` / `delivery_unknown`）到達時に
 `delivery_events` outbox へ `MailDeliveryEventPayload` を enqueue し、
 `WebhookDeliveryWorker` が HMAC 署名付き HTTPS POST で Consumer へ配信する。
 
 - **first-wins:** 同一 `(tenant_id, source_service, mail_request_id)` 世代では高々 1 event
-  （`ON CONFLICT DO NOTHING`）。最初に enqueue された終端状態のみが残る。Admin 手動再送で
-  別の終端（例: `failed` → `Queued` → `delivered`）へ進んでも、2 つ目の event は作らず、
-  既存 event も更新しない。delivery cycle 単位の再通知は [ADR 0017](adr/0017-webhook-first-wins-delivery-cycle.md) で見送り（再評価 trigger 付き）。
+  （`ON CONFLICT DO NOTHING`）。最初に enqueue された終端状態のみが残る。後続の別終端が生じても2つ目のeventは作らず、既存eventも更新しない。delivery cycle 単位の再通知は [ADR 0017](adr/0017-webhook-first-wins-delivery-cycle.md) で見送り（再評価 trigger 付き）。
 - reconcile は **欠落**（outbox 行が無い terminal request）のみ補完する。既存 event の上書きはしない。
 - secret は `webhook.secret_env` が指す環境変数から読み込む（tenant JSON 平文禁止）。
 - payload に PII（recipient, subject, body 等）は含めない。
@@ -385,7 +387,7 @@ Web ホスト起動前に `argv` で早期分岐。コンテナ `ENTRYPOINT` は
 | `db suppressions remove --tenant-id <uuid> --recipient <email>` | テナント別 `mail_suppressions` から 1 件を物理削除。正規化は格納/照会と同一。stdout に宛先は出さない。`admin_audit_events` に `mail_suppressions.removed` / `remove_failed` を同一 TX で記録（失敗時 rollback） | 0=削除成功 / 1=schema unavailable または削除・監査 TX 失敗 / 2=usage error / 3=not found / 130=cancelled |
 | `admin user create ...` | scoped / break-glass Admin ユーザー作成 | 0=成功 / 1=schema unavailable / 2=usage error / 130=cancelled |
 
-長時間 CLI は `Ctrl+C`（`Console.CancelKeyPress`）で協調 cancel する。各 `Ctrl+C` はプロセス強制終了せず（`e.Cancel = true`）共有 `CancellationToken` を cancel し、既存の transaction rollback と backup temp cleanup を利用する。2 回目以降も同じ協調経路のみで、`Environment.Exit` や OS 既定の即時終了へフォールバックしない。`BackupDatabase` のような同期・非割込区間では次の checkpoint まで停止が遅延しうる。その間に強制終了が必要なら SIGKILL / 端末切断を使う。cancel 時の終了コードは定数 `130`（`128 + SIGINT` 慣習）で、usage error（2）や schema unavailable（1）とは衝突しない。cancel は ERROR ログにしない（短い stderr のみ）。
+長時間 CLI は `Ctrl+C`（`Console.CancelKeyPress`）で協調 cancel する。各 `Ctrl+C` はプロセス強制終了せず（`e.Cancel = true`）共有 `CancellationToken` を cancel し、既存の transaction rollback と backup temp cleanup を利用する。2回目以降も同じ協調経路のみで、`Environment.Exit` や OS 既定の即時終了へフォールバックしない。`BackupDatabase` のような同期・非割込区間では次の checkpoint まで停止が遅延しうる。その間に強制終了が必要なら SIGKILL / 端末切断を使う。cancel 時の終了コードは定数 `130`（`128 + SIGINT` 慣習）で、usage error（2）や schema unavailable（1）とは衝突しない。cancel は ERROR ログにしない（短い stderr のみ）。
 
 ### マイグレーション checksum policy
 
@@ -556,7 +558,7 @@ WAL TRUNCATE は shutdown cleanup の best-effort であり、配送 durability 
 自体で担保する。checkpoint が失敗した場合は error log、shutdown timeout で中断された場合は
 warning log を出す。
 
-compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions.ShutdownTimeout` は mail / webhook 双方の drain 所要時間の大きい方に slack（15 秒）を加えた値とする（既定設定では mail 側が支配的で `SendTimeoutSeconds + 25秒` 以上）。HostedService の `StopAsync` は既定で逐次（`ServicesStopConcurrently=false`）のため、両 worker が同時に最大長のインフライトを抱える最悪ケースでは `max()` を超える加算待ちになり得る。その場合の打ち切り分は lease 失効後の reclaim / 冪等収束（#238）で吸収する前提であり、`max()` は concurrent drain 仮定ではなく「片側の最大 drain + slack」のホスト上限である。`SendTimeoutSeconds` や webhook `DeliveryTimeoutSeconds` を増やす場合は `MAILER_STOP_GRACE_PERIOD` も併せて増やす。
+compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions.ShutdownTimeout` は mail / webhook 双方の drain 所要時間の大きい方に slack（15 秒）を加えた値とする（既定設定では mail 側が支配的で `SendTimeoutSeconds + 25秒` 以上）。HostedService の `StopAsync` は既定で逐次（`ServicesStopConcurrently=false`）のため、両 worker が同時に最大長のインフライトを抱える最悪ケースでは `max()` を超える加算待ちになり得る。その場合もv1.3のmail provider submission evidenceを保持し、`Started`以上のevidenceがあるrequestをshutdown/reclaim後にproviderへ再呼び出ししない。`SendTimeoutSeconds` や webhook `DeliveryTimeoutSeconds` を増やす場合は `MAILER_STOP_GRACE_PERIOD` も併せて増やす。
 
 ---
 
@@ -608,3 +610,4 @@ compose は既定で `stop_grace_period=120s` とし、アプリ側 `HostOptions
 | 2026-07-25 | ADR 0019: SQLite／単一プロセス維持と PostgreSQL／Worker 分離の着手 trigger・非目標を記録（#363）。#385 と同日マージで 0018 が衝突したため後着を 0019 に振り直し |
 | 2026-07-25 | `Mailer__Webhook__ReconcileBatchSize` へ改名。旧 `BatchClaimSize` は deprecated alias（#353） |
 | 2026-07-27 | `db suppressions remove` と `db stats` の `mail_suppressions_count` を追加（#400） |
+| 2026-08-07 | v1.3 ADR 0023実装へ同期: multiple To/CC/BCC、plain submission evidence、DeliveryUnknown、provider再呼び出し禁止、Admin retry/cancel境界を反映 |
