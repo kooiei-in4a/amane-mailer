@@ -5,9 +5,8 @@ using Microsoft.Data.Sqlite;
 namespace Amane.Mailer.Tests;
 
 /// <summary>
-/// ADR 0022 D-04/D-14: attachment content_base64 must never be persisted to SQLite (or its
-/// backups), only the short-lived spool and canonical metadata. mail_requests.payload_json
-/// echoes the accepted request body for audit/debugging, so it must be redacted before storage.
+/// ADR 0022 D-04/D-14 and ADR 0023 D-10: attachment content_base64 and recipient address/display
+/// name PII must never be persisted to the safe mail_requests.payload_json snapshot.
 /// </summary>
 [Collection(MailerTestCollection.Name)]
 public sealed class MailRequestPayloadJsonRedactionTests(MailerAdminDbOpsFixture fixture)
@@ -47,7 +46,7 @@ public sealed class MailRequestPayloadJsonRedactionTests(MailerAdminDbOpsFixture
     }
 
     [Fact]
-    public async Task Accepted_non_attachment_request_keeps_the_full_request_body()
+    public async Task Accepted_non_attachment_request_redacts_recipient_pii_from_payload_json()
     {
         var ct = TestContext.Current.CancellationToken;
         using var client = fixture.Factory.CreateClient();
@@ -63,8 +62,20 @@ public sealed class MailRequestPayloadJsonRedactionTests(MailerAdminDbOpsFixture
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
 
         var storedPayloadJson = await ReadPayloadJsonAsync(request.MailRequestId, ct);
-        Assert.NotNull(storedPayloadJson);
+        if (storedPayloadJson is null)
+            throw new InvalidOperationException("payload_json was not persisted.");
+
+        if (request.To is null)
+            throw new InvalidOperationException("test recipient was not initialized.");
+
+        var recipient = request.To[0];
+        var displayName = recipient.DisplayName;
+        if (displayName is null)
+            throw new InvalidOperationException("test recipient display name was not initialized.");
         Assert.DoesNotContain("attachments", storedPayloadJson, StringComparison.Ordinal);
+        Assert.DoesNotContain(recipient.Email, storedPayloadJson, StringComparison.Ordinal);
+        Assert.DoesNotContain(displayName, storedPayloadJson, StringComparison.Ordinal);
+        Assert.Contains("[REDACTED]", storedPayloadJson, StringComparison.Ordinal);
     }
 
     private async Task<string?> ReadPayloadJsonAsync(Guid mailRequestId, CancellationToken cancellationToken)

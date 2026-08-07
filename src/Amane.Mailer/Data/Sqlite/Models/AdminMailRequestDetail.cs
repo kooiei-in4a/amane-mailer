@@ -6,7 +6,6 @@ public sealed record AdminMailRequestDetail(
     string SourceService,
     Guid MailRequestId,
     string Purpose,
-    string PayloadJson,
     string PayloadHash,
     string Subject,
     string? HtmlBody,

@@ -53,7 +53,6 @@ public sealed class AdminMailRequestDetailBounceRenderTests
             SourceService: "svc",
             MailRequestId: Guid.NewGuid(),
             Purpose: "test",
-            PayloadJson: "{}",
             PayloadHash: new string('0', 64),
             Subject: "subject",
             HtmlBody: null,

@@ -118,7 +118,6 @@ public sealed class AdminMailRequestDetailPageXssTests
             SourceService: "test-service",
             MailRequestId: Guid.NewGuid(),
             Purpose: "test",
-            PayloadJson: "{}",
             PayloadHash: new string('a', 64),
             Subject: "Test subject",
             HtmlBody: htmlBody,

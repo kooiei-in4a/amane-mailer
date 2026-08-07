@@ -143,7 +143,6 @@ public sealed class AdminMailRequestDetailPageRenderTests
             SourceService: "test-service",
             MailRequestId: Guid.NewGuid(),
             Purpose: "test",
-            PayloadJson: "{}",
             PayloadHash: new string('a', 64),
             Subject: subject,
             HtmlBody: htmlBody,

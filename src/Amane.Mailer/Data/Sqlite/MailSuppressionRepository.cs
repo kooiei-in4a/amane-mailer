@@ -230,6 +230,7 @@ public sealed class MailSuppressionRepository(SqliteConnectionFactory connection
                           ON rr.request_id = mr.id
                          AND rr.recipient_role = e.recipient_role
                          AND rr.ordinal = e.recipient_ordinal
+                         AND rr.address_key = s.recipient_email
                         WHERE e.id = s.source_bounce_event_id
                           AND e.tenant_id = s.tenant_id
                           AND e.recipient_role IN (0, 1)

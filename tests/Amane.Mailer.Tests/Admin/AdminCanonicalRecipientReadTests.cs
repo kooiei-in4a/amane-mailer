@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data;
@@ -84,6 +85,9 @@ public sealed class AdminCanonicalRecipientReadTests(MailerAdminFixture fixture)
         Assert.Equal(string.Empty, detail.RecipientEmail);
         Assert.Null(detail.RecipientDisplayName);
         AssertCanonicalRecipients(detail.Recipients, detailCase.Recipients);
+        var serializedDetail = JsonSerializer.Serialize(detail);
+        Assert.DoesNotContain("admin-detail-payload-bcc-canary@example.com", serializedDetail, StringComparison.Ordinal);
+        Assert.DoesNotContain("Admin Detail Payload Bcc Canary", serializedDetail, StringComparison.Ordinal);
 
         var deadLetters = await repository.ListDeadLettersForAdminAsync(
             new AdminDeadLetterListQuery
@@ -123,7 +127,7 @@ public sealed class AdminCanonicalRecipientReadTests(MailerAdminFixture fixture)
                     accepted_at, created_at, updated_at, completed_at)
                 VALUES (
                     @Id, @TenantId, @SourceService, @MailRequestId, @Purpose,
-                    '{}', @PayloadHash, @Subject, @LegacyRecipient,
+                    @PayloadJson, @PayloadHash, @Subject, @LegacyRecipient,
                     @Status, 0, 3, 0, @Now, @Now, @Now, @CompletedAt);
                 """;
             request.Parameters.AddWithValue("@Id", requestId.ToString("D"));
@@ -131,6 +135,11 @@ public sealed class AdminCanonicalRecipientReadTests(MailerAdminFixture fixture)
             request.Parameters.AddWithValue("@SourceService", MailerWebApplicationFixtureBase.SourceService);
             request.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
             request.Parameters.AddWithValue("@Purpose", item.Name);
+            request.Parameters.AddWithValue(
+                "@PayloadJson",
+                item.Name == "to-cc-bcc"
+                    ? "{\"bcc\":[{\"email\":\"admin-detail-payload-bcc-canary@example.com\",\"display_name\":\"Admin Detail Payload Bcc Canary\"}]}"
+                    : "{}");
             request.Parameters.AddWithValue("@PayloadHash", new string('b', 64));
             request.Parameters.AddWithValue("@Subject", "canonical read test");
             request.Parameters.AddWithValue("@LegacyRecipient", $"legacy-{item.Name}@example.invalid");
