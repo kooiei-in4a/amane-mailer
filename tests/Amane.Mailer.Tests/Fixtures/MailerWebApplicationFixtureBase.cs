@@ -70,6 +70,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
             DELETE FROM provider_event_inbox;
             DELETE FROM admin_audit_events;
             DELETE FROM admin_login_throttle;
+            DELETE FROM admin_user_capabilities;
             DELETE FROM admin_sessions;
             DELETE FROM admin_config;
             DELETE FROM mailer_maintenance_leases;

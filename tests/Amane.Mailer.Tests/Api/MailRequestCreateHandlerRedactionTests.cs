@@ -65,4 +65,28 @@ public sealed class MailRequestCreateHandlerRedactionTests
 
         Assert.Contains("\"attachments\":[]", redacted, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Redacts_recipient_email_and_display_name_from_to_cc_and_bcc_snapshots()
+    {
+        const string requestBody = """
+            {
+              "to": [{"email":"to-secret@example.com","display_name":"To Secret"}],
+              "cc": [{"email":"cc-secret@example.com","display_name":"Cc Secret"}],
+              "bcc": [{"email":"bcc-secret@example.com","display_name":"Bcc Secret"}],
+              "subject": "Invoice"
+            }
+            """;
+
+        var redacted = MailRequestCreateHandler.RedactRecipientPii(requestBody);
+
+        Assert.DoesNotContain("to-secret@example.com", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("cc-secret@example.com", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("bcc-secret@example.com", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("To Secret", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("Cc Secret", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain("Bcc Secret", redacted, StringComparison.Ordinal);
+        Assert.Equal(6, redacted.Split("[REDACTED]", StringSplitOptions.None).Length - 1);
+        Assert.Contains("\"subject\":\"Invoice\"", redacted, StringComparison.Ordinal);
+    }
 }

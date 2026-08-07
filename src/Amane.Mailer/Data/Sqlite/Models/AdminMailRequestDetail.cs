@@ -6,7 +6,6 @@ public sealed record AdminMailRequestDetail(
     string SourceService,
     Guid MailRequestId,
     string Purpose,
-    string PayloadJson,
     string PayloadHash,
     string Subject,
     string? HtmlBody,
@@ -29,4 +28,7 @@ public sealed record AdminMailRequestDetail(
     DateTimeOffset AcceptedAt,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt)
+{
+    public IReadOnlyList<AdminRecipientSummary> Recipients { get; init; } = [];
+}

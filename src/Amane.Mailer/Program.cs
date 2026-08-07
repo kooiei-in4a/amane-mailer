@@ -27,6 +27,7 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll db suppressions remove --tenant-id <uuid> --recipient <email>
       dotnet Amane.Mailer.dll admin hash-password
       dotnet Amane.Mailer.dll admin user create --username <name> --password-hash <pbkdf2> [--tenant-id <uuid> ...] [--break-glass]
+      dotnet Amane.Mailer.dll admin user capability <grant|revoke> --username <name> --capability bcc_recipient_reveal
       dotnet Amane.Mailer.dll admin provider register-acs
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
       dotnet Amane.Mailer.dll admin provider test-acs-send
@@ -155,6 +156,19 @@ if (AdminHashPasswordCommand.IsAdminHashPasswordCommand(commandArgs))
 }
 
 var adminUserCommandArgs = MailerCliHost.FilterConfigurationArgs(commandArgs);
+if (AdminUserCapabilityCommand.IsAdminUserCapabilityCommand(adminUserCommandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunAdminUserCapabilityAsync(
+            cliConfiguration,
+            commandArgs,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
+}
+
 if (AdminUserCreateCommand.IsAdminUserCreateCommand(adminUserCommandArgs))
 {
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);

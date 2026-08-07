@@ -287,6 +287,38 @@
       }
     },
     {
+      "id": "admin-bcc-privacy-and-canonical-recipient-reads",
+      "status": "implemented",
+      "trackingIssue": 560,
+      "lastVerified": "2026-08-07",
+      "relatedAdrs": [
+        "0023",
+        "0013",
+        "0014"
+      ],
+      "notes": "Issue E: Admin list, dead-letter, and detail reads use mail_request_recipients; normal BCC output is always masked. Dedicated bcc_recipient_reveal is default-deny, tenant/source scoped, durably audited before serve, and capability changes atomically increment credential_epoch and revoke sessions. Suppression rows without a safe To/Cc correlation are fail-closed masked. No recipient-bearing Consumer GET, export, webhook, or public contract surface was added.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Data/Migrations/018_admin_user_capabilities.sql",
+          "src/Amane.Mailer/Data/Sqlite/AdminUserRepository.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailRequestAdminQueries.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailRequestRecipientStore.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailSuppressionRepository.cs",
+          "src/Amane.Mailer/Admin/AdminBccRecipientRevealPage.cs",
+          "src/Amane.Mailer/Admin/AdminRecipientSummaryRenderer.cs",
+          "src/Amane.Mailer/Admin/AdminEndpointMapping.cs",
+          "src/Amane.Mailer/Operations/AdminUserCapabilityCommand.cs"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/Admin/AdminCanonicalRecipientReadTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminBccRecipientRevealTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminBccSuppressionPrivacyTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminRecipientSummaryRendererTests.cs",
+          "tests/Amane.Mailer.Tests/MailerAdminUserCliTests.cs"
+        ]
+      }
+    },
+    {
       "id": "easy-setup",
       "status": "implemented",
       "trackingIssue": 445,

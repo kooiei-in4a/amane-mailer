@@ -23,6 +23,8 @@ namespace Amane.Mailer.Api;
 /// </summary>
 public static class MailRequestCreateHandler
 {
+    private const string RedactedRecipientValue = "[REDACTED]";
+
     public static async Task<IResult> HandleAsync(
         HttpRequest httpRequest,
         MailRequestCreateRequest request,
@@ -172,13 +174,13 @@ public static class MailRequestCreateHandler
             SourceService = request.SourceService,
             MailRequestId = request.MailRequestId,
             Purpose = request.Purpose,
-            // ADR 0022 D-04: the raw request body is stored for audit/debugging, but it must
-            // never carry attachment content_base64 into SQLite (and its backups) -- attachment
-            // binaries live only in the short-lived spool. payload_hash (compared for
-            // idempotency) is computed from requestBody above, before this redaction.
-            PayloadJson = attachmentResult.Attachments is { Count: > 0 }
-                ? RedactAttachmentContentBase64(requestBody)
-                : requestBody,
+            // ADR 0022 D-04 and ADR 0023 D-10: SQLite stores a safe request snapshot, never
+            // attachment bytes or recipient address/display-name PII. payload_hash (used for
+            // idempotency) is computed from the original requestBody above, before redaction.
+            PayloadJson = RedactRecipientPii(
+                attachmentResult.Attachments is { Count: > 0 }
+                    ? RedactAttachmentContentBase64(requestBody)
+                    : requestBody),
             PayloadHash = request.PayloadHash,
             Subject = request.Subject,
             HtmlBody = request.HtmlBody,
@@ -366,6 +368,73 @@ public static class MailRequestCreateHandler
         }
 
         return Encoding.UTF8.GetString(bufferWriter.WrittenSpan);
+    }
+
+    /// <summary>
+    /// Rewrites top-level To/Cc/Bcc recipient arrays so the persisted payload snapshot contains
+    /// no recipient address or display-name PII. The original request JSON remains the input to
+    /// payload hash verification; this method only protects the durable operational snapshot.
+    /// </summary>
+    internal static string RedactRecipientPii(string requestBody)
+    {
+        using var document = JsonDocument.Parse(requestBody);
+        var bufferWriter = new ArrayBufferWriter<byte>(requestBody.Length);
+        using (var writer = new Utf8JsonWriter(bufferWriter))
+        {
+            writer.WriteStartObject();
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (IsRecipientRole(property.Name)
+                    && property.Value.ValueKind == JsonValueKind.Array)
+                {
+                    writer.WritePropertyName(property.Name);
+                    writer.WriteStartArray();
+                    foreach (var recipient in property.Value.EnumerateArray())
+                    {
+                        WriteRecipientWithoutPii(recipient, writer);
+                    }
+
+                    writer.WriteEndArray();
+                }
+                else
+                {
+                    writer.WritePropertyName(property.Name);
+                    property.Value.WriteTo(writer);
+                }
+            }
+
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(bufferWriter.WrittenSpan);
+    }
+
+    private static bool IsRecipientRole(string propertyName) =>
+        propertyName is "to" or "cc" or "bcc";
+
+    private static void WriteRecipientWithoutPii(JsonElement recipient, Utf8JsonWriter writer)
+    {
+        if (recipient.ValueKind != JsonValueKind.Object)
+        {
+            recipient.WriteTo(writer);
+            return;
+        }
+
+        writer.WriteStartObject();
+        foreach (var property in recipient.EnumerateObject())
+        {
+            writer.WritePropertyName(property.Name);
+            if (property.Name is "email" or "address" or "display_name")
+            {
+                writer.WriteStringValue(RedactedRecipientValue);
+            }
+            else
+            {
+                property.Value.WriteTo(writer);
+            }
+        }
+
+        writer.WriteEndObject();
     }
 
     private static void WriteAttachmentWithoutContentBase64(JsonElement attachment, Utf8JsonWriter writer)
