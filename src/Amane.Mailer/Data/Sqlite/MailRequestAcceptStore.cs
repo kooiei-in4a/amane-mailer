@@ -1,5 +1,6 @@
 using Amane.Mailer.Admin;
 using Amane.Mailer.Attachments.Spool;
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
 using Microsoft.Data.Sqlite;
@@ -141,8 +142,36 @@ public sealed class MailRequestAcceptStore(
                 @ByteLength, @ContentSha256, @SpoolKey, @CreatedAt);
             """;
 
+        const string insertRecipientSql = """
+            INSERT INTO mail_request_recipients (
+                request_id, recipient_role, ordinal, address, address_key, display_name,
+                delivery_state, provider_message_id, provider_status_detail, created_at, updated_at)
+            VALUES (
+                @RequestId, @RecipientRole, @Ordinal, @Address, @AddressKey, @DisplayName,
+                @DeliveryState, NULL, NULL, @CreatedAt, @UpdatedAt);
+            """;
+
         var nowStorage = SqliteTime.ToStorageUtc(insert.AcceptedAt);
         var attachments = insert.Attachments;
+        var recipients = insert.Recipients ??
+        [
+            new CanonicalMailRecipient
+            {
+                Role = MailRecipientRole.To,
+                Ordinal = 0,
+                Address = insert.RecipientEmail,
+                AddressKey = RecipientEmailNormalizer.Normalize(insert.RecipientEmail),
+                DisplayName = insert.RecipientDisplayName,
+            },
+        ];
+        var isBccOnly = recipients.Count > 0
+            && recipients.All(recipient => recipient.Role == MailRecipientRole.Bcc);
+        var legacyRecipientEmail = isBccOnly
+            ? MailRequestLegacyShadow.BccOnlyRecipientEmail
+            : insert.RecipientEmail;
+        var legacyRecipientDisplayName = isBccOnly
+            ? MailRequestLegacyShadow.BccOnlyRecipientDisplayName
+            : insert.RecipientDisplayName;
 
         // Spool commit (atomic staging -> committed rename) happens before the SQLite
         // transaction opens (ADR 0022 D-08 steps 4-5). If the transaction below fails after
@@ -184,8 +213,8 @@ public sealed class MailRequestAcceptStore(
                 command.Parameters.AddWithValue("@HtmlBody", (object?)insert.HtmlBody ?? DBNull.Value);
                 command.Parameters.AddWithValue("@TextBody", (object?)insert.TextBody ?? DBNull.Value);
                 command.Parameters.AddWithValue("@ReplyTo", (object?)insert.ReplyTo ?? DBNull.Value);
-                command.Parameters.AddWithValue("@RecipientEmail", insert.RecipientEmail);
-                command.Parameters.AddWithValue("@RecipientDisplayName", (object?)insert.RecipientDisplayName ?? DBNull.Value);
+                command.Parameters.AddWithValue("@RecipientEmail", legacyRecipientEmail);
+                command.Parameters.AddWithValue("@RecipientDisplayName", (object?)legacyRecipientDisplayName ?? DBNull.Value);
                 command.Parameters.AddWithValue("@MetadataJson", (object?)insert.MetadataJson ?? DBNull.Value);
                 command.Parameters.AddWithValue("@Status", (int)MailRequestState.Queued);
                 command.Parameters.AddWithValue("@MaxAttempts", insert.MaxAttempts);
@@ -219,6 +248,28 @@ public sealed class MailRequestAcceptStore(
                     attachmentCommand.Parameters.AddWithValue("@CreatedAt", nowStorage);
                     await attachmentCommand.ExecuteNonQueryAsync(cancellationToken);
                 }
+            }
+
+            foreach (var recipient in recipients)
+            {
+                await using var recipientCommand = connection.CreateCommand();
+                recipientCommand.CommandText = insertRecipientSql;
+                recipientCommand.Parameters.AddWithValue("@RequestId", insert.Id.ToString("D"));
+                recipientCommand.Parameters.AddWithValue("@RecipientRole", (int)recipient.Role);
+                recipientCommand.Parameters.AddWithValue("@Ordinal", recipient.Ordinal);
+                recipientCommand.Parameters.AddWithValue("@Address", recipient.Address);
+                recipientCommand.Parameters.AddWithValue(
+                    "@AddressKey",
+                    RecipientEmailNormalizer.Normalize(recipient.Address));
+                recipientCommand.Parameters.AddWithValue(
+                    "@DisplayName",
+                    (object?)recipient.DisplayName ?? DBNull.Value);
+                recipientCommand.Parameters.AddWithValue(
+                    "@DeliveryState",
+                    (int)MailRecipientDeliveryState.NotSent);
+                recipientCommand.Parameters.AddWithValue("@CreatedAt", nowStorage);
+                recipientCommand.Parameters.AddWithValue("@UpdatedAt", nowStorage);
+                await recipientCommand.ExecuteNonQueryAsync(cancellationToken);
             }
 
             await transaction.CommitAsync(cancellationToken);

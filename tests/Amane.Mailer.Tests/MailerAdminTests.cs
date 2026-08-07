@@ -1,5 +1,6 @@
 using System.Net;
 using Amane.Mailer.Admin;
+using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
@@ -1280,6 +1281,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         command.Parameters.AddWithValue("@At", SqliteTime.ToStorageUtc(now));
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await InsertCanonicalToAsync(connection, id, recipientEmail, now, cancellationToken);
         return id;
     }
 
@@ -1391,6 +1393,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
                 : DBNull.Value);
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await InsertCanonicalToAsync(connection, id, recipientEmail, updatedAt, cancellationToken);
         return id;
     }
 
@@ -1436,7 +1439,32 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         command.Parameters.AddWithValue("@FailedAt", SqliteTime.ToStorageUtc(completedAt));
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await InsertCanonicalToAsync(connection, id, recipientEmail, completedAt, cancellationToken);
         return id;
+    }
+
+    private static async Task InsertCanonicalToAsync(
+        SqliteConnection connection,
+        Guid requestId,
+        string recipientEmail,
+        DateTimeOffset timestamp,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO mail_request_recipients (
+                request_id, recipient_role, ordinal, address, address_key, display_name,
+                delivery_state, provider_message_id, provider_status_detail, created_at, updated_at)
+            VALUES (
+                @RequestId, 0, 0, @Address, @AddressKey, NULL,
+                0, NULL, NULL, @CreatedAt, @UpdatedAt);
+            """;
+        command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+        command.Parameters.AddWithValue("@Address", recipientEmail.Trim());
+        command.Parameters.AddWithValue("@AddressKey", RecipientEmailNormalizer.Normalize(recipientEmail));
+        command.Parameters.AddWithValue("@CreatedAt", SqliteTime.ToStorageUtc(timestamp));
+        command.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(timestamp));
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task<Guid> SeedDeadLetterWithoutCompletedAtAsync(CancellationToken cancellationToken)
@@ -1473,6 +1501,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         command.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now));
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await InsertCanonicalToAsync(connection, id, "dead@example.com", now, cancellationToken);
         return id;
     }
 

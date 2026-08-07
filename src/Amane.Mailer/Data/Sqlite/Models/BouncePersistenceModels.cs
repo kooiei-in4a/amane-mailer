@@ -77,6 +77,10 @@ public sealed class BounceEventInsert
 
     public required Guid MailRequestId { get; init; }
 
+    public required int RecipientRole { get; init; }
+
+    public required int RecipientOrdinal { get; init; }
+
     public required string Provider { get; init; }
 
     public required string ProviderEventId { get; init; }
@@ -84,6 +88,8 @@ public sealed class BounceEventInsert
     public required string ProviderMessageId { get; init; }
 
     public required string DeliveryStatus { get; init; }
+
+    public MailRecipientDeliveryState? AppliedDeliveryState { get; init; }
 
     public string? StatusMessage { get; init; }
 

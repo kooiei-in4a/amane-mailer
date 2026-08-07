@@ -36,14 +36,21 @@ func toAttachments(entries []attachmentVectorEntry) []Attachment {
 	return attachments
 }
 
-func TestSharedTestVectorsMatchCanonicalJSONAndHash(t *testing.T) {
-	root := repoRoot(t)
+// loadVectors reads one payload_hash test vector fixture file.
+//
+// Baseline (payload-hash-vectors.json): the pre-ADR-0023 single-To/attachment fixture, also
+// read by the Python/TypeScript SDK test suites (sdk/python, sdk/typescript), which do not yet
+// implement cc/bcc (issue #542). Recipient v1.3 (payload-hash-recipient-v1.3-vectors.json):
+// ADR 0023 to/cc/bcc conformance vectors, verified here and by the .NET Contracts layer, but
+// intentionally NOT read by the SDK test suites until #542 lands.
+func loadVectors(t *testing.T, root, fileName string) []payloadHashVector {
+	t.Helper()
 	vectorsPath := filepath.Join(
 		root,
 		"tests",
 		"Amane.Mailer.Contracts.Tests",
 		"TestVectors",
-		"payload-hash-vectors.json",
+		fileName,
 	)
 	data, err := os.ReadFile(vectorsPath)
 	if err != nil {
@@ -54,6 +61,15 @@ func TestSharedTestVectorsMatchCanonicalJSONAndHash(t *testing.T) {
 	if err := json.Unmarshal(data, &vectors); err != nil {
 		t.Fatalf("parse vectors: %v", err)
 	}
+	return vectors
+}
+
+func TestSharedTestVectorsMatchCanonicalJSONAndHash(t *testing.T) {
+	root := repoRoot(t)
+	vectors := append(
+		loadVectors(t, root, "payload-hash-vectors.json"),
+		loadVectors(t, root, "payload-hash-recipient-v1.3-vectors.json")...,
+	)
 
 	for _, vector := range vectors {
 		t.Run(vector.Name, func(t *testing.T) {

@@ -23,6 +23,8 @@ namespace Amane.Mailer.Api;
 /// </summary>
 public static class MailRequestCreateHandler
 {
+    private const string RedactedRecipientValue = "[REDACTED]";
+
     public static async Task<IResult> HandleAsync(
         HttpRequest httpRequest,
         MailRequestCreateRequest request,
@@ -49,7 +51,7 @@ public static class MailRequestCreateHandler
         }
 
         var now = timeProvider.GetUtcNow();
-        var validationError = ValidateRequest(request, tenant!, now, runtimeMetrics);
+        var validationError = ValidateRequest(request, tenant!, now, runtimeMetrics, out var canonicalRecipients);
         if (validationError is not null)
         {
             return validationError;
@@ -108,7 +110,7 @@ public static class MailRequestCreateHandler
         // D-04 step 10: provider envelope pre-check (best-effort estimate; the authoritative
         // gate is re-checked at Worker dispatch time with exact pre-serialization).
         if (attachmentResult.Attachments is { Count: > 0 }
-            && !IsWithinProviderEnvelopeEstimate(request, tenant!, attachmentResult.Attachments))
+            && !IsWithinProviderEnvelopeEstimate(request, canonicalRecipients!.To[0], tenant!, attachmentResult.Attachments))
         {
             attachmentSpool.TryDeleteStaging(requestId);
             runtimeMetrics?.RecordAttachmentValidationRejected(MailerErrorCodes.MailPayloadTooLarge);
@@ -160,7 +162,11 @@ public static class MailRequestCreateHandler
             });
         }
 
-        var recipient = request.To[0];
+        // Guaranteed by the legacy-shape gate in ValidateRequest (IsLegacySingleTo): exactly one
+        // To recipient, no Cc/Bcc. Use the validated canonical recipient (trimmed address;
+        // whitespace-only display name normalized to null) -- the same value MailPayloadHasher
+        // hashed -- not the raw request DTO, so the stored/delivered recipient matches payload_hash.
+        var recipient = canonicalRecipients!.To[0];
         var insert = new AcceptedMailRequestInsert
         {
             Id = requestId,
@@ -168,20 +174,21 @@ public static class MailRequestCreateHandler
             SourceService = request.SourceService,
             MailRequestId = request.MailRequestId,
             Purpose = request.Purpose,
-            // ADR 0022 D-04: the raw request body is stored for audit/debugging, but it must
-            // never carry attachment content_base64 into SQLite (and its backups) -- attachment
-            // binaries live only in the short-lived spool. payload_hash (compared for
-            // idempotency) is computed from requestBody above, before this redaction.
-            PayloadJson = attachmentResult.Attachments is { Count: > 0 }
-                ? RedactAttachmentContentBase64(requestBody)
-                : requestBody,
+            // ADR 0022 D-04 and ADR 0023 D-10: SQLite stores a safe request snapshot, never
+            // attachment bytes or recipient address/display-name PII. payload_hash (used for
+            // idempotency) is computed from the original requestBody above, before redaction.
+            PayloadJson = RedactRecipientPii(
+                attachmentResult.Attachments is { Count: > 0 }
+                    ? RedactAttachmentContentBase64(requestBody)
+                    : requestBody),
             PayloadHash = request.PayloadHash,
             Subject = request.Subject,
             HtmlBody = request.HtmlBody,
             TextBody = request.TextBody,
             ReplyTo = request.ReplyTo,
-            RecipientEmail = recipient.Email,
+            RecipientEmail = recipient.Address,
             RecipientDisplayName = recipient.DisplayName,
+            Recipients = canonicalRecipients.All,
             MetadataJson = request.Metadata is null
                 ? null
                 : JsonSerializer.Serialize(request.Metadata, MailerJsonContext.Default.DictionaryStringString),
@@ -363,6 +370,73 @@ public static class MailRequestCreateHandler
         return Encoding.UTF8.GetString(bufferWriter.WrittenSpan);
     }
 
+    /// <summary>
+    /// Rewrites top-level To/Cc/Bcc recipient arrays so the persisted payload snapshot contains
+    /// no recipient address or display-name PII. The original request JSON remains the input to
+    /// payload hash verification; this method only protects the durable operational snapshot.
+    /// </summary>
+    internal static string RedactRecipientPii(string requestBody)
+    {
+        using var document = JsonDocument.Parse(requestBody);
+        var bufferWriter = new ArrayBufferWriter<byte>(requestBody.Length);
+        using (var writer = new Utf8JsonWriter(bufferWriter))
+        {
+            writer.WriteStartObject();
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (IsRecipientRole(property.Name)
+                    && property.Value.ValueKind == JsonValueKind.Array)
+                {
+                    writer.WritePropertyName(property.Name);
+                    writer.WriteStartArray();
+                    foreach (var recipient in property.Value.EnumerateArray())
+                    {
+                        WriteRecipientWithoutPii(recipient, writer);
+                    }
+
+                    writer.WriteEndArray();
+                }
+                else
+                {
+                    writer.WritePropertyName(property.Name);
+                    property.Value.WriteTo(writer);
+                }
+            }
+
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(bufferWriter.WrittenSpan);
+    }
+
+    private static bool IsRecipientRole(string propertyName) =>
+        propertyName is "to" or "cc" or "bcc";
+
+    private static void WriteRecipientWithoutPii(JsonElement recipient, Utf8JsonWriter writer)
+    {
+        if (recipient.ValueKind != JsonValueKind.Object)
+        {
+            recipient.WriteTo(writer);
+            return;
+        }
+
+        writer.WriteStartObject();
+        foreach (var property in recipient.EnumerateObject())
+        {
+            writer.WritePropertyName(property.Name);
+            if (property.Name is "email" or "address" or "display_name")
+            {
+                writer.WriteStringValue(RedactedRecipientValue);
+            }
+            else
+            {
+                property.Value.WriteTo(writer);
+            }
+        }
+
+        writer.WriteEndObject();
+    }
+
     private static void WriteAttachmentWithoutContentBase64(JsonElement attachment, Utf8JsonWriter writer)
     {
         if (attachment.ValueKind != JsonValueKind.Object)
@@ -388,14 +462,13 @@ public static class MailRequestCreateHandler
 
     private static bool IsWithinProviderEnvelopeEstimate(
         MailRequestCreateRequest request,
+        CanonicalMailRecipient recipient,
         MailerTenant tenant,
         IReadOnlyList<CanonicalAttachmentMetadata> attachments)
     {
-        var recipient = request.To[0];
         var estimate = AttachmentEnvelopeEstimator.EstimateUpperBound(new AttachmentEnvelopeInput(
             tenant.DefaultFrom.Email,
-            recipient.Email,
-            recipient.DisplayName,
+            [new AttachmentEnvelopeRecipient(recipient.Address, recipient.DisplayName)],
             request.Subject,
             request.TextBody,
             request.HtmlBody,
@@ -414,29 +487,37 @@ public static class MailRequestCreateHandler
         MailRequestCreateRequest request,
         MailerTenant tenant,
         DateTimeOffset now,
-        MailerRuntimeMetrics? runtimeMetrics)
+        MailerRuntimeMetrics? runtimeMetrics,
+        out CanonicalMailRecipientSet? canonicalRecipients)
     {
-        if (request.To is null)
+        if (!MailRecipientValidator.TryValidate(
+                request.To,
+                request.Cc,
+                request.Bcc,
+                out canonicalRecipients,
+                out var recipientFailure))
+        {
+            return recipientFailure == MailRecipientValidationFailure.TooManyRecipients
+                ? MailRequestHttpErrorMapper.Error(
+                    StatusCodes.Status422UnprocessableEntity,
+                    MailerErrorCodes.TooManyRecipients)
+                : MailerJsonResults.ValidationError(
+                    MailerErrorCodes.InvalidRequest,
+                    "A valid recipient is required.",
+                    StatusCodes.Status422UnprocessableEntity);
+        }
+
+        // Temporary gate (ADR 0023 / issue #540): Contracts/OpenAPI/validation/hash accept
+        // multiple To and Cc/Bcc, but recipient persistence and delivery (a separate, not-yet-
+        // implemented follow-up) still only handle a single To recipient. Reject any other shape
+        // here -- before attachment staging, hash verification, or any DB write -- so a
+        // multi-recipient request is never silently reduced to one recipient. No recipient values
+        // are included in the response.
+        if (!canonicalRecipients!.IsLegacySingleTo)
         {
             return MailerJsonResults.ValidationError(
                 MailerErrorCodes.InvalidRequest,
-                "A valid recipient is required.",
-                StatusCodes.Status422UnprocessableEntity);
-        }
-
-        if (request.To.Count > 1)
-        {
-            return MailRequestHttpErrorMapper.Error(
-                StatusCodes.Status422UnprocessableEntity,
-                MailerErrorCodes.TooManyRecipients);
-        }
-
-        if (request.To.Count == 0
-            || request.To.Any(recipient => recipient is null || !MailAddress.TryCreate(recipient.Email, out _)))
-        {
-            return MailerJsonResults.ValidationError(
-                MailerErrorCodes.InvalidRequest,
-                "A valid recipient is required.",
+                "Only a single To recipient is currently accepted.",
                 StatusCodes.Status422UnprocessableEntity);
         }
 

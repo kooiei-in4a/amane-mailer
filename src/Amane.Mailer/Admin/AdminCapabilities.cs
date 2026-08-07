@@ -8,6 +8,10 @@ namespace Amane.Mailer.Admin;
 public static class AdminCapabilities
 {
     public const string ViewUnmaskedListPii = "view_unmasked_list_pii";
+    public const string BccRecipientReveal = "bcc_recipient_reveal";
+
+    public static bool IsKnownPersistent(string capability) =>
+        string.Equals(capability, BccRecipientReveal, StringComparison.Ordinal);
 
     /// <summary>
     /// Whether the current Admin configuration grants the named capability.
@@ -21,6 +25,8 @@ public static class AdminCapabilities
         {
             // Suppressions / list unmask: PII_LIST_MODE=visible only (not MASK_RECIPIENTS=false).
             ViewUnmaskedListPii => options.ListPiiVisible,
+            // Raw BCC is never granted by configuration or by the list PII capability.
+            BccRecipientReveal => false,
             _ => false,
         };
     }

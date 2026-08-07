@@ -175,6 +175,44 @@ public sealed class MailerAdminManualMutationTests(MailerAdminFixture fixture)
     }
 
     [Fact]
+    public async Task Manual_retry_rejects_plain_delivery_unknown_without_reinvoking_provider()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var internalId = await SeedMailRequestAsync(MailRequestState.DeliveryUnknown, TenantA, ct);
+        var now = SqliteTime.UtcNow;
+
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+            var auditRepository = scope.ServiceProvider.GetRequiredService<AdminAuditRepository>();
+            var retry = await repository.TryManualRetryAsync(
+                internalId,
+                allowedTenantIds: null,
+                now,
+                auditRepository,
+                new AdminAuditEvent
+                {
+                    EventType = AdminAuditLog.EventTypes.ManualRetryRequested,
+                    Actor = "delivery-unknown-test-admin",
+                    OccurredAt = now,
+                    TargetType = AdminAuditLog.TargetTypes.MailRequest,
+                    TargetId = internalId.ToString("D"),
+                    Result = AdminAuditLog.Results.Success,
+                },
+                ct);
+
+            Assert.Equal(ManualMailRequestMutationStatus.InvalidState, retry.Status);
+        }
+
+        var state = await ReadStatusAsync(internalId, ct);
+        Assert.Equal(MailRequestState.DeliveryUnknown, state.Status);
+        var audit = await ReadLatestAuditAsync(internalId, AdminAuditLog.EventTypes.ManualRetryRequested, ct);
+        Assert.NotNull(audit);
+        Assert.Equal(AdminAuditLog.Results.Failure, audit.Value.Result);
+        Assert.Equal(AdminAuditLog.ErrorCodes.InvalidState, audit.Value.ErrorCode);
+    }
+
+    [Fact]
     public async Task Manual_cancel_allows_queued_attachment_request_without_submission_evidence()
     {
         var ct = TestContext.Current.CancellationToken;

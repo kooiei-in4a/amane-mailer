@@ -154,6 +154,11 @@ public sealed class MailerAdminUserCliTests
             Assert.NotNull(access);
             Assert.True(access.IsBreakGlass);
             Assert.Empty(access.TenantIds);
+
+            Assert.False(await repository.HasCapabilityAsync(
+                username,
+                AdminCapabilities.BccRecipientReveal,
+                ct));
         }
         finally
         {
@@ -265,6 +270,101 @@ public sealed class MailerAdminUserCliTests
             Assert.NotNull(access);
             Assert.Single(access.TenantIds);
             Assert.Equal(TenantB, access.TenantIds.Single());
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [Fact]
+    public async Task Admin_user_capability_command_grants_and_revokes_bcc_reveal()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = CreateTempRoot();
+        var configuration = BuildConfiguration(root);
+        const string username = "capability-cli-admin";
+
+        try
+        {
+            await MigrateAsync(configuration, ct);
+            Assert.Equal(
+                AdminUserCreateCommand.SuccessExitCode,
+                await RunCreateAsync(
+                    configuration,
+                    [
+                        "admin", "user", "create",
+                        "--username", username,
+                        "--password-hash", AdminPasswordHasher.Hash("capability-cli-password"),
+                        "--tenant-id", TenantA.ToString("D"),
+                    ],
+                    ct));
+
+            var grantOutput = new StringWriter();
+            Assert.Equal(
+                AdminUserCapabilityCommand.SuccessExitCode,
+                await MailerCliHost.RunAdminUserCapabilityAsync(
+                    configuration,
+                    [
+                        "admin", "user", "capability", "grant",
+                        "--username", username,
+                        "--capability", AdminCapabilities.BccRecipientReveal,
+                    ],
+                    grantOutput,
+                    new StringWriter(),
+                    ct));
+            Assert.Contains("granted", grantOutput.ToString(), StringComparison.OrdinalIgnoreCase);
+
+            var repository = new AdminUserRepository(
+                new SqliteConnectionFactory(configuration),
+                TimeProvider.System);
+            Assert.True(await repository.HasCapabilityAsync(username, AdminCapabilities.BccRecipientReveal, ct));
+
+            var revokeOutput = new StringWriter();
+            Assert.Equal(
+                AdminUserCapabilityCommand.SuccessExitCode,
+                await MailerCliHost.RunAdminUserCapabilityAsync(
+                    configuration,
+                    [
+                        "admin", "user", "capability", "revoke",
+                        "--username", username,
+                        "--capability", AdminCapabilities.BccRecipientReveal,
+                    ],
+                    revokeOutput,
+                    new StringWriter(),
+                    ct));
+            Assert.Contains("revoked", revokeOutput.ToString(), StringComparison.OrdinalIgnoreCase);
+            Assert.False(await repository.HasCapabilityAsync(username, AdminCapabilities.BccRecipientReveal, ct));
+        }
+        finally
+        {
+            Cleanup(root);
+        }
+    }
+
+    [Fact]
+    public async Task Admin_user_capability_command_rejects_unknown_capability()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = CreateTempRoot();
+        var configuration = BuildConfiguration(root);
+        try
+        {
+            await MigrateAsync(configuration, ct);
+            var error = new StringWriter();
+            var exitCode = await MailerCliHost.RunAdminUserCapabilityAsync(
+                configuration,
+                [
+                    "admin", "user", "capability", "grant",
+                    "--username", "unknown-capability-admin",
+                    "--capability", "view_unmasked_list_pii",
+                ],
+                new StringWriter(),
+                error,
+                ct);
+
+            Assert.Equal(AdminUserCapabilityCommand.UsageErrorExitCode, exitCode);
+            Assert.Contains("Unknown Admin capability is denied", error.ToString(), StringComparison.Ordinal);
         }
         finally
         {

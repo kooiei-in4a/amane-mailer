@@ -1,4 +1,5 @@
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Admin;
 using Microsoft.Data.Sqlite;
 
 namespace Amane.Mailer.Data.Sqlite;
@@ -138,6 +139,85 @@ public sealed class AdminUserRepository(
 
         var scopes = await ReadTenantScopesAsync(connection, user.Id, cancellationToken);
         return new AdminTenantAccess(user.Username, user.IsBreakGlass, scopes);
+    }
+
+    public async Task<bool> HasCapabilityAsync(
+        string username,
+        string capability,
+        CancellationToken cancellationToken = default)
+    {
+        if (!AdminCapabilities.IsKnownPersistent(capability))
+            return false;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM admin_user_capabilities c
+                INNER JOIN admin_users u ON u.id = c.admin_user_id
+                WHERE u.username = @Username
+                  AND u.disabled = 0
+                  AND c.capability = @Capability);
+            """;
+        command.Parameters.AddWithValue("@Username", NormalizeUsername(username));
+        command.Parameters.AddWithValue("@Capability", capability);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
+    public async Task<AdminCapabilityMutationResult> SetCapabilityAsync(
+        string username,
+        string capability,
+        bool grant,
+        CancellationToken cancellationToken = default)
+    {
+        if (!AdminCapabilities.IsKnownPersistent(capability))
+            throw new ArgumentException("Unknown Admin capability is denied.", nameof(capability));
+
+        var normalizedUsername = NormalizeUsername(username);
+        var now = timeProvider.GetUtcNow();
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            var user = await ReadUserByUsernameAsync(connection, normalizedUsername, cancellationToken)
+                ?? throw new InvalidOperationException($"Admin user '{normalizedUsername}' does not exist.");
+
+            var hasCapability = await HasCapabilityAsync(connection, user.Id, capability, cancellationToken);
+            if (hasCapability == grant)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return AdminCapabilityMutationResult.Unchanged;
+            }
+
+            await using (var command = connection.CreateCommand())
+            {
+                command.CommandText = grant
+                    ? "INSERT INTO admin_user_capabilities (admin_user_id, capability) VALUES (@UserId, @Capability);"
+                    : "DELETE FROM admin_user_capabilities WHERE admin_user_id = @UserId AND capability = @Capability;";
+                command.Parameters.AddWithValue("@UserId", user.Id);
+                command.Parameters.AddWithValue("@Capability", capability);
+                if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
+                    throw new InvalidOperationException("Admin capability mapping update affected an unexpected row count.");
+            }
+
+            await IncrementCredentialEpochAsync(connection, user.Id, now, cancellationToken);
+            await RevokeActiveSessionsByActorAsync(
+                connection,
+                normalizedUsername,
+                AdminSessionRevokeReasons.CapabilityChanged,
+                now,
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+            return AdminCapabilityMutationResult.Changed;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
     }
 
     public async Task<bool> CanRunServiceWideBackupAsync(
@@ -325,6 +405,26 @@ public sealed class AdminUserRepository(
         return Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
     }
 
+    private static async Task<bool> HasCapabilityAsync(
+        SqliteConnection connection,
+        long userId,
+        string capability,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT EXISTS (
+                SELECT 1
+                FROM admin_user_capabilities
+                WHERE admin_user_id = @UserId
+                  AND capability = @Capability);
+            """;
+        command.Parameters.AddWithValue("@UserId", userId);
+        command.Parameters.AddWithValue("@Capability", capability);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture) == 1;
+    }
+
     private static async Task<long> InsertUserAsync(
         SqliteConnection connection,
         string username,
@@ -500,4 +600,10 @@ public sealed class AdminUserRepository(
 
         return username.Trim();
     }
+}
+
+public enum AdminCapabilityMutationResult
+{
+    Unchanged,
+    Changed,
 }

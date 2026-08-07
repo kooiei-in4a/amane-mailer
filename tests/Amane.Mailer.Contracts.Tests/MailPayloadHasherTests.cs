@@ -65,16 +65,64 @@ public sealed class MailPayloadHasherTests
         Assert.Equal("7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9", hash);
     }
 
+    /// <summary>
+    /// Baseline vectors: the pre-ADR-0023 single-To/attachment fixture set that existing
+    /// Python/TypeScript SDKs (<c>sdk/python</c>, <c>sdk/typescript</c>) already implement and
+    /// verify against. Kept byte-identical to the pre-#540 fixture so those SDK test suites
+    /// (which read this exact file) do not need cc/bcc/trim support to stay green.
+    /// </summary>
     [Fact]
     public async Task Shared_test_vectors_match_canonical_json_and_hash()
     {
-        await using var stream = File.OpenRead(Path.Combine(AppContext.BaseDirectory, "TestVectors", "payload-hash-vectors.json"));
+        var vectors = await LoadVectorsAsync("payload-hash-vectors.json");
+        AssertVectorsMatch(vectors);
+    }
+
+    /// <summary>
+    /// ADR 0023 recipient (to/cc/bcc) conformance vectors, kept in a separate fixture so the
+    /// existing Python/TypeScript SDK test suites -- which only implement the baseline
+    /// single-To contract until issue #542 lands -- are not broken by these. The .NET Contracts
+    /// layer and the language-independent <c>examples/payload-hash/{python,javascript,go}</c>
+    /// reference verifiers (this PR's scope) validate both files.
+    /// </summary>
+    [Fact]
+    public async Task Recipient_v1_3_test_vectors_match_canonical_json_and_hash()
+    {
+        var vectors = await LoadVectorsAsync("payload-hash-recipient-v1.3-vectors.json");
+        AssertVectorsMatch(vectors);
+    }
+
+    /// <summary>
+    /// Guards against the same vector name being reused across the two fixture files, which
+    /// would make it ambiguous which file a name refers to in test failures, issue references,
+    /// or the non-.NET reference verifiers that load both.
+    /// </summary>
+    [Fact]
+    public async Task Baseline_and_recipient_v1_3_vectors_do_not_share_names()
+    {
+        var baselineNames = (await LoadVectorsAsync("payload-hash-vectors.json"))
+            .Select(vector => vector.Name)
+            .ToHashSet(StringComparer.Ordinal);
+        var v13Names = (await LoadVectorsAsync("payload-hash-recipient-v1.3-vectors.json"))
+            .Select(vector => vector.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.Empty(baselineNames.Intersect(v13Names));
+    }
+
+    private static async Task<IReadOnlyList<PayloadHashVector>> LoadVectorsAsync(string fileName)
+    {
+        await using var stream = File.OpenRead(Path.Combine(AppContext.BaseDirectory, "TestVectors", fileName));
         var vectors = await JsonSerializer.DeserializeAsync<IReadOnlyList<PayloadHashVector>>(
             stream,
             options: null,
             TestContext.Current.CancellationToken);
         Assert.NotNull(vectors);
+        return vectors;
+    }
 
+    private static void AssertVectorsMatch(IReadOnlyList<PayloadHashVector> vectors)
+    {
         foreach (var vector in vectors)
         {
             var json = vector.Input.GetRawText();

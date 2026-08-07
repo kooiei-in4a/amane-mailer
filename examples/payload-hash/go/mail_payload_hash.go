@@ -15,6 +15,8 @@ var includedFields = map[string]struct{}{
 	"source_service": {},
 	"purpose":        {},
 	"to":             {},
+	"cc":             {},
+	"bcc":            {},
 	"subject":        {},
 	"html_body":      {},
 	"text_body":      {},
@@ -36,6 +38,48 @@ var includedFields = map[string]struct{}{
 // file_name (the shared test vectors use precomposed Japanese text, so this does not affect
 // vector parity here).
 const attachmentsFieldName = "attachments"
+
+// recipientFieldNames follow the same omission rule as attachmentsFieldName (ADR 0023 D-02):
+// unspecified, null, and an empty slice are all equivalent and the role is omitted from the
+// hash document entirely (no "to":null or "to":[] ever appears; a CC-only request has no "to"
+// key at all). A non-empty role is re-projected to the validated canonical recipient value
+// (trimmed email; whitespace-only display_name treated as absent) -- not the raw request bytes
+// -- so equivalent-but-differently-formatted submissions hash identically.
+var recipientFieldNames = []string{"to", "cc", "bcc"}
+
+func isRecipientField(key string) bool {
+	for _, name := range recipientFieldNames {
+		if key == name {
+			return true
+		}
+	}
+	return false
+}
+
+func projectRecipientRole(role any) any {
+	items, ok := role.([]any)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+
+	projected := make([]any, 0, len(items))
+	for _, item := range items {
+		recipient, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		entry := map[string]any{}
+		if email, ok := recipient["email"].(string); ok {
+			entry["email"] = strings.TrimSpace(email)
+		}
+		if displayName, ok := recipient["display_name"].(string); ok && strings.TrimSpace(displayName) != "" {
+			entry["display_name"] = displayName
+		}
+		projected = append(projected, entry)
+	}
+	return projected
+}
 
 // Attachment is the verified (not Consumer-declared) shape used for the hash projection.
 type Attachment struct {
@@ -199,11 +243,18 @@ func BuildDeliveryPayloadJSON(request map[string]any) (string, error) {
 func BuildDeliveryPayloadJSONWithAttachments(request map[string]any, attachments []Attachment) (string, error) {
 	filtered := make(map[string]any)
 	for key, value := range request {
-		if key == attachmentsFieldName {
+		if key == attachmentsFieldName || isRecipientField(key) {
 			continue
 		}
 		if _, ok := includedFields[key]; ok {
 			filtered[key] = value
+		}
+	}
+	for _, fieldName := range recipientFieldNames {
+		if value, ok := request[fieldName]; ok {
+			if projected := projectRecipientRole(value); projected != nil {
+				filtered[fieldName] = projected
+			}
 		}
 	}
 	if len(attachments) > 0 {

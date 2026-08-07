@@ -253,7 +253,9 @@ public static class AdminSuppressionsPage
         AdminSuppressionListRow item,
         MailerAdminOptions options)
     {
-        var recipient = AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii)
+        var recipient = item.IsBccSensitive
+            ? "***"
+            : AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii)
             ? item.RecipientEmail
             : MaskSuppressionRecipient(item.RecipientEmail);
 

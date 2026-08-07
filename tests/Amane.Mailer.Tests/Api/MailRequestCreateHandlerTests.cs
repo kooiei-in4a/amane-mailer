@@ -3,6 +3,7 @@ using Amane.Mailer.Api;
 using Amane.Mailer.Attachments.Spool;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
+using Amane.Mailer.Contracts.Security;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Json;
@@ -162,6 +163,57 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HandleAsync_persists_the_validated_canonical_recipient_not_the_raw_request_value()
+    {
+        // ADR 0023 D-02: the stored/delivered recipient must match the value MailPayloadHasher
+        // hashed (trimmed address, whitespace-only display name normalized to absent) -- not
+        // the raw request DTO -- so payload_hash always describes the actual delivery payload.
+        var draft = new MailRequestCreateRequest
+        {
+            TenantId = MailerWebApplicationFixtureBase.TenantId,
+            SourceService = MailerWebApplicationFixtureBase.SourceService,
+            MailRequestId = Guid.NewGuid(),
+            Purpose = "FormResponseNotification",
+            To =
+            [
+                new MailRecipientDto
+                {
+                    Email = "  user@example.com  ",
+                    DisplayName = "   ",
+                },
+            ],
+            Subject = "Form response received",
+            TextBody = "Hello from Mailer tests",
+            PayloadHash = new string('0', 64),
+        };
+        var request = draft with
+        {
+            PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(draft),
+        };
+        var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
+        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
+        var repository = new StubMailRequestRepository();
+
+        var result = await MailRequestCreateHandler.HandleAsync(
+            httpRequest,
+            request,
+            body,
+            repository,
+            new MailRequestQueue(),
+            _registry!,
+            _attachmentSpool!,
+            TimeProvider.System,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        var (statusCode, _) = MailRequestHttpResultAssertions.Inspect(result);
+        Assert.Equal(StatusCodes.Status202Accepted, statusCode);
+        Assert.Equal(1, repository.InsertCount);
+        Assert.Equal("user@example.com", repository.LastInsert!.RecipientEmail);
+        Assert.Null(repository.LastInsert!.RecipientDisplayName);
+    }
+
+    [Fact]
     public async Task HandleAsync_returns_409_for_idempotency_conflict()
     {
         var request = MailRequestTestData.CreateRequest();
@@ -281,6 +333,70 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         Assert.Equal(1, repository.InsertCount);
     }
 
+    [Theory]
+    [MemberData(nameof(NonLegacyRecipientShapes))]
+    public async Task HandleAsync_rejects_non_legacy_recipient_shapes_before_any_db_write(
+        IReadOnlyList<MailRecipientDto>? to,
+        IReadOnlyList<MailRecipientDto>? cc,
+        IReadOnlyList<MailRecipientDto>? bcc)
+    {
+        // ADR 0023 / issue #540: the Contracts/validation layer accepts these shapes, but
+        // recipient persistence is a separate, not-yet-implemented follow-up. The temporary
+        // legacy-shape gate must reject them -- before any DB write, attachment staging, or queue
+        // signal -- rather than silently reducing them to one recipient.
+        var request = MailRequestTestData.CreateRequest() with { To = to, Cc = cc, Bcc = bcc };
+        request = request with { PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request) };
+        var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
+        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
+        var repository = new StubMailRequestRepository();
+
+        var result = await MailRequestCreateHandler.HandleAsync(
+            httpRequest,
+            request,
+            body,
+            repository,
+            new MailRequestQueue(),
+            _registry!,
+            _attachmentSpool!,
+            TimeProvider.System,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        var (statusCode, responseBody) = MailRequestHttpResultAssertions.Inspect(result);
+        Assert.Equal(StatusCodes.Status422UnprocessableEntity, statusCode);
+        Assert.Contains(MailerErrorCodes.InvalidRequest, responseBody, StringComparison.Ordinal);
+        Assert.Equal(0, repository.InsertCount);
+        Assert.DoesNotContain("@example.com", responseBody, StringComparison.Ordinal);
+    }
+
+    public static TheoryData<IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?> NonLegacyRecipientShapes()
+    {
+        var data = new TheoryData<IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?>();
+
+        // Two To recipients: a valid shape at the Contracts layer, but not yet persistable.
+        data.Add(
+            [
+                new MailRecipientDto { Email = "one@example.com" },
+                new MailRecipientDto { Email = "two@example.com" },
+            ],
+            null,
+            null);
+
+        // CC-only: no To at all.
+        data.Add(null, [new MailRecipientDto { Email = "cc@example.com" }], null);
+
+        // BCC-only.
+        data.Add(null, null, [new MailRecipientDto { Email = "bcc@example.com" }]);
+
+        // Single To plus a Cc.
+        data.Add(
+            [new MailRecipientDto { Email = "to@example.com" }],
+            [new MailRecipientDto { Email = "cc@example.com" }],
+            null);
+
+        return data;
+    }
+
     private static HttpRequest CreateAuthorizedHttpRequest(string token)
     {
         var context = new DefaultHttpContext();
@@ -298,7 +414,9 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
                 adminQueries: null!,
                 heartbeatStore: null!,
                 attachmentStore: null!,
-                attachmentSubmissionStore: null!)
+                attachmentSubmissionStore: null!,
+                recipientStore: null!,
+                plainSubmissionStore: null!)
         {
         }
 
@@ -307,6 +425,8 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         public Exception? FindException { get; init; }
 
         public int InsertCount { get; private set; }
+
+        public AcceptedMailRequestInsert? LastInsert { get; private set; }
 
         public override Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
             Guid tenantId,
@@ -327,6 +447,7 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             CancellationToken cancellationToken = default)
         {
             InsertCount++;
+            LastInsert = insert;
             return Task.CompletedTask;
         }
     }

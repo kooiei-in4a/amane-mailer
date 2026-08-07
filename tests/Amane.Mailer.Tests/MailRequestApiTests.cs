@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Net;
 using System.Text;
 using Amane.Mailer.Api;
@@ -273,6 +274,42 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     {
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
+
+        // ADR 0023 D-01: To allows up to 10 recipients at the Contracts/validation layer; 11
+        // exceeds the per-role limit and is TOO_MANY_RECIPIENTS regardless of the temporary
+        // single-To persistence gate (which would otherwise report a plain INVALID_REQUEST for a
+        // shape it does not persist -- see Multiple_to_recipients_within_limit_is_not_yet_persistable_returns_invalid_request).
+        var request = MailRequestTestData.CreateRequest() with
+        {
+            To = Enumerable.Range(1, 11)
+                .Select(i => new MailRecipientDto { Email = $"recipient{i}@example.com" })
+                .ToArray(),
+        };
+        request = request with
+        {
+            PayloadHash = global::Amane.Mailer.Contracts.Security.MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+        };
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.TooManyRecipients,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Multiple_to_recipients_within_limit_is_not_yet_persistable_returns_invalid_request()
+    {
+        // ADR 0023 / issue #540: the Contracts/validation layer now accepts up to 10 To
+        // recipients, but recipient persistence is a separate, not-yet-implemented follow-up.
+        // A shape the validator would otherwise accept is rejected by the temporary legacy-shape
+        // gate so it is never silently reduced to one recipient.
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
         var request = MailRequestTestData.CreateRequest() with
         {
             To =
@@ -293,7 +330,55 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.TooManyRecipients,
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Cc_only_is_not_yet_persistable_returns_invalid_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest() with
+        {
+            To = null,
+            Cc = [new MailRecipientDto { Email = "cc@example.com" }],
+        };
+        request = request with
+        {
+            PayloadHash = global::Amane.Mailer.Contracts.Security.MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+        };
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task No_recipients_at_all_returns_invalid_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest() with { To = null };
+        request = request with
+        {
+            PayloadHash = global::Amane.Mailer.Contracts.Security.MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+        };
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.InvalidRequest,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
@@ -726,7 +811,9 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
                                 sp.GetRequiredService<MailRequestAdminQueries>(),
                                 sp.GetRequiredService<WorkerHeartbeatStore>(),
                                 sp.GetRequiredService<MailRequestAttachmentStore>(),
-                                sp.GetRequiredService<MailAttachmentSubmissionStore>()));
+                                sp.GetRequiredService<MailAttachmentSubmissionStore>(),
+                                sp.GetRequiredService<MailRequestRecipientStore>(),
+                                sp.GetRequiredService<MailPlainSubmissionStore>()));
                     });
                 });
 
@@ -830,7 +917,9 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         MailRequestAdminQueries adminQueries,
         WorkerHeartbeatStore heartbeatStore,
         MailRequestAttachmentStore attachmentStore,
-        MailAttachmentSubmissionStore attachmentSubmissionStore)
+        MailAttachmentSubmissionStore attachmentSubmissionStore,
+        MailRequestRecipientStore recipientStore,
+        MailPlainSubmissionStore plainSubmissionStore)
         : MailRequestRepository(
             claimStore,
             acceptStore,
@@ -838,7 +927,9 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             adminQueries,
             heartbeatStore,
             attachmentStore,
-            attachmentSubmissionStore)
+            attachmentSubmissionStore,
+            recipientStore,
+            plainSubmissionStore)
     {
         public override Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
             Guid tenantId,

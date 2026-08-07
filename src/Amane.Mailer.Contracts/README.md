@@ -178,7 +178,15 @@ hash from raw JSON instead, pass the exact JSON string that will be sent.
 Python, JavaScript (Node.js), and Go reference implementations with official
 test vector verification live under
 [`examples/payload-hash/`](../../examples/payload-hash/README.md).
-CI runs each language verifier against
-`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json`.
-When canonicalization rules change, update those examples in the same change as
-the test vectors.
+CI runs each language verifier against both
+`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` (baseline) and
+`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json`
+(ADR 0023 recipient conformance). When canonicalization rules change, update those examples in
+the same change as the test vectors.
+
+The Python/TypeScript **SDKs** (`sdk/python`, `sdk/typescript`, as opposed to the
+language-independent reference examples above) verify only the baseline fixture until issue
+[#542](https://github.com/kooiei-in4a/amane-mailer/issues/542) implements `cc`/`bcc`/optional-`to`
+support in SDK production code — reading the recipient v1.3 fixture from the SDK tests before
+then would fail on every vector it adds. See
+[examples/payload-hash/README.md#vector-fixtures-baseline-vs-recipient-v13](../../examples/payload-hash/README.md#vector-fixtures-baseline-vs-recipient-v13).

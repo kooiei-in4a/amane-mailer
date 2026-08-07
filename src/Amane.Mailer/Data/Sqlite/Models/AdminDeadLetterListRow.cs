@@ -10,4 +10,7 @@ public sealed record AdminDeadLetterListRow(
     string? LastErrorMessage,
     int AttemptCount,
     int MaxAttempts,
-    DateTimeOffset CompletedAt);
+    DateTimeOffset CompletedAt)
+{
+    public IReadOnlyList<AdminRecipientSummary> Recipients { get; init; } = [];
+}

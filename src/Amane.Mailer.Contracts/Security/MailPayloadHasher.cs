@@ -10,6 +10,11 @@ namespace Amane.Mailer.Contracts.Security;
 public static class MailPayloadHasher
 {
     private const string AttachmentsFieldName = "attachments";
+    private const string ToFieldName = "to";
+    private const string CcFieldName = "cc";
+    private const string BccFieldName = "bcc";
+
+    private static readonly string[] RecipientFieldNames = [ToFieldName, CcFieldName, BccFieldName];
 
     private static readonly ISet<string> IncludedFieldSet =
         MailPayloadHashContract.IncludedFields.ToHashSet(StringComparer.Ordinal);
@@ -47,9 +52,22 @@ public static class MailPayloadHasher
         var properties = document.RootElement.EnumerateObject()
             .Where(property =>
                 IncludedFieldSet.Contains(property.Name)
-                && !string.Equals(property.Name, AttachmentsFieldName, StringComparison.Ordinal))
+                && !string.Equals(property.Name, AttachmentsFieldName, StringComparison.Ordinal)
+                && !RecipientFieldNames.Contains(property.Name, StringComparer.Ordinal))
             .Select(property => (property.Name, CanonicalValue: Canonicalize(property.Value)))
             .ToList();
+
+        foreach (var fieldName in RecipientFieldNames)
+        {
+            if (document.RootElement.TryGetProperty(fieldName, out var recipientElement))
+            {
+                var canonicalRole = CanonicalizeRecipientRoleOrNull(recipientElement);
+                if (canonicalRole is not null)
+                {
+                    properties.Add((fieldName, canonicalRole));
+                }
+            }
+        }
 
         if (attachments is { Count: > 0 })
         {
@@ -73,10 +91,23 @@ public static class MailPayloadHasher
         {
             ("source_service", EscapeJsonString(request.SourceService)),
             ("purpose", EscapeJsonString(request.Purpose)),
-            ("to", CanonicalizeRecipients(
-                request.To as MailRecipientDto[] ?? request.To.ToArray())),
             ("subject", EscapeJsonString(request.Subject)),
         };
+
+        if (CanonicalizeRecipientRoleOrNull(request.To) is { } canonicalTo)
+        {
+            properties.Add(("to", canonicalTo));
+        }
+
+        if (CanonicalizeRecipientRoleOrNull(request.Cc) is { } canonicalCc)
+        {
+            properties.Add(("cc", canonicalCc));
+        }
+
+        if (CanonicalizeRecipientRoleOrNull(request.Bcc) is { } canonicalBcc)
+        {
+            properties.Add(("bcc", canonicalBcc));
+        }
 
         if (request.HtmlBody is not null)
         {
@@ -173,10 +204,52 @@ public static class MailPayloadHasher
         return element.GetDouble().ToString("G17", CultureInfo.InvariantCulture);
     }
 
-    private static string CanonicalizeRecipients(MailRecipientDto[] value)
+    /// <summary>
+    /// Canonicalizes a To/Cc/Bcc role from a raw JSON property value (absent property, explicit
+    /// <c>null</c>, and empty array are all treated as "no recipients in this role" upstream by
+    /// the caller's <c>TryGetProperty</c> check plus the empty-array check here). Returns
+    /// <c>null</c> when the role has zero recipients, so the caller omits the field entirely
+    /// (ADR 0023 D-02).
+    /// </summary>
+    private static string? CanonicalizeRecipientRoleOrNull(JsonElement recipientElement)
     {
+        if (recipientElement.ValueKind is not JsonValueKind.Array || recipientElement.GetArrayLength() == 0)
+        {
+            // Explicit null, an empty array, or (defensively) any other shape all omit the role.
+            return null;
+        }
+
+        var recipients = JsonSerializer.Deserialize(
+            recipientElement.GetRawText(),
+            MailerContractsJsonContext.Default.MailRecipientDtoArray);
+        return CanonicalizeRecipientRoleOrNull(recipients);
+    }
+
+    /// <summary>
+    /// Canonicalizes a To/Cc/Bcc role from the DTO. Returns <c>null</c> when unspecified, null,
+    /// or an empty array, so the caller omits the field entirely (ADR 0023 D-02). Non-null
+    /// recipients are re-derived through <see cref="MailRecipientValidator"/>-equivalent
+    /// canonicalization (trimmed, case-preserved address; whitespace-only display name treated as
+    /// absent) so the hash reflects the same value the validator accepted, not the raw request
+    /// bytes.
+    /// </summary>
+    private static string? CanonicalizeRecipientRoleOrNull(IReadOnlyList<MailRecipientDto>? role)
+    {
+        if (role is null || role.Count == 0)
+        {
+            return null;
+        }
+
+        var normalized = role
+            .Select(recipient => recipient with
+            {
+                Email = recipient.Email.Trim(),
+                DisplayName = string.IsNullOrWhiteSpace(recipient.DisplayName) ? null : recipient.DisplayName,
+            })
+            .ToArray();
+
         using var document = JsonDocument.Parse(
-            JsonSerializer.Serialize(value, MailerContractsJsonContext.Default.MailRecipientDtoArray));
+            JsonSerializer.Serialize(normalized, MailerContractsJsonContext.Default.MailRecipientDtoArray));
         return Canonicalize(document.RootElement);
     }
 

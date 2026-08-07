@@ -40,15 +40,15 @@ public sealed class Spike525UnknownAfterSubmissionTests
             MailpitUseSsl = false,
         });
 
-        var job = new MailSendJob(
+        var job = MailSendJob.ForSingleRecipient(
             Guid.NewGuid(),
             "spike525-source",
             subject,
-            HtmlBody: null,
-            TextBody: "s06 body",
-            ReplyTo: null,
-            Spike525Support.SyntheticAddress("s06-to1"),
-            RecipientDisplayName: null);
+            htmlBody: null,
+            textBody: "s06 body",
+            replyTo: null,
+            recipientEmail: Spike525Support.SyntheticAddress("s06-to1"),
+            recipientDisplayName: null);
 
         var tenant = new MailerTenant
         {
@@ -114,15 +114,15 @@ public sealed class Spike525UnknownAfterSubmissionTests
         }
 
         var subject = "spike525-s08-" + Guid.NewGuid().ToString("N")[..8];
-        var job = new MailSendJob(
+        var job = MailSendJob.ForSingleRecipient(
             Guid.NewGuid(),
             "spike525-source",
             subject,
-            HtmlBody: null,
-            TextBody: "s08 body",
-            ReplyTo: null,
-            Spike525Support.SyntheticAddress("s08-to1"),
-            RecipientDisplayName: null);
+            htmlBody: null,
+            textBody: "s08 body",
+            replyTo: null,
+            recipientEmail: Spike525Support.SyntheticAddress("s08-to1"),
+            recipientDisplayName: null);
 
         var tenant = new MailerTenant
         {

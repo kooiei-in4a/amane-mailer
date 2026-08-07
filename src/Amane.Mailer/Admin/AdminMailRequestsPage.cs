@@ -278,7 +278,7 @@ public static class AdminMailRequestsPage
         html.AppendLine("</a></td>");
         AppendCell(html, item.TenantId.ToString("D"));
         AppendCell(html, item.SourceService);
-        AppendCell(html, options.MaskRecipients ? MaskRecipient(item.RecipientEmail) : item.RecipientEmail);
+        AppendCell(html, AdminRecipientSummaryRenderer.RenderList(item.Recipients, options.MaskRecipients));
         AppendCell(html, options.MaskSubjects ? MaskSubject(item.Subject) : item.Subject);
         html.Append("                    <td><span class=\"status-badge ");
         html.Append(statusClass);
@@ -406,18 +406,6 @@ public static class AdminMailRequestsPage
             (int)MailRequestState.DeliveryUnknown => "status-deliveryunknown",
             _ => "status-unknown",
         };
-
-    private static string MaskRecipient(string email)
-    {
-        if (string.IsNullOrEmpty(email))
-            return "***";
-
-        var at = email.IndexOf('@', StringComparison.Ordinal);
-        if (at <= 0)
-            return $"{email[0]}***";
-
-        return $"{email[0]}***{email[at..]}";
-    }
 
     private static string MaskSubject(string subject)
     {

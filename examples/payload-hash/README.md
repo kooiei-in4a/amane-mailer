@@ -2,9 +2,15 @@
 
 Reference implementations for computing Mailer `payload_hash` outside .NET.
 
-Official test vectors:
+Official test vectors, split across two fixture files (see
+[Vector fixtures: baseline vs recipient v1.3](#vector-fixtures-baseline-vs-recipient-v13) below):
 
-`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json`
+- `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` (baseline)
+- `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json` (ADR 0023 recipient conformance)
+
+These Python/JavaScript/Go reference implementations verify **both** files. The Python/TypeScript
+**SDKs** (`sdk/python`, `sdk/typescript`) verify only the baseline file until issue
+[#542](https://github.com/kooiei-in4a/amane-mailer/issues/542) adds cc/bcc support.
 
 Contract notes (also in `tests/Amane.Mailer.Contracts.Tests/TestVectors/README.md`):
 
@@ -14,13 +20,35 @@ Hash covers delivery payload fields only:
 
 - `source_service`
 - `purpose`
-- `to`
+- `to` (special projection — see below)
+- `cc` (special projection — see below)
+- `bcc` (special projection — see below)
 - `subject`
 - `html_body`
 - `text_body`
 - `reply_to`
 - `metadata`
 - `attachments` (special projection — see below)
+
+## Recipients: to / cc / bcc (ADR 0023 D-01/D-02)
+
+`to`, `cc`, and `bcc` follow the same omission rule as `attachments`, applied independently per
+role: unspecified, `null`, and an empty array are all equivalent ("zero recipients in this
+role") and the role is omitted from the hash document entirely — a CC-only request has no `to`
+key at all, and a BCC-only request has neither a `to` nor a `cc` key. When a role has one or
+more recipients, each element is re-projected to the *validated canonical* recipient value, not
+the raw request bytes: `email` is trimmed (case is preserved — addresses are not
+lowercased for hashing), and `display_name` is included only when present and not
+whitespace-only (a whitespace-only `display_name` is treated the same as an absent one and
+omitted from the projected object). Role array order is preserved. Each example's
+`build_delivery_payload_json` / `buildDeliveryPayloadJson` / `BuildDeliveryPayloadJSONWithAttachments`
+function performs this projection automatically from whatever `to`/`cc`/`bcc` shape is present
+on the request object you pass in — you do not need to pre-trim addresses or drop whitespace-only
+display names yourself, but the request you actually POST must be one Mailer would accept (a
+request with a leading/trailing-whitespace or invalid address will still be rejected by Mailer's
+own validation even though these examples can compute *a* hash for it). See
+[docs/adr/0023-multiple-recipient-contract-and-delivery-semantics.md](../../docs/adr/0023-multiple-recipient-contract-and-delivery-semantics.md)
+D-01/D-02.
 
 ## Attachments (ADR 0022 D-03)
 
@@ -70,6 +98,33 @@ After extracting included fields from the request JSON:
 
 These examples mirror `MailPayloadHasher` in `src/Amane.Mailer.Contracts/Security/MailPayloadHasher.cs`, not a generic RFC 8785 library.
 
+## Vector fixtures: baseline vs recipient v1.3
+
+The shared test vectors are split across two files by contract generation, not by consumer
+convenience — each file is still a complete, language-independent fixture on its own:
+
+- **`payload-hash-vectors.json`** (baseline): the pre-ADR-0023 single-To/attachment vectors.
+  This file is also read directly by the existing Python/TypeScript **SDK** conformance tests
+  (`sdk/python/tests/test_payload_hash.py`, `sdk/typescript/test/payload-hash.test.mjs`), which
+  implement only the single-To contract today. Its content and hash values are frozen —
+  unchanged since before the ADR 0023 recipient work.
+- **`payload-hash-recipient-v1.3-vectors.json`** (recipient v1.3): the ADR 0023 `to`/`cc`/`bcc`
+  conformance vectors (CC-only, BCC-only, combined to+cc+bcc, address trim, whitespace-only
+  display name). This file is **not** read by the SDK conformance tests yet — the Python and
+  TypeScript SDK production code does not implement `cc`/`bcc`/optional-`to` until issue
+  [#542](https://github.com/kooiei-in4a/amane-mailer/issues/542) lands. Reading it from the SDK
+  tests before then would fail on every vector this file adds.
+
+The Python/JavaScript/Go reference implementations in this directory verify **both** files (see
+`verify_vectors.py` / `verify_vectors.mjs` / `verify_vectors_test.go`), since they exist to
+validate the full language-independent contract, not just what any one SDK has implemented so
+far. Vector names are disjoint across the two files (enforced by a .NET Contracts test,
+`Baseline_and_recipient_v1_3_vectors_do_not_share_names`), so a name always identifies exactly
+one fixture unambiguously.
+
+When issue #542 implements `cc`/`bcc`/optional-`to` in the SDKs, the SDK conformance tests
+should be updated to read both fixture files as well.
+
 ## Language examples
 
 | Language | Implementation | Verify against test vectors | Request JSON verifier |
@@ -78,7 +133,7 @@ These examples mirror `MailPayloadHasher` in `src/Amane.Mailer.Contracts/Securit
 | JavaScript (Node.js) | [javascript/mail_payload_hash.mjs](javascript/mail_payload_hash.mjs) | `node examples/payload-hash/javascript/verify_vectors.mjs` | — |
 | Go | [go/mail_payload_hash.go](go/mail_payload_hash.go) | `go test ./...` in `examples/payload-hash/go` | — |
 
-CI runs all three verifiers in the OpenAPI validation workflow. Contract drift check (`scripts/check-contract-drift.mjs`) asserts these examples stay present and reference the shared test vectors.
+CI runs all three verifiers in the OpenAPI validation workflow. Contract drift check (`scripts/check-contract-drift.mjs`) asserts these examples stay present and reference the shared test vectors (both fixture files — see [Vector fixtures: baseline vs recipient v1.3](#vector-fixtures-baseline-vs-recipient-v13) above).
 
 ## Minimal usage
 
@@ -160,7 +215,7 @@ previous request. Typical causes:
 1. **Included vs. excluded fields mixed up.** Hashing `tenant_id`,
    `mail_request_id`, `payload_hash`, or `scheduled_at` (routing/schedule/self-reference fields), or
    omitting one of the delivery fields (`source_service`, `purpose`, `to`,
-   `subject`, `html_body`, `text_body`, `reply_to`, `metadata`) that is
+   `cc`, `bcc`, `subject`, `html_body`, `text_body`, `reply_to`, `metadata`) that is
    actually present in the request JSON from the hash input.
 2. **Omitted vs. explicit `null` mismatch.** Computing the hash as if an
    optional field were omitted, then POSTing it as `"reply_to": null` (or the

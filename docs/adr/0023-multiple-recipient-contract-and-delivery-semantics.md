@@ -7,7 +7,7 @@
 - **Tracks:** [Issue #519](https://github.com/kooiei-in4a/amane-mailer/issues/519)
 - **Planning:** [Issue #517](https://github.com/kooiei-in4a/amane-mailer/issues/517)
 - **Related PR:** [#539](https://github.com/kooiei-in4a/amane-mailer/pull/539)
-- **Related issues:** [#525](https://github.com/kooiei-in4a/amane-mailer/issues/525)、[#530](https://github.com/kooiei-in4a/amane-mailer/issues/530)
+- **Related issues:** [#525](https://github.com/kooiei-in4a/amane-mailer/issues/525)、[#530](https://github.com/kooiei-in4a/amane-mailer/issues/530)、[#546](https://github.com/kooiei-in4a/amane-mailer/issues/546)（issue C, D-12 amendment）
 - **Amends:** [ADR 0012](0012-mail-via-mailer-microservice.md)、[ADR 0013](0013-admin-threat-model-and-pii-policy.md)、[ADR 0014](0014-admin-session-tenant-throttle-audit-design.md)、[ADR 0015](0015-manual-retry-cancel-state-transitions.md)、[ADR 0020](0020-bounce-ingestion-and-suppression.md)、[ADR 0022](0022-attachment-contract-validation-and-delivery-boundaries.md)
 - **Implementation status:** Design decision approved. Production implementation is **NOT YET APPROVED** and was not performed by PR #539.
 - **Migration status:** Migration SQL, including migration 018, is **NOT IMPLEMENTED / NOT REVIEWED**.
@@ -201,6 +201,36 @@ Koo承認済みのv1.3.0 Committed scopeは次である。
 - tenant別DB
 
 実装IssueはD0（ADR／authority整合）、D1（[#530](https://github.com/kooiei-in4a/amane-mailer/issues/530) Suppressed独立実装）、A（Contracts／OpenAPI／hash／validation）、B（recipient persistence／migration 018）、C（provider disposition）、D（recipient feedback／bounce correlation）、E（BCC capability／Admin／audit）、F（SDK／examples）、G（integration／platform／RC qualification）へ分割する。#530のproduction責任をmultiple-recipient本体へ混ぜず、Issue mutationは本ADR反映では行わない。
+
+### D-12. Issue #546 amendment: suppression precheckのterminal disposition
+
+[Issue #546](https://github.com/kooiei-in4a/amane-mailer/issues/546)（issue C）の実装開始前に、D-04の `DefinitelyNotSubmitted` とD-05の事前suppression拒否の組合せについて、[maintainer decisionコメント](https://github.com/kooiei-in4a/amane-mailer/issues/546#issuecomment-5194173466)（2026-08-06、Koo）で正本を確定した。本節はその決定をADR正本へ反映するものであり、D-04／D-05の既存の意味、ADR 0012／0015／0020／0022の意味を変更しない。
+
+provider invocation前のsuppression precheckで、canonical recipientのうち1件以上が既存suppression（`Bounced`または`Suppressed`由来、tenant-scoped）に該当すると判定された場合、current claim tokenと未期限切れleaseによるfenced transitionの前提が成立していることを条件に、同一のSQLite transaction内で次のterminal組合せへ確定的に収束する。
+
+```text
+provider invocation                    = 0回
+mail_plain_submissions.evidence_state  = DefinitelyNotSubmitted
+mail_requests.status                   = Failed
+suppressed recipient                   = Suppressed
+non-suppressed recipient               = NotSent
+mail_attempts.error_code               = RECIPIENT_SUPPRESSED
+mail_attempts.retryable                = false
+```
+
+**通常の再開可能な `DefinitelyNotSubmitted` との違い。** D-04表の `DefinitelyNotSubmitted` 行が指す「Queuedへ戻す制御遷移」は、request stateが `Queued` のまま維持され、current claim tokenと未期限切れleaseによるfenced transitionが成功した場合に限りprovider callを再開できるケースを指す。本節が定義するsuppression由来の `DefinitelyNotSubmitted` はこれと同じevidence stateを再利用するが、**常に同一transaction内でrequestを終端 `Failed` にする**点で異なり、`Started` へ遷移させることはない。実装は、この2つの `DefinitelyNotSubmitted` の意味をrequest stateの違い（`Queued` か `Failed` か）だけで区別し、新しいevidence stateやdisposition値を追加しない。
+
+**再送禁止。** suppression由来の `DefinitelyNotSubmitted` + `Failed` の組合せに対しては、次をすべて禁止する。
+
+- automatic retry
+- whole-request manual retry
+- rescheduleによるprovider再呼び出し
+- manual cancel後の同一requestでの再送
+- crash recoveryを経た後の同一requestでの再送
+
+再送が必要な場合は、suppression解除後に新しい `mail_request_id` による新規requestを作成する。既存requestを`Queued`へ戻す経路は提供しない。
+
+**新しいstateを追加しない。** 本節は既存の `MailPlainSubmissionEvidenceState.DefinitelyNotSubmitted`、既存の `MailRequestState.Failed`、既存の `MailRecipientDeliveryState.Suppressed`／`NotSent`、既存の固定error code `RECIPIENT_SUPPRESSED` だけを使用する。新しいpublic request state、新しいrecipient state、新しいplain evidence state、suppression専用の新しいretry policy stateは追加しない。
 
 ## Consequences
 

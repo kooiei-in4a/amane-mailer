@@ -139,6 +139,8 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<MailRequestConsumerMutations>();
         services.AddSingleton<MailRequestAdminQueries>();
         services.AddSingleton<WorkerHeartbeatStore>();
+        services.AddSingleton<MailRequestRecipientStore>();
+        services.AddSingleton<MailPlainSubmissionStore>();
         services.AddSingleton<MailRequestRepository>();
         services.AddSingleton<AdminAuditRepository>();
         services.AddSingleton<ProviderEventInboxRepository>();

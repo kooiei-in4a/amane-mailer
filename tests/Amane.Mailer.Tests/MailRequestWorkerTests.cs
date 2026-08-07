@@ -95,8 +95,16 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         Assert.Equal(2, stored.AttemptCount);
     }
 
+    // ADR 0023 D-04/D-07 (Issue #546): plain requests were unified onto the same at-most-once
+    // provider invocation model attachment requests already use. A retryable-classified provider
+    // exception (SMTP_TEMPORARY is not one of the fixed codes AttachmentProviderResultClassifier
+    // recognizes as definitive) can no longer disprove or prove provider acceptance, so it
+    // converges straight to Unknown/DeliveryUnknown with retryable=false -- never back to Queued
+    // with a backoff delay. These two tests replace the old
+    // Worker_caps_retry_backoff_delay/Worker_dead_letters_after_max_retry_attempts, which
+    // exercised the automatic retry-with-backoff loop this issue removed for plain requests.
     [Fact]
-    public async Task Worker_caps_retry_backoff_delay()
+    public async Task Worker_converges_retryable_provider_failure_to_delivery_unknown_without_scheduling_retry()
     {
         var ct = TestContext.Current.CancellationToken;
         fixture.DeliveryProvider.QueueResult(MailDeliveryResult.Failure(
@@ -105,29 +113,41 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
             retryable: true));
         var request = await SeedQueuedRequestAsync(attemptCount: 0, ct);
 
-        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Queued, minAttemptCount: 1, ct);
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.DeliveryUnknown, minAttemptCount: 1, ct);
 
         Assert.Equal(1, stored.AttemptCount);
-        Assert.NotNull(stored.NextAttemptAt);
-        var delay = stored.NextAttemptAt!.Value - DateTimeOffset.UtcNow;
-        Assert.InRange(delay.TotalSeconds, 0.5, 2.5);
+        Assert.Null(stored.NextAttemptAt);
+        Assert.Equal(1, await CountAttemptsAsync(stored.Id, ct));
+
+        var attempt = await ReadSingleAttemptAsync(stored.Id, ct);
+        Assert.Equal(MailRequestState.DeliveryUnknown, attempt.Status);
+        Assert.Equal(MailDeliveryErrorCodes.DeliveryUnknown, attempt.ErrorCode);
+        Assert.False(attempt.Retryable);
     }
 
     [Fact]
-    public async Task Worker_dead_letters_after_max_retry_attempts()
+    public async Task Worker_does_not_automatically_reinvoke_provider_after_delivery_unknown()
     {
         var ct = TestContext.Current.CancellationToken;
         fixture.DeliveryProvider.QueueResult(MailDeliveryResult.Failure(
             "SMTP_TEMPORARY",
             "temporary failure",
             retryable: true));
-        var request = await SeedQueuedRequestAsync(attemptCount: 2, ct);
+        var request = await SeedQueuedRequestAsync(attemptCount: 0, ct);
 
-        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.DeadLettered, minAttemptCount: 3, ct);
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.DeliveryUnknown, minAttemptCount: 1, ct);
+        Assert.Equal(1, stored.AttemptCount);
 
-        Assert.Equal(3, stored.AttemptCount);
-        Assert.NotNull(stored.CompletedAt);
-        Assert.Equal(1, await CountAttemptsAsync(stored.Id, ct));
+        // A Failed/Queued/DeadLettered request would normally be re-signalable; DeliveryUnknown
+        // must not be, since it is a terminal state the ADR 0023 D-07 automatic-retry ban covers.
+        SignalWorker();
+        await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
+
+        var afterSignal = await FindDispatchStateAsync(request.MailRequestId, ct);
+        Assert.NotNull(afterSignal);
+        Assert.Equal(MailRequestState.DeliveryUnknown, afterSignal.Status);
+        Assert.Equal(1, afterSignal.AttemptCount);
+        Assert.Single(fixture.DeliveryProvider.Sent);
     }
 
     [Fact]
@@ -163,8 +183,16 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         Assert.True(attempt.Retryable);
     }
 
+    // ADR 0023 D-04 / Issue #546 review finding F3 replaced the old #238 "ignore lease expiry
+    // under the same lock token" finalize fallback with strict fencing (current claim token AND
+    // unexpired lease) for plain requests. Combined with finding F1 (a plain request with durable
+    // evidence is always reclaimable to converge from that evidence, even at max_attempts, since
+    // the reclaim never re-invokes the provider), a send that completes after its lease has
+    // expired can no longer finalize directly to Delivered: it loses the fencing race, and the
+    // request instead recovers via reclaim + existing-evidence convergence to DeliveryUnknown.
+    // This replaces the old Worker_marks_delivered_when_send_succeeds_after_lease_expiry_at_max_attempts.
     [Fact]
-    public async Task Worker_marks_delivered_when_send_succeeds_after_lease_expiry_at_max_attempts()
+    public async Task Worker_converges_to_delivery_unknown_when_lease_expires_at_max_attempts()
     {
         var ct = TestContext.Current.CancellationToken;
         fixture.DeliveryProvider.HoldNextSendIgnoringCancellation();
@@ -176,21 +204,51 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
             minAttemptCount: 3,
             ct);
 
+        await fixture.DeliveryProvider.WaitUntilHoldConsumedAsync(ct);
         await ExpireProcessingLeaseAsync(processing.Id, ct);
+
+        // The row is at max_attempts, but its Started evidence makes it a recovery claim rather
+        // than a generic max-attempt dead-letter candidate. Exercise both sides of F1 directly:
+        // the generic reaper must leave it Processing, and the normal claim path must still be
+        // able to reclaim it for no-provider-call convergence.
+        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
+        {
+            var reaper = scope.ServiceProvider.GetRequiredService<Amane.Mailer.Worker.ExpiredProcessingReaper>();
+            await reaper.DeadLetterExpiredProcessingAtMaxAttemptsAsync(DateTimeOffset.UtcNow, ct);
+        }
+
+        var stillRecoverable = await FindDispatchStateAsync(request.MailRequestId, ct);
+        Assert.NotNull(stillRecoverable);
+        Assert.Equal(MailRequestState.Processing, stillRecoverable!.Status);
+        Assert.Equal(0, await CountAttemptsAsync(processing.Id, ct));
+
         fixture.DeliveryProvider.ReleaseHeldSend();
 
-        var delivered = await WaitUntilStatusAsync(
+        // The sweep service only polls every 30s (MailerWorkerFixture does not override
+        // Mailer:Sweep:IntervalSeconds); signal the worker directly so the reclaim happens
+        // within this test's wait window instead of depending on sweep timing.
+        SignalWorker();
+
+        var converged = await WaitUntilStatusAsync(
             request.MailRequestId,
-            MailRequestState.Delivered,
-            minAttemptCount: 3,
+            MailRequestState.DeliveryUnknown,
+            minAttemptCount: 4,
             ct);
         Assert.Single(fixture.DeliveryProvider.Sent);
 
-        var attempts = await ListAttemptsAsync(delivered.Id, ct);
+        var attempts = await ListAttemptsAsync(converged.Id, ct);
         Assert.Contains(
             attempts,
-            attempt => attempt.Status == MailRequestState.Delivered
-                && !string.IsNullOrWhiteSpace(attempt.ProviderMessageId));
+            attempt => attempt.Status == MailRequestState.DeliveryUnknown
+                && attempt.ErrorCode == MailDeliveryErrorCodes.DeliveryUnknown);
+        Assert.Single(attempts);
+
+        SignalWorker();
+        await Task.Delay(TimeSpan.FromMilliseconds(300), ct);
+        var afterTerminalSignal = await FindDispatchStateAsync(request.MailRequestId, ct);
+        Assert.NotNull(afterTerminalSignal);
+        Assert.Equal(MailRequestState.DeliveryUnknown, afterTerminalSignal!.Status);
+        Assert.Equal(1, await CountAttemptsAsync(converged.Id, ct));
     }
 
     [Fact]
@@ -202,8 +260,12 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         // defense-in-depth layer strips secrets before writing to the DB.
         var ct = TestContext.Current.CancellationToken;
         const string rawError = "SMTP connect failed: password=hunter2 sender=admin@acme.example.com";
+        // AcsRequestFailed classifies as DefinitiveFailed/Failed (AttachmentProviderResultClassifier,
+        // shared with plain requests since Issue #546) so this exercises sanitization on a genuine
+        // terminal Failed outcome rather than the Unknown/DeliveryUnknown bucket every other
+        // non-fixed error code now falls into (ADR 0023 D-04).
         fixture.DeliveryProvider.QueueResult(MailDeliveryResult.Failure(
-            "SMTP_CONNECT_FAILED",
+            MailDeliveryErrorCodes.AcsRequestFailed,
             rawError,
             retryable: false));
         var request = await SeedQueuedRequestAsync(attemptCount: 0, ct);
@@ -289,8 +351,14 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         Assert.DoesNotContain("example.com", stored.LastErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ADR 0023 D-04 / Issue #546 review finding F3 replaced the old #238 "ignore lease expiry
+    // under the same lock token" finalize fallback with strict fencing (current claim token AND
+    // unexpired lease) for plain requests: a send that completes after its lease has expired can
+    // no longer finalize directly to Delivered, even under the same, still-current lock token.
+    // This replaces the old Worker_skips_finalize_when_lock_token_is_stale, which asserted the
+    // pre-ADR-0023 best-effort-Delivered behavior.
     [Fact]
-    public async Task Worker_skips_finalize_when_lock_token_is_stale()
+    public async Task Worker_converges_to_delivery_unknown_when_finalize_loses_the_expired_lease_race()
     {
         var ct = TestContext.Current.CancellationToken;
         fixture.DeliveryProvider.HoldNextSend();
@@ -305,55 +373,40 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
 
         var processing = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Processing, minAttemptCount: 1, ct);
         Assert.NotNull(processing.LockToken);
-        var staleToken = processing.LockToken!.Value;
 
-        // Expire the lease but keep the same lock_token. Releasing the held send
-        // lets the first worker finish provider delivery; strict lease fencing fails,
-        // but success evidence is persisted and the request converges to Delivered (#238).
+        // Expire the lease but keep the same lock_token, then release the held send: the
+        // original worker iteration finishes provider delivery, but strict lease fencing
+        // (F3) rejects its finalize. The request is left in Processing with its Started
+        // evidence intact until a reclaim converges it.
         await ExpireProcessingLeaseAsync(processing.Id, ct);
         fixture.DeliveryProvider.ReleaseHeldSend();
 
-        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 1, ct);
-        Assert.Equal(MailRequestState.Delivered, delivered.Status);
+        // The sweep service only polls every 30s (MailerWorkerFixture does not override
+        // Mailer:Sweep:IntervalSeconds); signal the worker directly so the reclaim happens
+        // within this test's wait window instead of depending on sweep timing.
+        SignalWorker();
+
+        var converged = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.DeliveryUnknown, minAttemptCount: 2, ct);
+        Assert.Equal(MailRequestState.DeliveryUnknown, converged.Status);
         Assert.Single(fixture.DeliveryProvider.Sent);
 
-        var attempts = await ListAttemptsAsync(delivered.Id, ct);
+        var attempts = await ListAttemptsAsync(converged.Id, ct);
         Assert.Contains(
             attempts,
-            attempt => attempt.Status == MailRequestState.Delivered
-                && !string.IsNullOrWhiteSpace(attempt.ProviderMessageId));
-
-        await using var scope = fixture.Factory.Services.CreateAsyncScope();
-        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
-        var fenced = await repository.FinalizeAsync(
-            delivered.Id,
-            staleToken,
-            DateTimeOffset.UtcNow,
-            MailRequestFinalizeOutcome.Delivered,
-            nextAttemptAt: null,
-            lastErrorMessage: null,
-            new MailAttemptInsert
-            {
-                RequestId = delivered.Id,
-                AttemptNumber = 99,
-                Provider = "mailpit",
-                Status = MailRequestState.Delivered,
-                LockToken = staleToken,
-                Retryable = false,
-                StartedAt = DateTimeOffset.UtcNow,
-                CompletedAt = DateTimeOffset.UtcNow,
-            },
-            ct);
-        Assert.False(fenced);
-
-        var afterStaleFinalize = await FindDispatchStateAsync(request.MailRequestId, ct);
-        Assert.NotNull(afterStaleFinalize);
-        Assert.Equal(MailRequestState.Delivered, afterStaleFinalize!.Status);
-        Assert.Equal(1, afterStaleFinalize.AttemptCount);
+            attempt => attempt.Status == MailRequestState.DeliveryUnknown
+                && attempt.ErrorCode == MailDeliveryErrorCodes.DeliveryUnknown);
     }
 
+    // ADR 0023 D-04 (Issue #546) replaced the old #238 mechanism (scan mail_attempts for a
+    // Delivered row not superseded by manual retry) with durable plain submission evidence:
+    // recovery now converges from the mail_plain_submissions row itself, never from attempt
+    // history alone. These two tests replace Worker_skips_resend_when_prior_delivery_attempt_exists
+    // and Worker_converges_prior_success_before_suppression_check, which simulated a "prior
+    // success" using only a raw mail_attempts row with no evidence -- a state the new Worker can
+    // no longer produce (mail_attempts.status=Delivered is now always written atomically with
+    // evidence_state=Accepted in the same FinalizePlainSubmissionAsync transaction).
     [Fact]
-    public async Task Worker_skips_resend_when_prior_delivery_attempt_exists()
+    public async Task Worker_recovers_started_only_plain_evidence_to_delivery_unknown_without_calling_provider()
     {
         var ct = TestContext.Current.CancellationToken;
         var now = DateTimeOffset.UtcNow;
@@ -386,6 +439,9 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
                 ct);
         }
 
+        // Simulate a crash after Started durably committed but before the provider was ever
+        // called or finalized: request stuck in Processing with an expired lease, a Started
+        // plain evidence row, and no mail_attempts row yet.
         await using (var connection = new SqliteConnection(fixture.ConnectionString))
         {
             await connection.OpenAsync(ct);
@@ -409,43 +465,24 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
                 await update.ExecuteNonQueryAsync(ct);
             }
 
-            await using (var insertAttempt = connection.CreateCommand())
-            {
-                insertAttempt.CommandText = """
-                    INSERT INTO mail_attempts (
-                        request_id, attempt_number, provider, status,
-                        provider_message_id, error_code, error_message, retryable,
-                        lock_token, started_at, completed_at)
-                    VALUES (
-                        @RequestId, 1, 'mailpit', @DeliveredStatus,
-                        @ProviderMessageId, NULL, NULL, 0,
-                        @LockToken, @StartedAt, @CompletedAt);
-                    """;
-                insertAttempt.Parameters.AddWithValue("@RequestId", internalId.ToString("D"));
-                insertAttempt.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
-                insertAttempt.Parameters.AddWithValue("@ProviderMessageId", "prior-success-provider-msg");
-                insertAttempt.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
-                insertAttempt.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
-                insertAttempt.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
-                await insertAttempt.ExecuteNonQueryAsync(ct);
-            }
+            await InsertStartedPlainEvidenceAsync(connection, internalId, expiredLockToken, now, ct);
         }
 
         SignalWorker();
 
-        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 2, ct);
-        Assert.Equal(MailRequestState.Delivered, delivered.Status);
+        var converged = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.DeliveryUnknown, minAttemptCount: 2, ct);
+        Assert.Equal(MailRequestState.DeliveryUnknown, converged.Status);
         Assert.Empty(fixture.DeliveryProvider.Sent);
 
-        var prior = await ListAttemptsAsync(delivered.Id, ct);
+        var attempts = await ListAttemptsAsync(converged.Id, ct);
         Assert.Contains(
-            prior,
-            attempt => attempt.Status == MailRequestState.Delivered
-                && attempt.ProviderMessageId == "prior-success-provider-msg");
+            attempts,
+            attempt => attempt.Status == MailRequestState.DeliveryUnknown
+                && attempt.ErrorCode == MailDeliveryErrorCodes.DeliveryUnknown);
     }
 
     [Fact]
-    public async Task Worker_converges_prior_success_before_suppression_check()
+    public async Task Worker_does_not_recheck_suppression_when_recovering_from_existing_evidence()
     {
         var ct = TestContext.Current.CancellationToken;
         var now = DateTimeOffset.UtcNow;
@@ -453,6 +490,9 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         var internalId = Guid.CreateVersion7(now);
         var expiredLockToken = Guid.CreateVersion7(now);
 
+        // Suppression added *after* the durable Started marker committed: recovery must converge
+        // from the existing evidence (DeliveryUnknown, since it is Started-only) and must never
+        // re-run the suppression precheck for a request that already has evidence.
         await SeedSuppressionAsync(request.To[0].Email, ct);
         var metrics = fixture.Factory.Services.GetRequiredService<MailerRuntimeMetrics>();
         metrics.ClearForTests();
@@ -505,43 +545,49 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
                 await update.ExecuteNonQueryAsync(ct);
             }
 
-            await using (var insertAttempt = connection.CreateCommand())
-            {
-                insertAttempt.CommandText = """
-                    INSERT INTO mail_attempts (
-                        request_id, attempt_number, provider, status,
-                        provider_message_id, error_code, error_message, retryable,
-                        lock_token, started_at, completed_at)
-                    VALUES (
-                        @RequestId, 1, 'mailpit', @DeliveredStatus,
-                        @ProviderMessageId, NULL, NULL, 0,
-                        @LockToken, @StartedAt, @CompletedAt);
-                    """;
-                insertAttempt.Parameters.AddWithValue("@RequestId", internalId.ToString("D"));
-                insertAttempt.Parameters.AddWithValue("@DeliveredStatus", (int)MailRequestState.Delivered);
-                insertAttempt.Parameters.AddWithValue("@ProviderMessageId", "prior-success-with-suppression");
-                insertAttempt.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
-                insertAttempt.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
-                insertAttempt.Parameters.AddWithValue("@CompletedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
-                await insertAttempt.ExecuteNonQueryAsync(ct);
-            }
+            await InsertStartedPlainEvidenceAsync(connection, internalId, expiredLockToken, now, ct);
         }
 
         SignalWorker();
 
-        var delivered = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Delivered, minAttemptCount: 2, ct);
-        Assert.Equal(MailRequestState.Delivered, delivered.Status);
+        var converged = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.DeliveryUnknown, minAttemptCount: 2, ct);
+        Assert.Equal(MailRequestState.DeliveryUnknown, converged.Status);
         Assert.Empty(fixture.DeliveryProvider.Sent);
         Assert.Equal(0, metrics.CaptureSnapshot().SuppressedSendsTotal);
 
-        var attempts = await ListAttemptsAsync(delivered.Id, ct);
+        var attempts = await ListAttemptsAsync(converged.Id, ct);
         Assert.DoesNotContain(
             attempts,
             attempt => attempt.ErrorCode == MailDeliveryErrorCodes.RecipientSuppressed);
         Assert.Contains(
             attempts,
-            attempt => attempt.Status == MailRequestState.Delivered
-                && attempt.ProviderMessageId == "prior-success-with-suppression");
+            attempt => attempt.Status == MailRequestState.DeliveryUnknown
+                && attempt.ErrorCode == MailDeliveryErrorCodes.DeliveryUnknown);
+    }
+
+    private static async Task InsertStartedPlainEvidenceAsync(
+        SqliteConnection connection,
+        Guid requestId,
+        Guid claimToken,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        await using var insertEvidence = connection.CreateCommand();
+        insertEvidence.CommandText = """
+            INSERT INTO mail_plain_submissions (
+                request_id, evidence_state, evidence_origin, provider, claim_token, started_at,
+                provider_message_id, resolved_at, created_at, updated_at)
+            VALUES (
+                @RequestId, @Started, @Runtime, 'mailpit', @ClaimToken, @StartedAt,
+                NULL, NULL, @Now, @Now);
+            """;
+        insertEvidence.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
+        insertEvidence.Parameters.AddWithValue("@Started", (int)MailPlainSubmissionEvidenceState.Started);
+        insertEvidence.Parameters.AddWithValue("@Runtime", (int)MailPlainSubmissionEvidenceOrigin.Runtime);
+        insertEvidence.Parameters.AddWithValue("@ClaimToken", claimToken.ToString("D"));
+        insertEvidence.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
+        insertEvidence.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
+        await insertEvidence.ExecuteNonQueryAsync(cancellationToken);
     }
 
     [Fact]
@@ -687,18 +733,25 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         Assert.Equal(request.MailRequestId, sent.MailRequestId);
     }
 
+    // ADR 0023 D-04 (Issue #546): a send timeout can neither prove nor disprove provider
+    // acceptance, so it converges straight to Unknown/DeliveryUnknown -- never back to Queued
+    // with a scheduled retry, replacing this test's old Worker_schedules_retry_when_send_times_out
+    // expectation.
     [Fact]
-    public async Task Worker_schedules_retry_when_send_times_out()
+    public async Task Worker_converges_send_timeout_to_delivery_unknown_without_scheduling_retry()
     {
         var ct = TestContext.Current.CancellationToken;
         fixture.DeliveryProvider.SetSendDelay(TimeSpan.FromSeconds(3));
         var request = await SeedQueuedRequestAsync(attemptCount: 0, ct);
 
-        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Queued, minAttemptCount: 1, ct);
+        var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.DeliveryUnknown, minAttemptCount: 1, ct);
 
         Assert.Equal(1, stored.AttemptCount);
-        Assert.NotNull(stored.NextAttemptAt);
-        Assert.Contains("exceeded", stored.LastErrorMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        Assert.Null(stored.NextAttemptAt);
+
+        var attempt = await ReadSingleAttemptAsync(stored.Id, ct);
+        Assert.Equal(MailDeliveryErrorCodes.DeliveryUnknown, attempt.ErrorCode);
+        Assert.False(attempt.Retryable);
     }
 
     private async Task<MailRequestDispatchState> WaitUntilStatusAsync(

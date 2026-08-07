@@ -9,7 +9,17 @@ internal static class OutboundMimeMessageFactory
     {
         var message = new MimeMessage();
         message.From.Add(ToMailboxAddress(tenant.DefaultFrom.Email, tenant.DefaultFrom.DisplayName));
-        message.To.Add(ToMailboxAddress(job.RecipientEmail, job.RecipientDisplayName));
+
+        // Global provider order To -> Cc -> Bcc (ADR 0023 D-01). Bcc is deliberately never added
+        // to this MimeMessage at all -- Issue #546 review finding F4: a literal "Bcc:" header
+        // (which MimeMessage.WriteTo() always emits verbatim once message.Bcc is populated) must
+        // never exist, not merely be stripped by whichever transport happens to send this object.
+        // The SMTP envelope recipient list (including Bcc) is built separately by
+        // BuildEnvelopeRecipients and passed to MailKit's explicit-envelope SendAsync overload
+        // (MailpitMailDeliveryProvider), which computes RCPT TO from that list, not from this
+        // message's To/Cc/Bcc headers. Never fold Bcc into To/Cc here either.
+        AddRecipients(message.To, job.To);
+        AddRecipients(message.Cc, job.Cc);
         message.Subject = job.Subject;
 
         if (!string.IsNullOrWhiteSpace(job.ReplyTo))
@@ -61,6 +71,37 @@ internal static class OutboundMimeMessageFactory
 
         message.Body = builder.ToMessageBody();
         return message;
+    }
+
+    /// <summary>
+    /// Full SMTP envelope recipient list (To + Cc + Bcc, global order) for MailKit's explicit-
+    /// envelope <c>SendAsync(message, sender, recipients, ct)</c> overload. This is the only
+    /// place Bcc addresses are represented for an SMTP send -- they are never added to the
+    /// <see cref="MimeMessage"/> itself (see <see cref="Create"/>).
+    /// </summary>
+    public static IReadOnlyList<MailboxAddress> BuildEnvelopeRecipients(MailSendJob job)
+    {
+        var recipients = new List<MailboxAddress>(job.To.Count + job.Cc.Count + job.Bcc.Count);
+        AppendMailboxes(recipients, job.To);
+        AppendMailboxes(recipients, job.Cc);
+        AppendMailboxes(recipients, job.Bcc);
+        return recipients;
+    }
+
+    private static void AppendMailboxes(List<MailboxAddress> destination, IReadOnlyList<MailSendRecipient> recipients)
+    {
+        foreach (var recipient in recipients)
+        {
+            destination.Add(ToMailboxAddress(recipient.Address, recipient.DisplayName));
+        }
+    }
+
+    private static void AddRecipients(InternetAddressList list, IReadOnlyList<MailSendRecipient> recipients)
+    {
+        foreach (var recipient in recipients)
+        {
+            list.Add(ToMailboxAddress(recipient.Address, recipient.DisplayName));
+        }
     }
 
     private static MailboxAddress ToMailboxAddress(string email, string? displayName) =>

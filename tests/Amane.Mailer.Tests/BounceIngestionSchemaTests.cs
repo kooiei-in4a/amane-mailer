@@ -10,7 +10,7 @@ namespace Amane.Mailer.Tests;
 public sealed class BounceIngestionMigrationTests
 {
     [Fact]
-    public async Task Db_migrate_011_creates_bounce_tables_indexes_and_preserves_mail_request_schema()
+    public async Task Db_migrate_creates_recipient_delivery_history_and_preserves_mail_request_schema()
     {
         var ct = TestContext.Current.CancellationToken;
         var root = Path.Combine(Path.GetTempPath(), "amane-mailer-migration-011", Guid.NewGuid().ToString("N"));
@@ -22,7 +22,7 @@ public sealed class BounceIngestionMigrationTests
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath};Pooling=False",
                 })
                 .Build();
 
@@ -33,12 +33,14 @@ public sealed class BounceIngestionMigrationTests
             Assert.Contains("011_bounce_ingestion.sql", applied);
             Assert.Contains("012_provider_event_inbox_details.sql", applied);
             Assert.Contains("013_provider_queue_dead_letters.sql", applied);
+            Assert.Contains("017_recipient_delivery_events.sql", applied);
 
-            await using var connection = new SqliteConnection($"Data Source={databasePath}");
+            await using var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False");
             await connection.OpenAsync(ct);
 
             Assert.True(await TableExistsAsync(connection, "provider_event_inbox", ct));
-            Assert.True(await TableExistsAsync(connection, "bounce_events", ct));
+            Assert.False(await TableExistsAsync(connection, "bounce_events", ct));
+            Assert.True(await TableExistsAsync(connection, "recipient_delivery_events", ct));
             Assert.True(await TableExistsAsync(connection, "mail_suppressions", ct));
             Assert.True(await TableExistsAsync(connection, "provider_queue_dead_letters", ct));
 
@@ -70,19 +72,26 @@ public sealed class BounceIngestionMigrationTests
             var suppressionColumns = await GetColumnNamesAsync(connection, "mail_suppressions", ct);
             Assert.DoesNotContain("removed_at", suppressionColumns);
 
+            var recipientEventColumns = await GetColumnNamesAsync(connection, "recipient_delivery_events", ct);
+            Assert.Contains("recipient_role", recipientEventColumns);
+            Assert.Contains("recipient_ordinal", recipientEventColumns);
+            Assert.Contains("applied_delivery_state", recipientEventColumns);
+            Assert.DoesNotContain("recipient_email", recipientEventColumns);
+            Assert.DoesNotContain("address_key", recipientEventColumns);
+            Assert.DoesNotContain("display_name", recipientEventColumns);
+
             var indexes = await GetIndexNamesAsync(connection, ct);
             Assert.Contains("idx_provider_event_inbox_pending_due", indexes);
             Assert.Contains("idx_provider_event_inbox_processing_expired", indexes);
             Assert.Contains("idx_provider_event_inbox_deadletter_completed", indexes);
             Assert.Contains("idx_provider_queue_dead_letters_created", indexes);
-            Assert.Contains("ix_bounce_events_tenant_occurred", indexes);
-            Assert.Contains("ix_bounce_events_mail_request", indexes);
+            Assert.Contains("ix_recipient_delivery_events_request_occurred", indexes);
+            Assert.Contains("ix_recipient_delivery_events_provider_message", indexes);
             Assert.Contains("ix_mail_suppressions_tenant_created", indexes);
             Assert.Contains("ix_mail_attempts_provider_message_id", indexes);
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
     }
@@ -100,7 +109,7 @@ public sealed class BounceIngestionMigrationTests
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath};Pooling=False",
                 })
                 .Build();
 
@@ -117,7 +126,6 @@ public sealed class BounceIngestionMigrationTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
     }
@@ -138,7 +146,7 @@ public sealed class BounceIngestionMigrationTests
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                    ["ConnectionStrings:Mailer"] = $"Data Source={databasePath};Pooling=False",
                 })
                 .Build();
 
@@ -149,7 +157,7 @@ public sealed class BounceIngestionMigrationTests
             Assert.DoesNotContain("012_provider_event_inbox_details.sql", appliedBefore);
 
             var now = DateTimeOffset.Parse("2026-07-26T00:00:00Z");
-            await using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            await using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
             {
                 await connection.OpenAsync(ct);
                 var columnsBefore = await GetColumnNamesAsync(connection, "provider_event_inbox", ct);
@@ -180,7 +188,7 @@ public sealed class BounceIngestionMigrationTests
             var applied = await runner.ApplyPendingAsync(ct);
             Assert.Contains("012_provider_event_inbox_details.sql", applied);
 
-            await using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            await using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
             {
                 await connection.OpenAsync(ct);
                 var columnsAfter = await GetColumnNamesAsync(connection, "provider_event_inbox", ct);
@@ -212,7 +220,7 @@ public sealed class BounceIngestionMigrationTests
             var applied013 = await runner.ApplyPendingAsync(ct);
             Assert.Contains("013_provider_queue_dead_letters.sql", applied013);
 
-            await using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            await using (var connection = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
             {
                 await connection.OpenAsync(ct);
                 Assert.True(await TableExistsAsync(connection, "provider_queue_dead_letters", ct));
@@ -228,7 +236,6 @@ public sealed class BounceIngestionMigrationTests
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
         }
     }
@@ -446,6 +453,8 @@ public sealed class BouncePersistenceRepositoryTests
             TenantId = Guid.Parse("00000000-0000-0000-0000-000000000302"),
             SourceService = "orders",
             MailRequestId = Guid.Parse("00000000-0000-0000-0000-000000000303"),
+            RecipientRole = 0,
+            RecipientOrdinal = 0,
             Provider = "acs",
             ProviderEventId = "eg-event-1",
             ProviderMessageId = "44444444-4444-4444-4444-444444444444",
@@ -463,6 +472,8 @@ public sealed class BouncePersistenceRepositoryTests
                 TenantId = insert.TenantId,
                 SourceService = insert.SourceService,
                 MailRequestId = insert.MailRequestId,
+                RecipientRole = insert.RecipientRole,
+                RecipientOrdinal = insert.RecipientOrdinal,
                 Provider = insert.Provider,
                 ProviderEventId = insert.ProviderEventId,
                 ProviderMessageId = insert.ProviderMessageId,
@@ -579,7 +590,7 @@ public sealed class BouncePersistenceRepositoryTests
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                ["ConnectionStrings:Mailer"] = $"Data Source={databasePath};Pooling=False",
             })
             .Build();
         var factory = new SqliteConnectionFactory(configuration);
@@ -593,7 +604,6 @@ public sealed class BouncePersistenceRepositoryTests
 
         public async ValueTask DisposeAsync()
         {
-            SqliteConnection.ClearAllPools();
             await Task.Run(() => Directory.Delete(root, recursive: true));
         }
     }

@@ -13,17 +13,23 @@ from mail_payload_hash import (
 )
 
 ROOT = Path(__file__).resolve().parents[3]
-VECTORS_PATH = (
-    ROOT
-    / "tests"
-    / "Amane.Mailer.Contracts.Tests"
-    / "TestVectors"
-    / "payload-hash-vectors.json"
-)
+VECTORS_DIR = ROOT / "tests" / "Amane.Mailer.Contracts.Tests" / "TestVectors"
+# Baseline: pre-ADR-0023 single-To/attachment fixture, also read by the Python/TypeScript SDK
+# test suites (sdk/python, sdk/typescript), which do not yet implement cc/bcc (issue #542).
+# Recipient v1.3: ADR 0023 to/cc/bcc conformance vectors, verified here and by the .NET
+# Contracts layer, but intentionally NOT read by the SDK test suites until #542 lands.
+VECTOR_FILES = [
+    VECTORS_DIR / "payload-hash-vectors.json",
+    VECTORS_DIR / "payload-hash-recipient-v1.3-vectors.json",
+]
 
 
 def main() -> int:
-    vectors = json.loads(VECTORS_PATH.read_text(encoding="utf-8"))
+    vectors = [
+        vector
+        for vectors_path in VECTOR_FILES
+        for vector in json.loads(vectors_path.read_text(encoding="utf-8"))
+    ]
     for vector in vectors:
         name = vector["name"]
         payload = vector["input"]

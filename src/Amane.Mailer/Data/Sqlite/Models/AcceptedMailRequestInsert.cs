@@ -1,4 +1,5 @@
 using Amane.Mailer.Attachments.Validation;
+using Amane.Mailer.Contracts.MailRequests;
 
 namespace Amane.Mailer.Data.Sqlite.Models;
 
@@ -37,6 +38,13 @@ public sealed class AcceptedMailRequestInsert
     public required DateTimeOffset AcceptedAt { get; init; }
 
     public DateTimeOffset? ScheduledAt { get; init; }
+
+    /// <summary>
+    /// Canonical recipients to persist with the accepted request. When null, the legacy
+    /// single-To fields are used to derive one To recipient so existing direct callers remain
+    /// source-compatible while the handler passes its validated canonical set explicitly.
+    /// </summary>
+    public IReadOnlyList<CanonicalMailRecipient>? Recipients { get; init; }
 
     /// <summary>
     /// Canonical attachment metadata, already staged to the spool's request-scoped staging

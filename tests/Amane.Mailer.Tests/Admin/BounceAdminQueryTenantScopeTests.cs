@@ -109,14 +109,16 @@ public sealed class BounceAdminQueryTenantScopeTests
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO bounce_events (
+            INSERT INTO recipient_delivery_events (
                 id, tenant_id, source_service, mail_request_id,
+                recipient_role, recipient_ordinal,
                 provider, provider_event_id, provider_message_id,
-                delivery_status, status_message, occurred_at, created_at)
+                provider_status, applied_delivery_state, status_message, occurred_at, created_at)
             VALUES (
                 @Id, @TenantId, 'bounce-admin-scope', @MailRequestId,
+                0, 0,
                 'acs', @ProviderEventId, @ProviderMessageId,
-                'Bounced', 'sanitized', @Now, @Now);
+                'Bounced', 3, 'sanitized', @Now, @Now);
             """;
         command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("D"));
         command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
@@ -133,18 +135,54 @@ public sealed class BounceAdminQueryTenantScopeTests
         string recipientEmail,
         CancellationToken cancellationToken)
     {
+        var requestId = Guid.NewGuid();
+        var mailRequestId = Guid.NewGuid();
+        var bounceEventId = Guid.NewGuid();
         await using var connection = new SqliteConnection(connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
+            INSERT INTO mail_requests (
+                id, tenant_id, source_service, mail_request_id, purpose,
+                payload_json, payload_hash, subject, recipient_email,
+                status, attempt_count, max_attempts, attachment_count,
+                accepted_at, created_at, updated_at)
+            VALUES (
+                @RequestId, @TenantId, 'bounce-admin-scope', @MailRequestId, 'suppression-scope-test',
+                '{}', @PayloadHash, 'subject', @RecipientEmail,
+                0, 0, 3, 0, @Now, @Now, @Now);
+
+            INSERT INTO mail_request_recipients (
+                request_id, recipient_role, ordinal, address, address_key,
+                display_name, delivery_state, created_at, updated_at)
+            VALUES (
+                @RequestId, 0, 0, @RecipientEmail, @RecipientEmail,
+                NULL, 3, @Now, @Now);
+
+            INSERT INTO recipient_delivery_events (
+                id, tenant_id, source_service, mail_request_id,
+                recipient_role, recipient_ordinal, provider,
+                provider_event_id, provider_message_id, provider_status,
+                applied_delivery_state, status_message, occurred_at, created_at)
+            VALUES (
+                @BounceEventId, @TenantId, 'bounce-admin-scope', @MailRequestId,
+                0, 0, 'acs', @ProviderEventId, @ProviderMessageId, 'Bounced',
+                3, 'sanitized', @Now, @Now);
+
             INSERT INTO mail_suppressions (
                 id, tenant_id, recipient_email, reason, source_bounce_event_id, created_at)
             VALUES (
-                @Id, @TenantId, @RecipientEmail, @Reason, NULL, @Now);
+                @SuppressionId, @TenantId, @RecipientEmail, @Reason, @BounceEventId, @Now);
             """;
-        command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("D"));
+        command.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
         command.Parameters.AddWithValue("@TenantId", tenantId.ToString("D"));
+        command.Parameters.AddWithValue("@MailRequestId", mailRequestId.ToString("D"));
+        command.Parameters.AddWithValue("@PayloadHash", new string('a', 64));
         command.Parameters.AddWithValue("@RecipientEmail", RecipientEmailNormalizer.Normalize(recipientEmail));
+        command.Parameters.AddWithValue("@BounceEventId", bounceEventId.ToString("D"));
+        command.Parameters.AddWithValue("@ProviderEventId", "event-" + bounceEventId.ToString("N"));
+        command.Parameters.AddWithValue("@ProviderMessageId", "message-" + bounceEventId.ToString("N"));
+        command.Parameters.AddWithValue("@SuppressionId", Guid.NewGuid().ToString("D"));
         command.Parameters.AddWithValue("@Reason", MailSuppressionReasons.HardBounce);
         command.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(FixedNow));
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -170,7 +208,7 @@ public sealed class BounceAdminQueryTenantScopeTests
             var root = Path.Combine(Path.GetTempPath(), "amane-mailer-bounce-admin", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
             var databasePath = Path.Combine(root, "mailer.db");
-            var connectionString = $"Data Source={databasePath}";
+            var connectionString = $"Data Source={databasePath};Pooling=False";
 
             var factory = new SqliteConnectionFactory(
                 new ConfigurationBuilder()
@@ -186,7 +224,6 @@ public sealed class BounceAdminQueryTenantScopeTests
 
         public ValueTask DisposeAsync()
         {
-            SqliteConnection.ClearAllPools();
             if (Directory.Exists(_root))
                 Directory.Delete(_root, recursive: true);
 

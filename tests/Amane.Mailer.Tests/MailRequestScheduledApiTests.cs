@@ -303,7 +303,9 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
                         sp.GetRequiredService<MailRequestAdminQueries>(),
                         sp.GetRequiredService<WorkerHeartbeatStore>(),
                         sp.GetRequiredService<MailRequestAttachmentStore>(),
-                        sp.GetRequiredService<MailAttachmentSubmissionStore>()));
+                        sp.GetRequiredService<MailAttachmentSubmissionStore>(),
+                        sp.GetRequiredService<MailRequestRecipientStore>(),
+                        sp.GetRequiredService<MailPlainSubmissionStore>()));
             });
         });
 
@@ -616,7 +618,9 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         MailRequestAdminQueries adminQueries,
         WorkerHeartbeatStore heartbeatStore,
         MailRequestAttachmentStore attachmentStore,
-        MailAttachmentSubmissionStore attachmentSubmissionStore)
+        MailAttachmentSubmissionStore attachmentSubmissionStore,
+        MailRequestRecipientStore recipientStore,
+        MailPlainSubmissionStore plainSubmissionStore)
         : MailRequestRepository(
             claimStore,
             acceptStore,
@@ -624,7 +628,9 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
             adminQueries,
             heartbeatStore,
             attachmentStore,
-            attachmentSubmissionStore)
+            attachmentSubmissionStore,
+            recipientStore,
+            plainSubmissionStore)
     {
         public override Task<MailRequestStatusRow?> GetStatusByIdempotencyKeyAsync(
             Guid tenantId,

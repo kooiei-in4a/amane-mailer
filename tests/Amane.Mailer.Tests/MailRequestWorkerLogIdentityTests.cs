@@ -55,11 +55,11 @@ public sealed class MailRequestWorkerLogIdentityTests
             _ = factory.CreateClient();
 
             deliveryProvider.QueueResult(MailDeliveryResult.Failure(
-                "SMTP_CONNECT_FAILED",
+                MailDeliveryErrorCodes.AcsRequestFailed,
                 "SMTP connect failed",
                 retryable: false));
             deliveryProvider.QueueResult(MailDeliveryResult.Failure(
-                "SMTP_CONNECT_FAILED",
+                MailDeliveryErrorCodes.AcsRequestFailed,
                 "SMTP connect failed",
                 retryable: false));
 

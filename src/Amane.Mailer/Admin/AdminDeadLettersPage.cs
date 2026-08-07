@@ -128,7 +128,7 @@ public static class AdminDeadLettersPage
         html.AppendLine("</a></td>");
         AppendCell(html, item.TenantId.ToString("D"));
         AppendCell(html, item.SourceService);
-        AppendCell(html, options.MaskRecipients ? MaskRecipient(item.RecipientEmail) : item.RecipientEmail);
+        AppendCell(html, AdminRecipientSummaryRenderer.RenderList(item.Recipients, options.MaskRecipients));
         AppendCell(html, options.MaskSubjects ? MaskSubject(item.Subject) : item.Subject);
         AppendCell(html, TruncateErrorMessage(item.LastErrorMessage));
         AppendCell(html, $"{item.AttemptCount} / {item.MaxAttempts}");
@@ -191,18 +191,6 @@ public static class AdminDeadLettersPage
             return message;
 
         return message[..50] + "...";
-    }
-
-    private static string MaskRecipient(string email)
-    {
-        if (string.IsNullOrEmpty(email))
-            return "***";
-
-        var at = email.IndexOf('@', StringComparison.Ordinal);
-        if (at <= 0)
-            return $"{email[0]}***";
-
-        return $"{email[0]}***{email[at..]}";
     }
 
     private static string MaskSubject(string subject)

@@ -188,7 +188,9 @@ public sealed class MailRequestMutationHandlerTests
                 adminQueries: null!,
                 heartbeatStore: null!,
                 attachmentStore: null!,
-                attachmentSubmissionStore: null!)
+                attachmentSubmissionStore: null!,
+                recipientStore: null!,
+                plainSubmissionStore: null!)
         {
         }
 
