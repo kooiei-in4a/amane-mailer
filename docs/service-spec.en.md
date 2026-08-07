@@ -341,9 +341,10 @@ Before provider invocation, plain requests durably commit `mail_plain_submission
 | Operation | Allowed boundary | Target state |
 |---|---|---|
 | Manual retry | `Failed` / `DeadLettered` with no attachment and no plain submission evidence | `Queued` (`attempt_count=0`, `next_attempt_at=NULL`) |
-| Manual cancel | ADR 0015-allowed state with neither attachment nor plain submission evidence | `Cancelled` |
+| Manual cancel | ADR 0015-allowed state. Attachment submission evidence blocks cancellation; when plain submission evidence exists, only `Failed` may use the existing administrative `Failed` → `Cancelled` transition, preserving evidence, recipient disposition, and attempt history without a provider call | `Cancelled` |
 
 Whole-request manual retry is rejected for requests with a `mail_plain_submissions` evidence row, attachment requests, `DeliveryUnknown`, `Delivered`, `Processing` with a valid lock, and `Cancelled`. If another business send is required, use a new `mail_request_id` (ADR 0023 D-07).
+Manual cancel of a `Failed` request with plain evidence is an administrative terminal transition: it does not withdraw or deny the provider submission, modify evidence, recipient disposition, or attempt history, and it does not invoke the provider or create a resend path. Other states with plain evidence remain non-cancellable.
 
 ### 3.5 Delivery result webhooks (outbound)
 

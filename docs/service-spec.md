@@ -338,9 +338,10 @@ provider invocation前にplain requestでは `mail_plain_submissions.Started`、
 | 操作 | 許可境界 | 遷移先 |
 |---|---|---|
 | 手動再送 | `Failed` / `DeadLettered` かつ添付なし・plain submission evidenceなし | `Queued`（`attempt_count=0`, `next_attempt_at=NULL`） |
-| 手動キャンセル | ADR 0015の許可状態かつattachment/plain submission evidenceなし | `Cancelled` |
+| 手動キャンセル | ADR 0015の許可状態。attachment submission evidenceがある場合は拒否。plain submission evidenceがある場合は `Failed` のみ既存の管理上の `Failed` → `Cancelled` を許可（evidence、recipient disposition、attempt historyを保持し、provider呼出しなし） | `Cancelled` |
 
 `mail_plain_submissions` evidenceが存在するrequest、添付request、`DeliveryUnknown`、`Delivered`、有効lock保持中の`Processing`、`Cancelled`からwhole-request manual retryを行わない。再送が必要なら原則として新しい`mail_request_id`を使う（ADR 0023 D-07）。
+plain evidenceを持つ `Failed` requestのmanual cancelは、provider submissionの取消しや未送信を意味しない管理上の終端遷移であり、evidence、recipient disposition、attempt historyを変更せず、provider呼出しや同一requestの再送を発生させない。plain evidence付きの他の状態ではmanual cancelを拒否する。
 
 ### 3.5 配送結果 Webhook（outbound）
 
