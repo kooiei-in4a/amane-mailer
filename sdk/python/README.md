@@ -25,6 +25,12 @@ $env:PYTHONPATH = "src"
 python -m unittest discover -s tests -v
 ```
 
+## Multiple recipients
+
+`to()`, `cc()`, and `bcc()` set a role with one recipient. Use `add_to()`, `add_cc()`,
+and `add_bcc()` to append recipients while preserving role order. Each role accepts at most
+10 recipients and all roles accept at most 20 recipients combined.
+
 ## Local Mailer integration
 
 With local Mailer running (`http://127.0.0.1:5280`):

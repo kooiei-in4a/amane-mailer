@@ -10,19 +10,28 @@ from amane_mailer.payload_hash import (
 )
 
 ROOT = Path(__file__).resolve().parents[3]
-VECTORS_PATH = (
+VECTORS_PATHS = (
     ROOT
     / "tests"
     / "Amane.Mailer.Contracts.Tests"
     / "TestVectors"
-    / "payload-hash-vectors.json"
+    / "payload-hash-vectors.json",
+    ROOT
+    / "tests"
+    / "Amane.Mailer.Contracts.Tests"
+    / "TestVectors"
+    / "payload-hash-recipient-v1.3-vectors.json",
 )
 
 
 class PayloadHashVectorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.vectors = json.loads(VECTORS_PATH.read_text(encoding="utf-8"))
+        cls.vectors = [
+            vector
+            for vectors_path in VECTORS_PATHS
+            for vector in json.loads(vectors_path.read_text(encoding="utf-8"))
+        ]
 
     def test_payload_hash_matches_official_vectors(self) -> None:
         for vector in self.vectors:

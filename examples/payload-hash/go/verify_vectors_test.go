@@ -39,10 +39,9 @@ func toAttachments(entries []attachmentVectorEntry) []Attachment {
 // loadVectors reads one payload_hash test vector fixture file.
 //
 // Baseline (payload-hash-vectors.json): the pre-ADR-0023 single-To/attachment fixture, also
-// read by the Python/TypeScript SDK test suites (sdk/python, sdk/typescript), which do not yet
-// implement cc/bcc (issue #542). Recipient v1.3 (payload-hash-recipient-v1.3-vectors.json):
-// ADR 0023 to/cc/bcc conformance vectors, verified here and by the .NET Contracts layer, but
-// intentionally NOT read by the SDK test suites until #542 lands.
+// read by the Python/TypeScript SDK test suites (sdk/python, sdk/typescript). Recipient v1.3
+// (payload-hash-recipient-v1.3-vectors.json): ADR 0023 to/cc/bcc conformance vectors, also read
+// by the SDK test suites after #542.
 func loadVectors(t *testing.T, root, fileName string) []payloadHashVector {
 	t.Helper()
 	vectorsPath := filepath.Join(

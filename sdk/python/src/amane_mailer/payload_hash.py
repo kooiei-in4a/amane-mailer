@@ -12,6 +12,8 @@ INCLUDED_FIELDS = frozenset(
         "source_service",
         "purpose",
         "to",
+        "cc",
+        "bcc",
         "subject",
         "html_body",
         "text_body",
@@ -28,6 +30,7 @@ INCLUDED_FIELDS = frozenset(
 # content_base64 or an unverified declared content_type. Pass the *verified* attachment values
 # (post decode/validation), not the raw request body's attachments array.
 ATTACHMENTS_FIELD_NAME = "attachments"
+RECIPIENT_FIELD_NAMES = ("to", "cc", "bcc")
 
 
 def escape_json_string(value: str) -> str:
@@ -107,6 +110,21 @@ def _project_attachments(attachments: list[dict[str, Any]]) -> list[dict[str, An
     ]
 
 
+def _project_recipient_role(
+    role: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    if not role:
+        return None
+    projected = []
+    for recipient in role:
+        entry: dict[str, Any] = {"email": recipient["email"].strip()}
+        display_name = recipient.get("display_name")
+        if display_name is not None and display_name.strip() != "":
+            entry["display_name"] = display_name
+        projected.append(entry)
+    return projected
+
+
 def build_delivery_payload_json(
     request: dict[str, Any],
     attachments: list[dict[str, Any]] | None = None,
@@ -114,8 +132,15 @@ def build_delivery_payload_json(
     filtered = {
         key: value
         for key, value in request.items()
-        if key in INCLUDED_FIELDS and key != ATTACHMENTS_FIELD_NAME
+        if key in INCLUDED_FIELDS
+        and key != ATTACHMENTS_FIELD_NAME
+        and key not in RECIPIENT_FIELD_NAMES
     }
+    for field_name in RECIPIENT_FIELD_NAMES:
+        if field_name in request:
+            projected_role = _project_recipient_role(request[field_name])
+            if projected_role is not None:
+                filtered[field_name] = projected_role
     if attachments:
         filtered[ATTACHMENTS_FIELD_NAME] = _project_attachments(attachments)
     return _canonicalize_object(filtered)
