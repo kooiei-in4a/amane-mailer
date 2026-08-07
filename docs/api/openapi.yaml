@@ -742,8 +742,8 @@ components:
           enum: [queued, processing, delivered, failed, dead_lettered, cancelled, delivery_unknown]
           description: >-
             Worker 配送ステータス（API 受付ステータス accepted / already_accepted とは別）。
-            delivery_unknown は添付依頼専用の終端ステータスで、provider submission marker
-            commit 後に受理可否を証明できなかったことを表す（ADR 0022 D-08）。failed とは
+            delivery_unknown は provider invocation 開始後に受理可否を証明できなかった
+            plain／添付依頼の終端ステータス（ADR 0022 D-08 / ADR 0023 D-04）。failed とは
             区別され、自動・手動いずれの再送も行わない。
         attempt_count:
           type: integer
