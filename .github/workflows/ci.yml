@@ -3,7 +3,7 @@ name: CI
 # CI tiers (single workflow + job-level `if`; job names unchanged for branch protection):
 # - feature/** / fix/** push: build-test only
 # - develop push or PR targeting develop: build-test + openapi-validation + native-aot-smoke
-# - PR targeting main: release-gate CI (incl. Native AOT, amd64 Docker)
+# - PR targeting main or release-rehearsal/**: release-gate CI (incl. Native AOT, amd64 Docker)
 # - main push, workflow_dispatch: final CI (incl. Native AOT, amd64/arm64 Docker)
 # Fail-secure: workflow_dispatch and unrecognized paths use final CI when triggered.
 
@@ -12,6 +12,7 @@ on:
     branches:
       - main
       - develop
+      - "release-rehearsal/**"
   push:
     branches:
       - main
@@ -62,6 +63,9 @@ jobs:
 
       - name: PTY smoke (ACS register-acs interactive paths)
         run: python3 scripts/pty-smoke-register-acs.py
+
+      - name: Qualified Git promotion validator self-test
+        run: python3 scripts/validate-qualified-git-promotion-self-test.py
 
       - name: "Guard setup-bundle MSBuild -p args (MSYS-safe)"
         run: |
@@ -116,6 +120,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
       github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/') ||
       github.base_ref == 'develop'
     runs-on: ubuntu-24.04
     steps:
@@ -300,7 +305,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
-      github.base_ref == 'main'
+      github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -354,6 +360,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
       github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/') ||
       startsWith(github.head_ref, 'release-infra/') ||
       startsWith(github.ref_name, 'release-infra/')
     runs-on: ubuntu-24.04
@@ -378,7 +385,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
-      github.base_ref == 'main'
+      github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/')
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -396,6 +404,7 @@ jobs:
       github.ref == 'refs/heads/main' ||
       github.ref == 'refs/heads/develop' ||
       github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/') ||
       github.base_ref == 'develop'
     runs-on: ubuntu-24.04
     steps:
