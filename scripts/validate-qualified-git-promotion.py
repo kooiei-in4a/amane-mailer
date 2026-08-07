@@ -174,8 +174,11 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     require_equal("promotionPrMergeable", promotion.get("promotionPrMergeable"), True)
 
     if mode == "rehearsal":
-        if not str(promotion.get("promotionPrBaseRef", "")).startswith("release-rehearsal/"):
-            fail("promotionPrBaseRef", "must use release-rehearsal namespace")
+        require_equal(
+            "promotionPrBaseRef",
+            promotion.get("promotionPrBaseRef"),
+            "release-rehearsal/504-main-equivalent",
+        )
         if not re.fullmatch(r"rehearsal/issue-504/[A-Za-z0-9._-]+", str(promotion.get("tagName", ""))):
             fail("tagName", "must use the rehearsal namespace and safe characters")
     else:

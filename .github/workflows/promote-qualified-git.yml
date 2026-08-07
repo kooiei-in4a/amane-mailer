@@ -229,7 +229,7 @@ jobs:
           [[ "${PRIVATE_KEY_PRESENT}" == "true" ]] \
             || { echo "::error::release promotion App credential is missing"; exit 1; }
           if [[ "${MODE}" == "rehearsal" ]]; then
-            [[ "${TARGET_BRANCH}" =~ ^release-rehearsal/[A-Za-z0-9._/-]+$ ]] \
+            [[ "${TARGET_BRANCH}" == "release-rehearsal/504-main-equivalent" ]] \
               || { echo "::error::rehearsal target branch is invalid"; exit 1; }
             [[ "${TAG_NAME}" =~ ^rehearsal/issue-504/[A-Za-z0-9._-]+$ ]] \
               || { echo "::error::rehearsal tag is invalid"; exit 1; }
