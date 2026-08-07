@@ -398,7 +398,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
-                invalid: { value: { code: INVALID_REQUEST, message: "mail_request_id must be a UUID." }
+                invalid: { value: { code: INVALID_REQUEST, message: "mail_request_id must be a UUID." } }
         '401':
           description: テナント/トークン不一致
           content:
@@ -580,7 +580,7 @@ components:
           description: >-
             添付ファイル（ADR 0022）。未指定または空配列は添付なし（両者は同義）。
             配列順は添付順であり payload identity の一部。最大 5 件、超過は 422
-            TOO_MANY_ATTACHMENTS。decoded binary は 1ファイル最大 2,097,152 バイト
+            TOO_MANY_ATTACHMENTS。decoded binary は 1 ファイル最大 2,097,152 バイト
             （超過は 422 ATTACHMENT_TOO_LARGE）、合計最大 5,242,880 バイト（超過は 422
             ATTACHMENT_TOTAL_TOO_LARGE）。Consumer 申告の content_type / content_sha256 /
             byte_length は信用せず、Mailer が decoded binary から再検証する
