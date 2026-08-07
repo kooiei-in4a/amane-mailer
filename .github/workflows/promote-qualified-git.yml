@@ -85,6 +85,13 @@ on:
         description: v<version> for release; rehearsal/issue-504/* for rehearsal
         required: true
         type: string
+      merge_freeze_confirmation:
+        description: Maintainer confirms no concurrent target branch writes during merge
+        required: true
+        type: choice
+        options:
+          - CONFIRM_TARGET_MERGE_FREEZE
+          - NOT_CONFIRMED
       qualification_workflow_run_id:
         description: Release mode only; run containing immutable qualification handoff
         required: false
@@ -201,6 +208,7 @@ jobs:
           TARGET_BRANCH: ${{ inputs.promotion_target_branch }}
           RELEASE_BRANCH: ${{ inputs.release_branch }}
           TAG_NAME: ${{ inputs.tag_name }}
+          FREEZE_CONFIRMATION: ${{ inputs.merge_freeze_confirmation }}
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
           CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_ruleset_fingerprint }}
@@ -222,6 +230,8 @@ jobs:
             || { echo "::error::release branch is invalid"; exit 1; }
           [[ "${CANDIDATE_RUN_ID}" =~ ^[1-9][0-9]*$ && "${CANDIDATE_ATTEMPT}" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::candidate run identity is invalid"; exit 1; }
+          [[ "${FREEZE_CONFIRMATION}" == "CONFIRM_TARGET_MERGE_FREEZE" ]] \
+            || { echo "::error::maintainer merge-freeze confirmation is required"; exit 1; }
           [[ "${MAIN_RULESET_ID}" == "18124512" && "${REHEARSAL_RULESET_ID}" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::ruleset authority configuration is invalid"; exit 1; }
           [[ "${POLICY_FINGERPRINT}" =~ ^[0-9a-f]{64}$ ]] \
@@ -325,6 +335,7 @@ jobs:
           PROMOTION_BASE_SHA: ${{ inputs.promotion_base_sha }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_ruleset_fingerprint }}
           TAG_NAME: ${{ inputs.tag_name }}
+          FREEZE_CONFIRMATION: ${{ inputs.merge_freeze_confirmation }}
           APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           MAIN_RULESET_ID: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_ID }}
           REHEARSAL_RULESET_ID: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_ID }}
@@ -404,6 +415,7 @@ jobs:
               "rcTipSha": load("rc-ref.json").get("object", {}).get("sha"),
               "tagName": os.environ["TAG_NAME"],
               "tagTargetSha": os.environ["RELEASE_COMMIT_SHA"],
+              "mergeFreezeConfirmation": os.environ["FREEZE_CONFIRMATION"],
               "rulesetFingerprint": target_fingerprint["fingerprint"],
               "expectedRulesetFingerprint": os.environ["EXPECTED_FINGERPRINT"],
               "mainRulesetPolicyFingerprint": main_fingerprint["policyFingerprint"],

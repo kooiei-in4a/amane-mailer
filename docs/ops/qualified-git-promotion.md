@@ -96,6 +96,7 @@ workflow は次を operator input と immutable handoff / live GitHub state の�
 - `promotionBaseSha`
 - `expectedRulesetFingerprint`
 - `tagName`
+- `mergeFreezeConfirmation`
 
 `humanDecision=APPROVE` は exact-candidate qualification の判定であり、release execution
 approvalではありません。workflowの`release` environment承認が別のexecution gateです。
@@ -188,6 +189,17 @@ evidenceの書換えや再qualificationで回避してはいけません。
 fingerprint一致を確認して`mode=release`をdispatchします。workflowは1回の承認境界内で
 merge commitを作成し、親順を検証してからannotated `v<version>` tagをexact RC SHAへ作成します。
 OCI / NuGet / GitHub Release / deployはこのworkflowの後でも自動実行されません。
+
+### Maintainer merge-freeze（必須）
+
+GitHubのPR merge APIはPR head SHAだけをatomicに比較し、base SHAのcompare-and-swapを提供しません。
+したがって、`merge_freeze_confirmation=CONFIRM_TARGET_MERGE_FREEZE`を必須入力とし、承認記録に
+次を明記します。merge直前からparent検証完了まで、対象branchへの他PR merge、branch update、
+force-push、ruleset変更を行わないこと。workflowは直前にbase/head/RC/checksを再取得し、merge後に
+parent順を検証します。parent不一致なら即STOPし、tag作成・自動rollback・別SHA補完をしません。
+このfreezeは競合リスクを低減する運用制約であり、GitHub APIのatomic base保証ではありません。
+atomic保証が必要な場合は、merge queue（organization所有repositoryが必要）または専用lock rulesetの
+採用を別issueで決定するまでproduction releaseを実行しません。
 
 merge成功後にtag作成だけが失敗した場合、mainをrewindしません。merge SHA、親順、RC tip、
 tag absence、ruleset fingerprintを記録してSTOPし、同じApp / validator / exact tag targetを用いた

@@ -83,6 +83,7 @@ def base_manifest(fingerprint: str, policy_fingerprint: str) -> dict[str, object
         "rcTipSha": COMMIT,
         "tagName": "rehearsal/issue-504/fixture",
         "tagTargetSha": COMMIT,
+        "mergeFreezeConfirmation": "CONFIRM_TARGET_MERGE_FREEZE",
         "rulesetFingerprint": fingerprint,
         "expectedRulesetFingerprint": fingerprint,
         "mainRulesetPolicyFingerprint": policy_fingerprint,

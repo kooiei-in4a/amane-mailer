@@ -160,6 +160,7 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     require_equal("machineVerdict", promotion.get("machineVerdict"), "GO_ELIGIBLE")
     require_equal("humanDecision", promotion.get("humanDecision"), "APPROVE")
     require_equal("qualificationApprovalScope", promotion.get("qualificationApprovalScope"), "exact-candidate-qualification")
+    require_equal("mergeFreezeConfirmation", promotion.get("mergeFreezeConfirmation"), "CONFIRM_TARGET_MERGE_FREEZE")
     require_equal("rcTipSha", promotion.get("rcTipSha"), commit)
     require_equal("promotionPrHeadSha", promotion.get("promotionPrHeadSha"), commit)
     require_equal("promotionPrHeadRef", promotion.get("promotionPrHeadRef"), promotion["releaseBranch"])
