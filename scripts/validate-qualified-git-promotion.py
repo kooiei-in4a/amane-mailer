@@ -82,6 +82,8 @@ def validate_qualification(root: Path, promotion: dict[str, Any]) -> None:
         fail("qualification", "documents must be objects")
 
     identities = (
+        ("candidateRunId", "candidateRunId"),
+        ("candidateAttempt", "candidateAttempt"),
         ("candidateId", "candidateId"),
         ("bindingId", "bindingId"),
         ("qualificationRunId", "qualificationRunId"),
@@ -145,7 +147,13 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
 
     version = require_string(promotion, "releaseVersion", VERSION)
     commit = require_string(promotion, "releaseCommitSha", HEX40)
-    require_string(promotion, "releaseBranch")
+    require_equal("releaseBranch", promotion.get("releaseBranch"), f"release/v{version}-rc")
+    candidate_run_id = promotion.get("candidateRunId")
+    if not isinstance(candidate_run_id, int) or candidate_run_id <= 0:
+        fail("candidateRunId", "must be a positive integer")
+    candidate_attempt = promotion.get("candidateAttempt")
+    if not isinstance(candidate_attempt, int) or candidate_attempt <= 0:
+        fail("candidateAttempt", "must be a positive integer")
     for field in ("candidateId", "bindingId", "qualificationRunId", "sealedEventId"):
         require_string(promotion, field, HEX64)
 
@@ -168,8 +176,8 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     if mode == "rehearsal":
         if not str(promotion.get("promotionPrBaseRef", "")).startswith("release-rehearsal/"):
             fail("promotionPrBaseRef", "must use release-rehearsal namespace")
-        if not str(promotion.get("tagName", "")).startswith("rehearsal/issue-504/"):
-            fail("tagName", "must use rehearsal namespace")
+        if not re.fullmatch(r"rehearsal/issue-504/[A-Za-z0-9._-]+", str(promotion.get("tagName", ""))):
+            fail("tagName", "must use the rehearsal namespace and safe characters")
     else:
         require_equal("promotionPrBaseRef", promotion.get("promotionPrBaseRef"), "main")
         require_equal("tagName", promotion.get("tagName"), "v" + version)

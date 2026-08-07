@@ -26,6 +26,14 @@ on:
         description: Immutable RC branch whose tip equals releaseCommitSha
         required: true
         type: string
+      candidate_run_id:
+        description: Immutable candidate workflow run ID
+        required: true
+        type: string
+      candidate_attempt:
+        description: Immutable candidate workflow attempt
+        required: true
+        type: string
       candidate_id:
         description: Exact 64-hex candidateId
         required: true
@@ -115,6 +123,8 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
           RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
           CANDIDATE_ID: ${{ inputs.candidate_id }}
           BINDING_ID: ${{ inputs.binding_id }}
           QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
@@ -131,6 +141,8 @@ jobs:
 
           identity = {
               "candidateId": os.environ["CANDIDATE_ID"],
+              "candidateRunId": int(os.environ["CANDIDATE_RUN_ID"]),
+              "candidateAttempt": int(os.environ["CANDIDATE_ATTEMPT"]),
               "bindingId": os.environ["BINDING_ID"],
               "qualificationRunId": os.environ["QUALIFICATION_RUN_ID"],
               "releaseCommitSha": os.environ["RELEASE_COMMIT_SHA"],
@@ -187,6 +199,10 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           TARGET_BRANCH: ${{ inputs.promotion_target_branch }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+          TAG_NAME: ${{ inputs.tag_name }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_ruleset_fingerprint }}
           APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           APP_SLUG: ${{ vars.RELEASE_PROMOTION_APP_SLUG }}
@@ -202,6 +218,10 @@ jobs:
             || { echo "::error::workflow must be dispatched from refs/heads/main"; exit 1; }
           [[ "${APP_ID}" =~ ^[1-9][0-9]*$ && -n "${APP_SLUG}" ]] \
             || { echo "::error::release promotion App configuration is missing"; exit 1; }
+          [[ "${RELEASE_BRANCH}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+-rc$ ]] \
+            || { echo "::error::release branch is invalid"; exit 1; }
+          [[ "${CANDIDATE_RUN_ID}" =~ ^[1-9][0-9]*$ && "${CANDIDATE_ATTEMPT}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::candidate run identity is invalid"; exit 1; }
           [[ "${MAIN_RULESET_ID}" == "18124512" && "${REHEARSAL_RULESET_ID}" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::ruleset authority configuration is invalid"; exit 1; }
           [[ "${POLICY_FINGERPRINT}" =~ ^[0-9a-f]{64}$ ]] \
@@ -209,8 +229,10 @@ jobs:
           [[ "${PRIVATE_KEY_PRESENT}" == "true" ]] \
             || { echo "::error::release promotion App credential is missing"; exit 1; }
           if [[ "${MODE}" == "rehearsal" ]]; then
-            [[ "${TARGET_BRANCH}" == release-rehearsal/* ]] \
+            [[ "${TARGET_BRANCH}" =~ ^release-rehearsal/[A-Za-z0-9._/-]+$ ]] \
               || { echo "::error::rehearsal target branch is invalid"; exit 1; }
+            [[ "${TAG_NAME}" =~ ^rehearsal/issue-504/[A-Za-z0-9._-]+$ ]] \
+              || { echo "::error::rehearsal tag is invalid"; exit 1; }
             [[ "${EXPECTED_FINGERPRINT}" == "${REHEARSAL_FINGERPRINT}" ]] \
               || { echo "::error::expected rehearsal ruleset fingerprint mismatch"; exit 1; }
           else
@@ -218,6 +240,8 @@ jobs:
               || { echo "::error::release target branch must be main"; exit 1; }
             [[ "${EXPECTED_FINGERPRINT}" == "${MAIN_FINGERPRINT}" ]] \
               || { echo "::error::expected main ruleset fingerprint mismatch"; exit 1; }
+            [[ "${TAG_NAME}" == "v${{ inputs.release_version }}" ]] \
+              || { echo "::error::release tag does not match release version"; exit 1; }
           fi
           [[ "${QUALIFICATION_WORKFLOW_RUN_ID}" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::qualification workflow run ID is invalid"; exit 1; }
@@ -288,6 +312,8 @@ jobs:
           RELEASE_VERSION: ${{ inputs.release_version }}
           RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
           RELEASE_BRANCH: ${{ inputs.release_branch }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
           CANDIDATE_ID: ${{ inputs.candidate_id }}
           BINDING_ID: ${{ inputs.binding_id }}
           QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
@@ -302,6 +328,7 @@ jobs:
           APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           MAIN_RULESET_ID: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_ID }}
           REHEARSAL_RULESET_ID: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_ID }}
+          EXPECTED_MAIN_FINGERPRINT: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_FINGERPRINT }}
           EXPECTED_POLICY_FINGERPRINT: ${{ vars.RELEASE_PROMOTION_POLICY_FINGERPRINT }}
         run: |
           set -Eeuo pipefail
@@ -312,8 +339,9 @@ jobs:
           GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${MAIN_RULESET_ID}" > "${state}/main-ruleset.json"
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" > "${state}/main-effective-rules.json"
           GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset.json"
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset-normal.json"
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > "${state}/target-effective-rules.json"
-          python3 scripts/ruleset-fingerprint.py --ruleset "${state}/main-ruleset.json" --effective-rules "${state}/main-effective-rules.json" --expect-policy-fingerprint "${EXPECTED_POLICY_FINGERPRINT}" --output "${state}/main-fingerprint.json"
+          python3 scripts/ruleset-fingerprint.py --ruleset "${state}/main-ruleset.json" --effective-rules "${state}/main-effective-rules.json" --expect-fingerprint "${EXPECTED_MAIN_FINGERPRINT}" --expect-policy-fingerprint "${EXPECTED_POLICY_FINGERPRINT}" --output "${state}/main-fingerprint.json"
           python3 scripts/ruleset-fingerprint.py --ruleset "${state}/target-ruleset.json" --effective-rules "${state}/target-effective-rules.json" --expect-fingerprint "${EXPECTED_FINGERPRINT}" --expect-policy-fingerprint "${EXPECTED_POLICY_FINGERPRINT}" --output "${state}/target-fingerprint-before.json"
 
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PROMOTION_PR_NUMBER}" > "${state}/pr.json"
@@ -321,8 +349,10 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TARGET_BRANCH}" > "${state}/base-ref.json"
           gh api "repos/${GITHUB_REPOSITORY}" > "${state}/repository.json"
           merge_commit_sha="$(python3 -c 'import json; print(json.load(open("artifacts/git-promotion-state/pr.json"))["merge_commit_sha"])')"
+          head_sha="$(python3 -c 'import json; print(json.load(open("artifacts/git-promotion-state/pr.json"))["head"]["sha"])')"
           [[ "${merge_commit_sha}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::promotion PR merge preview is unavailable"; exit 1; }
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${merge_commit_sha}/check-runs?per_page=100" > "${state}/check-runs.json"
+          [[ "${head_sha}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::promotion PR head is unavailable"; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" > "${state}/check-runs.json"
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG_NAME}" >/dev/null 2>&1; then
             echo "::error::tag already exists"
             exit 1
@@ -338,6 +368,7 @@ jobs:
           main_fingerprint = load("main-fingerprint.json")
           target_fingerprint = load("target-fingerprint-before.json")
           ruleset = load("target-ruleset.json")
+          normal_ruleset = load("target-ruleset-normal.json")
           pr = load("pr.json")
           repo = load("repository.json")
           checks = load("check-runs.json").get("check_runs") or []
@@ -351,6 +382,8 @@ jobs:
               "releaseVersion": os.environ["RELEASE_VERSION"],
               "releaseCommitSha": os.environ["RELEASE_COMMIT_SHA"],
               "releaseBranch": os.environ["RELEASE_BRANCH"],
+              "candidateRunId": int(os.environ["CANDIDATE_RUN_ID"]),
+              "candidateAttempt": int(os.environ["CANDIDATE_ATTEMPT"]),
               "candidateId": os.environ["CANDIDATE_ID"],
               "bindingId": os.environ["BINDING_ID"],
               "qualificationRunId": os.environ["QUALIFICATION_RUN_ID"],
@@ -377,7 +410,7 @@ jobs:
               "targetRulesetPolicyFingerprint": target_fingerprint["policyFingerprint"],
               "rulesetEnforcement": ruleset.get("enforcement"),
               "requiredSignatures": any(rule.get("type") == "required_signatures" for rule in ruleset.get("rules", [])),
-              "normalActorBypass": "never",
+              "normalActorBypass": normal_ruleset.get("current_user_can_bypass"),
               "expectedReleaseAppId": int(os.environ["APP_ID"]),
               "rulesetBypassActors": ruleset.get("bypass_actors") or [],
               "repositoryAllowMergeCommit": repo.get("allow_merge_commit"),
@@ -410,6 +443,7 @@ jobs:
           ruleset_id="${MAIN_RULESET_ID}"
           if [[ "${MODE}" == "rehearsal" ]]; then ruleset_id="${REHEARSAL_RULESET_ID}"; fi
           GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-pre-merge.json
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-normal-pre-merge.json
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > artifacts/git-promotion-state/target-effective-rules-pre-merge.json
           python3 scripts/ruleset-fingerprint.py --ruleset artifacts/git-promotion-state/target-ruleset-pre-merge.json --effective-rules artifacts/git-promotion-state/target-effective-rules-pre-merge.json --expect-fingerprint "${EXPECTED_FINGERPRINT}" --output artifacts/git-promotion-state/target-fingerprint-pre-merge.json
 
@@ -430,8 +464,10 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" > "${state}/rc-ref-pre-merge.json"
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TARGET_BRANCH}" > "${state}/base-ref-pre-merge.json"
           merge_commit_sha="$(python3 -c 'import json; print(json.load(open("artifacts/git-promotion-state/pr-pre-merge.json"))["merge_commit_sha"])')"
+          head_sha="$(python3 -c 'import json; print(json.load(open("artifacts/git-promotion-state/pr-pre-merge.json"))["head"]["sha"])')"
           [[ "${merge_commit_sha}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::promotion PR merge preview is unavailable"; exit 1; }
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${merge_commit_sha}/check-runs?per_page=100" > "${state}/check-runs-pre-merge.json"
+          [[ "${head_sha}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::promotion PR head is unavailable"; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/check-runs?per_page=100" > "${state}/check-runs-pre-merge.json"
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG_NAME}" >/dev/null 2>&1; then
             echo "::error::tag appeared after preflight"
             exit 1
@@ -447,6 +483,7 @@ jobs:
           rc = load("rc-ref-pre-merge.json")
           base = load("base-ref-pre-merge.json")
           ruleset = load("target-ruleset-pre-merge.json")
+          normal_ruleset = load("target-ruleset-normal-pre-merge.json")
           checks = load("check-runs-pre-merge.json").get("check_runs") or []
           if pr.get("state") != "open" or pr.get("draft") is not False or pr.get("mergeable") is not True:
               raise SystemExit("promotionPr: no longer open and mergeable")
@@ -462,7 +499,7 @@ jobs:
               raise SystemExit("releaseBranch.tip: drift")
           if base.get("object", {}).get("sha") != os.environ["PROMOTION_BASE_SHA"]:
               raise SystemExit("promotionTarget.tip: drift")
-          if ruleset.get("current_user_can_bypass") != "never":
+          if normal_ruleset.get("current_user_can_bypass") != "never":
               raise SystemExit("workflowActor.bypass: changed")
           status_rule = next(
               (rule for rule in ruleset.get("rules", []) if rule.get("type") == "required_status_checks"),
@@ -587,8 +624,10 @@ jobs:
           ruleset_id="${MAIN_RULESET_ID}"
           if [[ "${MODE}" == "rehearsal" ]]; then ruleset_id="${REHEARSAL_RULESET_ID}"; fi
           GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-after.json
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-normal-after.json
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > artifacts/git-promotion-state/target-effective-rules-after.json
           python3 scripts/ruleset-fingerprint.py --ruleset artifacts/git-promotion-state/target-ruleset-after.json --effective-rules artifacts/git-promotion-state/target-effective-rules-after.json --expect-fingerprint "${EXPECTED_FINGERPRINT}" --output artifacts/git-promotion-state/target-fingerprint-after.json
+          python3 -c 'import json; assert json.load(open("artifacts/git-promotion-state/target-ruleset-normal-after.json"))["current_user_can_bypass"] == "never"'
 
       - name: Write value-free audit evidence
         shell: bash

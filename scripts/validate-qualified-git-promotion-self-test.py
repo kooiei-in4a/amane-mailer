@@ -18,6 +18,8 @@ FINGERPRINTER = SCRIPT_DIR / "ruleset-fingerprint.py"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 OTHER_COMMIT = "89abcdef0123456789abcdef0123456789abcdef"
 IDS = {
+    "candidateRunId": 31203481547,
+    "candidateAttempt": 1,
     "candidateId": "1" * 64,
     "bindingId": "2" * 64,
     "qualificationRunId": "3" * 64,

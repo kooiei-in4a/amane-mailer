@@ -84,6 +84,8 @@ workflow は次を operator input と immutable handoff / live GitHub state の�
 - `releaseVersion`
 - `releaseCommitSha`
 - `releaseBranch`
+- `candidateRunId`
+- `candidateAttempt`
 - `candidateId`
 - `bindingId`
 - `qualificationRunId`
@@ -101,8 +103,8 @@ approvalではありません。workflowの`release` environment承認が別のe
 [`validate-qualified-git-promotion.py`](../../scripts/validate-qualified-git-promotion.py)
 は次をfail-closedで要求します。
 
-- handoffのbinding / decision / sealed eventが同じcandidate / binding / qualification run /
-  source SHA / release versionを持つ。
+- handoffのbinding / decision / sealed eventが同じcandidate run / attempt / candidate / binding /
+  qualification run / source SHA / release versionを持つ。
 - `machineVerdict=GO_ELIGIBLE`、`humanDecision=APPROVE`、`runSealed=true`、terminal eventが
   `sealed`かつ入力`sealedEventId`と一致する。
 - live RC tipとpromotion PR headがどちらも`releaseCommitSha`と完全一致する。
