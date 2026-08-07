@@ -49,9 +49,10 @@ after publishing a release, verify and record the following items.
   audit, tenant scope operational boundaries, and retention sweep.
 - Take a backup of the SQLite DB and tenant config before upgrade / migration,
   and verify the restore procedure for production.
-- For GHCR image publish, confirm `publish-image.yml` release-critical validation
-  (restore / NuGet vulnerability audit / build / test, OpenAPI validation,
-  contract drift, version alignment) passed before image push.
+- For GHCR image publish, confirm `promote-qualified-oci.yml` pre-login identity
+  validation (candidate run/attempt, artifact IDs, candidateId, sealed
+  qualification, releaseCommitSha, and OCI index digest) passed. The legacy
+  `publish-image.yml` is fail-closed and performs no rebuild or image push.
 - ACS live sending requires explicit configuration. Send live mail only when
   `MAILER_PROVIDER=acs`, a Staging/Production file secret registered via
   `admin provider register-acs` (`ACS_CONNECTION_STRING_FILE`; bare

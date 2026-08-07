@@ -1,101 +1,64 @@
 [English](ghcr-image-publish.en.md)
 
-# GHCR イメージ publish 手順
+# GHCR イメージ publish
 
-GitHub Actions で Mailer ランタイムイメージを GitHub Container Registry へ publish します。
+公式 Amane Mailer image の publish は、資格済み OCI layout を digest-preserving
+に昇格する **P-OCI-PROMOTE** のみを使います。canonical workflow は
+`.github/workflows/promote-qualified-oci.yml` です。
+canonical workflowは `refs/heads/main` からdispatchし、candidateのrefは
+pre-login validatorで別途固定します。
+product refはcandidate bytesとqualificationを所有し、`main`はrelease-infrastructure
+のpromotion wrapperとproof生成だけを所有します。
 
-> **v1.2.0 note:** 公開 OCI は **P-OCI-PROMOTE**（資格済み layout の promote）で、
-> `EXTERNAL_PROVENANCE` のため registry attestation manifest は添付しません。
-> 証跡は [docs/releases/v1.2.0.md](../releases/v1.2.0.md) と GitHub Release 添付、
-> 検証手順は [release-artifact-verification](release-artifact-verification.md) を参照。
-> 以下は従来の rebuild-as-publish workflow（`publish-image.yml`）の手順です。
+## 必須 handoff
 
-ワークフロー:
+同一の `Generate Setup Release Candidate` 成功runからOCI artifactとhandoff
+artifactを取得し、sealed qualification handoffも取得します。registry login前に
+再buildせず、次を検証します:
 
-- `.github/workflows/publish-image.yml`
-- トリガー: 手動 `workflow_dispatch`（release tag ref からのみ成功）
+- workflow name/path、event、head branch/SHA、run ID、run attempt;
+- OCI/handoff artifactの名前・IDと期限切れでないこと;
+- `candidateId`、`qualificationRunId`、`releaseCommitSha`、OCI index digest、
+  `image-identity.json`、`candidate-provenance.json`、`buildx-metadata.json`;
+- immutableなbinding 1件、`GO_ELIGIBLE` + `APPROVE` decision、sealed run-status
+  event 1件。
 
-## イメージ
+不一致や欠落はregistry login前にfail-closedします。source digestはlayoutの
+`index.json`が参照する最終image-index blobのdigestです。
 
-- `ghcr.io/<github-org>/amane-mailer`
+## publish結果
 
-イメージ名は publish 時に `${{ github.repository_owner }}` から決まります。
+同一OCI layoutを次の2つのtagにだけpushします:
 
-## タグ
+- `vX.Y.Z`
+- `sha-<releaseCommitSha>`
 
-- `workflow_dispatch` は GitHub UI/API で release tag `vX.Y.Z` を選んで実行します。
-- pre-release は `vX.Y.Z-rc.1` のような `-` 付き識別子を許可します。
-- workflow input はありません。image version tag は選択された `GITHUB_REF_NAME` から決まります。
-- publish されるタグは `sha-<git-sha>` と release tag（例: `v0.1.1`）だけです。
-- `sha-<git-sha>` または release tag が GHCR に既に存在する場合、workflow は上書きせず失敗します。
-- branch ref、形式不正な tag、tag が指す commit と checked-out commit / workflow event commit が一致しない実行は失敗します。
-- image push の前に release-critical validation を再実行します（`dotnet restore` / NuGet vulnerability audit / `build` / `test`、OpenAPI validation、`scripts/check-contract-drift.mjs`、`scripts/check-mail-request-field-inventory.mjs`、Contracts `<Version>` と OpenAPI `info.version` の tag 整合性）。CI 未通過、既知 NuGet 脆弱性、または contract drift のある commit からは publish できません。監査手順は [NuGet vulnerability audit](nuget-vulnerability-audit.md) を参照してください。
-- deploy では可能な限り不変タグ `sha-<git-sha>` または digest を使います。
+両方のdigestがsource image-index digestと一致することを確認します。`latest`は
+作成しません。`EXTERNAL_PROVENANCE`を維持し、registry attestation manifestは
+追加しません。runtime値から `promote-proof.json` を生成してworkflow artifactに
+保存します。
 
-## GitHub Actions 権限
+## legacy route（廃止済み）
 
-publish ジョブは次を使います:
+`.github/workflows/publish-image.yml` はfail-closed tombstoneとして当面残します。
+製品build、registry login、push、tag作成を行わず、
+`promote-qualified-oci.yml`を明示して停止します。参照docsと運用手順の整理後、
+削除は別変更で判断します。
 
-- `contents: read`
-- `packages: write`
+## 権限とenvironment
 
-イメージ push に repository secret は不要です。ワークフローは `GITHUB_TOKEN` を使います。
+canonical promotionは`contents: read`、`actions: read`、`packages: write`と既存の
+`release` environment承認を使います。repository publish secretは不要で、job単位の
+`GITHUB_TOKEN`を使います。
 
-ワークフローは `infra/docker/Dockerfile` から Mailer イメージをビルドします。release build の
-base image は digest pin し、更新時は [container image pinning policy](container-image-pinning.md)
-に従って review / verification します。
+## deploy host pull認証
 
-## Release publish
-
-1. release commit に `vX.Y.Z` tag を作成します。tag commit はこの hardened workflow を含む必要があるため、この変更を merge した後の commit に tag を切ってください。Contracts package を同じ release で publish する場合は、`src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` の `<Version>` が `X.Y.Z` と一致している必要があります。
-2. GitHub Actions の `Publish Amane Mailer Image` を release tag ref から実行します。
-3. `release` environment の承認後、workflow が `sha-<git-sha>` と `vX.Y.Z` を publish します。
-4. ワークフローの platform ごとの image run、config-content チェック、runtime manifest digest、OCI label、attestation manifest チェックが通ることを確認します。
-5. workflow summary の image index digest、platform ごとの runtime / attestation manifest digest、`sha-<git-sha>` を GitHub Release notes または release evidence に転記します。Release notes の artifact / 運用制約は [release notes checklist](release-notes-checklist.md) で確認します。
-
-既存の `v0.1.0` image は手動 evidence で digest / provenance を確認済みです。workflow 変更だけで既存 artifact を再発行しません。
-
-ランタイムイメージに含まれる `config/mailer` のファイルは安全なものだけです:
-
-- `tenants.example.json`
-- `tenants.local-acs.json.example`
-- `tenants.schema.json`
-
-deploy 固有の tenant JSON はイメージに焼き込みません。共有 deploy では `infra/deploy/compose.yml` の `MAILER_TENANTS_HOST_PATH` と `MAILER_TENANTS_CONTAINER_PATH` でホスト所有の tenant ファイルを mount します。tenant JSON の変更はイメージ再ビルドではなく config deploy です。
-
-## GitHub Environment
-
-image publish と NuGet package publish はどちらも GitHub Environment `release` を使います。
-
-- `release` environment に必須 reviewer を設定します。
-- environment の deployment branch/tag policy は release tag（例: `v*`）を許可します。
-- branch ref から実行した publish は workflow 内の tag 検証で失敗します。
-
-## SBOM / provenance / digest
-
-`docker/build-push-action` は次を明示して実行します:
-
-- `provenance: true`
-- `sbom: true`
-- `platforms: linux/amd64,linux/arm64`
-
-workflow は publish 前に `sha-<git-sha>` tag と release tag が GHCR に存在しないことを確認します。publish 後は build action の digest output が空でないこと、`sha-<git-sha>` tag と release tag の digest が build digest と一致すること、`docker buildx imagetools inspect --raw` に各 runtime platform の manifest と、その runtime manifest を参照する attestation manifest があることを gate します。さらに各 platform の pulled image / container で `--help` smoke、safe config file 一覧、OCI labels を検証します:
-
-- `org.opencontainers.image.source`
-- `org.opencontainers.image.revision`
-- `org.opencontainers.image.version`
-
-image index digest、platform ごとの runtime manifest digest、attestation manifest digest、OCI labels、inspect 結果は workflow summary に出力されます。Release notes を自動更新しないため、publish 後は summary の digest と `sha-<git-sha>` を release record に転記し、[release notes checklist](release-notes-checklist.md) の artifact / 運用制約も GitHub Release notes に反映してください。
-
-Consumer が公開済み artifact を検証する手順は
-[release artifact verification](release-artifact-verification.md) にまとめます。
-
-## Deploy host pull 認証
-
-GHCR パッケージが private の場合、deploy host は `docker compose pull` の前に認証が必要です。
-
-`read:packages` スコープの read-only personal access token を使います:
+GHCRがprivateの場合、deploy hostは`docker compose pull`前に`read:packages`のみの
+read-only tokenで認証します:
 
 ```bash
 printf '%s' '<ghcr-read-token>' | docker login ghcr.io -u '<github-user>' --password-stdin
 ```
+
+検証手順は [Digest-preserving OCI promotion](oci-promote.md) と
+[release artifact verification](release-artifact-verification.md) を参照してください。

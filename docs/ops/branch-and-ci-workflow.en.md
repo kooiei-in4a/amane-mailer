@@ -78,7 +78,9 @@ Known NuGet vulnerabilities (including transitive packages) are checked by a
 separate workflow
 [`.github/workflows/nuget-vulnerability-audit.yml`](../../.github/workflows/nuget-vulnerability-audit.yml)
 on a weekly schedule / `workflow_dispatch`, and again before push in
-`publish-image.yml` and `publish-contracts.yml`. See
+`publish-contracts.yml`. GHCR images are promoted without rebuild by
+`promote-qualified-oci.yml` after sealed-qualification identity checks; the
+legacy `publish-image.yml` is a fail-closed tombstone. See
 [NuGet vulnerability audit](nuget-vulnerability-audit.en.md). This complements
 Dependabot; it does not replace it. npm / Python are out of scope.
 

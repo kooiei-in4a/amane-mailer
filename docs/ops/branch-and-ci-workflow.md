@@ -75,8 +75,10 @@ release PR の待ち時間を短くしつつ、最終的な `main` コミット�
 
 NuGet の既知脆弱性（transitive 含む）は別 workflow
 [`.github/workflows/nuget-vulnerability-audit.yml`](../../.github/workflows/nuget-vulnerability-audit.yml)
-で週次 schedule / `workflow_dispatch` し、`publish-image.yml` と
-`publish-contracts.yml` でも push 前に同じスクリプトを実行します。
+で週次 schedule / `workflow_dispatch` し、`publish-contracts.yml` でも
+push 前に同じスクリプトを実行します。GHCR imageは再build publishせず、
+sealed qualificationを検証する `promote-qualified-oci.yml` でdigest-preserving
+promotionします。旧 `publish-image.yml` はfail-closed tombstoneです。
 手順は [NuGet vulnerability audit](nuget-vulnerability-audit.md) を参照してください。
 Dependabot の代替ではなく併用です。npm / Python は対象外です。
 
