@@ -166,7 +166,7 @@ public sealed class MailRequestRetentionTests(MailerRetentionFixture fixture)
     }
 
     [Fact]
-    public async Task DeleteExpiredCompletedAsync_removes_matching_bounce_events()
+    public async Task DeleteExpiredCompletedAsync_removes_matching_recipient_delivery_events()
     {
         var ct = TestContext.Current.CancellationToken;
         var expiredRequest = MailRequestTestData.CreateRequest();
@@ -243,14 +243,16 @@ public sealed class MailRequestRetentionTests(MailerRetentionFixture fixture)
         await using var command = connection.CreateCommand();
         var now = SqliteTime.ToStorageUtc(DateTimeOffset.UtcNow);
         command.CommandText = """
-            INSERT INTO bounce_events (
+            INSERT INTO recipient_delivery_events (
                 id, tenant_id, source_service, mail_request_id,
+                recipient_role, recipient_ordinal,
                 provider, provider_event_id, provider_message_id,
-                delivery_status, status_message, occurred_at, created_at)
+                provider_status, applied_delivery_state, status_message, occurred_at, created_at)
             VALUES (
                 @Id, @TenantId, @SourceService, @MailRequestId,
+                0, 0,
                 'acs', @ProviderEventId, @ProviderMessageId,
-                'Bounced', 'sanitized', @Now, @Now);
+                'Bounced', 3, 'sanitized', @Now, @Now);
             """;
         command.Parameters.AddWithValue("@Id", Guid.NewGuid().ToString("D"));
         command.Parameters.AddWithValue("@TenantId", request.TenantId.ToString("D"));
@@ -272,7 +274,7 @@ public sealed class MailRequestRetentionTests(MailerRetentionFixture fixture)
         command.CommandText = """
             SELECT EXISTS (
                 SELECT 1
-                FROM bounce_events
+                FROM recipient_delivery_events
                 WHERE mail_request_id = @MailRequestId
             );
             """;

@@ -732,7 +732,7 @@ public sealed class MailRequestClaimStore(
         CancellationToken cancellationToken = default)
     {
         // Select the expired batch once, then delete matching delivery_events,
-        // bounce_events, and mail_requests from that fixed set. Two independent
+        // recipient_delivery_events, and mail_requests from that fixed set. Two independent
         // ORDER BY ... LIMIT queries can diverge on completed_at ties; a single
         // selection avoids orphans.
         const string selectBatchSql = """
@@ -825,7 +825,7 @@ public sealed class MailRequestClaimStore(
                 }
 
                 deleteBounces.CommandText = $"""
-                    DELETE FROM bounce_events
+                    DELETE FROM recipient_delivery_events
                     WHERE (tenant_id, source_service, mail_request_id) IN ({bounceTuples});
                     """;
                 _ = await deleteBounces.ExecuteNonQueryAsync(cancellationToken);

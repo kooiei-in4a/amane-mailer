@@ -5,7 +5,7 @@ namespace Amane.Mailer.Bounce;
 
 /// <summary>
 /// AOT-safe ACS Event Grid delivery-report parser (issue #302 / ADR 0020).
-/// Keeps <c>EmailDeliveryReportReceived</c> non-success reports; discards other types and Delivered.
+/// Keeps every well-formed <c>EmailDeliveryReportReceived</c> status for recipient correlation.
 /// </summary>
 public static class AcsEventParser
 {
@@ -87,11 +87,6 @@ public static class AcsEventParser
             || string.IsNullOrWhiteSpace(data.Status))
         {
             return Unparseable();
-        }
-
-        if (BounceClassifier.IsDelivered(data.Status))
-        {
-            return Ignored();
         }
 
         DateTimeOffset? occurredAt = dto.EventTime == default ? null : dto.EventTime;

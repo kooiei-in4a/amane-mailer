@@ -1,3 +1,5 @@
+using Amane.Mailer.Data.Sqlite;
+
 namespace Amane.Mailer.Bounce;
 
 /// <summary>
@@ -25,8 +27,28 @@ public static class BounceClassifier
         string.Equals(deliveryStatus, DeliveredStatus, StringComparison.Ordinal);
 
     /// <summary>
-    /// Non-Delivered delivery-report statuses are recorded; only known suppression statuses suppress.
+    /// Every non-empty provider status is retained as recipient delivery-event history.
     /// </summary>
     public static bool ShouldRecordBounceEvent(string? deliveryStatus) =>
-        !string.IsNullOrWhiteSpace(deliveryStatus) && !IsDelivered(deliveryStatus);
+        !string.IsNullOrWhiteSpace(deliveryStatus);
+
+    public static MailRecipientDeliveryState? AppliedRecipientState(string? deliveryStatus)
+    {
+        if (IsDelivered(deliveryStatus))
+        {
+            return MailRecipientDeliveryState.Delivered;
+        }
+
+        if (IsHardBounce(deliveryStatus))
+        {
+            return MailRecipientDeliveryState.Bounced;
+        }
+
+        if (IsSuppressed(deliveryStatus))
+        {
+            return MailRecipientDeliveryState.Suppressed;
+        }
+
+        return null;
+    }
 }

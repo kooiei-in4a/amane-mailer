@@ -16,6 +16,7 @@ public sealed class SqlMigrationRunner
         new Dictionary<string, MigrationTransactionStep>(StringComparer.Ordinal)
         {
             [RecipientPersistenceMigration.MigrationVersion] = RecipientPersistenceMigration.Step,
+            [RecipientDeliveryEventMigration.MigrationVersion] = RecipientDeliveryEventMigration.Step,
         };
 
     private readonly SqliteConnectionFactory _connections;
@@ -424,10 +425,11 @@ public sealed class SqlMigrationRunner
                     'mail_attachment_submissions',
                     'mailer_maintenance_leases',
                     'mail_request_recipients',
-                    'mail_plain_submissions');
+                    'mail_plain_submissions',
+                    'recipient_delivery_events');
                 """;
             var tableCount = await tables.ExecuteScalarAsync(cancellationToken);
-            if (tableCount is not long count || count != 10L)
+            if (tableCount is not long count || count != 11L)
             {
                 return false;
             }
@@ -453,7 +455,74 @@ public sealed class SqlMigrationRunner
             }
         }
 
-        return hasScheduledAt && hasAttachmentCount;
+        if (!hasScheduledAt || !hasAttachmentCount)
+        {
+            return false;
+        }
+
+        await using var recipientColumns = connection.CreateCommand();
+        recipientColumns.CommandText = "PRAGMA table_info(mail_request_recipients);";
+        var requiredRecipientColumns = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "last_feedback_occurred_at",
+            "last_feedback_provider",
+            "last_feedback_event_id",
+        };
+        await using (var reader = await recipientColumns.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                requiredRecipientColumns.Remove(reader.GetString(1));
+            }
+        }
+
+        if (requiredRecipientColumns.Count != 0)
+        {
+            return false;
+        }
+
+        await using var eventColumns = connection.CreateCommand();
+        eventColumns.CommandText = "PRAGMA table_info(recipient_delivery_events);";
+        var requiredEventColumns = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "id",
+            "tenant_id",
+            "source_service",
+            "mail_request_id",
+            "recipient_role",
+            "recipient_ordinal",
+            "provider",
+            "provider_event_id",
+            "provider_message_id",
+            "provider_status",
+            "applied_delivery_state",
+            "status_message",
+            "occurred_at",
+            "created_at",
+        };
+        await using (var reader = await eventColumns.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                requiredEventColumns.Remove(reader.GetString(1));
+            }
+        }
+
+        if (requiredEventColumns.Count != 0)
+        {
+            return false;
+        }
+
+        await using var eventIndexes = connection.CreateCommand();
+        eventIndexes.CommandText = """
+            SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type = 'index'
+              AND name IN (
+                'ix_recipient_delivery_events_request_occurred',
+                'ix_recipient_delivery_events_provider_message');
+            """;
+        return Convert.ToInt64(await eventIndexes.ExecuteScalarAsync(cancellationToken)) == 2;
     }
 
     private static async Task<bool> HasChecksumColumnAsync(
