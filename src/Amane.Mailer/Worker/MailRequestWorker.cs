@@ -711,9 +711,8 @@ public sealed class MailRequestWorker : BackgroundService
 
         // Canonical recipient mapping (ADR 0023 D-03, Issue #546 review finding F2): the shared
         // BuildMailSendJob helper maps every To/Cc/Bcc recipient row, matching the plain path.
-        // The IsLegacySingleTo gate still keeps every reachable request single-To in practice
-        // today, but the provider envelope is now built from canonical recipients rather than
-        // the legacy shadow columns.
+        // The provider envelope is built from canonical recipients rather than the legacy shadow
+        // columns.
         var job = BuildMailSendJob(row, recipients, sendAttachments);
 
         MailDeliveryResult result;

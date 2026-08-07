@@ -73,12 +73,11 @@ characters; a whitespace-only value is treated as unspecified. Array order is pr
 each role, and the provider submission order is To, Cc, Bcc. A request with a single To entry
 and no Cc/Bcc is byte-identical to the existing v1.2 contract and payload hash.
 
-**The current runtime accepts only a single To recipient via a temporary gate.** Two or more
-To entries, or any Cc/Bcc entry, are rejected as 422 `INVALID_REQUEST`
-(`Only a single To recipient is currently accepted.`) before any DB write, attachment staging,
-or queue signal. This is a temporary boundary pending recipient persistence/migration (ADR 0023
-D-11 issue B) and is independent of the Contracts/OpenAPI/payload hash/validation layer (this
-issue's scope) already accepting and validating multiple recipients. See
+The runtime accepts the multiple-recipient shapes above through canonical recipient persistence
+and provider mapping, sending every To, Cc, and Bcc recipient in one provider message. The
+legacy `recipient_email` / `recipient_display_name` columns are binary-compatibility shadows
+only and are not the source of truth for delivery or recipient-aware behavior. A Bcc-only request
+uses the fixed redacted sentinel in that shadow; the raw Bcc address is not stored there. See
 [docs/adr/0023-multiple-recipient-contract-and-delivery-semantics.md](adr/0023-multiple-recipient-contract-and-delivery-semantics.md).
 
 ### Acceptance Responses
@@ -93,7 +92,7 @@ issue's scope) already accepting and validating multiple recipients. See
 | Same ID, different content | 409 | `IDEMPOTENCY_CONFLICT` |
 | Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | Per-role or combined recipient limit exceeded | 422 | `TOO_MANY_RECIPIENTS` |
-| Invalid/duplicate recipient, non-single-To shape (temporary gate) / metadata / hash mismatch | 422 | `INVALID_REQUEST` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` |
+| Invalid/duplicate recipient / metadata / hash mismatch | 422 | `INVALID_REQUEST` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` |
 | Past `scheduled_at` / beyond max schedule horizon | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
@@ -265,7 +264,7 @@ Canonical DDL: `src/Amane.Mailer/Data/Migrations/001_initial.sql`
 | `payload_json` | TEXT | Received JSON verbatim |
 | `payload_hash` | TEXT | SHA-256 hex (64 characters) |
 | `subject` / `html_body` / `text_body` / `reply_to` | TEXT | Delivery content |
-| `recipient_email` / `recipient_display_name` | TEXT | Recipient (runtime currently accepts only a single To recipient; temporary boundary pending ADR 0023 D-01/D-11 issue B) |
+| `recipient_email` / `recipient_display_name` | TEXT | Legacy binary-compatibility shadow (canonical `mail_request_recipients` is the source of truth; fixed redacted sentinel for Bcc-only) |
 | `metadata_json` | TEXT NULL | Optional metadata |
 | `status` | INTEGER | State (see table below) |
 | `attempt_count` / `max_attempts` | INTEGER | Attempt counts |

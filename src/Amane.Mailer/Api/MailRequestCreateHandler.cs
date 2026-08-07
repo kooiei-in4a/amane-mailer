@@ -110,7 +110,11 @@ public static class MailRequestCreateHandler
         // D-04 step 10: provider envelope pre-check (best-effort estimate; the authoritative
         // gate is re-checked at Worker dispatch time with exact pre-serialization).
         if (attachmentResult.Attachments is { Count: > 0 }
-            && !IsWithinProviderEnvelopeEstimate(request, canonicalRecipients!.To[0], tenant!, attachmentResult.Attachments))
+            && !IsWithinProviderEnvelopeEstimate(
+                request,
+                canonicalRecipients!.All,
+                tenant!,
+                attachmentResult.Attachments))
         {
             attachmentSpool.TryDeleteStaging(requestId);
             runtimeMetrics?.RecordAttachmentValidationRejected(MailerErrorCodes.MailPayloadTooLarge);
@@ -162,11 +166,12 @@ public static class MailRequestCreateHandler
             });
         }
 
-        // Guaranteed by the legacy-shape gate in ValidateRequest (IsLegacySingleTo): exactly one
-        // To recipient, no Cc/Bcc. Use the validated canonical recipient (trimmed address;
-        // whitespace-only display name normalized to null) -- the same value MailPayloadHasher
-        // hashed -- not the raw request DTO, so the stored/delivered recipient matches payload_hash.
-        var recipient = canonicalRecipients!.To[0];
+        // Select the compatibility-only legacy shadow representative from the canonical
+        // aggregate. MailRequestAcceptStore applies the fixed redacted sentinel for Bcc-only
+        // shadows; the canonical recipient rows remain the sole source of truth for delivery and
+        // all recipient-aware behavior.
+        var canonicalRecipientSet = canonicalRecipients!;
+        var legacyRecipient = GetLegacyShadowRepresentative(canonicalRecipientSet);
         var insert = new AcceptedMailRequestInsert
         {
             Id = requestId,
@@ -186,9 +191,9 @@ public static class MailRequestCreateHandler
             HtmlBody = request.HtmlBody,
             TextBody = request.TextBody,
             ReplyTo = request.ReplyTo,
-            RecipientEmail = recipient.Address,
-            RecipientDisplayName = recipient.DisplayName,
-            Recipients = canonicalRecipients.All,
+            RecipientEmail = legacyRecipient.Address,
+            RecipientDisplayName = legacyRecipient.DisplayName,
+            Recipients = canonicalRecipientSet.All,
             MetadataJson = request.Metadata is null
                 ? null
                 : JsonSerializer.Serialize(request.Metadata, MailerJsonContext.Default.DictionaryStringString),
@@ -460,15 +465,17 @@ public static class MailRequestCreateHandler
         writer.WriteEndObject();
     }
 
-    private static bool IsWithinProviderEnvelopeEstimate(
+    internal static bool IsWithinProviderEnvelopeEstimate(
         MailRequestCreateRequest request,
-        CanonicalMailRecipient recipient,
+        IReadOnlyList<CanonicalMailRecipient> recipients,
         MailerTenant tenant,
         IReadOnlyList<CanonicalAttachmentMetadata> attachments)
     {
         var estimate = AttachmentEnvelopeEstimator.EstimateUpperBound(new AttachmentEnvelopeInput(
             tenant.DefaultFrom.Email,
-            [new AttachmentEnvelopeRecipient(recipient.Address, recipient.DisplayName)],
+            recipients
+                .Select(recipient => new AttachmentEnvelopeRecipient(recipient.Address, recipient.DisplayName))
+                .ToArray(),
             request.Subject,
             request.TextBody,
             request.HtmlBody,
@@ -482,6 +489,10 @@ public static class MailRequestCreateHandler
 
         return estimate <= MailAttachmentLimits.MaxProviderEnvelopeBytes;
     }
+
+    internal static CanonicalMailRecipient GetLegacyShadowRepresentative(
+        CanonicalMailRecipientSet canonicalRecipients) =>
+        canonicalRecipients.All[0];
 
     private static IResult? ValidateRequest(
         MailRequestCreateRequest request,
@@ -505,20 +516,6 @@ public static class MailRequestCreateHandler
                     MailerErrorCodes.InvalidRequest,
                     "A valid recipient is required.",
                     StatusCodes.Status422UnprocessableEntity);
-        }
-
-        // Temporary gate (ADR 0023 / issue #540): Contracts/OpenAPI/validation/hash accept
-        // multiple To and Cc/Bcc, but recipient persistence and delivery (a separate, not-yet-
-        // implemented follow-up) still only handle a single To recipient. Reject any other shape
-        // here -- before attachment staging, hash verification, or any DB write -- so a
-        // multi-recipient request is never silently reduced to one recipient. No recipient values
-        // are included in the response.
-        if (!canonicalRecipients!.IsLegacySingleTo)
-        {
-            return MailerJsonResults.ValidationError(
-                MailerErrorCodes.InvalidRequest,
-                "Only a single To recipient is currently accepted.",
-                StatusCodes.Status422UnprocessableEntity);
         }
 
         if (!string.IsNullOrWhiteSpace(request.ReplyTo)

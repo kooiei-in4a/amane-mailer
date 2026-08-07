@@ -1,9 +1,12 @@
 using System.Text.Json;
+using Amane.Mailer.Attachments.Provider;
 using Amane.Mailer.Api;
 using Amane.Mailer.Attachments.Spool;
+using Amane.Mailer.Attachments.Validation;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Contracts.Security;
+using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Json;
@@ -335,15 +338,13 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
 
     [Theory]
     [MemberData(nameof(NonLegacyRecipientShapes))]
-    public async Task HandleAsync_rejects_non_legacy_recipient_shapes_before_any_db_write(
+    public async Task HandleAsync_accepts_non_legacy_recipient_shapes_and_persists_all_recipients(
         IReadOnlyList<MailRecipientDto>? to,
         IReadOnlyList<MailRecipientDto>? cc,
         IReadOnlyList<MailRecipientDto>? bcc)
     {
-        // ADR 0023 / issue #540: the Contracts/validation layer accepts these shapes, but
-        // recipient persistence is a separate, not-yet-implemented follow-up. The temporary
-        // legacy-shape gate must reject them -- before any DB write, attachment staging, or queue
-        // signal -- rather than silently reducing them to one recipient.
+        // ADR 0023: public acceptance persists the complete canonical recipient set. The legacy
+        // mail_requests shadow remains compatibility-only and must not reduce the recipient set.
         var request = MailRequestTestData.CreateRequest() with { To = to, Cc = cc, Bcc = bcc };
         request = request with { PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request) };
         var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
@@ -363,10 +364,107 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             CancellationToken.None);
 
         var (statusCode, responseBody) = MailRequestHttpResultAssertions.Inspect(result);
-        Assert.Equal(StatusCodes.Status422UnprocessableEntity, statusCode);
-        Assert.Contains(MailerErrorCodes.InvalidRequest, responseBody, StringComparison.Ordinal);
-        Assert.Equal(0, repository.InsertCount);
-        Assert.DoesNotContain("@example.com", responseBody, StringComparison.Ordinal);
+        var response = MailRequestHttpResultAssertions.Value<MailRequestCreateResponse>(result);
+        Assert.Equal(StatusCodes.Status202Accepted, statusCode);
+        Assert.Equal(MailRequestAcceptanceStatus.Accepted, response.Status);
+        Assert.Equal(1, repository.InsertCount);
+        Assert.Equal(
+            (to?.Count ?? 0) + (cc?.Count ?? 0) + (bcc?.Count ?? 0),
+            repository.LastInsert!.Recipients!.Count);
+        Assert.DoesNotContain(MailerErrorCodes.InvalidRequest, responseBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Legacy_shadow_representative_comes_from_the_canonical_aggregate()
+    {
+        var canonicalRecipients = new CanonicalMailRecipientSet
+        {
+            To = [],
+            Cc = [CanonicalRecipient(MailRecipientRole.Cc, "cc@example.com")],
+            Bcc = [],
+            All = [CanonicalRecipient(MailRecipientRole.Cc, "cc@example.com")],
+        };
+
+        var representative = MailRequestCreateHandler.GetLegacyShadowRepresentative(canonicalRecipients);
+
+        Assert.Equal("cc@example.com", representative.Address);
+
+        var bccOnlyRecipients = new CanonicalMailRecipientSet
+        {
+            To = [],
+            Cc = [],
+            Bcc = [CanonicalRecipient(MailRecipientRole.Bcc, "bcc@example.com")],
+            All = [CanonicalRecipient(MailRecipientRole.Bcc, "bcc@example.com")],
+        };
+
+        Assert.Equal(
+            "bcc@example.com",
+            MailRequestCreateHandler.GetLegacyShadowRepresentative(bccOnlyRecipients).Address);
+    }
+
+    [Fact]
+    public void Provider_envelope_estimate_uses_all_canonical_recipients_at_the_acceptance_boundary()
+    {
+        var tenant = new MailerTenant
+        {
+            TenantId = Guid.NewGuid(),
+            Name = "example-develop",
+            SourceServices = ["example-service"],
+            DefaultFrom = new MailerAddress { Email = "noreply@example.com" },
+            TokenEnv = "MAIL_SERVICE_TOKEN",
+            Provider = "mailpit",
+            Retry = new MailerRetryOptions { MaxAttempts = 3, InitialDelaySeconds = 1, MaxDelaySeconds = 2 },
+        };
+        var recipients = new[]
+        {
+            CanonicalRecipient(MailRecipientRole.To, "to@example.com"),
+            CanonicalRecipient(MailRecipientRole.Cc, "cc@example.com"),
+            CanonicalRecipient(MailRecipientRole.Bcc, "bcc@example.com"),
+        };
+        var attachment = new CanonicalAttachmentMetadata(
+            Order: 0,
+            FileName: "payload.bin",
+            ContentType: "application/octet-stream",
+            ByteLength: MailAttachmentLimits.MaxTotalDecodedBytes,
+            Sha256Hex: new string('a', 64),
+            SpoolKey: Guid.NewGuid());
+
+        var bodyLength = Enumerable.Range(1_300, 200)
+            .Select(thousands => thousands * 1_000)
+            .First(length =>
+            {
+                var request = MailRequestTestData.CreateRequest() with
+                {
+                    Subject = "subject",
+                    TextBody = new string('x', length),
+                };
+
+                var singleRecipientEstimate = AttachmentEnvelopeEstimator.EstimateUpperBound(
+                    CreateEnvelopeInput(request, recipients[..1], tenant, attachment));
+                var allRecipientEstimate = AttachmentEnvelopeEstimator.EstimateUpperBound(
+                    CreateEnvelopeInput(request, recipients, tenant, attachment));
+
+                return singleRecipientEstimate <= MailAttachmentLimits.MaxProviderEnvelopeBytes
+                    && allRecipientEstimate > MailAttachmentLimits.MaxProviderEnvelopeBytes;
+            });
+        var boundaryRequest = MailRequestTestData.CreateRequest() with
+        {
+            Subject = "subject",
+            TextBody = new string('x', bodyLength),
+        };
+
+        Assert.True(
+            MailRequestCreateHandler.IsWithinProviderEnvelopeEstimate(
+                boundaryRequest,
+                recipients[..1],
+                tenant,
+                [attachment]));
+        Assert.False(
+            MailRequestCreateHandler.IsWithinProviderEnvelopeEstimate(
+                boundaryRequest,
+                recipients,
+                tenant,
+                [attachment]));
     }
 
     public static TheoryData<IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?> NonLegacyRecipientShapes()
@@ -394,8 +492,51 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             [new MailRecipientDto { Email = "cc@example.com" }],
             null);
 
+        // Single To plus a Bcc.
+        data.Add(
+            [new MailRecipientDto { Email = "to@example.com" }],
+            null,
+            [new MailRecipientDto { Email = "bcc@example.com" }]);
+
+        // Cc plus Bcc without a To.
+        data.Add(
+            null,
+            [new MailRecipientDto { Email = "cc@example.com" }],
+            [new MailRecipientDto { Email = "bcc@example.com" }]);
+
+        // All three roles.
+        data.Add(
+            [new MailRecipientDto { Email = "to@example.com" }],
+            [new MailRecipientDto { Email = "cc@example.com" }],
+            [new MailRecipientDto { Email = "bcc@example.com" }]);
+
         return data;
     }
+
+    private static AttachmentEnvelopeInput CreateEnvelopeInput(
+        MailRequestCreateRequest request,
+        IReadOnlyList<CanonicalMailRecipient> recipients,
+        MailerTenant tenant,
+        CanonicalAttachmentMetadata attachment) =>
+        new(
+            tenant.DefaultFrom.Email,
+            recipients
+                .Select(recipient => new AttachmentEnvelopeRecipient(recipient.Address, recipient.DisplayName))
+                .ToArray(),
+            request.Subject,
+            request.TextBody,
+            request.HtmlBody,
+            request.ReplyTo,
+            [new AttachmentEnvelopeAttachment(attachment.FileName, attachment.ContentType, attachment.ByteLength)]);
+
+    private static CanonicalMailRecipient CanonicalRecipient(MailRecipientRole role, string address) =>
+        new()
+        {
+            Role = role,
+            Ordinal = 0,
+            Address = address,
+            AddressKey = RecipientEmailNormalizer.Normalize(address),
+        };
 
     private static HttpRequest CreateAuthorizedHttpRequest(string token)
     {

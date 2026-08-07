@@ -17,9 +17,8 @@ public sealed record CanonicalMailRecipientSet
     public int TotalCount => All.Count;
 
     /// <summary>
-    /// True when the request is exactly one To recipient and no Cc/Bcc — the only shape the
-    /// runtime currently persists and delivers (ADR 0023 non-goals: persistence/migration is a
-    /// separate, not-yet-implemented follow-up).
+    /// True when the request is exactly one To recipient and no Cc/Bcc. This is a compatibility
+    /// shape classifier; public acceptance supports every validated recipient shape.
     /// </summary>
     public bool IsLegacySingleTo => To.Count == 1 && Cc.Count == 0 && Bcc.Count == 0;
 }
