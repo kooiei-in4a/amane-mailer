@@ -122,7 +122,8 @@ See [python/README.md](python/README.md) for error handling, retries, and local 
 
 Both SDKs ship cross-check tests against the official vectors:
 
-`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json`
+`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` and
+`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json`
 
 CI runs SDK tests in the `sdk-tests` job. Lower-level language examples remain in [examples/payload-hash/](../examples/payload-hash/README.md).
 

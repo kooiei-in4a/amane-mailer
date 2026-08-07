@@ -23,6 +23,8 @@ MAIL_REQUEST_JSON_FIELDS = frozenset(
         "mail_request_id",
         "purpose",
         "to",
+        "cc",
+        "bcc",
         "subject",
         "html_body",
         "text_body",
@@ -55,10 +57,34 @@ def _assert_source_service(value: str) -> None:
         )
 
 
-def _assert_recipient(recipient: dict[str, Any]) -> None:
+def _assert_recipient(recipient: dict[str, Any], field_name: str, index: int) -> None:
     email = recipient.get("email") if isinstance(recipient, dict) else None
     if not isinstance(email, str) or not email:
-        raise MailRequestValidationError("to[0].email is required.")
+        raise MailRequestValidationError(f"{field_name}[{index}].email is required.")
+
+
+def _assert_recipient_roles(draft: dict[str, Any]) -> None:
+    recipient_count = 0
+    for field_name in ("to", "cc", "bcc"):
+        role = draft.get(field_name)
+        if role is None:
+            continue
+        if not isinstance(role, list):
+            raise MailRequestValidationError(f"{field_name} must be an array when provided.")
+        if len(role) > 10:
+            raise MailRequestValidationError(
+                f"{field_name} must contain at most 10 recipients.",
+            )
+        recipient_count += len(role)
+        for index, recipient in enumerate(role):
+            _assert_recipient(recipient, field_name, index)
+
+    if recipient_count == 0:
+        raise MailRequestValidationError("At least one recipient in to, cc, or bcc is required.")
+    if recipient_count > 20:
+        raise MailRequestValidationError(
+            "to, cc, and bcc must contain at most 20 recipients combined.",
+        )
 
 
 def _assert_metadata(metadata: dict[str, str] | None) -> None:
@@ -125,12 +151,7 @@ def validate_mail_request_draft(draft: dict[str, Any]) -> None:
     if not isinstance(purpose, str) or not purpose:
         raise MailRequestValidationError("purpose is required.")
 
-    recipients = draft.get("to")
-    if not isinstance(recipients, list) or not recipients:
-        raise MailRequestValidationError("to must contain at least one recipient.")
-    if len(recipients) > 1:
-        raise MailRequestValidationError("to must contain at most one recipient.")
-    _assert_recipient(recipients[0])
+    _assert_recipient_roles(draft)
 
     subject = draft.get("subject")
     if not isinstance(subject, str) or not subject:

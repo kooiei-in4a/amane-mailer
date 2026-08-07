@@ -185,8 +185,7 @@ CI runs each language verifier against both
 the same change as the test vectors.
 
 The Python/TypeScript **SDKs** (`sdk/python`, `sdk/typescript`, as opposed to the
-language-independent reference examples above) verify only the baseline fixture until issue
-[#542](https://github.com/kooiei-in4a/amane-mailer/issues/542) implements `cc`/`bcc`/optional-`to`
-support in SDK production code — reading the recipient v1.3 fixture from the SDK tests before
-then would fail on every vector it adds. See
+language-independent reference examples above) verify both the baseline and recipient v1.3
+fixtures after issue [#542](https://github.com/kooiei-in4a/amane-mailer/issues/542) implemented
+`cc`/`bcc`/optional-`to` support in SDK production code. See
 [examples/payload-hash/README.md#vector-fixtures-baseline-vs-recipient-v13](../../examples/payload-hash/README.md#vector-fixtures-baseline-vs-recipient-v13).

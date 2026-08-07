@@ -12,6 +12,8 @@ export const MAIL_REQUEST_JSON_FIELDS = new Set([
   'mail_request_id',
   'purpose',
   'to',
+  'cc',
+  'bcc',
   'subject',
   'html_body',
   'text_body',
@@ -47,12 +49,37 @@ export function assertSourceService(value) {
   }
 }
 
-export function assertRecipient(recipient) {
+export function assertRecipient(recipient, fieldName, index) {
   if (!recipient || typeof recipient !== 'object' || typeof recipient.email !== 'string') {
-    throw new MailRequestValidationError('to[0].email is required.');
+    throw new MailRequestValidationError(`${fieldName}[${index}].email is required.`);
   }
   if (recipient.email.length === 0) {
-    throw new MailRequestValidationError('to[0].email must not be empty.');
+    throw new MailRequestValidationError(`${fieldName}[${index}].email must not be empty.`);
+  }
+}
+
+function assertRecipientRoles(draft) {
+  let recipientCount = 0;
+  for (const fieldName of ['to', 'cc', 'bcc']) {
+    const role = draft[fieldName];
+    if (role === null || role === undefined) {
+      continue;
+    }
+    if (!Array.isArray(role)) {
+      throw new MailRequestValidationError(`${fieldName} must be an array when provided.`);
+    }
+    if (role.length > 10) {
+      throw new MailRequestValidationError(`${fieldName} must contain at most 10 recipients.`);
+    }
+    recipientCount += role.length;
+    role.forEach((recipient, index) => assertRecipient(recipient, fieldName, index));
+  }
+
+  if (recipientCount === 0) {
+    throw new MailRequestValidationError('At least one recipient in to, cc, or bcc is required.');
+  }
+  if (recipientCount > 20) {
+    throw new MailRequestValidationError('to, cc, and bcc must contain at most 20 recipients combined.');
   }
 }
 
@@ -152,13 +179,7 @@ export function validateMailRequestDraft(draft) {
     throw new MailRequestValidationError('purpose is required.');
   }
 
-  if (!Array.isArray(draft.to) || draft.to.length === 0) {
-    throw new MailRequestValidationError('to must contain at least one recipient.');
-  }
-  if (draft.to.length > 1) {
-    throw new MailRequestValidationError('to must contain at most one recipient.');
-  }
-  assertRecipient(draft.to[0]);
+  assertRecipientRoles(draft);
 
   if (typeof draft.subject !== 'string' || draft.subject.length === 0) {
     throw new MailRequestValidationError('subject is required.');

@@ -8,9 +8,8 @@ Official test vectors, split across two fixture files (see
 - `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` (baseline)
 - `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json` (ADR 0023 recipient conformance)
 
-These Python/JavaScript/Go reference implementations verify **both** files. The Python/TypeScript
-**SDKs** (`sdk/python`, `sdk/typescript`) verify only the baseline file until issue
-[#542](https://github.com/kooiei-in4a/amane-mailer/issues/542) adds cc/bcc support.
+These Python/JavaScript/Go reference implementations and the Python/TypeScript **SDKs**
+(`sdk/python`, `sdk/typescript`) verify **both** files.
 
 Contract notes (also in `tests/Amane.Mailer.Contracts.Tests/TestVectors/README.md`):
 
@@ -104,16 +103,13 @@ The shared test vectors are split across two files by contract generation, not b
 convenience — each file is still a complete, language-independent fixture on its own:
 
 - **`payload-hash-vectors.json`** (baseline): the pre-ADR-0023 single-To/attachment vectors.
-  This file is also read directly by the existing Python/TypeScript **SDK** conformance tests
-  (`sdk/python/tests/test_payload_hash.py`, `sdk/typescript/test/payload-hash.test.mjs`), which
-  implement only the single-To contract today. Its content and hash values are frozen —
-  unchanged since before the ADR 0023 recipient work.
+  This file is also read directly by the Python/TypeScript **SDK** conformance tests
+  (`sdk/python/tests/test_payload_hash.py`, `sdk/typescript/test/payload-hash.test.mjs`). Its
+  content and hash values are frozen — unchanged since before the ADR 0023 recipient work.
 - **`payload-hash-recipient-v1.3-vectors.json`** (recipient v1.3): the ADR 0023 `to`/`cc`/`bcc`
   conformance vectors (CC-only, BCC-only, combined to+cc+bcc, address trim, whitespace-only
-  display name). This file is **not** read by the SDK conformance tests yet — the Python and
-  TypeScript SDK production code does not implement `cc`/`bcc`/optional-`to` until issue
-  [#542](https://github.com/kooiei-in4a/amane-mailer/issues/542) lands. Reading it from the SDK
-  tests before then would fail on every vector this file adds.
+  display name). This file is also read by the Python and TypeScript SDK conformance tests after
+  #542 added `cc`/`bcc`/optional-`to` support.
 
 The Python/JavaScript/Go reference implementations in this directory verify **both** files (see
 `verify_vectors.py` / `verify_vectors.mjs` / `verify_vectors_test.go`), since they exist to
@@ -122,8 +118,8 @@ far. Vector names are disjoint across the two files (enforced by a .NET Contract
 `Baseline_and_recipient_v1_3_vectors_do_not_share_names`), so a name always identifies exactly
 one fixture unambiguously.
 
-When issue #542 implements `cc`/`bcc`/optional-`to` in the SDKs, the SDK conformance tests
-should be updated to read both fixture files as well.
+The SDK conformance tests read both fixture files so SDK canonicalization stays byte-identical
+with the Contracts and language-independent reference implementations.
 
 ## Language examples
 

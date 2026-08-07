@@ -11,7 +11,7 @@ import {
   MailRequestAcceptanceStatus,
 } from '../src/errors.mjs';
 import { generateUuidV7 } from '../src/uuid.mjs';
-import { MailRequestValidationError } from '../src/validation.mjs';
+import { MailRequestValidationError, validateMailRequestDraft } from '../src/validation.mjs';
 
 function buildSampleRequest() {
   return MailRequestBuilder.create()
@@ -31,9 +31,55 @@ test('MailRequestBuilder computes payload_hash and validates input', () => {
   assert.equal(request.payload_hash, '7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9');
 });
 
+test('MailRequestBuilder supports cc and bcc without to', () => {
+  for (const [role, recipient, subject, body, expectedHash] of [
+    ['cc', { email: 'cc@example.com' }, 'CC only', 'CC only body.', '22cee63ba2c526ce67078a838d1b9277f2ce089237dcc36ee28c6b4c086d06ac'],
+    ['bcc', { email: 'bcc@example.com' }, 'BCC only', 'BCC only body.', 'b834a8ba190ecb3f2ae6feeff0de486805de4edef8e98c2529b70771d5619d4d'],
+  ]) {
+    const builder = MailRequestBuilder.create()
+      .tenantId('00000000-0000-0000-0000-000000000101')
+      .sourceService('example-service')
+      .mailRequestId('00000000-0000-0000-0000-000000000201')
+      .purpose('FormResponseNotification')
+      .subject(subject)
+      .textBody(body);
+    const request = role === 'cc' ? builder.cc(recipient).build() : builder.bcc(recipient).build();
+
+    assert.equal(Object.hasOwn(request, 'to'), false);
+    assert.deepEqual(request[role], [recipient]);
+    assert.equal(request.payload_hash, expectedHash);
+  }
+
+  const request = MailRequestBuilder.create()
+    .tenantId('00000000-0000-0000-0000-000000000101')
+    .sourceService('example-service')
+    .mailRequestId('00000000-0000-0000-0000-000000000201')
+    .purpose('FormResponseNotification')
+    .to(null)
+    .cc({ email: 'cc@example.com' })
+    .subject('CC only')
+    .textBody('CC only body.')
+    .build();
+  assert.equal(request.to, null);
+  assert.equal(request.payload_hash, '22cee63ba2c526ce67078a838d1b9277f2ce089237dcc36ee28c6b4c086d06ac');
+});
+
 test('MailRequestBuilder omits scheduled_at when unset', () => {
   const request = buildSampleRequest();
   assert.equal(Object.hasOwn(request, 'scheduled_at'), false);
+});
+
+test('validation allows empty to when cc is present', () => {
+  assert.doesNotThrow(() => validateMailRequestDraft({
+    tenant_id: '00000000-0000-0000-0000-000000000101',
+    source_service: 'example-service',
+    mail_request_id: '00000000-0000-0000-0000-000000000201',
+    purpose: 'FormResponseNotification',
+    to: [],
+    cc: [{ email: 'cc@example.com' }],
+    subject: 'CC only',
+    text_body: 'CC only body.',
+  }));
 });
 
 test('MailRequestBuilder accepts scheduled_at with Z and offsets', () => {

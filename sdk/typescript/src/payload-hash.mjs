@@ -4,6 +4,8 @@ export const INCLUDED_FIELDS = new Set([
   'source_service',
   'purpose',
   'to',
+  'cc',
+  'bcc',
   'subject',
   'html_body',
   'text_body',
@@ -19,6 +21,7 @@ export const INCLUDED_FIELDS = new Set([
 // content_base64 or an unverified declared content_type. Pass the *verified* attachment values
 // (post decode/validation), not the raw request body's attachments array.
 const ATTACHMENTS_FIELD_NAME = 'attachments';
+const RECIPIENT_FIELD_NAMES = ['to', 'cc', 'bcc'];
 
 export function escapeJsonString(value) {
   let result = '"';
@@ -96,11 +99,37 @@ function projectAttachments(attachments) {
   }));
 }
 
+function projectRecipientRole(role) {
+  if (!role || role.length === 0) {
+    return null;
+  }
+  return role.map((recipient) => {
+    const entry = { email: recipient.email.trim() };
+    const displayName = recipient.display_name;
+    if (displayName != null && displayName.trim() !== '') {
+      entry.display_name = displayName;
+    }
+    return entry;
+  });
+}
+
 export function buildDeliveryPayloadJson(request, attachments = null) {
   const filtered = {};
   for (const key of Object.keys(request)) {
-    if (INCLUDED_FIELDS.has(key) && key !== ATTACHMENTS_FIELD_NAME) {
+    if (
+      INCLUDED_FIELDS.has(key)
+      && key !== ATTACHMENTS_FIELD_NAME
+      && !RECIPIENT_FIELD_NAMES.includes(key)
+    ) {
       filtered[key] = request[key];
+    }
+  }
+  for (const fieldName of RECIPIENT_FIELD_NAMES) {
+    if (Object.prototype.hasOwnProperty.call(request, fieldName)) {
+      const projected = projectRecipientRole(request[fieldName]);
+      if (projected !== null) {
+        filtered[fieldName] = projected;
+      }
     }
   }
   if (attachments && attachments.length > 0) {

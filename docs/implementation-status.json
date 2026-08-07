@@ -319,6 +319,35 @@
       }
     },
     {
+      "id": "consumer-sdk-multiple-recipient-contract",
+      "status": "implemented",
+      "trackingIssue": 542,
+      "lastVerified": "2026-08-07",
+      "relatedAdrs": [
+        "0023"
+      ],
+      "notes": "Python and TypeScript Consumer SDKs now build cc/bcc recipients, allow optional to when another role is present, project canonical recipient values for payload_hash, and verify both baseline and recipient v1.3 fixtures. The #542 field-inventory exceptions are removed.",
+      "evidence": {
+        "files": [
+          "sdk/python/src/amane_mailer/builder.py",
+          "sdk/python/src/amane_mailer/validation.py",
+          "sdk/python/src/amane_mailer/payload_hash.py",
+          "sdk/typescript/src/builder.mjs",
+          "sdk/typescript/src/validation.mjs",
+          "sdk/typescript/src/payload-hash.mjs",
+          "scripts/mail-request-field-inventory-exceptions.json",
+          "tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json"
+        ],
+        "tests": [
+          "sdk/python/tests/test_client.py",
+          "sdk/python/tests/test_payload_hash.py",
+          "sdk/typescript/test/client.test.mjs",
+          "sdk/typescript/test/payload-hash.test.mjs",
+          "scripts/check-mail-request-field-inventory.mjs"
+        ]
+      }
+    },
+    {
       "id": "easy-setup",
       "status": "implemented",
       "trackingIssue": 445,

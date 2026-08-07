@@ -34,11 +34,40 @@ class MailRequestBuilder:
         self._fields["purpose"] = value
         return self
 
-    def to(self, *, email: str, display_name: str | None = None) -> MailRequestBuilder:
+    def to(self, *, email: str | None, display_name: str | None = None) -> MailRequestBuilder:
+        if email is None:
+            self._fields["to"] = None
+            self._explicit_nulls.add("to")
+            return self
         recipient: dict[str, Any] = {"email": email}
         if display_name is not None:
             recipient["display_name"] = display_name
         self._fields["to"] = [recipient]
+        self._explicit_nulls.discard("to")
+        return self
+
+    def cc(self, *, email: str | None, display_name: str | None = None) -> MailRequestBuilder:
+        if email is None:
+            self._fields["cc"] = None
+            self._explicit_nulls.add("cc")
+            return self
+        recipient: dict[str, Any] = {"email": email}
+        if display_name is not None:
+            recipient["display_name"] = display_name
+        self._fields["cc"] = [recipient]
+        self._explicit_nulls.discard("cc")
+        return self
+
+    def bcc(self, *, email: str | None, display_name: str | None = None) -> MailRequestBuilder:
+        if email is None:
+            self._fields["bcc"] = None
+            self._explicit_nulls.add("bcc")
+            return self
+        recipient: dict[str, Any] = {"email": email}
+        if display_name is not None:
+            recipient["display_name"] = display_name
+        self._fields["bcc"] = [recipient]
+        self._explicit_nulls.discard("bcc")
         return self
 
     def subject(self, value: str) -> MailRequestBuilder:
@@ -99,7 +128,17 @@ class MailRequestBuilder:
     def build(self) -> dict[str, Any]:
         draft = deepcopy(self._fields)
 
-        for key in ("html_body", "text_body", "reply_to", "metadata", "scheduled_at", "attachments"):
+        for key in (
+            "to",
+            "cc",
+            "bcc",
+            "html_body",
+            "text_body",
+            "reply_to",
+            "metadata",
+            "scheduled_at",
+            "attachments",
+        ):
             if key not in draft:
                 continue
             if draft[key] is None and key not in self._explicit_nulls:

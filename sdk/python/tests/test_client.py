@@ -16,7 +16,7 @@ from amane_mailer import (
     MailerValidationError,
 )
 from amane_mailer.uuid import generate_uuid_v7
-from amane_mailer.validation import MailRequestValidationError
+from amane_mailer.validation import MailRequestValidationError, validate_mail_request_draft
 
 
 def build_sample_request() -> dict[str, Any]:
@@ -60,9 +60,77 @@ class ClientTests(unittest.TestCase):
             "7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9",
         )
 
+    def test_builder_supports_cc_and_bcc_without_to(self) -> None:
+        for role, email, subject, body, expected_hash in (
+            (
+                "cc",
+                "cc@example.com",
+                "CC only",
+                "CC only body.",
+                "22cee63ba2c526ce67078a838d1b9277f2ce089237dcc36ee28c6b4c086d06ac",
+            ),
+            (
+                "bcc",
+                "bcc@example.com",
+                "BCC only",
+                "BCC only body.",
+                "b834a8ba190ecb3f2ae6feeff0de486805de4edef8e98c2529b70771d5619d4d",
+            ),
+        ):
+            with self.subTest(role=role):
+                builder = (
+                    MailRequestBuilder()
+                    .tenant_id("00000000-0000-0000-0000-000000000101")
+                    .source_service("example-service")
+                    .mail_request_id("00000000-0000-0000-0000-000000000201")
+                    .purpose("FormResponseNotification")
+                    .subject(subject)
+                    .text_body(body)
+                )
+                if role == "cc":
+                    request = builder.cc(email=email).build()
+                else:
+                    request = builder.bcc(email=email).build()
+
+                self.assertNotIn("to", request)
+                self.assertEqual(request[role][0]["email"], email)
+                self.assertEqual(request["payload_hash"], expected_hash)
+
+        request = (
+            MailRequestBuilder()
+            .tenant_id("00000000-0000-0000-0000-000000000101")
+            .source_service("example-service")
+            .mail_request_id("00000000-0000-0000-0000-000000000201")
+            .purpose("FormResponseNotification")
+            .to(email=None)
+            .cc(email="cc@example.com")
+            .subject("CC only")
+            .text_body("CC only body.")
+            .build()
+        )
+        self.assertIsNone(request["to"])
+        self.assertEqual(
+            request["payload_hash"],
+            "22cee63ba2c526ce67078a838d1b9277f2ce089237dcc36ee28c6b4c086d06ac",
+        )
+
     def test_builder_omits_scheduled_at_when_unset(self) -> None:
         request = build_sample_request()
         self.assertNotIn("scheduled_at", request)
+
+    def test_validation_allows_empty_to_when_cc_is_present(self) -> None:
+        validate_mail_request_draft(
+            {
+                "tenant_id": "00000000-0000-0000-0000-000000000101",
+                "source_service": "example-service",
+                "mail_request_id": "00000000-0000-0000-0000-000000000201",
+                "purpose": "FormResponseNotification",
+                "to": [],
+                "cc": [{"email": "cc@example.com"}],
+                "subject": "CC only",
+                "text_body": "CC only body.",
+            },
+        )
 
     def test_builder_accepts_scheduled_at_with_z_and_offsets(self) -> None:
         for value in (
