@@ -495,6 +495,7 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
     {
         var body = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var now = DateTimeOffset.UtcNow;
+        var scheduledAt = now.AddDays(1);
         var internalId = Guid.CreateVersion7(now);
         var nowStorage = SqliteTime.ToStorageUtc(now);
 
@@ -506,14 +507,14 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
                 id, tenant_id, source_service, mail_request_id, purpose,
                 payload_json, payload_hash, subject, html_body, text_body, reply_to,
                 recipient_email, recipient_display_name, metadata_json,
-                status, attempt_count, max_attempts,
+                status, attempt_count, max_attempts, scheduled_at,
                 accepted_at, created_at, updated_at, completed_at, failed_at, last_error_message)
             VALUES (
                 @Id, @TenantId, @SourceService, @MailRequestId, @Purpose,
                 @PayloadJson, @PayloadHash, @Subject, @HtmlBody, @TextBody, @ReplyTo,
                 @RecipientEmail, @RecipientDisplayName, NULL,
-                @Status, @AttemptCount, @MaxAttempts,
-                @Now, @Now, @Now, @Now, @Now, @LastErrorMessage);
+                @Status, @AttemptCount, @MaxAttempts, @ScheduledAt,
+                @Now, @Now, @Now, NULL, NULL, NULL);
             """;
         command.Parameters.AddWithValue("@Id", internalId.ToString("D"));
         command.Parameters.AddWithValue("@TenantId", request.TenantId.ToString("D"));
@@ -528,11 +529,11 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
         command.Parameters.AddWithValue("@ReplyTo", (object?)request.ReplyTo ?? DBNull.Value);
         command.Parameters.AddWithValue("@RecipientEmail", request.To[0].Email);
         command.Parameters.AddWithValue("@RecipientDisplayName", (object?)request.To[0].DisplayName ?? DBNull.Value);
-        command.Parameters.AddWithValue("@Status", (int)MailRequestState.Failed);
-        command.Parameters.AddWithValue("@AttemptCount", 1);
+        command.Parameters.AddWithValue("@Status", (int)MailRequestState.Queued);
+        command.Parameters.AddWithValue("@AttemptCount", 0);
         command.Parameters.AddWithValue("@MaxAttempts", 3);
+        command.Parameters.AddWithValue("@ScheduledAt", SqliteTime.ToStorageUtc(scheduledAt));
         command.Parameters.AddWithValue("@Now", nowStorage);
-        command.Parameters.AddWithValue("@LastErrorMessage", "transport failure");
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         return internalId;
