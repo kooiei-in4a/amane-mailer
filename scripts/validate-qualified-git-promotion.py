@@ -14,6 +14,11 @@ from typing import Any, NoReturn
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+CANDIDATE_WORKFLOW_PATH = ".github/workflows/generate-setup-release-candidate.yml"
+CANDIDATE_WORKFLOW_ID = 324880172
+CANDIDATE_WORKFLOW_EVENT = "workflow_dispatch"
+CANDIDATE_REPOSITORY = "kooiei-in4a/amane-mailer"
 
 
 def fail(field: str, message: str) -> NoReturn:
@@ -69,6 +74,69 @@ def document_version(document: dict[str, Any]) -> str | None:
     return values[0]
 
 
+def require_int_equal(field: str, actual: Any, expected: int) -> None:
+    try:
+        value = int(actual)
+    except (TypeError, ValueError):
+        fail(field, "must be an integer")
+    require_equal(field, value, expected)
+
+
+def validate_candidate_provenance(root: Path, promotion: dict[str, Any]) -> None:
+    """Validate the immutable #455 candidate handoff without rebuilding it."""
+    if not root.is_dir():
+        fail("candidateRoot", "directory is missing")
+    provenance_path = exactly_one(list(root.rglob("candidate-provenance.json")), "candidate-provenance.json")
+    image_path = exactly_one(list(root.rglob("image-identity.json")), "image-identity.json")
+    provenance = load_json(provenance_path, "candidate-provenance.json")
+    image = load_json(image_path, "image-identity.json")
+    if not isinstance(provenance, dict) or not isinstance(image, dict):
+        fail("candidateProvenance", "documents must be objects")
+
+    require_equal("candidateProvenance.schemaVersion", provenance.get("schemaVersion"), 1)
+    require_equal("candidateProvenance.sourceCommitSha", provenance.get("sourceCommitSha"), promotion["releaseCommitSha"])
+    require_equal("candidateProvenance.releaseVersion", provenance.get("releaseVersion"), promotion["releaseVersion"])
+    require_int_equal("candidateProvenance.workflowRunId", provenance.get("workflowRunId"), promotion["candidateRunId"])
+    require_int_equal("candidateProvenance.workflowRunAttempt", provenance.get("workflowRunAttempt"), promotion["candidateAttempt"])
+    expected_ref = (
+        f"{CANDIDATE_REPOSITORY}/{CANDIDATE_WORKFLOW_PATH}"
+        f"@refs/heads/{promotion['releaseBranch']}"
+    )
+    require_equal("candidateProvenance.workflowRef", provenance.get("workflowRef"), expected_ref)
+    require_string(provenance, "ociIndexDigest", SHA256_DIGEST)
+    require_equal("candidateProvenance.ociIndexDigest", provenance["ociIndexDigest"], promotion["ociIndexDigest"])
+
+    require_equal("imageIdentity.sourceCommitSha", image.get("sourceCommitSha"), promotion["releaseCommitSha"])
+    require_equal("imageIdentity.mailerVersion", image.get("mailerVersion"), promotion["releaseVersion"])
+    require_equal("imageIdentity.imageDigest", image.get("imageDigest"), promotion["ociIndexDigest"])
+
+
+def validate_qualification_producer(producer: dict[str, Any], promotion: dict[str, Any]) -> None:
+    """Bind the sealed handoff to the exact trusted Actions producer identity."""
+    if not isinstance(producer, dict):
+        fail("qualificationProducer", "document must be an object")
+    for field in (
+        "repository",
+        "workflowPath",
+        "workflowId",
+        "event",
+        "headBranch",
+        "headSha",
+        "runId",
+        "runAttempt",
+    ):
+        if field not in producer:
+            fail(f"qualificationProducer.{field}", "is required")
+    require_equal("qualificationProducer.runId", str(producer["runId"]), str(promotion["qualificationProducerRunId"]))
+    require_equal("qualificationProducer.runAttempt", int(producer["runAttempt"]), promotion["qualificationWorkflowRunAttempt"])
+    require_equal("qualificationProducer.repository", producer["repository"], promotion["qualificationProducerRepository"])
+    require_equal("qualificationProducer.workflowPath", producer["workflowPath"], promotion["qualificationProducerWorkflowPath"])
+    require_equal("qualificationProducer.workflowId", int(producer["workflowId"]), promotion["qualificationProducerWorkflowId"])
+    require_equal("qualificationProducer.event", producer["event"], promotion["qualificationProducerEvent"])
+    require_equal("qualificationProducer.headBranch", producer["headBranch"], promotion["qualificationProducerHeadBranch"])
+    require_equal("qualificationProducer.headSha", producer["headSha"], promotion["qualificationProducerHeadSha"])
+
+
 def validate_qualification(root: Path, promotion: dict[str, Any]) -> None:
     if not root.is_dir():
         fail("qualificationRoot", "directory is missing")
@@ -80,6 +148,10 @@ def validate_qualification(root: Path, promotion: dict[str, Any]) -> None:
     event = load_json(event_path, "run-status-event")
     if not all(isinstance(item, dict) for item in (binding, decision, event)):
         fail("qualification", "documents must be objects")
+    producer_paths = list(root.rglob("qualification-producer.json"))
+    if producer_paths:
+        producer = load_json(exactly_one(producer_paths, "qualification-producer.json"), "qualification-producer.json")
+        validate_qualification_producer(producer, promotion)
 
     identities = (
         ("candidateRunId", "candidateRunId"),
@@ -196,6 +268,25 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     require_equal("requiredSignatures", promotion.get("requiredSignatures"), True)
     require_equal("normalActorBypass", promotion.get("normalActorBypass"), "never")
 
+    require_string(promotion, "ociIndexDigest", SHA256_DIGEST)
+    producer_fields = {
+        "qualificationProducerRepository": (str, None),
+        "qualificationProducerWorkflowPath": (str, None),
+        "qualificationProducerEvent": (str, None),
+        "qualificationProducerHeadBranch": (str, None),
+        "qualificationProducerHeadSha": (str, HEX40),
+    }
+    for field, (kind, pattern) in producer_fields.items():
+        value = promotion.get(field)
+        if not isinstance(value, kind) or not value:
+            fail(field, "is required")
+        if pattern and not pattern.fullmatch(value):
+            fail(field, "invalid format")
+    for field in ("qualificationProducerRunId", "qualificationProducerWorkflowId", "qualificationWorkflowRunAttempt"):
+        value = promotion.get(field)
+        if not isinstance(value, int) or value <= 0:
+            fail(field, "must be a positive integer")
+
     app_id = promotion.get("expectedReleaseAppId")
     if not isinstance(app_id, int) or app_id <= 0:
         fail("expectedReleaseAppId", "must be a positive integer")
@@ -219,12 +310,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--qualification-root", required=True, type=Path)
+    parser.add_argument("--candidate-root", required=True, type=Path)
     args = parser.parse_args()
 
     promotion = load_json(args.manifest, "promotionManifest")
     if not isinstance(promotion, dict):
         fail("promotionManifest", "must be an object")
     validate_manifest(promotion)
+    validate_candidate_provenance(args.candidate_root, promotion)
     validate_qualification(args.qualification_root, promotion)
     print("[info] qualified Git promotion preflight passed")
     print("finalResult=PASS")

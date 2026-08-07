@@ -50,6 +50,10 @@ on:
         description: Exact 64-hex sealedEventId
         required: true
         type: string
+      oci_index_digest:
+        description: Exact OCI index digest from the immutable candidate provenance
+        required: true
+        type: string
       machine_verdict:
         description: Must be GO_ELIGIBLE
         required: true
@@ -96,6 +100,19 @@ on:
         description: Release mode only; run containing immutable qualification handoff
         required: false
         type: string
+      qualification_workflow_run_attempt:
+        description: Release mode only; exact attempt of the qualification producer run
+        required: false
+        type: string
+      candidate_artifact_id:
+        description: Release mode only; exact existing candidate handoff artifact ID
+        required: false
+        type: string
+      candidate_artifact_name:
+        description: Release mode only; exact existing candidate handoff artifact name
+        required: false
+        type: string
+        default: setup-release-candidate-handoff
       qualification_artifact_id:
         description: Release mode only; exact qualification handoff artifact ID
         required: false
@@ -124,20 +141,27 @@ jobs:
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
       artifact_name: issue-504-synthetic-qualification-${{ github.run_id }}
       workflow_run_id: ${{ github.run_id }}
+      workflow_run_attempt: 1
+      candidate_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      candidate_artifact_name: issue-504-synthetic-qualification-${{ github.run_id }}
+      candidate_artifact_run_id: ${{ github.run_id }}
     steps:
       - name: Create synthetic qualification handoff
         shell: bash
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
           RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
           CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
+          OCI_INDEX_DIGEST: ${{ inputs.oci_index_digest }}
           CANDIDATE_ID: ${{ inputs.candidate_id }}
           BINDING_ID: ${{ inputs.binding_id }}
           QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
           SEALED_EVENT_ID: ${{ inputs.sealed_event_id }}
           MACHINE_VERDICT: ${{ inputs.machine_verdict }}
           HUMAN_DECISION: ${{ inputs.human_decision }}
+          SYNTHETIC_RUN_ID: ${{ github.run_id }}
         run: |
           set -Eeuo pipefail
           mkdir -p fixture/decision fixture/run-status-events
@@ -155,6 +179,30 @@ jobs:
               "releaseCommitSha": os.environ["RELEASE_COMMIT_SHA"],
               "releaseVersion": os.environ["RELEASE_VERSION"],
           }
+          candidate_provenance = {
+              "schemaVersion": 1,
+              "sourceCommitSha": os.environ["RELEASE_COMMIT_SHA"],
+              "releaseVersion": os.environ["RELEASE_VERSION"],
+              "workflowRunId": os.environ["CANDIDATE_RUN_ID"],
+              "workflowRunAttempt": os.environ["CANDIDATE_ATTEMPT"],
+              "workflowRef": "kooiei-in4a/amane-mailer/.github/workflows/generate-setup-release-candidate.yml@refs/heads/" + os.environ["RELEASE_BRANCH"],
+              "ociIndexDigest": os.environ["OCI_INDEX_DIGEST"],
+          }
+          image_identity = {
+              "imageDigest": os.environ["OCI_INDEX_DIGEST"],
+              "sourceCommitSha": os.environ["RELEASE_COMMIT_SHA"],
+              "mailerVersion": os.environ["RELEASE_VERSION"],
+          }
+          qualification_producer = {
+              "repository": "kooiei-in4a/amane-mailer",
+              "workflowPath": ".github/workflows/promote-qualified-git.yml",
+              "workflowId": 1,
+              "event": "workflow_dispatch",
+              "headBranch": "main",
+              "headSha": os.environ["RELEASE_COMMIT_SHA"],
+              "runId": int(os.environ["SYNTHETIC_RUN_ID"]),
+              "runAttempt": 1,
+          }
           documents = {
               Path("fixture/binding.json"): identity,
               Path("fixture/decision/go-no-go.json"): {
@@ -169,6 +217,9 @@ jobs:
                   "status": "sealed",
                   "runStatusEventSequence": 1,
               },
+              Path("fixture/candidate-provenance.json"): candidate_provenance,
+              Path("fixture/image-identity.json"): image_identity,
+              Path("fixture/qualification-producer.json"): qualification_producer,
           }
           for path, document in documents.items():
               path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -193,8 +244,18 @@ jobs:
     environment: release
     env:
       QUALIFICATION_WORKFLOW_RUN_ID: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.workflow_run_id || inputs.qualification_workflow_run_id }}
+      QUALIFICATION_WORKFLOW_RUN_ATTEMPT: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.workflow_run_attempt || inputs.qualification_workflow_run_attempt }}
       QUALIFICATION_ARTIFACT_ID: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.artifact_id || inputs.qualification_artifact_id }}
       QUALIFICATION_ARTIFACT_NAME: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.artifact_name || inputs.qualification_artifact_name }}
+      CANDIDATE_ARTIFACT_RUN_ID: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.candidate_artifact_run_id || inputs.candidate_run_id }}
+      CANDIDATE_ARTIFACT_ID: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.candidate_artifact_id || inputs.candidate_artifact_id }}
+      CANDIDATE_ARTIFACT_NAME: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.candidate_artifact_name || inputs.candidate_artifact_name }}
+      QUALIFICATION_PRODUCER_REPOSITORY: ${{ inputs.mode == 'rehearsal' && github.repository || vars.RELEASE_PROMOTION_QUALIFICATION_REPOSITORY }}
+      QUALIFICATION_PRODUCER_WORKFLOW_ID: ${{ inputs.mode == 'rehearsal' && '1' || vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_ID }}
+      QUALIFICATION_PRODUCER_WORKFLOW_PATH: ${{ inputs.mode == 'rehearsal' && '.github/workflows/promote-qualified-git.yml' || vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_PATH }}
+      QUALIFICATION_PRODUCER_EVENT: ${{ inputs.mode == 'rehearsal' && 'workflow_dispatch' || vars.RELEASE_PROMOTION_QUALIFICATION_EVENT }}
+      QUALIFICATION_PRODUCER_HEAD_BRANCH: ${{ inputs.mode == 'rehearsal' && 'main' || vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_BRANCH }}
+      QUALIFICATION_PRODUCER_HEAD_SHA: ${{ inputs.mode == 'rehearsal' && inputs.release_commit_sha || vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_SHA }}
     steps:
       - name: Checkout trusted control plane
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -212,6 +273,16 @@ jobs:
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
           CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_ruleset_fingerprint }}
+          OCI_INDEX_DIGEST: ${{ inputs.oci_index_digest }}
+          QUALIFICATION_PRODUCER_REPOSITORY: ${{ env.QUALIFICATION_PRODUCER_REPOSITORY }}
+          QUALIFICATION_PRODUCER_WORKFLOW_ID: ${{ env.QUALIFICATION_PRODUCER_WORKFLOW_ID }}
+          QUALIFICATION_PRODUCER_WORKFLOW_PATH: ${{ env.QUALIFICATION_PRODUCER_WORKFLOW_PATH }}
+          QUALIFICATION_PRODUCER_EVENT: ${{ env.QUALIFICATION_PRODUCER_EVENT }}
+          QUALIFICATION_PRODUCER_HEAD_BRANCH: ${{ env.QUALIFICATION_PRODUCER_HEAD_BRANCH }}
+          QUALIFICATION_PRODUCER_HEAD_SHA: ${{ env.QUALIFICATION_PRODUCER_HEAD_SHA }}
+          QUALIFICATION_RUN_ATTEMPT: ${{ env.QUALIFICATION_WORKFLOW_RUN_ATTEMPT }}
+          CANDIDATE_ARTIFACT_ID: ${{ env.CANDIDATE_ARTIFACT_ID }}
+          CANDIDATE_ARTIFACT_NAME: ${{ env.CANDIDATE_ARTIFACT_NAME }}
           APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           APP_SLUG: ${{ vars.RELEASE_PROMOTION_APP_SLUG }}
           MAIN_RULESET_ID: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_ID }}
@@ -230,6 +301,8 @@ jobs:
             || { echo "::error::release branch is invalid"; exit 1; }
           [[ "${CANDIDATE_RUN_ID}" =~ ^[1-9][0-9]*$ && "${CANDIDATE_ATTEMPT}" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::candidate run identity is invalid"; exit 1; }
+          [[ "${OCI_INDEX_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || { echo "::error::OCI index digest is invalid"; exit 1; }
           [[ "${FREEZE_CONFIRMATION}" == "CONFIRM_TARGET_MERGE_FREEZE" ]] \
             || { echo "::error::maintainer merge-freeze confirmation is required"; exit 1; }
           [[ "${MAIN_RULESET_ID}" == "18124512" && "${REHEARSAL_RULESET_ID}" =~ ^[1-9][0-9]*$ ]] \
@@ -255,20 +328,60 @@ jobs:
           fi
           [[ "${QUALIFICATION_WORKFLOW_RUN_ID}" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::qualification workflow run ID is invalid"; exit 1; }
+          [[ "${QUALIFICATION_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::qualification workflow run attempt is invalid"; exit 1; }
           [[ "${QUALIFICATION_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ && -n "${QUALIFICATION_ARTIFACT_NAME}" ]] \
             || { echo "::error::qualification artifact identity is invalid"; exit 1; }
+          [[ "${CANDIDATE_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ && -n "${CANDIDATE_ARTIFACT_NAME}" ]] \
+            || { echo "::error::candidate artifact identity is invalid"; exit 1; }
+          if [[ "${MODE}" == "release" ]]; then
+            [[ -n "${QUALIFICATION_PRODUCER_REPOSITORY}" && "${QUALIFICATION_PRODUCER_WORKFLOW_PATH}" == .github/workflows/* ]] \
+              || { echo "::error::trusted qualification producer configuration is missing"; exit 1; }
+            [[ "${QUALIFICATION_PRODUCER_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ && "${QUALIFICATION_PRODUCER_EVENT}" == workflow_dispatch ]] \
+              || { echo "::error::qualification producer workflow identity is invalid"; exit 1; }
+            [[ "${QUALIFICATION_PRODUCER_HEAD_BRANCH}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+-rc$ && "${QUALIFICATION_PRODUCER_HEAD_SHA}" == "${RELEASE_COMMIT_SHA}" ]] \
+              || { echo "::error::qualification producer source identity is invalid"; exit 1; }
+          fi
 
       - name: Run validator positive and negative fixtures
         run: python3 scripts/validate-qualified-git-promotion-self-test.py
 
-      - name: Validate qualification artifact identity
+      - name: Validate candidate producer workflow identity
+        if: inputs.mode == 'release'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          CANDIDATE_ARTIFACT_ID: ${{ env.CANDIDATE_ARTIFACT_ID }}
+          OCI_ARTIFACT_NAME: ${{ env.CANDIDATE_ARTIFACT_NAME }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          EXPECTED_HEAD_BRANCH: ${{ inputs.release_branch }}
+          EXPECTED_RUN_ATTEMPT: ${{ inputs.candidate_attempt }}
+          CANDIDATE_WORKFLOW_ID: 324880172
+          CANDIDATE_WORKFLOW_NAME: Generate Setup Release Candidate
+          CANDIDATE_WORKFLOW_PATH: .github/workflows/generate-setup-release-candidate.yml
+        run: bash scripts/validate-candidate-oci-run.sh
+
+      - name: Validate qualification artifact identity
+        if: inputs.mode == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFICATION_REPOSITORY: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_REPOSITORY || github.repository }}
+          QUALIFICATION_PRODUCER_WORKFLOW_ID: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_ID }}
+          QUALIFICATION_PRODUCER_WORKFLOW_PATH: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_PATH }}
+          QUALIFICATION_PRODUCER_EVENT: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_EVENT }}
+          QUALIFICATION_PRODUCER_HEAD_BRANCH: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_BRANCH }}
+          QUALIFICATION_PRODUCER_HEAD_SHA: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_SHA }}
+          QUALIFICATION_RUN_ATTEMPT: ${{ env.QUALIFICATION_WORKFLOW_RUN_ATTEMPT }}
+          MODE: ${{ inputs.mode }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
         run: |
           set -Eeuo pipefail
-          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${QUALIFICATION_WORKFLOW_RUN_ID}")"
-          artifacts_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${QUALIFICATION_WORKFLOW_RUN_ID}/artifacts?per_page=100")"
+          repository="${QUALIFICATION_REPOSITORY}"
+          run_json="$(gh api "repos/${repository}/actions/runs/${QUALIFICATION_WORKFLOW_RUN_ID}")"
+          artifacts_json="$(gh api "repos/${repository}/actions/runs/${QUALIFICATION_WORKFLOW_RUN_ID}/artifacts?per_page=100")"
           RUN_JSON="${run_json}" ARTIFACTS_JSON="${artifacts_json}" python3 - <<'PY'
           import json
           import os
@@ -276,6 +389,19 @@ jobs:
           run = json.loads(os.environ["RUN_JSON"])
           if run.get("status") != "completed" or run.get("conclusion") != "success":
               raise SystemExit("qualificationWorkflowRun: not completed successfully")
+          if os.environ["MODE"] == "release":
+              expected = {
+                  "id": int(os.environ["QUALIFICATION_WORKFLOW_RUN_ID"]),
+                  "run_attempt": int(os.environ["QUALIFICATION_RUN_ATTEMPT"]),
+                  "workflow_id": int(os.environ["QUALIFICATION_PRODUCER_WORKFLOW_ID"]),
+                  "path": os.environ["QUALIFICATION_PRODUCER_WORKFLOW_PATH"],
+                  "event": os.environ["QUALIFICATION_PRODUCER_EVENT"],
+                  "head_branch": os.environ["QUALIFICATION_PRODUCER_HEAD_BRANCH"],
+                  "head_sha": os.environ["QUALIFICATION_PRODUCER_HEAD_SHA"],
+              }
+              for key, value in expected.items():
+                  if run.get(key) != value:
+                      raise SystemExit(f"qualificationProducer.{key}: mismatch")
           artifacts = json.loads(os.environ["ARTIFACTS_JSON"]).get("artifacts") or []
           matches = [item for item in artifacts if item.get("name") == os.environ["QUALIFICATION_ARTIFACT_NAME"]]
           if len(matches) != 1:
@@ -291,8 +417,17 @@ jobs:
           artifact-ids: ${{ env.QUALIFICATION_ARTIFACT_ID }}
           path: artifacts/qualification
           github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
+          repository: ${{ inputs.mode == 'rehearsal' && github.repository || vars.RELEASE_PROMOTION_QUALIFICATION_REPOSITORY }}
           run-id: ${{ env.QUALIFICATION_WORKFLOW_RUN_ID }}
+
+      - name: Download immutable candidate handoff
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ env.CANDIDATE_ARTIFACT_ID }}
+          path: artifacts/candidate
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CANDIDATE_ARTIFACT_RUN_ID }}
 
       - name: Mint repository-scoped release App token
         id: app-token
@@ -330,6 +465,15 @@ jobs:
           SEALED_EVENT_ID: ${{ inputs.sealed_event_id }}
           MACHINE_VERDICT: ${{ inputs.machine_verdict }}
           HUMAN_DECISION: ${{ inputs.human_decision }}
+          QUALIFICATION_PRODUCER_RUN_ID: ${{ env.QUALIFICATION_WORKFLOW_RUN_ID }}
+          QUALIFICATION_PRODUCER_RUN_ATTEMPT: ${{ env.QUALIFICATION_WORKFLOW_RUN_ATTEMPT }}
+          QUALIFICATION_PRODUCER_REPOSITORY: ${{ env.QUALIFICATION_PRODUCER_REPOSITORY }}
+          QUALIFICATION_PRODUCER_WORKFLOW_ID: ${{ env.QUALIFICATION_PRODUCER_WORKFLOW_ID }}
+          QUALIFICATION_PRODUCER_WORKFLOW_PATH: ${{ env.QUALIFICATION_PRODUCER_WORKFLOW_PATH }}
+          QUALIFICATION_PRODUCER_EVENT: ${{ env.QUALIFICATION_PRODUCER_EVENT }}
+          QUALIFICATION_PRODUCER_HEAD_BRANCH: ${{ env.QUALIFICATION_PRODUCER_HEAD_BRANCH }}
+          QUALIFICATION_PRODUCER_HEAD_SHA: ${{ env.QUALIFICATION_PRODUCER_HEAD_SHA }}
+          OCI_INDEX_DIGEST: ${{ inputs.oci_index_digest }}
           PROMOTION_PR_NUMBER: ${{ inputs.promotion_pr_number }}
           TARGET_BRANCH: ${{ inputs.promotion_target_branch }}
           PROMOTION_BASE_SHA: ${{ inputs.promotion_base_sha }}
@@ -399,6 +543,15 @@ jobs:
               "bindingId": os.environ["BINDING_ID"],
               "qualificationRunId": os.environ["QUALIFICATION_RUN_ID"],
               "sealedEventId": os.environ["SEALED_EVENT_ID"],
+              "ociIndexDigest": os.environ["OCI_INDEX_DIGEST"],
+              "qualificationProducerRepository": os.environ["QUALIFICATION_PRODUCER_REPOSITORY"],
+              "qualificationProducerWorkflowId": int(os.environ["QUALIFICATION_PRODUCER_WORKFLOW_ID"]),
+              "qualificationProducerWorkflowPath": os.environ["QUALIFICATION_PRODUCER_WORKFLOW_PATH"],
+              "qualificationProducerEvent": os.environ["QUALIFICATION_PRODUCER_EVENT"],
+              "qualificationProducerHeadBranch": os.environ["QUALIFICATION_PRODUCER_HEAD_BRANCH"],
+              "qualificationProducerHeadSha": os.environ["QUALIFICATION_PRODUCER_HEAD_SHA"],
+              "qualificationProducerRunId": int(os.environ["QUALIFICATION_PRODUCER_RUN_ID"]),
+              "qualificationWorkflowRunAttempt": int(os.environ["QUALIFICATION_PRODUCER_RUN_ATTEMPT"]),
               "machineVerdict": os.environ["MACHINE_VERDICT"],
               "humanDecision": os.environ["HUMAN_DECISION"],
               "qualificationApprovalScope": "exact-candidate-qualification",
@@ -439,6 +592,7 @@ jobs:
           python3 scripts/validate-qualified-git-promotion.py
           --manifest artifacts/git-promotion-state/promotion-manifest.json
           --qualification-root artifacts/qualification
+          --candidate-root artifacts/candidate
 
       - name: Recheck ruleset immediately before mutation
         shell: bash

@@ -86,9 +86,11 @@ workflow は次を operator input と immutable handoff / live GitHub state の�
 - `releaseBranch`
 - `candidateRunId`
 - `candidateAttempt`
+- `ociIndexDigest`
 - `candidateId`
 - `bindingId`
 - `qualificationRunId`
+- `qualification_workflow_run_attempt` (producer Actions run attempt)
 - `sealedEventId`
 - `machineVerdict`
 - `humanDecision`
@@ -98,6 +100,14 @@ workflow は次を operator input と immutable handoff / live GitHub state の�
 - `tagName`
 - `mergeFreezeConfirmation`
 
+production入力はartifactを一つに混ぜません。既存の #455 `setup-release-candidate-handoff`
+（`candidate-provenance.json`、`image-identity.json`、archives）を
+`candidate_run_id` / `candidate_artifact_id` / `candidate_artifact_name`でそのまま読み取り、
+別入力のsealed qualification artifactからのみ`binding.json`、`decision/go-no-go.json`、
+`run-status-events/*.json`を読み取ります。候補artifactにsealed JSONを後付けしたり、candidateを
+再生成して互換性を作ることは禁止です。現行v1.3.0 artifact `9004008439`は候補handoffであり、
+sealed qualification artifactの代替ではありません。
+
 `humanDecision=APPROVE` は exact-candidate qualification の判定であり、release execution
 approvalではありません。workflowの`release` environment承認が別のexecution gateです。
 
@@ -106,6 +116,11 @@ approvalではありません。workflowの`release` environment承認が別のe
 
 - handoffのbinding / decision / sealed eventが同じcandidate run / attempt / candidate / binding /
   qualification run / source SHA / release versionを持つ。
+- candidate provenanceのproducer workflow path/ref、run ID/attempt、release SHA、release version、
+  OCI digestが固定値と一致し、image identityも同じSHA/version/digestを持つ。
+- qualification artifactのActions runはrelease environmentで設定したtrusted repository、workflow ID/path、
+  event、head branch/SHA、run attemptとAPI上で一致する。設定値がない、run/artifactが別producer、
+  または期待SHA/branch/eventと違う場合はFAILとする。
 - `machineVerdict=GO_ELIGIBLE`、`humanDecision=APPROVE`、`runSealed=true`、terminal eventが
   `sealed`かつ入力`sealedEventId`と一致する。
 - live RC tipとpromotion PR headがどちらも`releaseCommitSha`と完全一致する。
@@ -170,6 +185,8 @@ python3 scripts/validate-qualified-git-promotion-self-test.py
 - N5: `qualificationRunId` mismatch -> FAIL
 - N6: ruleset fingerprint mismatch -> FAIL
 - N7: `candidateId` / `sealedEventId` mismatch -> FAIL
+- N8: qualification producer workflow ID/path/run identity mismatch -> FAIL
+- N9: candidate-provenance workflow run/attempt/ref mismatch -> FAIL
 
 N3bはproduction RCを使いません。validation branchからsynthetic source branchを作り、署名なし
 fixture commitを1件追加します。required checksをgreenにした後、通常actor tokenでmerge APIを
@@ -180,10 +197,14 @@ source branchだけを削除できます。validation branchやrulesetは変更�
 
 ## Actual release（別セッションの明示承認が必要）
 
-実releaseではsynthetic fixtureを使いません。binding / decision / sealed eventを含むimmutable
-qualification handoff Actions artifactのrun ID、artifact ID、nameが必須です。artifactが存在しない、
-expired、ambiguous、またはsealed identityを再現できない場合はSTOPします。既存qualification
-evidenceの書換えや再qualificationで回避してはいけません。
+実releaseではsynthetic fixtureを使いません。既存候補artifactと、binding / decision / sealed eventを含む
+別のimmutable qualification handoff artifactのrun ID、attempt、artifact ID、nameが必須です。
+qualification artifactのproducer identity（repository、workflow ID/path、event、head branch/SHA）は
+release environmentの保護変数で固定し、Actions APIのrun metadataと照合します。artifactが存在しない、
+expired、ambiguous、producer identityが未設定/不一致、またはsealed identityを再現できない場合はSTOPします。
+既存candidateの再生成・qualification再実行・seal変更・候補artifactへのsealed JSON後付けで回避してはいけません。
+保護変数は`RELEASE_PROMOTION_QUALIFICATION_REPOSITORY`、`..._WORKFLOW_ID`、
+`..._WORKFLOW_PATH`、`..._EVENT`、`..._HEAD_BRANCH`、`..._HEAD_SHA`です。
 
 明示的release approval後だけ、exact RC -> main PRを作り、checks green、main tip固定、
 fingerprint一致を確認して`mode=release`をdispatchします。workflowは1回の承認境界内で

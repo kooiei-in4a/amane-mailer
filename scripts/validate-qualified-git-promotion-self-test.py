@@ -17,6 +17,7 @@ VALIDATOR = SCRIPT_DIR / "validate-qualified-git-promotion.py"
 FINGERPRINTER = SCRIPT_DIR / "ruleset-fingerprint.py"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 OTHER_COMMIT = "89abcdef0123456789abcdef0123456789abcdef"
+OCI_DIGEST = "sha256:" + "a" * 64
 IDS = {
     "candidateRunId": 31203481547,
     "candidateAttempt": 1,
@@ -24,6 +25,15 @@ IDS = {
     "bindingId": "2" * 64,
     "qualificationRunId": "3" * 64,
     "sealedEventId": "4" * 64,
+    "ociIndexDigest": OCI_DIGEST,
+    "qualificationProducerRunId": 456789,
+    "qualificationWorkflowRunAttempt": 2,
+    "qualificationProducerRepository": "kooiei-in4a/amane-mailer",
+    "qualificationProducerWorkflowPath": ".github/workflows/qualify-release.yml",
+    "qualificationProducerWorkflowId": 987654,
+    "qualificationProducerEvent": "workflow_dispatch",
+    "qualificationProducerHeadBranch": "release/v1.3.0-rc",
+    "qualificationProducerHeadSha": COMMIT,
 }
 APP_ID = 24680
 CHECKS = [
@@ -42,7 +52,16 @@ def run_validator(root: Path, manifest: dict[str, object]) -> subprocess.Complet
     manifest_path = root / "promotion.json"
     write_json(manifest_path, manifest)
     return subprocess.run(
-        [sys.executable, str(VALIDATOR), "--manifest", str(manifest_path), "--qualification-root", str(root / "qualification")],
+        [
+            sys.executable,
+            str(VALIDATOR),
+            "--manifest",
+            str(manifest_path),
+            "--qualification-root",
+            str(root / "qualification"),
+            "--candidate-root",
+            str(root / "candidate"),
+        ],
         check=False,
         capture_output=True,
         text=True,
@@ -105,6 +124,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="qualified-git-promotion-") as temp:
         root = Path(temp)
         qual = root / "qualification"
+        candidate = root / "candidate"
         binding = {
             **IDS,
             "releaseCommitSha": COMMIT,
@@ -125,9 +145,36 @@ def main() -> None:
             "status": "sealed",
             "runStatusEventSequence": 1,
         }
+        producer = {
+            "repository": "kooiei-in4a/amane-mailer",
+            "workflowPath": ".github/workflows/qualify-release.yml",
+            "workflowId": 987654,
+            "event": "workflow_dispatch",
+            "headBranch": "release/v1.3.0-rc",
+            "headSha": COMMIT,
+            "runId": 456789,
+            "runAttempt": 2,
+        }
+        candidate_provenance = {
+            "schemaVersion": 1,
+            "sourceCommitSha": COMMIT,
+            "releaseVersion": "1.3.0",
+            "workflowRunId": str(IDS["candidateRunId"]),
+            "workflowRunAttempt": str(IDS["candidateAttempt"]),
+            "workflowRef": "kooiei-in4a/amane-mailer/.github/workflows/generate-setup-release-candidate.yml@refs/heads/release/v1.3.0-rc",
+            "ociIndexDigest": OCI_DIGEST,
+        }
+        image_identity = {
+            "sourceCommitSha": COMMIT,
+            "mailerVersion": "1.3.0",
+            "imageDigest": OCI_DIGEST,
+        }
         write_json(qual / "binding.json", binding)
         write_json(qual / "decision" / "go-no-go.json", decision)
         write_json(qual / "run-status-events" / "sealed.json", event)
+        write_json(qual / "qualification-producer.json", producer)
+        write_json(candidate / "candidate-provenance.json", candidate_provenance)
+        write_json(candidate / "image-identity.json", image_identity)
 
         ruleset = {
             "id": 1,
@@ -159,6 +206,10 @@ def main() -> None:
 
         expect_pass("positive", run_validator(root, manifest))
 
+        (qual / "qualification-producer.json").unlink()
+        expect_pass("existing sealed handoff compatibility", run_validator(root, manifest))
+        write_json(qual / "qualification-producer.json", producer)
+
         no_go = copy.deepcopy(manifest)
         no_go["machineVerdict"] = "NO_GO"
         expect_fail("N1 qualification not approved", run_validator(root, no_go))
@@ -187,6 +238,15 @@ def main() -> None:
         candidate_mismatch["candidateId"] = "7" * 64
         expect_fail("N7 candidateId mismatch", run_validator(root, candidate_mismatch))
 
+        producer_mismatch = copy.deepcopy(manifest)
+        producer_mismatch["qualificationProducerWorkflowId"] = 123456
+        expect_fail("N8 qualification producer mismatch", run_validator(root, producer_mismatch))
+
+        candidate_provenance_mismatch = copy.deepcopy(manifest)
+        write_json(candidate / "candidate-provenance.json", {**candidate_provenance, "workflowRunId": "999999"})
+        expect_fail("N9 candidate producer provenance mismatch", run_validator(root, candidate_provenance_mismatch))
+        write_json(candidate / "candidate-provenance.json", candidate_provenance)
+
         sealed_event_mismatch = copy.deepcopy(manifest)
         sealed_event_mismatch["sealedEventId"] = "8" * 64
         expect_fail("N7 sealedEventId mismatch", run_validator(root, sealed_event_mismatch))
@@ -211,6 +271,7 @@ def main() -> None:
     print("negativeQualificationFixture=PASS")
     print("negativeHeadMismatchFixture=PASS")
     print("negativeSignatureFixture=PASS")
+    print("sealedHandoffCompatibility=PASS")
     print("additionalNegativeFixtures=PASS")
     print("finalResult=PASS")
 
