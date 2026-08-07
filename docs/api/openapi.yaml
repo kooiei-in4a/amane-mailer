@@ -50,9 +50,10 @@ paths:
         自動再送しない（at-most-once）。添付ファイルの検証・上限・spool・
         provider mapping・DeliveryUnknown の詳細は
         docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md を参照。
-        `to`／`cc`／`bcc` は ADR 0023 D-01 の複数宛先契約を受理・検証・payload_hash 化するが、
-        recipient persistence（ADR 0023 D-11 issue B）実装までは single To 以外の形状を
-        暫定的に 422 INVALID_REQUEST で拒否する（`to` schema の説明を参照）。
+        `to`／`cc`／`bcc` は ADR 0023 D-01 の複数宛先契約として受理・検証・payload_hash 化
+        され、canonical recipient persistenceを経由してTo、Cc、Bccの全件が1件のprovider
+        messageへ送信される。legacy recipient shadowはbinary互換用途に限られ、Bcc-only
+        では固定redacted sentinelを使用する（`to` schema の説明を参照）。
       operationId: createMailRequest
       security:
         - tenantBearer: []
@@ -117,7 +118,6 @@ paths:
                 invalidMetadata: { value: { code: INVALID_METADATA } }
                 invalidPayloadHash: { value: { code: INVALID_PAYLOAD_HASH } }
                 invalidRecipient: { value: { code: INVALID_REQUEST, message: "A valid recipient is required." } }
-                multiRecipientNotYetSupported: { value: { code: INVALID_REQUEST, message: "Only a single To recipient is currently accepted." } }
                 scheduledAtInPast: { value: { code: SCHEDULED_AT_IN_PAST } }
                 scheduledAtTooFar: { value: { code: SCHEDULED_AT_TOO_FAR } }
                 tooManyAttachments: { value: { code: TOO_MANY_ATTACHMENTS } }
@@ -520,11 +520,10 @@ components:
             アドレス一致）は 422 INVALID_REQUEST で拒否する。display name の違いは
             重複判定に影響しない。配列順を保持し、provider への送信順は To、Cc、Bcc の順。
             単一 To のみ（Cc／Bcc 未指定）の request は既存 v1.2 契約・payload hash と
-            byte-identical。**現時点の runtime は暫定 gate により single To のみ受理し、
-            それ以外の形状（To 2 件以上、または Cc／Bcc 指定）は DB 書き込み・添付 staging・
-            queue 発火の前で 422 INVALID_REQUEST
-            (`Only a single To recipient is currently accepted.`) として拒否する**
-            （recipient persistence 実装 issue 完了までの一時的境界。ADR 0023 D-11 issue B）。
+            byte-identical。複数To、Cc-only、Bcc-only、または複合roleの形状も受理され、
+            canonical recipient persistenceを正本としてproviderへ送信される。legacy shadowは
+            binary互換用途に限られ、Bcc-onlyではraw addressではなく固定redacted sentinelを
+            保存する（ADR 0023 D-03）。
           maxItems: 10
           items:
             $ref: '#/components/schemas/MailRecipient'
@@ -533,8 +532,7 @@ components:
           description: >-
             CC 宛先（ADR 0023 D-01）。未指定・null・空配列は同義（Cc 0 件）で
             payload_hash から省略される。role 上限・重複規則は `to` と同じ。
-            **現時点の runtime は暫定 gate により指定すると 422 INVALID_REQUEST で拒否する**
-            （`to` の説明を参照）。
+            canonical recipient persistenceを通じてproviderへ送信される（`to` の説明を参照）。
           maxItems: 10
           items:
             $ref: '#/components/schemas/MailRecipient'
@@ -543,8 +541,8 @@ components:
           description: >-
             BCC 宛先（ADR 0023 D-01）。未指定・null・空配列は同義（Bcc 0 件）で
             payload_hash から省略される。role 上限・重複規則は `to` と同じ。
-            **現時点の runtime は暫定 gate により指定すると 422 INVALID_REQUEST で拒否する**
-            （`to` の説明を参照）。
+            canonical recipient persistenceを通じてproviderへ送信される。legacy shadowには
+            raw Bcc addressを保存しない（`to` の説明を参照）。
           maxItems: 10
           items:
             $ref: '#/components/schemas/MailRecipient'

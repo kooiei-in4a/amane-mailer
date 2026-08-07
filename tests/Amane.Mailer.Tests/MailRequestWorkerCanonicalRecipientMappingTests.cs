@@ -14,10 +14,9 @@ namespace Amane.Mailer.Tests;
 /// End-to-end Worker coverage for canonical recipient provider mapping (ADR 0023 D-01/D-03/D-10,
 /// Issue #546): the Worker must read <c>mail_request_recipients</c>, never the legacy
 /// <c>mail_requests.recipient_email</c>/<c>recipient_display_name</c> shadow, when constructing
-/// the provider job. Requests are seeded directly via <see cref="MailRequestRepository"/>
-/// (bypassing the public HTTP contract) since the <c>IsLegacySingleTo</c> gate keeps every
-/// HTTP-accepted request single-To -- these shapes are reachable internally today and must be
-/// reachable through the public contract once Issue E lifts the gate.
+/// the provider job. Requests are seeded directly via <see cref="MailRequestRepository"/> so the
+/// provider-focused mapping tests are independent of HTTP authentication and acceptance setup.
+/// The public HTTP recipient matrix is covered separately in <c>MailRequestApiTests</c>.
 /// </summary>
 [Collection(MailerTestCollection.Name)]
 public sealed class MailRequestWorkerCanonicalRecipientMappingTests(MailerWorkerFixture fixture)

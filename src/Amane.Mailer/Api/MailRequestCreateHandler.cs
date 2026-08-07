@@ -166,11 +166,10 @@ public static class MailRequestCreateHandler
             });
         }
 
-        // The legacy-shape gate remains in place for now, but select the compatibility-only
-        // representative from the canonical aggregate so Cc-only/Bcc-only shapes remain safe
-        // when that gate is eventually removed. MailRequestAcceptStore applies the fixed
-        // redacted sentinel for Bcc-only shadows; the canonical recipient rows remain the sole
-        // source of truth for delivery and all recipient-aware behavior.
+        // Select the compatibility-only legacy shadow representative from the canonical
+        // aggregate. MailRequestAcceptStore applies the fixed redacted sentinel for Bcc-only
+        // shadows; the canonical recipient rows remain the sole source of truth for delivery and
+        // all recipient-aware behavior.
         var canonicalRecipientSet = canonicalRecipients!;
         var legacyRecipient = GetLegacyShadowRepresentative(canonicalRecipientSet);
         var insert = new AcceptedMailRequestInsert
@@ -517,20 +516,6 @@ public static class MailRequestCreateHandler
                     MailerErrorCodes.InvalidRequest,
                     "A valid recipient is required.",
                     StatusCodes.Status422UnprocessableEntity);
-        }
-
-        // Temporary gate (ADR 0023 / issue #540): Contracts/OpenAPI/validation/hash accept
-        // multiple To and Cc/Bcc, but recipient persistence and delivery (a separate, not-yet-
-        // implemented follow-up) still only handle a single To recipient. Reject any other shape
-        // here -- before attachment staging, hash verification, or any DB write -- so a
-        // multi-recipient request is never silently reduced to one recipient. No recipient values
-        // are included in the response.
-        if (!canonicalRecipients!.IsLegacySingleTo)
-        {
-            return MailerJsonResults.ValidationError(
-                MailerErrorCodes.InvalidRequest,
-                "Only a single To recipient is currently accepted.",
-                StatusCodes.Status422UnprocessableEntity);
         }
 
         if (!string.IsNullOrWhiteSpace(request.ReplyTo)

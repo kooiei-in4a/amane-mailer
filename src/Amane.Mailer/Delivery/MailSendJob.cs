@@ -26,10 +26,8 @@ public sealed record MailSendJob(
     IReadOnlyList<MailSendAttachment>? Attachments = null)
 {
     /// <summary>
-    /// Convenience for the single-recipient shape, which remains the only shape reachable
-    /// through the public HTTP contract while <c>IsLegacySingleTo</c> gates runtime acceptance
-    /// (ADR 0023 D-11 issue split) and the only shape the attachment send path (ADR 0022, out of
-    /// Issue #546 scope) constructs.
+    /// Convenience for constructing the single-recipient shape in provider-focused callers and
+    /// tests. Public HTTP acceptance and Worker dispatch use the canonical To/Cc/Bcc lists.
     /// </summary>
     public static MailSendJob ForSingleRecipient(
         Guid mailRequestId,

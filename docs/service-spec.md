@@ -71,12 +71,11 @@ octet、full address 最大 254 byte）。display name は CR/LF/control を拒�
 未指定として扱う。配列順は role 内で保持し、provider への送信順は To、Cc、Bcc の順。単一 To
 のみ（Cc／Bcc 未指定）の request は既存 v1.2 契約・payload hash と byte-identical。
 
-**現時点の runtime は暫定 gate により single To のみ受理する。** To 2 件以上、または
-Cc／Bcc の指定は、DB 書き込み・添付 staging・queue 発火より前で 422 `INVALID_REQUEST`
-(`Only a single To recipient is currently accepted.`) として拒否する。これは recipient
-persistence／migration（ADR 0023 D-11 issue B）が実装されるまでの一時的な境界であり、
-Contracts／OpenAPI／payload hash／validation（本 issue #540 のスコープ）が複数宛先を
-受理・検証できることとは独立している。詳細は
+runtime は recipient persistence と canonical provider mapping を通じて、上記の複数宛先
+形状を受理し、To、Cc、Bcc の全recipientを1件のprovider messageへ送信する。legacyの
+`recipient_email`／`recipient_display_name` はbinary互換のshadowに限られ、deliveryや
+recipient-aware処理の正本ではない。Bcc-only requestのshadowには固定redacted sentinelを
+使用し、raw Bcc addressは保存しない。詳細は
 [docs/adr/0023-multiple-recipient-contract-and-delivery-semantics.md](adr/0023-multiple-recipient-contract-and-delivery-semantics.md)
 を参照。
 
@@ -92,7 +91,7 @@ Contracts／OpenAPI／payload hash／validation（本 issue #540 のスコープ
 | 同一ID・内容差異 | 409 | `IDEMPOTENCY_CONFLICT` |
 | ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
 | 宛先 role 別／合計上限超過 | 422 | `TOO_MANY_RECIPIENTS` |
-| 宛先不正・重複・単一 To 以外の形状（暫定 gate） / メタデータ / hash 不一致 | 422 | `INVALID_REQUEST` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` |
+| 宛先不正・重複 / メタデータ / hash 不一致 | 422 | `INVALID_REQUEST` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` |
 | 過去の `scheduled_at` / 最大予約期間超過 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | 一時的 DB 障害（busy/locked 等） | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk 枯渇（SQLITE_FULL） | 503 | `STORAGE_FULL` (`retryable: false`) |
@@ -262,7 +261,7 @@ Contracts package の TFM を引き上げる場合は、CHANGELOG のリリー�
 | `payload_json` | TEXT | 受信 JSON 原文 |
 | `payload_hash` | TEXT | SHA-256 hex（64 文字） |
 | `subject` / `html_body` / `text_body` / `reply_to` | TEXT | 配送内容 |
-| `recipient_email` / `recipient_display_name` | TEXT | 宛先（runtime は現時点で single To のみ受理。ADR 0023 D-01/D-11 issue B 完了までの暫定境界） |
+| `recipient_email` / `recipient_display_name` | TEXT | legacy binary互換shadow（canonical `mail_request_recipients` が宛先の正本。Bcc-onlyでは固定redacted sentinel） |
 | `metadata_json` | TEXT NULL | 任意 metadata |
 | `status` | INTEGER | 状態（下表） |
 | `attempt_count` / `max_attempts` | INTEGER | 試行回数 |

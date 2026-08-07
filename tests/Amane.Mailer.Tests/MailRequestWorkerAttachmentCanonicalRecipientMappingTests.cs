@@ -19,9 +19,8 @@ namespace Amane.Mailer.Tests;
 /// this fix, <c>SendAttachmentRequestAndFinalizeAsync</c> built the suppression check, envelope
 /// estimate, and provider job from <c>row.RecipientEmail</c>/<c>row.RecipientDisplayName</c> (the
 /// legacy single-To shadow) instead of the canonical <c>mail_request_recipients</c> rows. Requests
-/// are seeded directly via <see cref="MailRequestRepository"/> (bypassing the public HTTP
-/// contract) since the <c>IsLegacySingleTo</c> gate keeps every HTTP-accepted request single-To --
-/// these shapes are reachable internally today, mirroring
+/// are seeded directly via <see cref="MailRequestRepository"/> so the provider-focused mapping
+/// tests are independent of HTTP authentication and acceptance setup, mirroring
 /// <see cref="MailRequestWorkerCanonicalRecipientMappingTests"/> for plain requests.
 /// </summary>
 [Collection(MailerTestCollection.Name)]
