@@ -180,7 +180,8 @@ python3 scripts/qualification-runner.py handoff \
 
 The publication-only handoff contains only the sealed binding, `go-no-go`,
 terminal sealed event, and a value-free manifest. It must be copied byte-for-
-unapproved run cannot produce a handoff. The consumer validator must require
+byte from the sealed run; an unapproved run cannot produce a handoff. The
+consumer validator must require
 the manifest's exact three-object allowlist and SHA-256s, reject extra files or
 symlinks, require all release/candidate/OCI identities (not optional fields),
 and recheck the terminal event's JCS canonicalization, previous digest, event
