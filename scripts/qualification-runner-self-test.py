@@ -187,6 +187,12 @@ def main() -> int:
         contradictory_path = root / "contradictory-migration.json"
         write(contradictory_path, envelope(contradictory_migration, "G456-42", "win-docker", "FAIL", "db-migration-fresh-apply", payload_for("G456-42", "win-docker", "FAIL")))
         run("evidence", "--run-root", str(run_root), "--evidence-id", contradictory_migration, "--scenario-id", "G456-42", "--variant-id", "win-docker", "--result", "FAIL", "--executed-by-role", "lane-owner", "--executed-by-identity", "ci:test", "--observations", str(contradictory_path), expect=1)
+        leaky_evidence = "8" * 64
+        leaky_path = root / "leaky-envelope.json"
+        leaky = envelope(leaky_evidence, "G456-03", "acs-staging-nosend", "PASS", "staging-acs-verification", payload_for("G456-03", "acs-staging-nosend", "PASS"))
+        leaky["notes"] = {"recipient": "user@example.com"}
+        write(leaky_path, leaky)
+        run("evidence", "--run-root", str(run_root), "--evidence-id", leaky_evidence, "--scenario-id", "G456-03", "--variant-id", "acs-staging-nosend", "--result", "PASS", "--executed-by-role", "lane-owner", "--executed-by-identity", "ci:test", "--observations", str(leaky_path), expect=1)
         exception_id = "4" * 64
         run("exception", "--run-root", str(run_root), "--exception-id", exception_id, "--scenario-id", "G456-29", "--variant-id", "win-docker", "--reason-not-executable", "synthetic lane unavailable", "--alternate-verification", "synthetic alternate review", "--residual-risk", "synthetic residual risk", "--impact-scope", "synthetic scope", "--created-by-role", "lane-owner", "--created-by-identity", "ci:test")
         exception_approval = json.loads(run("exception-disposition", "--run-root", str(run_root), "--scenario-id", "G456-29", "--variant-id", "win-docker", "--action", "approve", "--target-exception-id", exception_id, "--reason-code", "self-test-conditional", "--approved-by-role", "conditional-approver", "--approved-by-identity", "maintainer:conditional"))

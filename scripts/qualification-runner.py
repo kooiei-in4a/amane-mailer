@@ -1194,6 +1194,9 @@ def validate_evidence_envelope(envelope: dict[str, Any], binding: dict[str, Any]
     missing = sorted(COMMON_EVIDENCE_FIELDS - envelope.keys())
     if missing:
         fail(f"evidence envelope missing fields: {','.join(missing)}")
+    unknown = sorted(set(envelope) - COMMON_EVIDENCE_FIELDS)
+    if unknown:
+        fail(f"evidence envelope contains unknown fields: {','.join(unknown)}")
     if envelope.get("schemaVersion") != 1 or envelope.get("kind") != "release-qualification-evidence":
         fail("evidence envelope schema/kind mismatch")
     evidence_id = require_hex(envelope.get("evidenceId"), "evidenceId")

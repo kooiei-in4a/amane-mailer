@@ -165,6 +165,35 @@ terminal sealed event, and a value-free manifest. It must be copied byte-for-
 byte; no workflow may rebuild or normalize the sealed JSON. A NO_GO or
 unapproved run cannot produce a handoff.
 
+## Abandon, recovery, retention, and audit
+
+Phase-4 writes are deliberately not treated as one filesystem transaction. If
+the process or durable backend fails after any Phase-4 object is written,
+stop the run, do not edit or delete partial JSON, and append the terminal
+abandon event when the store is writable:
+
+```bash
+python3 scripts/qualification-runner.py abandon \
+  --run-root <store-root>/runs/<qualification-run-id> \
+  --reason-code phase4-write-failed \
+  --phase4-incomplete
+```
+
+An abandoned run is never repaired or reused. Preserve its immutable objects
+and hashes for audit, then start a new bind with a new run-attempt nonce. If
+the backend cannot append the abandon event, preserve the directory as
+incomplete and record only its run ID and value-free failure code in the
+maintainer audit channel; do not publish it as a handoff.
+
+The durable-store owner must retain candidate intake, run objects, terminal
+event, and value-free hash inventory for the repository's release-audit
+retention period (at least the corresponding release record's retention
+period). Retention cleanup is an external backend operation: it must be
+approved, logged by run ID/digest only, and must never copy or log candidate
+archives, ACS data, recipients, provider errors, tokens, or private keys.
+The publication workflow receives only the three sealed JSON objects and its
+manifest; the full store is not uploaded to Actions artifacts.
+
 ## Validation
 
 The offline self-test uses synthetic candidate and full canonical Issue rows;
