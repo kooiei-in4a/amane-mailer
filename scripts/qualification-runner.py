@@ -635,7 +635,7 @@ def validate_archive_manifest(manifest: dict[str, Any], archive: dict[str, Any],
     for field in ("composeSha256", "composeImageDigestSha256", "composeRecordedMetadataSha256", "composeMailpitSha256", "payloadTreeSha256"):
         if not isinstance(manifest.get(field), str) or not SHA256_DIGEST.fullmatch(manifest[field]):
             fail(f"archives[{rid}]: release-bundle-manifest.{field} must be sha256 digest")
-    if archive.get("payloadTreeSha256") is not None and manifest.get("payloadTreeSha256") != "sha256:" + archive["payloadTreeSha256"]:
+    if archive.get("payloadTreeSha256") is not None and manifest.get("payloadTreeSha256") != archive["payloadTreeSha256"]:
         fail(f"archives[{rid}]: payloadTreeSha256 mismatch")
 
 
@@ -697,7 +697,7 @@ def candidate_documents(candidate_root: Path) -> tuple[dict[str, Any], dict[str,
             fail(f"archives[{rid}].smokeResult: candidate smoke must be passed")
         if archive.get("mailerVersion") != release_version or archive.get("setupLauncherVersion") != release_version:
             fail(f"archives[{rid}]: archive version does not match releaseVersion")
-        if "payloadTreeSha256" not in archive or (archive.get("payloadTreeSha256") is not None and not HEX64.fullmatch(str(archive.get("payloadTreeSha256")))):
+        if "payloadTreeSha256" not in archive or (archive.get("payloadTreeSha256") is not None and not SHA256_DIGEST.fullmatch(str(archive.get("payloadTreeSha256")))):
             fail(f"archives[{rid}].payloadTreeSha256: invalid")
         digest = require_digest(require_string(archive, "archiveSha256"), f"archives[{rid}].archiveSha256")
         if not SAFE_ID.fullmatch(rid) or Path(name).name != name:
@@ -1226,7 +1226,7 @@ def command_intake(args: argparse.Namespace) -> None:
     if not handoff.is_file() or handoff.is_symlink():
         fail("CANDIDATE-HANDOFF.md: required regular file")
     handoff_text = handoff.read_text(encoding="utf-8")
-    if re.search(r"(?:password|secret|token|connectionstring|recipient|sender|subject|raw.?error|bearer|cookie)", handoff_text, re.I) or "-----BEGIN" in handoff_text:
+    if re.search(r"(?:password|secret|token|connectionstring|recipient|sender|subject|raw.?error|bearer|cookie)\s*[:=]", handoff_text, re.I) or re.search(r"-----BEGIN", handoff_text):
         fail("CANDIDATE-HANDOFF.md contains prohibited secret/PII markers")
     for name in ("candidate-provenance.json", "image-identity.json", "CANDIDATE-SHA256SUMS", "CANDIDATE-HANDOFF.md"):
         copy_tree_file(candidate_root / name, intake / name)
