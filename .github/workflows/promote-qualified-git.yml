@@ -497,6 +497,31 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset.json"
           GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset-app.json"
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > "${state}/target-effective-rules.json"
+          python3 - "${state}/main-ruleset.json" "${state}/target-ruleset.json" <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          expected_actor = {
+              "actor_id": int(os.environ["APP_ID"]),
+              "actor_type": "Integration",
+              "bypass_mode": "pull_request",
+          }
+          for raw_path in sys.argv[1:]:
+              path = Path(raw_path)
+              ruleset = json.loads(path.read_text(encoding="utf-8"))
+              actors = ruleset.get("bypass_actors")
+              # GitHub may redact bypass_actors for the workflow token even
+              # though the caller capability is still visible. Keep the
+              # fingerprint deterministic and verify the capability with the
+              # separately fetched App-token response below.
+              if actors in (None, []):
+                  ruleset["bypass_actors"] = [expected_actor]
+              elif actors != [expected_actor]:
+                  raise SystemExit("unexpected ruleset bypass actor set")
+              path.write_text(json.dumps(ruleset, sort_keys=True) + "\n", encoding="utf-8")
+          PY
           python3 scripts/ruleset-fingerprint.py --ruleset "${state}/main-ruleset.json" --effective-rules "${state}/main-effective-rules.json" --expect-fingerprint "${EXPECTED_MAIN_FINGERPRINT}" --expect-policy-fingerprint "${EXPECTED_POLICY_FINGERPRINT}" --output "${state}/main-fingerprint.json"
           python3 scripts/ruleset-fingerprint.py --ruleset "${state}/target-ruleset.json" --effective-rules "${state}/target-effective-rules.json" --expect-fingerprint "${EXPECTED_FINGERPRINT}" --expect-policy-fingerprint "${EXPECTED_POLICY_FINGERPRINT}" --output "${state}/target-fingerprint-before.json"
 
@@ -607,6 +632,7 @@ jobs:
           MODE: ${{ inputs.mode }}
           TARGET_BRANCH: ${{ inputs.promotion_target_branch }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_ruleset_fingerprint }}
+          APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           MAIN_RULESET_ID: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_ID }}
           REHEARSAL_RULESET_ID: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_ID }}
         run: |
@@ -616,6 +642,25 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-pre-merge.json
           GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-app-pre-merge.json
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > artifacts/git-promotion-state/target-effective-rules-pre-merge.json
+          python3 - artifacts/git-promotion-state/target-ruleset-pre-merge.json <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("artifacts/git-promotion-state/target-ruleset-pre-merge.json")
+          ruleset = json.loads(path.read_text(encoding="utf-8"))
+          expected_actor = {
+              "actor_id": int(os.environ["APP_ID"]),
+              "actor_type": "Integration",
+              "bypass_mode": "pull_request",
+          }
+          actors = ruleset.get("bypass_actors")
+          if actors in (None, []):
+              ruleset["bypass_actors"] = [expected_actor]
+          elif actors != [expected_actor]:
+              raise SystemExit("unexpected ruleset bypass actor set")
+          path.write_text(json.dumps(ruleset, sort_keys=True) + "\n", encoding="utf-8")
+          PY
           python3 scripts/ruleset-fingerprint.py --ruleset artifacts/git-promotion-state/target-ruleset-pre-merge.json --effective-rules artifacts/git-promotion-state/target-effective-rules-pre-merge.json --expect-fingerprint "${EXPECTED_FINGERPRINT}" --output artifacts/git-promotion-state/target-fingerprint-pre-merge.json
 
       - name: Recheck exact PR and ref state immediately before mutation
@@ -791,6 +836,7 @@ jobs:
           MODE: ${{ inputs.mode }}
           TARGET_BRANCH: ${{ inputs.promotion_target_branch }}
           EXPECTED_FINGERPRINT: ${{ inputs.expected_ruleset_fingerprint }}
+          APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           MAIN_RULESET_ID: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_ID }}
           REHEARSAL_RULESET_ID: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_ID }}
         run: |
@@ -800,6 +846,25 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-after.json
           GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-app-after.json
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > artifacts/git-promotion-state/target-effective-rules-after.json
+          python3 - artifacts/git-promotion-state/target-ruleset-after.json <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("artifacts/git-promotion-state/target-ruleset-after.json")
+          ruleset = json.loads(path.read_text(encoding="utf-8"))
+          expected_actor = {
+              "actor_id": int(os.environ["APP_ID"]),
+              "actor_type": "Integration",
+              "bypass_mode": "pull_request",
+          }
+          actors = ruleset.get("bypass_actors")
+          if actors in (None, []):
+              ruleset["bypass_actors"] = [expected_actor]
+          elif actors != [expected_actor]:
+              raise SystemExit("unexpected ruleset bypass actor set")
+          path.write_text(json.dumps(ruleset, sort_keys=True) + "\n", encoding="utf-8")
+          PY
           python3 scripts/ruleset-fingerprint.py --ruleset artifacts/git-promotion-state/target-ruleset-after.json --effective-rules artifacts/git-promotion-state/target-effective-rules-after.json --expect-fingerprint "${EXPECTED_FINGERPRINT}" --output artifacts/git-promotion-state/target-fingerprint-after.json
           python3 -c 'import json; assert json.load(open("artifacts/git-promotion-state/target-ruleset-after.json"))["current_user_can_bypass"] == "never"'
           python3 -c 'import json; assert json.load(open("artifacts/git-promotion-state/target-ruleset-app-after.json"))["current_user_can_bypass"] in {"pull_request", "pull_requests_only"}'
