@@ -439,6 +439,84 @@ def archive_manifest(path: Path) -> dict[str, Any]:
         fail(f"{path.name}: release-bundle-manifest is invalid ({type(exc).__name__})")
 
 
+def archive_member(path: Path, basename: str) -> bytes:
+    try:
+        if path.suffix.lower() == ".zip":
+            with zipfile.ZipFile(path) as archive:
+                names = [name for name in archive.namelist() if Path(name).name == basename]
+                if len(names) != 1:
+                    fail(f"{path.name}: exactly one {basename} is required")
+                return archive.read(names[0])
+        with tarfile.open(path, "r:*") as archive:
+            members = [member for member in archive.getmembers() if Path(member.name).name == basename]
+            if len(members) != 1 or not members[0].isreg():
+                fail(f"{path.name}: exactly one regular {basename} is required")
+            payload = archive.extractfile(members[0])
+            if payload is None:
+                fail(f"{path.name}: {basename} cannot be read")
+            return payload.read()
+    except RunnerError:
+        raise
+    except (OSError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        fail(f"{path.name}: {basename} is invalid ({type(exc).__name__})")
+
+
+def docs_from_release_tree(repo_root: Path, release_commit: str, candidate_root: Path, archive_paths: Iterable[Path]) -> tuple[dict[str, str], dict[str, bytes]]:
+    paths = {
+        "setupGuideJa": "docs/ops/setup-guide.md",
+        "setupGuideEn": "docs/ops/setup-guide.en.md",
+        "setupReleaseBundleJa": "docs/ops/setup-release-bundle.md",
+        "setupReleaseBundleEn": "docs/ops/setup-release-bundle.en.md",
+        "readmeJa": "README.md",
+        "readmeEn": "README.en.md",
+    }
+    extracted: dict[str, bytes] = {}
+    for key, relative in paths.items():
+        try:
+            payload = subprocess.run(["git", "-C", str(repo_root), "show", f"{release_commit}:{relative}"], check=True, capture_output=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            fail(f"docs extract missing from release tree: {relative}")
+        extracted[key] = payload
+    candidate_setup: list[bytes] = []
+    for archive in archive_paths:
+        try:
+            candidate_setup.append(archive_member(archive, "README-SETUP.md"))
+        except RunnerError as exc:
+            if "exactly one README-SETUP.md" in str(exc):
+                continue
+            raise
+    if not candidate_setup or len({sha_bytes(payload) for payload in candidate_setup}) != 1:
+        fail("candidate README-SETUP.md must be present and identical across host archives")
+    extracted["candidateReadmeSetup"] = candidate_setup[0]
+    digests = {f"{key}Sha256": sha_bytes(payload) for key, payload in extracted.items()}
+    digests.update({"extractionMethod": "git-archive-exact-source-plus-qualified-archive", "sourceCommitSha": release_commit})
+    return digests, extracted
+
+
+def validate_oci_layout(layout_root: Path, expected_digest: str) -> str:
+    layout_root = layout_root.resolve()
+    if not layout_root.is_dir() or any(path.is_symlink() for path in layout_root.rglob("*")):
+        fail("OCI layout must be a regular, symlink-free directory")
+    marker = read_json(layout_root / "oci-layout", "oci-layout")
+    index = read_json(layout_root / "index.json", "OCI index.json")
+    if marker.get("imageLayoutVersion") != "1.0.0" or not isinstance(index, dict) or index.get("schemaVersion") != 2:
+        fail("OCI layout/index schema mismatch")
+    manifests = index.get("manifests")
+    if not isinstance(manifests, list) or len(manifests) != 2:
+        fail("OCI index must contain exactly two platform descriptors")
+    platforms = {((entry.get("platform") or {}).get("os"), ((entry.get("platform") or {}).get("architecture"))) for entry in manifests if isinstance(entry, dict)}
+    if platforms != {("linux", "amd64"), ("linux", "arm64")}:
+        fail("OCI index platform set mismatch")
+    if any(not isinstance(entry.get("digest"), str) or not SHA256_DIGEST.fullmatch(entry["digest"]) for entry in manifests):
+        fail("OCI index descriptor digest is invalid")
+    if expected_digest not in {entry["digest"] for entry in manifests}:
+        fail("OCI index does not contain expected image digest descriptor")
+    digest_file = layout_root / "oci-index.digest"
+    if digest_file.is_file() and digest_file.read_text(encoding="utf-8").strip() != expected_digest:
+        fail("OCI index digest attestation mismatch")
+    return sha_bytes((layout_root / "index.json").read_bytes())
+
+
 def validate_archive_manifest(manifest: dict[str, Any], archive: dict[str, Any], source: str, release_version: str, oci: str) -> None:
     if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1 or manifest.get("packagingKind") != "setup-release-candidate":
         fail(f"archives[{archive['targetRid']}]: release-bundle-manifest schema/kind mismatch")
@@ -571,8 +649,10 @@ def binding_id_for(binding: dict[str, Any], authorization: dict[str, Any]) -> st
         authorization_seed,
         require_commit(require_string(binding, "releaseCommitSha"), "releaseCommitSha"),
         require_digest(require_string(binding, "ociIndexDigest"), "ociIndexDigest"),
+        require_hex(require_string(binding, "ociLayoutIndexSha256"), "ociLayoutIndexSha256"),
         require_string(binding, "releaseVersion"),
         sha_object(binding.get("ociPlatforms")),
+        sha_object(binding.get("docs")),
         require_string(binding, "producerWorkflowRef"),
         str(binding.get("producerWorkflowRunId")),
         str(binding.get("producerWorkflowRunAttempt")),
@@ -601,7 +681,7 @@ def load_binding(run_root: Path) -> dict[str, Any]:
     if not isinstance(binding.get("migrationFileDigests"), list) or binding.get("migrationPinDigestSha256") is None or binding.get("migrationInventoryDigestSha256") is None:
         fail("binding migration PIN fields are missing")
     phase2 = read_json(run_root / "phase-manifests/phase-2.json", "phase-2.json")
-    if any(phase2.get(field) != binding.get(field) for field in ("candidateId", "bindingId", "qualificationRunId", "runAttemptNonce", "releaseCommitSha", "releaseVersion", "ociPlatforms", "planFilePath", "producerWorkflowRef", "producerWorkflowRunId", "producerWorkflowRunAttempt", "candidateProvenanceSha256", "candidateImageIdentitySha256", "candidatePhase1ManifestSha256", "candidateArchivesDigestSha256")) or phase2.get("authorizationDigestSha256") != binding.get("authorizationDigestSha256"):
+    if any(phase2.get(field) != binding.get(field) for field in ("candidateId", "bindingId", "qualificationRunId", "runAttemptNonce", "releaseCommitSha", "releaseVersion", "ociPlatforms", "ociLayoutIndexSha256", "planFilePath", "producerWorkflowRef", "producerWorkflowRunId", "producerWorkflowRunAttempt", "candidateProvenanceSha256", "candidateImageIdentitySha256", "candidatePhase1ManifestSha256", "candidateArchivesDigestSha256")) or phase2.get("docs") != binding.get("docs") or phase2.get("authorizationDigestSha256") != binding.get("authorizationDigestSha256"):
         fail("phase-2 manifest identity mismatch")
     auth = read_json(run_root / "authorization.json", "authorization.json")
     if not isinstance(auth, dict) or any(auth.get(field) != binding.get(field) for field in ("candidateId", "bindingId", "qualificationRunId")) or sha_object(auth) != binding.get("authorizationDigestSha256"):
@@ -613,6 +693,15 @@ def load_binding(run_root: Path) -> dict[str, Any]:
         fail("saved migration PIN does not match binding")
     if phase2.get("migrationPinDigestSha256") != saved_pin["migrationPinDigestSha256"] or phase2.get("migrationInventoryDigestSha256") != saved_pin["migrationInventoryDigestSha256"] or phase2.get("migrationFileDigests") != saved_pin["migrationFileDigests"] or phase2.get("releaseCommitSha") != saved_pin["releaseCommitSha"]:
         fail("phase-2 migration PIN identity mismatch")
+    docs = binding.get("docs")
+    if not isinstance(docs, dict) or docs.get("sourceCommitSha") != binding.get("releaseCommitSha") or docs.get("extractionMethod") != "git-archive-exact-source-plus-qualified-archive":
+        fail("binding docs extraction metadata mismatch")
+    docs_files = {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}
+    for key, filename in docs_files.items():
+        expected = docs.get(f"{key}Sha256")
+        path = run_root / "docs-extract" / filename
+        if not isinstance(expected, str) or not HEX64.fullmatch(expected) or file_sha(path) != expected:
+            fail(f"docs-extract/{filename}: digest mismatch")
     candidate_root = run_root.parent.parent / "candidates" / binding["candidateId"] / "intake"
     provenance, identity, archive_digests = candidate_documents(candidate_root)
     if candidate_id(provenance, archive_digests) != binding.get("candidateId"):
@@ -1031,6 +1120,7 @@ def command_intake(args: argparse.Namespace) -> None:
         fail("candidate sourceCommitSha does not match exact release commit")
     if provenance["ociIndexDigest"] != expected_digest or identity.get("imageDigest") != expected_digest:
         fail("candidate OCI digest does not match expected digest")
+    oci_layout_index_sha = validate_oci_layout(Path(args.oci_layout), expected_digest)
     cid = candidate_id(provenance, archive_digests)
     candidate_store = store / "candidates" / cid
     if candidate_store.exists():
@@ -1051,6 +1141,7 @@ def command_intake(args: argparse.Namespace) -> None:
         "candidateId": cid,
         "sourceCommitSha": source,
         "ociIndexDigest": expected_digest,
+        "ociLayoutIndexSha256": oci_layout_index_sha,
         "workflowRunId": provenance["workflowRunId"],
         "workflowRunAttempt": provenance["workflowRunAttempt"],
         "workflowRef": provenance["workflowRef"],
@@ -1187,6 +1278,8 @@ def command_bind(args: argparse.Namespace) -> None:
     migration_pin = load_migration_pin(Path(args.migration_pin))
     if migration_pin["releaseCommitSha"] != intake_manifest["sourceCommitSha"]:
         fail("migration pin releaseCommitSha does not match candidate sourceCommitSha")
+    if not isinstance(intake_manifest.get("ociLayoutIndexSha256"), str) or not HEX64.fullmatch(intake_manifest["ociLayoutIndexSha256"]):
+        fail("phase-1 OCI layout index digest is missing")
     verify_migration_pin_tree(Path(args.repo_root).resolve(), intake_manifest["sourceCommitSha"], migration_pin)
     candidate_intake = candidate_store / "intake"
     provenance, identity, archive_digests = candidate_documents(candidate_intake)
@@ -1196,6 +1289,8 @@ def command_bind(args: argparse.Namespace) -> None:
     candidate_identity_sha = file_sha(candidate_intake / "image-identity.json")
     candidate_phase1_sha = file_sha(candidate_intake / "phase-1.json")
     candidate_archives_sha = sha_object({"archives": provenance["archives"], "archiveDigests": archive_digests})
+    archive_paths = [candidate_intake / archive["archiveFileName"] for archive in provenance["archives"]]
+    docs_metadata, docs_payloads = docs_from_release_tree(Path(args.repo_root), intake_manifest["sourceCommitSha"], candidate_intake, archive_paths)
     nonce = require_value_free_identity(args.run_attempt_nonce, "run-attempt-nonce")
     owners = load_owner_map(Path(args.evidence_owners))
     optional = [{"scenarioId": "G456-38", "variantId": "nas"}, {"scenarioId": "G456-39", "variantId": "macos"}, {"scenarioId": "G456-40", "variantId": "mode5-manual"}, {"scenarioId": "G456-41", "variantId": "external-secret-manager-docs"}]
@@ -1219,6 +1314,7 @@ def command_bind(args: argparse.Namespace) -> None:
         "migrationInventoryDigestSha256": migration_pin["migrationInventoryDigestSha256"],
         "releaseCommitSha": intake_manifest["sourceCommitSha"],
         "ociIndexDigest": intake_manifest["ociIndexDigest"],
+        "ociLayoutIndexSha256": intake_manifest["ociLayoutIndexSha256"],
         "releaseVersion": provenance["releaseVersion"],
         "ociPlatforms": provenance["ociPlatforms"],
         "producerWorkflowRef": provenance["workflowRef"],
@@ -1228,6 +1324,7 @@ def command_bind(args: argparse.Namespace) -> None:
         "candidateImageIdentitySha256": candidate_identity_sha,
         "candidatePhase1ManifestSha256": candidate_phase1_sha,
         "candidateArchivesDigestSha256": candidate_archives_sha,
+        "docs": docs_metadata,
         "rows": rows,
     }
     authorization_seed = {
@@ -1273,6 +1370,7 @@ def command_bind(args: argparse.Namespace) -> None:
         "sourceCommitSha": intake_manifest["sourceCommitSha"],
         "releaseCommitSha": intake_manifest["sourceCommitSha"],
         "ociIndexDigest": intake_manifest["ociIndexDigest"],
+        "ociLayoutIndexSha256": intake_manifest["ociLayoutIndexSha256"],
         "releaseVersion": provenance["releaseVersion"],
         "ociPlatforms": provenance["ociPlatforms"],
         "producerWorkflowRef": provenance["workflowRef"],
@@ -1282,6 +1380,7 @@ def command_bind(args: argparse.Namespace) -> None:
         "candidateImageIdentitySha256": candidate_identity_sha,
         "candidatePhase1ManifestSha256": candidate_phase1_sha,
         "candidateArchivesDigestSha256": candidate_archives_sha,
+        "docs": docs_metadata,
         "migrationPinDigestSha256": migration_pin["migrationPinDigestSha256"],
         "migrationInventoryDigestSha256": migration_pin["migrationInventoryDigestSha256"],
         "migrationFileDigests": migration_pin["migrationFileDigests"],
@@ -1292,8 +1391,9 @@ def command_bind(args: argparse.Namespace) -> None:
     write_once(run_root / "authorization.json", authorization)
     write_once(run_root / "binding.json", binding)
     write_once(run_root / "migration-pin.json", read_json(Path(args.migration_pin), "migration pin"))
-    write_once(run_root / "docs-extract" / "issue-metadata.json", {"issueNumber": 456, "updatedAt": snapshot["updatedAt"], "bodySha256": issue_body_sha})
-    write_once(run_root / "docs-extract" / "plan-metadata.json", {"planCommitSha": plan_commit, "planFileSha256": plan_sha, "planRevision": "12"})
+    for key, payload in docs_payloads.items():
+        write_bytes_once(run_root / "docs-extract" / {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}[key], payload)
+    write_once(run_root / "docs-extract" / "metadata.json", docs_metadata)
     phase2 = {
         "schemaVersion": 1,
         "phase": 2,
@@ -1309,6 +1409,7 @@ def command_bind(args: argparse.Namespace) -> None:
         "releaseCommitSha": migration_pin["releaseCommitSha"],
         "releaseVersion": provenance["releaseVersion"],
         "ociPlatforms": provenance["ociPlatforms"],
+        "ociLayoutIndexSha256": intake_manifest["ociLayoutIndexSha256"],
         "producerWorkflowRef": provenance["workflowRef"],
         "producerWorkflowRunId": provenance["workflowRunId"],
         "producerWorkflowRunAttempt": provenance["workflowRunAttempt"],
@@ -1316,6 +1417,7 @@ def command_bind(args: argparse.Namespace) -> None:
         "candidateImageIdentitySha256": candidate_identity_sha,
         "candidatePhase1ManifestSha256": candidate_phase1_sha,
         "candidateArchivesDigestSha256": candidate_archives_sha,
+        "docs": docs_metadata,
         "createdAtUtc": created,
     }
     write_once(run_root / "phase-manifests" / "phase-2.json", phase2)
@@ -2010,6 +2112,7 @@ def build_parser() -> argparse.ArgumentParser:
     intake.add_argument("--store-root", required=True)
     intake.add_argument("--release-commit-sha", required=True)
     intake.add_argument("--expected-oci-digest", required=True)
+    intake.add_argument("--oci-layout", required=True)
     intake.add_argument("--expected-workflow-ref", required=True)
     intake.set_defaults(func=command_intake)
     bind = sub.add_parser("bind")

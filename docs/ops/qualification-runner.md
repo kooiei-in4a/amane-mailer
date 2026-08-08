@@ -57,6 +57,7 @@ python3 scripts/qualification-runner.py intake \
   --store-root <maintainer-durable-store> \
   --release-commit-sha <exact-40-hex-sha> \
   --expected-oci-digest sha256:<64-hex> \
+  --oci-layout <downloaded-setup-release-candidate-oci-layout> \
   --expected-workflow-ref <trusted-producer-workflow-ref>
 
 python3 scripts/qualification-runner.py bind \

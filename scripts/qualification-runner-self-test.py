@@ -78,11 +78,16 @@ def main() -> int:
             if archive_name.endswith(".zip"):
                 with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive_file:
                     archive_file.writestr("release-bundle-manifest.json", manifest_bytes)
+                    archive_file.writestr("README-SETUP.md", "synthetic setup guide\n")
             else:
                 with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive_file:
                     info = tarfile.TarInfo("release-bundle-manifest.json")
                     info.size = len(manifest_bytes)
                     archive_file.addfile(info, io.BytesIO(manifest_bytes))
+                    readme = b"synthetic setup guide\n"
+                    readme_info = tarfile.TarInfo("README-SETUP.md")
+                    readme_info.size = len(readme)
+                    archive_file.addfile(readme_info, io.BytesIO(readme))
             archive_bytes = archive_buffer.getvalue()
             write(candidate / archive_name, archive_bytes)
             archive_digests[rid] = sha(archive_bytes)
@@ -101,12 +106,16 @@ def main() -> int:
         write(candidate / "image-identity.json", {"sourceCommitSha": source, "imageDigest": oci, "mailerVersion": "1.3.0", "platforms": ["linux/amd64", "linux/arm64"]})
         (candidate / "CANDIDATE-SHA256SUMS").write_text("".join(f"{archive_digests[rid]}  {archive_name}\n" for rid, archive_name in archive_specs), encoding="utf-8")
         write(candidate / "CANDIDATE-HANDOFF.md", "synthetic value-free handoff\n")
+        oci_layout = root / "oci-layout"
+        write(oci_layout / "oci-layout", {"imageLayoutVersion": "1.0.0"})
+        write(oci_layout / "index.json", {"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": oci, "size": 1, "platform": {"os": "linux", "architecture": "amd64"}}, {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": oci, "size": 1, "platform": {"os": "linux", "architecture": "arm64"}}]})
+        (oci_layout / "oci-index.digest").write_text(oci + "\n", encoding="utf-8")
         invalid_provenance = dict(provenance)
         invalid_provenance["unexpected"] = "must be rejected"
         write(candidate / "candidate-provenance.json", invalid_provenance)
-        run("intake", "--candidate-root", str(candidate), "--store-root", str(store), "--release-commit-sha", source, "--expected-oci-digest", oci, "--expected-workflow-ref", "local", expect=1)
+        run("intake", "--candidate-root", str(candidate), "--store-root", str(store), "--release-commit-sha", source, "--expected-oci-digest", oci, "--oci-layout", str(oci_layout), "--expected-workflow-ref", "local", expect=1)
         write(candidate / "candidate-provenance.json", provenance)
-        intake = json.loads(run("intake", "--candidate-root", str(candidate), "--store-root", str(store), "--release-commit-sha", source, "--expected-oci-digest", oci, "--expected-workflow-ref", "local"))
+        intake = json.loads(run("intake", "--candidate-root", str(candidate), "--store-root", str(store), "--release-commit-sha", source, "--expected-oci-digest", oci, "--oci-layout", str(oci_layout), "--expected-workflow-ref", "local"))
         candidate_id = intake["candidateId"]
 
         variants = {
