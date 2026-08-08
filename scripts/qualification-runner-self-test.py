@@ -8,11 +8,14 @@ All candidate/evidence data is generated in a temporary directory.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 
@@ -52,12 +55,37 @@ def main() -> int:
         candidate = root / "candidate"
         store = root / "store"
         handoff = root / "handoff"
-        archive_name = "amane-mailer-v1.3.0-linux-x64.tar.gz"
-        archive = b"synthetic candidate archive; no production bytes"
-        archive_sha = sha(archive)
+        archive_specs = [("win-x64", "amane-mailer-v1.3.0-windows-x64.zip"), ("linux-x64", "amane-mailer-v1.3.0-linux-x64.tar.gz"), ("linux-arm64", "amane-mailer-v1.3.0-linux-arm64.tar.gz")]
         oci = "sha256:" + "a" * 64
         source = subprocess.check_output(["git", "-C", str(ROOT.parent), "rev-parse", "HEAD"], text=True).strip()
-        write(candidate / archive_name, archive)
+        archive_digests = {}
+        for rid, archive_name in archive_specs:
+            manifest = {
+                "schemaVersion": 1, "packagingKind": "setup-release-candidate", "artifactId": f"synthetic-{rid}",
+                "sourceCommitSha": source, "mailerVersion": "1.3.0", "setupLauncherVersion": "1.3.0",
+                "hostRid": rid, "targetRid": rid, "platform": "linux" if rid != "win-x64" else "win", "architecture": "arm64" if rid == "linux-arm64" else "amd64",
+                "imageDigest": oci, "ociIndexDigest": oci, "artifactFileName": archive_name,
+                "mailpitImageReference": "axllent/mailpit@sha256:" + "c" * 64,
+                "composeSha256": "sha256:" + "d" * 64, "composeImageDigestSha256": "sha256:" + "e" * 64,
+                "composeRecordedMetadataSha256": "sha256:" + "f" * 64, "composeMailpitSha256": "sha256:" + "0" * 64,
+            "payloadTreeSha256": "sha256:" + "b" * 64,
+                "supportedRecordedSchemaMin": 1, "supportedRecordedSchemaMax": 1,
+                "supportedInspectEffectiveSchemaMin": 1, "supportedInspectEffectiveSchemaMax": 1,
+                "supportedReleaseManifestSchemaMin": 1, "supportedReleaseManifestSchemaMax": 1,
+            }
+            manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            archive_buffer = io.BytesIO()
+            if archive_name.endswith(".zip"):
+                with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive_file:
+                    archive_file.writestr("release-bundle-manifest.json", manifest_bytes)
+            else:
+                with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive_file:
+                    info = tarfile.TarInfo("release-bundle-manifest.json")
+                    info.size = len(manifest_bytes)
+                    archive_file.addfile(info, io.BytesIO(manifest_bytes))
+            archive_bytes = archive_buffer.getvalue()
+            write(candidate / archive_name, archive_bytes)
+            archive_digests[rid] = sha(archive_bytes)
         provenance = {
             "schemaVersion": 1,
             "sourceCommitSha": source,
@@ -66,12 +94,18 @@ def main() -> int:
             "workflowRunAttempt": "1",
             "workflowRef": "local",
             "ociIndexDigest": oci,
-            "archives": [{"artifactName": "synthetic-linux-x64", "targetRid": "linux-x64", "archiveFileName": archive_name, "archiveSha256": "sha256:" + archive_sha, "mailerVersion": "1.3.0", "setupLauncherVersion": "1.3.0", "payloadTreeSha256": None, "smokeResult": "passed"}],
+            "ociPlatforms": ["linux/amd64", "linux/arm64"],
+            "archives": [{"artifactName": f"synthetic-{rid}", "targetRid": rid, "archiveFileName": archive_name, "archiveSha256": "sha256:" + archive_digests[rid], "mailerVersion": "1.3.0", "setupLauncherVersion": "1.3.0", "payloadTreeSha256": "b" * 64, "smokeResult": "passed"} for rid, archive_name in archive_specs],
         }
         write(candidate / "candidate-provenance.json", provenance)
-        write(candidate / "image-identity.json", {"sourceCommitSha": source, "imageDigest": oci, "platforms": ["linux/amd64"]})
-        (candidate / "CANDIDATE-SHA256SUMS").write_text(f"{archive_sha}  {archive_name}\n", encoding="utf-8")
+        write(candidate / "image-identity.json", {"sourceCommitSha": source, "imageDigest": oci, "mailerVersion": "1.3.0", "platforms": ["linux/amd64", "linux/arm64"]})
+        (candidate / "CANDIDATE-SHA256SUMS").write_text("".join(f"{archive_digests[rid]}  {archive_name}\n" for rid, archive_name in archive_specs), encoding="utf-8")
         write(candidate / "CANDIDATE-HANDOFF.md", "synthetic value-free handoff\n")
+        invalid_provenance = dict(provenance)
+        invalid_provenance["unexpected"] = "must be rejected"
+        write(candidate / "candidate-provenance.json", invalid_provenance)
+        run("intake", "--candidate-root", str(candidate), "--store-root", str(store), "--release-commit-sha", source, "--expected-oci-digest", oci, "--expected-workflow-ref", "local", expect=1)
+        write(candidate / "candidate-provenance.json", provenance)
         intake = json.loads(run("intake", "--candidate-root", str(candidate), "--store-root", str(store), "--release-commit-sha", source, "--expected-oci-digest", oci, "--expected-workflow-ref", "local"))
         candidate_id = intake["candidateId"]
 
@@ -93,8 +127,9 @@ def main() -> int:
         }
         issue_path = root / "issue.json"
         write(issue_path, issue)
-        plan = root / "plan.md"
-        plan.write_text("synthetic plan\n", encoding="utf-8")
+        plan = ROOT.parent / "docs" / "agent-workflows" / "issue-456-release-qualification-plan.md"
+        bad_plan = root / "bad-plan.md"
+        bad_plan.write_text("wrong plan bytes\n", encoding="utf-8")
         migration_names = [f"{n:03d}_{name}.sql" for n, name in [(1,"initial"),(2,"worker_heartbeats"),(3,"admin_indexes"),(4,"admin_audit_events"),(5,"admin_session_and_throttle"),(6,"admin_users_and_tenant_scopes"),(7,"mail_request_cancelled_status"),(8,"delivery_events"),(9,"mail_request_scheduled_at"),(10,"admin_audit_events_tenant_id"),(11,"bounce_ingestion"),(12,"provider_event_inbox_details"),(13,"provider_queue_dead_letters")]]
         migration_paths = [f"src/Amane.Mailer/Data/Migrations/{name}" for name in migration_names]
         inventory_document = {"schemaVersion": 1, "releaseCommitSha": source, "runnerOrderPaths": migration_paths}
@@ -137,6 +172,7 @@ def main() -> int:
             {"scenarioId": "G456-41", "variantId": "external-secret-manager-docs", "ownerRole": "lane-owner", "ownerIdentity": "ci:test"},
         ])
         write(owners, owner_entries)
+        run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(bad_plan), "--plan-commit-sha", source, "--repo-root", str(ROOT.parent), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "bad-plan", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional", expect=1)
         def actor_for(scenario, variant):
             matches = [entry for entry in owner_entries if entry["scenarioId"] == scenario and entry["variantId"] == variant]
             assert len(matches) == 1

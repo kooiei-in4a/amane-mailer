@@ -17,14 +17,17 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import unicodedata
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -36,6 +39,9 @@ SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+RELEASE_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+ARCHIVE_RIDS = {"win-x64", "linux-x64", "linux-arm64"}
+OCI_PLATFORMS = {"linux/amd64", "linux/arm64"}
 JCS_VERSION = {"algorithm": "RFC8785-JCS", "version": 1}
 ROOT_DIGEST_ALGORITHM = "RFC8785-JCS-sorted-path-sha256/v1"
 VARIANT_RULES_VERSION = 4
@@ -384,10 +390,79 @@ def git_output(repo_root: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+def verify_plan_source(repo_root: Path, plan_path: Path, plan_commit: str, plan_sha: str) -> str:
+    repo_root = repo_root.resolve()
+    plan_path = plan_path.resolve()
+    try:
+        relative = plan_path.relative_to(repo_root).as_posix()
+    except ValueError:
+        fail("plan-file must be inside repo-root")
+    if not relative or relative.startswith("../"):
+        fail("plan-file path is invalid")
+    blob_sha = git_output(repo_root, "rev-parse", f"{plan_commit}:{relative}")
+    if not SHA40.fullmatch(blob_sha) or sha_bytes(subprocess.run(["git", "-C", str(repo_root), "show", f"{plan_commit}:{relative}"], check=True, capture_output=True).stdout) != plan_sha:
+        fail("plan-file bytes do not match plan-commit-sha")
+    if git_output(repo_root, "status", "--porcelain", "--", relative):
+        fail("plan-file worktree is dirty")
+    return relative
+
+
 def copy_tree_file(src: Path, dst: Path) -> None:
     if not src.is_file() or src.is_symlink():
         fail(f"candidate file missing or symlink: {src.name}")
     write_bytes_once(dst, src.read_bytes())
+
+
+def archive_manifest(path: Path) -> dict[str, Any]:
+    """Read the single embedded release-bundle-manifest without extracting bytes."""
+    try:
+        if path.suffix.lower() == ".zip":
+            with zipfile.ZipFile(path) as archive:
+                names = [name for name in archive.namelist() if Path(name).name == "release-bundle-manifest.json"]
+                if len(names) != 1:
+                    fail(f"{path.name}: exactly one release-bundle-manifest.json is required")
+                info = archive.getinfo(names[0])
+                if info.is_dir() or info.filename != names[0]:
+                    fail(f"{path.name}: release-bundle-manifest.json entry is invalid")
+                return json.loads(archive.read(info).decode("utf-8"))
+        with tarfile.open(path, "r:*") as archive:
+            members = [member for member in archive.getmembers() if Path(member.name).name == "release-bundle-manifest.json"]
+            if len(members) != 1 or not members[0].isreg():
+                fail(f"{path.name}: exactly one regular release-bundle-manifest.json is required")
+            payload = archive.extractfile(members[0])
+            if payload is None:
+                fail(f"{path.name}: release-bundle-manifest.json cannot be read")
+            return json.loads(payload.read().decode("utf-8"))
+    except RunnerError:
+        raise
+    except (OSError, ValueError, KeyError, tarfile.TarError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        fail(f"{path.name}: release-bundle-manifest is invalid ({type(exc).__name__})")
+
+
+def validate_archive_manifest(manifest: dict[str, Any], archive: dict[str, Any], source: str, release_version: str, oci: str) -> None:
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 1 or manifest.get("packagingKind") != "setup-release-candidate":
+        fail(f"archives[{archive['targetRid']}]: release-bundle-manifest schema/kind mismatch")
+    rid = archive["targetRid"]
+    required_equal = {
+        "sourceCommitSha": source,
+        "mailerVersion": release_version,
+        "setupLauncherVersion": release_version,
+        "hostRid": rid,
+        "targetRid": rid,
+        "imageDigest": oci,
+        "ociIndexDigest": oci,
+    }
+    for field, expected in required_equal.items():
+        if manifest.get(field) != expected:
+            fail(f"archives[{rid}]: release-bundle-manifest.{field} mismatch")
+    for field in ("artifactId", "platform", "architecture", "mailpitImageReference", "artifactFileName"):
+        if not isinstance(manifest.get(field), str) or not manifest[field]:
+            fail(f"archives[{rid}]: release-bundle-manifest.{field} is required")
+    for field in ("composeSha256", "composeImageDigestSha256", "composeRecordedMetadataSha256", "composeMailpitSha256", "payloadTreeSha256"):
+        if not isinstance(manifest.get(field), str) or not SHA256_DIGEST.fullmatch(manifest[field]):
+            fail(f"archives[{rid}]: release-bundle-manifest.{field} must be sha256 digest")
+    if archive.get("payloadTreeSha256") is not None and manifest.get("payloadTreeSha256") != "sha256:" + archive["payloadTreeSha256"]:
+        fail(f"archives[{rid}]: payloadTreeSha256 mismatch")
 
 
 def candidate_documents(candidate_root: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, str]]:
@@ -395,6 +470,15 @@ def candidate_documents(candidate_root: Path) -> tuple[dict[str, Any], dict[str,
     identity = read_json(candidate_root / "image-identity.json", "image-identity.json")
     if not isinstance(provenance, dict) or not isinstance(identity, dict):
         fail("candidate documents must be JSON objects")
+    allowed_provenance = {"schemaVersion", "sourceCommitSha", "releaseVersion", "workflowRunId", "workflowRunAttempt", "workflowRef", "imageRepository", "imageTag", "ociIndexDigest", "ociPlatforms", "mailpitImageReference", "dotnetSdkVersion", "archives", "notes"}
+    allowed_identity = {"imageRepository", "imageTag", "imageDigest", "sourceCommitSha", "mailerVersion", "platforms"}
+    if set(provenance) - allowed_provenance or set(identity) - allowed_identity:
+        fail("candidate provenance contains unknown fields")
+    if provenance.get("schemaVersion") != 1:
+        fail("candidate-provenance.schemaVersion must be 1")
+    release_version = provenance.get("releaseVersion")
+    if not isinstance(release_version, str) or not RELEASE_VERSION.fullmatch(release_version):
+        fail("candidate-provenance.releaseVersion must be a stable semantic version")
     source = require_commit(require_string(provenance, "sourceCommitSha"), "sourceCommitSha")
     run_id = provenance.get("workflowRunId")
     if not ((isinstance(run_id, int) and run_id > 0) or (isinstance(run_id, str) and run_id.isdigit() and int(run_id) > 0)):
@@ -406,10 +490,13 @@ def candidate_documents(candidate_root: Path) -> tuple[dict[str, Any], dict[str,
     if any(character in workflow_ref for character in ("\x00", "\r", "\n")):
         fail("workflowRef: invalid control character")
     platforms = identity.get("platforms")
-    if not isinstance(platforms, list) or not platforms or any(not isinstance(platform, str) or not platform for platform in platforms):
+    oci_platforms = provenance.get("ociPlatforms")
+    if not isinstance(oci_platforms, list) or len(oci_platforms) != len(OCI_PLATFORMS) or set(oci_platforms) != OCI_PLATFORMS:
+        fail("candidate-provenance.ociPlatforms must be the exact OCI platform set")
+    if not isinstance(platforms, list) or len(platforms) != len(OCI_PLATFORMS) or set(platforms) != OCI_PLATFORMS:
         fail("image-identity.platforms: non-empty string array required")
     oci = require_digest(require_string(provenance, "ociIndexDigest"), "ociIndexDigest")
-    if identity.get("sourceCommitSha") != source or identity.get("imageDigest") != oci:
+    if identity.get("sourceCommitSha") != source or identity.get("imageDigest") != oci or identity.get("mailerVersion") != release_version:
         fail("image-identity does not match candidate provenance")
     archives = provenance.get("archives")
     if not isinstance(archives, list) or not archives:
@@ -434,6 +521,8 @@ def candidate_documents(candidate_root: Path) -> tuple[dict[str, Any], dict[str,
         require_string(archive, "artifactName")
         if archive.get("smokeResult") != "passed":
             fail(f"archives[{rid}].smokeResult: candidate smoke must be passed")
+        if archive.get("mailerVersion") != release_version or archive.get("setupLauncherVersion") != release_version:
+            fail(f"archives[{rid}]: archive version does not match releaseVersion")
         if "payloadTreeSha256" not in archive or (archive.get("payloadTreeSha256") is not None and not HEX64.fullmatch(str(archive.get("payloadTreeSha256")))):
             fail(f"archives[{rid}].payloadTreeSha256: invalid")
         digest = require_digest(require_string(archive, "archiveSha256"), f"archives[{rid}].archiveSha256")
@@ -443,9 +532,10 @@ def candidate_documents(candidate_root: Path) -> tuple[dict[str, Any], dict[str,
         raw_digest = digest.removeprefix("sha256:")
         if file_sha(path) != raw_digest or sums.get(name) != raw_digest:
             fail(f"archives[{rid}]: archive digest mismatch")
+        validate_archive_manifest(archive_manifest(path), archive, source, release_version, oci)
         checksums[rid] = digest
-    if len(checksums) != len(archives):
-        fail("archives: duplicate targetRid")
+    if len(checksums) != len(archives) or set(checksums) != ARCHIVE_RIDS:
+        fail("archives: exact win-x64/linux-x64/linux-arm64 set is required")
     if set(sums) != {require_string(archive, "archiveFileName") for archive in archives}:
         fail("CANDIDATE-SHA256SUMS: entries do not exactly match provenance archives")
     return provenance, identity, checksums
@@ -474,12 +564,15 @@ def binding_id_for(binding: dict[str, Any], authorization: dict[str, Any]) -> st
         require_string(binding, "candidateId"),
         require_string(binding, "issueBodySha256"),
         require_string(binding, "planCommitSha"),
+        require_string(binding, "planFilePath"),
         require_string(binding, "planFileSha256"),
         str(binding.get("variantRulesVersion")),
         sha_object(binding.get("rows")),
         authorization_seed,
         require_commit(require_string(binding, "releaseCommitSha"), "releaseCommitSha"),
         require_digest(require_string(binding, "ociIndexDigest"), "ociIndexDigest"),
+        require_string(binding, "releaseVersion"),
+        sha_object(binding.get("ociPlatforms")),
         require_string(binding, "producerWorkflowRef"),
         str(binding.get("producerWorkflowRunId")),
         str(binding.get("producerWorkflowRunAttempt")),
@@ -502,13 +595,13 @@ def load_binding(run_root: Path) -> dict[str, Any]:
     nonce = require_string(binding, "runAttemptNonce")
     if sha_bytes((binding["bindingId"] + "|" + nonce).encode("utf-8")) != run_root.name:
         fail("qualificationRunId/runAttemptNonce binding mismatch")
-    if binding.get("issueNumber") != 456 or binding.get("planRevision") != "12" or binding.get("variantRulesVersion") != VARIANT_RULES_VERSION:
+    if binding.get("issueNumber") != 456 or binding.get("planRevision") != "12" or binding.get("variantRulesVersion") != VARIANT_RULES_VERSION or not isinstance(binding.get("planFilePath"), str) or Path(binding["planFilePath"]).is_absolute() or ".." in Path(binding["planFilePath"]).parts:
         fail("binding canonical plan/issue identity mismatch")
     bind_rows({"rows": binding.get("rows"), "number": 456})
     if not isinstance(binding.get("migrationFileDigests"), list) or binding.get("migrationPinDigestSha256") is None or binding.get("migrationInventoryDigestSha256") is None:
         fail("binding migration PIN fields are missing")
     phase2 = read_json(run_root / "phase-manifests/phase-2.json", "phase-2.json")
-    if any(phase2.get(field) != binding.get(field) for field in ("candidateId", "bindingId", "qualificationRunId", "runAttemptNonce", "releaseCommitSha", "producerWorkflowRef", "producerWorkflowRunId", "producerWorkflowRunAttempt", "candidateProvenanceSha256", "candidateImageIdentitySha256", "candidatePhase1ManifestSha256", "candidateArchivesDigestSha256")) or phase2.get("authorizationDigestSha256") != binding.get("authorizationDigestSha256"):
+    if any(phase2.get(field) != binding.get(field) for field in ("candidateId", "bindingId", "qualificationRunId", "runAttemptNonce", "releaseCommitSha", "releaseVersion", "ociPlatforms", "planFilePath", "producerWorkflowRef", "producerWorkflowRunId", "producerWorkflowRunAttempt", "candidateProvenanceSha256", "candidateImageIdentitySha256", "candidatePhase1ManifestSha256", "candidateArchivesDigestSha256")) or phase2.get("authorizationDigestSha256") != binding.get("authorizationDigestSha256"):
         fail("phase-2 manifest identity mismatch")
     auth = read_json(run_root / "authorization.json", "authorization.json")
     if not isinstance(auth, dict) or any(auth.get(field) != binding.get(field) for field in ("candidateId", "bindingId", "qualificationRunId")) or sha_object(auth) != binding.get("authorizationDigestSha256"):
@@ -526,7 +619,7 @@ def load_binding(run_root: Path) -> dict[str, Any]:
         fail("candidateId recomputation mismatch")
     if provenance.get("sourceCommitSha") != binding.get("releaseCommitSha") or provenance.get("ociIndexDigest") != binding.get("ociIndexDigest") or identity.get("sourceCommitSha") != binding.get("releaseCommitSha") or identity.get("imageDigest") != binding.get("ociIndexDigest"):
         fail("candidate intake identity does not match binding")
-    if binding.get("producerWorkflowRef") != provenance.get("workflowRef") or binding.get("producerWorkflowRunId") != provenance.get("workflowRunId") or binding.get("producerWorkflowRunAttempt") != provenance.get("workflowRunAttempt"):
+    if binding.get("producerWorkflowRef") != provenance.get("workflowRef") or binding.get("producerWorkflowRunId") != provenance.get("workflowRunId") or binding.get("producerWorkflowRunAttempt") != provenance.get("workflowRunAttempt") or binding.get("releaseVersion") != provenance.get("releaseVersion") or binding.get("ociPlatforms") != provenance.get("ociPlatforms"):
         fail("candidate producer identity does not match binding")
     if binding.get("candidateProvenanceSha256") != file_sha(candidate_root / "candidate-provenance.json") or binding.get("candidateImageIdentitySha256") != file_sha(candidate_root / "image-identity.json") or binding.get("candidatePhase1ManifestSha256") != file_sha(candidate_root / "phase-1.json") or binding.get("candidateArchivesDigestSha256") != sha_object({"archives": provenance["archives"], "archiveDigests": archive_digests}):
         fail("candidate provenance/archive digest does not match binding")
@@ -585,6 +678,31 @@ def evidence_paths(run_root: Path) -> list[Path]:
     return sorted(directory.glob("*.json")) if directory.is_dir() else []
 
 
+def scan_paths(run_root: Path) -> list[Path]:
+    directory = run_root / "scans"
+    return sorted(directory.glob("*.json")) if directory.is_dir() else []
+
+
+def load_scan_attestations(run_root: Path, evidence: dict[str, dict[str, Any]]) -> None:
+    paths = scan_paths(run_root)
+    if len(paths) != len(evidence):
+        fail("scan attestations must cover every evidence object")
+    binding = load_binding(run_root)
+    for path in paths:
+        value = read_json(path, f"scans/{path.name}")
+        if not isinstance(value, dict) or path.stem != value.get("evidenceId"):
+            fail(f"scans/{path.name}: filename/evidenceId mismatch")
+        evidence_id = require_hex(require_string(value, "evidenceId"), f"scans/{path.name}.evidenceId")
+        source = evidence.get(evidence_id)
+        if source is None:
+            fail(f"scans/{path.name}: evidence object is missing")
+        scan = source.get("prohibitedContentScan")
+        if any(value.get(field) != binding.get(field) for field in ("qualificationRunId", "bindingId", "candidateId")) or any(value.get(field) != scan.get(field) for field in ("result", "scannerId", "scannerVersion", "reportDigestSha256")):
+            fail(f"scans/{path.name}: scan attestation mismatch")
+        value_free({"scannerId": value.get("scannerId"), "scannerVersion": value.get("scannerVersion")}, f"scans/{path.name}")
+        require_hex(value.get("reportDigestSha256"), f"scans/{path.name}.reportDigestSha256")
+
+
 def disposition_paths(run_root: Path) -> list[Path]:
     directory = run_root / "dispositions"
     return sorted(directory.glob("*.json")) if directory.is_dir() else []
@@ -615,6 +733,7 @@ def load_evidence(run_root: Path) -> dict[str, dict[str, Any]]:
         if path.stem != evidence_id:
             fail(f"evidence/{path.name}: filename must equal evidenceId")
         result[evidence_id] = value
+    load_scan_attestations(run_root, result)
     return result
 
 
@@ -917,6 +1036,12 @@ def command_intake(args: argparse.Namespace) -> None:
     if candidate_store.exists():
         fail("candidateId already exists; intake is write-once")
     intake = candidate_store / "intake"
+    handoff = candidate_root / "CANDIDATE-HANDOFF.md"
+    if not handoff.is_file() or handoff.is_symlink():
+        fail("CANDIDATE-HANDOFF.md: required regular file")
+    handoff_text = handoff.read_text(encoding="utf-8")
+    if re.search(r"(?:password|secret|token|connectionstring|recipient|sender|subject|raw.?error|bearer|cookie)", handoff_text, re.I) or "-----BEGIN" in handoff_text:
+        fail("CANDIDATE-HANDOFF.md contains prohibited secret/PII markers")
     for name in ("candidate-provenance.json", "image-identity.json", "CANDIDATE-SHA256SUMS", "CANDIDATE-HANDOFF.md"):
         copy_tree_file(candidate_root / name, intake / name)
     for archive in provenance["archives"]:
@@ -1058,6 +1183,7 @@ def command_bind(args: argparse.Namespace) -> None:
     plan_path = Path(args.plan_file).resolve()
     plan_sha = file_sha(plan_path)
     plan_commit = require_commit(args.plan_commit_sha, "plan-commit-sha")
+    plan_relative_path = verify_plan_source(Path(args.repo_root), plan_path, plan_commit, plan_sha)
     migration_pin = load_migration_pin(Path(args.migration_pin))
     if migration_pin["releaseCommitSha"] != intake_manifest["sourceCommitSha"]:
         fail("migration pin releaseCommitSha does not match candidate sourceCommitSha")
@@ -1086,12 +1212,15 @@ def command_bind(args: argparse.Namespace) -> None:
         "candidateId": args.candidate_id,
         "issueBodySha256": issue_body_sha,
         "planCommitSha": plan_commit,
+        "planFilePath": plan_relative_path,
         "planFileSha256": plan_sha,
         "variantRulesVersion": VARIANT_RULES_VERSION,
         "migrationPinDigestSha256": migration_pin["migrationPinDigestSha256"],
         "migrationInventoryDigestSha256": migration_pin["migrationInventoryDigestSha256"],
         "releaseCommitSha": intake_manifest["sourceCommitSha"],
         "ociIndexDigest": intake_manifest["ociIndexDigest"],
+        "releaseVersion": provenance["releaseVersion"],
+        "ociPlatforms": provenance["ociPlatforms"],
         "producerWorkflowRef": provenance["workflowRef"],
         "producerWorkflowRunId": provenance["workflowRunId"],
         "producerWorkflowRunAttempt": provenance["workflowRunAttempt"],
@@ -1134,6 +1263,7 @@ def command_bind(args: argparse.Namespace) -> None:
         "candidateId": args.candidate_id,
         "planRevision": "12",
         "planCommitSha": plan_commit,
+        "planFilePath": plan_relative_path,
         "planFileSha256": plan_sha,
         "variantRulesVersion": VARIANT_RULES_VERSION,
         "issueNumber": 456,
@@ -1143,6 +1273,8 @@ def command_bind(args: argparse.Namespace) -> None:
         "sourceCommitSha": intake_manifest["sourceCommitSha"],
         "releaseCommitSha": intake_manifest["sourceCommitSha"],
         "ociIndexDigest": intake_manifest["ociIndexDigest"],
+        "releaseVersion": provenance["releaseVersion"],
+        "ociPlatforms": provenance["ociPlatforms"],
         "producerWorkflowRef": provenance["workflowRef"],
         "producerWorkflowRunId": provenance["workflowRunId"],
         "producerWorkflowRunAttempt": provenance["workflowRunAttempt"],
@@ -1169,11 +1301,14 @@ def command_bind(args: argparse.Namespace) -> None:
         "bindingId": binding_id,
         "qualificationRunId": run_id,
         "runAttemptNonce": nonce,
+        "planFilePath": plan_relative_path,
         "authorizationDigestSha256": sha_object(authorization),
         "migrationPinDigestSha256": migration_pin["migrationPinDigestSha256"],
         "migrationInventoryDigestSha256": migration_pin["migrationInventoryDigestSha256"],
         "migrationFileDigests": migration_pin["migrationFileDigests"],
         "releaseCommitSha": migration_pin["releaseCommitSha"],
+        "releaseVersion": provenance["releaseVersion"],
+        "ociPlatforms": provenance["ociPlatforms"],
         "producerWorkflowRef": provenance["workflowRef"],
         "producerWorkflowRunId": provenance["workflowRunId"],
         "producerWorkflowRunAttempt": provenance["workflowRunAttempt"],
@@ -1388,6 +1523,19 @@ def command_evidence(args: argparse.Namespace) -> None:
     if evidence.get("evidenceId") != evidence_id or evidence.get("result") != args.result or evidence.get("executedByRole") != args.executed_by_role or evidence.get("executedByIdentity") != args.executed_by_identity:
         fail("CLI evidence identity/result/actor does not match envelope")
     write_once(run_root / "evidence" / f"{evidence_id}.json", evidence)
+    scan = evidence["prohibitedContentScan"]
+    write_once(run_root / "scans" / f"{evidence_id}.json", {
+        "schemaVersion": 1,
+        "kind": "prohibited-content-scan-attestation",
+        "evidenceId": evidence_id,
+        "qualificationRunId": binding["qualificationRunId"],
+        "bindingId": binding["bindingId"],
+        "candidateId": binding["candidateId"],
+        "result": scan["result"],
+        "scannerId": scan["scannerId"],
+        "scannerVersion": scan["scannerVersion"],
+        "reportDigestSha256": scan["reportDigestSha256"],
+    })
     print(json.dumps({"evidenceId": evidence_id, "scenarioId": key[0], "variantId": key[1], "result": evidence["result"]}, sort_keys=True))
 
 
@@ -1607,6 +1755,7 @@ def command_seal(args: argparse.Namespace) -> None:
     ensure_unsealed(run_root)
     binding = load_binding(run_root)
     auth = load_authorization(run_root)
+    verify_plan_source(Path(args.repo_root), Path(args.repo_root) / binding["planFilePath"], binding["planCommitSha"], binding["planFileSha256"])
     migration_pin = load_migration_pin(run_root / "migration-pin.json")
     verify_migration_pin_tree(Path(args.repo_root).resolve(), binding["releaseCommitSha"], migration_pin)
     active, evidence, last_sequence, last_digest = current_state(run_root)
@@ -1661,6 +1810,7 @@ def command_seal(args: argparse.Namespace) -> None:
     phase3_index_sha = file_sha(run_root / "indexes/evidence-index-v1.json")
     write_once(run_root / "phase-manifests" / "phase-3-v1.json", {"schemaVersion": 1, "phase": 3, "qualificationRunId": binding["qualificationRunId"], "latestEvidenceIndexSha256": phase3_index_sha, "createdAtUtc": utc_now()})
     inventory = object_inventory(run_root)
+    scan_entries = [entry for entry in inventory if entry["path"].startswith("scans/")]
     phase4 = {
         "schemaVersion": 1,
         "qualificationRunId": binding["qualificationRunId"],
@@ -1677,8 +1827,8 @@ def command_seal(args: argparse.Namespace) -> None:
             "exceptionRootSha256": object_root([e for e in inventory if e["path"].startswith("exceptions/")]),
             "exceptionDispositionLastSequence": exception_last_sequence,
             "exceptionDispositionLastDigestSha256": exception_last_digest,
-            "scanObjectCount": 0,
-            "scanRootSha256": object_root([]),
+            "scanObjectCount": len(scan_entries),
+            "scanRootSha256": object_root(scan_entries),
             "phase3LatestIndexSha256": phase3_index_sha,
             "finalEvidenceIndexSha256": evidence_index_file_sha,
             "goNoGoSha256": file_sha(run_root / "decision/go-no-go.json"),
@@ -1713,6 +1863,7 @@ def command_verify(args: argparse.Namespace) -> None:
     run_root = Path(args.run_root).resolve()
     binding = load_binding(run_root)
     auth = load_authorization(run_root)
+    verify_plan_source(Path(args.repo_root), Path(args.repo_root) / binding["planFilePath"], binding["planCommitSha"], binding["planFileSha256"])
     migration_pin = load_migration_pin(run_root / "migration-pin.json")
     verify_migration_pin_tree(Path(args.repo_root).resolve(), binding["releaseCommitSha"], migration_pin)
     decision = read_json(run_root / "decision/go-no-go.json", "decision/go-no-go.json")
@@ -1770,6 +1921,13 @@ def command_verify(args: argparse.Namespace) -> None:
     expected_machine_verdict = "GO_ELIGIBLE" if expected_machine_go else "NO_GO"
     if decision.get("machineVerdict") != expected_machine_verdict or decision.get("scenarioIndex") != expected_scenario_index:
         fail("go/no-go aggregation does not match replayed active state")
+    if decision.get("schemaVersion") != 1 or decision.get("authorizationDigestSha256") != binding.get("authorizationDigestSha256"):
+        fail("go/no-go authorization schema/digest mismatch")
+    if decision.get("humanDecision") not in {"APPROVE", "REJECT", "NOT_DECIDED"}:
+        fail("go/no-go human decision is invalid")
+    freshness = decision.get("issueFreshnessCheck")
+    if not isinstance(freshness, dict) or freshness.get("matchedBinding") is not True or freshness.get("currentIssueBodySha256") != binding.get("issueBodySha256"):
+        fail("go/no-go issue freshness binding mismatch")
     expected_entries = [{"scenarioId": scenario, "variantId": variant, "evidenceId": active.get((scenario, variant)), "exceptionId": active_exceptions.get((scenario, variant)), "result": evidence[active[(scenario, variant)]]["result"] if active.get((scenario, variant)) else ("EXCEPTION" if active_exceptions.get((scenario, variant)) else "NOT_RUN")} for scenario, variant in sorted(allowed_keys(binding))]
     evidence_index = read_json(run_root / "decision/evidence-index.json", "decision/evidence-index.json")
     if evidence_index.get("entries") != expected_entries or evidence_index.get("candidateId") != binding.get("candidateId") or evidence_index.get("bindingId") != binding.get("bindingId") or evidence_index.get("qualificationRunId") != binding.get("qualificationRunId"):

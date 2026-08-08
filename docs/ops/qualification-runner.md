@@ -77,8 +77,14 @@ python3 scripts/qualification-runner.py bind \
 
 `bind` requires the complete canonical G456-01..44 Issue table, exact variant
 cardinality, owner coverage (including optional G456-38..41 keys), and a
-release-tree-verified migration PIN. The saved binding, authorization, Phase-2
-manifest, and migration PIN are cross-checked again at every later command.
+release-tree-verified migration PIN. Candidate provenance must be schemaVersion
+1, stable releaseVersion, the exact linux/amd64 + linux/arm64 OCI platform set,
+all three host archives (win-x64, linux-x64, linux-arm64), and one embedded
+release-bundle-manifest.json per archive whose source/version/OCI/digest fields
+match the candidate. The plan file must be tracked at `planCommitSha` with
+matching bytes and a clean worktree. The saved binding, authorization, Phase-2
+manifest, migration PIN, candidate documents, and archive digests are
+cross-checked again at every later command.
 
 ### Evidence envelope
 
@@ -105,6 +111,11 @@ The ACS and migration validators enforce the exact #456 predicates and both
 PASS/FAIL directions. Direct `result=EXCEPTION` evidence is rejected. For
 unsupported scenario lanes, a PASS is rejected until its dedicated validator
 is implemented.
+
+Each evidence envelope also creates a write-once `scans/<evidenceId>.json`
+attestation containing the scanner identity and report digest. `seal` records
+the scan object count/root in Phase 4, and `verify` requires one matching scan
+attestation for every evidence object.
 
 Restricted lanes are role-bound and cannot be represented by a generic CI
 owner: G456-03/04 require `maintainer-acs-staging`, G456-05/06 require
@@ -168,8 +179,11 @@ python3 scripts/qualification-runner.py handoff \
 
 The publication-only handoff contains only the sealed binding, `go-no-go`,
 terminal sealed event, and a value-free manifest. It must be copied byte-for-
-byte; no workflow may rebuild or normalize the sealed JSON. A NO_GO or
-unapproved run cannot produce a handoff.
+unapproved run cannot produce a handoff. The consumer validator must require
+the manifest's exact three-object allowlist and SHA-256s, reject extra files or
+symlinks, require all release/candidate/OCI identities (not optional fields),
+and recheck the terminal event's JCS canonicalization, previous digest, event
+digest, and decision digest set.
 
 ## Abandon, recovery, retention, and audit
 
