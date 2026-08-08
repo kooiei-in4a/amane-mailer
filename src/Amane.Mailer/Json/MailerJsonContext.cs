@@ -26,6 +26,8 @@ namespace Amane.Mailer.Json;
 [JsonSerializable(typeof(MailRequestRescheduleRequest))]
 [JsonSerializable(typeof(MailRecipientDto))]
 [JsonSerializable(typeof(MailRecipientDto[]))]
+[JsonSerializable(typeof(MailAttachmentDto))]
+[JsonSerializable(typeof(MailAttachmentDto[]))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(AcsEventGridEventDto))]
 [JsonSerializable(typeof(AcsEmailDeliveryReportDataDto))]

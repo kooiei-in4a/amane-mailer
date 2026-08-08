@@ -10,6 +10,8 @@ namespace Amane.Mailer.Contracts.Json;
 [JsonSerializable(typeof(MailDeliveryEventPayload))]
 [JsonSerializable(typeof(MailRecipientDto))]
 [JsonSerializable(typeof(MailRecipientDto[]))]
+[JsonSerializable(typeof(MailAttachmentDto))]
+[JsonSerializable(typeof(MailAttachmentDto[]))]
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,

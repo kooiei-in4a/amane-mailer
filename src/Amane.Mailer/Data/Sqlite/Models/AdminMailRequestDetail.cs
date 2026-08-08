@@ -6,7 +6,6 @@ public sealed record AdminMailRequestDetail(
     string SourceService,
     Guid MailRequestId,
     string Purpose,
-    string PayloadJson,
     string PayloadHash,
     string Subject,
     string? HtmlBody,
@@ -18,13 +17,18 @@ public sealed record AdminMailRequestDetail(
     MailRequestState Status,
     int AttemptCount,
     int MaxAttempts,
+    int AttachmentCount,
     DateTimeOffset? NextAttemptAt,
     string? LockToken,
     DateTimeOffset? LockExpiresAt,
     DateTimeOffset? DeliveredAt,
     DateTimeOffset? FailedAt,
+    DateTimeOffset? DeliveryUnknownAt,
     string? LastErrorMessage,
     DateTimeOffset AcceptedAt,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? CompletedAt);
+    DateTimeOffset? CompletedAt)
+{
+    public IReadOnlyList<AdminRecipientSummary> Recipients { get; init; } = [];
+}

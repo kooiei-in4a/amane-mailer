@@ -14,6 +14,12 @@ npm test
 
 Runs payload_hash vector cross-checks and client unit tests with a mock HTTP server.
 
+## Multiple recipients
+
+`to()`, `cc()`, and `bcc()` set a role with one recipient. Use `addTo()`, `addCc()`,
+and `addBcc()` to append recipients while preserving role order. Each role accepts at most
+10 recipients and all roles accept at most 20 recipients combined.
+
 ## Local Mailer integration
 
 With local Mailer running (`http://127.0.0.1:5280`):

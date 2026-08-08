@@ -11,7 +11,7 @@ namespace Amane.Mailer.ReleaseBundle;
 /// Build-only Easy Setup release-candidate packaging (#455).
 /// Not part of the product CLI.
 /// </summary>
-public static class ReleaseBundlePackaging
+public static partial class ReleaseBundlePackaging
 {
     public const string PackagingKind = "setup-release-candidate";
     public const string ChecksumsFileName = "FILES-SHA256SUMS";
@@ -926,7 +926,8 @@ public static class ReleaseBundlePackaging
         string ociLayoutDirectory,
         string expectedImageDigest,
         IReadOnlyList<string>? requiredPlatforms = null,
-        OciDescriptor? expectedRootDescriptor = null)
+        OciDescriptor? expectedRootDescriptor = null,
+        bool allowSinglePlatformImageManifest = false)
     {
         requiredPlatforms ??= RequiredOciPlatforms;
 
@@ -1075,8 +1076,13 @@ public static class ReleaseBundlePackaging
         }
 
         var bound = boundMatches[0];
-        if (string.IsNullOrWhiteSpace(bound.MediaType)
-            || !AllowedOciIndexMediaTypes.Contains(bound.MediaType))
+        var boundIsImageIndex = !string.IsNullOrWhiteSpace(bound.MediaType)
+            && AllowedOciIndexMediaTypes.Contains(bound.MediaType);
+        var boundIsSinglePlatformManifest = allowSinglePlatformImageManifest
+            && requiredPlatforms.Count == 1
+            && !string.IsNullOrWhiteSpace(bound.MediaType)
+            && AllowedOciImageManifestMediaTypes.Contains(bound.MediaType);
+        if (!boundIsImageIndex && !boundIsSinglePlatformManifest)
         {
             return PackagingFail(
                 "oci_bound_not_image_index",
@@ -1144,7 +1150,9 @@ public static class ReleaseBundlePackaging
             }
 
             if (!string.IsNullOrWhiteSpace(expectedMediaType)
-                && !AllowedOciIndexMediaTypes.Contains(expectedMediaType))
+                && !AllowedOciIndexMediaTypes.Contains(expectedMediaType)
+                && !(boundIsSinglePlatformManifest
+                    && AllowedOciImageManifestMediaTypes.Contains(expectedMediaType)))
             {
                 return PackagingFail(
                     "oci_bound_not_image_index",
@@ -1159,12 +1167,43 @@ public static class ReleaseBundlePackaging
         // the required-platform membership checks below.
         var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var platformOccurrences = new OciPlatformOccurrenceTracker();
+        var walkRoot = bound;
+        var walkRole = OciWalkRole.BoundImageIndex;
+        if (boundIsSinglePlatformManifest)
+        {
+            walkRole = OciWalkRole.IndexPlatformManifest;
+            // Some single-platform OCI exporters omit the platform annotation on
+            // the root image-manifest descriptor. The explicit required platform
+            // is the authority in this opt-in validation mode.
+            if (walkRoot.Platform is null)
+            {
+                var slash = requiredPlatforms[0].IndexOf('/');
+                if (slash <= 0 || slash == requiredPlatforms[0].Length - 1)
+                {
+                    return PackagingFail(
+                        "oci_platform_invalid",
+                        "Single-platform validation requires an os/architecture platform.");
+                }
+
+                walkRoot = new OciDescriptor
+                {
+                    Digest = bound.Digest,
+                    MediaType = bound.MediaType,
+                    Size = bound.Size,
+                    Platform = new OciPlatform
+                    {
+                        Os = requiredPlatforms[0][..slash],
+                        Architecture = requiredPlatforms[0][(slash + 1)..],
+                    },
+                };
+            }
+        }
         var walk = WalkOciDescriptors(
             rootFull,
-            [bound],
+            [walkRoot],
             referenced,
             platformOccurrences,
-            OciWalkRole.BoundImageIndex);
+            walkRole);
         if (!walk.Success)
         {
             return walk;
@@ -1712,6 +1751,13 @@ public static class ReleaseBundlePackaging
                     platformIdentity = os + "/" + arch;
                 }
 
+                if (platformIdentity is null)
+                {
+                    return PackagingFail(
+                        "oci_platform_missing",
+                        "Image-manifest descriptors must declare a complete os/architecture platform.");
+                }
+
                 var recorded = platformOccurrences.RecordIndexPlatformManifest(
                     digest,
                     platformIdentity);
@@ -1802,6 +1848,15 @@ public static class ReleaseBundlePackaging
                     return configWalk;
                 }
 
+                var configPlatform = ValidateOciConfigPlatform(
+                    rootFull,
+                    manifest.Config,
+                    descriptor.Platform!);
+                if (!configPlatform.Success)
+                {
+                    return configPlatform;
+                }
+
                 if (manifest.Layers is { Length: > 0 })
                 {
                     var layerWalk = WalkOciDescriptors(
@@ -1829,6 +1884,54 @@ public static class ReleaseBundlePackaging
     {
         var hex = digest["sha256:".Length..].ToLowerInvariant();
         return Path.Combine(rootFull, "blobs", "sha256", hex);
+    }
+
+    private static PackagingValidationResult ValidateOciConfigPlatform(
+        string rootFull,
+        OciDescriptor configDescriptor,
+        OciPlatform expectedPlatform)
+    {
+        if (string.IsNullOrWhiteSpace(expectedPlatform.Os)
+            || string.IsNullOrWhiteSpace(expectedPlatform.Architecture))
+        {
+            return PackagingFail(
+                "oci_platform_missing",
+                "Image-manifest descriptors must declare a complete os/architecture platform.");
+        }
+
+        var configPath = BlobPath(rootFull, configDescriptor.Digest!);
+        OciConfigDocument? config;
+        try
+        {
+            config = JsonSerializer.Deserialize(
+                File.ReadAllBytes(configPath),
+                ReleaseBundleJsonContext.Default.OciConfigDocument);
+        }
+        catch
+        {
+            return PackagingFail(
+                "oci_config_unreadable",
+                "OCI config blob could not be parsed as JSON.");
+        }
+
+        if (config is null
+            || string.IsNullOrWhiteSpace(config.Os)
+            || string.IsNullOrWhiteSpace(config.Architecture))
+        {
+            return PackagingFail(
+                "oci_config_platform_missing",
+                "OCI config must declare non-empty os and architecture fields.");
+        }
+
+        if (!string.Equals(config.Os, expectedPlatform.Os, StringComparison.Ordinal)
+            || !string.Equals(config.Architecture, expectedPlatform.Architecture, StringComparison.Ordinal))
+        {
+            return PackagingFail(
+                "oci_config_platform_mismatch",
+                "OCI config os/architecture must match its image-manifest platform descriptor.");
+        }
+
+        return new PackagingValidationResult { Success = true };
     }
 
     public static PackagingValidationResult ScanStagedTreeForSecrets(string stagedRoot)

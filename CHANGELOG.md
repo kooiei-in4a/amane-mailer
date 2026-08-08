@@ -15,8 +15,93 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
-## [1.2.0] - 2026-08-03
+## [1.3.0] - 2026-08-07
 
+Minor release. Adds multiple `To` / `CC` / `BCC` recipients and bounded file
+attachments while preserving existing single-To / attachment-free request
+compatibility. Provider submission evidence now protects both plain and attachment
+sends from unsafe automatic re-invocation when provider acceptance is ambiguous.
+The release includes SQLite migrations 014-018. No public endpoint or existing
+request field is removed or renamed.
+
+### Added
+
+- Multiple recipient roles for public mail requests: multiple `To`, `CC`, and
+  `BCC`, including Cc-only, Bcc-only, and mixed-role requests, with role/aggregate
+  limits, duplicate detection, canonical recipient persistence, and provider
+  projection (ADR 0023).
+- Bounded attachments with validated filename/type/digest/length, short-lived
+  spool storage, provider mapping, submission evidence, and attachment-aware
+  payload-hash canonicalization (ADR 0022).
+- Canonical per-recipient delivery-state persistence and provider delivery-event
+  correlation without storing raw BCC in recipient-event evidence.
+- Python and TypeScript SDK support for `cc` / `bcc`, optional / `null` / empty
+  `to`, recipient limits, and baseline + v1.3 payload-hash vectors (#542, #564).
+- Admin BCC reveal capability with tenant/request/role/ordinal authorization,
+  durable audit, no-store responses, and default-deny session capability handling.
+
+### Changed
+
+- Plain and attachment provider invocation now use durable submission evidence.
+  Ambiguous provider acceptance converges to terminal `delivery_unknown` and is
+  not automatically or manually resent solely because a lease expires or the
+  process restarts.
+- Provider send jobs are built from canonical `To` / `CC` / `BCC` recipients;
+  SMTP includes BCC in the envelope but omits a MIME `Bcc` header.
+- Suppression precheck covers every canonical recipient before provider
+  invocation and fails the whole request without a provider call when any
+  recipient is suppressed.
+- Payload hash canonicalization projects recipient roles and attachment metadata
+  while retaining byte-identical baseline behavior for the existing single-To,
+  no-attachment vectors.
+- Admin recipient display reads canonical recipient persistence; BCC stays masked
+  by default and persisted diagnostic payloads redact recipient / attachment
+  sensitive data.
+- Native Docker build paths cover `linux/amd64` and `linux/arm64`; release-candidate
+  packaging retains Native AOT host bundles for Windows and Linux.
+- `Amane.Mailer.Contracts` package version and OpenAPI `info.version` align on
+  `1.3.0`.
+
+### Security
+
+- BCC addresses are excluded from SMTP message headers, remain masked in normal
+  Admin views, and use a fixed redacted legacy shadow for Bcc-only compatibility.
+- BCC reveal is explicit, capability-gated, tenant-scoped, audited, HTML-encoded,
+  and returned with no-store caching semantics.
+- Attachment filenames/content and recipient addresses remain outside normal
+  logs; submission evidence stores only the data required for delivery safety and
+  correlation.
+
+### Documentation
+
+- Add pre-publication release record `docs/releases/v1.3.0.md` with explicit
+  `PENDING` / `NOT YET PUBLISHED` public artifact identities and the exact
+  candidate qualification gates.
+- Published-image README / SECURITY / release-smoke defaults intentionally remain
+  on `v1.2.0` until v1.3.0 is actually promoted and published.
+
+### Breaking / Migration
+
+- **Public HTTP compatibility**: the change is additive. Existing single-To
+  requests remain valid. `to` may now be omitted, `null`, or empty when `cc` or
+  `bcc` supplies at least one valid recipient; all three roles empty / omitted is
+  invalid.
+- **Status consumers**: `delivery_unknown` is a terminal public delivery state for
+  an ambiguous provider invocation. Consumers with exhaustive status enums must
+  handle it and must not infer that retrying the same delivery is safe.
+- **Database**: v1.2.0 databases apply, in order,
+  `014_mail_request_delivery_unknown_status.sql`,
+  `015_attachment_spool_and_submission_evidence.sql`,
+  `016_recipient_persistence_and_plain_submission_evidence.sql`,
+  `017_recipient_delivery_events.sql`, and
+  `018_admin_user_capabilities.sql`.
+- **Upgrade**: take a verified pre-upgrade backup. `/readyz` remains fail-closed
+  until the current migration set is applied with matching checksums. Reverse
+  migration to v1.2.0 is not guaranteed; rollback across migrations 014-018 uses
+  the pre-upgrade backup and a compatible runtime rather than an assumed database
+  downgrade.
+
+## [1.2.0] - 2026-08-03
 Minor release. Ships Easy Setup (modes 1–4) for first-time Mailpit / ACS
 configuration, keeps Manual / Hardened paths, and **INCLUDEs** SQLite migrations
 `012_provider_event_inbox_details.sql` / `013_provider_queue_dead_letters.sql`

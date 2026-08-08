@@ -116,7 +116,9 @@ public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
         const string sql = """
             SELECT mr.id
             FROM mail_requests mr
-            WHERE mr.status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus)
+            WHERE mr.status IN (
+                    @DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus,
+                    @DeliveryUnknownStatus)
               AND NOT EXISTS (
                     SELECT 1
                     FROM delivery_events de
@@ -135,6 +137,7 @@ public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
         command.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
         command.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
         command.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
+        command.Parameters.AddWithValue("@DeliveryUnknownStatus", (int)MailRequestState.DeliveryUnknown);
         command.Parameters.AddWithValue("@BatchSize", Math.Max(1, batchSize));
 
         var ids = new List<Guid>();
@@ -603,6 +606,7 @@ public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
             MailRequestState.Failed => MailDeliveryEventType.Failed,
             MailRequestState.DeadLettered => MailDeliveryEventType.DeadLettered,
             MailRequestState.Cancelled => MailDeliveryEventType.Cancelled,
+            MailRequestState.DeliveryUnknown => MailDeliveryEventType.DeliveryUnknown,
             _ => null,
         };
 

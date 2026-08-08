@@ -11,7 +11,16 @@ internal interface IMailpitSmtpClient : IAsyncDisposable
         SecureSocketOptions socketOptions,
         CancellationToken cancellationToken);
 
-    Task SendAsync(MimeMessage message, CancellationToken cancellationToken);
+    /// <summary>
+    /// Explicit-envelope send (Issue #546 review finding F4): <paramref name="recipients"/> is
+    /// the full SMTP envelope recipient list (To + Cc + Bcc). <paramref name="message"/> itself
+    /// never carries a Bcc header/address -- see <see cref="OutboundMimeMessageFactory.Create"/>.
+    /// </summary>
+    Task SendAsync(
+        MimeMessage message,
+        MailboxAddress sender,
+        IReadOnlyList<MailboxAddress> recipients,
+        CancellationToken cancellationToken);
 
     Task DisconnectAsync(bool quit, CancellationToken cancellationToken);
 }

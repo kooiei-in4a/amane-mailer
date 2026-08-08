@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Amane.Mailer.Spike526.Probe</RootNamespace>
+    <RuntimeIdentifiers>win-x64;linux-x64;linux-arm64</RuntimeIdentifiers>
+    <PublishAot>true</PublishAot>
+    <IsTrimmable>true</IsTrimmable>
+    <TrimMode>full</TrimMode>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <IlcTreatWarningsAsErrors>true</IlcTreatWarningsAsErrors>
+    <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL3050;IL2104</WarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.Communication.Email" />
+  </ItemGroup>
+
+  <Target Name="CopySpike526ProbeToTestsOutput" AfterTargets="Build">
+    <PropertyGroup>
+      <_Spike526TestsOutDir>$(MSBuildThisFileDirectory)..\Amane.Mailer.Tests\bin\$(Configuration)\$(TargetFramework)\</_Spike526TestsOutDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_Spike526ProbeCopy Include="$(TargetPath)" />
+      <_Spike526ProbeCopy Include="$(TargetDir)$(AssemblyName).deps.json" />
+      <_Spike526ProbeCopy Include="$(TargetDir)$(AssemblyName).runtimeconfig.json" />
+      <_Spike526ProbeCopy Include="$(TargetDir)$(AssemblyName).exe"
+                          Condition="Exists('$(TargetDir)$(AssemblyName).exe')" />
+      <_Spike526ProbeCopy Include="$(TargetDir)$(AssemblyName)"
+                          Condition="Exists('$(TargetDir)$(AssemblyName)')" />
+    </ItemGroup>
+    <MakeDir Directories="$(_Spike526TestsOutDir)" />
+    <Copy SourceFiles="@(_Spike526ProbeCopy)"
+          DestinationFolder="$(_Spike526TestsOutDir)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_Spike526ProbeCopy)' != ''" />
+  </Target>
+
+</Project>

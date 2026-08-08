@@ -387,6 +387,58 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
     }
 
     [Fact]
+    public async Task Metrics_attachment_accepted_total_increments_on_attachment_mail_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient(fixture.Factory);
+        var request = MailRequestTestData.CreateRequest(
+            attachments: [MailRequestTestData.CreateTextAttachment()]);
+
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
+
+        using var metrics = await client.GetAsync("/metrics", ct);
+        var body = await metrics.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, metrics.StatusCode);
+        Assert.Contains("mail_requests_accepted_total 1", body, StringComparison.Ordinal);
+        Assert.Contains("mail_attachment_requests_accepted_total 1", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Metrics_attachment_validation_rejected_total_increments_with_fixed_reason_code()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient(fixture.Factory);
+        var tooMany = Enumerable.Range(0, MailAttachmentLimits.MaxAttachmentCount + 1)
+            .Select(index => MailRequestTestData.CreateTextAttachment(fileName: $"note-{index}.txt"))
+            .ToArray();
+        var request = MailRequestTestData.CreateRequest(attachments: tooMany);
+
+        using var post = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, post.StatusCode);
+        var code = await MailRequestTestData.ReadCodeAsync(post, ct);
+        Assert.Equal(MailerErrorCodes.TooManyAttachments, code);
+
+        using var metrics = await client.GetAsync("/metrics", ct);
+        var body = await metrics.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, metrics.StatusCode);
+        Assert.Contains(
+            $"mail_attachment_validation_rejected_total{{reason_code=\"{MailerErrorCodes.TooManyAttachments}\"}} 1",
+            body,
+            StringComparison.Ordinal);
+        // Never carries filenames or raw request content -- only the fixed reason code label.
+        Assert.DoesNotContain("note-0.txt", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Metrics_delivery_and_retry_counters_increment_on_finalize()
     {
         var ct = TestContext.Current.CancellationToken;

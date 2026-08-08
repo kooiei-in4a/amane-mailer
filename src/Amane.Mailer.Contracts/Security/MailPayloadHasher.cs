@@ -9,11 +9,20 @@ namespace Amane.Mailer.Contracts.Security;
 
 public static class MailPayloadHasher
 {
+    private const string AttachmentsFieldName = "attachments";
+    private const string ToFieldName = "to";
+    private const string CcFieldName = "cc";
+    private const string BccFieldName = "bcc";
+
+    private static readonly string[] RecipientFieldNames = [ToFieldName, CcFieldName, BccFieldName];
+
     private static readonly ISet<string> IncludedFieldSet =
         MailPayloadHashContract.IncludedFields.ToHashSet(StringComparer.Ordinal);
 
-    public static string ComputeDeliveryPayloadSha256Hex(string requestJson) =>
-        ComputeSha256Hex(BuildDeliveryPayloadJson(requestJson));
+    public static string ComputeDeliveryPayloadSha256Hex(
+        string requestJson,
+        IReadOnlyList<MailAttachmentHashInput>? attachments = null) =>
+        ComputeSha256Hex(BuildDeliveryPayloadJson(requestJson, attachments));
 
     /// <summary>
     /// Builds a delivery payload from a DTO constructed by the App before sending. Null optional fields are omitted.
@@ -22,7 +31,17 @@ public static class MailPayloadHasher
     public static string ComputeDeliveryPayloadSha256Hex(MailRequestCreateRequest request) =>
         ComputeSha256Hex(BuildDeliveryPayloadJson(request));
 
-    public static string BuildDeliveryPayloadJson(string requestJson)
+    /// <summary>
+    /// Builds the canonical hash document from raw request JSON. The <c>attachments</c> JSON
+    /// property itself is never used for hashing (it carries content_base64 and an unverified
+    /// declared content_type): callers that need attachments reflected in the hash must pass the
+    /// Mailer-verified <paramref name="attachments"/> list (ADR 0022 D-03/D-04 step 12), computed
+    /// from decoded binaries after validation. A null or empty list omits <c>attachments</c> from
+    /// the hash document entirely, matching the pre-attachment ADR 0012 hash.
+    /// </summary>
+    public static string BuildDeliveryPayloadJson(
+        string requestJson,
+        IReadOnlyList<MailAttachmentHashInput>? attachments = null)
     {
         using var document = JsonDocument.Parse(requestJson);
         if (document.RootElement.ValueKind != JsonValueKind.Object)
@@ -31,11 +50,35 @@ public static class MailPayloadHasher
         }
 
         var properties = document.RootElement.EnumerateObject()
-            .Where(property => IncludedFieldSet.Contains(property.Name))
-            .OrderBy(property => property.Name, StringComparer.Ordinal)
-            .Select(property => $"{EscapeJsonString(property.Name)}:{Canonicalize(property.Value)}");
+            .Where(property =>
+                IncludedFieldSet.Contains(property.Name)
+                && !string.Equals(property.Name, AttachmentsFieldName, StringComparison.Ordinal)
+                && !RecipientFieldNames.Contains(property.Name, StringComparer.Ordinal))
+            .Select(property => (property.Name, CanonicalValue: Canonicalize(property.Value)))
+            .ToList();
 
-        return "{" + string.Join(",", properties) + "}";
+        foreach (var fieldName in RecipientFieldNames)
+        {
+            if (document.RootElement.TryGetProperty(fieldName, out var recipientElement))
+            {
+                var canonicalRole = CanonicalizeRecipientRoleOrNull(recipientElement);
+                if (canonicalRole is not null)
+                {
+                    properties.Add((fieldName, canonicalRole));
+                }
+            }
+        }
+
+        if (attachments is { Count: > 0 })
+        {
+            properties.Add((AttachmentsFieldName, CanonicalizeAttachments(attachments)));
+        }
+
+        return "{" + string.Join(
+            ",",
+            properties
+                .OrderBy(property => property.Name, StringComparer.Ordinal)
+                .Select(property => $"{EscapeJsonString(property.Name)}:{property.CanonicalValue}")) + "}";
     }
 
     /// <summary>
@@ -48,10 +91,23 @@ public static class MailPayloadHasher
         {
             ("source_service", EscapeJsonString(request.SourceService)),
             ("purpose", EscapeJsonString(request.Purpose)),
-            ("to", CanonicalizeRecipients(
-                request.To as MailRecipientDto[] ?? request.To.ToArray())),
             ("subject", EscapeJsonString(request.Subject)),
         };
+
+        if (CanonicalizeRecipientRoleOrNull(request.To) is { } canonicalTo)
+        {
+            properties.Add(("to", canonicalTo));
+        }
+
+        if (CanonicalizeRecipientRoleOrNull(request.Cc) is { } canonicalCc)
+        {
+            properties.Add(("cc", canonicalCc));
+        }
+
+        if (CanonicalizeRecipientRoleOrNull(request.Bcc) is { } canonicalBcc)
+        {
+            properties.Add(("bcc", canonicalBcc));
+        }
 
         if (request.HtmlBody is not null)
         {
@@ -71,6 +127,18 @@ public static class MailPayloadHasher
         if (request.Metadata is not null)
         {
             properties.Add(("metadata", CanonicalizeMetadata(request.Metadata)));
+        }
+
+        if (request.Attachments is { Count: > 0 })
+        {
+            var attachmentInputs = request.Attachments
+                .Select(attachment => new MailAttachmentHashInput(
+                    attachment.FileName,
+                    attachment.ContentType,
+                    attachment.ByteLength,
+                    attachment.ContentSha256))
+                .ToArray();
+            properties.Add((AttachmentsFieldName, CanonicalizeAttachments(attachmentInputs)));
         }
 
         return "{" + string.Join(
@@ -136,11 +204,82 @@ public static class MailPayloadHasher
         return element.GetDouble().ToString("G17", CultureInfo.InvariantCulture);
     }
 
-    private static string CanonicalizeRecipients(MailRecipientDto[] value)
+    /// <summary>
+    /// Canonicalizes a To/Cc/Bcc role from a raw JSON property value (absent property, explicit
+    /// <c>null</c>, and empty array are all treated as "no recipients in this role" upstream by
+    /// the caller's <c>TryGetProperty</c> check plus the empty-array check here). Returns
+    /// <c>null</c> when the role has zero recipients, so the caller omits the field entirely
+    /// (ADR 0023 D-02).
+    /// </summary>
+    private static string? CanonicalizeRecipientRoleOrNull(JsonElement recipientElement)
     {
+        if (recipientElement.ValueKind is not JsonValueKind.Array || recipientElement.GetArrayLength() == 0)
+        {
+            // Explicit null, an empty array, or (defensively) any other shape all omit the role.
+            return null;
+        }
+
+        var recipients = JsonSerializer.Deserialize(
+            recipientElement.GetRawText(),
+            MailerContractsJsonContext.Default.MailRecipientDtoArray);
+        return CanonicalizeRecipientRoleOrNull(recipients);
+    }
+
+    /// <summary>
+    /// Canonicalizes a To/Cc/Bcc role from the DTO. Returns <c>null</c> when unspecified, null,
+    /// or an empty array, so the caller omits the field entirely (ADR 0023 D-02). Non-null
+    /// recipients are re-derived through <see cref="MailRecipientValidator"/>-equivalent
+    /// canonicalization (trimmed, case-preserved address; whitespace-only display name treated as
+    /// absent) so the hash reflects the same value the validator accepted, not the raw request
+    /// bytes.
+    /// </summary>
+    private static string? CanonicalizeRecipientRoleOrNull(IReadOnlyList<MailRecipientDto>? role)
+    {
+        if (role is null || role.Count == 0)
+        {
+            return null;
+        }
+
+        var normalized = role
+            .Select(recipient => recipient with
+            {
+                Email = recipient.Email.Trim(),
+                DisplayName = string.IsNullOrWhiteSpace(recipient.DisplayName) ? null : recipient.DisplayName,
+            })
+            .ToArray();
+
         using var document = JsonDocument.Parse(
-            JsonSerializer.Serialize(value, MailerContractsJsonContext.Default.MailRecipientDtoArray));
+            JsonSerializer.Serialize(normalized, MailerContractsJsonContext.Default.MailRecipientDtoArray));
         return Canonicalize(document.RootElement);
+    }
+
+    /// <summary>
+    /// Projects verified attachment values to the fixed 5-field hash object (ADR 0022 D-03):
+    /// file_name (NFC), content_type (D-06 canonical), byte_length, content_sha256 (lowercase
+    /// hex), and a zero-based order generated from list position. Object keys are sorted
+    /// ordinally per field, matching RFC 8785 JCS key ordering.
+    /// </summary>
+    private static string CanonicalizeAttachments(IReadOnlyList<MailAttachmentHashInput> attachments)
+    {
+        var items = attachments.Select((attachment, index) =>
+        {
+            var fields = new (string Name, string Value)[]
+            {
+                ("byte_length", attachment.ByteLength.ToString(CultureInfo.InvariantCulture)),
+                ("content_sha256", EscapeJsonString(attachment.ContentSha256)),
+                ("content_type", EscapeJsonString(attachment.ContentType)),
+                ("file_name", EscapeJsonString(attachment.FileName.Normalize(NormalizationForm.FormC))),
+                ("order", index.ToString(CultureInfo.InvariantCulture)),
+            };
+
+            return "{" + string.Join(
+                ",",
+                fields
+                    .OrderBy(field => field.Name, StringComparer.Ordinal)
+                    .Select(field => $"{EscapeJsonString(field.Name)}:{field.Value}")) + "}";
+        });
+
+        return "[" + string.Join(",", items) + "]";
     }
 
     private static string CanonicalizeMetadata(IReadOnlyDictionary<string, string> value)

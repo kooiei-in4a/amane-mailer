@@ -18,10 +18,30 @@ public sealed record MailRequestCreateRequest
     public required string Purpose { get; init; }
 
     /// <summary>
-    /// Contract shape is an array for forward compatibility. MVP validation accepts at most one recipient.
+    /// Primary recipients (ADR 0023 D-01). Unspecified, <c>null</c>, and an empty array are
+    /// equivalent (zero To recipients). Each of <see cref="To"/>, <see cref="Cc"/>, and
+    /// <see cref="Bcc"/> allows 0-10 entries; the combined total across all three must be 1-20.
+    /// Duplicate <c>address_key</c> values (trimmed, lowercase-invariant address) are rejected
+    /// both within a role and across roles.
     /// </summary>
     [JsonPropertyName("to")]
-    public required IReadOnlyList<MailRecipientDto> To { get; init; }
+    public IReadOnlyList<MailRecipientDto>? To { get; init; }
+
+    /// <summary>
+    /// Carbon-copy recipients (ADR 0023 D-01). Same role limits and duplicate rules as
+    /// <see cref="To"/>. Unspecified, <c>null</c>, and an empty array are equivalent and are
+    /// omitted from <c>payload_hash</c> (ADR 0023 D-02).
+    /// </summary>
+    [JsonPropertyName("cc")]
+    public IReadOnlyList<MailRecipientDto>? Cc { get; init; }
+
+    /// <summary>
+    /// Blind carbon-copy recipients (ADR 0023 D-01). Same role limits and duplicate rules as
+    /// <see cref="To"/>. Unspecified, <c>null</c>, and an empty array are equivalent and are
+    /// omitted from <c>payload_hash</c> (ADR 0023 D-02).
+    /// </summary>
+    [JsonPropertyName("bcc")]
+    public IReadOnlyList<MailRecipientDto>? Bcc { get; init; }
 
     [JsonPropertyName("subject")]
     public required string Subject { get; init; }
@@ -51,6 +71,15 @@ public sealed record MailRequestCreateRequest
     /// </summary>
     [JsonPropertyName("scheduled_at")]
     public DateTimeOffset? ScheduledAt { get; init; }
+
+    /// <summary>
+    /// Optional attachments (ADR 0022 D-01). Unspecified or an empty array means no attachment;
+    /// both are equivalent and omitted from payload_hash (ADR 0022 D-03). Array order is
+    /// submission order and part of payload identity; at most
+    /// <see cref="MailAttachmentLimits.MaxAttachmentCount"/> entries are accepted.
+    /// </summary>
+    [JsonPropertyName("attachments")]
+    public IReadOnlyList<MailAttachmentDto>? Attachments { get; init; }
 
     [JsonPropertyName("payload_hash")]
     public required string PayloadHash { get; init; }

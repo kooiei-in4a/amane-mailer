@@ -32,6 +32,7 @@ public sealed class AdminSuppressionsPiiOptionsTests
         Assert.True(options.ListPiiVisible);
         Assert.True(options.MaskRecipients);
         Assert.True(AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii));
+        Assert.False(AdminCapabilities.Has(options, AdminCapabilities.BccRecipientReveal));
     }
 
     [Fact]

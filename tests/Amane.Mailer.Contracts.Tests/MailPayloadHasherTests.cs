@@ -1,6 +1,7 @@
 using Amane.Mailer.Contracts.Json;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Contracts.Security;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -64,23 +65,152 @@ public sealed class MailPayloadHasherTests
         Assert.Equal("7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9", hash);
     }
 
+    /// <summary>
+    /// Baseline vectors: the pre-ADR-0023 single-To/attachment fixture set that existing
+    /// Python/TypeScript SDKs (<c>sdk/python</c>, <c>sdk/typescript</c>) already implement and
+    /// verify against. Kept byte-identical to the pre-#540 fixture so those SDK test suites
+    /// (which read this exact file) do not need cc/bcc/trim support to stay green.
+    /// </summary>
     [Fact]
     public async Task Shared_test_vectors_match_canonical_json_and_hash()
     {
-        await using var stream = File.OpenRead(Path.Combine(AppContext.BaseDirectory, "TestVectors", "payload-hash-vectors.json"));
+        var vectors = await LoadVectorsAsync("payload-hash-vectors.json");
+        AssertVectorsMatch(vectors);
+    }
+
+    /// <summary>
+    /// ADR 0023 recipient (to/cc/bcc) conformance vectors, kept in a separate fixture so the
+    /// existing Python/TypeScript SDK test suites -- which only implement the baseline
+    /// single-To contract until issue #542 lands -- are not broken by these. The .NET Contracts
+    /// layer and the language-independent <c>examples/payload-hash/{python,javascript,go}</c>
+    /// reference verifiers (this PR's scope) validate both files.
+    /// </summary>
+    [Fact]
+    public async Task Recipient_v1_3_test_vectors_match_canonical_json_and_hash()
+    {
+        var vectors = await LoadVectorsAsync("payload-hash-recipient-v1.3-vectors.json");
+        AssertVectorsMatch(vectors);
+    }
+
+    /// <summary>
+    /// Guards against the same vector name being reused across the two fixture files, which
+    /// would make it ambiguous which file a name refers to in test failures, issue references,
+    /// or the non-.NET reference verifiers that load both.
+    /// </summary>
+    [Fact]
+    public async Task Baseline_and_recipient_v1_3_vectors_do_not_share_names()
+    {
+        var baselineNames = (await LoadVectorsAsync("payload-hash-vectors.json"))
+            .Select(vector => vector.Name)
+            .ToHashSet(StringComparer.Ordinal);
+        var v13Names = (await LoadVectorsAsync("payload-hash-recipient-v1.3-vectors.json"))
+            .Select(vector => vector.Name)
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.Empty(baselineNames.Intersect(v13Names));
+    }
+
+    private static async Task<IReadOnlyList<PayloadHashVector>> LoadVectorsAsync(string fileName)
+    {
+        await using var stream = File.OpenRead(Path.Combine(AppContext.BaseDirectory, "TestVectors", fileName));
         var vectors = await JsonSerializer.DeserializeAsync<IReadOnlyList<PayloadHashVector>>(
             stream,
             options: null,
             TestContext.Current.CancellationToken);
         Assert.NotNull(vectors);
+        return vectors;
+    }
 
+    private static void AssertVectorsMatch(IReadOnlyList<PayloadHashVector> vectors)
+    {
         foreach (var vector in vectors)
         {
             var json = vector.Input.GetRawText();
+            var attachments = vector.Attachments?
+                .Select(attachment => new MailAttachmentHashInput(
+                    attachment.FileName,
+                    attachment.ContentType,
+                    attachment.ByteLength,
+                    attachment.ContentSha256))
+                .ToArray();
 
-            Assert.Equal(vector.ExpectedCanonicalJson, MailPayloadHasher.Canonicalize(json));
-            Assert.Equal(vector.ExpectedSha256Hex, MailPayloadHasher.ComputeSha256Hex(json));
+            Assert.Equal(
+                vector.ExpectedCanonicalJson,
+                MailPayloadHasher.BuildDeliveryPayloadJson(json, attachments));
+            Assert.Equal(
+                vector.ExpectedSha256Hex,
+                MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(json, attachments));
         }
+    }
+
+    [Fact]
+    public void BuildDeliveryPayloadJson_omits_attachments_for_null_and_empty_alike()
+    {
+        const string requestJson = """
+            {
+              "source_service": "example-service",
+              "purpose": "FormResponseNotification",
+              "subject": "New response",
+              "to": [
+                { "email": "admin@example.com" }
+              ],
+              "text_body": "A new response arrived."
+            }
+            """;
+
+        var withoutAttachmentsList = MailPayloadHasher.BuildDeliveryPayloadJson(requestJson, null);
+        var withEmptyAttachmentsList = MailPayloadHasher.BuildDeliveryPayloadJson(
+            requestJson,
+            Array.Empty<MailAttachmentHashInput>());
+
+        Assert.Equal(withoutAttachmentsList, withEmptyAttachmentsList);
+        Assert.DoesNotContain("attachments", withoutAttachmentsList, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildDeliveryPayloadJson_projects_only_the_five_canonical_attachment_fields()
+    {
+        const string requestJson = """
+            {
+              "source_service": "example-service",
+              "purpose": "FormResponseNotification",
+              "subject": "Invoice",
+              "to": [
+                { "email": "admin@example.com" }
+              ],
+              "text_body": "See attached.",
+              "attachments": [
+                {
+                  "file_name": "invoice.pdf",
+                  "content_type": "application/octet-stream",
+                  "content_base64": "AAAA",
+                  "content_sha256": "0000000000000000000000000000000000000000000000000000000000000",
+                  "byte_length": 999
+                }
+              ]
+            }
+            """;
+
+        var attachments = new[]
+        {
+            new MailAttachmentHashInput(
+                "invoice.pdf",
+                "application/pdf",
+                4,
+                "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+        };
+
+        var json = MailPayloadHasher.BuildDeliveryPayloadJson(requestJson, attachments);
+
+        // The verified projection (application/pdf, byte_length 4) wins; the raw JSON's
+        // Consumer-declared content_type/byte_length and content_base64 are never used.
+        Assert.Contains("\"content_type\":\"application/pdf\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"byte_length\":4", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("application/octet-stream", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("999", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("content_base64", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("AAAA", json, StringComparison.Ordinal);
+        Assert.Contains("\"order\":0", json, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -250,10 +380,33 @@ public sealed class MailPayloadHasherTests
         [JsonPropertyName("input")]
         public required JsonElement Input { get; init; }
 
+        /// <summary>
+        /// Verified attachment values to project into the hash (ADR 0022 D-03). Absent for the
+        /// pre-attachment vectors (no attachments-property call site at all); an explicit empty
+        /// array is a distinct fixture case that must still omit "attachments" from the hash.
+        /// </summary>
+        [JsonPropertyName("attachments")]
+        public IReadOnlyList<PayloadHashVectorAttachment>? Attachments { get; init; }
+
         [JsonPropertyName("expected_canonical_json")]
         public required string ExpectedCanonicalJson { get; init; }
 
         [JsonPropertyName("expected_sha256_hex")]
         public required string ExpectedSha256Hex { get; init; }
+    }
+
+    private sealed record PayloadHashVectorAttachment
+    {
+        [JsonPropertyName("file_name")]
+        public required string FileName { get; init; }
+
+        [JsonPropertyName("content_type")]
+        public required string ContentType { get; init; }
+
+        [JsonPropertyName("byte_length")]
+        public required long ByteLength { get; init; }
+
+        [JsonPropertyName("content_sha256")]
+        public required string ContentSha256 { get; init; }
     }
 }

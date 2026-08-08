@@ -33,6 +33,11 @@ def main() -> int:
             "payload_hash": expected_hash,
             **payload,
         }
+        if "attachments" in vector:
+            # The vector stores attachments as a sibling of "input" (kept out of the raw
+            # JSON body fixture to avoid duplicating content_base64); a real Consumer request
+            # carries it as a normal top-level field, so fold it in here the same way.
+            matching_request["attachments"] = vector["attachments"]
         match_result = verify_request_data(matching_request)
         if match_result.canonical_json != expected_canonical:
             print(f"[FAIL] {name}: canonical JSON mismatch in verifier")

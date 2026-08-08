@@ -228,17 +228,19 @@
       "id": "bounce-ingestion-and-suppression",
       "status": "implemented",
       "trackingIssue": 306,
-      "lastVerified": "2026-07-28",
+      "lastVerified": "2026-08-06",
       "relatedAdrs": [
         "0020",
+        "0023",
         "0013"
       ],
-      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. #460 persists sanitized status_message and Event Grid eventTime on provider_event_inbox through bounce_events. #461 isolates poison Storage Queue envelopes via provider_queue_dead_letters after DequeueCount threshold (internal constant 5) without storing raw payload. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
+      "notes": "v1.1.0 scope. Schema #301, ingestion #302, send-time suppression #303, queue poller #305, visibility #306, removal CLI #400 done. #460 persists sanitized status_message and Event Grid eventTime on provider_event_inbox. #461 isolates poison Storage Queue envelopes via provider_queue_dead_letters after DequeueCount threshold (internal constant 5) without storing raw payload. #530 classifies ACS Suppressed as a suppression outcome. #553 replaces legacy bounce_events with recipient-aware history, correlates exact durable submission evidence to canonical recipients, and applies deterministic negative-sticky current state without changing request aggregate lifecycle. Consumer bounced notification deferred (D-11). Push webhook #304 out of v1.1.0.",
       "evidence": {
         "files": [
           "src/Amane.Mailer/Data/Migrations/011_bounce_ingestion.sql",
           "src/Amane.Mailer/Data/Migrations/012_provider_event_inbox_details.sql",
           "src/Amane.Mailer/Data/Migrations/013_provider_queue_dead_letters.sql",
+          "src/Amane.Mailer/Data/Migrations/017_recipient_delivery_events.sql",
           "src/Amane.Mailer/Data/RecipientEmailNormalizer.cs",
           "src/Amane.Mailer/Data/Sqlite/ProviderEventInboxRepository.cs",
           "src/Amane.Mailer/Data/Sqlite/ProviderQueueDeadLetterRepository.cs",
@@ -256,6 +258,7 @@
           "src/Amane.Mailer/Worker/RetentionService.cs",
           "src/Amane.Mailer.Contracts/MailRequests/MailDeliveryErrorCodes.cs",
           "src/Amane.Mailer/Operations/MailerRuntimeMetrics.cs",
+          "src/Amane.Mailer/Operations/RecipientDeliveryEventMigration.cs",
           "src/Amane.Mailer/Operations/PrometheusMetricsFormatter.cs",
           "src/Amane.Mailer/Operations/DbSuppressionsRemoveCommand.cs",
           "src/Amane.Mailer/Operations/DbStatsCommand.cs",
@@ -268,6 +271,8 @@
         "tests": [
           "tests/Amane.Mailer.Tests/BounceIngestionSchemaTests.cs",
           "tests/Amane.Mailer.Tests/BounceIngestionWorkerTests.cs",
+          "tests/Amane.Mailer.Tests/RecipientDeliveryEventMigrationTests.cs",
+          "tests/Amane.Mailer.Tests/RecipientFeedbackCorrelationTests.cs",
           "tests/Amane.Mailer.Tests/AcsQueuePollingServiceTests.cs",
           "tests/Amane.Mailer.Tests/AcsQueueAzuriteIntegrationTests.cs",
           "tests/Amane.Mailer.Tests/MailRequestRetentionTests.cs",
@@ -278,6 +283,67 @@
           "tests/Amane.Mailer.Tests/Admin/AdminMailRequestDetailBounceRenderTests.cs",
           "tests/Amane.Mailer.Tests/Admin/AdminSuppressionsPageRenderTests.cs",
           "tests/Amane.Mailer.Tests/Admin/BounceAdminQueryTenantScopeTests.cs"
+        ]
+      }
+    },
+    {
+      "id": "admin-bcc-privacy-and-canonical-recipient-reads",
+      "status": "implemented",
+      "trackingIssue": 560,
+      "lastVerified": "2026-08-07",
+      "relatedAdrs": [
+        "0023",
+        "0013",
+        "0014"
+      ],
+      "notes": "Issue E: Admin list, dead-letter, and detail reads use mail_request_recipients; normal BCC output is always masked. Dedicated bcc_recipient_reveal is default-deny, tenant/source scoped, durably audited before serve, and capability changes atomically increment credential_epoch and revoke sessions. Suppression rows without a safe To/Cc correlation are fail-closed masked. No recipient-bearing Consumer GET, export, webhook, or public contract surface was added.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Data/Migrations/018_admin_user_capabilities.sql",
+          "src/Amane.Mailer/Data/Sqlite/AdminUserRepository.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailRequestAdminQueries.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailRequestRecipientStore.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailSuppressionRepository.cs",
+          "src/Amane.Mailer/Admin/AdminBccRecipientRevealPage.cs",
+          "src/Amane.Mailer/Admin/AdminRecipientSummaryRenderer.cs",
+          "src/Amane.Mailer/Admin/AdminEndpointMapping.cs",
+          "src/Amane.Mailer/Operations/AdminUserCapabilityCommand.cs"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/Admin/AdminCanonicalRecipientReadTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminBccRecipientRevealTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminBccSuppressionPrivacyTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminRecipientSummaryRendererTests.cs",
+          "tests/Amane.Mailer.Tests/MailerAdminUserCliTests.cs"
+        ]
+      }
+    },
+    {
+      "id": "consumer-sdk-multiple-recipient-contract",
+      "status": "implemented",
+      "trackingIssue": 542,
+      "lastVerified": "2026-08-07",
+      "relatedAdrs": [
+        "0023"
+      ],
+      "notes": "Python and TypeScript Consumer SDKs now build cc/bcc recipients, allow optional to when another role is present, project canonical recipient values for payload_hash, and verify both baseline and recipient v1.3 fixtures. The #542 field-inventory exceptions are removed.",
+      "evidence": {
+        "files": [
+          "sdk/python/src/amane_mailer/builder.py",
+          "sdk/python/src/amane_mailer/validation.py",
+          "sdk/python/src/amane_mailer/payload_hash.py",
+          "sdk/typescript/src/builder.mjs",
+          "sdk/typescript/src/validation.mjs",
+          "sdk/typescript/src/payload-hash.mjs",
+          "scripts/mail-request-field-inventory-exceptions.json",
+          "tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json"
+        ],
+        "tests": [
+          "sdk/python/tests/test_client.py",
+          "sdk/python/tests/test_payload_hash.py",
+          "sdk/typescript/test/client.test.mjs",
+          "sdk/typescript/test/payload-hash.test.mjs",
+          "scripts/check-mail-request-field-inventory.mjs"
         ]
       }
     },
@@ -487,6 +553,61 @@
           "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupApplyNonInteractiveProcessTests.cs",
           "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupApplyNonInteractiveCommandTests.cs",
           "tests/Amane.Mailer.Tests/Setup/NonInteractive/SetupNonInteractiveTestSupport.cs"
+        ]
+      }
+    },
+    {
+      "id": "attachment-mvp",
+      "status": "implemented",
+      "trackingIssue": 533,
+      "lastVerified": "2026-08-05",
+      "relatedAdrs": [
+        "0022"
+      ],
+      "notes": "Public attachments contract (max 5 files, 2 MiB/file, 5 MiB total decoded), bounded-decode acceptance pipeline with structural file-type validation (PDF/JPEG/PNG/DOCX/XLSX/CSV/TXT), durable short-lived spool with startup+periodic reconciliation, request-unique provider submission evidence (at-most-once invocation, explicit ADR 0015 attempt_number exception), DeliveryUnknown terminal state, attachment manual-retry/cancel prohibition, shared SQLite backup maintenance lease, ACS/SMTP provider mapping with forced Base64 CTE, and Admin filename masking with an audited reveal action. Native AOT publish smoke could not run on this Windows dev host (cross-OS AOT compilation is unsupported); CI (ubuntu) performs it on the PR. Crash-window fault-injection and 256/512 MiB Docker/cgroup resource qualification were not performed in this environment.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Data/Migrations/014_mail_request_delivery_unknown_status.sql",
+          "src/Amane.Mailer/Data/Migrations/015_attachment_spool_and_submission_evidence.sql",
+          "src/Amane.Mailer/Attachments/Validation/AttachmentAcceptanceValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/AttachmentFilenameValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/PdfStructureValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/JpegStructureValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/PngStructureValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/OfficeOpenXmlStructureValidator.cs",
+          "src/Amane.Mailer/Attachments/Validation/TextContentValidator.cs",
+          "src/Amane.Mailer/Attachments/Spool/AttachmentSpool.cs",
+          "src/Amane.Mailer/Attachments/Spool/BoundedAttachmentDecoder.cs",
+          "src/Amane.Mailer/Attachments/Provider/AttachmentEnvelopeEstimator.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailAttachmentSubmissionStore.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailerMaintenanceLeaseStore.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailRequestAcceptStore.cs",
+          "src/Amane.Mailer/Data/Sqlite/MailRequestClaimStore.cs",
+          "src/Amane.Mailer/Worker/AttachmentProviderResultClassifier.cs",
+          "src/Amane.Mailer/Worker/AttachmentSpoolReconciliationService.cs",
+          "src/Amane.Mailer/Worker/MailRequestWorker.cs",
+          "src/Amane.Mailer/Delivery/OutboundMimeMessageFactory.cs",
+          "src/Amane.Mailer/Delivery/AcsMailDeliveryProvider.cs",
+          "src/Amane.Mailer/Admin/AdminMailRequestAttachmentFilenamePage.cs",
+          "src/Amane.Mailer/Admin/AdminDbOpsService.cs",
+          "src/Amane.Mailer/Operations/DbBackupCommand.cs",
+          "src/Amane.Mailer.Contracts/MailRequests/MailAttachmentDto.cs",
+          "src/Amane.Mailer.Contracts/MailRequests/MailAttachmentLimits.cs",
+          "src/Amane.Mailer.Contracts/Security/MailPayloadHasher.cs",
+          "docs/api/openapi.yaml",
+          "docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/Attachments/Validation/AttachmentValidatorsTests.cs",
+          "tests/Amane.Mailer.Tests/MailRequestWorkerAttachmentTests.cs",
+          "tests/Amane.Mailer.Tests/OutboundMimeMessageFactoryAttachmentTests.cs",
+          "tests/Amane.Mailer.Tests/MailerAttachmentBackupLeaseTests.cs",
+          "tests/Amane.Mailer.Tests/AttachmentSpoolReconciliationServiceTests.cs",
+          "tests/Amane.Mailer.Tests/MailerAdminManualMutationTests.cs",
+          "tests/Amane.Mailer.Tests/MailerMetricsTests.cs",
+          "tests/Amane.Mailer.Contracts.Tests/MailPayloadHasherTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminMailRequestDetailPageRenderTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/AdminMailRequestDetailPageXssTests.cs"
         ]
       }
     }

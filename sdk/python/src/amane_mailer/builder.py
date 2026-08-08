@@ -34,11 +34,67 @@ class MailRequestBuilder:
         self._fields["purpose"] = value
         return self
 
-    def to(self, *, email: str, display_name: str | None = None) -> MailRequestBuilder:
+    def to(self, *, email: str | None, display_name: str | None = None) -> MailRequestBuilder:
+        if email is None:
+            self._fields["to"] = None
+            self._explicit_nulls.add("to")
+            return self
         recipient: dict[str, Any] = {"email": email}
         if display_name is not None:
             recipient["display_name"] = display_name
         self._fields["to"] = [recipient]
+        self._explicit_nulls.discard("to")
+        return self
+
+    def add_to(self, *, email: str, display_name: str | None = None) -> MailRequestBuilder:
+        return self._add_recipient("to", email=email, display_name=display_name)
+
+    def cc(self, *, email: str | None, display_name: str | None = None) -> MailRequestBuilder:
+        if email is None:
+            self._fields["cc"] = None
+            self._explicit_nulls.add("cc")
+            return self
+        recipient: dict[str, Any] = {"email": email}
+        if display_name is not None:
+            recipient["display_name"] = display_name
+        self._fields["cc"] = [recipient]
+        self._explicit_nulls.discard("cc")
+        return self
+
+    def add_cc(self, *, email: str, display_name: str | None = None) -> MailRequestBuilder:
+        return self._add_recipient("cc", email=email, display_name=display_name)
+
+    def bcc(self, *, email: str | None, display_name: str | None = None) -> MailRequestBuilder:
+        if email is None:
+            self._fields["bcc"] = None
+            self._explicit_nulls.add("bcc")
+            return self
+        recipient: dict[str, Any] = {"email": email}
+        if display_name is not None:
+            recipient["display_name"] = display_name
+        self._fields["bcc"] = [recipient]
+        self._explicit_nulls.discard("bcc")
+        return self
+
+    def add_bcc(self, *, email: str, display_name: str | None = None) -> MailRequestBuilder:
+        return self._add_recipient("bcc", email=email, display_name=display_name)
+
+    def _add_recipient(
+        self,
+        field_name: str,
+        *,
+        email: str,
+        display_name: str | None,
+    ) -> MailRequestBuilder:
+        recipient: dict[str, Any] = {"email": email}
+        if display_name is not None:
+            recipient["display_name"] = display_name
+        role = self._fields.get(field_name)
+        if not isinstance(role, list):
+            role = []
+            self._fields[field_name] = role
+        role.append(recipient)
+        self._explicit_nulls.discard(field_name)
         return self
 
     def subject(self, value: str) -> MailRequestBuilder:
@@ -85,10 +141,31 @@ class MailRequestBuilder:
             self._explicit_nulls.discard("scheduled_at")
         return self
 
+    def attachments(self, value: list[dict[str, Any]] | None) -> MailRequestBuilder:
+        """Sets attachments (ADR 0022 D-01). Each dict needs file_name, content_type,
+        content_base64, content_sha256, and byte_length. Unspecified/None and an empty list
+        are equivalent ("no attachments")."""
+        self._fields["attachments"] = value
+        if value is None:
+            self._explicit_nulls.add("attachments")
+        else:
+            self._explicit_nulls.discard("attachments")
+        return self
+
     def build(self) -> dict[str, Any]:
         draft = deepcopy(self._fields)
 
-        for key in ("html_body", "text_body", "reply_to", "metadata", "scheduled_at"):
+        for key in (
+            "to",
+            "cc",
+            "bcc",
+            "html_body",
+            "text_body",
+            "reply_to",
+            "metadata",
+            "scheduled_at",
+            "attachments",
+        ):
             if key not in draft:
                 continue
             if draft[key] is None and key not in self._explicit_nulls:
@@ -97,5 +174,9 @@ class MailRequestBuilder:
         validate_mail_request_draft(draft)
 
         hash_input = {**draft, "payload_hash": "placeholder"}
-        draft["payload_hash"] = compute_delivery_payload_sha256_hex(hash_input)
+        attachments_for_hash = draft.get("attachments") or None
+        draft["payload_hash"] = compute_delivery_payload_sha256_hex(
+            hash_input,
+            attachments_for_hash,
+        )
         return draft
