@@ -56,8 +56,29 @@ def main() -> int:
         store = root / "store"
         handoff = root / "handoff"
         archive_specs = [("win-x64", "amane-mailer-v1.3.0-windows-x64.zip"), ("linux-x64", "amane-mailer-v1.3.0-linux-x64.tar.gz"), ("linux-arm64", "amane-mailer-v1.3.0-linux-arm64.tar.gz")]
-        oci = "sha256:" + "a" * 64
         source = subprocess.check_output(["git", "-C", str(ROOT.parent), "rev-parse", "HEAD"], text=True).strip()
+        oci_layout = root / "oci-layout"
+        blob_root = oci_layout / "blobs" / "sha256"
+
+        def put_blob(payload: bytes) -> tuple[str, int]:
+            digest = "sha256:" + sha(payload)
+            write(blob_root / digest.removeprefix("sha256:"), payload)
+            return digest, len(payload)
+
+        runtime_descriptors = []
+        for platform_name in ("amd64", "arm64"):
+            config_bytes = json.dumps({"architecture": platform_name, "os": "linux", "config": {"Labels": {"org.opencontainers.image.version": "1.3.0", "org.opencontainers.image.revision": source}}}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            config_digest, config_size = put_blob(config_bytes)
+            manifest_bytes = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": config_digest, "size": config_size}, "layers": []}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            manifest_digest, manifest_size = put_blob(manifest_bytes)
+            runtime_descriptors.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": manifest_digest, "size": manifest_size, "platform": {"os": "linux", "architecture": platform_name}})
+        nested_bytes = json.dumps({"schemaVersion": 2, "manifests": runtime_descriptors}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        oci, nested_size = put_blob(nested_bytes)
+        write(oci_layout / "oci-layout", {"imageLayoutVersion": "1.0.0"})
+        write(oci_layout / "index.json", {"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": oci, "size": nested_size}]})
+        (oci_layout / "oci-index.digest").write_text(oci + "\n", encoding="utf-8")
+        tampered_blob = blob_root / runtime_descriptors[0]["digest"].removeprefix("sha256:")
+        tampered_original = tampered_blob.read_bytes()
         archive_digests = {}
         for rid, archive_name in archive_specs:
             manifest = {
@@ -106,15 +127,14 @@ def main() -> int:
         write(candidate / "image-identity.json", {"sourceCommitSha": source, "imageDigest": oci, "mailerVersion": "1.3.0", "platforms": ["linux/amd64", "linux/arm64"]})
         (candidate / "CANDIDATE-SHA256SUMS").write_text("".join(f"{archive_digests[rid]}  {archive_name}\n" for rid, archive_name in archive_specs), encoding="utf-8")
         write(candidate / "CANDIDATE-HANDOFF.md", "synthetic value-free handoff\n")
-        oci_layout = root / "oci-layout"
-        write(oci_layout / "oci-layout", {"imageLayoutVersion": "1.0.0"})
-        write(oci_layout / "index.json", {"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": oci, "size": 1, "platform": {"os": "linux", "architecture": "amd64"}}, {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": oci, "size": 1, "platform": {"os": "linux", "architecture": "arm64"}}]})
-        (oci_layout / "oci-index.digest").write_text(oci + "\n", encoding="utf-8")
         invalid_provenance = dict(provenance)
         invalid_provenance["unexpected"] = "must be rejected"
         write(candidate / "candidate-provenance.json", invalid_provenance)
         run("intake", "--candidate-root", str(candidate), "--store-root", str(store), "--release-commit-sha", source, "--expected-oci-digest", oci, "--oci-layout", str(oci_layout), "--expected-workflow-ref", "local", expect=1)
         write(candidate / "candidate-provenance.json", provenance)
+        tampered_blob.write_bytes(tampered_original + b"tampered")
+        run("intake", "--candidate-root", str(candidate), "--store-root", str(root / "tampered-store"), "--release-commit-sha", source, "--expected-oci-digest", oci, "--oci-layout", str(oci_layout), "--expected-workflow-ref", "local", expect=1)
+        tampered_blob.write_bytes(tampered_original)
         intake = json.loads(run("intake", "--candidate-root", str(candidate), "--store-root", str(store), "--release-commit-sha", source, "--expected-oci-digest", oci, "--oci-layout", str(oci_layout), "--expected-workflow-ref", "local"))
         candidate_id = intake["candidateId"]
 

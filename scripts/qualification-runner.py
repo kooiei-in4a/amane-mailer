@@ -493,28 +493,124 @@ def docs_from_release_tree(repo_root: Path, release_commit: str, candidate_root:
     return digests, extracted
 
 
-def validate_oci_layout(layout_root: Path, expected_digest: str) -> str:
+def validate_oci_layout(layout_root: Path, expected_digest: str, expected_release_version: str, expected_source_commit: str) -> str:
+    """Validate the candidate OCI layout using the repository's Buildx contract.
+
+    ``oci-index.digest`` is the Buildx image-index descriptor digest, not the
+    SHA-256 of the layout entrypoint ``index.json``.  The entrypoint must have
+    one root descriptor whose blob is an image index; the complete descriptor
+    graph is then walked and every referenced blob is hash-checked.
+    """
     layout_root = layout_root.resolve()
     if not layout_root.is_dir() or any(path.is_symlink() for path in layout_root.rglob("*")):
         fail("OCI layout must be a regular, symlink-free directory")
     marker = read_json(layout_root / "oci-layout", "oci-layout")
-    index = read_json(layout_root / "index.json", "OCI index.json")
+    index_path = layout_root / "index.json"
+    index = read_json(index_path, "OCI index.json")
     if marker.get("imageLayoutVersion") != "1.0.0" or not isinstance(index, dict) or index.get("schemaVersion") != 2:
         fail("OCI layout/index schema mismatch")
-    manifests = index.get("manifests")
-    if not isinstance(manifests, list) or len(manifests) != 2:
-        fail("OCI index must contain exactly two platform descriptors")
-    platforms = {((entry.get("platform") or {}).get("os"), ((entry.get("platform") or {}).get("architecture"))) for entry in manifests if isinstance(entry, dict)}
-    if platforms != {("linux", "amd64"), ("linux", "arm64")}:
-        fail("OCI index platform set mismatch")
-    if any(not isinstance(entry.get("digest"), str) or not SHA256_DIGEST.fullmatch(entry["digest"]) for entry in manifests):
-        fail("OCI index descriptor digest is invalid")
-    if expected_digest not in {entry["digest"] for entry in manifests}:
-        fail("OCI index does not contain expected image digest descriptor")
+    blob_root = layout_root / "blobs" / "sha256"
+    if not blob_root.is_dir() or any(path.is_symlink() or not path.is_file() for path in blob_root.rglob("*")):
+        fail("OCI blob store must be a regular, symlink-free directory")
+
+    referenced: set[str] = set()
+    platforms: set[str] = set()
+
+    def load_blob(digest: str, label: str) -> bytes:
+        if not isinstance(digest, str) or not SHA256_DIGEST.fullmatch(digest):
+            fail(f"{label}: invalid descriptor digest")
+        blob_path = blob_root / digest.removeprefix("sha256:")
+        if not blob_path.is_file() or blob_path.is_symlink():
+            fail(f"{label}: referenced blob is missing")
+        payload = blob_path.read_bytes()
+        if sha_bytes(payload) != digest.removeprefix("sha256:"):
+            fail(f"{label}: referenced blob digest mismatch")
+        referenced.add(digest.removeprefix("sha256:"))
+        return payload
+
+    def descriptor_payload(descriptor: dict[str, Any], label: str) -> tuple[str, bytes]:
+        if not isinstance(descriptor, dict):
+            fail(f"{label}: descriptor must be an object")
+        digest = descriptor.get("digest")
+        payload = load_blob(digest, label)
+        size = descriptor.get("size")
+        if size is not None and (not isinstance(size, int) or size != len(payload)):
+            fail(f"{label}: descriptor size mismatch")
+        media_type = descriptor.get("mediaType")
+        if not isinstance(media_type, str) or not media_type:
+            fail(f"{label}: descriptor mediaType is required")
+        return media_type, payload
+
+    index_media_types = {"application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json"}
+    manifest_media_types = {"application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"}
+
+    def walk_index(document: dict[str, Any], label: str) -> None:
+        if document.get("schemaVersion") != 2 or not isinstance(document.get("manifests"), list) or not document["manifests"]:
+            fail(f"{label}: image index schema/manifests mismatch")
+        for index, descriptor in enumerate(document["manifests"]):
+            media_type, payload = descriptor_payload(descriptor, f"{label}.manifests[{index}]")
+            platform = descriptor.get("platform") or {}
+            if media_type in index_media_types:
+                if platform:
+                    fail(f"{label}.manifests[{index}]: nested image index must not have a platform")
+                try:
+                    nested = json.loads(payload.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    fail(f"{label}.manifests[{index}]: nested image index is invalid")
+                walk_index(nested, f"{label}.manifests[{index}]")
+                continue
+            if media_type not in manifest_media_types:
+                fail(f"{label}.manifests[{index}]: unsupported descriptor mediaType")
+            os_name, architecture = platform.get("os"), platform.get("architecture")
+            platform_name = f"{os_name}/{architecture}" if isinstance(os_name, str) and isinstance(architecture, str) else ""
+            if platform_name not in {"linux/amd64", "linux/arm64"} or platform_name in platforms:
+                fail(f"{label}.manifests[{index}]: platform set mismatch")
+            platforms.add(platform_name)
+            try:
+                manifest = json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                fail(f"{label}.manifests[{index}]: image manifest is invalid")
+            if manifest.get("schemaVersion") != 2 or not isinstance(manifest.get("config"), dict):
+                fail(f"{label}.manifests[{index}]: image manifest schema mismatch")
+            config_media, config_payload = descriptor_payload(manifest["config"], f"{label}.manifests[{index}].config")
+            if config_media not in {"application/vnd.oci.image.config.v1+json", "application/vnd.docker.container.image.v1+json"}:
+                fail(f"{label}.manifests[{index}].config: unsupported mediaType")
+            try:
+                config = json.loads(config_payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                fail(f"{label}.manifests[{index}].config: JSON is invalid")
+            labels = ((config.get("config") or {}).get("Labels") or {})
+            if labels.get("org.opencontainers.image.version") != expected_release_version or labels.get("org.opencontainers.image.revision") != expected_source_commit:
+                fail(f"{label}.manifests[{index}].config: source/version labels mismatch")
+            layers = manifest.get("layers")
+            if not isinstance(layers, list):
+                fail(f"{label}.manifests[{index}]: layers must be an array")
+            for layer_index, layer in enumerate(layers):
+                descriptor_payload(layer, f"{label}.manifests[{index}].layers[{layer_index}]")
+
+    root_manifests = index.get("manifests")
+    if not isinstance(root_manifests, list) or len(root_manifests) != 1:
+        fail("OCI index must contain exactly one Buildx root descriptor")
+    root = root_manifests[0]
+    if root.get("digest") != expected_digest or root.get("mediaType") not in index_media_types or root.get("platform"):
+        fail("OCI root descriptor does not match expected image-index digest")
+    root_media, root_payload = descriptor_payload(root, "OCI root descriptor")
+    try:
+        nested_index = json.loads(root_payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("OCI root image-index blob is invalid")
+    if root_media not in index_media_types:
+        fail("OCI root descriptor must reference an image index")
+    walk_index(nested_index, "OCI root image-index")
+    if platforms != {"linux/amd64", "linux/arm64"}:
+        fail("OCI required platform set mismatch")
     digest_file = layout_root / "oci-index.digest"
-    if digest_file.is_file() and digest_file.read_text(encoding="utf-8").strip() != expected_digest:
-        fail("OCI index digest attestation mismatch")
-    return sha_bytes((layout_root / "index.json").read_bytes())
+    if not digest_file.is_file() or digest_file.read_text(encoding="utf-8").strip() != expected_digest:
+        fail("OCI index digest attestation is missing or mismatched")
+    for blob_path in blob_root.iterdir():
+        if blob_path.name not in referenced:
+            fail("OCI layout contains an unreferenced blob")
+    return sha_bytes(index_path.read_bytes())
 
 
 def validate_archive_manifest(manifest: dict[str, Any], archive: dict[str, Any], source: str, release_version: str, oci: str) -> None:
@@ -1120,7 +1216,7 @@ def command_intake(args: argparse.Namespace) -> None:
         fail("candidate sourceCommitSha does not match exact release commit")
     if provenance["ociIndexDigest"] != expected_digest or identity.get("imageDigest") != expected_digest:
         fail("candidate OCI digest does not match expected digest")
-    oci_layout_index_sha = validate_oci_layout(Path(args.oci_layout), expected_digest)
+    oci_layout_index_sha = validate_oci_layout(Path(args.oci_layout), expected_digest, provenance["releaseVersion"], source)
     cid = candidate_id(provenance, archive_digests)
     candidate_store = store / "candidates" / cid
     if candidate_store.exists():
