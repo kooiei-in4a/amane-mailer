@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "candidateId": "7582d42abc4467ddc2c33322c119072eacd75236b6d3b54aa905b0fd5b7ce11f",
+  "bindingId": "1795679e06b1d136987439ffab11ab5370759f79d0ffd20cdc75e0c22be829d5",
+  "qualificationRunId": "49bc79002527cf09fbed2299c2f2bce857e0d66a8001597855857c1d5ba2a45d",
+  "sourceCommitSha": "85af2fb410ec6cdec4c6ec2bdb431c62b062e9eb",
+  "ociIndexDigest": "sha256:e65231d736d618810cc121e9ce07dcf967d3d3061bc5f97cb68ef48f094f5d45",
+  "bindingDigestSha256": "4a77c917140aa187dd09e77fea065ea24889a73670c88ec42505b965d6653853",
+  "authorizationDigestSha256": "59881026619daed0e8712bb1351182c46a89121b9568469a9cfa3a8ba48ed675",
+  "planCommitSha": "85af2fb410ec6cdec4c6ec2bdb431c62b062e9eb",
+  "planFileSha256": "700c9f259c76becb3ded80af4bd7ec6c66aa7c773f7ff3bff7fbf2d0276315a9",
+  "evidenceIndexDigestSha256": "2d6f11f04f8846756838884da127013c2f4ef2cb0ec6236bb41e291fefe3ff3c",
+  "runSealed": true,
+  "releaseRecordFreshnessCheck": {
+    "checkedAtUtc": "2026-08-07T18:27:04.6221374Z",
+    "path": "docs/releases/v1.3.0.md",
+    "currentSha256": "8fd7888ee209947febe633f2e48eb164cc9c4161455a65645a317e0c18ed38c5",
+    "matchedBinding": true
+  },
+  "machineVerdict": "GO_ELIGIBLE",
+  "machineReasons": [
+    "All 27 release-record REQUIRED checks have active PASS evidence.",
+    "Candidate, source SHA, workflow run, artifact IDs, archives, and OCI digest are bound.",
+    "The final evidence inventory contains no failed or unexecuted required check.",
+    "Issue #504 remains a separate release-execution blocker and does not invalidate qualification."
+  ],
+  "counts": {
+    "requiredPass": 27,
+    "requiredFail": 0,
+    "requiredUnexecuted": 0
+  },
+  "humanDecision": "APPROVE",
+  "humanDecisionScope": "v1.3.0 exact-candidate qualification only",
+  "approverRole": "v1.3.0 Release Maintainer",
+  "approverIdentity": "current-session:koo",
+  "decidedAtUtc": "2026-08-07T18:27:04.6221374Z",
+  "releaseExecutionApprovalGranted": false,
+  "releaseExecutionBlocker": {
+    "issue": 504,
+    "status": "BLOCKED"
+  },
+  "forbiddenOpsConfirmed": {
+    "promotionPrMerge": false,
+    "mainMerge": false,
+    "releaseTag": false,
+    "ghcrPromotion": false,
+    "nugetPublish": false,
+    "githubRelease": false,
+    "rulesetChange": false
+  }
+}

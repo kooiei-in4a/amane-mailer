@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "bindingId": "1795679e06b1d136987439ffab11ab5370759f79d0ffd20cdc75e0c22be829d5",
+  "qualificationRunId": "49bc79002527cf09fbed2299c2f2bce857e0d66a8001597855857c1d5ba2a45d",
+  "candidateId": "7582d42abc4467ddc2c33322c119072eacd75236b6d3b54aa905b0fd5b7ce11f",
+  "releaseVersion": "1.3.0",
+  "releaseCommitSha": "85af2fb410ec6cdec4c6ec2bdb431c62b062e9eb",
+  "rcBranch": "release/v1.3.0-rc",
+  "workflowRunId": "31203481547",
+  "workflowRunAttempt": "1",
+  "artifactIds": {
+    "oci": 9003858258,
+    "handoff": 9004008439,
+    "win-x64": 9003987024,
+    "linux-x64": 9003944689,
+    "linux-arm64": 9003935098,
+    "oci-linux-amd64": 9003836099,
+    "oci-linux-arm64": 9003826476
+  },
+  "ociIndexDigest": "sha256:e65231d736d618810cc121e9ce07dcf967d3d3061bc5f97cb68ef48f094f5d45",
+  "archiveSha256ByRid": {
+    "win-x64": "sha256:29f1b8aa3e24a3aa28803c7e0ece7e625044d575d120b81e4d84e946458edf7e",
+    "linux-x64": "sha256:bbe7d9c8c228217e226d89f1c4167062618f5267b737fcf67cbcc2b008c08e37",
+    "linux-arm64": "sha256:e3f85f7bc97a808743601d927097b0fcbe9a3ffd7c362d03646471dfc47903ab"
+  },
+  "sourceAuthority": {
+    "path": "docs/releases/v1.3.0.md",
+    "sha256": "8fd7888ee209947febe633f2e48eb164cc9c4161455a65645a317e0c18ed38c5",
+    "commitSha": "85af2fb410ec6cdec4c6ec2bdb431c62b062e9eb"
+  },
+  "qualificationPlan": {
+    "path": "docs/agent-workflows/issue-456-release-qualification-plan.md",
+    "sha256": "700c9f259c76becb3ded80af4bd7ec6c66aa7c773f7ff3bff7fbf2d0276315a9",
+    "commitSha": "85af2fb410ec6cdec4c6ec2bdb431c62b062e9eb"
+  },
+  "variantRulesVersion": "v1.3.0-release-record-1",
+  "runAttemptNonce": "24486a36e55b47ed8fbd36657b681d1f",
+  "idDerivation": {
+    "bindingId": "sha256(candidateId|sourceAuthoritySha256|releaseCommitSha|planFileSha256|variantRulesVersion)",
+    "qualificationRunId": "sha256(bindingId|runAttemptNonce)"
+  },
+  "authorizationDigestSha256": "59881026619daed0e8712bb1351182c46a89121b9568469a9cfa3a8ba48ed675",
+  "producerIdentity": "codex:release-agent-a",
+  "createdAtUtc": "2026-08-07T18:23:16.9514956Z"
+}

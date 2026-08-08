@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "qualificationRunId": "49bc79002527cf09fbed2299c2f2bce857e0d66a8001597855857c1d5ba2a45d",
+  "bindingId": "1795679e06b1d136987439ffab11ab5370759f79d0ffd20cdc75e0c22be829d5",
+  "candidateId": "7582d42abc4467ddc2c33322c119072eacd75236b6d3b54aa905b0fd5b7ce11f",
+  "runStatusEventSequence": 1,
+  "previousRunStatusEventDigestSha256": null,
+  "status": "sealed",
+  "sealedAtUtc": "2026-08-07T18:28:12.2991955Z",
+  "decisionDigests": {
+    "evidenceIndexSha256": "2d6f11f04f8846756838884da127013c2f4ef2cb0ec6236bb41e291fefe3ff3c",
+    "goNoGoSha256": "f04efc051ebe290c4c4a4bdbad63f218bf63b5a7a57f8fdcf8d2d83172c4b964",
+    "phase4ManifestSha256": "4ebb0f25ed248cc4caf58428d119d6a42cb2b75988ab256813adae49e944197e"
+  },
+  "approvedByRole": "v1.3.0 Release Maintainer",
+  "approvedByIdentity": "current-session:koo",
+  "approvalScope": "exact-candidate qualification only; release-execution approval not granted",
+  "approvedAtUtc": "2026-08-07T18:28:12.2991955Z",
+  "eventIdDerivation": "sha256(qualificationRunId|sequence|status|sealedAtUtc|phase4ManifestSha256)",
+  "eventId": "7b5e2df848b754785889502276fdb74748b4e36d2926d41211f6fb55b2043b4d"
+}
