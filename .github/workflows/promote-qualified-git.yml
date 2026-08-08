@@ -340,8 +340,15 @@ jobs:
               || { echo "::error::trusted qualification producer configuration is missing"; exit 1; }
             [[ "${QUALIFICATION_PRODUCER_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ && "${QUALIFICATION_PRODUCER_EVENT}" == workflow_dispatch ]] \
               || { echo "::error::qualification producer workflow identity is invalid"; exit 1; }
-            [[ "${QUALIFICATION_PRODUCER_HEAD_BRANCH}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+-rc$ && "${QUALIFICATION_PRODUCER_HEAD_SHA}" == "${RELEASE_COMMIT_SHA}" ]] \
-              || { echo "::error::qualification producer source identity is invalid"; exit 1; }
+            # The sealed run was created on the immutable RC branch, but its
+            # existing sealed documents are published by a separate,
+            # publication-only workflow. Keep that transport producer bound to
+            # a release-specific immutable handoff branch and protected SHA;
+            # never accept an arbitrary producer branch from dispatch input.
+            [[ "${QUALIFICATION_PRODUCER_HEAD_BRANCH}" == "qualification-handoff/v${{ inputs.release_version }}" ]] \
+              || { echo "::error::qualification producer handoff branch is invalid"; exit 1; }
+            [[ "${QUALIFICATION_PRODUCER_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+              || { echo "::error::qualification producer handoff SHA is invalid"; exit 1; }
           fi
 
       - name: Run validator positive and negative fixtures
