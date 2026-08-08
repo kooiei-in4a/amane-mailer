@@ -528,7 +528,7 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PROMOTION_PR_NUMBER}" > "${state}/pr.json"
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" > "${state}/rc-ref.json"
           gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TARGET_BRANCH}" > "${state}/base-ref.json"
-          gh api "repos/${GITHUB_REPOSITORY}" > "${state}/repository.json"
+          GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}" > "${state}/repository.json"
           merge_commit_sha="$(python3 -c 'import json; print(json.load(open("artifacts/git-promotion-state/pr.json"))["merge_commit_sha"])')"
           head_sha="$(python3 -c 'import json; print(json.load(open("artifacts/git-promotion-state/pr.json"))["head"]["sha"])')"
           [[ "${merge_commit_sha}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::promotion PR merge preview is unavailable"; exit 1; }
