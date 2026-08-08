@@ -159,6 +159,15 @@ IMPLEMENTED_SCENARIO_VALIDATORS = {
     "G456-03", "G456-04", "G456-05", "G456-06",
     "G456-42", "G456-43", "G456-44",
 }
+RESTRICTED_LANE_OWNER_ROLES = {
+    "G456-03": "maintainer-acs-staging",
+    "G456-04": "maintainer-acs-staging",
+    "G456-05": "maintainer-acs-production",
+    "G456-06": "maintainer-acs-production",
+    "G456-42": "maintainer-migration",
+    "G456-43": "maintainer-migration",
+    "G456-44": "maintainer-migration",
+}
 MIGRATION_SCHEMA_COLUMNS = [
     "id TEXT NOT NULL PRIMARY KEY", "provider TEXT NOT NULL", "queue_message_id TEXT NOT NULL",
     "failure_stage TEXT NOT NULL", "last_error_code TEXT NOT NULL", "dequeue_count INTEGER NOT NULL",
@@ -950,6 +959,9 @@ def load_owner_map(path: Path) -> list[dict[str, str]]:
             "ownerRole": require_value_free_identity(entry.get("ownerRole"), "ownerRole"),
             "ownerIdentity": require_value_free_identity(entry.get("ownerIdentity"), "ownerIdentity"),
         }
+        required_role = RESTRICTED_LANE_OWNER_ROLES.get(item["scenarioId"])
+        if required_role is not None and item["ownerRole"] != required_role:
+            fail(f"evidence owners: {item['scenarioId']} requires role {required_role}")
         key = (item["scenarioId"], item["variantId"])
         if key in seen:
             fail("evidence owners: duplicate scenario/variant key")
@@ -1058,7 +1070,7 @@ def command_bind(args: argparse.Namespace) -> None:
     candidate_identity_sha = file_sha(candidate_intake / "image-identity.json")
     candidate_phase1_sha = file_sha(candidate_intake / "phase-1.json")
     candidate_archives_sha = sha_object({"archives": provenance["archives"], "archiveDigests": archive_digests})
-    nonce = require_arg(args.run_attempt_nonce, "run-attempt-nonce")
+    nonce = require_value_free_identity(args.run_attempt_nonce, "run-attempt-nonce")
     owners = load_owner_map(Path(args.evidence_owners))
     optional = [{"scenarioId": "G456-38", "variantId": "nas"}, {"scenarioId": "G456-39", "variantId": "macos"}, {"scenarioId": "G456-40", "variantId": "mode5-manual"}, {"scenarioId": "G456-41", "variantId": "external-secret-manager-docs"}]
     required_keys = {(r["scenarioId"], v) for r in rows for v in r["requiredVariants"]}
@@ -1066,9 +1078,9 @@ def command_bind(args: argparse.Namespace) -> None:
     owner_keys = {(e["scenarioId"], e["variantId"]) for e in owners}
     if required_keys != owner_keys:
         fail("evidence owners must cover every required and optional key exactly once")
-    qualification_lead_role = require_arg(args.qualification_lead_role, "qualification-lead-role")
+    qualification_lead_role = require_value_free_identity(args.qualification_lead_role, "qualification-lead-role")
     qualification_lead_identity = require_value_free_identity(args.qualification_lead_identity, "qualification-lead-identity")
-    conditional_role = require_arg(args.conditional_approver_role, "conditional-approver-role")
+    conditional_role = require_value_free_identity(args.conditional_approver_role, "conditional-approver-role")
     conditional_identity = require_value_free_identity(args.conditional_approver_identity, "conditional-approver-identity")
     binding_material = {
         "candidateId": args.candidate_id,
@@ -1220,11 +1232,13 @@ def validate_evidence_envelope(envelope: dict[str, Any], binding: dict[str, Any]
         fail("evidence envelope procedure/timestamp fields are required")
     if not all(UTC_TIMESTAMP.fullmatch(envelope[field]) for field in ("startedAtUtc", "finishedAtUtc", "attestedAtUtc")):
         fail("evidence envelope timestamps must be UTC RFC3339 seconds")
+    value_free({field: envelope[field] for field in ("procedureId", "procedureRevision", "runnerClass", "toolVersion")}, "$.metadata")
     if not isinstance(envelope.get("identity"), dict):
         fail("evidence envelope identity must be an object")
     scan = envelope.get("prohibitedContentScan")
     if not isinstance(scan, dict) or scan.get("result") != "PASS" or not all(isinstance(scan.get(field), str) and scan[field] for field in ("scannerId", "scannerVersion", "reportDigestSha256")):
         fail("evidence envelope prohibitedContentScan is invalid")
+    value_free({"scannerId": scan["scannerId"], "scannerVersion": scan["scannerVersion"]}, "$.prohibitedContentScan")
     require_hex(scan["reportDigestSha256"], "prohibitedContentScan.reportDigestSha256")
     if not isinstance(envelope.get("typePayload"), dict):
         fail("evidence envelope typePayload must be an object")
@@ -1305,11 +1319,11 @@ def validate_type_payload(envelope: dict[str, Any], binding: dict[str, Any], row
     require_payload_fields(payload, required.get(scenario, ()), scenario)
     if scenario == "G456-03" and (payload["acsEnvironment"] != "Staging" or payload["liveSending"] is not False or payload["sendKind"] != "none" or payload["mailSendAttempted"] is not False or payload["testBypassUsed"] is not False or payload["mailboxConfirmation"] != "not-required" or ("normalMailerPath" in payload and not isinstance(payload["normalMailerPath"], bool)) or ("restrictedOpsRecordId" in payload and (not isinstance(payload["restrictedOpsRecordId"], str) or not payload["restrictedOpsRecordId"])) or (envelope["result"] == "PASS" and payload["outcome"] != "configuration-applied") or (envelope["result"] == "FAIL" and payload["outcome"] not in {"rejected", "failed"})):
         fail("G456-03: staging no-send predicate mismatch")
-    if scenario == "G456-04" and (payload["acsEnvironment"] != "Staging" or payload["sendKind"] != "typed-fixed-synthetic" or payload["mailSendAttempted"] is not True or payload["testBypassUsed"] is not False or ("mailboxConfirmation" in payload and payload["mailboxConfirmation"] not in {"not-run", "observed-value-free"}) or (envelope["result"] == "PASS" and payload["outcome"] != "completed") or (envelope["result"] == "FAIL" and payload["outcome"] == "completed")):
+    if scenario == "G456-04" and (payload["acsEnvironment"] != "Staging" or payload["sendKind"] != "typed-fixed-synthetic" or payload["mailSendAttempted"] is not True or payload["testBypassUsed"] is not False or ("mailboxConfirmation" in payload and payload["mailboxConfirmation"] not in {"not-run", "observed-value-free"}) or not isinstance(payload["restrictedOpsRecordId"], str) or not payload["restrictedOpsRecordId"] or (envelope["result"] == "PASS" and payload["outcome"] != "completed") or (envelope["result"] == "FAIL" and payload["outcome"] == "completed")):
         fail("G456-04: staging verification predicate mismatch")
     if scenario == "G456-05" and (payload["acsEnvironment"] != "Production" or payload["liveSending"] is not True or payload["sendKind"] != "none-for-send-ready-assert" or payload["mailSendAttempted"] is not False or payload["testBypassUsed"] is not False or payload["mailboxConfirmation"] != "not-required-for-send-ready" or (envelope["result"] == "PASS" and (payload["doctorOrReadinessSummary"] != "pass" or payload["effectiveFingerprintMatch"] is not True or payload["bundleIntegrityMatched"] is not True)) or (envelope["result"] == "FAIL" and payload["doctorOrReadinessSummary"] == "pass" and payload["effectiveFingerprintMatch"] is True and payload["bundleIntegrityMatched"] is True)):
         fail("G456-05: production send-ready predicate mismatch")
-    if scenario == "G456-06" and (payload["acsEnvironment"] != "Production" or payload["mailPath"] != "normal-mailer" or payload["testBypassUsed"] is not False or payload["tenantStatusExportForbidden"] is not True or (envelope["result"] == "PASS" and payload["sendCompletedValueFree"] is not True) or (envelope["result"] == "FAIL" and payload["sendCompletedValueFree"] is True)):
+    if scenario == "G456-06" and (payload["acsEnvironment"] != "Production" or payload["mailPath"] != "normal-mailer" or payload["testBypassUsed"] is not False or payload["tenantStatusExportForbidden"] is not True or not isinstance(payload["restrictedOpsRecordId"], str) or not payload["restrictedOpsRecordId"] or (envelope["result"] == "PASS" and payload["sendCompletedValueFree"] is not True) or (envelope["result"] == "FAIL" and payload["sendCompletedValueFree"] is True)):
         fail("G456-06: release OV predicate mismatch")
     if scenario not in {"G456-03", "G456-04", "G456-05", "G456-06", "G456-42", "G456-43", "G456-44"}:
         if set(payload) != {"predicateResult"}:
@@ -1437,7 +1451,7 @@ def command_disposition(args: argparse.Namespace) -> None:
         if evidence[incoming_id].get("result") == "PASS" and active.get(key) is not None and evidence[active[key]].get("result") == "FAIL":
             role = auth["qualificationLeadRole"]
             identity = auth["qualificationLeadIdentity"]
-    approved_role = require_arg(args.approved_by_role, "approved-by-role")
+    approved_role = require_value_free_identity(args.approved_by_role, "approved-by-role")
     approved_identity = require_value_free_identity(args.approved_by_identity, "approved-by-identity")
     if not actor_matches({"approvedByRole": approved_role, "approvedByIdentity": approved_identity}, role, identity):
         fail("disposition actor is not authorized for this transition")
@@ -1452,7 +1466,7 @@ def command_disposition(args: argparse.Namespace) -> None:
         "scenarioId": scenario,
         "variantId": variant,
         "action": action,
-        "reasonCode": require_arg(args.reason_code, "reason-code"),
+        "reasonCode": require_value_free_identity(args.reason_code, "reason-code"),
         "approvedByRole": approved_role,
         "approvedByIdentity": approved_identity,
         "approvedAtUtc": utc_now(),
@@ -1481,7 +1495,7 @@ def command_exception(args: argparse.Namespace) -> None:
     if scenario in {"G456-42", "G456-43", "G456-44"}:
         fail("migration rows cannot use exceptions")
     owner = owner_for(auth, (scenario, variant))
-    created_by_role = require_arg(args.created_by_role, "created-by-role")
+    created_by_role = require_value_free_identity(args.created_by_role, "created-by-role")
     created_by_identity = require_value_free_identity(args.created_by_identity, "created-by-identity")
     if created_by_role != owner["ownerRole"] or created_by_identity != owner["ownerIdentity"]:
         fail("exception creator is not the evidence owner")
@@ -1551,7 +1565,7 @@ def command_exception_disposition(args: argparse.Namespace) -> None:
         fail("only supersede may include a replacement exception id")
     if action not in {"approve", "supersede", "revoke", "restore"}:
         fail("unsupported exception disposition action")
-    approved_role = require_arg(args.approved_by_role, "approved-by-role")
+    approved_role = require_value_free_identity(args.approved_by_role, "approved-by-role")
     approved_identity = require_value_free_identity(args.approved_by_identity, "approved-by-identity")
     if approved_role != auth["conditionalApproverRole"] or approved_identity != auth["conditionalApproverIdentity"]:
         fail("exception disposition actor is not the conditional approver")
@@ -1566,7 +1580,7 @@ def command_exception_disposition(args: argparse.Namespace) -> None:
         "scenarioId": scenario,
         "variantId": variant,
         "action": action,
-        "reasonCode": require_arg(args.reason_code, "reason-code"),
+        "reasonCode": require_value_free_identity(args.reason_code, "reason-code"),
         "approvedByRole": approved_role,
         "approvedByIdentity": approved_identity,
         "approvedAtUtc": utc_now(),
@@ -1611,7 +1625,7 @@ def command_seal(args: argparse.Namespace) -> None:
         fail("GO_ELIGIBLE requires humanDecision=APPROVE")
     if machine_verdict == "NO_GO" and human == "APPROVE":
         fail("NO_GO cannot be human-approved")
-    approved_role = require_arg(args.approved_by_role, "approved-by-role")
+    approved_role = require_value_free_identity(args.approved_by_role, "approved-by-role")
     approved_identity = require_value_free_identity(args.approved_by_identity, "approved-by-identity")
     if approved_role != auth["qualificationLeadRole"] or approved_identity != auth["qualificationLeadIdentity"]:
         fail("seal approver does not match authorization snapshot")
@@ -1711,6 +1725,13 @@ def command_verify(args: argparse.Namespace) -> None:
         fail("sealed run-status event filename/id mismatch")
     if event.get("status") != "sealed" or event.get("runStatusEventSequence") != 1:
         fail("run-status event is not a terminal sealed event")
+    if event.get("previousRunStatusEventDigestSha256") is not None:
+        fail("sealed run-status event must be the first event")
+    if event.get("canonicalization") != JCS_VERSION:
+        fail("sealed run-status event canonicalization mismatch")
+    for field in ("sealedAtUtc", "approvedAtUtc"):
+        if not isinstance(event.get(field), str) or not UTC_TIMESTAMP.fullmatch(event[field]):
+            fail(f"sealed run-status event {field} must be UTC RFC3339 seconds")
     for field in ("qualificationRunId", "bindingId", "candidateId"):
         if event.get(field) != binding.get(field):
             fail(f"sealed run-status event {field} mismatch")
@@ -1719,7 +1740,9 @@ def command_verify(args: argparse.Namespace) -> None:
     event_digest = require_hex(require_string(event, "eventDigestSha256"), "eventDigestSha256")
     if sha_object({k: v for k, v in event.items() if k != "eventDigestSha256"}) != event_digest:
         fail("sealed event digest mismatch")
-    digests = event.get("decisionDigests") or {}
+    digests = event.get("decisionDigests")
+    if not isinstance(digests, dict) or set(digests) != {"evidenceIndexSha256", "goNoGoSha256", "phase4ManifestSha256"} or any(not isinstance(value, str) or not HEX64.fullmatch(value) for value in digests.values()):
+        fail("sealed decision digests are invalid")
     if digests.get("evidenceIndexSha256") != file_sha(run_root / "decision/evidence-index.json") or digests.get("goNoGoSha256") != file_sha(run_root / "decision/go-no-go.json") or digests.get("phase4ManifestSha256") != file_sha(run_root / "phase-manifests/phase-4.json"):
         fail("sealed decision digest mismatch")
     inventory = phase4.get("sealedObjectInventory")
@@ -1780,7 +1803,7 @@ def command_abandon(args: argparse.Namespace) -> None:
     ensure_unsealed(run_root)
     binding = load_binding(run_root)
     auth = load_authorization(run_root)
-    reason = require_arg(args.reason_code, "reason-code")
+    reason = require_value_free_identity(args.reason_code, "reason-code")
     event_id = uuid.uuid4().hex
     event = {
         "eventId": event_id,
@@ -1818,7 +1841,7 @@ def command_handoff(args: argparse.Namespace) -> None:
         write_bytes_once(target, source.read_bytes())
     manifest = {"schemaVersion": 1, "publicationOnly": True, "candidateId": binding["candidateId"], "bindingId": binding["bindingId"], "qualificationRunId": binding["qualificationRunId"], "sealedEventId": read_json(event_path, "sealed event")["eventId"], "objects": [{"path": p.relative_to(output).as_posix(), "sha256": file_sha(p)} for p in sorted(output.rglob("*.json"))]}
     write_once(output / "handoff-manifest.json", manifest)
-    print(json.dumps({"qualificationRunId": binding["qualificationRunId"], "outputRoot": str(output), "publicationOnly": True}, sort_keys=True))
+    print(json.dumps({"qualificationRunId": binding["qualificationRunId"], "publicationOnly": True}, sort_keys=True))
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -118,7 +118,18 @@ def main() -> int:
             "migrationInventoryDigestSha256": inventory_digest,
         })
         owners = root / "owners.json"
-        owner_entries = [{"scenarioId": f"G456-{number:02d}", "variantId": variant, "ownerRole": "lane-owner", "ownerIdentity": "ci:test"} for number in range(1, 45) for variant in variants[number]]
+        restricted_roles = {
+            "G456-03": ("maintainer-acs-staging", "maintainer:acs-staging"),
+            "G456-04": ("maintainer-acs-staging", "maintainer:acs-staging"),
+            "G456-05": ("maintainer-acs-production", "maintainer:acs-production"),
+            "G456-06": ("maintainer-acs-production", "maintainer:acs-production"),
+            "G456-42": ("maintainer-migration", "maintainer:migration"),
+            "G456-43": ("maintainer-migration", "maintainer:migration"),
+            "G456-44": ("maintainer-migration", "maintainer:migration"),
+        }
+        def owner_for_scenario(scenario):
+            return restricted_roles.get(scenario, ("lane-owner", "ci:test"))
+        owner_entries = [{"scenarioId": f"G456-{number:02d}", "variantId": variant, "ownerRole": owner_for_scenario(f"G456-{number:02d}")[0], "ownerIdentity": owner_for_scenario(f"G456-{number:02d}")[1]} for number in range(1, 45) for variant in variants[number]]
         owner_entries.extend([
             {"scenarioId": "G456-38", "variantId": "nas", "ownerRole": "lane-owner", "ownerIdentity": "ci:test"},
             {"scenarioId": "G456-39", "variantId": "macos", "ownerRole": "lane-owner", "ownerIdentity": "ci:test"},
@@ -126,11 +137,16 @@ def main() -> int:
             {"scenarioId": "G456-41", "variantId": "external-secret-manager-docs", "ownerRole": "lane-owner", "ownerIdentity": "ci:test"},
         ])
         write(owners, owner_entries)
+        def actor_for(scenario, variant):
+            matches = [entry for entry in owner_entries if entry["scenarioId"] == scenario and entry["variantId"] == variant]
+            assert len(matches) == 1
+            return matches[0]["ownerRole"], matches[0]["ownerIdentity"]
         bound = json.loads(run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(plan), "--plan-commit-sha", source, "--repo-root", str(ROOT.parent), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "self-test-1", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional"))
         run_root = store / "runs" / bound["qualificationRunId"]
         binding = json.loads((run_root / "binding.json").read_text(encoding="utf-8"))
         evidence_counter = 10
         def envelope(evidence_id, scenario, variant, result, evidence_type, payload):
+            owner_role, owner_identity = actor_for(scenario, variant)
             return {
                 "schemaVersion": 1, "kind": "release-qualification-evidence", "evidenceType": evidence_type,
                 "evidenceId": evidence_id, "candidateId": binding["candidateId"], "sourceCommitSha": binding["releaseCommitSha"],
@@ -138,7 +154,7 @@ def main() -> int:
                 "planCommitSha": binding["planCommitSha"], "planFileSha256": binding["planFileSha256"], "bindingId": binding["bindingId"],
                 "qualificationRunId": binding["qualificationRunId"], "attempt": 1, "result": result,
                 "startedAtUtc": "2026-08-08T00:00:00Z", "finishedAtUtc": "2026-08-08T00:00:01Z",
-                "executedByRole": "lane-owner", "executedByIdentity": "ci:test", "procedureId": f"self-test-{scenario}",
+                "executedByRole": owner_role, "executedByIdentity": owner_identity, "procedureId": f"self-test-{scenario}",
                 "procedureRevision": "1", "runnerClass": "synthetic", "toolVersion": "self-test-1", "attestedAtUtc": "2026-08-08T00:00:01Z",
                 "identity": {}, "prohibitedContentScan": {"result": "PASS", "scannerId": "qualify-secret-like/1", "scannerVersion": "1", "reportDigestSha256": "a" * 64},
                 "typePayload": payload,
@@ -157,7 +173,8 @@ def main() -> int:
             envelope_path = root / f"evidence-{evidence_id}.json"
             default_type = "manual-smoke" if scenario in {"G456-01", "G456-02"} else "qualification-scenario"
             write(envelope_path, envelope(evidence_id, scenario, variant, result, evidence_type or default_type, payload if payload is not None else payload_for(scenario, variant, result)))
-            run("evidence", "--run-root", str(run_root), "--evidence-id", evidence_id, "--scenario-id", scenario, "--variant-id", variant, "--result", result, "--executed-by-role", "lane-owner", "--executed-by-identity", "ci:test", "--observations", str(envelope_path))
+            owner_role, owner_identity = actor_for(scenario, variant)
+            run("evidence", "--run-root", str(run_root), "--evidence-id", evidence_id, "--scenario-id", scenario, "--variant-id", variant, "--result", result, "--executed-by-role", owner_role, "--executed-by-identity", owner_identity, "--observations", str(envelope_path))
         first_id = "1" * 64
         add_evidence(first_id, "G456-01", "win-docker", "FAIL", "manual-smoke")
         run("disposition", "--run-root", str(run_root), "--scenario-id", "G456-01", "--variant-id", "win-docker", "--action", "accept", "--target-evidence-id", first_id, "--reason-code", "self-test-fail", "--approved-by-role", "lane-owner", "--approved-by-identity", "ci:test")
@@ -176,7 +193,8 @@ def main() -> int:
                     send_ready_evidence_id = eid
                 etype = "manual-smoke" if scenario in {"G456-01", "G456-02"} else ("staging-acs-verification" if scenario in {"G456-03", "G456-04"} else ("production-acs-send-ready" if scenario == "G456-05" else ("release-production-operational-verification" if scenario == "G456-06" else ("linux-arm64-e2e" if scenario == "G456-34" else ("linux-arm64-artifact-smoke" if scenario == "G456-35" else ("vps-verification" if scenario == "G456-36" else ("optional-automation" if scenario == "G456-37" else ("db-migration-fresh-apply" if scenario == "G456-42" else ("db-migration-upgrade" if scenario == "G456-43" else ("db-migration-schema-contract" if scenario == "G456-44" else "qualification-scenario"))))))))))
                 add_evidence(eid, scenario, variant, "PASS", etype)
-                run("disposition", "--run-root", str(run_root), "--scenario-id", scenario, "--variant-id", variant, "--action", "accept", "--target-evidence-id", eid, "--reason-code", "self-test-pass", "--approved-by-role", "lane-owner", "--approved-by-identity", "ci:test")
+                owner_role, owner_identity = actor_for(scenario, variant)
+                run("disposition", "--run-root", str(run_root), "--scenario-id", scenario, "--variant-id", variant, "--action", "accept", "--target-evidence-id", eid, "--reason-code", "self-test-pass", "--approved-by-role", owner_role, "--approved-by-identity", owner_identity)
         # A generic predicateResult must not be able to promote an unimplemented
         # Admin/HTTPS/security lane.
         unsupported = "6" * 64
@@ -186,16 +204,25 @@ def main() -> int:
         contradictory_migration = "7" * 64
         contradictory_path = root / "contradictory-migration.json"
         write(contradictory_path, envelope(contradictory_migration, "G456-42", "win-docker", "FAIL", "db-migration-fresh-apply", payload_for("G456-42", "win-docker", "FAIL")))
-        run("evidence", "--run-root", str(run_root), "--evidence-id", contradictory_migration, "--scenario-id", "G456-42", "--variant-id", "win-docker", "--result", "FAIL", "--executed-by-role", "lane-owner", "--executed-by-identity", "ci:test", "--observations", str(contradictory_path), expect=1)
+        migration_role, migration_identity = actor_for("G456-42", "win-docker")
+        run("evidence", "--run-root", str(run_root), "--evidence-id", contradictory_migration, "--scenario-id", "G456-42", "--variant-id", "win-docker", "--result", "FAIL", "--executed-by-role", migration_role, "--executed-by-identity", migration_identity, "--observations", str(contradictory_path), expect=1)
         leaky_evidence = "8" * 64
         leaky_path = root / "leaky-envelope.json"
         leaky = envelope(leaky_evidence, "G456-03", "acs-staging-nosend", "PASS", "staging-acs-verification", payload_for("G456-03", "acs-staging-nosend", "PASS"))
         leaky["notes"] = {"recipient": "user@example.com"}
         write(leaky_path, leaky)
-        run("evidence", "--run-root", str(run_root), "--evidence-id", leaky_evidence, "--scenario-id", "G456-03", "--variant-id", "acs-staging-nosend", "--result", "PASS", "--executed-by-role", "lane-owner", "--executed-by-identity", "ci:test", "--observations", str(leaky_path), expect=1)
+        staging_role, staging_identity = actor_for("G456-03", "acs-staging-nosend")
+        run("evidence", "--run-root", str(run_root), "--evidence-id", leaky_evidence, "--scenario-id", "G456-03", "--variant-id", "acs-staging-nosend", "--result", "PASS", "--executed-by-role", staging_role, "--executed-by-identity", staging_identity, "--observations", str(leaky_path), expect=1)
+        metadata_leak_evidence = "9" * 64
+        metadata_leak_path = root / "metadata-leak-envelope.json"
+        metadata_leak = envelope(metadata_leak_evidence, "G456-03", "acs-staging-nosend", "PASS", "staging-acs-verification", payload_for("G456-03", "acs-staging-nosend", "PASS"))
+        metadata_leak["procedureId"] = "https://secret.example/?token=redacted"
+        write(metadata_leak_path, metadata_leak)
+        run("evidence", "--run-root", str(run_root), "--evidence-id", metadata_leak_evidence, "--scenario-id", "G456-03", "--variant-id", "acs-staging-nosend", "--result", "PASS", "--executed-by-role", staging_role, "--executed-by-identity", staging_identity, "--observations", str(metadata_leak_path), expect=1)
         exception_id = "4" * 64
         run("exception", "--run-root", str(run_root), "--exception-id", exception_id, "--scenario-id", "G456-29", "--variant-id", "win-docker", "--reason-not-executable", "synthetic lane unavailable", "--alternate-verification", "synthetic alternate review", "--residual-risk", "synthetic residual risk", "--impact-scope", "synthetic scope", "--created-by-role", "lane-owner", "--created-by-identity", "ci:test")
         exception_approval = json.loads(run("exception-disposition", "--run-root", str(run_root), "--scenario-id", "G456-29", "--variant-id", "win-docker", "--action", "approve", "--target-exception-id", exception_id, "--reason-code", "self-test-conditional", "--approved-by-role", "conditional-approver", "--approved-by-identity", "maintainer:conditional"))
+        run("exception-disposition", "--run-root", str(run_root), "--scenario-id", "G456-29", "--variant-id", "win-docker", "--action", "revoke", "--target-exception-id", exception_id, "--reason-code", "https://secret.example/?token=redacted", "--approved-by-role", "conditional-approver", "--approved-by-identity", "maintainer:conditional", expect=1)
         replacement_exception_id = "5" * 64
         run("exception", "--run-root", str(run_root), "--exception-id", replacement_exception_id, "--scenario-id", "G456-29", "--variant-id", "win-docker", "--reason-not-executable", "synthetic lane unavailable", "--alternate-verification", "synthetic alternate review", "--residual-risk", "synthetic residual risk", "--impact-scope", "synthetic scope", "--created-by-role", "lane-owner", "--created-by-identity", "ci:test")
         run("exception-disposition", "--run-root", str(run_root), "--scenario-id", "G456-29", "--variant-id", "win-docker", "--action", "supersede", "--target-exception-id", exception_id, "--superseded-by-exception-id", replacement_exception_id, "--reason-code", "self-test-supersede", "--approved-by-role", "conditional-approver", "--approved-by-identity", "maintainer:conditional")
@@ -204,6 +231,13 @@ def main() -> int:
         verify = json.loads(run("verify", "--run-root", str(run_root), "--repo-root", str(ROOT.parent)))
         assert verify["machineVerdict"] == "NO_GO"
         run("handoff", "--run-root", str(run_root), "--output-root", str(handoff), "--repo-root", str(ROOT.parent), expect=1)
+        sealed_event_path = next((run_root / "run-status-events").glob("*.json"))
+        sealed_event = json.loads(sealed_event_path.read_text(encoding="utf-8"))
+        sealed_event["canonicalization"] = {"algorithm": "not-jcs", "version": 1}
+        unsigned_event = {key: value for key, value in sealed_event.items() if key != "eventDigestSha256"}
+        sealed_event["eventDigestSha256"] = sha(json.dumps(unsigned_event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+        write(sealed_event_path, sealed_event)
+        run("verify", "--run-root", str(run_root), "--repo-root", str(ROOT.parent), expect=1)
 
         # Sealed runs reject new evidence and value-bearing observations.
         run("evidence", "--run-root", str(run_root), "--evidence-id", "9" * 64, "--scenario-id", "G456-01", "--variant-id", "win-docker", "--result", "PASS", "--executed-by-role", "lane-owner", "--executed-by-identity", "ci:test", expect=1)

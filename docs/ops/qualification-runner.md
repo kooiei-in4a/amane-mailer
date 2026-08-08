@@ -106,6 +106,12 @@ PASS/FAIL directions. Direct `result=EXCEPTION` evidence is rejected. For
 unsupported scenario lanes, a PASS is rejected until its dedicated validator
 is implemented.
 
+Restricted lanes are role-bound and cannot be represented by a generic CI
+owner: G456-03/04 require `maintainer-acs-staging`, G456-05/06 require
+`maintainer-acs-production`, and G456-42..44 require `maintainer-migration`.
+The corresponding maintainer identity must be present in the bound owner map;
+using a CI role for these lanes is rejected.
+
 ### Dispositions and Conditional exceptions
 
 Disposition actions are append-only (`accept`, `supersede`, `invalidate`,
