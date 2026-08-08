@@ -68,14 +68,109 @@ def main() -> int:
         migration = profile["migration"]
         v13_binding = {
             "scopeId": profile["scopeId"],
+            "scopeVersion": profile["scopeVersion"],
+            "scopeAuthorityIssueNumber": profile["authorityIssueNumber"],
+            "scopeAuthorityIssueBodySha256": profile["authorityIssueBodySha256"],
+            "scopePlanFileSha256": profile["planFileSha256"],
+            "scopeManifestSha256": profile["scopeManifestSha256"],
+            "issueNumber": profile["authorityIssueNumber"],
+            "planRevision": profile["planRevision"],
+            "variantRulesVersion": profile["variantRulesVersion"],
             "migrationBaselineInventory": migration["baselineInventory"],
             "migrationDeltaInventory": migration["deltaInventory"],
             "migrationFullInventory": migration["fullInventory"],
             "migrationFullInventoryDigestSha256": "a" * 64,
             "migrationDeltaInventoryDigestSha256": "b" * 64,
+            "migrationBaselineInventoryDigestSha256": "c" * 64,
             "migrationFullFileDigests": [],
-            "migrationSchemaAllowlistVersion": "1",
+            "migrationPredicateSetVersion": profile["migrationPredicateSetVersion"],
+            "migrationSchemaAllowlistVersion": migration["schemaAllowlistVersion"],
+            "migrationSchemaAllowlistSha256": migration["schemaAllowlistSha256"],
+            "migrationSchemaAllowlist": migration["schemaAllowlist"],
+            "rows": profile["scenarioRows"],
         }
+        if v13_binding["planRevision"] != "1" or v13_binding["issueNumber"] != 583 or v13_binding["variantRulesVersion"] != 5:
+            raise AssertionError("v1.3 scope binding identity was not materialized")
+        if v13_binding["migrationPredicateSetVersion"] != 1 or v13_binding["migrationSchemaAllowlistVersion"] != 1:
+            raise AssertionError("v1.3 scope versions must remain numeric")
+        v13_snapshot_rows = [
+            {**row, "scenarioText": f"synthetic {row['scenarioId']}", "environmentText": "synthetic v1.3 lane"}
+            for row in profile["scenarioRows"]
+        ]
+        runner.bind_rows({"number": 583, "rows": v13_snapshot_rows}, profile)
+        # Exercise the v1.3 load path with a complete, value-free synthetic
+        # binding.  This deliberately avoids product/ACS work while proving
+        # that binding, phase-2, authority, and numeric scope versions can be
+        # reloaded together (the failure in F584-01 occurred only on reload).
+        smoke_root = root / "v13-scope-load-smoke"
+        smoke_nonce = "scope-smoke-1"
+        smoke_provenance = {
+            "sourceCommitSha": "b" * 40, "workflowRunId": "583000001", "workflowRunAttempt": "1",
+            "workflowRef": "local/scope-smoke", "releaseVersion": "1.3.0",
+            "ociIndexDigest": "sha256:" + "c" * 64, "ociPlatforms": ["linux/amd64"],
+            "archives": [{"targetRid": "linux-x64", "archiveFileName": "synthetic-linux-x64.tar.gz", "archiveSha256": "sha256:" + "d" * 64}],
+        }
+        smoke_identity = {"sourceCommitSha": smoke_provenance["sourceCommitSha"], "imageDigest": smoke_provenance["ociIndexDigest"]}
+        smoke_archives = {"linux-x64": "d" * 64}
+        smoke_candidate_id = runner.candidate_id(smoke_provenance, smoke_archives)
+        smoke_rows = [
+            {**row, "scenarioText": f"synthetic {row['scenarioId']}", "environmentText": "synthetic v1.3 lane"}
+            for row in profile["scenarioRows"]
+        ]
+        smoke_docs_dir = smoke_root / "docs-extract"
+        smoke_docs = {}
+        for key, filename in {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}.items():
+            payload = f"synthetic {key}\n".encode()
+            write(smoke_docs_dir / filename, payload)
+            smoke_docs[f"{key}Sha256"] = sha(payload)
+        smoke_docs.update({"sourceCommitSha": smoke_provenance["sourceCommitSha"], "extractionMethod": "git-archive-exact-source-plus-qualified-archive"})
+        smoke_candidate_root = smoke_root / "candidates" / smoke_candidate_id / "intake"
+        write(smoke_candidate_root / "candidate-provenance.json", smoke_provenance)
+        write(smoke_candidate_root / "image-identity.json", smoke_identity)
+        smoke_objects = [
+            {"path": f"intake/{name}", "sha256": runner.file_sha(smoke_candidate_root / name)}
+            for name in ("candidate-provenance.json", "image-identity.json")
+        ]
+        write(smoke_candidate_root / "phase-1.json", {"candidateId": smoke_candidate_id, "sourceCommitSha": smoke_provenance["sourceCommitSha"], "ociIndexDigest": smoke_provenance["ociIndexDigest"], "workflowRunId": smoke_provenance["workflowRunId"], "workflowRunAttempt": smoke_provenance["workflowRunAttempt"], "workflowRef": smoke_provenance["workflowRef"], "objects": smoke_objects})
+        smoke_file_sha = {name: runner.file_sha(smoke_candidate_root / name) for name in ("candidate-provenance.json", "image-identity.json", "phase-1.json")}
+        smoke_pin = {
+            "releaseCommitSha": smoke_provenance["sourceCommitSha"], "migrationPinDigestSha256": "e" * 64,
+            "migrationInventoryDigestSha256": "f" * 64, "migrationFileDigests": [],
+            "migrationBaselineInventory": migration["baselineInventory"], "migrationDeltaInventory": migration["deltaInventory"],
+            "migrationFullInventory": migration["fullInventory"], "migrationBaselineInventoryDigestSha256": "1" * 64,
+            "migrationDeltaInventoryDigestSha256": "2" * 64, "migrationFullInventoryDigestSha256": "3" * 64,
+            "migrationBaselineFileDigests": [], "migrationDeltaFileDigests": [], "migrationFullFileDigests": [],
+            "migrationPredicateSetVersion": 1,
+        }
+        smoke_auth = {"schemaVersion": 1, "qualificationRunId": "pending", "bindingId": "pending", "candidateId": smoke_candidate_id, "qualificationLeadRole": "qualification-lead", "qualificationLeadIdentity": "maintainer:scope-smoke", "conditionalApproverRole": "conditional-approver", "conditionalApproverIdentity": "maintainer:scope-smoke", "evidenceOwners": [], "createdAtUtc": "2026-08-08T00:00:00Z"}
+        smoke_binding = {
+            "schemaVersion": 1, "candidateId": smoke_candidate_id, "planRevision": profile["planRevision"], "planCommitSha": "a" * 40, "planFilePath": profile["planFilePath"], "planFileSha256": profile["planFileSha256"], "variantRulesVersion": profile["variantRulesVersion"], "issueNumber": 583, "issueUpdatedAt": "2026-08-08T00:00:00Z", "issueBodySha256": profile["authorityIssueBodySha256"], "fetchedAtUtc": "2026-08-08T00:00:00Z", "sourceCommitSha": smoke_provenance["sourceCommitSha"], "releaseCommitSha": smoke_provenance["sourceCommitSha"], "ociIndexDigest": smoke_provenance["ociIndexDigest"], "ociLayoutIndexSha256": "4" * 64, "releaseVersion": "1.3.0", "ociPlatforms": smoke_provenance["ociPlatforms"], "producerWorkflowRef": smoke_provenance["workflowRef"], "producerWorkflowRunId": smoke_provenance["workflowRunId"], "producerWorkflowRunAttempt": smoke_provenance["workflowRunAttempt"], "candidateProvenanceSha256": smoke_file_sha["candidate-provenance.json"], "candidateImageIdentitySha256": smoke_file_sha["image-identity.json"], "candidatePhase1ManifestSha256": smoke_file_sha["phase-1.json"], "candidateArchivesDigestSha256": runner.sha_object({"archives": smoke_provenance["archives"], "archiveDigests": smoke_archives}), "docs": smoke_docs, "migrationPinDigestSha256": smoke_pin["migrationPinDigestSha256"], "migrationInventoryDigestSha256": smoke_pin["migrationInventoryDigestSha256"], "migrationFileDigests": [], "rows": runner.bind_rows({"number": 583, "rows": smoke_rows}, profile), "optionalEvidenceKeys": profile["optionalEvidenceKeys"], "scopeId": profile["scopeId"], "scopeVersion": profile["scopeVersion"], "scopeManifestSha256": profile["scopeManifestSha256"], "scopeAuthorityIssueNumber": profile["authorityIssueNumber"], "scopeAuthorityIssueBodySha256": profile["authorityIssueBodySha256"], "scopePlanFileSha256": profile["planFileSha256"], "migrationBaselineInventory": migration["baselineInventory"], "migrationDeltaInventory": migration["deltaInventory"], "migrationFullInventory": migration["fullInventory"], "migrationBaselineInventoryDigestSha256": smoke_pin["migrationBaselineInventoryDigestSha256"], "migrationDeltaInventoryDigestSha256": smoke_pin["migrationDeltaInventoryDigestSha256"], "migrationFullInventoryDigestSha256": smoke_pin["migrationFullInventoryDigestSha256"], "migrationBaselineFileDigests": [], "migrationDeltaFileDigests": [], "migrationFullFileDigests": [], "migrationPredicateSetVersion": 1, "migrationSchemaAllowlistVersion": 1, "migrationSchemaAllowlistSha256": migration["schemaAllowlistSha256"], "migrationSchemaAllowlist": migration["schemaAllowlist"],
+        }
+        smoke_auth["bindingId"] = runner.binding_id_for(smoke_binding, smoke_auth)
+        smoke_auth["qualificationRunId"] = runner.sha_bytes((smoke_auth["bindingId"] + "|" + smoke_nonce).encode())
+        smoke_binding.update({"bindingId": smoke_auth["bindingId"], "qualificationRunId": smoke_auth["qualificationRunId"], "runAttemptNonce": smoke_nonce, "authorizationDigestSha256": runner.sha_object(smoke_auth)})
+        smoke_root = smoke_root / "runs" / smoke_auth["qualificationRunId"]
+        for key, filename in {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}.items():
+            write(smoke_root / "docs-extract" / filename, f"synthetic {key}\n".encode())
+        write(smoke_root / "binding.json", smoke_binding)
+        write(smoke_root / "authorization.json", smoke_auth)
+        write(smoke_root / "scope-manifest.json", json.loads(scope_manifest.read_text(encoding="utf-8")))
+        write(smoke_root / "migration-pin.json", {})
+        phase2 = {"candidateId": smoke_candidate_id, "bindingId": smoke_auth["bindingId"], "qualificationRunId": smoke_auth["qualificationRunId"], "runAttemptNonce": smoke_nonce, "releaseCommitSha": smoke_provenance["sourceCommitSha"], "releaseVersion": "1.3.0", "ociPlatforms": smoke_provenance["ociPlatforms"], "ociLayoutIndexSha256": "4" * 64, "planFilePath": profile["planFilePath"], "producerWorkflowRef": smoke_provenance["workflowRef"], "producerWorkflowRunId": smoke_provenance["workflowRunId"], "producerWorkflowRunAttempt": smoke_provenance["workflowRunAttempt"], "candidateProvenanceSha256": smoke_file_sha["candidate-provenance.json"], "candidateImageIdentitySha256": smoke_file_sha["image-identity.json"], "candidatePhase1ManifestSha256": smoke_file_sha["phase-1.json"], "candidateArchivesDigestSha256": smoke_binding["candidateArchivesDigestSha256"], "docs": smoke_docs, "authorizationDigestSha256": smoke_binding["authorizationDigestSha256"], "migrationPinDigestSha256": smoke_pin["migrationPinDigestSha256"], "migrationInventoryDigestSha256": smoke_pin["migrationInventoryDigestSha256"], "migrationFileDigests": [], "scopeId": profile["scopeId"], "scopeVersion": profile["scopeVersion"], "scopeManifestSha256": profile["scopeManifestSha256"], "scopeAuthorityIssueNumber": 583, "scopeAuthorityIssueBodySha256": profile["authorityIssueBodySha256"], "scopePlanFileSha256": profile["planFileSha256"], "planRevision": "1", "issueNumber": 583, "variantRulesVersion": 5, "migrationBaselineInventoryDigestSha256": smoke_pin["migrationBaselineInventoryDigestSha256"], "migrationDeltaInventoryDigestSha256": smoke_pin["migrationDeltaInventoryDigestSha256"], "migrationFullInventoryDigestSha256": smoke_pin["migrationFullInventoryDigestSha256"], "migrationPredicateSetVersion": 1, "migrationSchemaAllowlistVersion": 1, "migrationSchemaAllowlistSha256": migration["schemaAllowlistSha256"], "migrationSchemaAllowlist": migration["schemaAllowlist"]}
+        assert smoke_binding["candidateArchivesDigestSha256"] == runner.sha_object({"archives": smoke_provenance["archives"], "archiveDigests": smoke_archives})
+        assert smoke_binding["candidateProvenanceSha256"] == runner.file_sha(smoke_candidate_root / "candidate-provenance.json")
+        assert smoke_binding["candidateImageIdentitySha256"] == runner.file_sha(smoke_candidate_root / "image-identity.json")
+        assert smoke_binding["candidatePhase1ManifestSha256"] == runner.file_sha(smoke_candidate_root / "phase-1.json")
+        write(smoke_root / "phase-manifests" / "phase-2.json", phase2)
+        original_pin_loader = runner.load_migration_pin
+        original_candidate_documents = runner.candidate_documents
+        runner.load_migration_pin = lambda _path, _profile: smoke_pin
+        runner.candidate_documents = lambda _path: (smoke_provenance, smoke_identity, smoke_archives)
+        try:
+            runner.load_binding(smoke_root)
+        finally:
+            runner.load_migration_pin = original_pin_loader
+            runner.candidate_documents = original_candidate_documents
         migration_payload = {
             "migrationDecision": "INCLUDE",
             "baselineInventory": migration["baselineInventory"],
@@ -95,6 +190,23 @@ def main() -> int:
             "lastAppliedAfter": migration["deltaInventory"][-1],
         }
         runner.validate_migration_payload({"result": "PASS"}, v13_binding, "G583-MIG-01", migration_payload)
+        schema_payload = dict(migration_payload)
+        schema_payload.update({
+            "outcome": "schema-checked", "lastAppliedAfter": migration["deltaInventory"][-1],
+            "schemaContractResult": "pass", "piiValueCanaryResult": "pass",
+            "schemaAllowlistVersion": 1, "schemaAllowlistSha256": migration["schemaAllowlistSha256"],
+            "schemaAllowlist": migration["schemaAllowlist"],
+        })
+        runner.validate_migration_payload({"result": "PASS"}, v13_binding, "G583-MIG-03", schema_payload)
+        tampered_schema = dict(schema_payload)
+        tampered_schema["schemaAllowlist"] = dict(migration["schemaAllowlist"])
+        tampered_schema["schemaAllowlist"][migration["deltaInventory"][0]] = {"sqlSha256": "0" * 64, "tables": [], "indexes": [], "constraints": []}
+        try:
+            runner.validate_migration_payload({"result": "PASS"}, v13_binding, "G583-MIG-03", tampered_schema)
+        except runner.RunnerError:
+            pass
+        else:
+            raise AssertionError("v1.3 schema predicate accepted a tampered allowlist")
         invalid_migration_payload = dict(migration_payload)
         invalid_migration_payload["deltaInventory"] = ["012_provider_event_inbox_details.sql"]
         try:

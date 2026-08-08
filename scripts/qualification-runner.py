@@ -201,6 +201,18 @@ RESTRICTED_LANE_OWNER_ROLES = {
     "G583-MIG-02": "maintainer-migration",
     "G583-MIG-03": "maintainer-migration",
 }
+SCOPE_OWNER_CLASSES = {
+    **{f"G456-{n:02d}": ("maintainer-acs-staging" if n in {3, 4} else "maintainer-acs-production" if n in {5, 6} else "lane-owner") for n in range(1, 42)},
+    "G583-MIG-01": "maintainer-migration",
+    "G583-MIG-02": "maintainer-migration",
+    "G583-MIG-03": "maintainer-migration",
+}
+SCOPE_PREDICATE_SETS = {
+    **{f"G456-{n:02d}": f"legacy-g456-{n:02d}" for n in range(1, 42)},
+    "G583-MIG-01": "v1.3-migration-fresh",
+    "G583-MIG-02": "v1.3-migration-upgrade",
+    "G583-MIG-03": "v1.3-migration-schema-contract",
+}
 MIGRATION_SCHEMA_COLUMNS = [
     "id TEXT NOT NULL PRIMARY KEY", "provider TEXT NOT NULL", "queue_message_id TEXT NOT NULL",
     "failure_stage TEXT NOT NULL", "last_error_code TEXT NOT NULL", "dequeue_count INTEGER NOT NULL",
@@ -388,6 +400,13 @@ def require_value_free_identity(value: Any, field: str) -> str:
 def require_hex(value: str, field: str) -> str:
     if not HEX64.fullmatch(value):
         fail(f"{field}: expected lowercase 64-hex")
+    return value
+
+
+def require_scope_version(value: Any, field: str) -> int:
+    """Scope/predicate versions are numeric, never string aliases."""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        fail(f"{field}: positive integer required")
     return value
 
 
@@ -797,8 +816,9 @@ def binding_id_for(binding: dict[str, Any], authorization: dict[str, Any]) -> st
             require_hex(require_string(binding, "migrationBaselineInventoryDigestSha256"), "migrationBaselineInventoryDigestSha256"),
             require_hex(require_string(binding, "migrationDeltaInventoryDigestSha256"), "migrationDeltaInventoryDigestSha256"),
             require_hex(require_string(binding, "migrationFullInventoryDigestSha256"), "migrationFullInventoryDigestSha256"),
-            require_value_free_identity(binding.get("migrationPredicateSetVersion"), "migrationPredicateSetVersion"),
-            require_value_free_identity(binding.get("migrationSchemaAllowlistVersion"), "migrationSchemaAllowlistVersion"),
+            str(require_scope_version(binding.get("migrationPredicateSetVersion"), "migrationPredicateSetVersion")),
+            str(require_scope_version(binding.get("migrationSchemaAllowlistVersion"), "migrationSchemaAllowlistVersion")),
+            require_hex(require_string(binding, "migrationSchemaAllowlistSha256"), "migrationSchemaAllowlistSha256"),
         ])
     return sha_bytes(preimage.encode("utf-8"))
 
@@ -815,7 +835,15 @@ def load_binding(run_root: Path) -> dict[str, Any]:
     scope_profile = None
     if binding.get("scopeId") is not None:
         scope_profile = load_scope_manifest(run_root / "scope-manifest.json")
-        if any(binding.get(field) != scope_profile[field] for field in ("scopeId", "scopeVersion", "scopeAuthorityIssueNumber", "scopeAuthorityIssueBodySha256", "scopePlanFileSha256")) or binding.get("scopeManifestSha256") != scope_profile["scopeManifestSha256"]:
+        scope_expected = {
+            "scopeId": scope_profile["scopeId"],
+            "scopeVersion": scope_profile["scopeVersion"],
+            "scopeAuthorityIssueNumber": scope_profile["authorityIssueNumber"],
+            "scopeAuthorityIssueBodySha256": scope_profile["authorityIssueBodySha256"],
+            "scopePlanFileSha256": scope_profile["planFileSha256"],
+            "scopeManifestSha256": scope_profile["scopeManifestSha256"],
+        }
+        if any(binding.get(field) != expected for field, expected in scope_expected.items()):
             fail("binding scope authority identity mismatch")
         if binding.get("issueNumber") != scope_profile["authorityIssueNumber"] or binding.get("planRevision") != scope_profile["planRevision"] or binding.get("variantRulesVersion") != scope_profile["variantRulesVersion"]:
             fail("binding v1.3 scope plan identity mismatch")
@@ -829,7 +857,7 @@ def load_binding(run_root: Path) -> dict[str, Any]:
     phase2 = read_json(run_root / "phase-manifests/phase-2.json", "phase-2.json")
     phase2_fields = ("candidateId", "bindingId", "qualificationRunId", "runAttemptNonce", "releaseCommitSha", "releaseVersion", "ociPlatforms", "ociLayoutIndexSha256", "planFilePath", "producerWorkflowRef", "producerWorkflowRunId", "producerWorkflowRunAttempt", "candidateProvenanceSha256", "candidateImageIdentitySha256", "candidatePhase1ManifestSha256", "candidateArchivesDigestSha256")
     if scope_profile is not None:
-        phase2_fields += ("scopeId", "scopeVersion", "scopeManifestSha256", "scopeAuthorityIssueNumber", "scopeAuthorityIssueBodySha256", "scopePlanFileSha256", "migrationBaselineInventoryDigestSha256", "migrationDeltaInventoryDigestSha256", "migrationFullInventoryDigestSha256", "migrationPredicateSetVersion", "migrationSchemaAllowlistVersion")
+        phase2_fields += ("scopeId", "scopeVersion", "scopeManifestSha256", "scopeAuthorityIssueNumber", "scopeAuthorityIssueBodySha256", "scopePlanFileSha256", "planRevision", "issueNumber", "variantRulesVersion", "migrationBaselineInventoryDigestSha256", "migrationDeltaInventoryDigestSha256", "migrationFullInventoryDigestSha256", "migrationPredicateSetVersion", "migrationSchemaAllowlistVersion", "migrationSchemaAllowlistSha256", "migrationSchemaAllowlist")
     if any(phase2.get(field) != binding.get(field) for field in phase2_fields) or phase2.get("docs") != binding.get("docs") or phase2.get("authorizationDigestSha256") != binding.get("authorizationDigestSha256"):
         fail("phase-2 manifest identity mismatch")
     auth = read_json(run_root / "authorization.json", "authorization.json")
@@ -844,8 +872,14 @@ def load_binding(run_root: Path) -> dict[str, Any]:
         fail("phase-2 migration PIN identity mismatch")
     if scope_profile is not None and any(binding.get(field) != saved_pin.get(field) for field in ("migrationBaselineInventoryDigestSha256", "migrationDeltaInventoryDigestSha256", "migrationFullInventoryDigestSha256", "migrationPredicateSetVersion")):
         fail("v1.3 migration scope digest identity mismatch")
-    if scope_profile is not None and binding.get("migrationSchemaAllowlistVersion") != str(scope_profile["migration"]["schemaAllowlistVersion"]):
+    if scope_profile is not None and binding.get("migrationPredicateSetVersion") != scope_profile["migrationPredicateSetVersion"]:
+        fail("v1.3 migration predicate version mismatch")
+    if scope_profile is not None and binding.get("migrationSchemaAllowlistVersion") != scope_profile["migration"]["schemaAllowlistVersion"]:
         fail("v1.3 migration schema allowlist version mismatch")
+    if scope_profile is not None and binding.get("migrationSchemaAllowlistSha256") != scope_profile["migration"]["schemaAllowlistSha256"]:
+        fail("v1.3 migration schema allowlist digest mismatch")
+    if scope_profile is not None and binding.get("migrationSchemaAllowlist") != scope_profile["migration"]["schemaAllowlist"]:
+        fail("v1.3 migration schema allowlist mismatch")
     docs = binding.get("docs")
     if not isinstance(docs, dict) or docs.get("sourceCommitSha") != binding.get("releaseCommitSha") or docs.get("extractionMethod") != "git-archive-exact-source-plus-qualified-archive":
         fail("binding docs extraction metadata mismatch")
@@ -1275,6 +1309,8 @@ def load_scope_manifest(path: Path) -> dict[str, Any]:
             variants = list(raw_variants)
         predicate_set = require_value_free_identity(raw.get("predicateSet"), "predicateSet")
         owner_class = require_value_free_identity(raw.get("ownerRoleClass"), "ownerRoleClass")
+        if predicate_set != SCOPE_PREDICATE_SETS.get(scenario) or owner_class != SCOPE_OWNER_CLASSES.get(scenario):
+            fail(f"scope manifest: predicate/owner authority mismatch for {scenario}")
         normalized_rows.append({
             "rowIndex": index,
             "scenarioId": scenario,
@@ -1294,6 +1330,15 @@ def load_scope_manifest(path: Path) -> dict[str, Any]:
     schema_allowlist_version = migration.get("schemaAllowlistVersion")
     if not isinstance(schema_allowlist_version, int) or schema_allowlist_version < 1:
         fail("scope manifest: invalid schemaAllowlistVersion")
+    schema_allowlist = migration.get("schemaAllowlist")
+    if not isinstance(schema_allowlist, dict) or set(schema_allowlist) != set(V13_MIGRATION_DELTA):
+        fail("scope manifest: schema allowlist must cover exactly v1.3 migration delta")
+    for migration_name, definition in schema_allowlist.items():
+        if not isinstance(definition, dict) or not HEX64.fullmatch(str(definition.get("sqlSha256", ""))):
+            fail(f"scope manifest: schema allowlist digest missing for {migration_name}")
+        for field in ("tables", "indexes", "constraints"):
+            if not isinstance(definition.get(field), list) or any(not isinstance(item, str) or not item for item in definition[field]):
+                fail(f"scope manifest: schema allowlist {field} missing for {migration_name}")
     baseline = migration.get("baselineInventory")
     delta = migration.get("deltaInventory")
     full = migration.get("fullInventory")
@@ -1323,6 +1368,8 @@ def load_scope_manifest(path: Path) -> dict[str, Any]:
             "inventoryAlgorithm": migration["inventoryAlgorithm"],
             "predicateSetVersion": predicate_version,
             "schemaAllowlistVersion": schema_allowlist_version,
+            "schemaAllowlist": schema_allowlist,
+            "schemaAllowlistSha256": sha_object(schema_allowlist),
             "scenarioIds": sorted(V13_MIGRATION_SCENARIOS),
         },
         "scopeManifestSha256": sha_object(manifest),
@@ -1348,6 +1395,10 @@ def bind_rows(snapshot: dict[str, Any], scope_profile: dict[str, Any] | None = N
             variants = row.get("requiredVariants", [])
             if row.get("gateClass") != expected["gateClass"] or variants != expected["requiredVariants"]:
                 fail(f"issue snapshot rows[{scenario}]: scope gate/variant mismatch")
+            if "predicateSet" in row and row.get("predicateSet") != expected["predicateSet"]:
+                fail(f"issue snapshot rows[{scenario}]: predicate authority mismatch")
+            if "ownerRoleClass" in row and row.get("ownerRoleClass") != expected["ownerRoleClass"]:
+                fail(f"issue snapshot rows[{scenario}]: owner authority mismatch")
             result.append({
                 "rowIndex": index,
                 "scenarioId": scenario,
@@ -1667,13 +1718,21 @@ def command_bind(args: argparse.Namespace) -> None:
     qualification_lead_identity = require_value_free_identity(args.qualification_lead_identity, "qualification-lead-identity")
     conditional_role = require_value_free_identity(args.conditional_approver_role, "conditional-approver-role")
     conditional_identity = require_value_free_identity(args.conditional_approver_identity, "conditional-approver-identity")
+    # A v1.3 binding is governed by the selected scope authority.  Keep the
+    # historical #456 values only for the legacy profile; never mix them into
+    # a v1.3 binding and let a later load_binding call discover the mismatch.
+    scope_plan_revision = scope_profile["planRevision"] if scope_profile is not None else "12"
+    scope_issue_number = scope_profile["authorityIssueNumber"] if scope_profile is not None else 456
+    scope_variant_rules_version = scope_profile["variantRulesVersion"] if scope_profile is not None else VARIANT_RULES_VERSION
+    scope_predicate_version = scope_profile["migrationPredicateSetVersion"] if scope_profile is not None else None
+    scope_schema_allowlist_version = scope_profile["migration"]["schemaAllowlistVersion"] if scope_profile is not None else None
     binding_material = {
         "candidateId": args.candidate_id,
         "issueBodySha256": issue_body_sha,
         "planCommitSha": plan_commit,
         "planFilePath": plan_relative_path,
         "planFileSha256": plan_sha,
-        "variantRulesVersion": VARIANT_RULES_VERSION,
+        "variantRulesVersion": scope_variant_rules_version,
         "migrationPinDigestSha256": migration_pin["migrationPinDigestSha256"],
         "migrationInventoryDigestSha256": migration_pin["migrationInventoryDigestSha256"],
         "releaseCommitSha": intake_manifest["sourceCommitSha"],
@@ -1702,8 +1761,10 @@ def command_bind(args: argparse.Namespace) -> None:
             "migrationBaselineInventoryDigestSha256": sha_object({"scopeId": scope_profile["scopeId"], "scopeVersion": scope_profile["scopeVersion"], "releaseCommitSha": intake_manifest["sourceCommitSha"], "runnerOrderPaths": [f"src/Amane.Mailer/Data/Migrations/{name}" for name in scope_profile["migration"]["baselineInventory"]]}),
             "migrationDeltaInventoryDigestSha256": sha_object({"scopeId": scope_profile["scopeId"], "scopeVersion": scope_profile["scopeVersion"], "releaseCommitSha": intake_manifest["sourceCommitSha"], "runnerOrderPaths": [f"src/Amane.Mailer/Data/Migrations/{name}" for name in scope_profile["migration"]["deltaInventory"]]}),
             "migrationFullInventoryDigestSha256": migration_pin["migrationFullInventoryDigestSha256"],
-            "migrationPredicateSetVersion": str(scope_profile["migrationPredicateSetVersion"]),
-            "migrationSchemaAllowlistVersion": str(scope_profile["migration"]["schemaAllowlistVersion"]),
+            "migrationPredicateSetVersion": scope_predicate_version,
+            "migrationSchemaAllowlistVersion": scope_schema_allowlist_version,
+            "migrationSchemaAllowlistSha256": scope_profile["migration"]["schemaAllowlistSha256"],
+            "migrationSchemaAllowlist": scope_profile["migration"]["schemaAllowlist"],
         })
         if binding_material["migrationBaselineInventoryDigestSha256"] != migration_pin["migrationBaselineInventoryDigestSha256"] or binding_material["migrationDeltaInventoryDigestSha256"] != migration_pin["migrationDeltaInventoryDigestSha256"]:
             fail("scope migration inventory digest does not match the migration PIN")
@@ -1738,12 +1799,12 @@ def command_bind(args: argparse.Namespace) -> None:
         "qualificationRunId": run_id,
         "runAttemptNonce": nonce,
         "candidateId": args.candidate_id,
-        "planRevision": "12",
+        "planRevision": scope_plan_revision,
         "planCommitSha": plan_commit,
         "planFilePath": plan_relative_path,
         "planFileSha256": plan_sha,
-        "variantRulesVersion": VARIANT_RULES_VERSION,
-        "issueNumber": 456,
+        "variantRulesVersion": scope_variant_rules_version,
+        "issueNumber": scope_issue_number,
         "issueUpdatedAt": require_string(snapshot, "updatedAt"),
         "issueBodySha256": issue_body_sha,
         "fetchedAtUtc": created,
@@ -1786,8 +1847,10 @@ def command_bind(args: argparse.Namespace) -> None:
             "migrationBaselineFileDigests": migration_pin["migrationBaselineFileDigests"],
             "migrationDeltaFileDigests": migration_pin["migrationDeltaFileDigests"],
             "migrationFullFileDigests": migration_pin["migrationFullFileDigests"],
-            "migrationPredicateSetVersion": str(scope_profile["migrationPredicateSetVersion"]),
-            "migrationSchemaAllowlistVersion": str(scope_profile["migration"]["schemaAllowlistVersion"]),
+            "migrationPredicateSetVersion": scope_predicate_version,
+            "migrationSchemaAllowlistVersion": scope_schema_allowlist_version,
+            "migrationSchemaAllowlistSha256": scope_profile["migration"]["schemaAllowlistSha256"],
+            "migrationSchemaAllowlist": scope_profile["migration"]["schemaAllowlist"],
         })
     write_once(run_root / "authorization.json", authorization)
     write_once(run_root / "binding.json", binding)
@@ -1825,6 +1888,9 @@ def command_bind(args: argparse.Namespace) -> None:
     }
     if scope_profile is not None:
         phase2.update({
+            "planRevision": binding["planRevision"],
+            "issueNumber": binding["issueNumber"],
+            "variantRulesVersion": binding["variantRulesVersion"],
             "scopeId": scope_profile["scopeId"],
             "scopeVersion": scope_profile["scopeVersion"],
             "scopeManifestSha256": scope_profile["scopeManifestSha256"],
@@ -1836,6 +1902,8 @@ def command_bind(args: argparse.Namespace) -> None:
             "migrationFullInventoryDigestSha256": binding["migrationFullInventoryDigestSha256"],
             "migrationPredicateSetVersion": binding["migrationPredicateSetVersion"],
             "migrationSchemaAllowlistVersion": binding["migrationSchemaAllowlistVersion"],
+            "migrationSchemaAllowlistSha256": binding["migrationSchemaAllowlistSha256"],
+            "migrationSchemaAllowlist": binding["migrationSchemaAllowlist"],
         })
     write_once(run_root / "phase-manifests" / "phase-2.json", phase2)
     print(json.dumps({"candidateId": args.candidate_id, "bindingId": binding_id, "qualificationRunId": run_id}, sort_keys=True))
@@ -1923,7 +1991,7 @@ def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any]
         if binding.get("scopeId") != V13_SCOPE_ID:
             fail(f"{scenario}: v1.3 migration evidence requires the v1.3 scope profile")
         common = {"migrationDecision", "baselineInventory", "deltaInventory", "fullInventory", "expectedFullMigrationInventory", "migrationDirectoryInventoryBefore", "migrationDirectoryInventoryDigestSha256", "migrationDeltaInventoryDigestSha256", "migrationFileDigests", "outcome", "preApplyAppliedMigrations", "preApplyPendingMigrations", "postApplyAppliedMigrations", "postApplyPendingMigrations", "lastAppliedBefore", "lastAppliedAfter"}
-        extra = {"schemaContractResult", "piiValueCanaryResult", "schemaAllowlistVersion"} if scenario == "G583-MIG-03" else set()
+        extra = {"schemaContractResult", "piiValueCanaryResult", "schemaAllowlistVersion", "schemaAllowlistSha256", "schemaAllowlist"} if scenario == "G583-MIG-03" else set()
         if set(payload) - common - extra:
             fail(f"{scenario}: unknown v1.3 migration typePayload field")
         require_payload_fields(payload, common, scenario)
@@ -1940,7 +2008,14 @@ def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any]
             success = payload["outcome"] == "upgraded" and payload["preApplyAppliedMigrations"] == baseline and payload["preApplyPendingMigrations"] == delta and payload["postApplyAppliedMigrations"] == full and payload["postApplyPendingMigrations"] == [] and payload["lastAppliedBefore"] == baseline[-1] and payload["lastAppliedAfter"] == delta[-1]
         else:
             require_payload_fields(payload, extra, scenario)
-            success = payload["outcome"] == "schema-checked" and payload["schemaContractResult"] == "pass" and payload["piiValueCanaryResult"] == "pass" and payload["schemaAllowlistVersion"] == binding["migrationSchemaAllowlistVersion"]
+            success = (
+                payload["outcome"] == "schema-checked"
+                and payload["schemaContractResult"] == "pass"
+                and payload["piiValueCanaryResult"] == "pass"
+                and payload["schemaAllowlistVersion"] == binding["migrationSchemaAllowlistVersion"]
+                and payload["schemaAllowlistSha256"] == binding["migrationSchemaAllowlistSha256"]
+                and payload["schemaAllowlist"] == binding["migrationSchemaAllowlist"]
+            )
         if envelope["result"] == "PASS" and not success:
             fail(f"{scenario}: PASS requires exact v1.3 migration predicate")
         if envelope["result"] == "FAIL" and success:
@@ -1983,6 +2058,8 @@ def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any]
 
 def validate_type_payload(envelope: dict[str, Any], binding: dict[str, Any], row: dict[str, Any]) -> None:
     scenario = row["scenarioId"]
+    if binding.get("scopeId") is not None and (row.get("predicateSet") != SCOPE_PREDICATE_SETS.get(scenario) or row.get("ownerRoleClass") != SCOPE_OWNER_CLASSES.get(scenario)):
+        fail(f"{scenario}: scope predicate/owner mapping is not registered")
     evidence_type = envelope.get("evidenceType")
     if evidence_type not in EVIDENCE_TYPES.get(scenario, ()):
         fail(f"{scenario}: evidenceType is not allowed")

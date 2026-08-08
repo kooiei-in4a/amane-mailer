@@ -38,9 +38,10 @@ All three migration scenarios are Hard gates and require the
 
 The v1.2.0 baseline is migrations 001..013. The v1.3.0 delta is migrations
 014..018. The full inventory is the exact runner-order list 001..018 from the
-RC tree. The scope manifest records every path, SHA-256, Git blob SHA, the full
-inventory digest, the delta digest, and the predicate-set version. Missing,
-extra, reordered, or tree-mismatched files fail closed.
+RC tree. The scope manifest records the canonical ordered paths and schema
+allowlist; the B-MIG-PIN records each path's SHA-256/Git blob SHA plus the full
+and delta digests. Both objects are bound together, so missing, extra,
+reordered, or tree-mismatched files fail closed.
 
 ## Binding requirements
 
