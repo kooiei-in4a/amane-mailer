@@ -1,4 +1,5 @@
 using Amane.Mailer.Admin;
+using Amane.Mailer.Attachments.Spool;
 using Amane.Mailer.Bounce;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
@@ -120,11 +121,26 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<MailerDbStatsReader>();
         services.AddSingleton<MailerDbStorageInfoReader>();
 
+        services.AddSingleton(provider => AttachmentSpoolOptions.Resolve(
+            provider.GetRequiredService<IConfiguration>(),
+            provider.GetRequiredService<SqliteConnectionFactory>()));
+        services.AddSingleton(provider =>
+        {
+            var spool = new AttachmentSpool(provider.GetRequiredService<AttachmentSpoolOptions>());
+            spool.EnsureRootDirectoriesExist();
+            return spool;
+        });
+        services.AddSingleton<MailRequestAttachmentStore>();
+        services.AddSingleton<MailAttachmentSubmissionStore>();
+        services.AddSingleton<MailerMaintenanceLeaseStore>();
+
         services.AddSingleton<MailRequestClaimStore>();
         services.AddSingleton<MailRequestAcceptStore>();
         services.AddSingleton<MailRequestConsumerMutations>();
         services.AddSingleton<MailRequestAdminQueries>();
         services.AddSingleton<WorkerHeartbeatStore>();
+        services.AddSingleton<MailRequestRecipientStore>();
+        services.AddSingleton<MailPlainSubmissionStore>();
         services.AddSingleton<MailRequestRepository>();
         services.AddSingleton<AdminAuditRepository>();
         services.AddSingleton<ProviderEventInboxRepository>();
@@ -171,6 +187,7 @@ public static class AmaneMailerServiceCollectionExtensions
             services.AddHostedService<MailerWalCheckpointShutdownService>();
             services.AddHostedService<MailRequestWorker>();
             services.AddHostedService<WebhookDeliveryWorker>();
+            services.AddHostedService<AttachmentSpoolReconciliationService>();
 
             if (MailerBounceIngestionOptions.IsEnabled(configuration))
             {

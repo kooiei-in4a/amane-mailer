@@ -138,7 +138,10 @@ public sealed class MailerCliCancellationTests
             try
             {
                 var exitCode = await MailerCliHost.MapCancellationAsync(
-                    token => new DbBackupCommand(factory).ExecuteAsync(
+                    token => new DbBackupCommand(
+                        factory,
+                        new MailerMaintenanceLeaseStore(factory, TimeProvider.System),
+                        TimeProvider.System).ExecuteAsync(
                         ["db", "backup", backupPath],
                         output,
                         error,

@@ -6,6 +6,7 @@ namespace Amane.Mailer.Operations;
 public sealed class MailerRuntimeMetrics
 {
     private long _acceptedTotal;
+    private long _attachmentRequestsAcceptedTotal;
     private long _retriesTotal;
     private long _finalizeSkippedTotal;
     private long _webhookFinalizeSkippedTotal;
@@ -22,9 +23,40 @@ public sealed class MailerRuntimeMetrics
     private readonly object _gate = new();
     private readonly Dictionary<(string Result, string Provider), long> _deliveries = new();
     private readonly Dictionary<string, DeliveryDurationHistogram> _durations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _attachmentValidationRejected = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _attachmentSpoolCleanups = new(StringComparer.Ordinal);
 
     public void RecordRequestAccepted() =>
         Interlocked.Increment(ref _acceptedTotal);
+
+    /// <summary>ADR 0022 D-04: a mail request with one or more attachments was accepted (spool
+    /// committed, DB row inserted). Never carries filename or content -- count only.</summary>
+    public void RecordAttachmentRequestAccepted() =>
+        Interlocked.Increment(ref _attachmentRequestsAcceptedTotal);
+
+    /// <summary>ADR 0022 D-04/D-12: an attachment-bearing request was rejected at acceptance
+    /// time. <paramref name="reasonCode"/> must be a fixed <see cref="MailerErrorCodes"/>-style
+    /// value, never a raw filename or provider message.</summary>
+    public void RecordAttachmentValidationRejected(string reasonCode)
+    {
+        lock (_gate)
+        {
+            _attachmentValidationRejected.TryGetValue(reasonCode, out var count);
+            _attachmentValidationRejected[reasonCode] = count + 1;
+        }
+    }
+
+    /// <summary>ADR 0022 D-06/D-09 spool lifecycle: a committed or staging spool entry was
+    /// removed. <paramref name="kind"/> is a fixed category (e.g. "committed", "staging"),
+    /// never an opaque spool key or filename.</summary>
+    public void RecordAttachmentSpoolCleanup(string kind)
+    {
+        lock (_gate)
+        {
+            _attachmentSpoolCleanups.TryGetValue(kind, out var count);
+            _attachmentSpoolCleanups[kind] = count + 1;
+        }
+    }
 
     public void RecordFinalizeSkipped() =>
         Interlocked.Increment(ref _finalizeSkippedTotal);
@@ -99,6 +131,7 @@ public sealed class MailerRuntimeMetrics
         {
             return new MailerRuntimeMetricsSnapshot(
                 Interlocked.Read(ref _acceptedTotal),
+                Interlocked.Read(ref _attachmentRequestsAcceptedTotal),
                 Interlocked.Read(ref _retriesTotal),
                 Interlocked.Read(ref _finalizeSkippedTotal),
                 Interlocked.Read(ref _webhookFinalizeSkippedTotal),
@@ -118,13 +151,20 @@ public sealed class MailerRuntimeMetrics
                 _durations.ToDictionary(
                     entry => entry.Key,
                     entry => entry.Value.CaptureSnapshot(),
-                    StringComparer.Ordinal));
+                    StringComparer.Ordinal),
+                _attachmentValidationRejected
+                    .Select(entry => (entry.Key, entry.Value))
+                    .ToArray(),
+                _attachmentSpoolCleanups
+                    .Select(entry => (entry.Key, entry.Value))
+                    .ToArray());
         }
     }
 
     internal void ClearForTests()
     {
         Interlocked.Exchange(ref _acceptedTotal, 0);
+        Interlocked.Exchange(ref _attachmentRequestsAcceptedTotal, 0);
         Interlocked.Exchange(ref _retriesTotal, 0);
         Interlocked.Exchange(ref _finalizeSkippedTotal, 0);
         Interlocked.Exchange(ref _webhookFinalizeSkippedTotal, 0);
@@ -143,6 +183,8 @@ public sealed class MailerRuntimeMetrics
             _readinessFailureReason = null;
             _deliveries.Clear();
             _durations.Clear();
+            _attachmentValidationRejected.Clear();
+            _attachmentSpoolCleanups.Clear();
         }
     }
 
@@ -161,6 +203,7 @@ public sealed class MailerRuntimeMetrics
         MailRequestState.Delivered => "delivered",
         MailRequestState.Failed => "failed",
         MailRequestState.DeadLettered => "dead_lettered",
+        MailRequestState.DeliveryUnknown => "delivery_unknown",
         _ => "unknown",
     };
 
@@ -191,6 +234,7 @@ public sealed class MailerRuntimeMetrics
 
 public sealed record MailerRuntimeMetricsSnapshot(
     long AcceptedTotal,
+    long AttachmentRequestsAcceptedTotal,
     long RetriesTotal,
     long FinalizeSkippedTotal,
     long WebhookFinalizeSkippedTotal,
@@ -205,7 +249,9 @@ public sealed record MailerRuntimeMetricsSnapshot(
     bool Ready,
     string? ReadinessFailureReason,
     (string Result, string Provider, long Count)[] Deliveries,
-    IReadOnlyDictionary<string, DeliveryDurationSnapshot> Durations);
+    IReadOnlyDictionary<string, DeliveryDurationSnapshot> Durations,
+    (string ReasonCode, long Count)[] AttachmentValidationRejected,
+    (string Kind, long Count)[] AttachmentSpoolCleanups);
 
 public sealed record DeliveryDurationSnapshot(
     long[] BucketCounts,

@@ -3,6 +3,7 @@ using Amane.Mailer.Contracts.MailRequests;
 using MailKit.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using MimeKit;
 
 namespace Amane.Mailer.Delivery;
 
@@ -44,6 +45,8 @@ public sealed class MailpitMailDeliveryProvider
         try
         {
             using var message = OutboundMimeMessageFactory.Create(job, tenant);
+            var sender = (MailboxAddress)message.From[0];
+            var recipients = OutboundMimeMessageFactory.BuildEnvelopeRecipients(job);
             await using var client = _clientFactory();
             var socketOptions = _options.MailpitUseSsl
                 ? SecureSocketOptions.StartTlsWhenAvailable
@@ -54,7 +57,9 @@ public sealed class MailpitMailDeliveryProvider
                 _options.MailpitSmtpPort,
                 socketOptions,
                 cancellationToken);
-            await client.SendAsync(message, cancellationToken);
+            // Explicit envelope (Issue #546 review finding F4): recipients (including Bcc) are
+            // passed here, not read from message.To/Cc/Bcc -- message never carries a Bcc header.
+            await client.SendAsync(message, sender, recipients, cancellationToken);
 
             // SMTP DATA accepted: do not convert later disconnect failures (including send-timeout
             // cancellation) into retryable Failure — that would schedule a duplicate send. (#275)
@@ -70,6 +75,15 @@ public sealed class MailpitMailDeliveryProvider
             }
 
             return MailDeliveryResult.Success();
+        }
+        catch (AttachmentSpoolFileReadException)
+        {
+            // Never let the underlying file I/O exception (which embeds the private spool path,
+            // ADR 0022 D-08/D-14) reach the generic sanitizer below.
+            return MailDeliveryResult.Failure(
+                MailDeliveryErrorCodes.AttachmentStorageMissing,
+                "Attachment spool file could not be read.",
+                retryable: false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

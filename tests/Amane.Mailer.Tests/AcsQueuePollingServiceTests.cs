@@ -473,7 +473,7 @@ public sealed class AcsQueuePollingServiceTests
     }
 
     [Fact]
-    public async Task Poll_deletes_ignored_delivered_without_inbox_insert()
+    public async Task Poll_deletes_delivered_after_inbox_insert()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await OpenMigratedAsync(ct);
@@ -496,7 +496,7 @@ public sealed class AcsQueuePollingServiceTests
         await service.PollOnceAsync(ct);
 
         Assert.Contains(("msg-delivered", "pop-delivered"), queue.Deleted);
-        Assert.Equal(0, await CountInboxAsync(db.Factory, "eg-delivered", ct));
+        Assert.Equal(1, await CountInboxAsync(db.Factory, "eg-delivered", ct));
     }
 
     [Fact]
@@ -909,7 +909,7 @@ public sealed class AcsQueuePollingServiceTests
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                ["ConnectionStrings:Mailer"] = $"Data Source={databasePath};Pooling=False",
             })
             .Build();
         var factory = new SqliteConnectionFactory(configuration);
@@ -923,7 +923,6 @@ public sealed class AcsQueuePollingServiceTests
 
         public async ValueTask DisposeAsync()
         {
-            SqliteConnection.ClearAllPools();
             await Task.Run(() => Directory.Delete(root, recursive: true));
         }
     }
@@ -1061,4 +1060,3 @@ public sealed class AcsQueuePollingServiceTests
         }
     }
 }
-

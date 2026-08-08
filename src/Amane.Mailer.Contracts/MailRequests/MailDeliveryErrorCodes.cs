@@ -20,4 +20,17 @@ public static class MailDeliveryErrorCodes
     public const string ProviderProtocol = "PROVIDER_PROTOCOL";
     public const string ProviderAuth = "PROVIDER_AUTH";
     public const string ProviderUnknown = "PROVIDER_UNKNOWN";
+
+    /// <summary>
+    /// Attachment metadata exists in SQLite but the durable spool file is missing at dispatch
+    /// time (ADR 0022 D-08 recovery). Terminal Failed; the provider is never invoked.
+    /// </summary>
+    public const string AttachmentStorageMissing = "ATTACHMENT_STORAGE_MISSING";
+
+    /// <summary>
+    /// Fixed category for the <c>DeliveryUnknown</c> terminal status (ADR 0022 D-08/D-12):
+    /// provider acceptance could not be proven or disproven after a submission marker committed.
+    /// Distinct from an ordinary failure; never treated as a synonym for Failed.
+    /// </summary>
+    public const string DeliveryUnknown = "DELIVERY_UNKNOWN";
 }

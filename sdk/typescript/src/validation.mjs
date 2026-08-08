@@ -12,14 +12,21 @@ export const MAIL_REQUEST_JSON_FIELDS = new Set([
   'mail_request_id',
   'purpose',
   'to',
+  'cc',
+  'bcc',
   'subject',
   'html_body',
   'text_body',
   'reply_to',
   'metadata',
   'scheduled_at',
+  'attachments',
   'payload_hash',
 ]);
+
+// ADR 0022 D-01 fixed MVP limit. Mailer is the authority; this is a client-side fail-fast check
+// only, not a substitute for server-side validation.
+export const MAX_ATTACHMENTS = 5;
 
 export class MailRequestValidationError extends Error {
   constructor(message) {
@@ -42,12 +49,37 @@ export function assertSourceService(value) {
   }
 }
 
-export function assertRecipient(recipient) {
+export function assertRecipient(recipient, fieldName, index) {
   if (!recipient || typeof recipient !== 'object' || typeof recipient.email !== 'string') {
-    throw new MailRequestValidationError('to[0].email is required.');
+    throw new MailRequestValidationError(`${fieldName}[${index}].email is required.`);
   }
   if (recipient.email.length === 0) {
-    throw new MailRequestValidationError('to[0].email must not be empty.');
+    throw new MailRequestValidationError(`${fieldName}[${index}].email must not be empty.`);
+  }
+}
+
+function assertRecipientRoles(draft) {
+  let recipientCount = 0;
+  for (const fieldName of ['to', 'cc', 'bcc']) {
+    const role = draft[fieldName];
+    if (role === null || role === undefined) {
+      continue;
+    }
+    if (!Array.isArray(role)) {
+      throw new MailRequestValidationError(`${fieldName} must be an array when provided.`);
+    }
+    if (role.length > 10) {
+      throw new MailRequestValidationError(`${fieldName} must contain at most 10 recipients.`);
+    }
+    recipientCount += role.length;
+    role.forEach((recipient, index) => assertRecipient(recipient, fieldName, index));
+  }
+
+  if (recipientCount === 0) {
+    throw new MailRequestValidationError('At least one recipient in to, cc, or bcc is required.');
+  }
+  if (recipientCount > 20) {
+    throw new MailRequestValidationError('to, cc, and bcc must contain at most 20 recipients combined.');
   }
 }
 
@@ -109,6 +141,35 @@ export function assertScheduledAt(value) {
   }
 }
 
+export function assertAttachments(attachments) {
+  if (attachments === null || attachments === undefined) {
+    return;
+  }
+  if (!Array.isArray(attachments)) {
+    throw new MailRequestValidationError('attachments must be an array when provided.');
+  }
+  if (attachments.length > MAX_ATTACHMENTS) {
+    throw new MailRequestValidationError(
+      `attachments must contain at most ${MAX_ATTACHMENTS} entries.`,
+    );
+  }
+  attachments.forEach((attachment, index) => {
+    if (!attachment || typeof attachment !== 'object') {
+      throw new MailRequestValidationError(`attachments[${index}] must be an object.`);
+    }
+    for (const field of ['file_name', 'content_type', 'content_base64', 'content_sha256']) {
+      if (typeof attachment[field] !== 'string' || attachment[field].length === 0) {
+        throw new MailRequestValidationError(`attachments[${index}].${field} is required.`);
+      }
+    }
+    if (!Number.isInteger(attachment.byte_length) || attachment.byte_length < 0) {
+      throw new MailRequestValidationError(
+        `attachments[${index}].byte_length must be a non-negative integer.`,
+      );
+    }
+  });
+}
+
 export function validateMailRequestDraft(draft) {
   assertUuid(draft.tenant_id, 'tenant_id');
   assertUuid(draft.mail_request_id, 'mail_request_id');
@@ -118,13 +179,7 @@ export function validateMailRequestDraft(draft) {
     throw new MailRequestValidationError('purpose is required.');
   }
 
-  if (!Array.isArray(draft.to) || draft.to.length === 0) {
-    throw new MailRequestValidationError('to must contain at least one recipient.');
-  }
-  if (draft.to.length > 1) {
-    throw new MailRequestValidationError('to must contain at most one recipient.');
-  }
-  assertRecipient(draft.to[0]);
+  assertRecipientRoles(draft);
 
   if (typeof draft.subject !== 'string' || draft.subject.length === 0) {
     throw new MailRequestValidationError('subject is required.');
@@ -139,5 +194,8 @@ export function validateMailRequestDraft(draft) {
   assertMetadata(draft.metadata);
   if (Object.prototype.hasOwnProperty.call(draft, 'scheduled_at')) {
     assertScheduledAt(draft.scheduled_at);
+  }
+  if (Object.prototype.hasOwnProperty.call(draft, 'attachments')) {
+    assertAttachments(draft.attachments);
   }
 }

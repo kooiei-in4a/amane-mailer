@@ -10,6 +10,13 @@ function cloneRecipient(recipient) {
   return result;
 }
 
+function appendRecipient(fields, fieldName, recipient) {
+  if (!Array.isArray(fields[fieldName])) {
+    fields[fieldName] = [];
+  }
+  fields[fieldName].push(cloneRecipient(recipient));
+}
+
 export class MailRequestBuilder {
   static create() {
     return new MailRequestBuilder();
@@ -48,7 +55,53 @@ export class MailRequestBuilder {
   }
 
   to(recipient) {
+    if (recipient === null) {
+      this.#fields.to = null;
+      this.#explicitNulls.add('to');
+      return this;
+    }
     this.#fields.to = [cloneRecipient(recipient)];
+    this.#explicitNulls.delete('to');
+    return this;
+  }
+
+  addTo(recipient) {
+    appendRecipient(this.#fields, 'to', recipient);
+    this.#explicitNulls.delete('to');
+    return this;
+  }
+
+  cc(recipient) {
+    if (recipient === null) {
+      this.#fields.cc = null;
+      this.#explicitNulls.add('cc');
+      return this;
+    }
+    this.#fields.cc = [cloneRecipient(recipient)];
+    this.#explicitNulls.delete('cc');
+    return this;
+  }
+
+  addCc(recipient) {
+    appendRecipient(this.#fields, 'cc', recipient);
+    this.#explicitNulls.delete('cc');
+    return this;
+  }
+
+  bcc(recipient) {
+    if (recipient === null) {
+      this.#fields.bcc = null;
+      this.#explicitNulls.add('bcc');
+      return this;
+    }
+    this.#fields.bcc = [cloneRecipient(recipient)];
+    this.#explicitNulls.delete('bcc');
+    return this;
+  }
+
+  addBcc(recipient) {
+    appendRecipient(this.#fields, 'bcc', recipient);
+    this.#explicitNulls.delete('bcc');
     return this;
   }
 
@@ -107,10 +160,35 @@ export class MailRequestBuilder {
     return this;
   }
 
+  /**
+   * Sets attachments (ADR 0022 D-01). Each entry needs file_name, content_type,
+   * content_base64, content_sha256, and byte_length. Unspecified/null and an empty array are
+   * equivalent ("no attachments").
+   */
+  attachments(value) {
+    this.#fields.attachments = value;
+    if (value === null) {
+      this.#explicitNulls.add('attachments');
+    } else {
+      this.#explicitNulls.delete('attachments');
+    }
+    return this;
+  }
+
   build() {
     const draft = { ...this.#fields };
 
-    for (const key of ['html_body', 'text_body', 'reply_to', 'metadata', 'scheduled_at']) {
+    for (const key of [
+      'to',
+      'cc',
+      'bcc',
+      'html_body',
+      'text_body',
+      'reply_to',
+      'metadata',
+      'scheduled_at',
+      'attachments',
+    ]) {
       if (draft[key] === undefined) {
         delete draft[key];
       } else if (draft[key] === null && !this.#explicitNulls.has(key)) {
@@ -120,10 +198,13 @@ export class MailRequestBuilder {
 
     validateMailRequestDraft(draft);
 
-    draft.payload_hash = computeDeliveryPayloadSha256Hex({
-      ...draft,
-      payload_hash: 'placeholder',
-    });
+    const attachmentsForHash = draft.attachments && draft.attachments.length > 0
+      ? draft.attachments
+      : null;
+    draft.payload_hash = computeDeliveryPayloadSha256Hex(
+      { ...draft, payload_hash: 'placeholder' },
+      attachmentsForHash,
+    );
 
     return Object.freeze({ ...draft });
   }

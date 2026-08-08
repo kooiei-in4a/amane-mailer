@@ -1,5 +1,6 @@
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Json;
 using Amane.Mailer.Queue;
 using Amane.Mailer.Webhooks;
 using Microsoft.AspNetCore.Antiforgery;
@@ -155,6 +156,9 @@ public static class AdminMailRequestMutationHandlers
         return result.Status switch
         {
             ManualMailRequestMutationStatus.NotFound => Results.NotFound(),
+            ManualMailRequestMutationStatus.AttachmentManualRetryNotSupported => MailerJsonResults.Error(
+                AdminAuditLog.ErrorCodes.AttachmentManualRetryNotSupported,
+                StatusCodes.Status409Conflict),
             ManualMailRequestMutationStatus.LockHeld or ManualMailRequestMutationStatus.InvalidState =>
                 Results.Conflict(),
             _ => Results.Conflict(),

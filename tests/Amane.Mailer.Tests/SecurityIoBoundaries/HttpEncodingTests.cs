@@ -152,9 +152,11 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
     [Fact]
     public async Task Oversized_body_with_invalid_utf8_still_returns_413()
     {
+        // /internal/mail-requests accepts attachments (ADR 0022 D-02), so its cap is
+        // MailAttachmentLimits.MaxConsumerHttpEnvelopeBytes (16 MiB), not the base 256,000 bytes.
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
-        var bytes = new byte[256_001];
+        var bytes = new byte[16 * 1024 * 1024 + 1];
         Array.Fill(bytes, (byte)0xFF);
         using var content = RawBytesContent(bytes);
 

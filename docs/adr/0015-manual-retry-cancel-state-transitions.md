@@ -2,6 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-03
+- **Amended by:** [ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md)（2026-08-05）
+- **Related PR:** [#539](https://github.com/kooiei-in4a/amane-mailer/pull/539)
+- **Related issues:** [#519](https://github.com/kooiei-in4a/amane-mailer/issues/519)、[#517](https://github.com/kooiei-in4a/amane-mailer/issues/517)
+- **Decision owner:** Koo
+- **Design approval:** 2026-08-05（production implementationは未承認・未実施）
 - **Tracks:** [#100](https://github.com/kooiei-in4a/amane-mailer/issues/100)
 - **Implementation follow-up:** [#101](https://github.com/kooiei-in4a/amane-mailer/issues/101)
 - **Supersedes ambiguity in:** [service-spec §3.4](../service-spec.md#34-状態遷移mail_requestsstatus)（`Failed` の意味、手動操作の未定義）
@@ -222,6 +227,18 @@
                                     │
                                     └──▶ 0 Queued (manual retry 成功時)
 ```
+
+### D-10. ADR 0023 amendment: provider uncertainty and whole-request retry boundary
+
+本ADRの単一recipient plain requestに対する既存manual retry契約は、provider invocationがなかったことをNoEvidenceとして証明できる場合、または同じevidence rowをDefinitelyNotSubmittedからStartedへfenced transitionできる場合に限って互換維持する。[ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md) のrecipient単位結果とrequest aggregateを優先し、成功済みrecipientへの二重送信を防ぐ。
+
+Unknown／DeliveryUnknown、provider acceptance不明、一部recipientへ送信された可能性があるrequest、legacy migration 018でUnknownへ分類されたrequestは、automatic retry、whole-request manual retry、cancel／rescheduleによるprovider再呼び出しを禁止する。`attempt_count=0`へ戻っていても履歴があればUnknownであり、manual retry対象にしない。
+
+Started、Accepted、DefinitelyRejected、UnknownからQueuedへ戻してはならない。Failed／DeadLetteredの既存manual retryを許可する場合も、evidenceがNoEvidenceまたはDefinitelyNotSubmittedであることをfenced conditional transitionで確認する。再送が必要な場合は新しい `mail_request_id` による新規requestを基本とする。
+
+添付requestは[ADR 0022](0022-attachment-contract-validation-and-delivery-boundaries.md)の契約を維持し、Delivered、Failed、DeadLettered、Cancelled、DeliveryUnknownを含む全terminal stateから既存requestのmanual retryを禁止する。
+
+このamendmentは既存single-recipient compatibility boundaryを狭める設計承認であり、Admin API、runtime、migration SQLはPR #539で変更しない。
 
 ## Rejected Alternatives
 

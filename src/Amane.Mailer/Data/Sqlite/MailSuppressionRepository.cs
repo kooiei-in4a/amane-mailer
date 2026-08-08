@@ -215,10 +215,34 @@ public sealed class MailSuppressionRepository(SqliteConnectionFactory connection
         }
 
         command.CommandText = $"""
+            WITH classified AS (
+                SELECT
+                    s.id, s.tenant_id, s.recipient_email, s.reason,
+                    s.source_bounce_event_id, s.created_at,
+                    CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM recipient_delivery_events e
+                        INNER JOIN mail_requests mr
+                          ON mr.tenant_id = e.tenant_id
+                         AND mr.source_service = e.source_service
+                         AND mr.mail_request_id = e.mail_request_id
+                        INNER JOIN mail_request_recipients rr
+                          ON rr.request_id = mr.id
+                         AND rr.recipient_role = e.recipient_role
+                         AND rr.ordinal = e.recipient_ordinal
+                         AND rr.address_key = s.recipient_email
+                        WHERE e.id = s.source_bounce_event_id
+                          AND e.tenant_id = s.tenant_id
+                          AND e.recipient_role IN (0, 1)
+                    ) THEN 0 ELSE 1 END AS is_bcc_sensitive
+                FROM mail_suppressions s
+                {where}
+            )
             SELECT
-                id, tenant_id, recipient_email, reason, source_bounce_event_id, created_at
-            FROM mail_suppressions
-            {where}
+                id, tenant_id,
+                CASE WHEN is_bcc_sensitive = 1 THEN NULL ELSE recipient_email END,
+                reason, source_bounce_event_id, created_at, is_bcc_sensitive
+            FROM classified
             ORDER BY created_at DESC, id DESC
             LIMIT @Limit;
             """;
@@ -231,10 +255,11 @@ public sealed class MailSuppressionRepository(SqliteConnectionFactory connection
             rows.Add(new AdminSuppressionListRow(
                 Id: Guid.Parse(reader.GetString(0)),
                 TenantId: Guid.Parse(reader.GetString(1)),
-                RecipientEmail: reader.GetString(2),
+                RecipientEmail: reader.IsDBNull(2) ? string.Empty : reader.GetString(2),
                 Reason: reader.GetString(3),
                 SourceBounceEventId: reader.IsDBNull(4) ? null : Guid.Parse(reader.GetString(4)),
-                CreatedAt: SqliteTime.FromStorage(reader.GetString(5))));
+                CreatedAt: SqliteTime.FromStorage(reader.GetString(5)),
+                IsBccSensitive: reader.GetInt32(6) != 0));
         }
 
         string? nextCursor = null;

@@ -22,7 +22,8 @@ public sealed record AdminSuppressionListRow(
     string RecipientEmail,
     string Reason,
     Guid? SourceBounceEventId,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    bool IsBccSensitive = false);
 
 public sealed record AdminSuppressionListPage(
     IReadOnlyList<AdminSuppressionListRow> Items,
