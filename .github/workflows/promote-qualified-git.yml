@@ -90,7 +90,7 @@ on:
         required: true
         type: string
       merge_freeze_confirmation:
-        description: Maintainer confirms no concurrent target branch writes during merge
+        description: Maintainer confirms target main remained frozen from successor RC creation through parent verification
         required: true
         type: choice
         options:
@@ -298,7 +298,7 @@ jobs:
             || { echo "::error::workflow must be dispatched from refs/heads/main"; exit 1; }
           [[ "${APP_ID}" =~ ^[1-9][0-9]*$ && -n "${APP_SLUG}" ]] \
             || { echo "::error::release promotion App configuration is missing"; exit 1; }
-          [[ "${RELEASE_BRANCH}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+-rc$ ]] \
+          [[ "${RELEASE_BRANCH}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+-rc([1-9][0-9]*)?$ ]] \
             || { echo "::error::release branch is invalid"; exit 1; }
           [[ "${CANDIDATE_RUN_ID}" =~ ^[1-9][0-9]*$ && "${CANDIDATE_ATTEMPT}" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::candidate run identity is invalid"; exit 1; }
@@ -345,7 +345,12 @@ jobs:
             # publication-only workflow. Keep that transport producer bound to
             # a release-specific immutable handoff branch and protected SHA;
             # never accept an arbitrary producer branch from dispatch input.
-            [[ "${QUALIFICATION_PRODUCER_HEAD_BRANCH}" == "qualification-handoff/v${{ inputs.release_version }}" ]] \
+            handoff_suffix="${RELEASE_BRANCH#release/v${{ inputs.release_version }}}"
+            expected_handoff_branch="qualification-handoff/v${{ inputs.release_version }}"
+            if [[ "${handoff_suffix}" != "-rc" ]]; then
+              expected_handoff_branch+="${handoff_suffix}"
+            fi
+            [[ "${QUALIFICATION_PRODUCER_HEAD_BRANCH}" == "${expected_handoff_branch}" ]] \
               || { echo "::error::qualification producer handoff branch is invalid"; exit 1; }
             [[ "${QUALIFICATION_PRODUCER_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] \
               || { echo "::error::qualification producer handoff SHA is invalid"; exit 1; }

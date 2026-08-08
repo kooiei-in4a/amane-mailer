@@ -83,7 +83,9 @@ workflow は次を operator input と immutable handoff / live GitHub state の�
 
 - `releaseVersion`
 - `releaseCommitSha`
-- `releaseBranch`
+- `releaseBranch`（`release/v<version>-rc` または後継候補の
+  `release/v<version>-rc<positive integer>`。各RC branchはimmutableで、同じbranchへの
+  force-push / commit追加は禁止）
 - `candidateRunId`
 - `candidateAttempt`
 - `ociIndexDigest`
@@ -204,10 +206,16 @@ release environmentの保護変数で固定し、Actions APIのrun metadataと�
 expired、ambiguous、producer identityが未設定/不一致、またはsealed identityを再現できない場合はSTOPします。
 既存candidateの再生成・qualification再実行・seal変更・候補artifactへのsealed JSON後付けで回避してはいけません。
 保護変数は`RELEASE_PROMOTION_QUALIFICATION_REPOSITORY`、`..._WORKFLOW_ID`、
-`..._WORKFLOW_PATH`、`..._EVENT`、`..._HEAD_BRANCH`、`..._HEAD_SHA`です。
+`..._WORKFLOW_PATH`、`..._EVENT`、`..._HEAD_BRANCH`、`..._HEAD_SHA`です。release branchが
+`release/v<version>-rc`の場合のhandoff branchは`qualification-handoff/v<version>`、
+`release/v<version>-rcN`の場合は`qualification-handoff/v<version>-rcN`とし、release branchと
+handoff branchのsuffixを一致させます。publication-only handoff workflowはRCごとの固定handoff
+branch / sealed-byte hash設定を持ち、branch上の実物を変更せず検証・転送します。
 
 明示的release approval後だけ、exact RC -> main PRを作り、checks green、main tip固定、
-fingerprint一致を確認して`mode=release`をdispatchします。workflowは1回の承認境界内で
+fingerprint一致を確認して`mode=release`をdispatchします。後継RCを作る場合は旧RC branchを
+書き換えず、`release/v<version>-rc2` など新しいimmutable branch / SHAとしてcandidate、
+qualification、seal、handoffを最初からやり直します。workflowは1回の承認境界内で
 merge commitを作成し、親順を検証してからannotated `v<version>` tagをexact RC SHAへ作成します。
 OCI / NuGet / GitHub Release / deployはこのworkflowの後でも自動実行されません。
 
@@ -215,8 +223,8 @@ OCI / NuGet / GitHub Release / deployはこのworkflowの後でも自動実行�
 
 GitHubのPR merge APIはPR head SHAだけをatomicに比較し、base SHAのcompare-and-swapを提供しません。
 したがって、`merge_freeze_confirmation=CONFIRM_TARGET_MERGE_FREEZE`を必須入力とし、承認記録に
-次を明記します。merge直前からparent検証完了まで、対象branchへの他PR merge、branch update、
-force-push、ruleset変更を行わないこと。workflowは直前にbase/head/RC/checksを再取得し、merge後に
+次を明記します。後継RC branchを作成してcandidate / qualificationを開始してからparent検証完了まで、
+対象branchへの他PR merge、branch update、force-push、ruleset変更を行わないこと。workflowは直前にbase/head/RC/checksを再取得し、merge後に
 parent順を検証します。parent不一致なら即STOPし、tag作成・自動rollback・別SHA補完をしません。
 このfreezeは競合リスクを低減する運用制約であり、GitHub APIのatomic base保証ではありません。
 atomic保証が必要な場合は、merge queue（organization所有repositoryが必要）または専用lock rulesetの

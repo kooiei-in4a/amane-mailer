@@ -32,7 +32,7 @@ IDS = {
     "qualificationProducerWorkflowPath": ".github/workflows/qualify-release.yml",
     "qualificationProducerWorkflowId": 987654,
     "qualificationProducerEvent": "workflow_dispatch",
-    "qualificationProducerHeadBranch": "release/v1.3.0-rc",
+    "qualificationProducerHeadBranch": "qualification-handoff/v1.3.0-rc2",
     "qualificationProducerHeadSha": COMMIT,
 }
 APP_ID = 24680
@@ -84,14 +84,14 @@ def base_manifest(fingerprint: str, policy_fingerprint: str) -> dict[str, object
         "mode": "rehearsal",
         "releaseVersion": "1.3.0",
         "releaseCommitSha": COMMIT,
-        "releaseBranch": "release/v1.3.0-rc",
+        "releaseBranch": "release/v1.3.0-rc2",
         **IDS,
         "machineVerdict": "GO_ELIGIBLE",
         "humanDecision": "APPROVE",
         "qualificationApprovalScope": "exact-candidate-qualification",
         "promotionPrNumber": 5040,
         "promotionPrHeadSha": COMMIT,
-        "promotionPrHeadRef": "release/v1.3.0-rc",
+        "promotionPrHeadRef": "release/v1.3.0-rc2",
         "promotionPrBaseRef": "release-rehearsal/504-main-equivalent",
         "promotionPrBaseSha": OTHER_COMMIT,
         "promotionBaseSha": OTHER_COMMIT,
@@ -150,7 +150,7 @@ def main() -> None:
             "workflowPath": ".github/workflows/qualify-release.yml",
             "workflowId": 987654,
             "event": "workflow_dispatch",
-            "headBranch": "release/v1.3.0-rc",
+            "headBranch": "qualification-handoff/v1.3.0-rc2",
             "headSha": COMMIT,
             "runId": 456789,
             "runAttempt": 2,
@@ -161,7 +161,7 @@ def main() -> None:
             "releaseVersion": "1.3.0",
             "workflowRunId": str(IDS["candidateRunId"]),
             "workflowRunAttempt": str(IDS["candidateAttempt"]),
-            "workflowRef": "kooiei-in4a/amane-mailer/.github/workflows/generate-setup-release-candidate.yml@refs/heads/release/v1.3.0-rc",
+            "workflowRef": "kooiei-in4a/amane-mailer/.github/workflows/generate-setup-release-candidate.yml@refs/heads/release/v1.3.0-rc2",
             "ociIndexDigest": OCI_DIGEST,
         }
         image_identity = {
@@ -242,10 +242,22 @@ def main() -> None:
         producer_mismatch["qualificationProducerWorkflowId"] = 123456
         expect_fail("N8 qualification producer mismatch", run_validator(root, producer_mismatch))
 
+        handoff_branch_mismatch = copy.deepcopy(manifest)
+        handoff_branch_mismatch["mode"] = "release"
+        handoff_branch_mismatch["promotionPrBaseRef"] = "main"
+        handoff_branch_mismatch["tagName"] = "v1.3.0"
+        handoff_branch_mismatch["qualificationProducerHeadBranch"] = "qualification-handoff/v1.3.0"
+        expect_fail("N8 qualification handoff branch mismatch", run_validator(root, handoff_branch_mismatch))
+
         candidate_provenance_mismatch = copy.deepcopy(manifest)
         write_json(candidate / "candidate-provenance.json", {**candidate_provenance, "workflowRunId": "999999"})
         expect_fail("N9 candidate producer provenance mismatch", run_validator(root, candidate_provenance_mismatch))
         write_json(candidate / "candidate-provenance.json", candidate_provenance)
+
+        invalid_branch = copy.deepcopy(manifest)
+        invalid_branch["releaseBranch"] = "release/v1.3.0-rc0"
+        invalid_branch["promotionPrHeadRef"] = invalid_branch["releaseBranch"]
+        expect_fail("N10 invalid RC branch suffix", run_validator(root, invalid_branch))
 
         sealed_event_mismatch = copy.deepcopy(manifest)
         sealed_event_mismatch["sealedEventId"] = "8" * 64
