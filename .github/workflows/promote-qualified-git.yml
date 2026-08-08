@@ -492,10 +492,10 @@ jobs:
           state=artifacts/git-promotion-state
           target_ruleset_id="${MAIN_RULESET_ID}"
           if [[ "${MODE}" == "rehearsal" ]]; then target_ruleset_id="${REHEARSAL_RULESET_ID}"; fi
-          GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${MAIN_RULESET_ID}" > "${state}/main-ruleset.json"
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${MAIN_RULESET_ID}" > "${state}/main-ruleset.json"
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" > "${state}/main-effective-rules.json"
-          GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset.json"
-          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset-normal.json"
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset.json"
+          GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset-app.json"
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > "${state}/target-effective-rules.json"
           python3 scripts/ruleset-fingerprint.py --ruleset "${state}/main-ruleset.json" --effective-rules "${state}/main-effective-rules.json" --expect-fingerprint "${EXPECTED_MAIN_FINGERPRINT}" --expect-policy-fingerprint "${EXPECTED_POLICY_FINGERPRINT}" --output "${state}/main-fingerprint.json"
           python3 scripts/ruleset-fingerprint.py --ruleset "${state}/target-ruleset.json" --effective-rules "${state}/target-effective-rules.json" --expect-fingerprint "${EXPECTED_FINGERPRINT}" --expect-policy-fingerprint "${EXPECTED_POLICY_FINGERPRINT}" --output "${state}/target-fingerprint-before.json"
@@ -524,7 +524,10 @@ jobs:
           main_fingerprint = load("main-fingerprint.json")
           target_fingerprint = load("target-fingerprint-before.json")
           ruleset = load("target-ruleset.json")
-          normal_ruleset = load("target-ruleset-normal.json")
+          normal_ruleset = ruleset
+          app_ruleset = load("target-ruleset-app.json")
+          if app_ruleset.get("current_user_can_bypass") not in {"pull_request", "pull_requests_only"}:
+              raise SystemExit("releaseApp.bypass: expected pull-request-only caller capability")
           pr = load("pr.json")
           repo = load("repository.json")
           checks = load("check-runs.json").get("check_runs") or []
@@ -579,6 +582,7 @@ jobs:
               "normalActorBypass": normal_ruleset.get("current_user_can_bypass"),
               "expectedReleaseAppId": int(os.environ["APP_ID"]),
               "rulesetBypassActors": ruleset.get("bypass_actors") or [],
+              "appCallerBypass": app_ruleset.get("current_user_can_bypass"),
               "repositoryAllowMergeCommit": repo.get("allow_merge_commit"),
               "selectedMergeMethod": "merge",
               "rulesetAllowedMergeMethods": (pull_rule.get("parameters") or {}).get("allowed_merge_methods") or [],
@@ -609,8 +613,8 @@ jobs:
           set -Eeuo pipefail
           ruleset_id="${MAIN_RULESET_ID}"
           if [[ "${MODE}" == "rehearsal" ]]; then ruleset_id="${REHEARSAL_RULESET_ID}"; fi
-          GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-pre-merge.json
-          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-normal-pre-merge.json
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-pre-merge.json
+          GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-app-pre-merge.json
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > artifacts/git-promotion-state/target-effective-rules-pre-merge.json
           python3 scripts/ruleset-fingerprint.py --ruleset artifacts/git-promotion-state/target-ruleset-pre-merge.json --effective-rules artifacts/git-promotion-state/target-effective-rules-pre-merge.json --expect-fingerprint "${EXPECTED_FINGERPRINT}" --output artifacts/git-promotion-state/target-fingerprint-pre-merge.json
 
@@ -650,7 +654,8 @@ jobs:
           rc = load("rc-ref-pre-merge.json")
           base = load("base-ref-pre-merge.json")
           ruleset = load("target-ruleset-pre-merge.json")
-          normal_ruleset = load("target-ruleset-normal-pre-merge.json")
+          normal_ruleset = ruleset
+          app_ruleset = load("target-ruleset-app-pre-merge.json")
           checks = load("check-runs-pre-merge.json").get("check_runs") or []
           if pr.get("state") != "open" or pr.get("draft") is not False or pr.get("mergeable") is not True:
               raise SystemExit("promotionPr: no longer open and mergeable")
@@ -668,6 +673,8 @@ jobs:
               raise SystemExit("promotionTarget.tip: drift")
           if normal_ruleset.get("current_user_can_bypass") != "never":
               raise SystemExit("workflowActor.bypass: changed")
+          if app_ruleset.get("current_user_can_bypass") not in {"pull_request", "pull_requests_only"}:
+              raise SystemExit("releaseApp.bypass: expected pull-request-only caller capability")
           status_rule = next(
               (rule for rule in ruleset.get("rules", []) if rule.get("type") == "required_status_checks"),
               {},
@@ -790,11 +797,12 @@ jobs:
           set -Eeuo pipefail
           ruleset_id="${MAIN_RULESET_ID}"
           if [[ "${MODE}" == "rehearsal" ]]; then ruleset_id="${REHEARSAL_RULESET_ID}"; fi
-          GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-after.json
-          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-normal-after.json
+          gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-after.json
+          GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-app-after.json
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > artifacts/git-promotion-state/target-effective-rules-after.json
           python3 scripts/ruleset-fingerprint.py --ruleset artifacts/git-promotion-state/target-ruleset-after.json --effective-rules artifacts/git-promotion-state/target-effective-rules-after.json --expect-fingerprint "${EXPECTED_FINGERPRINT}" --output artifacts/git-promotion-state/target-fingerprint-after.json
-          python3 -c 'import json; assert json.load(open("artifacts/git-promotion-state/target-ruleset-normal-after.json"))["current_user_can_bypass"] == "never"'
+          python3 -c 'import json; assert json.load(open("artifacts/git-promotion-state/target-ruleset-after.json"))["current_user_can_bypass"] == "never"'
+          python3 -c 'import json; assert json.load(open("artifacts/git-promotion-state/target-ruleset-app-after.json"))["current_user_can_bypass"] in {"pull_request", "pull_requests_only"}'
 
       - name: Write value-free audit evidence
         shell: bash
