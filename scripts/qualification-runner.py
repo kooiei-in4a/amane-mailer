@@ -604,8 +604,8 @@ def validate_oci_layout(layout_root: Path, expected_digest: str, expected_releas
     walk_index(nested_index, "OCI root image-index")
     if platforms != {"linux/amd64", "linux/arm64"}:
         fail("OCI required platform set mismatch")
-    digest_file = layout_root / "oci-index.digest"
-    if not digest_file.is_file() or digest_file.read_text(encoding="utf-8").strip() != expected_digest:
+    digest_files = [path for path in (layout_root / "oci-index.digest", layout_root.parent / "oci-index.digest") if path.is_file()]
+    if not digest_files or any(path.is_symlink() or path.read_text(encoding="utf-8").strip() != expected_digest for path in digest_files):
         fail("OCI index digest attestation is missing or mismatched")
     for blob_path in blob_root.iterdir():
         if blob_path.name not in referenced:

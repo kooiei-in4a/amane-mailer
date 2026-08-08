@@ -76,7 +76,7 @@ def main() -> int:
         oci, nested_size = put_blob(nested_bytes)
         write(oci_layout / "oci-layout", {"imageLayoutVersion": "1.0.0"})
         write(oci_layout / "index.json", {"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": oci, "size": nested_size}]})
-        (oci_layout / "oci-index.digest").write_text(oci + "\n", encoding="utf-8")
+        (oci_layout.parent / "oci-index.digest").write_text(oci + "\n", encoding="utf-8")
         tampered_blob = blob_root / runtime_descriptors[0]["digest"].removeprefix("sha256:")
         tampered_original = tampered_blob.read_bytes()
         archive_digests = {}
