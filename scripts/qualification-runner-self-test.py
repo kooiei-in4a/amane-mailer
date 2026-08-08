@@ -8,6 +8,7 @@ All candidate/evidence data is generated in a temporary directory.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -52,6 +53,56 @@ def run(*args: str, expect: int = 0) -> str:
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="qualification-runner-self-test-") as temp:
         root = Path(temp)
+        scope_manifest = ROOT.parent / "docs" / "qualification" / "v1.3.0-scope.json"
+        run("validate-scope", "--scope-manifest", str(scope_manifest), "--repo-root", str(ROOT.parent))
+        malformed_scope = root / "malformed-scope.json"
+        malformed = json.loads(scope_manifest.read_text(encoding="utf-8"))
+        malformed["migration"]["deltaInventory"] = malformed["migration"]["deltaInventory"][:-1]
+        write(malformed_scope, malformed)
+        run("validate-scope", "--scope-manifest", str(malformed_scope), "--repo-root", str(ROOT.parent), expect=1)
+        spec = importlib.util.spec_from_file_location("qualification_runner_scope_test", RUNNER)
+        runner = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(runner)
+        profile = runner.load_scope_manifest(scope_manifest)
+        migration = profile["migration"]
+        v13_binding = {
+            "scopeId": profile["scopeId"],
+            "migrationBaselineInventory": migration["baselineInventory"],
+            "migrationDeltaInventory": migration["deltaInventory"],
+            "migrationFullInventory": migration["fullInventory"],
+            "migrationFullInventoryDigestSha256": "a" * 64,
+            "migrationDeltaInventoryDigestSha256": "b" * 64,
+            "migrationFullFileDigests": [],
+            "migrationSchemaAllowlistVersion": "1",
+        }
+        migration_payload = {
+            "migrationDecision": "INCLUDE",
+            "baselineInventory": migration["baselineInventory"],
+            "deltaInventory": migration["deltaInventory"],
+            "fullInventory": migration["fullInventory"],
+            "expectedFullMigrationInventory": migration["fullInventory"],
+            "migrationDirectoryInventoryBefore": migration["fullInventory"],
+            "migrationDirectoryInventoryDigestSha256": "a" * 64,
+            "migrationDeltaInventoryDigestSha256": "b" * 64,
+            "migrationFileDigests": [],
+            "outcome": "applied",
+            "preApplyAppliedMigrations": [],
+            "preApplyPendingMigrations": migration["fullInventory"],
+            "postApplyAppliedMigrations": migration["fullInventory"],
+            "postApplyPendingMigrations": [],
+            "lastAppliedBefore": None,
+            "lastAppliedAfter": migration["deltaInventory"][-1],
+        }
+        runner.validate_migration_payload({"result": "PASS"}, v13_binding, "G583-MIG-01", migration_payload)
+        invalid_migration_payload = dict(migration_payload)
+        invalid_migration_payload["deltaInventory"] = ["012_provider_event_inbox_details.sql"]
+        try:
+            runner.validate_migration_payload({"result": "PASS"}, v13_binding, "G583-MIG-01", invalid_migration_payload)
+        except runner.RunnerError:
+            pass
+        else:
+            raise AssertionError("v1.3 migration validator accepted a legacy delta")
         candidate = root / "candidate"
         store = root / "store"
         handoff = root / "handoff"
@@ -67,7 +118,7 @@ def main() -> int:
 
         runtime_descriptors = []
         for platform_name in ("amd64", "arm64"):
-            config_bytes = json.dumps({"architecture": platform_name, "os": "linux", "config": {"Labels": {"org.opencontainers.image.version": "1.3.0", "org.opencontainers.image.revision": source}}}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            config_bytes = json.dumps({"architecture": platform_name, "os": "linux", "config": {"Labels": {"org.opencontainers.image.version": "1.2.0", "org.opencontainers.image.revision": source}}}, sort_keys=True, separators=(",", ":")).encode("utf-8")
             config_digest, config_size = put_blob(config_bytes)
             manifest_bytes = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": config_digest, "size": config_size}, "layers": []}, sort_keys=True, separators=(",", ":")).encode("utf-8")
             manifest_digest, manifest_size = put_blob(manifest_bytes)
@@ -83,7 +134,7 @@ def main() -> int:
         for rid, archive_name in archive_specs:
             manifest = {
                 "schemaVersion": 1, "packagingKind": "setup-release-candidate", "artifactId": f"synthetic-{rid}",
-                "sourceCommitSha": source, "mailerVersion": "1.3.0", "setupLauncherVersion": "1.3.0",
+                "sourceCommitSha": source, "mailerVersion": "1.2.0", "setupLauncherVersion": "1.2.0",
                 "hostRid": rid, "targetRid": rid, "platform": "linux" if rid != "win-x64" else "win", "architecture": "arm64" if rid == "linux-arm64" else "amd64",
                 "imageDigest": oci, "ociIndexDigest": oci, "artifactFileName": archive_name,
                 "mailpitImageReference": "axllent/mailpit@sha256:" + "c" * 64,
@@ -115,16 +166,16 @@ def main() -> int:
         provenance = {
             "schemaVersion": 1,
             "sourceCommitSha": source,
-            "releaseVersion": "1.3.0",
+            "releaseVersion": "1.2.0",
             "workflowRunId": "123456789",
             "workflowRunAttempt": "1",
             "workflowRef": "local",
             "ociIndexDigest": oci,
             "ociPlatforms": ["linux/amd64", "linux/arm64"],
-            "archives": [{"artifactName": f"synthetic-{rid}", "targetRid": rid, "archiveFileName": archive_name, "archiveSha256": "sha256:" + archive_digests[rid], "mailerVersion": "1.3.0", "setupLauncherVersion": "1.3.0", "payloadTreeSha256": "sha256:" + "b" * 64, "smokeResult": "passed"} for rid, archive_name in archive_specs],
+            "archives": [{"artifactName": f"synthetic-{rid}", "targetRid": rid, "archiveFileName": archive_name, "archiveSha256": "sha256:" + archive_digests[rid], "mailerVersion": "1.2.0", "setupLauncherVersion": "1.2.0", "payloadTreeSha256": "sha256:" + "b" * 64, "smokeResult": "passed"} for rid, archive_name in archive_specs],
         }
         write(candidate / "candidate-provenance.json", provenance)
-        write(candidate / "image-identity.json", {"sourceCommitSha": source, "imageDigest": oci, "mailerVersion": "1.3.0", "platforms": ["linux/amd64", "linux/arm64"]})
+        write(candidate / "image-identity.json", {"sourceCommitSha": source, "imageDigest": oci, "mailerVersion": "1.2.0", "platforms": ["linux/amd64", "linux/arm64"]})
         (candidate / "CANDIDATE-SHA256SUMS").write_text("".join(f"{archive_digests[rid]}  {archive_name}\n" for rid, archive_name in archive_specs), encoding="utf-8")
         write(candidate / "CANDIDATE-HANDOFF.md", "synthetic value-free handoff; prohibited-content secret scan completed\n")
         invalid_provenance = dict(provenance)
