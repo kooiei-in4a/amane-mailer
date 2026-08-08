@@ -121,12 +121,12 @@ def main() -> int:
             "workflowRef": "local",
             "ociIndexDigest": oci,
             "ociPlatforms": ["linux/amd64", "linux/arm64"],
-            "archives": [{"artifactName": f"synthetic-{rid}", "targetRid": rid, "archiveFileName": archive_name, "archiveSha256": "sha256:" + archive_digests[rid], "mailerVersion": "1.3.0", "setupLauncherVersion": "1.3.0", "payloadTreeSha256": "b" * 64, "smokeResult": "passed"} for rid, archive_name in archive_specs],
+            "archives": [{"artifactName": f"synthetic-{rid}", "targetRid": rid, "archiveFileName": archive_name, "archiveSha256": "sha256:" + archive_digests[rid], "mailerVersion": "1.3.0", "setupLauncherVersion": "1.3.0", "payloadTreeSha256": "sha256:" + "b" * 64, "smokeResult": "passed"} for rid, archive_name in archive_specs],
         }
         write(candidate / "candidate-provenance.json", provenance)
         write(candidate / "image-identity.json", {"sourceCommitSha": source, "imageDigest": oci, "mailerVersion": "1.3.0", "platforms": ["linux/amd64", "linux/arm64"]})
         (candidate / "CANDIDATE-SHA256SUMS").write_text("".join(f"{archive_digests[rid]}  {archive_name}\n" for rid, archive_name in archive_specs), encoding="utf-8")
-        write(candidate / "CANDIDATE-HANDOFF.md", "synthetic value-free handoff\n")
+        write(candidate / "CANDIDATE-HANDOFF.md", "synthetic value-free handoff; prohibited-content secret scan completed\n")
         invalid_provenance = dict(provenance)
         invalid_provenance["unexpected"] = "must be rejected"
         write(candidate / "candidate-provenance.json", invalid_provenance)
