@@ -67,6 +67,9 @@ jobs:
       - name: Qualified Git promotion validator self-test
         run: python3 scripts/validate-qualified-git-promotion-self-test.py
 
+      - name: Qualification runner durable-store self-test
+        run: python3 scripts/qualification-runner-self-test.py
+
       - name: "Guard setup-bundle MSBuild -p args (MSYS-safe)"
         run: |
           set -Eeuo pipefail
