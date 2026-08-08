@@ -1,0 +1,116 @@
+name: Publish Sealed Qualification Handoff
+
+# Publication-only transport for an already sealed qualification run.
+# This workflow never runs qualification, changes a seal, or derives evidence.
+# The source files are committed byte-for-byte on the release-specific handoff
+# branch and are validated before being uploaded as a separate Actions artifact.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  RELEASE_VERSION: 1.3.0
+  RELEASE_COMMIT_SHA: 85af2fb410ec6cdec4c6ec2bdb431c62b062e9eb
+  CANDIDATE_ID: 7582d42abc4467ddc2c33322c119072eacd75236b6d3b54aa905b0fd5b7ce11f
+  QUALIFICATION_RUN_ID: 49bc79002527cf09fbed2299c2f2bce857e0d66a8001597855857c1d5ba2a45d
+  SEALED_EVENT_ID: 7b5e2df848b754785889502276fdb74748b4e36d2926d41211f6fb55b2043b4d
+  OCI_INDEX_DIGEST: sha256:e65231d736d618810cc121e9ce07dcf967d3d3061bc5f97cb68ef48f094f5d45
+  HANDOFF_BRANCH: qualification-handoff/v1.3.0
+  SOURCE_ROOT: qualification-handoff/source
+  ARTIFACT_NAME: qualification-handoff-v1.3.0
+
+jobs:
+  publish:
+    name: Publish existing sealed handoff only
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout immutable handoff branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate source identity and exact bytes
+        shell: bash
+        env:
+          EXPECTED_BINDING_SHA256: 4a77c917140aa187dd09e77fea065ea24889a73670c88ec42505b965d6653853
+          EXPECTED_DECISION_SHA256: f04efc051ebe290c4c4a4bdbad63f218bf63b5a7a57f8fdcf8d2d83172c4b964
+          EXPECTED_EVENT_SHA256: 8dda42c6710c2473cfab671b8f1af194b24076031825d748f325db35409d573f
+        run: |
+          set -Eeuo pipefail
+          [[ "${GITHUB_REF}" == "refs/heads/${HANDOFF_BRANCH}" ]] \
+            || { echo "::error::workflow must run on the fixed handoff branch"; exit 1; }
+          root="${SOURCE_ROOT}"
+          [[ -f "${root}/binding.json" ]] || { echo "::error::binding.json missing"; exit 1; }
+          [[ -f "${root}/decision/go-no-go.json" ]] || { echo "::error::decision/go-no-go.json missing"; exit 1; }
+          mapfile -t events < <(find "${root}/run-status-events" -maxdepth 1 -type f -name '*.json' -print)
+          [[ "${#events[@]}" -eq 1 ]] || { echo "::error::exactly one sealed event is required"; exit 1; }
+          [[ "$(sha256sum "${root}/binding.json" | cut -d' ' -f1)" == "${EXPECTED_BINDING_SHA256}" ]] \
+            || { echo "::error::binding.json bytes changed"; exit 1; }
+          [[ "$(sha256sum "${root}/decision/go-no-go.json" | cut -d' ' -f1)" == "${EXPECTED_DECISION_SHA256}" ]] \
+            || { echo "::error::go-no-go.json bytes changed"; exit 1; }
+          [[ "$(sha256sum "${events[0]}" | cut -d' ' -f1)" == "${EXPECTED_EVENT_SHA256}" ]] \
+            || { echo "::error::sealed event bytes changed"; exit 1; }
+          bash scripts/validate-qualification-handoff.sh \
+            --root "${root}" \
+            --candidate-id "${CANDIDATE_ID}" \
+            --qualification-run-id "${QUALIFICATION_RUN_ID}" \
+            --release-commit-sha "${RELEASE_COMMIT_SHA}" \
+            --expected-digest "${OCI_INDEX_DIGEST}"
+
+      - name: Add live producer metadata without changing sealed documents
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          workflow_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/publish-sealed-qualification-handoff.yml" --jq '.id')"
+          [[ "${workflow_id}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::workflow ID unavailable"; exit 1; }
+          rm -rf publication
+          mkdir -p publication/decision publication/run-status-events
+          cp -- "${SOURCE_ROOT}/binding.json" publication/binding.json
+          cp -- "${SOURCE_ROOT}/decision/go-no-go.json" publication/decision/go-no-go.json
+          event_file="$(find "${SOURCE_ROOT}/run-status-events" -maxdepth 1 -type f -name '*.json' -print -quit)"
+          cp -- "${event_file}" publication/run-status-events/"$(basename "${event_file}")"
+          WORKFLOW_ID="${workflow_id}" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          producer = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflowPath": ".github/workflows/publish-sealed-qualification-handoff.yml",
+              "workflowId": int(os.environ["WORKFLOW_ID"]),
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "headBranch": os.environ["GITHUB_REF_NAME"],
+              "headSha": os.environ["GITHUB_SHA"],
+              "runId": int(os.environ["GITHUB_RUN_ID"]),
+              "runAttempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+          }
+          Path("publication/qualification-producer.json").write_text(
+              json.dumps(producer, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload immutable qualification handoff artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: publication
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Write value-free publication identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "artifact_id=${{ steps.upload.outputs.artifact-id }}"
+          echo "artifact_name=${ARTIFACT_NAME}"
+          echo "producer_run_id=${GITHUB_RUN_ID}"
+          echo "producer_run_attempt=${GITHUB_RUN_ATTEMPT}"
+          echo "producer_head_branch=${GITHUB_REF_NAME}"
+          echo "producer_head_sha=${GITHUB_SHA}"
