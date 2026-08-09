@@ -5,6 +5,7 @@
   "runnerClass": "qualification-lane-adapter",
   "toolVersion": "1",
   "fixtureReportKind": "qualification-lane-fixture-observations",
+  "fixtureContractVersion": 1,
   "producerScript": "qualification-lane-fixture-producer.py",
   "producerRevision": "1",
   "producerContractVersion": 1,
@@ -12,7 +13,7 @@
   "lanes": [
     {"scenarioId": "G456-01", "variantId": "win-docker", "expectedPlatform": "win-docker", "expectedOsFamily": "windows", "fixtureCommandId": "g456-01-win-docker", "producerId": "g456-01-win-docker", "procedureId": "g456-01-win-docker-canonical"},
     {"scenarioId": "G456-02", "variantId": "linux-docker", "expectedPlatform": "linux-docker", "expectedOsFamily": "linux", "fixtureCommandId": "g456-02-linux-docker", "producerId": "g456-02-linux-docker", "procedureId": "g456-02-linux-docker-canonical"},
-    {"scenarioId": "G456-07", "variantId": "admin-local-dev", "expectedPlatform": "admin-local-dev", "expectedOsFamily": "windows", "fixtureCommandId": "g456-07-admin-local-dev", "producerId": "g456-07-admin-local-dev", "procedureId": "g456-07-admin-local-dev-canonical"},
+    {"scenarioId": "G456-07", "variantId": "admin-local-dev", "expectedPlatform": "admin-local-dev", "expectedOsFamily": "windows", "fixtureCommandId": "g456-07-admin-local-dev", "producerId": "g456-07-admin-local-dev", "procedureId": "g456-07-admin-local-dev-canonical", "canonicalFixture": {"fixtureId": "g456-07-admin-local-dev", "fixtureRevision": "1", "sourceTestId": "Amane.Mailer.Tests.MailerAdminTests.Qualification_fixture_G456_07_emits_value_free_result", "testSelector": "FullyQualifiedName=Amane.Mailer.Tests.MailerAdminTests.Qualification_fixture_G456_07_emits_value_free_result"}},
     {"scenarioId": "G456-11", "variantId": "local-dev", "expectedPlatform": "local-dev", "expectedOsFamily": "windows", "fixtureCommandId": "g456-11-local-dev", "producerId": "g456-11-local-dev", "procedureId": "g456-11-local-dev-canonical"},
     {"scenarioId": "G456-13", "variantId": "win-docker", "expectedPlatform": "win-docker", "expectedOsFamily": "windows", "fixtureCommandId": "g456-13-win-docker", "producerId": "g456-13-win-docker", "procedureId": "g456-13-win-docker-canonical"},
     {"scenarioId": "G456-13", "variantId": "linux-docker", "expectedPlatform": "linux-docker", "expectedOsFamily": "linux", "fixtureCommandId": "g456-13-linux-docker", "producerId": "g456-13-linux-docker", "procedureId": "g456-13-linux-docker-canonical"},

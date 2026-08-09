@@ -1,115 +1,89 @@
 # Non-live qualification lane adapter
 
-`qualification-lane-fixture-producer.py` と `qualification-lane-adapter.py` は、Issue #583 v1.3.0 scopeに含まれるPhase A〜CのHard laneについて、manifestで固定されたcanonical procedureを実行し、実測したvalue-free predicate observationを `qualification-runner.py evidence --observations` へ渡せる完全envelopeへ変換する。
+`qualification-lane-fixture-producer.py` と `qualification-lane-adapter.py` は、Issue #583 v1.3.0 scopeに含まれるPhase A〜CのHard laneについて、manifestで固定されたcanonical procedureを実行し、fixtureが実測したvalue-free predicate observationをevidence envelopeへ変換する。
 
-対象は次の32 variantだけである。G456-03/04/05/06、Production HTTPS、G456-35、Conditional、G583-MIG-01〜03はこのadapterの対象外である。
+対象manifestは32 variantである。G456-03/04/05/06、Production HTTPS、G456-35、Conditional、G583-MIG-01〜03はこのadapterの対象外である。
 
 ## 責任分離と固定procedure
 
-manifestの32 laneはすべて `producerId` と `procedureId` を持ち、producer registryが全laneのcanonical producer availabilityをmachine-checkする。producerはlane以外のcommand、report、predicate result、observed valueを受け取らない。固定されたplatform probeとdedicated product-test procedureが完了し、skip/fail/errorがない場合だけ、procedureの固定value-free observationをmachine-readable reportへ出力する。test stdout/stderr、private host path、secret、provider raw responseは保存も出力もしない。
+manifestの各laneは `producerId` と `procedureId` を持つ。実際に実行可能なlaneにはさらに `canonicalFixture` として、fixture ID、revision、完全なsource test ID、固定test selectorを登録する。producer registryは32 laneの件数・重複・validator対応・fixture identityをmachine-checkし、`availableLaneCount` と `canonicalProducerAvailable` を出力する。
 
-adapterはproducerを自ら起動し、producerのexit code/result、producerId、procedureId、procedure digest、candidate/binding/run identity、platform identityを再検証する。任意のfixture reportをCLIから渡す経路はない。
+現在、structured result producerまで実装済みなのは `G456-07/admin-local-dev` の1 laneだけである。残り31 laneはprocedure identityだけが登録され、`canonicalFixture` がないため実行不能であり、Hard PASSへ変換できない。manifestにfixtureがあるのにproducerが欠落・不一致の場合もfail-closedになる。
 
-全validator fieldについて、次のcheckを1つずつ要求する。
+canonical fixture自身が実操作を行い、validatorが要求する全fieldのobservationsをvalue-freeなstructured resultとして出力する。producerはPASS値を生成・補完せず、fixture resultのschema、fixture identity、exact test case、終了結果、skip/fail/errorのない単一実行、value-free性、登録predicateを検証する。stdout/stderr、private host path、secret、provider raw responseは保存も出力もしない。
+
+adapterはproducerを自ら起動し、producerのexit code/result、producerId、procedureId、procedure digest、fixture result digest、exact source test ID、candidate/binding/run identity、platform identityを再検証する。任意のfixture reportやoperator指定resultをCLIから渡す経路はない。
+
+全validator fieldについて、fixture resultから次のcheckを1つずつ導出する。
 
 ```text
 checkId = <scenarioId>/<variantId>/<fieldName>
 result = PASS
 proofKind = qualification-integration-observation
-observedFields = { <fieldName>: <observed value> }
+sourceTestId = <exact canonical fixture test id>
+observedFields = { <fieldName>: <fixture-measured value> }
 ```
 
-`test command exit code == 0`、`predicateResult`、`--pass`、operator指定resultだけではreportを作成できない。missing、unknown、tampered、wrong platform、wrong identity、owner不一致はfail-closedになる。
+`test command exit code == 0`、`passed > 0`、`predicateResult`、`--pass`、operator指定resultだけではreportを作成できない。fixture resultのfield欠落・skip・失敗・改ざん・unknown field、wrong platform、wrong identity、owner不一致はfail-closedになる。
 
-## Producer report
+## Structured fixture result と producer report
 
-fixture reportはvalue-free JSONで、次のtop-level fieldだけを持つ。
+fixtureは次のvalue-free resultを生成する。observationsの値は実操作の応答・設定・状態からfixture自身が観測した値であり、producerのPASS定数表からは供給しない。
 
 ```json
 {
-  "schemaVersion": 2,
-  "kind": "qualification-lane-fixture-observations",
-  "scenarioId": "G456-15",
-  "variantId": "ci-auto",
-  "candidateId": "<bound candidate id>",
-  "releaseCommitSha": "<bound release sha>",
-  "bindingId": "<bound binding id>",
-  "qualificationRunId": "<bound qualification run id>",
-  "executedByRole": "<authorized owner role>",
-  "executedByIdentity": "<authorized value-free owner identity>",
-  "startedAtUtc": "2026-08-09T00:00:00Z",
-  "finishedAtUtc": "2026-08-09T00:00:01Z",
-  "attestedAtUtc": "2026-08-09T00:00:01Z",
-  "execution": {
-    "platform": "ci-auto",
-    "osFamily": "ci",
-    "runtimeKind": "qualification-fixture",
-    "fixtureCommandId": "g456-15-ci-auto"
-  },
-  "producer": {
-    "producerId": "g456-15-ci-auto",
-    "producerRevision": "1",
-    "procedureId": "g456-15-ci-auto-canonical",
-    "procedureRevision": "1",
-    "procedureDigestSha256": "<digest of fixed procedure>",
-    "exitCode": 0,
-    "result": "PASS",
-    "passedTestCount": 1,
-    "totalTestCount": 1,
-    "skippedTestCount": 0
-  },
-  "checks": [
-    {
-      "checkId": "G456-15/ci-auto/credentialChanged",
-      "result": "PASS",
-      "proofKind": "qualification-integration-observation",
-      "sourceTestId": "<value-free test id>",
-      "observedFields": {"credentialChanged": false}
-    }
-  ]
+  "schemaVersion": 1,
+  "kind": "qualification-fixture-result",
+  "fixtureId": "g456-07-admin-local-dev",
+  "fixtureRevision": "1",
+  "scenarioId": "G456-07",
+  "variantId": "admin-local-dev",
+  "sourceTestId": "<exact test id>",
+  "result": "PASS",
+  "operationExitCode": 0,
+  "observations": {
+    "accessProfile": "development-loopback",
+    "transportProfile": "http-loopback",
+    "loopbackOnly": true,
+    "loginResult": "success",
+    "setupStatusResult": "visible",
+    "adminRouteResult": "available",
+    "sensitiveOutput": "absent"
+  }
 }
 ```
 
-実際のproducerではvalidatorが要求する全fieldのcheckを含める。recipient、sender、subject/body、provider raw error、secret、token、connection string、private key、URL、private host pathはproducer reportへ出力しない。
+adapterへ渡すproducer reportはschema version 3で、`fixtureResult`本体とそのdigestを含む。全fieldのcheckはこの同じfixture resultとexact source test IDへ機械的に結合される。recipient、sender、subject/body、provider raw error、secret、token、connection string、private key、URL、private host pathはproducer reportへ出力しない。
 
 ## 実行
 
-adapterが固定producerを起動した後、evidence envelopeを生成する。
+adapterが固定producerを起動した後、value-free evidence envelopeを生成する。実装済みfixtureの例は次のとおりである。
 
 ```powershell
 python scripts/qualification-lane-adapter.py run `
   --run-root <maintainer-run>/runs/<qualification-run-id> `
-  --scenario-id G456-15 `
-  --variant-id ci-auto `
-  --output <value-free-observations.json>
-
-python scripts/qualification-runner.py evidence `
-  --run-root <maintainer-run>/runs/<qualification-run-id> `
-  --evidence-id <adapter-output-evidence-id> `
-  --scenario-id G456-15 `
-  --variant-id ci-auto `
-  --result PASS `
-  --executed-by-role <authorized-owner-role> `
-  --executed-by-identity <authorized-owner-identity> `
-  --observations <value-free-observations.json>
+  --scenario-id G456-07 `
+  --variant-id admin-local-dev `
+  --output <value-free-evidence.json>
 ```
 
-adapter自身でもrunnerのenvelope validatorを呼び、runnerが受理できることを事前確認する。evidence commandが作る禁止内容scan、disposition、replayは既存runnerのappend-only contractに従う。
+未実装laneを実行するとcanonical structured fixture unavailableとして終了し、Hard PASSは作成されない。adapter自身でもrunnerのenvelope validatorを呼び、runnerが受理できることを事前確認する。evidence commandが作る禁止内容scan、disposition、replayは既存runnerのappend-only contractに従う。
 
 producer availabilityは次で確認する。
 
 ```powershell
 python scripts/qualification-lane-fixture-producer.py manifest
+python scripts/qualification-lane-adapter.py manifest
 ```
 
-`canonicalProducerAvailable=true` かつ `laneCount=32` でない場合はfail-closedとし、Hard PASSへ変換しない。
+出力の `laneCount` は32、現時点の `availableLaneCount` は1、`canonicalProducerAvailable` はfalseである。全laneのcanonical fixtureが揃うまで、Hard laneをPASSへ集計してはならない。
 
 ## Self-test
 
 ```powershell
-python -m py_compile scripts/qualification-lane-adapter.py scripts/qualification-lane-adapter-self-test.py
+python -m py_compile scripts/qualification-lane-adapter.py scripts/qualification-lane-fixture-producer.py scripts/qualification-lane-adapter-self-test.py
 python scripts/qualification-lane-adapter.py manifest
 python scripts/qualification-lane-adapter-self-test.py
 ```
 
-self-testはsynthetic contract negative casesに加え、実際の固定product-test procedureを `linux-docker`、`admin-local-dev`、`admin-integrated` の代表laneで起動する。その実測reportをadapterで検証し、runnerのevidence、prohibited-content scan、accept disposition、replayのactive evidenceまで実行する。RC7のqualification runやevidenceは読み書き・再利用しない。`ci-auto` procedureは実CI (`CI=true` または GitHub Actions) でのみ実行可能であり、ローカル環境による偽装は拒否する。
+self-testはsynthetic contractのnegative casesでfixture result差し替え、digest不一致、exact source test ID不一致、field欠落、fixture FAIL、check改ざんを拒否する。さらに `G456-07/admin-local-dev` の実fixtureを起動し、実測structured result → producer → adapter → evidence → prohibited-content scan → accept disposition → replayのactive PASSまで実行する。残りのmanifest laneはfixture producerが完成するまで同じE2Eへ進めず、未実装のままmissingとする。RC7のqualification runやevidenceは読み書き・再利用しない。

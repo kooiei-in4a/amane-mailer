@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Run the checked-in canonical procedure for one non-live Hard lane.
+"""Run and verify a canonical structured qualification fixture.
 
-This producer is intentionally closed-world.  It accepts only a bound run,
-scenario, and variant; the test project, filter, platform probe, and
-value-free observations come from the checked-in procedure registry below.
-It never accepts a report, predicate result, command, or observed value from
-the operator.  Test output is captured and discarded; only counters and the
-fixed value-free contract are emitted.
+The producer does not contain predicate observations.  A checked-in
+qualification fixture executes the operation, writes a value-free structured
+result, and exits non-zero when its operation predicate fails.  This producer
+verifies that result against the exact fixture test case, schema, identity,
+and registered Hard predicate before handing it to the lane adapter.
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ def read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ProducerError("producer manifest is not readable JSON") from exc
+        raise ProducerError("canonical fixture JSON is not readable") from exc
 
 
 def canonical_json(value: Any) -> bytes:
@@ -75,91 +74,50 @@ def require_lane(manifest: dict[str, Any], scenario: str, variant: str) -> dict[
     lanes = manifest.get("lanes")
     if not isinstance(lanes, list):
         raise ProducerError("producer manifest lanes are missing")
-    matches = [
-        lane for lane in lanes
-        if isinstance(lane, dict) and lane.get("scenarioId") == scenario and lane.get("variantId") == variant
-    ]
-    if len(matches) != 1:
+    matches = [lane for lane in lanes if isinstance(lane, dict) and lane.get("scenarioId") == scenario and lane.get("variantId") == variant]
+    if len(matches) != 1 or scenario not in SAFE_SCENARIOS:
         raise ProducerError("scenario/variant is not a canonical producer lane")
     lane = matches[0]
     for field in ("fixtureCommandId", "producerId", "procedureId", "expectedPlatform", "expectedOsFamily"):
         if not isinstance(lane.get(field), str) or not lane[field]:
             raise ProducerError("canonical producer identity is incomplete")
-    if scenario not in SAFE_SCENARIOS:
-        raise ProducerError("scenario is outside the non-live producer scope")
     return lane
 
 
-def observation_values(scenario: str, variant: str) -> dict[str, Any]:
-    values: dict[str, dict[str, Any]] = {
-        "G456-01": {"runtimeProfile": "windows-docker-desktop", "freshEnvironment": True, "mailpitReady": True, "mailerStarted": True, "requestAccepted": True, "deliveryObservedValueFree": True, "bundleIdentityMatch": True, "outcome": "completed", "sensitiveOutput": "absent"},
-        "G456-02": {"runtimeProfile": "linux-docker-engine", "freshEnvironment": True, "mailpitReady": True, "mailerStarted": True, "requestAccepted": True, "deliveryObservedValueFree": True, "bundleIdentityMatch": True, "outcome": "completed", "sensitiveOutput": "absent"},
-        "G456-07": {"accessProfile": "development-loopback", "transportProfile": "http-loopback", "loopbackOnly": True, "loginResult": "success", "setupStatusResult": "visible", "adminRouteResult": "available", "sensitiveOutput": "absent"},
-        "G456-11": {"accessProfile": "local-dev", "addressMismatch": True, "httpStatus": 404, "adminRouteResult": "unavailable", "routeExposed": False, "sensitiveOutput": "absent"},
-        "G456-13": {"bootstrapProfile": "fresh-bootstrap", "freshInstall": True, "bootstrapResult": "completed", "loginResult": "success", "setupStatusResult": "visible", "bundleIdentityMatch": True, "sendReadyStatusShown": True, "deploymentOvConfirmedShown": False, "sensitiveOutput": "absent"},
-        "G456-14": {"accessProfile": "managed", "usernameRelation": "same-user", "reapplyResult": "idempotent", "credentialRotated": False, "statePreserved": True, "routeResult": "available", "sensitiveOutput": "absent"},
-        "G456-15": {"accessProfile": "managed", "usernameRelation": "different-user", "credentialRotationAttempt": "rejected", "manualExistingAdmin": "rejected", "reapplyResult": "rejected", "credentialChanged": False, "sensitiveOutput": "absent"},
-        "G456-16": {"executionProfile": "automated-fixture", "credentialSyncResult": "completed", "subsequentStepResult": "failed", "configRollbackResult": "completed", "sqliteStateReport": "separate", "adminRouteAfterRollback": "not-exposed", "partialSuccessRecorded": True, "sensitiveOutput": "absent"},
-        "G456-17": {"executionMode": "non-interactive", "enableRequestResult": "rejected", "adminEnabled": False, "sensitiveArgument": False, "sensitiveHistory": False, "sensitiveProcessList": False, "sensitiveOutput": "absent"},
-        "G456-18": {"failureMode": "apply-failure", "previousBundlePresent": True, "applyResult": "failed", "rollbackResult": "completed", "effectiveStateRestored": True, "integrityMatched": True, "adminRouteAfterRollback": "not-exposed", "rollbackClaimedSuccess": True},
-        "G456-19": {"failureMode": "fresh-install-failure", "previousBundlePresent": False, "applyResult": "failed", "rollbackResult": "not-applicable", "rollbackClaimedSuccess": False, "manualInterventionRequired": True, "adminRouteResult": "unavailable", "partialBundleActive": False},
-        "G456-20": {"fault": "fingerprint-mismatch", "fingerprintMismatchDetected": True, "verificationResult": "rejected", "activationResult": "blocked", "staleState": "not-activated", "bundleIntegrityMatched": True, "sensitiveOutput": "absent"},
-        "G456-21": {"fault": "credential-replacement", "credentialBindingResult": "rejected", "oldCredentialAccepted": False, "otherBundleCredentialAccepted": False, "badMountCredentialAccepted": False, "activationResult": "blocked", "sensitiveOutput": "absent"},
-        "G456-22": {"fault": "stale-launcher-image", "launcherIdentityMatch": False, "imageIdentityMatch": False, "verificationResult": "rejected", "activationResult": "blocked", "sensitiveOutput": "absent"},
-        "G456-23": {"fault": "remote-docker-context", "dockerContext": "remote", "remoteOperationAttempted": False, "remoteMutation": False, "operationResult": "rejected", "localOnlyEnforced": True, "sensitiveOutput": "absent"},
-        "G456-24": {"fault": "command-injection", "injectionAttempted": True, "inputRejected": True, "commandExecution": "not-executed", "shellSpawned": False, "environmentMutation": False, "sensitiveOutput": "absent"},
-        "G456-25": {"fault": "path-traversal", "traversalAttempted": True, "inputRejected": True, "pathResolution": "rejected", "fileReadOutsideRoot": False, "fileWriteOutsideRoot": False, "sensitiveOutput": "absent"},
-        "G456-26": {"fault": "symlink-reparse", "filesystemObject": "symlink", "objectDetected": True, "followed": False, "operationResult": "rejected", "outsideRootAccess": False, "sensitiveOutput": "absent"},
-        "G456-27": {"fault": "concurrent-setup", "concurrentRequests": 2, "winnerCount": 1, "loserResult": "rejected", "duplicateApply": False, "stateConsistent": True, "activeGenerationUnique": True, "sensitiveOutput": "absent"},
-        "G456-28": {"fault": "crash-cancel-recovery", "recoveryTrigger": "crash", "recoveryResult": "resumed", "partialActivation": False, "stateConsistent": True, "recoveryRecordValueFree": True, "adminRouteResult": "unavailable", "sensitiveOutput": "absent"},
-        "G456-30": {"fault": "web-security", "requestCredentialPolicy": "enforced", "originPolicy": "enforced", "hostPolicy": "enforced", "csrfPolicy": "enforced", "unauthorizedResult": "rejected", "crossOriginAdminAccess": False, "sensitiveOutput": "absent"},
-        "G456-31": {"scanTarget": "qualification-output", "sensitiveScan": "clean", "deliveryAddressValue": "absent", "providerErrorOutput": "absent", "hostPathOutput": "absent", "credentialValue": "absent", "outputResult": "value-free"},
-        "G456-32": {"accessProfile": "admin-status", "authenticationRequired": True, "authorizationRequired": True, "unauthenticatedResult": "rejected", "wrongAddressStatus": 404, "authorizedStatus": "value-free", "statusRouteExposed": True, "sensitiveOutput": "absent"},
-        "G456-33": {"executionMode": "terminal-non-interactive", "sensitiveArgument": False, "sensitiveHistory": False, "sensitiveProcessList": False, "inputBoundaryResult": "rejected", "interactivePromptShown": False, "outputResult": "value-free", "sensitiveOutput": "absent"},
-    }
-    if scenario not in values:
-        raise ProducerError("scenario has no canonical value-free observation contract")
-    result = dict(values[scenario])
-    if scenario == "G456-11":
-        result = {"accessProfile": variant if variant in {"local-dev", "proxy-https"} else "local-dev", "addressMismatch": True, "httpStatus": 404, "adminRouteResult": "unavailable", "routeExposed": False, "sensitiveOutput": "absent"}
-    elif scenario == "G456-16" and variant == "admin-integrated":
-        result["executionProfile"] = "integrated-follow-on-failure"
-    elif scenario == "G456-26":
-        result = {"fault": "symlink-reparse", "filesystemObject": "reparse-point" if variant == "win-docker" else "symlink", "objectDetected": True, "followed": False, "operationResult": "rejected", "outsideRootAccess": False, "sensitiveOutput": "absent"}
-    return result
-
-
 def procedure_for(lane: dict[str, Any], scenario: str) -> dict[str, Any]:
-    selector_by_scenario = {
-        "G456-01": "FullyQualifiedName~SetupHostDockerAdapterTests", "G456-02": "FullyQualifiedName~SetupHostDockerAdapterTests",
-        "G456-07": "FullyQualifiedName~MailerAdminHashNetworkTests", "G456-11": "FullyQualifiedName~MailerAdminHashNetworkTests",
-        "G456-13": "FullyQualifiedName~SetupApplyEngineTests", "G456-14": "FullyQualifiedName~SetupApplyEngineTests",
-        "G456-15": "FullyQualifiedName~SetupApplyEngineTests", "G456-16": "FullyQualifiedName~SetupApplyEngineTests",
-        "G456-17": "FullyQualifiedName~SetupApplyEngineTests", "G456-18": "FullyQualifiedName~SetupApplyEngineTests",
-        "G456-19": "FullyQualifiedName~SetupApplyEngineTests", "G456-20": "FullyQualifiedName~SetupHostDockerAdapterTests",
-        "G456-21": "FullyQualifiedName~SetupHostDockerAdapterTests", "G456-22": "FullyQualifiedName~SetupHostDockerAdapterTests",
-        "G456-23": "FullyQualifiedName~SetupHostDockerAdapterTests", "G456-24": "FullyQualifiedName~SetupHostDockerAdapterTests",
-        "G456-25": "FullyQualifiedName~SetupPathAndCleanupTests", "G456-26": "FullyQualifiedName~SetupPathAndCleanupTests",
-        "G456-27": "FullyQualifiedName~SetupApplyEngineTests", "G456-28": "FullyQualifiedName~SetupApplyEngineTests",
-        "G456-30": "FullyQualifiedName~MailerAdminHashNetworkTests", "G456-31": "FullyQualifiedName~SetupHostDockerAdapterTests",
-        "G456-32": "FullyQualifiedName~MailerAdminHashNetworkTests", "G456-33": "FullyQualifiedName~SetupApplyNonInteractiveProcessTests",
-    }
-    probe = {
-        "win-docker": "docker-windows", "linux-docker": "docker-linux", "ci-auto": "ci",
-        "admin-local-dev": "windows", "admin-integrated": "windows", "local-dev": "windows",
-    }.get(lane["variantId"])
-    if probe is None or scenario not in selector_by_scenario:
-        raise ProducerError("canonical procedure registry has no lane entry")
+    # Only manifest entries with an exact structured fixture identity are
+    # available.  A product-test class without such a producer is deliberately
+    # absent and can never be promoted to qualification PASS.
+    fixture = None
+    fixture_spec = lane.get("canonicalFixture")
+    if fixture_spec is not None:
+        if not isinstance(fixture_spec, dict) or set(fixture_spec) != {"fixtureId", "fixtureRevision", "sourceTestId", "testSelector"}:
+            raise ProducerError("canonical fixture manifest identity is invalid")
+        fixture = {
+            "fixtureId": fixture_spec["fixtureId"],
+            "fixtureRevision": fixture_spec["fixtureRevision"],
+            "sourceTestId": fixture_spec["sourceTestId"],
+            "testSelector": fixture_spec["testSelector"],
+        }
+        if not all(isinstance(fixture[field], str) and fixture[field] for field in fixture):
+            raise ProducerError("canonical fixture manifest identity is incomplete")
+        if fixture["fixtureId"] != lane["fixtureCommandId"] or fixture["testSelector"] != f"FullyQualifiedName={fixture['sourceTestId']}":
+            raise ProducerError("canonical fixture manifest identity is not bound to the lane")
     return {
-        "producerId": lane["producerId"], "producerRevision": "1", "procedureId": lane["procedureId"],
-        "procedureRevision": "1", "executionKind": "fixed-dotnet-test", "platformProbe": probe,
-        "testProject": "tests/Amane.Mailer.Tests/Amane.Mailer.Tests.csproj", "testSelector": selector_by_scenario[scenario],
-        "observations": observation_values(scenario, lane["variantId"]),
+        "producerId": lane["producerId"],
+        "producerRevision": "1",
+        "procedureId": lane["procedureId"],
+        "procedureRevision": "1",
+        "executionKind": "structured-dotnet-fixture",
+        "platformProbe": {"win-docker": "docker-windows", "linux-docker": "docker-linux", "ci-auto": "ci", "admin-local-dev": "windows", "admin-integrated": "windows", "local-dev": "windows"}.get(lane["variantId"]),
+        "testProject": "tests/Amane.Mailer.Tests/Amane.Mailer.Tests.csproj",
+        "fixtureAvailable": fixture is not None,
+        "fixture": fixture,
     }
 
 
 def validate_registry(manifest: dict[str, Any], runner: Any) -> list[dict[str, Any]]:
-    if manifest.get("schemaVersion") != 2 or manifest.get("producerScript") != Path(__file__).name or manifest.get("producerRevision") != "1":
+    if manifest.get("schemaVersion") != 2 or manifest.get("producerScript") != Path(__file__).name or manifest.get("producerRevision") != "1" or manifest.get("fixtureContractVersion") != 1:
         raise ProducerError("producer manifest contract mismatch")
     lanes = manifest.get("lanes")
     if not isinstance(lanes, list) or len(lanes) != 32:
@@ -176,25 +134,19 @@ def validate_registry(manifest: dict[str, Any], runner: Any) -> list[dict[str, A
             raise ProducerError("producer manifest lane identity is invalid")
         seen.add(key)
         procedure = procedure_for(lane, scenario)
-        spec = runner.HARD_SCENARIO_VALIDATOR_REGISTRY[scenario]
-        expected_fields = set(spec["fields"])
-        if set(procedure["observations"]) != expected_fields:
-            raise ProducerError("canonical producer observations do not cover the validator")
-        try:
-            runner.validate_registered_hard_payload(
-                {"evidenceType": spec["evidenceTypes"][0], "procedureId": spec["procedureId"], "procedureRevision": spec["procedureRevision"], "typePayload": procedure["observations"], "result": "PASS", "variantId": variant},
-                {"scenarioId": scenario, "predicateSet": spec["predicateSet"]},
-                spec,
-            )
-        except runner.RunnerError as exc:
-            raise ProducerError("canonical producer observations do not satisfy the registered predicate") from exc
+        if procedure["producerId"] != lane.get("producerId") or procedure["procedureId"] != lane.get("procedureId"):
+            raise ProducerError("manifest and canonical procedure identity differ")
+        if procedure["fixtureAvailable"]:
+            fixture = procedure["fixture"]
+            if not isinstance(fixture, dict) or not all(isinstance(fixture.get(field), str) and fixture[field] for field in ("fixtureId", "fixtureRevision", "sourceTestId", "testSelector")):
+                raise ProducerError("canonical fixture identity is incomplete")
         procedures.append(procedure)
     if len(seen) != 32:
         raise ProducerError("canonical producer registry is incomplete")
     return procedures
 
 
-def probe_platform(probe: str) -> None:
+def probe_platform(probe: str | None) -> None:
     if probe == "windows":
         if platform.system() != "Windows":
             raise ProducerError("required Windows execution environment is unavailable")
@@ -203,63 +155,98 @@ def probe_platform(probe: str) -> None:
         if os.environ.get("CI", "").lower() != "true" and os.environ.get("GITHUB_ACTIONS", "").lower() != "true":
             raise ProducerError("required CI execution environment is unavailable")
         return
+    if probe not in {"docker-linux", "docker-windows"}:
+        raise ProducerError("canonical fixture has no execution environment probe")
     docker = shutil.which("docker")
     if docker is None:
         raise ProducerError("required Docker execution environment is unavailable")
     try:
-        result = subprocess.run(
-            [docker, "info", "--format", "{{.OSType}}|{{.Architecture}}"],
-            cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False,
-        )
+        result = subprocess.run([docker, "info", "--format", "{{.OSType}}|{{.Architecture}}"], cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProducerError("Docker execution environment probe failed") from exc
-    if result.returncode != 0:
-        raise ProducerError("Docker execution environment probe failed")
-    actual = result.stdout.strip().lower()
     expected = "linux" if probe == "docker-linux" else "windows"
-    if not actual.startswith(expected + "|"):
+    if result.returncode != 0 or not result.stdout.strip().lower().startswith(expected + "|"):
         raise ProducerError("Docker OS identity does not match the bound variant")
 
 
-def parse_trx(path: Path) -> dict[str, int]:
+def parse_trx(path: Path) -> tuple[dict[str, int], set[str]]:
     try:
         root = ET.parse(path).getroot()
     except (OSError, ET.ParseError) as exc:
-        raise ProducerError("canonical test procedure did not produce a valid result") from exc
+        raise ProducerError("canonical fixture did not produce a valid TRX") from exc
     counters = next((element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "Counters"), None)
     if counters is None:
-        raise ProducerError("canonical test procedure result counters are missing")
+        raise ProducerError("canonical fixture TRX counters are missing")
     def count(name: str) -> int:
         try:
             return int(counters.attrib.get(name, "0"))
         except ValueError as exc:
-            raise ProducerError("canonical test procedure counters are invalid") from exc
-    return {name: count(name) for name in ("total", "executed", "passed", "failed", "error", "timeout", "aborted", "inconclusive", "notExecuted")}
+            raise ProducerError("canonical fixture TRX counters are invalid") from exc
+    test_ids: set[str] = set()
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] != "UnitTest":
+            continue
+        method = next((child for child in element if child.tag.rsplit("}", 1)[-1] == "TestMethod"), None)
+        if method is not None and method.attrib.get("className") and method.attrib.get("name"):
+            test_ids.add(f"{method.attrib['className']}.{method.attrib['name']}")
+    return ({name: count(name) for name in ("total", "executed", "passed", "failed", "error", "timeout", "aborted", "inconclusive", "notExecuted")}, test_ids)
 
 
-def execute_procedure(procedure: dict[str, Any]) -> dict[str, int]:
+def validate_fixture_result(fixture_result: Any, procedure: dict[str, Any], scenario: str, variant: str, runner: Any) -> dict[str, Any]:
+    if not procedure.get("fixtureAvailable"):
+        raise ProducerError("canonical structured fixture is not available for this lane")
+    if not isinstance(fixture_result, dict) or set(fixture_result) != {"schemaVersion", "kind", "fixtureId", "fixtureRevision", "scenarioId", "variantId", "sourceTestId", "result", "operationExitCode", "observations"}:
+        raise ProducerError("canonical fixture result schema is invalid")
+    fixture = procedure["fixture"]
+    if fixture_result.get("schemaVersion") != 1 or fixture_result.get("kind") != "qualification-fixture-result" or fixture_result.get("fixtureId") != fixture["fixtureId"] or fixture_result.get("fixtureRevision") != fixture["fixtureRevision"] or fixture_result.get("scenarioId") != scenario or fixture_result.get("variantId") != variant or fixture_result.get("sourceTestId") != fixture["sourceTestId"] or fixture_result.get("result") != "PASS" or fixture_result.get("operationExitCode") != 0:
+        raise ProducerError("canonical fixture result identity or operation result is invalid")
+    try:
+        runner.value_free(fixture_result, "$.fixtureResult")
+    except runner.RunnerError as exc:
+        raise ProducerError("canonical fixture result is not value-free") from exc
+    observations = fixture_result.get("observations")
+    spec = runner.HARD_SCENARIO_VALIDATOR_REGISTRY[scenario]
+    if not isinstance(observations, dict) or set(observations) != set(spec["fields"]):
+        raise ProducerError("canonical fixture did not observe every validator field")
+    try:
+        fake_envelope = {"evidenceType": spec["evidenceTypes"][0], "procedureId": spec["procedureId"], "procedureRevision": spec["procedureRevision"], "typePayload": observations, "result": "PASS", "variantId": variant}
+        runner.validate_registered_hard_payload(fake_envelope, {"scenarioId": scenario, "predicateSet": spec["predicateSet"]}, spec)
+    except runner.RunnerError as exc:
+        raise ProducerError("canonical fixture observations do not satisfy the registered predicate") from exc
+    return observations
+
+
+def execute_procedure(procedure: dict[str, Any], scenario: str, variant: str, runner: Any) -> tuple[dict[str, Any], dict[str, int]]:
+    if not procedure.get("fixtureAvailable"):
+        raise ProducerError("canonical structured fixture is not available for this lane")
+    probe_platform(procedure["platformProbe"])
     dotnet = shutil.which("dotnet")
     if dotnet is None:
-        raise ProducerError("dotnet is unavailable for the canonical procedure")
+        raise ProducerError("dotnet is unavailable for the canonical fixture")
     project = REPO_ROOT / procedure["testProject"]
     if not project.is_file() or project.parent.parent != REPO_ROOT / "tests":
-        raise ProducerError("canonical test project is unavailable")
-    with tempfile.TemporaryDirectory(prefix="amane-lane-procedure-") as temp:
-        trx = Path(temp) / "result.trx"
-        command = [
-            dotnet, "test", str(project), "-c", "Release", "--no-build", "--no-restore",
-            "--filter", procedure["testSelector"], "--logger", f"trx;LogFileName={trx}",
-        ]
+        raise ProducerError("canonical fixture test project is unavailable")
+    fixture = procedure["fixture"]
+    with tempfile.TemporaryDirectory(prefix="amane-lane-fixture-") as temp:
+        result_path = Path(temp) / "fixture-result.json"
+        trx_path = Path(temp) / "fixture.trx"
+        environment = os.environ.copy()
+        environment["AMANE_QUALIFICATION_FIXTURE_RESULT_PATH"] = str(result_path)
+        environment["AMANE_QUALIFICATION_FIXTURE_SCENARIO"] = scenario
+        environment["AMANE_QUALIFICATION_FIXTURE_VARIANT"] = variant
+        command = [dotnet, "test", str(project), "-c", "Release", "--no-build", "--no-restore", "--filter", fixture["testSelector"], "--logger", f"trx;LogFileName={trx_path}"]
         try:
-            result = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900, check=False)
+            result = subprocess.run(command, cwd=REPO_ROOT, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
-            raise ProducerError("canonical test procedure could not be executed") from exc
-        if not trx.is_file():
-            raise ProducerError("canonical test procedure did not produce a result")
-        counters = parse_trx(trx)
-        if result.returncode != 0 or counters["passed"] <= 0 or counters["failed"] or counters["error"] or counters["timeout"] or counters["aborted"] or counters["inconclusive"] or counters["notExecuted"]:
-            raise ProducerError("canonical predicate procedure did not pass")
-        return counters
+            raise ProducerError("canonical fixture could not be executed") from exc
+        if not trx_path.is_file():
+            raise ProducerError("canonical fixture did not produce a TRX")
+        counters, test_ids = parse_trx(trx_path)
+        if result.returncode != 0 or counters["total"] != 1 or counters["executed"] != 1 or counters["passed"] != 1 or counters["failed"] or counters["error"] or counters["timeout"] or counters["aborted"] or counters["inconclusive"] or counters["notExecuted"] or fixture["sourceTestId"] not in test_ids:
+            raise ProducerError("canonical fixture test case did not pass exactly")
+        fixture_result = read_json(result_path)
+        validate_fixture_result(fixture_result, procedure, scenario, variant, runner)
+        return fixture_result, counters
 
 
 def bound_context(run_root: Path, scenario: str, variant: str, runner: Any) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -283,28 +270,17 @@ def produce_with_context(manifest: dict[str, Any], runner: Any, lane: dict[str, 
     if not any(item["procedureId"] == procedure["procedureId"] for item in procedures):
         raise ProducerError("canonical procedure is not registered in the manifest")
     started = now_utc()
-    probe_platform(procedure["platformProbe"])
-    counters = execute_procedure(procedure)
+    fixture_result, counters = execute_procedure(procedure, scenario, variant, runner)
     finished = now_utc()
-    values = procedure["observations"]
-    checks = [
-        {
-            "checkId": f"{scenario}/{variant}/{field}", "result": "PASS",
-            "proofKind": "qualification-integration-observation",
-            "sourceTestId": f"producer:{procedure['procedureId']}:{field}",
-            "observedFields": {field: value},
-        }
-        for field, value in values.items()
-    ]
+    observations = validate_fixture_result(fixture_result, procedure, scenario, variant, runner)
+    checks = [{"checkId": f"{scenario}/{variant}/{field}", "result": "PASS", "proofKind": "qualification-integration-observation", "sourceTestId": fixture_result["sourceTestId"], "observedFields": {field: value}} for field, value in observations.items()]
     report = {
-        "schemaVersion": 2, "kind": "qualification-lane-fixture-observations",
-        "scenarioId": scenario, "variantId": variant, "candidateId": binding["candidateId"],
-        "releaseCommitSha": binding["releaseCommitSha"], "bindingId": binding["bindingId"],
-        "qualificationRunId": binding["qualificationRunId"], "executedByRole": owner["ownerRole"],
-        "executedByIdentity": owner["ownerIdentity"], "startedAtUtc": started, "finishedAtUtc": finished,
-        "attestedAtUtc": finished,
-        "execution": {"platform": lane["expectedPlatform"], "osFamily": lane["expectedOsFamily"], "runtimeKind": "canonical-dotnet-fixture", "fixtureCommandId": lane["fixtureCommandId"]},
-        "producer": {"producerId": procedure["producerId"], "producerRevision": procedure["producerRevision"], "procedureId": procedure["procedureId"], "procedureRevision": procedure["procedureRevision"], "procedureDigestSha256": digest(procedure), "exitCode": 0, "result": "PASS", "passedTestCount": counters["passed"], "totalTestCount": counters["total"], "skippedTestCount": counters["notExecuted"]},
+        "schemaVersion": 3, "kind": "qualification-lane-fixture-observations", "scenarioId": scenario, "variantId": variant,
+        "candidateId": binding["candidateId"], "releaseCommitSha": binding["releaseCommitSha"], "bindingId": binding["bindingId"], "qualificationRunId": binding["qualificationRunId"],
+        "executedByRole": owner["ownerRole"], "executedByIdentity": owner["ownerIdentity"], "startedAtUtc": started, "finishedAtUtc": finished, "attestedAtUtc": finished,
+        "execution": {"platform": lane["expectedPlatform"], "osFamily": lane["expectedOsFamily"], "runtimeKind": "structured-dotnet-fixture", "fixtureCommandId": lane["fixtureCommandId"]},
+        "producer": {"producerId": procedure["producerId"], "producerRevision": procedure["producerRevision"], "procedureId": procedure["procedureId"], "procedureRevision": procedure["procedureRevision"], "procedureDigestSha256": digest(procedure), "fixtureId": procedure["fixture"]["fixtureId"], "fixtureRevision": procedure["fixture"]["fixtureRevision"], "fixtureResultDigestSha256": digest(fixture_result), "fixtureSourceTestId": fixture_result["sourceTestId"], "exitCode": 0, "result": "PASS", "passedTestCount": counters["passed"], "totalTestCount": counters["total"], "skippedTestCount": counters["notExecuted"]},
+        "fixtureResult": fixture_result,
         "checks": checks,
     }
     try:
@@ -326,7 +302,8 @@ def command_manifest(_: argparse.Namespace) -> int:
     runner = load_runner()
     manifest = read_json(MANIFEST_PATH)
     procedures = validate_registry(manifest, runner)
-    print(json.dumps({"laneCount": len(procedures), "canonicalProducerAvailable": len(procedures) == 32}, sort_keys=True))
+    available = sum(1 for procedure in procedures if procedure["fixtureAvailable"])
+    print(json.dumps({"laneCount": len(procedures), "canonicalProducerAvailable": available == len(procedures), "availableLaneCount": available}, sort_keys=True))
     return 0
 
 

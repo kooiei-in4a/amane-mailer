@@ -92,7 +92,7 @@ def load_manifest(runner: Any) -> dict[str, Any]:
         raise AdapterError("adapter manifest schema mismatch")
     if manifest.get("targetGateClass") != "Hard":
         raise AdapterError("adapter manifest must be Hard-only")
-    if manifest.get("producerScript") != PRODUCER_PATH.name or manifest.get("producerRevision") != "1" or manifest.get("producerContractVersion") != 1:
+    if manifest.get("producerScript") != PRODUCER_PATH.name or manifest.get("producerRevision") != "1" or manifest.get("producerContractVersion") != 1 or manifest.get("fixtureContractVersion") != 1:
         raise AdapterError("canonical producer contract is not fixed")
     lanes = manifest.get("lanes")
     if not isinstance(lanes, list) or not lanes:
@@ -151,8 +151,8 @@ def validate_execution(report: dict[str, Any], lane: dict[str, Any], scenario: s
 def validate_report(report: Any, binding: dict[str, Any], auth: dict[str, Any], lane: dict[str, Any], scenario: str, variant: str, runner: Any) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise AdapterError("fixture report must be an object")
-    allowed = {"schemaVersion", "kind", "scenarioId", "variantId", "candidateId", "releaseCommitSha", "bindingId", "qualificationRunId", "executedByRole", "executedByIdentity", "startedAtUtc", "finishedAtUtc", "attestedAtUtc", "execution", "producer", "checks"}
-    if report.get("schemaVersion") != 2 or report.get("kind") != "qualification-lane-fixture-observations" or set(report) != allowed:
+    allowed = {"schemaVersion", "kind", "scenarioId", "variantId", "candidateId", "releaseCommitSha", "bindingId", "qualificationRunId", "executedByRole", "executedByIdentity", "startedAtUtc", "finishedAtUtc", "attestedAtUtc", "execution", "producer", "fixtureResult", "checks"}
+    if report.get("schemaVersion") != 3 or report.get("kind") != "qualification-lane-fixture-observations" or set(report) != allowed:
         raise AdapterError("fixture report schema or fields are invalid")
     for field in ("scenarioId", "variantId", "candidateId", "releaseCommitSha", "bindingId", "qualificationRunId", "executedByRole", "executedByIdentity"):
         require_string(report.get(field), f"fixture {field}")
@@ -170,13 +170,21 @@ def validate_report(report: Any, binding: dict[str, Any], auth: dict[str, Any], 
     except producer_module.ProducerError as exc:
         raise AdapterError("lane has no canonical producer procedure") from exc
     producer = report.get("producer")
-    if not isinstance(producer, dict) or set(producer) != {"producerId", "producerRevision", "procedureId", "procedureRevision", "procedureDigestSha256", "exitCode", "result", "passedTestCount", "totalTestCount", "skippedTestCount"}:
+    if not isinstance(producer, dict) or set(producer) != {"producerId", "producerRevision", "procedureId", "procedureRevision", "procedureDigestSha256", "fixtureId", "fixtureRevision", "fixtureResultDigestSha256", "fixtureSourceTestId", "exitCode", "result", "passedTestCount", "totalTestCount", "skippedTestCount"}:
         raise AdapterError("canonical producer result is incomplete")
-    if producer.get("producerId") != expected_procedure["producerId"] or producer.get("producerRevision") != expected_procedure["producerRevision"] or producer.get("procedureId") != expected_procedure["procedureId"] or producer.get("procedureRevision") != expected_procedure["procedureRevision"] or producer.get("procedureDigestSha256") != producer_module.digest(expected_procedure):
+    if not expected_procedure.get("fixtureAvailable") or producer.get("producerId") != expected_procedure["producerId"] or producer.get("producerRevision") != expected_procedure["producerRevision"] or producer.get("procedureId") != expected_procedure["procedureId"] or producer.get("procedureRevision") != expected_procedure["procedureRevision"] or producer.get("procedureDigestSha256") != producer_module.digest(expected_procedure) or producer.get("fixtureId") != expected_procedure["fixture"]["fixtureId"] or producer.get("fixtureRevision") != expected_procedure["fixture"]["fixtureRevision"] or producer.get("fixtureSourceTestId") != expected_procedure["fixture"]["sourceTestId"]:
         raise AdapterError("canonical producer identity or digest mismatch")
     require_digest(producer.get("procedureDigestSha256"), "producer procedureDigestSha256")
+    require_digest(producer.get("fixtureResultDigestSha256"), "producer fixtureResultDigestSha256")
     if producer.get("exitCode") != 0 or producer.get("result") != "PASS" or type(producer.get("passedTestCount")) is not int or producer["passedTestCount"] <= 0 or type(producer.get("totalTestCount")) is not int or producer["totalTestCount"] < producer["passedTestCount"] or producer.get("skippedTestCount") != 0:
         raise AdapterError("canonical producer result did not pass its fixed procedure")
+    fixture_result = report.get("fixtureResult")
+    if producer.get("fixtureResultDigestSha256") != producer_module.digest(fixture_result):
+        raise AdapterError("fixture result digest mismatch")
+    try:
+        fixture_payload = producer_module.validate_fixture_result(fixture_result, expected_procedure, scenario, variant, runner)
+    except producer_module.ProducerError as exc:
+        raise AdapterError("canonical fixture result was rejected") from exc
     try:
         runner.value_free(report, "$.fixtureReport")
     except runner.RunnerError as exc:
@@ -197,12 +205,14 @@ def validate_report(report: Any, binding: dict[str, Any], auth: dict[str, Any], 
             raise AdapterError("fixture checkId is not bound to this lane")
         if check.get("result") != "PASS" or check.get("proofKind") != "qualification-integration-observation":
             raise AdapterError("fixture check is not an accepted operation observation")
+        if check.get("sourceTestId") != fixture_result.get("sourceTestId"):
+            raise AdapterError("fixture check sourceTestId is not the exact fixture test case")
         require_safe_id(check.get("sourceTestId"), "fixture sourceTestId")
         observed = check.get("observedFields")
         if not isinstance(observed, dict) or len(observed) != 1:
             raise AdapterError("each fixture check must observe exactly one field")
         field, value = next(iter(observed.items()))
-        if field not in expected_fields or field in payload or check_id != f"{expected_prefix}{field}":
+        if field not in expected_fields or field in payload or check_id != f"{expected_prefix}{field}" or fixture_payload.get(field) != value:
             raise AdapterError("fixture check field mapping is invalid")
         field_type, allowed = spec["fields"][field]
         if type(value) is not field_type or (allowed is not None and value not in allowed):
@@ -284,7 +294,10 @@ def command_run(args: argparse.Namespace) -> int:
 def command_manifest(args: argparse.Namespace) -> int:
     runner = load_runner()
     lanes = load_manifest(runner)
-    print(json.dumps({"laneCount": len(lanes), "lanes": sorted(lanes)}, sort_keys=True))
+    manifest = read_json(ADAPTER_MANIFEST, "adapter manifest")
+    procedures = load_producer().validate_registry(manifest, runner)
+    available = sum(1 for procedure in procedures if procedure["fixtureAvailable"])
+    print(json.dumps({"laneCount": len(lanes), "availableLaneCount": available, "canonicalProducerAvailable": available == len(lanes), "lanes": sorted(lanes)}, sort_keys=True))
     return 0
 
 
