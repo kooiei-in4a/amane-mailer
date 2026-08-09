@@ -2193,6 +2193,379 @@ def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any]
             fail("G456-44: FAIL cannot carry a fully successful schema result")
 
 
+def _field(field_type: type, *allowed: Any) -> tuple[type, frozenset[Any] | None]:
+    return field_type, frozenset(allowed) if allowed else None
+
+
+def _hard_validator(
+    predicate_set: str,
+    fields: dict[str, tuple[type, frozenset[Any] | None]],
+    pass_predicate: Any,
+    fail_predicate: Any,
+) -> dict[str, Any]:
+    """Build one explicit hard-lane predicate definition.
+
+    The registry carries the scenario-specific field set and both directions of
+    the predicate.  The shared executor below only performs the structural
+    checks and invokes those declared predicates; it never accepts a generic
+    boolean or predicateResult field.
+    """
+    scenario = predicate_set.removeprefix("legacy-g456-")
+    return {
+        "predicateSet": predicate_set,
+        "procedureId": f"issue-456-g456-{scenario}",
+        "procedureRevision": "1",
+        "evidenceTypes": EVIDENCE_TYPES[f"G456-{scenario}"],
+        "fields": fields,
+        "pass": pass_predicate,
+        "fail": fail_predicate,
+    }
+
+
+def _safe_pass(payload: dict[str, Any], variant: str, *checks: Any) -> bool:
+    return all(check(payload, variant) for check in checks)
+
+
+def _safe_fail(payload: dict[str, Any], variant: str, *checks: Any) -> bool:
+    return any(check(payload, variant) for check in checks)
+
+
+# Issue #456 defines the meaning of these lanes; this registry defines the
+# value-free evidence shape needed to prove each meaning.  Gate classes and
+# required variants remain exclusively in the bound Issue #583 scope profile.
+HARD_SCENARIO_VALIDATOR_REGISTRY: dict[str, dict[str, Any]] = {
+    "G456-01": _hard_validator(
+        "legacy-g456-01",
+        {
+            "runtimeProfile": _field(str, "windows-docker-desktop"), "freshEnvironment": _field(bool),
+            "mailpitReady": _field(bool), "mailerStarted": _field(bool), "requestAccepted": _field(bool),
+            "deliveryObservedValueFree": _field(bool), "bundleIdentityMatch": _field(bool),
+            "outcome": _field(str, "completed", "failed"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["freshEnvironment"], lambda x, _: x["mailpitReady"], lambda x, _: x["mailerStarted"], lambda x, _: x["requestAccepted"], lambda x, _: x["deliveryObservedValueFree"], lambda x, _: x["bundleIdentityMatch"], lambda x, _: x["outcome"] == "completed", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["outcome"] == "failed", lambda x, _: not x["freshEnvironment"], lambda x, _: not x["mailpitReady"], lambda x, _: not x["mailerStarted"], lambda x, _: not x["requestAccepted"], lambda x, _: not x["deliveryObservedValueFree"], lambda x, _: not x["bundleIdentityMatch"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-02": _hard_validator(
+        "legacy-g456-02",
+        {
+            "runtimeProfile": _field(str, "linux-docker-engine"), "freshEnvironment": _field(bool),
+            "mailpitReady": _field(bool), "mailerStarted": _field(bool), "requestAccepted": _field(bool),
+            "deliveryObservedValueFree": _field(bool), "bundleIdentityMatch": _field(bool),
+            "outcome": _field(str, "completed", "failed"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["freshEnvironment"], lambda x, _: x["mailpitReady"], lambda x, _: x["mailerStarted"], lambda x, _: x["requestAccepted"], lambda x, _: x["deliveryObservedValueFree"], lambda x, _: x["bundleIdentityMatch"], lambda x, _: x["outcome"] == "completed", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["outcome"] == "failed", lambda x, _: not x["freshEnvironment"], lambda x, _: not x["mailpitReady"], lambda x, _: not x["mailerStarted"], lambda x, _: not x["requestAccepted"], lambda x, _: not x["deliveryObservedValueFree"], lambda x, _: not x["bundleIdentityMatch"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-07": _hard_validator(
+        "legacy-g456-07",
+        {
+            "accessProfile": _field(str, "development-loopback"), "transportProfile": _field(str, "http-loopback"),
+            "loopbackOnly": _field(bool), "loginResult": _field(str, "success", "rejected"),
+            "setupStatusResult": _field(str, "visible", "hidden"), "adminRouteResult": _field(str, "available", "unavailable"),
+            "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["loopbackOnly"], lambda x, _: x["loginResult"] == "success", lambda x, _: x["setupStatusResult"] == "visible", lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["loopbackOnly"], lambda x, _: x["loginResult"] == "rejected", lambda x, _: x["setupStatusResult"] == "hidden", lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-08": _hard_validator(
+        "legacy-g456-08",
+        {
+            "accessProfile": _field(str, "production-https"), "transportProfile": _field(str, "https"),
+            "secureSessionFlag": _field(bool), "loginResult": _field(str, "success", "rejected"),
+            "setupStatusResult": _field(str, "visible", "hidden"), "adminRouteResult": _field(str, "available", "unavailable"),
+            "deploymentOvConfirmedShown": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["secureSessionFlag"], lambda x, _: x["loginResult"] == "success", lambda x, _: x["setupStatusResult"] == "visible", lambda x, _: x["adminRouteResult"] == "available", lambda x, _: not x["deploymentOvConfirmedShown"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["secureSessionFlag"], lambda x, _: x["loginResult"] == "rejected", lambda x, _: x["setupStatusResult"] == "hidden", lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["deploymentOvConfirmedShown"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-09": _hard_validator(
+        "legacy-g456-09",
+        {
+            "accessProfile": _field(str, "production-https"), "transportProfile": _field(str, "http"),
+            "secureSessionFlag": _field(bool), "httpSessionAccepted": _field(bool), "loginResult": _field(str, "success", "rejected"),
+            "adminRouteResult": _field(str, "available", "unavailable"), "httpFallbackAccepted": _field(bool),
+            "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["secureSessionFlag"], lambda x, _: not x["httpSessionAccepted"], lambda x, _: x["loginResult"] == "rejected", lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: not x["httpFallbackAccepted"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["secureSessionFlag"], lambda x, _: x["httpSessionAccepted"], lambda x, _: x["loginResult"] == "success", lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["httpFallbackAccepted"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-10": _hard_validator(
+        "legacy-g456-10",
+        {
+            "accessProfile": _field(str, "production-https"), "transportProfile": _field(str, "http"),
+            "amaneAdminAllowHttp": _field(bool), "configRejected": _field(bool),
+            "adminRouteResult": _field(str, "available", "unavailable"), "outcome": _field(str, "rejected", "accepted"),
+            "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["amaneAdminAllowHttp"], lambda x, _: x["configRejected"], lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["outcome"] == "rejected", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["configRejected"], lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["outcome"] == "accepted", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-11": _hard_validator(
+        "legacy-g456-11",
+        {
+            "accessProfile": _field(str, "local-dev", "proxy-https"), "addressMismatch": _field(bool),
+            "httpStatus": _field(int, 404, 200), "adminRouteResult": _field(str, "available", "unavailable"),
+            "routeExposed": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, lane: x["accessProfile"] == lane, lambda x, _: x["addressMismatch"], lambda x, _: x["httpStatus"] == 404, lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: not x["routeExposed"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, lane: x["accessProfile"] != lane, lambda x, _: not x["addressMismatch"], lambda x, _: x["httpStatus"] != 404, lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["routeExposed"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-12": _hard_validator(
+        "legacy-g456-12",
+        {
+            "accessProfile": _field(str, "production-https"), "httpsPathAvailable": _field(bool),
+            "adminBootstrapResult": _field(str, "not-presented", "presented"), "adminEnabled": _field(bool),
+            "adminRouteResult": _field(str, "available", "unavailable"), "mainPathResult": _field(str, "available", "unavailable"),
+            "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["httpsPathAvailable"], lambda x, _: x["adminBootstrapResult"] == "not-presented", lambda x, _: not x["adminEnabled"], lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["mainPathResult"] == "available", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["httpsPathAvailable"], lambda x, _: x["adminBootstrapResult"] == "presented", lambda x, _: x["adminEnabled"], lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["mainPathResult"] == "unavailable", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-13": _hard_validator(
+        "legacy-g456-13",
+        {
+            "bootstrapProfile": _field(str, "fresh-bootstrap"), "freshInstall": _field(bool),
+            "bootstrapResult": _field(str, "completed", "failed"), "loginResult": _field(str, "success", "rejected"),
+            "setupStatusResult": _field(str, "visible", "hidden"), "bundleIdentityMatch": _field(bool),
+            "sendReadyStatusShown": _field(bool), "deploymentOvConfirmedShown": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["freshInstall"], lambda x, _: x["bootstrapResult"] == "completed", lambda x, _: x["loginResult"] == "success", lambda x, _: x["setupStatusResult"] == "visible", lambda x, _: x["bundleIdentityMatch"], lambda x, _: x["sendReadyStatusShown"], lambda x, _: not x["deploymentOvConfirmedShown"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["freshInstall"], lambda x, _: x["bootstrapResult"] == "failed", lambda x, _: x["loginResult"] == "rejected", lambda x, _: x["setupStatusResult"] == "hidden", lambda x, _: not x["bundleIdentityMatch"], lambda x, _: not x["sendReadyStatusShown"], lambda x, _: x["deploymentOvConfirmedShown"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-14": _hard_validator(
+        "legacy-g456-14",
+        {
+            "accessProfile": _field(str, "managed"), "usernameRelation": _field(str, "same-user"),
+            "reapplyResult": _field(str, "idempotent", "rejected"), "credentialRotated": _field(bool),
+            "statePreserved": _field(bool), "routeResult": _field(str, "available", "unavailable"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["reapplyResult"] == "idempotent", lambda x, _: not x["credentialRotated"], lambda x, _: x["statePreserved"], lambda x, _: x["routeResult"] == "available", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["reapplyResult"] == "rejected", lambda x, _: x["credentialRotated"], lambda x, _: not x["statePreserved"], lambda x, _: x["routeResult"] == "unavailable", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-15": _hard_validator(
+        "legacy-g456-15",
+        {
+            "accessProfile": _field(str, "managed"), "usernameRelation": _field(str, "different-user"),
+            "credentialRotationAttempt": _field(str, "rejected", "accepted"), "manualExistingAdmin": _field(str, "rejected", "accepted"),
+            "reapplyResult": _field(str, "rejected", "idempotent"), "credentialChanged": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["credentialRotationAttempt"] == "rejected", lambda x, _: x["manualExistingAdmin"] == "rejected", lambda x, _: x["reapplyResult"] == "rejected", lambda x, _: not x["credentialChanged"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["credentialRotationAttempt"] == "accepted", lambda x, _: x["manualExistingAdmin"] == "accepted", lambda x, _: x["reapplyResult"] == "idempotent", lambda x, _: x["credentialChanged"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-16": _hard_validator(
+        "legacy-g456-16",
+        {
+            "executionProfile": _field(str, "automated-fixture", "integrated-follow-on-failure"), "credentialSyncResult": _field(str, "completed", "failed"),
+            "subsequentStepResult": _field(str, "failed", "completed"), "configRollbackResult": _field(str, "completed", "failed", "not-applicable"),
+            "sqliteStateReport": _field(str, "separate"), "adminRouteAfterRollback": _field(str, "not-exposed", "exposed"),
+            "partialSuccessRecorded": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, lane: x["executionProfile"] == ("automated-fixture" if lane == "ci-auto" else "integrated-follow-on-failure"), lambda x, _: x["credentialSyncResult"] == "completed", lambda x, _: x["subsequentStepResult"] == "failed", lambda x, _: x["configRollbackResult"] == "completed", lambda x, _: x["sqliteStateReport"] == "separate", lambda x, _: x["adminRouteAfterRollback"] == "not-exposed", lambda x, _: x["partialSuccessRecorded"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, lane: x["executionProfile"] != ("automated-fixture" if lane == "ci-auto" else "integrated-follow-on-failure"), lambda x, _: x["credentialSyncResult"] == "failed", lambda x, _: x["subsequentStepResult"] == "completed", lambda x, _: x["configRollbackResult"] != "completed", lambda x, _: x["adminRouteAfterRollback"] == "exposed", lambda x, _: not x["partialSuccessRecorded"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-17": _hard_validator(
+        "legacy-g456-17",
+        {
+            "executionMode": _field(str, "non-interactive"), "enableRequestResult": _field(str, "rejected", "accepted"),
+            "adminEnabled": _field(bool), "sensitiveArgument": _field(bool), "sensitiveHistory": _field(bool),
+            "sensitiveProcessList": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["enableRequestResult"] == "rejected", lambda x, _: not x["adminEnabled"], lambda x, _: not x["sensitiveArgument"], lambda x, _: not x["sensitiveHistory"], lambda x, _: not x["sensitiveProcessList"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["enableRequestResult"] == "accepted", lambda x, _: x["adminEnabled"], lambda x, _: x["sensitiveArgument"], lambda x, _: x["sensitiveHistory"], lambda x, _: x["sensitiveProcessList"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-18": _hard_validator(
+        "legacy-g456-18",
+        {
+            "failureMode": _field(str, "apply-failure"), "previousBundlePresent": _field(bool), "applyResult": _field(str, "failed", "completed"),
+            "rollbackResult": _field(str, "completed", "failed", "not-attempted"), "effectiveStateRestored": _field(bool), "integrityMatched": _field(bool),
+            "adminRouteAfterRollback": _field(str, "not-exposed", "exposed"), "rollbackClaimedSuccess": _field(bool),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["previousBundlePresent"], lambda x, _: x["applyResult"] == "failed", lambda x, _: x["rollbackResult"] == "completed", lambda x, _: x["effectiveStateRestored"], lambda x, _: x["integrityMatched"], lambda x, _: x["adminRouteAfterRollback"] == "not-exposed", lambda x, _: x["rollbackClaimedSuccess"]),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["previousBundlePresent"], lambda x, _: x["applyResult"] == "completed", lambda x, _: x["rollbackResult"] != "completed", lambda x, _: not x["effectiveStateRestored"], lambda x, _: not x["integrityMatched"], lambda x, _: x["adminRouteAfterRollback"] == "exposed", lambda x, _: not x["rollbackClaimedSuccess"]),
+    ),
+    "G456-19": _hard_validator(
+        "legacy-g456-19",
+        {
+            "failureMode": _field(str, "fresh-install-failure"), "previousBundlePresent": _field(bool), "applyResult": _field(str, "failed", "completed"),
+            "rollbackResult": _field(str, "not-applicable", "completed"), "rollbackClaimedSuccess": _field(bool),
+            "manualInterventionRequired": _field(bool), "adminRouteResult": _field(str, "unavailable", "available"), "partialBundleActive": _field(bool),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["previousBundlePresent"], lambda x, _: x["applyResult"] == "failed", lambda x, _: x["rollbackResult"] == "not-applicable", lambda x, _: not x["rollbackClaimedSuccess"], lambda x, _: x["manualInterventionRequired"], lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: not x["partialBundleActive"]),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["previousBundlePresent"], lambda x, _: x["applyResult"] == "completed", lambda x, _: x["rollbackResult"] == "completed", lambda x, _: x["rollbackClaimedSuccess"], lambda x, _: not x["manualInterventionRequired"], lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["partialBundleActive"]),
+    ),
+    "G456-20": _hard_validator(
+        "legacy-g456-20",
+        {
+            "fault": _field(str, "fingerprint-mismatch"), "fingerprintMismatchDetected": _field(bool), "verificationResult": _field(str, "rejected", "accepted"),
+            "activationResult": _field(str, "blocked", "activated"), "staleState": _field(str, "not-activated", "activated"), "bundleIntegrityMatched": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["fingerprintMismatchDetected"], lambda x, _: x["verificationResult"] == "rejected", lambda x, _: x["activationResult"] == "blocked", lambda x, _: x["staleState"] == "not-activated", lambda x, _: x["bundleIntegrityMatched"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["fingerprintMismatchDetected"], lambda x, _: x["verificationResult"] == "accepted", lambda x, _: x["activationResult"] == "activated", lambda x, _: x["staleState"] == "activated", lambda x, _: not x["bundleIntegrityMatched"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-21": _hard_validator(
+        "legacy-g456-21",
+        {
+            "fault": _field(str, "credential-replacement"), "credentialBindingResult": _field(str, "rejected", "accepted"),
+            "oldCredentialAccepted": _field(bool), "otherBundleCredentialAccepted": _field(bool), "badMountCredentialAccepted": _field(bool),
+            "activationResult": _field(str, "blocked", "activated"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["credentialBindingResult"] == "rejected", lambda x, _: not x["oldCredentialAccepted"], lambda x, _: not x["otherBundleCredentialAccepted"], lambda x, _: not x["badMountCredentialAccepted"], lambda x, _: x["activationResult"] == "blocked", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["credentialBindingResult"] == "accepted", lambda x, _: x["oldCredentialAccepted"], lambda x, _: x["otherBundleCredentialAccepted"], lambda x, _: x["badMountCredentialAccepted"], lambda x, _: x["activationResult"] == "activated", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-22": _hard_validator(
+        "legacy-g456-22",
+        {
+            "fault": _field(str, "stale-launcher-image"), "launcherIdentityMatch": _field(bool), "imageIdentityMatch": _field(bool),
+            "verificationResult": _field(str, "rejected", "accepted"), "activationResult": _field(str, "blocked", "activated"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["launcherIdentityMatch"], lambda x, _: not x["imageIdentityMatch"], lambda x, _: x["verificationResult"] == "rejected", lambda x, _: x["activationResult"] == "blocked", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["launcherIdentityMatch"], lambda x, _: x["imageIdentityMatch"], lambda x, _: x["verificationResult"] == "accepted", lambda x, _: x["activationResult"] == "activated", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-23": _hard_validator(
+        "legacy-g456-23",
+        {
+            "fault": _field(str, "remote-docker-context"), "dockerContext": _field(str, "remote"), "remoteOperationAttempted": _field(bool),
+            "remoteMutation": _field(bool), "operationResult": _field(str, "rejected", "completed"), "localOnlyEnforced": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["remoteOperationAttempted"], lambda x, _: not x["remoteMutation"], lambda x, _: x["operationResult"] == "rejected", lambda x, _: x["localOnlyEnforced"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["remoteOperationAttempted"], lambda x, _: x["remoteMutation"], lambda x, _: x["operationResult"] == "completed", lambda x, _: not x["localOnlyEnforced"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-24": _hard_validator(
+        "legacy-g456-24",
+        {
+            "fault": _field(str, "command-injection"), "injectionAttempted": _field(bool), "inputRejected": _field(bool),
+            "commandExecution": _field(str, "not-executed", "executed"), "shellSpawned": _field(bool), "environmentMutation": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["injectionAttempted"], lambda x, _: x["inputRejected"], lambda x, _: x["commandExecution"] == "not-executed", lambda x, _: not x["shellSpawned"], lambda x, _: not x["environmentMutation"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["injectionAttempted"], lambda x, _: not x["inputRejected"], lambda x, _: x["commandExecution"] == "executed", lambda x, _: x["shellSpawned"], lambda x, _: x["environmentMutation"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-25": _hard_validator(
+        "legacy-g456-25",
+        {
+            "fault": _field(str, "path-traversal"), "traversalAttempted": _field(bool), "inputRejected": _field(bool),
+            "pathResolution": _field(str, "rejected", "resolved"), "fileReadOutsideRoot": _field(bool), "fileWriteOutsideRoot": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["traversalAttempted"], lambda x, _: x["inputRejected"], lambda x, _: x["pathResolution"] == "rejected", lambda x, _: not x["fileReadOutsideRoot"], lambda x, _: not x["fileWriteOutsideRoot"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["traversalAttempted"], lambda x, _: not x["inputRejected"], lambda x, _: x["pathResolution"] == "resolved", lambda x, _: x["fileReadOutsideRoot"], lambda x, _: x["fileWriteOutsideRoot"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-26": _hard_validator(
+        "legacy-g456-26",
+        {
+            "fault": _field(str, "symlink-reparse"), "filesystemObject": _field(str, "symlink", "reparse-point"), "objectDetected": _field(bool),
+            "followed": _field(bool), "operationResult": _field(str, "rejected", "completed"), "outsideRootAccess": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, lane: x["filesystemObject"] == ("reparse-point" if lane == "win-docker" else "symlink"), lambda x, _: x["objectDetected"], lambda x, _: not x["followed"], lambda x, _: x["operationResult"] == "rejected", lambda x, _: not x["outsideRootAccess"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, lane: x["filesystemObject"] != ("reparse-point" if lane == "win-docker" else "symlink"), lambda x, _: not x["objectDetected"], lambda x, _: x["followed"], lambda x, _: x["operationResult"] == "completed", lambda x, _: x["outsideRootAccess"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-27": _hard_validator(
+        "legacy-g456-27",
+        {
+            "fault": _field(str, "concurrent-setup"), "concurrentRequests": _field(int), "winnerCount": _field(int, 1, 2),
+            "loserResult": _field(str, "rejected", "serialized"), "duplicateApply": _field(bool), "stateConsistent": _field(bool), "activeGenerationUnique": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["concurrentRequests"] >= 2, lambda x, _: x["winnerCount"] == 1, lambda x, _: x["loserResult"] in {"rejected", "serialized"}, lambda x, _: not x["duplicateApply"], lambda x, _: x["stateConsistent"], lambda x, _: x["activeGenerationUnique"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["concurrentRequests"] < 2, lambda x, _: x["winnerCount"] != 1, lambda x, _: x["loserResult"] not in {"rejected", "serialized"}, lambda x, _: x["duplicateApply"], lambda x, _: not x["stateConsistent"], lambda x, _: not x["activeGenerationUnique"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-28": _hard_validator(
+        "legacy-g456-28",
+        {
+            "fault": _field(str, "crash-cancel-recovery"), "recoveryTrigger": _field(str, "crash", "cancel"),
+            "recoveryResult": _field(str, "resumed", "manual-intervention", "unsafe"), "partialActivation": _field(bool), "stateConsistent": _field(bool),
+            "recoveryRecordValueFree": _field(bool), "adminRouteResult": _field(str, "unavailable", "available"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["recoveryResult"] in {"resumed", "manual-intervention"}, lambda x, _: not x["partialActivation"], lambda x, _: x["stateConsistent"], lambda x, _: x["recoveryRecordValueFree"], lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["recoveryResult"] == "unsafe", lambda x, _: x["partialActivation"], lambda x, _: not x["stateConsistent"], lambda x, _: not x["recoveryRecordValueFree"], lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-30": _hard_validator(
+        "legacy-g456-30",
+        {
+            "fault": _field(str, "web-security"), "requestCredentialPolicy": _field(str, "enforced", "bypassed"), "originPolicy": _field(str, "enforced", "bypassed"),
+            "hostPolicy": _field(str, "enforced", "bypassed"), "csrfPolicy": _field(str, "enforced", "bypassed"), "unauthorizedResult": _field(str, "rejected", "accepted"),
+            "crossOriginAdminAccess": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["requestCredentialPolicy"] == "enforced", lambda x, _: x["originPolicy"] == "enforced", lambda x, _: x["hostPolicy"] == "enforced", lambda x, _: x["csrfPolicy"] == "enforced", lambda x, _: x["unauthorizedResult"] == "rejected", lambda x, _: not x["crossOriginAdminAccess"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["requestCredentialPolicy"] == "bypassed", lambda x, _: x["originPolicy"] == "bypassed", lambda x, _: x["hostPolicy"] == "bypassed", lambda x, _: x["csrfPolicy"] == "bypassed", lambda x, _: x["unauthorizedResult"] == "accepted", lambda x, _: x["crossOriginAdminAccess"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-31": _hard_validator(
+        "legacy-g456-31",
+        {
+            "scanTarget": _field(str, "qualification-output"), "sensitiveScan": _field(str, "clean", "findings"), "deliveryAddressValue": _field(str, "absent", "present"),
+            "providerErrorOutput": _field(str, "absent", "present"), "hostPathOutput": _field(str, "absent", "present"), "credentialValue": _field(str, "absent", "present"), "outputResult": _field(str, "value-free", "value-bearing"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["sensitiveScan"] == "clean", lambda x, _: x["deliveryAddressValue"] == "absent", lambda x, _: x["providerErrorOutput"] == "absent", lambda x, _: x["hostPathOutput"] == "absent", lambda x, _: x["credentialValue"] == "absent", lambda x, _: x["outputResult"] == "value-free"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["sensitiveScan"] == "findings", lambda x, _: x["deliveryAddressValue"] == "present", lambda x, _: x["providerErrorOutput"] == "present", lambda x, _: x["hostPathOutput"] == "present", lambda x, _: x["credentialValue"] == "present", lambda x, _: x["outputResult"] == "value-bearing"),
+    ),
+    "G456-32": _hard_validator(
+        "legacy-g456-32",
+        {
+            "accessProfile": _field(str, "admin-status"), "authenticationRequired": _field(bool), "authorizationRequired": _field(bool),
+            "unauthenticatedResult": _field(str, "rejected", "accepted"), "wrongAddressStatus": _field(int, 404, 200), "authorizedStatus": _field(str, "value-free", "value-bearing"),
+            "statusRouteExposed": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["authenticationRequired"], lambda x, _: x["authorizationRequired"], lambda x, _: x["unauthenticatedResult"] == "rejected", lambda x, _: x["wrongAddressStatus"] == 404, lambda x, _: x["authorizedStatus"] == "value-free", lambda x, _: x["statusRouteExposed"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["authenticationRequired"], lambda x, _: not x["authorizationRequired"], lambda x, _: x["unauthenticatedResult"] == "accepted", lambda x, _: x["wrongAddressStatus"] == 200, lambda x, _: x["authorizedStatus"] == "value-bearing", lambda x, _: not x["statusRouteExposed"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-33": _hard_validator(
+        "legacy-g456-33",
+        {
+            "executionMode": _field(str, "terminal-non-interactive"), "sensitiveArgument": _field(bool), "sensitiveHistory": _field(bool),
+            "sensitiveProcessList": _field(bool), "inputBoundaryResult": _field(str, "rejected", "accepted"), "interactivePromptShown": _field(bool),
+            "outputResult": _field(str, "value-free", "value-bearing"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["sensitiveArgument"], lambda x, _: not x["sensitiveHistory"], lambda x, _: not x["sensitiveProcessList"], lambda x, _: x["inputBoundaryResult"] == "rejected", lambda x, _: not x["interactivePromptShown"], lambda x, _: x["outputResult"] == "value-free", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["sensitiveArgument"], lambda x, _: x["sensitiveHistory"], lambda x, _: x["sensitiveProcessList"], lambda x, _: x["inputBoundaryResult"] == "accepted", lambda x, _: x["interactivePromptShown"], lambda x, _: x["outputResult"] == "value-bearing", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-35": _hard_validator(
+        "legacy-g456-35",
+        {
+            "targetRid": _field(str, "linux-arm64"), "artifactSourceCommitMatch": _field(bool), "artifactIntegrityMatch": _field(bool),
+            "startupSmoke": _field(str, "passed", "failed"), "helpCommand": _field(str, "passed", "failed"), "aotBinary": _field(bool),
+            "runtimeIdentityMatch": _field(bool), "outputResult": _field(str, "value-free", "value-bearing"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["artifactSourceCommitMatch"], lambda x, _: x["artifactIntegrityMatch"], lambda x, _: x["startupSmoke"] == "passed", lambda x, _: x["helpCommand"] == "passed", lambda x, _: x["aotBinary"], lambda x, _: x["runtimeIdentityMatch"], lambda x, _: x["outputResult"] == "value-free", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["artifactSourceCommitMatch"], lambda x, _: not x["artifactIntegrityMatch"], lambda x, _: x["startupSmoke"] == "failed", lambda x, _: x["helpCommand"] == "failed", lambda x, _: not x["aotBinary"], lambda x, _: not x["runtimeIdentityMatch"], lambda x, _: x["outputResult"] == "value-bearing", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+}
+
+
+IMPLEMENTED_SCENARIO_VALIDATORS.update(HARD_SCENARIO_VALIDATOR_REGISTRY)
+
+
+def validate_registered_hard_payload(envelope: dict[str, Any], row: dict[str, Any], spec: dict[str, Any]) -> None:
+    scenario = row["scenarioId"]
+    bound_predicate_set = row.get("predicateSet", SCOPE_PREDICATE_SETS.get(scenario))
+    if bound_predicate_set != spec["predicateSet"]:
+        fail(f"{scenario}: predicateSet is not registered for this lane")
+    if envelope.get("evidenceType") not in spec["evidenceTypes"]:
+        fail(f"{scenario}: evidenceType is not registered for this lane")
+    if envelope.get("procedureId") != spec["procedureId"] or envelope.get("procedureRevision") != spec["procedureRevision"]:
+        fail(f"{scenario}: procedure identity/revision mismatch")
+    payload = envelope["typePayload"]
+    expected_fields = set(spec["fields"])
+    missing = sorted(expected_fields - set(payload))
+    unknown = sorted(set(payload) - expected_fields)
+    if missing:
+        fail(f"{scenario}: typePayload missing fields: {','.join(missing)}")
+    if unknown:
+        fail(f"{scenario}: unknown typePayload field: {','.join(unknown)}")
+    for field_name, (field_type, allowed) in spec["fields"].items():
+        value = payload[field_name]
+        if type(value) is not field_type:
+            fail(f"{scenario}: typePayload field {field_name} has wrong type")
+        if allowed is not None and value not in allowed:
+            fail(f"{scenario}: typePayload field {field_name} has an unexpected value")
+    if envelope["result"] not in {"PASS", "FAIL"}:
+        fail(f"{scenario}: dedicated Hard evidence result must be PASS or FAIL")
+    variant = envelope["variantId"]
+    if envelope["result"] == "PASS" and not spec["pass"](payload, variant):
+        fail(f"{scenario}: PASS predicate mismatch")
+    if envelope["result"] == "FAIL":
+        if spec["pass"](payload, variant):
+            fail(f"{scenario}: FAIL payload is a successful predicate")
+        if not spec["fail"](payload, variant):
+            fail(f"{scenario}: FAIL payload lacks an explicit failed predicate")
+
+
 def validate_type_payload(envelope: dict[str, Any], binding: dict[str, Any], row: dict[str, Any]) -> None:
     scenario = row["scenarioId"]
     if binding.get("scopeId") is not None and (row.get("predicateSet") != SCOPE_PREDICATE_SETS.get(scenario) or row.get("ownerRoleClass") != SCOPE_OWNER_CLASSES.get(scenario)):
@@ -2203,6 +2576,9 @@ def validate_type_payload(envelope: dict[str, Any], binding: dict[str, Any], row
     payload = envelope["typePayload"]
     if scenario in {"G456-42", "G456-43", "G456-44", "G583-MIG-01", "G583-MIG-02", "G583-MIG-03"}:
         validate_migration_payload(envelope, binding, scenario, payload)
+        return
+    if scenario in HARD_SCENARIO_VALIDATOR_REGISTRY:
+        validate_registered_hard_payload(envelope, row, HARD_SCENARIO_VALIDATOR_REGISTRY[scenario])
         return
     required: dict[str, tuple[str, ...]] = {
         "G456-03": ("acsEnvironment", "liveSending", "sendKind", "mailSendAttempted", "testBypassUsed", "outcome", "mailboxConfirmation"),

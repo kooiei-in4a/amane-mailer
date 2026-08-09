@@ -12,6 +12,7 @@ import importlib.util
 import io
 import json
 import os
+import copy
 import shutil
 import subprocess
 import sys
@@ -66,6 +67,24 @@ def main() -> int:
         assert spec.loader is not None
         spec.loader.exec_module(runner)
         profile = runner.load_scope_manifest(scope_manifest)
+        v13_hard = {row["scenarioId"] for row in profile["scenarioRows"] if row["gateClass"] == "Hard"}
+        rc5_dedicated = {
+            "G456-03", "G456-04", "G456-05", "G456-06",
+            "G456-42", "G456-43", "G456-44",
+            "G583-MIG-01", "G583-MIG-02", "G583-MIG-03",
+        }
+        rc5_gap = sorted(v13_hard - rc5_dedicated)
+        expected_rc5_gap = sorted(
+            {"G456-01", "G456-02"}
+            | {f"G456-{number:02d}" for number in range(7, 29)}
+            | {"G456-30", "G456-31", "G456-32", "G456-33", "G456-35"}
+        )
+        if rc5_gap != expected_rc5_gap or len(rc5_gap) != 29:
+            raise AssertionError(f"RC5 machine-derived Hard validator gap changed: {rc5_gap}")
+        if v13_hard - set(runner.IMPLEMENTED_SCENARIO_VALIDATORS):
+            raise AssertionError("v1.3 Hard scenario has no dedicated validator")
+        if set(runner.HARD_SCENARIO_VALIDATOR_REGISTRY) != set(expected_rc5_gap):
+            raise AssertionError("Hard validator registry is not exactly the RC5-derived gap")
         migration = profile["migration"]
         v13_binding = {
             "scopeId": profile["scopeId"],
@@ -487,6 +506,7 @@ def main() -> int:
         evidence_counter = 10
         def envelope(evidence_id, scenario, variant, result, evidence_type, payload):
             owner_role, owner_identity = actor_for(scenario, variant)
+            validator = runner.HARD_SCENARIO_VALIDATOR_REGISTRY.get(scenario)
             return {
                 "schemaVersion": 1, "kind": "release-qualification-evidence", "evidenceType": evidence_type,
                 "evidenceId": evidence_id, "candidateId": binding["candidateId"], "sourceCommitSha": binding["releaseCommitSha"],
@@ -494,12 +514,67 @@ def main() -> int:
                 "planCommitSha": binding["planCommitSha"], "planFileSha256": binding["planFileSha256"], "bindingId": binding["bindingId"],
                 "qualificationRunId": binding["qualificationRunId"], "attempt": 1, "result": result,
                 "startedAtUtc": "2026-08-08T00:00:00Z", "finishedAtUtc": "2026-08-08T00:00:01Z",
-                "executedByRole": owner_role, "executedByIdentity": owner_identity, "procedureId": f"self-test-{scenario}",
-                "procedureRevision": "1", "runnerClass": "synthetic", "toolVersion": "self-test-1", "attestedAtUtc": "2026-08-08T00:00:01Z",
+                "executedByRole": owner_role, "executedByIdentity": owner_identity, "procedureId": validator["procedureId"] if validator else f"self-test-{scenario}",
+                "procedureRevision": validator["procedureRevision"] if validator else "1", "runnerClass": "synthetic", "toolVersion": "self-test-1", "attestedAtUtc": "2026-08-08T00:00:01Z",
                 "identity": {}, "prohibitedContentScan": {"result": "PASS", "scannerId": "qualify-secret-like/1", "scannerVersion": "1", "reportDigestSha256": "a" * 64},
                 "typePayload": payload,
             }
+        hard_positive = {
+            "G456-01": {"runtimeProfile": "windows-docker-desktop", "freshEnvironment": True, "mailpitReady": True, "mailerStarted": True, "requestAccepted": True, "deliveryObservedValueFree": True, "bundleIdentityMatch": True, "outcome": "completed", "sensitiveOutput": "absent"},
+            "G456-02": {"runtimeProfile": "linux-docker-engine", "freshEnvironment": True, "mailpitReady": True, "mailerStarted": True, "requestAccepted": True, "deliveryObservedValueFree": True, "bundleIdentityMatch": True, "outcome": "completed", "sensitiveOutput": "absent"},
+            "G456-07": {"accessProfile": "development-loopback", "transportProfile": "http-loopback", "loopbackOnly": True, "loginResult": "success", "setupStatusResult": "visible", "adminRouteResult": "available", "sensitiveOutput": "absent"},
+            "G456-08": {"accessProfile": "production-https", "transportProfile": "https", "secureSessionFlag": True, "loginResult": "success", "setupStatusResult": "visible", "adminRouteResult": "available", "deploymentOvConfirmedShown": False, "sensitiveOutput": "absent"},
+            "G456-09": {"accessProfile": "production-https", "transportProfile": "http", "secureSessionFlag": True, "httpSessionAccepted": False, "loginResult": "rejected", "adminRouteResult": "unavailable", "httpFallbackAccepted": False, "sensitiveOutput": "absent"},
+            "G456-10": {"accessProfile": "production-https", "transportProfile": "http", "amaneAdminAllowHttp": True, "configRejected": True, "adminRouteResult": "unavailable", "outcome": "rejected", "sensitiveOutput": "absent"},
+            "G456-11": {"accessProfile": "local-dev", "addressMismatch": True, "httpStatus": 404, "adminRouteResult": "unavailable", "routeExposed": False, "sensitiveOutput": "absent"},
+            "G456-12": {"accessProfile": "production-https", "httpsPathAvailable": False, "adminBootstrapResult": "not-presented", "adminEnabled": False, "adminRouteResult": "unavailable", "mainPathResult": "available", "sensitiveOutput": "absent"},
+            "G456-13": {"bootstrapProfile": "fresh-bootstrap", "freshInstall": True, "bootstrapResult": "completed", "loginResult": "success", "setupStatusResult": "visible", "bundleIdentityMatch": True, "sendReadyStatusShown": True, "deploymentOvConfirmedShown": False, "sensitiveOutput": "absent"},
+            "G456-14": {"accessProfile": "managed", "usernameRelation": "same-user", "reapplyResult": "idempotent", "credentialRotated": False, "statePreserved": True, "routeResult": "available", "sensitiveOutput": "absent"},
+            "G456-15": {"accessProfile": "managed", "usernameRelation": "different-user", "credentialRotationAttempt": "rejected", "manualExistingAdmin": "rejected", "reapplyResult": "rejected", "credentialChanged": False, "sensitiveOutput": "absent"},
+            "G456-16": {"executionProfile": "automated-fixture", "credentialSyncResult": "completed", "subsequentStepResult": "failed", "configRollbackResult": "completed", "sqliteStateReport": "separate", "adminRouteAfterRollback": "not-exposed", "partialSuccessRecorded": True, "sensitiveOutput": "absent"},
+            "G456-17": {"executionMode": "non-interactive", "enableRequestResult": "rejected", "adminEnabled": False, "sensitiveArgument": False, "sensitiveHistory": False, "sensitiveProcessList": False, "sensitiveOutput": "absent"},
+            "G456-18": {"failureMode": "apply-failure", "previousBundlePresent": True, "applyResult": "failed", "rollbackResult": "completed", "effectiveStateRestored": True, "integrityMatched": True, "adminRouteAfterRollback": "not-exposed", "rollbackClaimedSuccess": True},
+            "G456-19": {"failureMode": "fresh-install-failure", "previousBundlePresent": False, "applyResult": "failed", "rollbackResult": "not-applicable", "rollbackClaimedSuccess": False, "manualInterventionRequired": True, "adminRouteResult": "unavailable", "partialBundleActive": False},
+            "G456-20": {"fault": "fingerprint-mismatch", "fingerprintMismatchDetected": True, "verificationResult": "rejected", "activationResult": "blocked", "staleState": "not-activated", "bundleIntegrityMatched": True, "sensitiveOutput": "absent"},
+            "G456-21": {"fault": "credential-replacement", "credentialBindingResult": "rejected", "oldCredentialAccepted": False, "otherBundleCredentialAccepted": False, "badMountCredentialAccepted": False, "activationResult": "blocked", "sensitiveOutput": "absent"},
+            "G456-22": {"fault": "stale-launcher-image", "launcherIdentityMatch": False, "imageIdentityMatch": False, "verificationResult": "rejected", "activationResult": "blocked", "sensitiveOutput": "absent"},
+            "G456-23": {"fault": "remote-docker-context", "dockerContext": "remote", "remoteOperationAttempted": False, "remoteMutation": False, "operationResult": "rejected", "localOnlyEnforced": True, "sensitiveOutput": "absent"},
+            "G456-24": {"fault": "command-injection", "injectionAttempted": True, "inputRejected": True, "commandExecution": "not-executed", "shellSpawned": False, "environmentMutation": False, "sensitiveOutput": "absent"},
+            "G456-25": {"fault": "path-traversal", "traversalAttempted": True, "inputRejected": True, "pathResolution": "rejected", "fileReadOutsideRoot": False, "fileWriteOutsideRoot": False, "sensitiveOutput": "absent"},
+            "G456-26": {"fault": "symlink-reparse", "filesystemObject": "symlink", "objectDetected": True, "followed": False, "operationResult": "rejected", "outsideRootAccess": False, "sensitiveOutput": "absent"},
+            "G456-27": {"fault": "concurrent-setup", "concurrentRequests": 2, "winnerCount": 1, "loserResult": "serialized", "duplicateApply": False, "stateConsistent": True, "activeGenerationUnique": True, "sensitiveOutput": "absent"},
+            "G456-28": {"fault": "crash-cancel-recovery", "recoveryTrigger": "crash", "recoveryResult": "resumed", "partialActivation": False, "stateConsistent": True, "recoveryRecordValueFree": True, "adminRouteResult": "unavailable", "sensitiveOutput": "absent"},
+            "G456-30": {"fault": "web-security", "requestCredentialPolicy": "enforced", "originPolicy": "enforced", "hostPolicy": "enforced", "csrfPolicy": "enforced", "unauthorizedResult": "rejected", "crossOriginAdminAccess": False, "sensitiveOutput": "absent"},
+            "G456-31": {"scanTarget": "qualification-output", "sensitiveScan": "clean", "deliveryAddressValue": "absent", "providerErrorOutput": "absent", "hostPathOutput": "absent", "credentialValue": "absent", "outputResult": "value-free"},
+            "G456-32": {"accessProfile": "admin-status", "authenticationRequired": True, "authorizationRequired": True, "unauthenticatedResult": "rejected", "wrongAddressStatus": 404, "authorizedStatus": "value-free", "statusRouteExposed": True, "sensitiveOutput": "absent"},
+            "G456-33": {"executionMode": "terminal-non-interactive", "sensitiveArgument": False, "sensitiveHistory": False, "sensitiveProcessList": False, "inputBoundaryResult": "rejected", "interactivePromptShown": False, "outputResult": "value-free", "sensitiveOutput": "absent"},
+            "G456-35": {"targetRid": "linux-arm64", "artifactSourceCommitMatch": True, "artifactIntegrityMatch": True, "startupSmoke": "passed", "helpCommand": "passed", "aotBinary": True, "runtimeIdentityMatch": True, "outputResult": "value-free", "sensitiveOutput": "absent"},
+        }
+        hard_fail_mutations = {
+            "G456-01": ("outcome", "failed"), "G456-02": ("outcome", "failed"), "G456-07": ("loginResult", "rejected"),
+            "G456-08": ("secureSessionFlag", False), "G456-09": ("httpSessionAccepted", True), "G456-10": ("outcome", "accepted"),
+            "G456-11": ("httpStatus", 200), "G456-12": ("adminEnabled", True), "G456-13": ("bootstrapResult", "failed"),
+            "G456-14": ("reapplyResult", "rejected"), "G456-15": ("credentialRotationAttempt", "accepted"), "G456-16": ("credentialSyncResult", "failed"),
+            "G456-17": ("enableRequestResult", "accepted"), "G456-18": ("rollbackResult", "failed"), "G456-19": ("partialBundleActive", True),
+            "G456-20": ("verificationResult", "accepted"), "G456-21": ("oldCredentialAccepted", True), "G456-22": ("launcherIdentityMatch", True),
+            "G456-23": ("remoteOperationAttempted", True), "G456-24": ("commandExecution", "executed"), "G456-25": ("pathResolution", "resolved"),
+            "G456-26": ("followed", True), "G456-27": ("winnerCount", 2), "G456-28": ("recoveryResult", "unsafe"),
+            "G456-30": ("originPolicy", "bypassed"), "G456-31": ("sensitiveScan", "findings"), "G456-32": ("wrongAddressStatus", 200),
+            "G456-33": ("sensitiveArgument", True), "G456-35": ("startupSmoke", "failed"),
+        }
         def payload_for(scenario, variant, result):
+            if scenario in hard_positive:
+                payload = copy.deepcopy(hard_positive[scenario])
+                if scenario == "G456-11":
+                    payload["accessProfile"] = variant
+                if scenario == "G456-16":
+                    payload["executionProfile"] = "automated-fixture" if variant == "ci-auto" else "integrated-follow-on-failure"
+                if scenario == "G456-26":
+                    payload["filesystemObject"] = "reparse-point" if variant == "win-docker" else "symlink"
+                if result == "FAIL":
+                    field, value = hard_fail_mutations[scenario]
+                    payload[field] = value
+                return payload
             if scenario == "G456-03": return {"acsEnvironment": "Staging", "liveSending": False, "sendKind": "none", "mailSendAttempted": False, "testBypassUsed": False, "normalMailerPath": False, "outcome": "configuration-applied", "mailboxConfirmation": "not-required"}
             if scenario == "G456-04": return {"acsEnvironment": "Staging", "sendKind": "typed-fixed-synthetic", "mailSendAttempted": True, "testBypassUsed": False, "outcome": "completed", "mailboxConfirmation": "not-run", "restrictedOpsRecordId": "ops-04"}
             if scenario == "G456-05": return {"acsEnvironment": "Production", "liveSending": True, "sendKind": "none-for-send-ready-assert", "mailSendAttempted": False, "testBypassUsed": False, "effectiveFingerprintMatch": True, "bundleIntegrityMatched": True, "doctorOrReadinessSummary": "pass", "mailboxConfirmation": "not-required-for-send-ready"}
@@ -516,11 +591,10 @@ def main() -> int:
             owner_role, owner_identity = actor_for(scenario, variant)
             run("evidence", "--run-root", str(run_root), "--evidence-id", evidence_id, "--scenario-id", scenario, "--variant-id", variant, "--result", result, "--executed-by-role", owner_role, "--executed-by-identity", owner_identity, "--observations", str(envelope_path))
         first_id = "1" * 64
-        add_evidence(first_id, "G456-01", "win-docker", "FAIL", "manual-smoke")
-        run("disposition", "--run-root", str(run_root), "--scenario-id", "G456-01", "--variant-id", "win-docker", "--action", "accept", "--target-evidence-id", first_id, "--reason-code", "self-test-fail", "--approved-by-role", "lane-owner", "--approved-by-identity", "ci:test")
+        add_evidence(first_id, "G456-29", "win-docker", "FAIL", "qualification-scenario")
         next_id = 3
         send_ready_evidence_id = None
-        supported_scenarios = {"G456-03", "G456-04", "G456-05", "G456-06", "G456-42", "G456-43", "G456-44"}
+        supported_scenarios = {"G456-03", "G456-04", "G456-05", "G456-06", "G456-42", "G456-43", "G456-44"} | set(runner.HARD_SCENARIO_VALIDATOR_REGISTRY)
         for number in range(1, 45):
             scenario = f"G456-{number:02d}"
             for variant in variants[number]:
@@ -535,8 +609,49 @@ def main() -> int:
                 add_evidence(eid, scenario, variant, "PASS", etype)
                 owner_role, owner_identity = actor_for(scenario, variant)
                 run("disposition", "--run-root", str(run_root), "--scenario-id", scenario, "--variant-id", variant, "--action", "accept", "--target-evidence-id", eid, "--reason-code", "self-test-pass", "--approved-by-role", owner_role, "--approved-by-identity", owner_identity)
-        # A generic predicateResult must not be able to promote an unimplemented
-        # Admin/HTTPS/security lane.
+        # Every new dedicated validator must accept a semantically failing
+        # evidence payload too; only the active PASS evidence above is used for
+        # the aggregation path.
+        for scenario in sorted(runner.HARD_SCENARIO_VALIDATOR_REGISTRY):
+            number = int(scenario[5:])
+            for variant in variants[number]:
+                eid = f"{next_id:064x}"; next_id += 1
+                add_evidence(eid, scenario, variant, "FAIL", runner.EVIDENCE_TYPES[scenario][0])
+        def reject_hard_fixture(label, mutate, cli_scenario="G456-10", cli_variant="admin-prod-https", cli_actor=None):
+            nonlocal next_id
+            eid = f"{next_id:064x}"; next_id += 1
+            item = envelope(eid, "G456-10", "admin-prod-https", "PASS", "qualification-scenario", payload_for("G456-10", "admin-prod-https", "PASS"))
+            mutate(item)
+            path = root / f"negative-{label}.json"
+            write(path, item)
+            role, identity = cli_actor or actor_for(cli_scenario, cli_variant)
+            run("evidence", "--run-root", str(run_root), "--evidence-id", eid, "--scenario-id", cli_scenario, "--variant-id", cli_variant, "--result", "PASS", "--executed-by-role", role, "--executed-by-identity", identity, "--observations", str(path), expect=1)
+
+        reject_hard_fixture("scenario-id", lambda item: item.update({"scenarioId": "G456-11"}), "G456-11", "proxy-https")
+        reject_hard_fixture("variant-id", lambda item: item.update({"variantId": "admin-prod-https"}), "G456-09", "admin-prod-https")
+        reject_hard_fixture("owner", lambda item: item.update({"executedByRole": "wrong-owner", "executedByIdentity": "ci:wrong"}))
+        reject_hard_fixture("procedure", lambda item: item.update({"procedureId": "wrong-procedure"}))
+        reject_hard_fixture("missing-predicate", lambda item: item["typePayload"].pop("amaneAdminAllowHttp"))
+        reject_hard_fixture("unexpected-predicate", lambda item: item["typePayload"].update({"allChecksPassed": True}))
+        reject_hard_fixture("wrong-type", lambda item: item["typePayload"].update({"configRejected": "true"}))
+        reject_hard_fixture("contradictory-pass", lambda item: item.update({"typePayload": payload_for("G456-10", "admin-prod-https", "FAIL")}))
+        reject_hard_fixture("contradictory-fail", lambda item: item.update({"result": "FAIL"}))
+        reject_hard_fixture("tampered-scan", lambda item: item["prohibitedContentScan"].update({"reportDigestSha256": "z" * 64}))
+        for field, value in (("candidateId", "0" * 64), ("sourceCommitSha", "0" * 40), ("bindingId", "0" * 64), ("qualificationRunId", "0" * 64)):
+            reject_hard_fixture(f"identity-{field}", lambda item, field=field, value=value: item.update({field: value}))
+        bad_row = copy.deepcopy(next(row for row in binding["rows"] if row["scenarioId"] == "G456-10"))
+        bad_row["predicateSet"] = "legacy-g456-wrong"
+        try:
+            runner.validate_registered_hard_payload(
+                envelope("f" * 64, "G456-10", "admin-prod-https", "PASS", "qualification-scenario", payload_for("G456-10", "admin-prod-https", "PASS")),
+                bad_row,
+                runner.HARD_SCENARIO_VALIDATOR_REGISTRY["G456-10"],
+            )
+        except runner.RunnerError:
+            pass
+        else:
+            raise AssertionError("wrong predicateSet was accepted")
+        # A generic predicateResult must not bypass a dedicated validator.
         unsupported = "6" * 64
         unsupported_path = root / "unsupported-pass.json"
         write(unsupported_path, envelope(unsupported, "G456-02", "linux-docker", "PASS", "manual-smoke", {"predicateResult": "PASS"}))
