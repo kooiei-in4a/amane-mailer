@@ -2528,7 +2528,7 @@ HARD_SCENARIO_VALIDATOR_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 
-IMPLEMENTED_SCENARIO_VALIDATORS.update(HARD_SCENARIO_VALIDATOR_REGISTRY)
+V13_IMPLEMENTED_SCENARIO_VALIDATORS = IMPLEMENTED_SCENARIO_VALIDATORS | set(HARD_SCENARIO_VALIDATOR_REGISTRY)
 
 
 def validate_registered_hard_payload(envelope: dict[str, Any], row: dict[str, Any], spec: dict[str, Any]) -> None:
@@ -2577,7 +2577,7 @@ def validate_type_payload(envelope: dict[str, Any], binding: dict[str, Any], row
     if scenario in {"G456-42", "G456-43", "G456-44", "G583-MIG-01", "G583-MIG-02", "G583-MIG-03"}:
         validate_migration_payload(envelope, binding, scenario, payload)
         return
-    if scenario in HARD_SCENARIO_VALIDATOR_REGISTRY:
+    if binding.get("scopeId") == V13_SCOPE_ID and scenario in HARD_SCENARIO_VALIDATOR_REGISTRY:
         validate_registered_hard_payload(envelope, row, HARD_SCENARIO_VALIDATOR_REGISTRY[scenario])
         return
     required: dict[str, tuple[str, ...]] = {

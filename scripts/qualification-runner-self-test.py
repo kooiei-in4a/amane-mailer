@@ -81,7 +81,7 @@ def main() -> int:
         )
         if rc5_gap != expected_rc5_gap or len(rc5_gap) != 29:
             raise AssertionError(f"RC5 machine-derived Hard validator gap changed: {rc5_gap}")
-        if v13_hard - set(runner.IMPLEMENTED_SCENARIO_VALIDATORS):
+        if v13_hard - set(runner.V13_IMPLEMENTED_SCENARIO_VALIDATORS):
             raise AssertionError("v1.3 Hard scenario has no dedicated validator")
         if set(runner.HARD_SCENARIO_VALIDATOR_REGISTRY) != set(expected_rc5_gap):
             raise AssertionError("Hard validator registry is not exactly the RC5-derived gap")
@@ -594,7 +594,7 @@ def main() -> int:
         add_evidence(first_id, "G456-29", "win-docker", "FAIL", "qualification-scenario")
         next_id = 3
         send_ready_evidence_id = None
-        supported_scenarios = {"G456-03", "G456-04", "G456-05", "G456-06", "G456-42", "G456-43", "G456-44"} | set(runner.HARD_SCENARIO_VALIDATOR_REGISTRY)
+        supported_scenarios = {"G456-03", "G456-04", "G456-05", "G456-06", "G456-42", "G456-43", "G456-44"}
         for number in range(1, 45):
             scenario = f"G456-{number:02d}"
             for variant in variants[number]:
@@ -609,14 +609,25 @@ def main() -> int:
                 add_evidence(eid, scenario, variant, "PASS", etype)
                 owner_role, owner_identity = actor_for(scenario, variant)
                 run("disposition", "--run-root", str(run_root), "--scenario-id", scenario, "--variant-id", variant, "--action", "accept", "--target-evidence-id", eid, "--reason-code", "self-test-pass", "--approved-by-role", owner_role, "--approved-by-identity", owner_identity)
-        # Every new dedicated validator must accept a semantically failing
-        # evidence payload too; only the active PASS evidence above is used for
-        # the aggregation path.
+        # Every v1.3 dedicated validator must accept a semantically failing
+        # evidence payload too.  Dispatch is exercised directly against the
+        # v1.3 scope rows so the legacy profile remains fail-closed below.
         for scenario in sorted(runner.HARD_SCENARIO_VALIDATOR_REGISTRY):
             number = int(scenario[5:])
             for variant in variants[number]:
-                eid = f"{next_id:064x}"; next_id += 1
-                add_evidence(eid, scenario, variant, "FAIL", runner.EVIDENCE_TYPES[scenario][0])
+                row = next(row for row in profile["scenarioRows"] if row["scenarioId"] == scenario)
+                spec_for_scenario = runner.HARD_SCENARIO_VALIDATOR_REGISTRY[scenario]
+                positive_payload = payload_for(scenario, variant, "PASS")
+                positive_envelope = {"evidenceType": runner.EVIDENCE_TYPES[scenario][0], "procedureId": spec_for_scenario["procedureId"], "procedureRevision": spec_for_scenario["procedureRevision"], "typePayload": positive_payload, "result": "PASS", "variantId": variant}
+                runner.validate_registered_hard_payload(positive_envelope, row, spec_for_scenario)
+                failed_payload = payload_for(scenario, variant, "FAIL")
+                failed_envelope = {**positive_envelope, "result": "FAIL", "typePayload": failed_payload}
+                runner.validate_registered_hard_payload(failed_envelope, row, spec_for_scenario)
+        # A typed v1.3 payload must not silently become a legacy #456 PASS.
+        legacy_typed_pass = root / "legacy-typed-pass.json"
+        write(legacy_typed_pass, envelope("a" * 64, "G456-10", "admin-prod-https", "PASS", "qualification-scenario", payload_for("G456-10", "admin-prod-https", "PASS")))
+        legacy_role, legacy_identity = actor_for("G456-10", "admin-prod-https")
+        run("evidence", "--run-root", str(run_root), "--evidence-id", "a" * 64, "--scenario-id", "G456-10", "--variant-id", "admin-prod-https", "--result", "PASS", "--executed-by-role", legacy_role, "--executed-by-identity", legacy_identity, "--observations", str(legacy_typed_pass), expect=1)
         def reject_hard_fixture(label, mutate, cli_scenario="G456-10", cli_variant="admin-prod-https", cli_actor=None):
             nonlocal next_id
             eid = f"{next_id:064x}"; next_id += 1
