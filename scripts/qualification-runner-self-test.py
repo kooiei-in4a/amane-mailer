@@ -12,6 +12,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -219,17 +220,35 @@ def main() -> int:
         store = root / "store"
         handoff = root / "handoff"
         archive_specs = [("win-x64", "amane-mailer-v1.3.0-windows-x64.zip"), ("linux-x64", "amane-mailer-v1.3.0-linux-x64.tar.gz"), ("linux-arm64", "amane-mailer-v1.3.0-linux-arm64.tar.gz")]
+        migration_names = [f"{n:03d}_{name}.sql" for n, name in [(1,"initial"),(2,"worker_heartbeats"),(3,"admin_indexes"),(4,"admin_audit_events"),(5,"admin_session_and_throttle"),(6,"admin_users_and_tenant_scopes"),(7,"mail_request_cancelled_status"),(8,"delivery_events"),(9,"mail_request_scheduled_at"),(10,"admin_audit_events_tenant_id"),(11,"bounce_ingestion"),(12,"provider_event_inbox_details"),(13,"provider_queue_dead_letters")]]
+        migration_paths = [f"src/Amane.Mailer/Data/Migrations/{name}" for name in migration_names]
+        repo_root = ROOT.parent
+        plan = ROOT.parent / "docs" / "agent-workflows" / "issue-456-release-qualification-plan.md"
         source = subprocess.check_output(["git", "-C", str(ROOT.parent), "rev-parse", "HEAD"], text=True).strip()
         legacy_inventory = subprocess.check_output(
             ["git", "-C", str(ROOT.parent), "ls-tree", "-r", "--name-only", source, "--", "src/Amane.Mailer/Data/Migrations"],
             text=True,
         ).splitlines()
         if len(legacy_inventory) > 13:
-            # Keep the legacy profile regression fixture on the merge's current-main
-            # parent when the RC4 integration tree also contains 014..018.
-            source = subprocess.check_output(
-                ["git", "-C", str(ROOT.parent), "rev-parse", f"{source}^1"], text=True
-            ).strip()
+            # Keep the legacy profile regression fixture independent of commit
+            # parent availability in shallow CI checkouts.
+            legacy_repo = root / "legacy-repo"
+            shutil.copytree(ROOT.parent / "docs", legacy_repo / "docs")
+            for readme_name in ("README.md", "README.en.md"):
+                (legacy_repo / readme_name).write_bytes((ROOT.parent / readme_name).read_bytes())
+            legacy_plan = legacy_repo / plan.relative_to(ROOT.parent)
+            legacy_plan.parent.mkdir(parents=True, exist_ok=True)
+            legacy_plan.write_bytes(plan.read_bytes())
+            for migration_path in migration_paths:
+                destination = legacy_repo / migration_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((ROOT.parent / migration_path).read_bytes())
+            subprocess.run(["git", "-C", str(legacy_repo), "init", "--quiet"], check=True)
+            subprocess.run(["git", "-C", str(legacy_repo), "add", "--", "docs", "README.md", "README.en.md", *migration_paths], check=True)
+            subprocess.run(["git", "-C", str(legacy_repo), "-c", "user.name=qualification-self-test", "-c", "user.email=qualification-self-test@example.invalid", "commit", "--quiet", "-m", "legacy qualification fixture"], check=True)
+            source = subprocess.check_output(["git", "-C", str(legacy_repo), "rev-parse", "HEAD"], text=True).strip()
+            repo_root = legacy_repo
+            plan = legacy_plan
         oci_layout = root / "oci-layout"
         blob_root = oci_layout / "blobs" / "sha256"
 
@@ -329,17 +348,14 @@ def main() -> int:
         }
         issue_path = root / "issue.json"
         write(issue_path, issue)
-        plan = ROOT.parent / "docs" / "agent-workflows" / "issue-456-release-qualification-plan.md"
         bad_plan = root / "bad-plan.md"
         bad_plan.write_text("wrong plan bytes\n", encoding="utf-8")
-        migration_names = [f"{n:03d}_{name}.sql" for n, name in [(1,"initial"),(2,"worker_heartbeats"),(3,"admin_indexes"),(4,"admin_audit_events"),(5,"admin_session_and_throttle"),(6,"admin_users_and_tenant_scopes"),(7,"mail_request_cancelled_status"),(8,"delivery_events"),(9,"mail_request_scheduled_at"),(10,"admin_audit_events_tenant_id"),(11,"bounce_ingestion"),(12,"provider_event_inbox_details"),(13,"provider_queue_dead_letters")]]
-        migration_paths = [f"src/Amane.Mailer/Data/Migrations/{name}" for name in migration_names]
         inventory_document = {"schemaVersion": 1, "releaseCommitSha": source, "runnerOrderPaths": migration_paths}
         inventory_digest = sha(json.dumps(inventory_document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
         migration_files = []
         for path in migration_paths[-2:]:
-            file_bytes = subprocess.check_output(["git", "-C", str(ROOT.parent), "show", f"{source}:{path}"])
-            blob_sha = subprocess.check_output(["git", "-C", str(ROOT.parent), "rev-parse", f"{source}:{path}"], text=True).strip()
+            file_bytes = subprocess.check_output(["git", "-C", str(repo_root), "show", f"{source}:{path}"])
+            blob_sha = subprocess.check_output(["git", "-C", str(repo_root), "rev-parse", f"{source}:{path}"], text=True).strip()
             migration_files.append({"path": path, "sha256": sha(file_bytes), "gitBlobSha": blob_sha})
         migration_pin_without = {
             "schemaVersion": 1,
@@ -374,12 +390,12 @@ def main() -> int:
             {"scenarioId": "G456-41", "variantId": "external-secret-manager-docs", "ownerRole": "lane-owner", "ownerIdentity": "ci:test"},
         ])
         write(owners, owner_entries)
-        run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(bad_plan), "--plan-commit-sha", source, "--repo-root", str(ROOT.parent), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "bad-plan", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional", expect=1)
+        run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(bad_plan), "--plan-commit-sha", source, "--repo-root", str(repo_root), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "bad-plan", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional", expect=1)
         def actor_for(scenario, variant):
             matches = [entry for entry in owner_entries if entry["scenarioId"] == scenario and entry["variantId"] == variant]
             assert len(matches) == 1
             return matches[0]["ownerRole"], matches[0]["ownerIdentity"]
-        bound = json.loads(run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(plan), "--plan-commit-sha", source, "--repo-root", str(ROOT.parent), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "self-test-1", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional"))
+        bound = json.loads(run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(plan), "--plan-commit-sha", source, "--repo-root", str(repo_root), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "self-test-1", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional"))
         run_root = store / "runs" / bound["qualificationRunId"]
         binding = json.loads((run_root / "binding.json").read_text(encoding="utf-8"))
         evidence_counter = 10
@@ -465,21 +481,21 @@ def main() -> int:
         run("exception", "--run-root", str(run_root), "--exception-id", replacement_exception_id, "--scenario-id", "G456-29", "--variant-id", "win-docker", "--reason-not-executable", "synthetic lane unavailable", "--alternate-verification", "synthetic alternate review", "--residual-risk", "synthetic residual risk", "--impact-scope", "synthetic scope", "--created-by-role", "lane-owner", "--created-by-identity", "ci:test")
         run("exception-disposition", "--run-root", str(run_root), "--scenario-id", "G456-29", "--variant-id", "win-docker", "--action", "supersede", "--target-exception-id", exception_id, "--superseded-by-exception-id", replacement_exception_id, "--reason-code", "self-test-supersede", "--approved-by-role", "conditional-approver", "--approved-by-identity", "maintainer:conditional")
         run("exception-disposition", "--run-root", str(run_root), "--scenario-id", "G456-29", "--variant-id", "win-docker", "--action", "restore", "--restores-exception-event-id", exception_approval["eventId"], "--reason-code", "self-test-restore", "--approved-by-role", "conditional-approver", "--approved-by-identity", "maintainer:conditional")
-        run("seal", "--run-root", str(run_root), "--current-issue-snapshot", str(issue_path), "--repo-root", str(ROOT.parent), "--human-decision", "NOT_DECIDED", "--approved-by-role", "qualification-lead", "--approved-by-identity", "maintainer:test")
-        verify = json.loads(run("verify", "--run-root", str(run_root), "--repo-root", str(ROOT.parent)))
+        run("seal", "--run-root", str(run_root), "--current-issue-snapshot", str(issue_path), "--repo-root", str(repo_root), "--human-decision", "NOT_DECIDED", "--approved-by-role", "qualification-lead", "--approved-by-identity", "maintainer:test")
+        verify = json.loads(run("verify", "--run-root", str(run_root), "--repo-root", str(repo_root)))
         assert verify["machineVerdict"] == "NO_GO"
-        run("handoff", "--run-root", str(run_root), "--output-root", str(handoff), "--repo-root", str(ROOT.parent), expect=1)
+        run("handoff", "--run-root", str(run_root), "--output-root", str(handoff), "--repo-root", str(repo_root), expect=1)
         sealed_event_path = next((run_root / "run-status-events").glob("*.json"))
         sealed_event = json.loads(sealed_event_path.read_text(encoding="utf-8"))
         sealed_event["canonicalization"] = {"algorithm": "not-jcs", "version": 1}
         unsigned_event = {key: value for key, value in sealed_event.items() if key != "eventDigestSha256"}
         sealed_event["eventDigestSha256"] = sha(json.dumps(unsigned_event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
         write(sealed_event_path, sealed_event)
-        run("verify", "--run-root", str(run_root), "--repo-root", str(ROOT.parent), expect=1)
+        run("verify", "--run-root", str(run_root), "--repo-root", str(repo_root), expect=1)
 
         # Sealed runs reject new evidence and value-bearing observations.
         run("evidence", "--run-root", str(run_root), "--evidence-id", "9" * 64, "--scenario-id", "G456-01", "--variant-id", "win-docker", "--result", "PASS", "--executed-by-role", "lane-owner", "--executed-by-identity", "ci:test", expect=1)
-        bound2 = json.loads(run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(plan), "--plan-commit-sha", source, "--repo-root", str(ROOT.parent), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "self-test-2", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional"))
+        bound2 = json.loads(run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(plan), "--plan-commit-sha", source, "--repo-root", str(repo_root), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "self-test-2", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional"))
         observations = root / "secret-observations.json"
         saved_binding = binding
         binding = json.loads((store / "runs" / bound2["qualificationRunId"] / "binding.json").read_text(encoding="utf-8"))
