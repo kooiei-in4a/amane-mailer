@@ -399,6 +399,10 @@ def main() -> int:
         missing_extract.unlink()
         expect_rid_failure("docs-extract missing RID", lambda: runner.validate_rid_readme_binding(rid_docs, rid_docs_root, rid_archive_records))
         write(rid_docs_root / "docs-extract" / "candidate-readme-setup" / "linux-arm64.md", rid_payloads["candidateReadmeSetup:linux-arm64"])
+        unexpected_extract = rid_docs_root / "docs-extract" / "candidate-readme-setup" / "linux-mips.md"
+        write(unexpected_extract, b"unexpected RID\n")
+        expect_rid_failure("docs-extract unexpected RID", lambda: runner.validate_rid_readme_binding(rid_docs, rid_docs_root, rid_archive_records))
+        unexpected_extract.unlink()
         tampered_extract = rid_docs_root / "docs-extract" / "candidate-readme-setup" / "linux-x64.md"
         tampered_extract.write_bytes(tampered_extract.read_bytes() + b"tampered")
         expect_rid_failure("README tampered after bind", lambda: runner.validate_rid_readme_binding(rid_docs, rid_docs_root, rid_archive_records))

@@ -571,6 +571,21 @@ def validate_rid_readme_binding(
         }
     if set(expected_archives) != ARCHIVE_RIDS:
         fail("candidate archive provenance RID set does not match README mapping")
+    extract_dir = run_root / "docs-extract" / "candidate-readme-setup"
+    if not extract_dir.is_dir() or extract_dir.is_symlink():
+        fail("docs-extract candidate README directory is missing or unsafe")
+    expected_extract_names = {f"{rid}.md" for rid in ARCHIVE_RIDS}
+    try:
+        extract_entries = list(extract_dir.iterdir())
+    except OSError as exc:
+        fail(f"docs-extract candidate README directory is unreadable ({type(exc).__name__})")
+    actual_extract_names = set()
+    for entry in extract_entries:
+        if entry.is_symlink() or not entry.is_file():
+            fail(f"docs-extract candidate README entry is unsafe: {entry.name}")
+        actual_extract_names.add(entry.name)
+    if actual_extract_names != expected_extract_names:
+        fail("docs-extract candidate README directory must contain the exact RID set")
     for rid in sorted(ARCHIVE_RIDS):
         entry = mapping.get(rid)
         if not isinstance(entry, dict) or any(not isinstance(entry.get(field), str) for field in ("archiveFileName", "archiveSha256", "targetRid", "manifestTargetRid", "sha256")):
