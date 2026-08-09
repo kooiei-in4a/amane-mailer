@@ -28,6 +28,36 @@ lanes are deliberately fail-closed until a dedicated validator is registered;
 `predicateResult=PASS` alone is never sufficient. This keeps an unfinished
 Admin/HTTPS/security/AOT lane from becoming an accidental GO.
 
+## Versioned qualification scopes
+
+The legacy #456/#458 v1.2.0 profile remains unchanged. A v1.3.0 candidate
+must supply an explicit `--scope-manifest`; there is no implicit fallback to
+the legacy table. The checked-in v1.3 scope authority is
+`docs/qualification/v1.3.0-scope.json` (Issue #583). It binds the authority
+Issue/body digest, plan identity, G456-01..41 reuse rules, and the new
+`G583-MIG-01`/`G583-MIG-02`/`G583-MIG-03` Hard migration scenarios.
+
+The v1.3 migration contract distinguishes the v1.2.0 baseline (001..013), the
+v1.3.0 delta (014..018), and the full RC inventory (001..018). A migration PIN
+must carry all three ordered inventories and their file/blob/digest records.
+The scope, authority, plan, baseline/delta/full digests, and predicate-set
+versions are persisted in binding, Phase 2, Phase 4, and the handoff.
+
+Example scope validation (value-free only):
+
+```powershell
+python scripts/qualification-runner.py validate-scope `
+  --scope-manifest docs/qualification/v1.3.0-scope.json `
+  --issue-snapshot <fresh-issue-583-snapshot.json> `
+  --repo-root .
+```
+
+For a v1.3 candidate, `bind` must include the same `--scope-manifest` and a
+fresh #583 snapshot. A #456 snapshot, a missing scope manifest, a stale body
+digest, a legacy G456-42..44 migration payload, or an inventory mismatch is a
+fail-closed error. RC2 qualification must not start until this scope contract
+has passed fixed-head CI and independent review.
+
 ## Lifecycle
 
 ```text
@@ -64,10 +94,11 @@ python3 scripts/qualification-runner.py bind \
   --store-root <maintainer-durable-store> \
   --candidate-id <candidate-id> \
   --issue-snapshot <normalized-value-free-issue-snapshot.json> \
-  --plan-file docs/agent-workflows/issue-456-release-qualification-plan.md \
+  --plan-file docs/agent-workflows/issue-583-v1.3-qualification-scope.md \
   --plan-commit-sha <plan-commit-sha> \
   --repo-root <checkout-containing-exact-release-commit> \
   --migration-pin <migration-pin.json> \
+  --scope-manifest <v1.3.0-scope.json> \
   --run-attempt-nonce <operator-generated-nonce> \
   --evidence-owners <owner-map.json> \
   --qualification-lead-role <role> \
@@ -76,9 +107,14 @@ python3 scripts/qualification-runner.py bind \
   --conditional-approver-identity <value-free-handle>
 ```
 
-`bind` requires the complete canonical G456-01..44 Issue table, exact variant
-cardinality, owner coverage (including optional G456-38..41 keys), and a
-release-tree-verified migration PIN. Candidate provenance must be schemaVersion
+The legacy v1.2.0 invocation uses the #456 plan and omits `--scope-manifest`;
+the example above is intentionally the explicit v1.3.0 path.
+
+For the legacy profile, `bind` requires the complete canonical G456-01..44
+Issue table. For v1.3, it requires the #583 scope table (G456-01..41 plus
+G583-MIG-01..03), exact variant cardinality, owner coverage (including
+optional G456-38..41 keys), and a release-tree-verified baseline/delta/full
+migration PIN. Candidate provenance must be schemaVersion
 1, stable releaseVersion, the exact linux/amd64 + linux/arm64 OCI platform set,
 all three host archives (win-x64, linux-x64, linux-arm64), and one embedded
 release-bundle-manifest.json per archive whose source/version/OCI/digest fields
