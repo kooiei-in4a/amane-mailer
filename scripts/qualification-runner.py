@@ -2128,7 +2128,7 @@ def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any]
         if binding.get("scopeId") != V13_SCOPE_ID:
             fail(f"{scenario}: v1.3 migration evidence requires the v1.3 scope profile")
         common = {"migrationDecision", "baselineInventory", "deltaInventory", "fullInventory", "expectedFullMigrationInventory", "migrationDirectoryInventoryBefore", "migrationDirectoryInventoryDigestSha256", "migrationDeltaInventoryDigestSha256", "migrationFileDigests", "outcome", "preApplyAppliedMigrations", "preApplyPendingMigrations", "postApplyAppliedMigrations", "postApplyPendingMigrations", "lastAppliedBefore", "lastAppliedAfter"}
-        extra = {"schemaContractResult", "piiValueCanaryResult", "schemaAllowlistVersion", "schemaAllowlistSha256", "schemaAllowlist"} if scenario == "G583-MIG-03" else set()
+        extra = {"schemaContractResult", "piiValueCanaryResult", "schemaAllowlistVersion", "schemaAllowlistSha256"} if scenario == "G583-MIG-03" else set()
         if set(payload) - common - extra:
             fail(f"{scenario}: unknown v1.3 migration typePayload field")
         require_payload_fields(payload, common, scenario)
@@ -2151,7 +2151,6 @@ def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any]
                 and payload["piiValueCanaryResult"] == "pass"
                 and payload["schemaAllowlistVersion"] == binding["migrationSchemaAllowlistVersion"]
                 and payload["schemaAllowlistSha256"] == binding["migrationSchemaAllowlistSha256"]
-                and payload["schemaAllowlist"] == binding["migrationSchemaAllowlist"]
             )
         if envelope["result"] == "PASS" and not success:
             fail(f"{scenario}: PASS requires exact v1.3 migration predicate")

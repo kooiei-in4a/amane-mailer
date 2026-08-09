@@ -160,6 +160,14 @@ PASS/FAIL directions. Direct `result=EXCEPTION` evidence is rejected. For
 unsupported scenario lanes, a PASS is rejected until its dedicated validator
 is implemented.
 
+For v1.3.0 `G583-MIG-03`, the value-free evidence payload must contain
+`schemaContractResult=pass`, `piiValueCanaryResult=pass`,
+`schemaAllowlistVersion`, and `schemaAllowlistSha256`. The version and digest
+must exactly match the bound migration authority. The complete
+`schemaAllowlist` remains authority-bound in the scope manifest, binding,
+Phase 2, and verify/seal/handoff contracts; it is not copied into evidence.
+The value-free scanner and unknown-field rejection remain unchanged.
+
 Each evidence envelope also creates a write-once `scans/<evidenceId>.json`
 attestation containing the scanner identity and report digest. `seal` records
 the scan object count/root in Phase 4, and `verify` requires one matching scan

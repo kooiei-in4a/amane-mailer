@@ -235,18 +235,65 @@ def main() -> int:
             "outcome": "schema-checked", "lastAppliedAfter": migration["deltaInventory"][-1],
             "schemaContractResult": "pass", "piiValueCanaryResult": "pass",
             "schemaAllowlistVersion": 1, "schemaAllowlistSha256": migration["schemaAllowlistSha256"],
-            "schemaAllowlist": migration["schemaAllowlist"],
         })
         runner.validate_migration_payload({"result": "PASS"}, v13_binding, "G583-MIG-03", schema_payload)
         tampered_schema = dict(schema_payload)
-        tampered_schema["schemaAllowlist"] = dict(migration["schemaAllowlist"])
-        tampered_schema["schemaAllowlist"][migration["deltaInventory"][0]] = {"sqlSha256": "0" * 64, "tables": [], "indexes": [], "constraints": []}
+        tampered_schema["schemaAllowlistSha256"] = "0" * 64
         try:
             runner.validate_migration_payload({"result": "PASS"}, v13_binding, "G583-MIG-03", tampered_schema)
         except runner.RunnerError:
             pass
         else:
-            raise AssertionError("v1.3 schema predicate accepted a tampered allowlist")
+            raise AssertionError("v1.3 schema predicate accepted a tampered allowlist digest")
+        v13_evidence_binding = {
+            **v13_binding,
+            "candidateId": "3" * 64,
+            "releaseCommitSha": "4" * 40,
+            "issueBodySha256": "5" * 64,
+            "planRevision": profile["planRevision"],
+            "planCommitSha": "6" * 40,
+            "planFileSha256": "7" * 64,
+            "bindingId": "8" * 64,
+            "qualificationRunId": "9" * 64,
+        }
+        v13_migration_row = next(row for row in profile["scenarioRows"] if row["scenarioId"] == "G583-MIG-03")
+        v13_evidence_key = ("G583-MIG-03", v13_migration_row["requiredVariants"][0])
+        v13_evidence_auth = {"evidenceOwners": [{"scenarioId": v13_evidence_key[0], "variantId": v13_evidence_key[1], "ownerRole": "lane-owner", "ownerIdentity": "ci:test"}]}
+        def v13_evidence_envelope(payload, result="PASS"):
+            owner = v13_evidence_auth["evidenceOwners"][0]
+            return {
+                "schemaVersion": 1, "kind": "release-qualification-evidence", "evidenceType": runner.EVIDENCE_TYPES["G583-MIG-03"][0],
+                "evidenceId": "a" * 64, "candidateId": v13_evidence_binding["candidateId"], "sourceCommitSha": v13_evidence_binding["releaseCommitSha"],
+                "scopeId": v13_evidence_binding["scopeId"], "scopeVersion": v13_evidence_binding["scopeVersion"], "scopeManifestSha256": v13_evidence_binding["scopeManifestSha256"],
+                "scenarioId": v13_evidence_key[0], "variantId": v13_evidence_key[1], "issueBodySha256": v13_evidence_binding["issueBodySha256"],
+                "planRevision": v13_evidence_binding["planRevision"], "planCommitSha": v13_evidence_binding["planCommitSha"], "planFileSha256": v13_evidence_binding["planFileSha256"],
+                "bindingId": v13_evidence_binding["bindingId"], "qualificationRunId": v13_evidence_binding["qualificationRunId"], "attempt": 1, "result": result,
+                "startedAtUtc": "2026-08-08T00:00:00Z", "finishedAtUtc": "2026-08-08T00:00:01Z", "executedByRole": owner["ownerRole"], "executedByIdentity": owner["ownerIdentity"],
+                "procedureId": "v13-migration-schema-contract", "procedureRevision": "1", "runnerClass": "synthetic", "toolVersion": "self-test-1", "attestedAtUtc": "2026-08-08T00:00:01Z",
+                "identity": {}, "prohibitedContentScan": {"result": "PASS", "scannerId": "qualify-secret-like/1", "scannerVersion": "1", "reportDigestSha256": "b" * 64},
+                "typePayload": payload,
+            }
+        runner.validate_evidence_envelope(v13_evidence_envelope(schema_payload), v13_evidence_binding, v13_evidence_auth, v13_evidence_key)
+        def expect_v13_evidence_rejection(label, mutate):
+            candidate_envelope = v13_evidence_envelope(copy.deepcopy(schema_payload))
+            mutate(candidate_envelope)
+            try:
+                runner.validate_evidence_envelope(candidate_envelope, v13_evidence_binding, v13_evidence_auth, v13_evidence_key)
+            except runner.RunnerError:
+                return
+            raise AssertionError(f"v1.3 G583-MIG-03 negative fixture unexpectedly passed: {label}")
+        expect_v13_evidence_rejection("wrong schema allowlist version", lambda item: item["typePayload"].update({"schemaAllowlistVersion": 2}))
+        expect_v13_evidence_rejection("wrong schema allowlist digest", lambda item: item["typePayload"].update({"schemaAllowlistSha256": "0" * 64}))
+        expect_v13_evidence_rejection("missing schema allowlist version", lambda item: item["typePayload"].pop("schemaAllowlistVersion"))
+        expect_v13_evidence_rejection("missing schema allowlist digest", lambda item: item["typePayload"].pop("schemaAllowlistSha256"))
+        expect_v13_evidence_rejection("schema contract not pass", lambda item: item["typePayload"].update({"schemaContractResult": "fail"}))
+        expect_v13_evidence_rejection("PII canary not pass", lambda item: item["typePayload"].update({"piiValueCanaryResult": "fail"}))
+        expect_v13_evidence_rejection("old full schema allowlist field", lambda item: item["typePayload"].update({"schemaAllowlist": {}}))
+        expect_v13_evidence_rejection("unexpected migration field", lambda item: item["typePayload"].update({"unexpectedField": "value"}))
+        expect_v13_evidence_rejection("wrong source identity", lambda item: item.update({"sourceCommitSha": "0" * 40}))
+        expect_v13_evidence_rejection("wrong binding identity", lambda item: item.update({"bindingId": "0" * 64}))
+        expect_v13_evidence_rejection("wrong qualification run identity", lambda item: item.update({"qualificationRunId": "0" * 64}))
+        expect_v13_evidence_rejection("wrong owner identity", lambda item: item.update({"executedByIdentity": "ci:wrong"}))
         invalid_migration_payload = dict(migration_payload)
         invalid_migration_payload["deltaInventory"] = ["012_provider_event_inbox_details.sql"]
         try:
