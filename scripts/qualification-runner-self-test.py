@@ -105,14 +105,19 @@ def main() -> int:
         # reloaded together (the failure in F584-01 occurred only on reload).
         smoke_root = root / "v13-scope-load-smoke"
         smoke_nonce = "scope-smoke-1"
+        smoke_archive_specs = [
+            ("win-x64", "synthetic-win-x64.zip", "d" * 64),
+            ("linux-x64", "synthetic-linux-x64.tar.gz", "e" * 64),
+            ("linux-arm64", "synthetic-linux-arm64.tar.gz", "f" * 64),
+        ]
         smoke_provenance = {
             "sourceCommitSha": "b" * 40, "workflowRunId": "583000001", "workflowRunAttempt": "1",
             "workflowRef": "local/scope-smoke", "releaseVersion": "1.3.0",
-            "ociIndexDigest": "sha256:" + "c" * 64, "ociPlatforms": ["linux/amd64"],
-            "archives": [{"targetRid": "linux-x64", "archiveFileName": "synthetic-linux-x64.tar.gz", "archiveSha256": "sha256:" + "d" * 64}],
+            "ociIndexDigest": "sha256:" + "c" * 64, "ociPlatforms": ["linux/amd64", "linux/arm64"],
+            "archives": [{"targetRid": rid, "archiveFileName": archive_name, "archiveSha256": "sha256:" + archive_sha} for rid, archive_name, archive_sha in smoke_archive_specs],
         }
         smoke_identity = {"sourceCommitSha": smoke_provenance["sourceCommitSha"], "imageDigest": smoke_provenance["ociIndexDigest"]}
-        smoke_archives = {"linux-x64": "d" * 64}
+        smoke_archives = {rid: archive_sha for rid, _, archive_sha in smoke_archive_specs}
         smoke_candidate_id = runner.candidate_id(smoke_provenance, smoke_archives)
         smoke_rows = [
             {**row, "scenarioText": f"synthetic {row['scenarioId']}", "environmentText": "synthetic v1.3 lane"}
@@ -120,10 +125,23 @@ def main() -> int:
         ]
         smoke_docs_dir = smoke_root / "docs-extract"
         smoke_docs = {}
-        for key, filename in {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}.items():
+        for key, filename in {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md"}.items():
             payload = f"synthetic {key}\n".encode()
             write(smoke_docs_dir / filename, payload)
             smoke_docs[f"{key}Sha256"] = sha(payload)
+        smoke_readme_mapping = {}
+        for rid, archive_name, archive_sha in smoke_archive_specs:
+            payload = f"synthetic candidate README {rid}\n".encode()
+            smoke_readme_mapping[rid] = {
+                "archiveFileName": archive_name,
+                "archiveSha256": "sha256:" + archive_sha,
+                "targetRid": rid,
+                "manifestTargetRid": rid,
+                "sha256": sha(payload),
+            }
+            write(smoke_docs_dir / "candidate-readme-setup" / f"{rid}.md", payload)
+        smoke_docs["candidateReadmeSetupByRid"] = smoke_readme_mapping
+        smoke_docs["candidateReadmeSetupByRidSha256"] = runner.sha_object(smoke_readme_mapping)
         smoke_docs.update({"sourceCommitSha": smoke_provenance["sourceCommitSha"], "extractionMethod": "git-archive-exact-source-plus-qualified-archive"})
         smoke_candidate_root = smoke_root / "candidates" / smoke_candidate_id / "intake"
         write(smoke_candidate_root / "candidate-provenance.json", smoke_provenance)
@@ -151,8 +169,10 @@ def main() -> int:
         smoke_auth["qualificationRunId"] = runner.sha_bytes((smoke_auth["bindingId"] + "|" + smoke_nonce).encode())
         smoke_binding.update({"bindingId": smoke_auth["bindingId"], "qualificationRunId": smoke_auth["qualificationRunId"], "runAttemptNonce": smoke_nonce, "authorizationDigestSha256": runner.sha_object(smoke_auth)})
         smoke_root = smoke_root / "runs" / smoke_auth["qualificationRunId"]
-        for key, filename in {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}.items():
+        for key, filename in {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md"}.items():
             write(smoke_root / "docs-extract" / filename, f"synthetic {key}\n".encode())
+        for rid, archive_name, _ in smoke_archive_specs:
+            write(smoke_root / "docs-extract" / "candidate-readme-setup" / f"{rid}.md", f"synthetic candidate README {rid}\n".encode())
         write(smoke_root / "binding.json", smoke_binding)
         write(smoke_root / "authorization.json", smoke_auth)
         write(smoke_root / "scope-manifest.json", json.loads(scope_manifest.read_text(encoding="utf-8")))
@@ -327,6 +347,68 @@ def main() -> int:
         tampered_blob.write_bytes(tampered_original + b"tampered")
         run("intake", "--candidate-root", str(candidate), "--store-root", str(root / "tampered-store"), "--release-commit-sha", source, "--expected-oci-digest", oci, "--oci-layout", str(oci_layout), "--expected-workflow-ref", "local", expect=1)
         tampered_blob.write_bytes(tampered_original)
+        rid_candidate = root / "rid-candidate"
+        rid_candidate.mkdir()
+        rid_archive_paths = []
+        rid_archive_records = []
+        for rid, archive_name in archive_specs:
+            original = candidate / archive_name
+            manifest_bytes = json.dumps(runner.archive_manifest(original), sort_keys=True, separators=(",", ":")).encode()
+            output = rid_candidate / archive_name
+            readme = f"synthetic setup guide {rid}\n".encode()
+            if archive_name.endswith(".zip"):
+                with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive_file:
+                    archive_file.writestr("release-bundle-manifest.json", manifest_bytes)
+                    archive_file.writestr("README-SETUP.md", readme)
+            else:
+                with tarfile.open(output, "w:gz") as archive_file:
+                    manifest_info = tarfile.TarInfo("release-bundle-manifest.json")
+                    manifest_info.size = len(manifest_bytes)
+                    archive_file.addfile(manifest_info, io.BytesIO(manifest_bytes))
+                    readme_info = tarfile.TarInfo("README-SETUP.md")
+                    readme_info.size = len(readme)
+                    archive_file.addfile(readme_info, io.BytesIO(readme))
+            rid_archive_paths.append(output)
+            rid_archive_records.append({"targetRid": rid, "archiveFileName": archive_name, "archiveSha256": "sha256:" + sha(output.read_bytes())})
+        rid_docs, rid_payloads = runner.docs_from_release_tree(repo_root, source, rid_candidate, rid_archive_paths, rid_specific=True)
+        rid_docs_root = root / "rid-docs"
+        for key, payload in rid_payloads.items():
+            if key.startswith("candidateReadmeSetup:"):
+                rid = key.split(":", 1)[1]
+                write(rid_docs_root / "docs-extract" / "candidate-readme-setup" / f"{rid}.md", payload)
+        runner.validate_rid_readme_binding(rid_docs, rid_docs_root, rid_archive_records)
+        if len({entry["sha256"] for entry in rid_docs["candidateReadmeSetupByRid"].values()}) != 3:
+            raise AssertionError("RID-specific README regression fixture must contain three distinct digests")
+
+        def expect_rid_failure(label: str, callback) -> None:
+            try:
+                callback()
+            except runner.RunnerError:
+                return
+            raise AssertionError(f"RID README negative fixture unexpectedly passed: {label}")
+
+        expect_rid_failure("missing RID", lambda: runner.docs_from_release_tree(repo_root, source, rid_candidate, rid_archive_paths[:2], rid_specific=True))
+        expect_rid_failure("duplicate RID", lambda: runner.readme_mapping_from_archives(rid_candidate, [rid_archive_records[0], rid_archive_records[0]]))
+        unexpected_record = dict(rid_archive_records[0])
+        unexpected_record["targetRid"] = "linux-mips"
+        expect_rid_failure("unexpected RID", lambda: runner.readme_mapping_from_archives(rid_candidate, [unexpected_record]))
+        swapped_record = dict(rid_archive_records[0])
+        swapped_record["targetRid"] = "linux-x64"
+        expect_rid_failure("wrong RID mapping", lambda: runner.readme_mapping_from_archives(rid_candidate, [swapped_record]))
+        missing_extract = rid_docs_root / "docs-extract" / "candidate-readme-setup" / "linux-arm64.md"
+        missing_extract.unlink()
+        expect_rid_failure("docs-extract missing RID", lambda: runner.validate_rid_readme_binding(rid_docs, rid_docs_root, rid_archive_records))
+        write(rid_docs_root / "docs-extract" / "candidate-readme-setup" / "linux-arm64.md", rid_payloads["candidateReadmeSetup:linux-arm64"])
+        tampered_extract = rid_docs_root / "docs-extract" / "candidate-readme-setup" / "linux-x64.md"
+        tampered_extract.write_bytes(tampered_extract.read_bytes() + b"tampered")
+        expect_rid_failure("README tampered after bind", lambda: runner.validate_rid_readme_binding(rid_docs, rid_docs_root, rid_archive_records))
+        tampered_extract.write_bytes(rid_payloads["candidateReadmeSetup:linux-x64"])
+        tampered_mapping = json.loads(json.dumps(rid_docs))
+        tampered_mapping["candidateReadmeSetupByRidSha256"] = "0" * 64
+        expect_rid_failure("recorded digest tampered", lambda: runner.validate_rid_readme_binding(tampered_mapping, rid_docs_root, rid_archive_records))
+        fourth_archive = dict(rid_archive_records[0])
+        fourth_archive["targetRid"] = "win-x64-extra"
+        expect_rid_failure("unexpected fourth RID", lambda: runner.readme_mapping_from_archives(rid_candidate, rid_archive_records + [fourth_archive]))
         intake = json.loads(run("intake", "--candidate-root", str(candidate), "--store-root", str(store), "--release-commit-sha", source, "--expected-oci-digest", oci, "--oci-layout", str(oci_layout), "--expected-workflow-ref", "local"))
         candidate_id = intake["candidateId"]
 

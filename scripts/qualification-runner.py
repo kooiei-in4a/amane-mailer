@@ -507,7 +507,91 @@ def archive_member(path: Path, basename: str) -> bytes:
         fail(f"{path.name}: {basename} is invalid ({type(exc).__name__})")
 
 
-def docs_from_release_tree(repo_root: Path, release_commit: str, candidate_root: Path, archive_paths: Iterable[Path]) -> tuple[dict[str, str], dict[str, bytes]]:
+def readme_mapping_from_archives(
+    candidate_root: Path,
+    archive_records: Iterable[dict[str, Any]],
+) -> tuple[dict[str, dict[str, str]], dict[str, bytes]]:
+    mapping: dict[str, dict[str, str]] = {}
+    payloads: dict[str, bytes] = {}
+    for archive_record in archive_records:
+        rid = require_string(archive_record, "targetRid")
+        if rid not in ARCHIVE_RIDS:
+            fail(f"candidate README-SETUP.md has unexpected targetRid: {rid}")
+        if rid in mapping:
+            fail(f"candidate README-SETUP.md has duplicate targetRid: {rid}")
+        archive_name = require_string(archive_record, "archiveFileName")
+        archive_path = candidate_root / archive_name
+        if not archive_path.is_file() or archive_path.is_symlink():
+            fail(f"candidate README archive is missing: {archive_name}")
+        archive_digest = require_digest(require_string(archive_record, "archiveSha256"), f"archives[{rid}].archiveSha256")
+        if archive_digest != "sha256:" + file_sha(archive_path):
+            fail(f"candidate README archive digest mismatch: {archive_name}")
+        manifest = archive_manifest(archive_path)
+        if manifest.get("targetRid") != rid:
+            fail(f"candidate README archive manifest targetRid mismatch: {archive_name}")
+        payload = archive_member(archive_path, "README-SETUP.md")
+        mapping[rid] = {
+            "archiveFileName": archive_name,
+            "archiveSha256": archive_digest,
+            "targetRid": rid,
+            "manifestTargetRid": require_string(manifest, "targetRid"),
+            "sha256": sha_bytes(payload),
+        }
+        payloads[rid] = payload
+    if set(mapping) != ARCHIVE_RIDS:
+        missing = sorted(ARCHIVE_RIDS - set(mapping))
+        unexpected = sorted(set(mapping) - ARCHIVE_RIDS)
+        fail(f"candidate README-SETUP.md RID set mismatch (missing={missing}, unexpected={unexpected})")
+    return {rid: mapping[rid] for rid in sorted(mapping)}, {rid: payloads[rid] for rid in sorted(payloads)}
+
+
+def validate_rid_readme_binding(
+    docs: Any,
+    run_root: Path,
+    archive_records: Iterable[dict[str, Any]],
+) -> None:
+    if not isinstance(docs, dict) or "candidateReadmeSetupSha256" in docs:
+        fail("v1.3 docs must use candidateReadmeSetupByRid")
+    mapping = docs.get("candidateReadmeSetupByRid")
+    if not isinstance(mapping, dict) or set(mapping) != ARCHIVE_RIDS:
+        fail("v1.3 candidate README mapping must contain the exact RID set")
+    mapping_digest = docs.get("candidateReadmeSetupByRidSha256")
+    if not isinstance(mapping_digest, str) or not HEX64.fullmatch(mapping_digest) or sha_object(mapping) != mapping_digest:
+        fail("v1.3 candidate README mapping digest mismatch")
+    expected_archives = {}
+    for archive_record in archive_records:
+        rid = require_string(archive_record, "targetRid")
+        if rid in expected_archives:
+            fail(f"candidate archive provenance has duplicate targetRid: {rid}")
+        expected_archives[rid] = {
+            "archiveFileName": require_string(archive_record, "archiveFileName"),
+            "archiveSha256": require_digest(require_string(archive_record, "archiveSha256"), f"archives[{rid}].archiveSha256"),
+            "targetRid": rid,
+            "manifestTargetRid": rid,
+        }
+    if set(expected_archives) != ARCHIVE_RIDS:
+        fail("candidate archive provenance RID set does not match README mapping")
+    for rid in sorted(ARCHIVE_RIDS):
+        entry = mapping.get(rid)
+        if not isinstance(entry, dict) or any(not isinstance(entry.get(field), str) for field in ("archiveFileName", "archiveSha256", "targetRid", "manifestTargetRid", "sha256")):
+            fail(f"candidate README mapping entry is invalid: {rid}")
+        for field in ("archiveFileName", "archiveSha256", "targetRid", "manifestTargetRid"):
+            if entry[field] != expected_archives[rid][field]:
+                fail(f"candidate README mapping archive identity mismatch: {rid}.{field}")
+        if not HEX64.fullmatch(entry["sha256"]):
+            fail(f"candidate README mapping digest is invalid: {rid}")
+        path = run_root / "docs-extract" / "candidate-readme-setup" / f"{rid}.md"
+        if file_sha(path) != entry["sha256"]:
+            fail(f"docs-extract candidate README digest mismatch: {rid}")
+
+
+def docs_from_release_tree(
+    repo_root: Path,
+    release_commit: str,
+    candidate_root: Path,
+    archive_paths: Iterable[Path],
+    rid_specific: bool = False,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
     paths = {
         "setupGuideJa": "docs/ops/setup-guide.md",
         "setupGuideEn": "docs/ops/setup-guide.en.md",
@@ -523,6 +607,26 @@ def docs_from_release_tree(repo_root: Path, release_commit: str, candidate_root:
         except (OSError, subprocess.CalledProcessError):
             fail(f"docs extract missing from release tree: {relative}")
         extracted[key] = payload
+    archive_paths = list(archive_paths)
+    if rid_specific:
+        archive_records = []
+        for archive in archive_paths:
+            manifest = archive_manifest(archive)
+            archive_records.append({
+                "targetRid": manifest.get("targetRid"),
+                "archiveFileName": archive.name,
+                "archiveSha256": "sha256:" + file_sha(archive),
+            })
+        mapping, candidate_setup = readme_mapping_from_archives(candidate_root, archive_records)
+        extracted.update({f"candidateReadmeSetup:{rid}": payload for rid, payload in candidate_setup.items()})
+        digests = {f"{key}Sha256": sha_bytes(payload) for key, payload in extracted.items()}
+        digests.update({
+            "candidateReadmeSetupByRid": mapping,
+            "candidateReadmeSetupByRidSha256": sha_object(mapping),
+            "extractionMethod": "git-archive-exact-source-plus-qualified-archive",
+            "sourceCommitSha": release_commit,
+        })
+        return digests, extracted
     candidate_setup: list[bytes] = []
     for archive in archive_paths:
         try:
@@ -883,12 +987,17 @@ def load_binding(run_root: Path) -> dict[str, Any]:
     docs = binding.get("docs")
     if not isinstance(docs, dict) or docs.get("sourceCommitSha") != binding.get("releaseCommitSha") or docs.get("extractionMethod") != "git-archive-exact-source-plus-qualified-archive":
         fail("binding docs extraction metadata mismatch")
-    docs_files = {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}
+    docs_files = {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md"}
     for key, filename in docs_files.items():
         expected = docs.get(f"{key}Sha256")
         path = run_root / "docs-extract" / filename
         if not isinstance(expected, str) or not HEX64.fullmatch(expected) or file_sha(path) != expected:
             fail(f"docs-extract/{filename}: digest mismatch")
+    if scope_profile is None:
+        expected = docs.get("candidateReadmeSetupSha256")
+        path = run_root / "docs-extract" / "README-SETUP.md"
+        if not isinstance(expected, str) or not HEX64.fullmatch(expected) or file_sha(path) != expected:
+            fail("docs-extract/README-SETUP.md: digest mismatch")
     candidate_root = run_root.parent.parent / "candidates" / binding["candidateId"] / "intake"
     provenance, identity, archive_digests = candidate_documents(candidate_root)
     if candidate_id(provenance, archive_digests) != binding.get("candidateId"):
@@ -899,6 +1008,8 @@ def load_binding(run_root: Path) -> dict[str, Any]:
         fail("candidate producer identity does not match binding")
     if binding.get("candidateProvenanceSha256") != file_sha(candidate_root / "candidate-provenance.json") or binding.get("candidateImageIdentitySha256") != file_sha(candidate_root / "image-identity.json") or binding.get("candidatePhase1ManifestSha256") != file_sha(candidate_root / "phase-1.json") or binding.get("candidateArchivesDigestSha256") != sha_object({"archives": provenance["archives"], "archiveDigests": archive_digests}):
         fail("candidate provenance/archive digest does not match binding")
+    if scope_profile is not None:
+        validate_rid_readme_binding(docs, run_root, provenance["archives"])
     if binding.get("sourceCommitSha") != binding.get("releaseCommitSha") or not SHA40.fullmatch(str(binding.get("sourceCommitSha", ""))) or not SHA256_DIGEST.fullmatch(str(binding.get("ociIndexDigest", ""))):
         fail("binding source/OCI identity is invalid")
     phase1 = read_json(candidate_root / "phase-1.json", "phase-1.json")
@@ -1705,7 +1816,13 @@ def command_bind(args: argparse.Namespace) -> None:
     candidate_phase1_sha = file_sha(candidate_intake / "phase-1.json")
     candidate_archives_sha = sha_object({"archives": provenance["archives"], "archiveDigests": archive_digests})
     archive_paths = [candidate_intake / archive["archiveFileName"] for archive in provenance["archives"]]
-    docs_metadata, docs_payloads = docs_from_release_tree(Path(args.repo_root), intake_manifest["sourceCommitSha"], candidate_intake, archive_paths)
+    docs_metadata, docs_payloads = docs_from_release_tree(
+        Path(args.repo_root),
+        intake_manifest["sourceCommitSha"],
+        candidate_intake,
+        archive_paths,
+        rid_specific=scope_profile is not None,
+    )
     nonce = require_value_free_identity(args.run_attempt_nonce, "run-attempt-nonce")
     owners = load_owner_map(Path(args.evidence_owners))
     optional = scope_profile["optionalEvidenceKeys"] if scope_profile is not None else [{"scenarioId": "G456-38", "variantId": "nas"}, {"scenarioId": "G456-39", "variantId": "macos"}, {"scenarioId": "G456-40", "variantId": "mode5-manual"}, {"scenarioId": "G456-41", "variantId": "external-secret-manager-docs"}]
@@ -1857,8 +1974,13 @@ def command_bind(args: argparse.Namespace) -> None:
     if scope_profile is not None:
         write_once(run_root / "scope-manifest.json", read_json(Path(args.scope_manifest), "scope manifest"))
     write_once(run_root / "migration-pin.json", read_json(Path(args.migration_pin), "migration pin"))
+    docs_paths = {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}
     for key, payload in docs_payloads.items():
-        write_bytes_once(run_root / "docs-extract" / {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}[key], payload)
+        if key.startswith("candidateReadmeSetup:"):
+            rid = key.split(":", 1)[1]
+            write_bytes_once(run_root / "docs-extract" / "candidate-readme-setup" / f"{rid}.md", payload)
+        else:
+            write_bytes_once(run_root / "docs-extract" / docs_paths[key], payload)
     write_once(run_root / "docs-extract" / "metadata.json", docs_metadata)
     phase2 = {
         "schemaVersion": 1,

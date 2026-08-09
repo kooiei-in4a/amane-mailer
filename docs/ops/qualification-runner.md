@@ -123,6 +123,17 @@ matching bytes and a clean worktree. The saved binding, authorization, Phase-2
 manifest, migration PIN, candidate documents, and archive digests are
 cross-checked again at every later command.
 
+Host archives contain RID-specific `README-SETUP.md` documents because the
+launcher path is host-qualified (`win-x64`, `linux-x64`, or `linux-arm64`). In
+the v1.3 ScopeProfile, each archive's README is bound independently through
+`candidateReadmeSetupByRid`: the exact target RID, archive filename and digest,
+embedded release-bundle-manifest target RID, and README SHA-256 are recorded in
+one JCS mapping digest. The corresponding bytes are stored under
+`docs-extract/candidate-readme-setup/<rid>.md` and rechecked during binding and
+verification. Cross-RID byte equality is not required; missing, duplicate,
+unexpected, swapped, or tampered RID documents fail closed. Legacy #456 runs
+retain their historical single `candidateReadmeSetupSha256` contract.
+
 ### Evidence envelope
 
 `evidence --observations` is mandatory; the runner does not construct a
