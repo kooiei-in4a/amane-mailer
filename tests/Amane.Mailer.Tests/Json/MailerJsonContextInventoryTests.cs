@@ -45,6 +45,8 @@ public sealed class MailerJsonContextInventoryTests
         typeof(MailRequestRescheduleRequest),
         typeof(MailRecipientDto),
         typeof(MailRecipientDto[]),
+        typeof(MailAttachmentDto),
+        typeof(MailAttachmentDto[]),
         typeof(Dictionary<string, string>),
         typeof(AcsEventGridEventDto),
         typeof(AcsEmailDeliveryReportDataDto),

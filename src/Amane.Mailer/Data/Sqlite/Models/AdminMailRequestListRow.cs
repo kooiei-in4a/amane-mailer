@@ -10,4 +10,7 @@ public sealed record AdminMailRequestListRow(
     MailRequestState Status,
     int AttemptCount,
     int MaxAttempts,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt)
+{
+    public IReadOnlyList<AdminRecipientSummary> Recipients { get; init; } = [];
+}

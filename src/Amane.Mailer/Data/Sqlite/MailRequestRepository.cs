@@ -15,6 +15,10 @@ public class MailRequestRepository
     private readonly MailRequestConsumerMutations _consumerMutations;
     private readonly MailRequestAdminQueries _adminQueries;
     private readonly WorkerHeartbeatStore _heartbeatStore;
+    private readonly MailRequestAttachmentStore _attachmentStore;
+    private readonly MailAttachmentSubmissionStore _attachmentSubmissionStore;
+    private readonly MailRequestRecipientStore _recipientStore;
+    private readonly MailPlainSubmissionStore _plainSubmissionStore;
 
     internal const string OperatorCancelledLastErrorMessage =
         MailRequestConsumerMutations.OperatorCancelledLastErrorMessage;
@@ -30,24 +34,38 @@ public class MailRequestRepository
         MailRequestAcceptStore acceptStore,
         MailRequestConsumerMutations consumerMutations,
         MailRequestAdminQueries adminQueries,
-        WorkerHeartbeatStore heartbeatStore)
+        WorkerHeartbeatStore heartbeatStore,
+        MailRequestAttachmentStore attachmentStore,
+        MailAttachmentSubmissionStore attachmentSubmissionStore,
+        MailRequestRecipientStore recipientStore,
+        MailPlainSubmissionStore plainSubmissionStore)
     {
         _claimStore = claimStore;
         _acceptStore = acceptStore;
         _consumerMutations = consumerMutations;
         _adminQueries = adminQueries;
         _heartbeatStore = heartbeatStore;
+        _attachmentStore = attachmentStore;
+        _attachmentSubmissionStore = attachmentSubmissionStore;
+        _recipientStore = recipientStore;
+        _plainSubmissionStore = plainSubmissionStore;
     }
 
     public static MailRequestRepository CreateStandalone(
         SqliteConnectionFactory connections,
-        MailerRuntimeMetrics? runtimeMetrics = null) =>
+        MailerRuntimeMetrics? runtimeMetrics = null,
+        Amane.Mailer.Attachments.Spool.AttachmentSpool? attachmentSpool = null,
+        TimeProvider? timeProvider = null) =>
         new(
             new MailRequestClaimStore(connections, runtimeMetrics),
-            new MailRequestAcceptStore(connections, runtimeMetrics),
+            new MailRequestAcceptStore(connections, attachmentSpool, runtimeMetrics),
             new MailRequestConsumerMutations(connections),
             new MailRequestAdminQueries(connections),
-            new WorkerHeartbeatStore(connections));
+            new WorkerHeartbeatStore(connections),
+            new MailRequestAttachmentStore(connections),
+            new MailAttachmentSubmissionStore(connections, timeProvider ?? TimeProvider.System),
+            new MailRequestRecipientStore(connections, timeProvider ?? TimeProvider.System, runtimeMetrics),
+            new MailPlainSubmissionStore(connections, timeProvider ?? TimeProvider.System, runtimeMetrics));
 
     public Task<AdminMailRequestListPage> ListForAdminAsync(
         AdminMailRequestListQuery query,
@@ -222,4 +240,119 @@ public class MailRequestRepository
     public Task<IReadOnlyList<WorkerHeartbeat>> GetHeartbeatsAsync(
         CancellationToken cancellationToken = default) =>
         _heartbeatStore.GetHeartbeatsAsync(cancellationToken);
+
+    public Task<IReadOnlyList<AttachmentMetadataRow>> ListAttachmentsAsync(
+        Guid requestId,
+        CancellationToken cancellationToken = default) =>
+        _attachmentStore.ListByRequestIdAsync(requestId, cancellationToken);
+
+    public Task<AttachmentSubmissionRow?> FindAttachmentSubmissionAsync(
+        Guid requestId,
+        CancellationToken cancellationToken = default) =>
+        _attachmentSubmissionStore.FindAsync(requestId, cancellationToken);
+
+    public Task<bool> TryInsertAttachmentSubmissionStartedAsync(
+        Guid requestId,
+        string provider,
+        Guid lockToken,
+        CancellationToken cancellationToken = default) =>
+        _attachmentSubmissionStore.TryInsertStartedAsync(requestId, provider, lockToken, cancellationToken);
+
+    public Task<bool> FinalizeAttachmentSubmissionAsync(
+        Guid id,
+        Guid requestLockToken,
+        Guid submissionLockToken,
+        DateTimeOffset now,
+        AttachmentSubmissionState expectedSubmissionState,
+        AttachmentSubmissionState targetSubmissionState,
+        string? providerMessageId,
+        MailRequestState requestTerminalState,
+        string? lastErrorMessage,
+        MailAttemptInsert attempt,
+        CancellationToken cancellationToken = default) =>
+        _claimStore.FinalizeAttachmentSubmissionAsync(
+            id,
+            requestLockToken,
+            submissionLockToken,
+            now,
+            expectedSubmissionState,
+            targetSubmissionState,
+            providerMessageId,
+            requestTerminalState,
+            lastErrorMessage,
+            attempt,
+            cancellationToken);
+
+    public Task<IReadOnlyList<MailRequestRecipientRow>> ListRecipientsAsync(
+        Guid requestId,
+        CancellationToken cancellationToken = default) =>
+        _recipientStore.ListByRequestIdAsync(requestId, cancellationToken);
+
+    public Task<MailRequestRecipientRow?> FindBccRecipientForRevealAsync(
+        Guid requestId,
+        Guid tenantId,
+        string sourceService,
+        int ordinal,
+        CancellationToken cancellationToken = default) =>
+        _recipientStore.FindBccForRevealAsync(
+            requestId,
+            tenantId,
+            sourceService,
+            ordinal,
+            cancellationToken);
+
+    public Task<AttachmentSuppressionPrecheckResult> TryApplyAttachmentSuppressionPrecheckAsync(
+        Guid requestId,
+        Guid tenantId,
+        Guid lockToken,
+        int attemptNumber,
+        CancellationToken cancellationToken = default) =>
+        _recipientStore.TryApplySuppressionPrecheckAsync(requestId, tenantId, lockToken, attemptNumber, cancellationToken);
+
+    public Task<MailPlainSubmissionRow?> FindPlainSubmissionAsync(
+        Guid requestId,
+        CancellationToken cancellationToken = default) =>
+        _plainSubmissionStore.FindAsync(requestId, cancellationToken);
+
+    public Task<PlainProviderInvocationResult> TryPreparePlainProviderInvocationAsync(
+        Guid requestId,
+        Guid tenantId,
+        string provider,
+        Guid lockToken,
+        int attemptNumber,
+        CancellationToken cancellationToken = default) =>
+        _plainSubmissionStore.TryPrepareProviderInvocationAsync(
+            requestId,
+            tenantId,
+            provider,
+            lockToken,
+            attemptNumber,
+            cancellationToken);
+
+    public Task<bool> FinalizePlainSubmissionAsync(
+        Guid requestId,
+        Guid requestLockToken,
+        Guid evidenceClaimToken,
+        MailPlainSubmissionEvidenceState expectedEvidenceState,
+        DateTimeOffset now,
+        MailPlainSubmissionEvidenceState targetEvidenceState,
+        string? providerMessageId,
+        MailRequestState requestTerminalState,
+        MailRecipientDeliveryState? recipientTargetState,
+        string? lastErrorMessage,
+        MailAttemptInsert attempt,
+        CancellationToken cancellationToken = default) =>
+        _plainSubmissionStore.FinalizeAsync(
+            requestId,
+            requestLockToken,
+            evidenceClaimToken,
+            expectedEvidenceState,
+            now,
+            targetEvidenceState,
+            providerMessageId,
+            requestTerminalState,
+            recipientTargetState,
+            lastErrorMessage,
+            attempt,
+            cancellationToken);
 }

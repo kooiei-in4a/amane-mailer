@@ -37,10 +37,18 @@ public static class AdminMailRequestDetailPage
         if (detail is null)
             return Results.NotFound();
 
+        var canRevealBcc = await userRepository.HasCapabilityAsync(
+            AdminAuditLog.ResolveActor(context),
+            AdminCapabilities.BccRecipientReveal,
+            cancellationToken);
+
         var attempts = await repository.ListAttemptsForAdminAsync(
             requestId,
             access.AllowedTenantIdsForQuery,
             cancellationToken);
+        var attachments = detail.AttachmentCount > 0
+            ? await repository.ListAttachmentsAsync(requestId, cancellationToken)
+            : [];
         var bounceEvents = await bounceEventRepository.ListForMailRequestAsync(
             detail.TenantId,
             detail.SourceService,
@@ -58,11 +66,13 @@ public static class AdminMailRequestDetailPage
             RenderHtml(
                 detail,
                 attempts,
+                attachments,
                 bounceEvents,
                 options,
                 deadLetterCount,
                 csrfToken,
-                timeProvider.GetUtcNow()),
+                timeProvider.GetUtcNow(),
+                canRevealBcc),
             "text/html; charset=utf-8");
     }
 
@@ -73,16 +83,18 @@ public static class AdminMailRequestDetailPage
         int deadLetterCount = 0,
         string csrfToken = "",
         DateTimeOffset? now = null) =>
-        RenderHtml(detail, attempts, [], options, deadLetterCount, csrfToken, now);
+        RenderHtml(detail, attempts, [], [], options, deadLetterCount, csrfToken, now, false);
 
     internal static string RenderHtml(
         AdminMailRequestDetail detail,
         IReadOnlyList<AdminMailAttemptRow> attempts,
+        IReadOnlyList<AttachmentMetadataRow> attachments,
         IReadOnlyList<AdminBounceEventRow> bounceEvents,
         MailerAdminOptions options,
         int deadLetterCount = 0,
         string csrfToken = "",
-        DateTimeOffset? now = null)
+        DateTimeOffset? now = null,
+        bool canRevealBcc = false)
     {
         var html = new StringBuilder();
 
@@ -98,9 +110,10 @@ public static class AdminMailRequestDetailPage
                 </nav>
             """);
 
-        AppendDetailSection(html, detail, options);
+        AppendDetailSection(html, detail, options, canRevealBcc);
         AppendMutationActions(html, detail, csrfToken, now ?? DateTimeOffset.UtcNow);
         AppendAttemptsSection(html, attempts);
+        AppendAttachmentsSection(html, detail.Id, attachments);
         AppendBounceEventsSection(html, bounceEvents);
 
         AdminLayout.AppendDocumentEnd(html);
@@ -111,11 +124,9 @@ public static class AdminMailRequestDetailPage
     private static void AppendDetailSection(
         StringBuilder html,
         AdminMailRequestDetail detail,
-        MailerAdminOptions options)
+        MailerAdminOptions options,
+        bool canRevealBcc)
     {
-        var recipientEmail = options.MaskRecipients
-            ? MaskRecipient(detail.RecipientEmail)
-            : detail.RecipientEmail;
         var subject = options.MaskSubjects
             ? MaskSubject(detail.Subject)
             : detail.Subject;
@@ -142,9 +153,6 @@ public static class AdminMailRequestDetailPage
         if (detail.Status == MailRequestState.Processing && detail.LockExpiresAt.HasValue)
             AppendDetailRow(html, "lock_expires_at", FormatLocalTime(detail.LockExpiresAt.Value));
 
-        AppendDetailRow(html, "宛先メールアドレス", recipientEmail);
-        if (detail.RecipientDisplayName is not null && !options.MaskRecipients)
-            AppendDetailRow(html, "宛先表示名", detail.RecipientDisplayName);
         AppendDetailRow(html, "件名", subject);
         if (detail.ReplyTo is not null)
         {
@@ -172,6 +180,8 @@ public static class AdminMailRequestDetailPage
             AppendDetailRow(html, "delivered_at", FormatLocalTime(detail.DeliveredAt.Value));
         if (detail.FailedAt.HasValue)
             AppendDetailRow(html, "failed_at", FormatLocalTime(detail.FailedAt.Value));
+        if (detail.DeliveryUnknownAt.HasValue)
+            AppendDetailRow(html, "delivery_unknown_at", FormatLocalTime(detail.DeliveryUnknownAt.Value));
         if (detail.CompletedAt.HasValue)
             AppendDetailRow(html, "completed_at", FormatLocalTime(detail.CompletedAt.Value));
 
@@ -179,6 +189,13 @@ public static class AdminMailRequestDetailPage
                   </tbody>
                 </table>
             """);
+
+        AdminRecipientSummaryRenderer.AppendDetailTable(
+            html,
+            detail.Id,
+            detail.Recipients,
+            options.MaskRecipients,
+            canRevealBcc);
 
         AppendBodyLink(html, detail.Id, "html_body", detail.HtmlBody);
         AppendBodyLink(html, detail.Id, "text_body", detail.TextBody);
@@ -193,13 +210,22 @@ public static class AdminMailRequestDetailPage
         string csrfToken,
         DateTimeOffset now)
     {
-        var canRetry = detail.Status is MailRequestState.DeadLettered or MailRequestState.Failed;
-        var canCancel = detail.Status is MailRequestState.Queued
-            or MailRequestState.Failed
-            or MailRequestState.DeadLettered
-            || detail.Status == MailRequestState.Processing
+        // ADR 0022 D-08: attachment-bearing requests are never retryable (single-shot delivery,
+        // HTTP 409 ATTACHMENT_MANUAL_RETRY_NOT_SUPPORTED), and are only cancellable before a
+        // submission marker exists -- Failed/DeadLettered for such a request always implies
+        // submission evidence was already committed, so cancel must not be offered there either.
+        var isAttachmentRequest = detail.AttachmentCount > 0;
+        var lockExpired = detail.Status == MailRequestState.Processing
             && detail.LockExpiresAt is not null
             && detail.LockExpiresAt <= now;
+        var canRetry = !isAttachmentRequest
+            && detail.Status is MailRequestState.DeadLettered or MailRequestState.Failed;
+        var canCancel = isAttachmentRequest
+            ? detail.Status == MailRequestState.Queued || lockExpired
+            : detail.Status is MailRequestState.Queued
+                or MailRequestState.Failed
+                or MailRequestState.DeadLettered
+                || lockExpired;
 
         if (!canRetry && !canCancel)
             return;
@@ -313,6 +339,63 @@ public static class AdminMailRequestDetailPage
         html.AppendLine("                  </tr>");
     }
 
+    private static void AppendAttachmentsSection(
+        StringBuilder html,
+        Guid requestId,
+        IReadOnlyList<AttachmentMetadataRow> attachments)
+    {
+        if (attachments.Count == 0)
+            return;
+
+        html.AppendLine("""
+              <section class="detail-section" aria-label="添付ファイル">
+                <h2 class="section-heading">添付ファイル</h2>
+                <table class="admin-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>ファイル名</th>
+                      <th>content_type</th>
+                      <th>byte_length</th>
+                      <th>content_sha256</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+            """);
+
+        foreach (var attachment in attachments)
+            AppendAttachmentRow(html, requestId, attachment);
+
+        html.AppendLine("""
+                  </tbody>
+                </table>
+              </section>
+            """);
+    }
+
+    private static void AppendAttachmentRow(StringBuilder html, Guid requestId, AttachmentMetadataRow attachment)
+    {
+        var idStr = requestId.ToString("D");
+        html.AppendLine("                  <tr>");
+        AppendCell(html, attachment.Order.ToString(CultureInfo.InvariantCulture));
+
+        // ADR 0022 D-13: the filename is potential PII and stays masked until explicitly
+        // revealed (audited) -- never rendered unmasked inline in this table.
+        html.Append("                    <td>");
+        html.Append(Html(MaskFileName(attachment.FileName)));
+        html.Append(" <a href=\"/admin/mail-requests/");
+        html.Append(idStr);
+        html.Append("/attachments/");
+        html.Append(attachment.Order.ToString(CultureInfo.InvariantCulture));
+        html.Append("/filename\">表示</a></td>");
+        html.AppendLine();
+
+        AppendCell(html, attachment.ContentType);
+        AppendCell(html, attachment.ByteLength.ToString(CultureInfo.InvariantCulture));
+        AppendCell(html, attachment.ContentSha256);
+        html.AppendLine("                  </tr>");
+    }
+
     private static void AppendBounceEventsSection(
         StringBuilder html,
         IReadOnlyList<AdminBounceEventRow> bounceEvents)
@@ -392,6 +475,7 @@ public static class AdminMailRequestDetailPage
             MailRequestState.Failed => "Failed",
             MailRequestState.DeadLettered => "DeadLettered",
             MailRequestState.Cancelled => "Cancelled",
+            MailRequestState.DeliveryUnknown => "DeliveryUnknown",
             _ => "Unknown",
         };
 
@@ -404,6 +488,7 @@ public static class AdminMailRequestDetailPage
             MailRequestState.Failed => "status-failed",
             MailRequestState.DeadLettered => "status-deadlettered",
             MailRequestState.Cancelled => "status-cancelled",
+            MailRequestState.DeliveryUnknown => "status-deliveryunknown",
             _ => "status-unknown",
         };
 
@@ -414,6 +499,7 @@ public static class AdminMailRequestDetailPage
             (int)MailRequestState.Failed => "Failed",
             (int)MailRequestState.DeadLettered => "DeadLettered",
             (int)MailRequestState.Cancelled => "Cancelled",
+            (int)MailRequestState.DeliveryUnknown => "DeliveryUnknown",
             _ => status.ToString(CultureInfo.InvariantCulture),
         };
 
@@ -424,6 +510,7 @@ public static class AdminMailRequestDetailPage
             (int)MailRequestState.Failed => "status-failed",
             (int)MailRequestState.DeadLettered => "status-deadlettered",
             (int)MailRequestState.Cancelled => "status-cancelled",
+            (int)MailRequestState.DeliveryUnknown => "status-deliveryunknown",
             _ => "status-unknown",
         };
 
@@ -448,6 +535,23 @@ public static class AdminMailRequestDetailPage
             return $"{subject[0]}***";
 
         return subject[..12] + "...";
+    }
+
+    /// <summary>
+    /// Masks an attachment filename for default display (ADR 0022 D-13). The extension is kept
+    /// so file type stays scannable in the list; the stem is masked. Unmasked display requires
+    /// the explicit, audited reveal action (<see cref="AdminMailRequestAttachmentFilenamePage"/>).
+    /// </summary>
+    private static string MaskFileName(string fileName)
+    {
+        if (string.IsNullOrEmpty(fileName))
+            return "***";
+
+        var dot = fileName.LastIndexOf('.');
+        if (dot <= 0 || dot == fileName.Length - 1)
+            return $"{fileName[0]}***";
+
+        return $"{fileName[0]}***{fileName[dot..]}";
     }
 
     private static string FormatLocalTime(DateTimeOffset value) =>

@@ -2,6 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-26
+- **Amended by:** [ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md)（2026-08-05）
+- **Related PR:** [#539](https://github.com/kooiei-in4a/amane-mailer/pull/539)
+- **Related issues:** [#519](https://github.com/kooiei-in4a/amane-mailer/issues/519)、[#530](https://github.com/kooiei-in4a/amane-mailer/issues/530)
+- **Decision owner:** Koo
+- **Design approval:** 2026-08-05（production implementationは未承認・未実施）
 - **Tracks:** [#300](https://github.com/kooiei-in4a/amane-mailer/issues/300)
 - **Implementation follow-up:** [#301](https://github.com/kooiei-in4a/amane-mailer/issues/301)（スキーマ）、[#302](https://github.com/kooiei-in4a/amane-mailer/issues/302)（取り込みコア）、[#303](https://github.com/kooiei-in4a/amane-mailer/issues/303)（送信前チェック）、[#305](https://github.com/kooiei-in4a/amane-mailer/issues/305)（Pull 受信）、[#306](https://github.com/kooiei-in4a/amane-mailer/issues/306)（可視化）、[#400](https://github.com/kooiei-in4a/amane-mailer/issues/400)（解除 CLI）
 - **Continues:** [ADR 0012 D-06](0012-mail-via-mailer-microservice.md)（`WaitUntil.Completed` と将来の配信結果精緻化の予約）
@@ -128,11 +133,11 @@ F-1 のとおり両者は書式・casing まで一致する。**正規化関数�
 
 バウンスの事実は `bounce_events` に保持し、リクエストとは `mail_request_id` で関連付ける。**FK は張らない。** 理由は retention 判定の独立性（`mail_requests` の完了判定に依存しない削除経路にできる）と、将来 `bounce_events` の保持方針を変える際に `mail_requests` のスキーマ変更を要さないことにある。**保持期間自体は `mail_requests` と揃え、同一 `DeleteExpiredCompletedAsync` トランザクションで purge する。** 耐久的な送信ブロック状態は `mail_suppressions` が担う（既定で非 purge）。リクエスト詳細画面からの表示は、参照先が存在しない状態を許容する設計にすること（#306。同一トランザクション purge でも読み取り側との競合はあり得る）。
 
-### D-06. 抑制リストはテナント別に分離し、ハードバウンスのみ即時登録する
+### D-06. 抑制リストはテナント別に分離し、Bounced／Suppressedを即時登録する
 
 `mail_suppressions` は `(tenant_id, 正規化宛先)` で UNIQUE とする。テナントをまたいだ抑制は行わない。
 
-**即時登録の対象は `status = "Bounced"` のみ**とする（F-2）。未観測のステータス値（`Failed` / `Quarantined` / `Suppressed` 等）は、**記録はするが抑制登録はしない**。分類が確定していない値で送信を止めると、誤検知に気づく手段がない。対象を広げる場合は、実データで値と意味を確認してから #301 / #302 の判断として追加する。
+**即時登録の対象は `status = "Bounced"` または ACS が報告する `status = "Suppressed"`** とする（F-2、#530）。`Bounced` は確認済みのハードバウンス、`Suppressed` はACS providerが抑制したrecipient結果として扱う。その他の未確認ステータス（`Failed` / `Quarantined` / unknown 等）は、**記録はするが抑制登録はしない**。分類が確定していない値で送信を止めると、誤検知に気づく手段がない。
 
 宛先の正規化方式は、格納（#301）・照会（#303）・解除（#400）の三箇所で**完全に一致させる**。食い違うと、UNIQUE インデックスが効かず全表走査になるか、抑制が効かないまま送信される。
 
@@ -177,6 +182,18 @@ F-1 のとおり両者は書式・casing まで一致する。**正規化関数�
 `delivery_events` の UNIQUE / CHECK 制約変更と HTTP 契約変更（OpenAPI・Contracts・SDK の同期）を伴うため、v1.2.0 以降へ分離する。
 
 v1.1.0 におけるバウンスの可視化手段は **Admin UI とメトリクスのみ**である（#306）。抑制リスト一覧は宛先アドレスの列挙そのものになるため、ADR 0013 D-05 の既定マスク方針を適用する。
+
+### D-12. ADR 0023 amendment: recipient-level feedback and ACS Suppressed
+
+v1.3.0ではdelivery eventをrecipient単位で関連付け、`mail_request_recipients`をrecipient correlationのcanonical sourceとする。[ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md) がrecipient state、request aggregate、BCC privacyの詳細正本であり、本ADRはbounce ingestion、event history、suppression dataの責任を維持する。
+
+provider message IDだけでcross-tenant correlationを行わない。tenant scope、request特定、canonical recipient照合の順に限定する。duplicate eventは冪等に処理し、out-of-order eventはhistoryを保持し、unknown recipient、cross-tenant、cross-source-service eventは他のrecipientへ相関しない。provider eventは外部観測結果であり、canonical recipient rowを置き換えない。
+
+ACS `Suppressed` は `Delivered` として扱わない。recipient単位のSuppressed結果として記録し、suppression対象として保存し、将来requestの事前拒否へ使う。request全体のstatusは他recipient結果とのaggregateで決定する。`Bounced` と `Suppressed` はsuppression対象、`Failed`、`Quarantined`、未確認のunknown statusは記録のみとする。
+
+事前suppressionは既存のall-or-nothing送信境界を維持し、一人でもsuppressedならprovider invocationを行わない。対象recipientはSuppressed、他recipientはNotSent、request aggregateはFailedとする。Issue [#530](https://github.com/kooiei-in4a/amane-mailer/issues/530)がACS Suppressedのproduction実装、分類、回帰テストを独立して所有する。本ADR amendmentとPR #539はIssue #530の実装完了を表さない。
+
+このamendmentはevent／suppressionの設計責任と#530のownershipを記録するだけであり、runtime、migration、test codeはPR #539で変更しない。
 
 ## Rejected Alternatives
 

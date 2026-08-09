@@ -100,6 +100,22 @@ public static class MailerCliHost
             cancellationToken);
     }
 
+    public static async Task<int> RunAdminUserCapabilityAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var factory = new SqliteConnectionFactory(configuration);
+        var command = new AdminUserCapabilityCommand(factory, TimeProvider.System);
+        return await command.ExecuteAsync(
+            FilterConfigurationArgs(commandArgs),
+            output,
+            error,
+            cancellationToken);
+    }
+
     public static async Task<int> RunHealthCheckAsync(
         IConfiguration configuration,
         CancellationToken cancellationToken)
@@ -170,7 +186,7 @@ public static class MailerCliHost
         CancellationToken cancellationToken)
     {
         var factory = new SqliteConnectionFactory(configuration);
-        var command = new DbBackupCommand(factory);
+        var command = new DbBackupCommand(factory, new MailerMaintenanceLeaseStore(factory, TimeProvider.System), TimeProvider.System);
         return await command.ExecuteAsync(["db", "backup", destinationPath], output, error, cancellationToken);
     }
 

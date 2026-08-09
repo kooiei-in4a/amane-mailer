@@ -59,6 +59,27 @@ CI validates OpenAPI structure with `scripts/validate-openapi.mjs` and runs Cont
 
 When intentionally changing the contract, update the DTOs / constants / payload hash contract in `src/Amane.Mailer.Contracts/` first, then synchronize runtime behavior, [openapi.yaml](api/openapi.yaml), related tests, and the Python / TypeScript SDK builder, validation, and payload_hash field inventories in the same change. There is no separate generated snapshot to refresh today; the drift check derives expected DTO / constant shape from source. Recompute the OpenAPI example `payload_hash` when it changes, and update `tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` when canonicalization fixtures change. Validate locally with `node scripts/validate-openapi.mjs docs/api/openapi.yaml`, `node scripts/check-contract-drift.mjs`, and `node scripts/check-mail-request-field-inventory.mjs`. See the "Versioning Policy" section for Contracts package / API versioning policy.
 
+### Recipient contract (to / cc / bcc, ADR 0023 D-01)
+
+`to`, `cc`, and `bcc` each accept 0-10 entries; the combined total across all three must be
+1-20. Unspecified, `null`, and an empty array are equivalent (zero recipients for that role).
+A combined total of 0 is 422 `INVALID_REQUEST`; exceeding a per-role or combined limit is 422
+`TOO_MANY_RECIPIENTS`. Duplicates within a role or across roles are rejected as 422
+`INVALID_REQUEST`, judged by a trim + lowercase-invariant address match (`address_key`);
+differing display names do not affect duplicate detection. Addresses accept ASCII local-part +
+ASCII domain only, rejecting IDN/Punycode/Unicode local-part and CR/LF/NUL/control characters
+(local-part max 64 octets, full address max 254 bytes). Display names reject CR/LF/control
+characters; a whitespace-only value is treated as unspecified. Array order is preserved within
+each role, and the provider submission order is To, Cc, Bcc. A request with a single To entry
+and no Cc/Bcc is byte-identical to the existing v1.2 contract and payload hash.
+
+The runtime accepts the multiple-recipient shapes above through canonical recipient persistence
+and provider mapping, sending every To, Cc, and Bcc recipient in one provider message. The
+legacy `recipient_email` / `recipient_display_name` columns are binary-compatibility shadows
+only and are not the source of truth for delivery or recipient-aware behavior. A Bcc-only request
+uses the fixed redacted sentinel in that shadow; the raw Bcc address is not stored there. See
+[docs/adr/0023-multiple-recipient-contract-and-delivery-semantics.md](adr/0023-multiple-recipient-contract-and-delivery-semantics.md).
+
 ### Acceptance Responses
 
 | Situation | HTTP | code / status |
@@ -70,7 +91,8 @@ When intentionally changing the contract, update the DTOs / constants / payload 
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Same ID, different content | 409 | `IDEMPOTENCY_CONFLICT` |
 | Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
-| Multiple recipients / metadata / hash mismatch | 422 | `TOO_MANY_RECIPIENTS` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` / `INVALID_REQUEST` |
+| Per-role or combined recipient limit exceeded | 422 | `TOO_MANY_RECIPIENTS` |
+| Invalid/duplicate recipient / metadata / hash mismatch | 422 | `INVALID_REQUEST` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` |
 | Past `scheduled_at` / beyond max schedule horizon | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |
 | Transient DB failure (busy/locked, etc.) | 503 | `MAILER_TEMPORARILY_UNAVAILABLE` (`retryable: true`) |
 | SQLite disk full (SQLITE_FULL) | 503 | `STORAGE_FULL` (`retryable: false`) |
@@ -83,7 +105,7 @@ API times are **UTC**. `scheduled_at` is the first-dispatch schedule and is inde
 
 | Situation | HTTP | code / status |
 |---|---|---|
-| Existing request for authorized tenant + allowed source_service | 200 | Worker delivery `status` (`queued` / `processing` / `delivered` / `failed` / `dead_lettered` / `cancelled`) |
+| Existing request for authorized tenant + allowed source_service | 200 | Worker delivery `status` (`queued` / `processing` / `delivered` / `failed` / `dead_lettered` / `cancelled` / `delivery_unknown`) |
 | Invalid or missing mail_request_id / tenant_id / source_service | 400 | `INVALID_REQUEST` |
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
@@ -161,19 +183,21 @@ This policy is synchronized with OpenAPI, the Contracts README, and `SECURITY.md
 
 HTTP acceptance idempotency (the "Idempotency" section above) and **actual email delivery uniqueness via ACS/Mailpit are separate contracts**. Consumers must not assume that the same `mail_request_id` results in exactly one delivered message (exactly-once).
 
-Mailer delivery semantics are **at-least-once** (a single accepted request may result in multiple actual sends). The table below summarizes guarantees based on the current implementation. Canonical references are [ADR 0012 D-07](adr/0012-mail-via-mailer-microservice.md) and this section.
+In v1.3.0, both plain and attachment requests establish durable submission evidence before provider invocation. Once `Started` or later evidence exists, Mailer does not invoke the provider again for the same request. Mailer therefore prioritizes **at-most-once provider invocation** at that boundary, while actual email delivery remains **not exactly-once** because Mailer cannot guarantee how a provider processes one submitted operation. If acceptance cannot be proved, the request converges to `DeliveryUnknown` and the same request is not automatically or manually resent. Canonical references are [ADR 0023 D-04/D-07](adr/0023-multiple-recipient-contract-and-delivery-semantics.md) and, for attachment requests, [ADR 0022 D-08](adr/0022-attachment-contract-validation-and-delivery-boundaries.md).
 
 | Scope | Guarantee | Notes |
 |---|---|---|
 | HTTP acceptance | at-most-once persistence | One row per `(tenant_id, source_service, mail_request_id)`. Re-POST returns `already_accepted` |
-| Actual email delivery (overall) | **not exactly-once** / at-least-once | Duplicates are possible due to automatic retries, manual retry, and provider behavior |
-| ACS (`provider=acs`) | **Mitigation only** via deterministic operation id (UUIDv5) | Derived from `tenant_id` + `source_service:mail_request_id` (`AcsOperationIdFactory`). This repository does not verify or guarantee ACS server-side deduplication |
-| Mailpit (`provider=mailpit`) | **No idempotency** (best-effort) | Each retry may perform a new SMTP send (development / verification use). Disconnect failure after SMTP DATA acceptance alone does not schedule a retry (#275) |
-| Worker automatic retry | at-least-once | Retryable failures return to `Queued` and are delivered again |
-| Finalize race after lease expiry (#238) | **Resend suppression** | Successful provider sends are recorded in `mail_attempts`; reclaim skips the actual send and converges to `Delivered`. Finalize skips are observable via `mail_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)) |
-| Wall-clock lease correction (#276) | **Absolute-time comparison** | Mail / webhook leases compare `lock_expires_at` from `TimeProvider.GetUtcNow()` to `@Now`. There is no monotonic clock. A large forward wall-clock jump can cause early reclaim / strict finalize fencing failure; a large backward jump can delay Processing / Delivering recovery (details in the next subsection) |
-| Admin manual retry | **Intentional redelivery** | Moves `DeadLettered` / `Failed` back to `Queued` (resets `attempt_count` to 0). Prior-cycle Delivered evidence is not used for prior-success convergence (#268). May resend even when a provider send already succeeded but the row had not converged to `Delivered` ([ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) maintains at-least-once) |
-| Delivery result webhook | **first-wins** (at most one event per mail-request generation) + `event_id` dedup for re-POSTs | **Separate contract from actual email delivery**. Only the first enqueued terminal state is notified. Admin manual retry that reaches a later terminal (e.g. `failed` → retry → `delivered`) does **not** send another webhook. Consumers must treat duplicate POSTs with the same `event_id` as idempotent ([webhook-verification.md](consumer/webhook-verification.md)) |
+| Mailer provider invocation | **at-most-once after `Started` evidence** | Both plain and attachment paths durably commit evidence before the provider call. `Started` / `Accepted` / `DefinitelyRejected` / `Unknown` never invoke the provider again |
+| Actual email delivery (overall) | **not exactly-once** | Mailer prefers possible non-delivery over duplicate provider invocation when the outcome is ambiguous; provider-internal processing is outside Mailer's exactly-once control |
+| ACS (`provider=acs`) | Deterministic operation id (UUIDv5) is defense-in-depth | Derived from `tenant_id` + `source_service:mail_request_id` (`AcsOperationIdFactory`). Submission evidence is the primary boundary; ACS-side deduplication is not used as permission to resend |
+| Mailpit (`provider=mailpit`) | No provider-side idempotency | An ambiguous SMTP acceptance result becomes `DeliveryUnknown`; Mailer does not resend the same request to SMTP to trade non-delivery risk for duplicate risk |
+| Worker automatic retry | **No provider re-invocation after invocation starts** | v1.3 removes the old plain retryable-provider-failure → `Queued` automatic retry loop. Ambiguous outcomes after `Started` converge to `DeliveryUnknown` |
+| `DefinitelyNotSubmitted` | Conditional controlled resume only | Resume is allowed only when non-submission is proved and a fenced transition of the same evidence row succeeds. Suppression-driven `DefinitelyNotSubmitted + Failed` is terminal (ADR 0023 D-12) |
+| Lease expiry / crash recovery | **Resend suppression** | A plain request left with durable `Started` evidence converges through `Unknown` / `DeliveryUnknown` on reclaim without another provider call. Attachment requests keep the ADR 0022 Started-marker boundary |
+| Wall-clock lease correction (#276) | **Absolute-time comparison** | Mail / webhook leases compare `lock_expires_at` from `TimeProvider.GetUtcNow()` to `@Now`. A large forward wall-clock jump can break strict finalize fencing, but submission evidence still prevents provider re-invocation |
+| Admin manual retry | **Only when no submission evidence exists** | Plain requests with a `mail_plain_submissions` row and attachment requests reject whole-request manual retry. If a business resend is required, use a new `mail_request_id` after assessing duplicate risk |
+| Delivery result webhook | **first-wins** (at most one event per mail-request generation) + `event_id` dedup for re-POSTs | **Separate contract from actual email delivery**. Only the first enqueued terminal state is notified. Consumers must treat duplicate POSTs with the same `event_id` as idempotent ([webhook-verification.md](consumer/webhook-verification.md)) |
 
 ### Worker / Webhook lease and wall clock (#276)
 
@@ -188,16 +212,16 @@ Ordinary NTP slew is rarely enough to matter. Host step corrections and manual c
 
 **Current mitigations:**
 
-- mail: #238 can still record Delivered evidence when strict fencing fails after a successful provider send, skip the actual send on reclaim, and converge to `Delivered`. This does not remove clock skew itself.
-- webhook: There is no equivalent prior-success converge path. Early reclaim can re-POST HTTP delivery (consumers must rely on `event_id` idempotency). Webhook finalize fencing failures are observable via `mail_webhook_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)).
+- mail: Provider submission evidence and claim/lease fencing are the primary boundary. If a plain request cannot finalize after `Started`, reclaim does not invoke the provider again and converges through `Unknown` / `DeliveryUnknown`. Attachment requests likewise never re-invoke the provider after the ADR 0022 Started marker.
+- webhook: There is no equivalent provider-submission evidence. Early reclaim can re-POST HTTP delivery (consumers must rely on `event_id` idempotency). Webhook finalize fencing failures are observable via `mail_webhook_finalize_skipped_total` ([metrics runbook](ops/metrics-and-alerts.en.md)).
 
 **Operations:** Prefer slew over large steps for OS / container time sync. A spike in `mail_finalize_skipped_total` can indicate mail fencing failures (including clock jumps). For webhook, watch `mail_webhook_finalize_skipped_total`; see the [metrics runbook](ops/metrics-and-alerts.en.md). A monotonic lease redesign remains a separate ADR candidate and is not the short-term direction of this spec.
 
 **Consumer recommendations:**
 
-- If duplicate notifications are unacceptable for business logic, deduplicate on the consumer side using `mail_request_id` or a custom correlation id.
-- Observing `delivered` via `GET /internal/mail-requests/{mail_request_id}` does not rule out multiple messages already sent (especially with Mailpit or manual retry).
-- After Admin manual retry, status GET and the webhook terminal may diverge (webhook is first-wins). Treat status GET as authoritative for the current mail-request state.
+- `delivery_unknown` does not mean "not sent" or "safe to retry." Do not resend the same request; if business requirements demand another attempt, assess duplicate risk and submit a new request with a new `mail_request_id`.
+- `delivered` from `GET /internal/mail-requests/{mail_request_id}` means provider acceptance was confirmed for the request aggregate; recipient-level delivery feedback is a separate concern.
+- Webhooks remain first-wins. Use status GET and canonical Admin/ops data for the current request / recipient state.
 
 ### Versioning Policy
 
@@ -242,7 +266,7 @@ Canonical DDL: `src/Amane.Mailer/Data/Migrations/001_initial.sql`
 | `payload_json` | TEXT | Received JSON verbatim |
 | `payload_hash` | TEXT | SHA-256 hex (64 characters) |
 | `subject` / `html_body` / `text_body` / `reply_to` | TEXT | Delivery content |
-| `recipient_email` / `recipient_display_name` | TEXT | Recipient (current API accepts one recipient) |
+| `recipient_email` / `recipient_display_name` | TEXT | Legacy binary-compatibility shadow (canonical `mail_request_recipients` is the source of truth; fixed redacted sentinel for Bcc-only) |
 | `metadata_json` | TEXT NULL | Optional metadata |
 | `status` | INTEGER | State (see table below) |
 | `attempt_count` / `max_attempts` | INTEGER | Attempt counts |
@@ -287,51 +311,53 @@ Worker and Sweep BackgroundServices each UPSERT periodically. The CLI `healthche
 
 ### 3.4 State Transitions (`mail_requests.status`)
 
-The canonical state values and Worker automatic transitions are defined in [ADR 0015: Manual retry and cancel state transitions](adr/0015-manual-retry-cancel-state-transitions.md). The table below is a service-spec summary.
+The provider re-invocation boundary is defined by [ADR 0023 D-04/D-07](adr/0023-multiple-recipient-contract-and-delivery-semantics.md). Attachment requests also follow [ADR 0022 D-08](adr/0022-attachment-contract-validation-and-delivery-boundaries.md), while [ADR 0015](adr/0015-manual-retry-cancel-state-transitions.md) still applies to Admin operations before provider submission evidence exists.
 
 | Value | Name | Meaning |
 |---|---|---|
 | **0** | `Queued` | Accepted · awaiting delivery (claimable when both `scheduled_at` and `next_attempt_at` are due) |
 | **1** | `Processing` | Worker holds lease · sending |
-| **2** | `Delivered` | Delivery succeeded (terminal) |
-| **3** | `Failed` | Non-retryable provider failure (terminal) |
-| **4** | `DeadLettered` | Abandoned after max attempts etc. (terminal) |
-| **5** | `Cancelled` | Operator manual cancel (terminal) |
+| **2** | `Delivered` | Provider acceptance confirmed for the request aggregate (terminal) |
+| **3** | `Failed` | Provider explicit rejection, pre-provider suppression, or another terminal failure before provider invocation |
+| **4** | `DeadLettered` | Abandoned before provider submission evidence exists, such as exhausting a pre-provider attempt budget (terminal) |
+| **5** | `Cancelled` | Cancelled before provider invocation where the control transition is allowed (terminal) |
+| **6** | `DeliveryUnknown` | Plain or attachment request where provider invocation started but acceptance could not be proved (ADR 0023 D-04 / ADR 0022 D-08). Distinct from `Failed`; neither automatic nor manual resend is allowed |
 
-**Worker automatic transitions:**
+**v1.3 provider-submission transitions:**
 
 ```
-0 Queued ──claim──▶ 1 Processing ──success──▶ 2 Delivered
+0 Queued ──claim──▶ 1 Processing
                          │
-                         ├──retryable fail──▶ 0 Queued (next_attempt_at)
-                         ├──terminal fail───▶ 3 Failed
-                         └──max attempts────▶ 4 DeadLettered
+                         ├──pre-provider suppression──▶ 3 Failed (provider calls: 0)
+                         ├──provider Accepted────────▶ 2 Delivered
+                         ├──DefinitelyRejected───────▶ 3 Failed
+                         └──Unknown / Started recovery▶ 6 DeliveryUnknown
 ```
 
-On retryable failure the runtime returns to **`Queued` (0)** with `next_attempt_at` set — it does **not** move to `Failed` (3).
+Before provider invocation, plain requests durably commit `mail_plain_submissions.Started`; attachment requests use the ADR 0022 Started marker. Evidence at `Started` or later prevents provider re-invocation for the same request. v1.3 removes the v1.2 plain path that returned retryable provider failures to `Queued` for automatic resend. Resume from `DefinitelyNotSubmitted` is only the fenced control transition defined by ADR 0023 D-04; suppression-driven `DefinitelyNotSubmitted + Failed` is terminal.
 
-**Admin manual operations (ADR 0015 summary):**
+**Admin manual operations:**
 
-| Operation | Allowed source states | Target state |
+| Operation | Allowed boundary | Target state |
 |---|---|---|
-| Manual retry | `DeadLettered`, `Failed` | `Queued` (`attempt_count=0`, `next_attempt_at=NULL`) |
-| Manual cancel | `Queued`, `Failed`, `DeadLettered`, expired `Processing` | `Cancelled` |
+| Manual retry | `Failed` / `DeadLettered` with no attachment and no plain submission evidence | `Queued` (`attempt_count=0`, `next_attempt_at=NULL`) |
+| Manual cancel | ADR 0015-allowed state. Attachment submission evidence blocks cancellation; when plain submission evidence exists, only `Failed` may use the existing administrative `Failed` → `Cancelled` transition, preserving evidence, recipient disposition, and attempt history without a provider call | `Cancelled` |
 
-Manual operations are rejected from `Delivered`, `Processing` with a valid lock, and `Cancelled`. See ADR 0015 for race rules, audit events, and tenant authorization.
+Whole-request manual retry is rejected for requests with a `mail_plain_submissions` evidence row, attachment requests, `DeliveryUnknown`, `Delivered`, `Processing` with a valid lock, and `Cancelled`. If another business send is required, use a new `mail_request_id` (ADR 0023 D-07).
+Manual cancel of a `Failed` request with plain evidence is an administrative terminal transition: it does not withdraw or deny the provider submission, modify evidence, recipient disposition, or attempt history, and it does not invoke the provider or create a resend path. Other states with plain evidence remain non-cancellable.
 
 ### 3.5 Delivery result webhooks (outbound)
 
 With an optional `webhook` object in tenant JSON, Mailer enqueues a
 `MailDeliveryEventPayload` into the `delivery_events` outbox when a request
 reaches a terminal state (`delivered` / `failed` / `dead_lettered` /
-`cancelled`). `WebhookDeliveryWorker` delivers an HMAC-signed HTTPS POST to the
+`cancelled` / `delivery_unknown`). `WebhookDeliveryWorker` delivers an HMAC-signed HTTPS POST to the
 Consumer.
 
 - **first-wins:** At most one event per `(tenant_id, source_service, mail_request_id)`
   generation (`ON CONFLICT DO NOTHING`). Only the first enqueued terminal state remains.
-  If Admin manual retry later reaches a different terminal (e.g. `failed` → `Queued` →
-  `delivered`), Mailer does not insert a second event and does not update the existing
-  one. Per-delivery-cycle re-notification is deferred by
+  A later terminal state does not insert a second event or update the existing event.
+  Per-delivery-cycle re-notification is deferred by
   [ADR 0017](adr/0017-webhook-first-wins-delivery-cycle.md) (with re-evaluation triggers).
 - Reconciliation only fills **missing** outbox rows for terminal requests; it never
   overwrites an existing event.
@@ -552,7 +578,7 @@ WAL TRUNCATE is best-effort shutdown cleanup; delivery durability is guaranteed 
 itself. On checkpoint failure, an error log is emitted; if shutdown timeout interrupts, a
 warning log is emitted.
 
-Compose defaults to `stop_grace_period=120s`; app-side `HostOptions.ShutdownTimeout` is the larger of the mail and webhook drain requirements plus slack (15 seconds). With defaults, the mail side dominates (`SendTimeoutSeconds + 25 seconds` or more). HostedService `StopAsync` runs sequentially by default (`ServicesStopConcurrently=false`), so when both workers hold a max-duration in-flight op at SIGTERM the additive wait can exceed `max()`. Any truncation is absorbed by lease-expiry reclaim / idempotent convergence (#238); `max()` is therefore a per-side drain + slack host ceiling, not a concurrent-drain bound. When increasing `SendTimeoutSeconds` or webhook `DeliveryTimeoutSeconds`, also increase `MAILER_STOP_GRACE_PERIOD`.
+Compose defaults to `stop_grace_period=120s`; app-side `HostOptions.ShutdownTimeout` is the larger of the mail and webhook drain requirements plus slack (15 seconds). With defaults, the mail side dominates (`SendTimeoutSeconds + 25 seconds` or more). HostedService `StopAsync` runs sequentially by default (`ServicesStopConcurrently=false`), so when both workers hold a max-duration in-flight op at SIGTERM the additive wait can exceed `max()`. v1.3 still preserves mail provider submission evidence in this case: a request with `Started` or later evidence is not provider-reinvoked after shutdown/reclaim. When increasing `SendTimeoutSeconds` or webhook `DeliveryTimeoutSeconds`, also increase `MAILER_STOP_GRACE_PERIOD`.
 
 ---
 
@@ -603,3 +629,4 @@ Backups are taken via the **`db backup` CLI** from the same container. Retention
 | 2026-07-25 | Document cooperative Ctrl+C cancellation and exit code 130 for long-running CLI commands (#347) |
 | 2026-07-25 | ADR 0019: record SQLite / single-process retention and PostgreSQL / Worker-split start triggers and non-goals (#363). Renumbered from colliding 0018 after same-day #385 merge |
 | 2026-07-25 | Renamed to `Mailer__Webhook__ReconcileBatchSize`; legacy `BatchClaimSize` remains a deprecated alias (#353) |
+| 2026-08-07 | Synced v1.3 ADR 0023 implementation: multiple To/CC/BCC, plain submission evidence, DeliveryUnknown, provider re-invocation prohibition, and Admin retry/cancel boundaries |

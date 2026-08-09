@@ -1,4 +1,5 @@
 using Amane.Mailer.Admin;
+using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 
@@ -98,6 +99,34 @@ public sealed class AdminMailRequestDetailPageRenderTests
         Assert.DoesNotContain("Sensitive Subject ABC", html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Attachment_filename_is_masked_and_reveal_link_is_present()
+    {
+        var id = Guid.NewGuid();
+        var detail = CreateDetail(id: id);
+        var attachment = new AttachmentMetadataRow(
+            Order: 0,
+            FileName: "invoice-2026.pdf",
+            ContentType: "application/pdf",
+            ByteLength: 2048,
+            ContentSha256: new string('f', 64),
+            SpoolKey: Guid.NewGuid());
+
+        var html = AdminMailRequestDetailPage.RenderHtml(detail, [], [attachment], [], NoMaskOptions);
+
+        Assert.DoesNotContain("invoice-2026.pdf", html, StringComparison.Ordinal);
+        Assert.Contains("i***.pdf", html, StringComparison.Ordinal);
+        Assert.Contains($"/admin/mail-requests/{id:D}/attachments/0/filename", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Attachments_section_is_omitted_when_there_are_no_attachments()
+    {
+        var html = AdminMailRequestDetailPage.RenderHtml(CreateDetail(), [], [], [], NoMaskOptions);
+
+        Assert.DoesNotContain("添付ファイル", html, StringComparison.Ordinal);
+    }
+
     private static AdminMailRequestDetail CreateDetail(
         MailRequestState status = MailRequestState.Queued,
         DateTimeOffset? lockExpiresAt = null,
@@ -114,7 +143,6 @@ public sealed class AdminMailRequestDetailPageRenderTests
             SourceService: "test-service",
             MailRequestId: Guid.NewGuid(),
             Purpose: "test",
-            PayloadJson: "{}",
             PayloadHash: new string('a', 64),
             Subject: subject,
             HtmlBody: htmlBody,
@@ -126,15 +154,28 @@ public sealed class AdminMailRequestDetailPageRenderTests
             Status: status,
             AttemptCount: 0,
             MaxAttempts: 3,
+            AttachmentCount: 0,
             NextAttemptAt: null,
             LockToken: null,
             LockExpiresAt: lockExpiresAt,
             DeliveredAt: null,
             FailedAt: null,
+            DeliveryUnknownAt: null,
             LastErrorMessage: null,
             AcceptedAt: now,
             CreatedAt: now,
             UpdatedAt: now,
-            CompletedAt: null);
+            CompletedAt: null)
+        {
+            Recipients =
+            [
+                new AdminRecipientSummary(
+                    MailRecipientRole.To,
+                    0,
+                    "test@example.com",
+                    recipientDisplayName,
+                    MailRecipientDeliveryState.NotSent),
+            ],
+        };
     }
 }

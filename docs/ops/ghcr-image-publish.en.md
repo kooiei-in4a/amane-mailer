@@ -2,7 +2,13 @@
 
 # GHCR image publishing
 
-GitHub Actions will publish the Mailer runtime image to GitHub Container Registry.
+Official Amane Mailer images are published only by digest-preserving
+P-OCI-PROMOTE. The canonical workflow is
+`.github/workflows/promote-qualified-oci.yml`.
+Dispatch it from `refs/heads/main`; the candidate ref is independently bound
+by the pre-login validator.
+The product ref owns candidate bytes and qualification; `main` owns only the
+release-infrastructure promotion wrapper and proof generation.
 
 > **v1.2.0 note:** The public OCI was published via **P-OCI-PROMOTE** (promote the
 > qualified layout) with `EXTERNAL_PROVENANCE` — no registry attestation
@@ -11,133 +17,57 @@ GitHub Actions will publish the Mailer runtime image to GitHub Container Registr
 > The steps below describe the classic rebuild-as-publish workflow
 > (`publish-image.yml`).
 
-Workflow:
+## Required handoff
 
-- `.github/workflows/publish-image.yml`
-- Trigger: manual `workflow_dispatch` (succeeds only from a release tag ref)
+Promotion consumes the OCI layout and handoff artifacts from one successful
+`Generate Setup Release Candidate` run, plus a sealed qualification handoff.
+Before registry login it verifies, without rebuilding:
 
-## Image
+- candidate workflow name/path, event, head branch, head SHA, run ID, and run attempt;
+- exact OCI and handoff artifact IDs/names and non-expired state;
+- `candidateId`, `qualificationRunId`, `releaseCommitSha`, OCI index digest,
+  `image-identity.json`, `candidate-provenance.json`, and `buildx-metadata.json`;
+- one immutable qualification binding, `GO_ELIGIBLE` + `APPROVE` decision, and
+  exactly one sealed run-status event.
 
-- `ghcr.io/<github-org>/amane-mailer`
+Any mismatch fails closed before registry login. The source digest is the final
+image-index blob digest referenced by layout `index.json`.
 
-The image name is derived from `${{ github.repository_owner }}` at publish time.
+## Promotion result
 
-## Tags
+The workflow pushes the same OCI layout to exactly two tags:
 
-- Run `workflow_dispatch` from the GitHub UI/API with a release tag such as
-  `vX.Y.Z`.
-- Pre-release tags such as `vX.Y.Z-rc.1` are allowed.
-- The workflow has no inputs. The image version tag is derived from
-  `GITHUB_REF_NAME`.
-- The only pushed tags are `sha-<git-sha>` and the release tag, for example
-  `v0.1.1`.
-- If either `sha-<git-sha>` or the release tag already exists in GHCR, the
-  workflow fails instead of overwriting it.
-- Branch refs, malformed tags, or runs where the tag commit does not match the
-  checked-out commit / workflow event commit fail before publishing.
-- Before image push, the workflow re-runs release-critical validation (`dotnet
-  restore` / NuGet vulnerability audit / `build` / `test`, OpenAPI validation,
-  `scripts/check-contract-drift.mjs`,
-  `scripts/check-mail-request-field-inventory.mjs`, and tag alignment for
-  Contracts `<Version>` and OpenAPI `info.version`). Publish fails when
-  CI-equivalent checks, known NuGet vulnerabilities, or contract drift would
-  fail on the tagged commit. See
-  [NuGet vulnerability audit](nuget-vulnerability-audit.en.md).
-- Deploy with the immutable `sha-<git-sha>` tag or the digest whenever possible.
+- `vX.Y.Z`
+- `sha-<releaseCommitSha>`
 
-## GitHub Actions permissions
+Both tags must resolve to the source image-index digest. `latest` is never
+created. Promotion uses `EXTERNAL_PROVENANCE`; it does not add registry
+attestation manifests. A runtime-generated `promote-proof.json` records the
+candidate, qualification, digest, tag, and workflow identities and is uploaded
+as a workflow artifact.
 
-The publish job uses:
+## Legacy route (retired)
 
-- `contents: read`
-- `packages: write`
+`.github/workflows/publish-image.yml` remains only as a fail-closed tombstone.
+It performs no product build, registry login, push, or tag creation and exits
+with an explicit pointer to `promote-qualified-oci.yml`. Delete it only in a
+separate change after all operational references are migrated.
 
-No repository secret is needed for pushing images. The workflow uses `GITHUB_TOKEN`.
+## GitHub permissions and environment
 
-The workflow builds the Mailer image from `infra/docker/Dockerfile`. Release
-build base images are digest-pinned and reviewed / verified through the
-[container image pinning policy](container-image-pinning.en.md).
-
-## Release publish
-
-1. Create a `vX.Y.Z` tag on the release commit. The tag commit must contain this
-   hardened workflow, so create the tag on a commit after this change is merged.
-   If the Contracts package is published for the same release,
-   `src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` `<Version>` must
-   match `X.Y.Z`.
-2. Run `Publish Amane Mailer Image` from the release tag ref in GitHub Actions.
-3. After the `release` environment approval, the workflow publishes
-   `sha-<git-sha>` and `vX.Y.Z`.
-4. Confirm that the image run, config-content check, runtime manifest digest,
-   OCI label, and attestation manifest checks pass for every platform.
-5. Copy the image index digest, per-platform runtime / attestation manifest
-   digests, and `sha-<git-sha>` from the workflow summary into the GitHub
-   Release notes or release evidence. Use the
-   [release notes checklist](release-notes-checklist.en.md) for the artifact
-   and operational-constraint entries.
-
-The existing `v0.1.0` image already has manual digest / provenance evidence. Do
-not republish existing artifacts just because the workflow changed.
-
-The runtime image includes only safe files from `config/mailer`:
-
-- `tenants.example.json`
-- `tenants.local-acs.json.example`
-- `tenants.schema.json`
-
-Deployment-specific tenant JSON is not baked into the image. Shared deployments
-mount a host-owned tenant file with `MAILER_TENANTS_HOST_PATH` and
-`MAILER_TENANTS_CONTAINER_PATH` from `infra/deploy/compose.yml`. A tenant JSON
-change is therefore a config deploy, not an image rebuild.
-
-## GitHub Environment
-
-Image publishing and NuGet package publishing both use the GitHub Environment
-`release`.
-
-- Configure the `release` environment with a required reviewer.
-- The environment deployment branch/tag policy should allow release tags, for
-  example `v*`.
-- Publish attempts from branch refs still fail inside the workflow tag
-  validation.
-
-## SBOM / provenance / digest
-
-`docker/build-push-action` runs with:
-
-- `provenance: true`
-- `sbom: true`
-- `platforms: linux/amd64,linux/arm64`
-
-Before publishing, the workflow verifies that neither the `sha-<git-sha>` tag
-nor the release tag exists in GHCR. After publishing, it verifies that the build
-action returned a non-empty digest, that both tag digests match the build digest,
-and that `docker buildx imagetools inspect --raw` contains a runtime manifest
-for each configured platform plus an attestation manifest referencing each
-runtime manifest. It also runs `--help`, checks safe config file contents, and
-validates OCI labels for each platform:
-
-- `org.opencontainers.image.source`
-- `org.opencontainers.image.revision`
-- `org.opencontainers.image.version`
-
-The image index digest, per-platform runtime manifest digests, attestation
-manifest digests, OCI labels, and inspect output are written to the workflow
-summary. Release notes are not updated automatically, so copy the summary digest
-and `sha-<git-sha>` into the release record after publishing, and reflect the
-artifact and operational-constraint items from the
-[release notes checklist](release-notes-checklist.en.md) in the GitHub Release
-notes.
-
-Consumer verification steps for published artifacts live in
-[release artifact verification](release-artifact-verification.en.md).
+The canonical promotion job uses `contents: read`, `actions: read`, and
+`packages: write`, with the existing `release` environment approval. No
+repository publish secret is required; the job-scoped `GITHUB_TOKEN` is used.
 
 ## Deploy host pull access
 
-If GHCR packages are private, the deploy host must authenticate before `docker compose pull`.
-
-Use a read-only personal access token with `read:packages` scope:
+If GHCR packages are private, the deploy host must authenticate before
+`docker compose pull` with a read-only token having `read:packages` scope:
 
 ```bash
 printf '%s' '<ghcr-read-token>' | docker login ghcr.io -u '<github-user>' --password-stdin
 ```
+
+See [digest-preserving OCI promotion](oci-promote.md) and
+[release artifact verification](release-artifact-verification.en.md) for the
+validation and consumer procedures.

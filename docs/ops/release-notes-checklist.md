@@ -42,9 +42,11 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
   limitation（durable session/throttle/audit、tenant scope 運用境界、retention sweep など）を明記する。
 - upgrade / migration 前に SQLite DB と tenant config の backup を取得し、
   production では restore 手順も確認する。
-- GHCR image publish 時は `publish-image.yml` の release-critical validation
-  （restore / NuGet vulnerability audit / build / test、OpenAPI validation、
-  contract drift、version 整合性）が image push 前に通過していることを確認する。
+- GHCR image publish 時は `promote-qualified-oci.yml` の pre-login identity
+  validation（candidate run/attempt、artifact IDs、candidateId、sealed
+  qualification、releaseCommitSha、OCI index digest）が通過していることを
+  確認する。旧 `publish-image.yml` はfail-closed tombstoneであり、再buildや
+  image pushを行わない。
 - ACS live sending は explicit config が必要。`MAILER_PROVIDER=acs`、
   Staging/Production では `admin provider register-acs` で登録した
   `ACS_CONNECTION_STRING_FILE`（local/drill のみ bare `ACS_CONNECTION_STRING`）、

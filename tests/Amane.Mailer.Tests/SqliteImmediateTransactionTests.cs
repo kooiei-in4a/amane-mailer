@@ -1,5 +1,6 @@
 using Amane.Mailer.Data.Sqlite;
 using Microsoft.Data.Sqlite;
+using static SQLitePCL.raw;
 
 namespace Amane.Mailer.Tests;
 
@@ -56,6 +57,48 @@ public sealed class SqliteImmediateTransactionTests
 
         var thrown = await Assert.ThrowsAsync<InvalidOperationException>(ActAsync);
         Assert.Same(original, thrown);
+    }
+
+    [Fact]
+    public async Task BeginAsync_uses_immediate_write_transaction_and_dispose_returns_autocommit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = await OpenMemoryConnectionAsync(ct);
+
+        await using (var transaction = await SqliteImmediateTransaction.BeginAsync(connection, ct))
+        {
+            Assert.Equal(0, sqlite3_get_autocommit(connection.Handle!));
+
+            await using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE t(x INTEGER);";
+            await command.ExecuteNonQueryAsync(ct);
+
+            await transaction.CommitAsync(ct);
+        }
+
+        Assert.NotEqual(0, sqlite3_get_autocommit(connection.Handle!));
+    }
+
+    [Fact]
+    public async Task DisposeAsync_without_commit_rolls_back_to_autocommit()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var connection = await OpenMemoryConnectionAsync(ct);
+
+        await using (var transaction = await SqliteImmediateTransaction.BeginAsync(connection, ct))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "CREATE TABLE t(x INTEGER);";
+            await command.ExecuteNonQueryAsync(ct);
+            Assert.Equal(0, sqlite3_get_autocommit(connection.Handle!));
+        }
+
+        Assert.NotEqual(0, sqlite3_get_autocommit(connection.Handle!));
+        await using (var verify = connection.CreateCommand())
+        {
+            verify.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 't';";
+            Assert.Equal(0L, await verify.ExecuteScalarAsync(ct));
+        }
     }
 
     private static async Task<SqliteConnection> OpenMemoryConnectionAsync(CancellationToken cancellationToken)

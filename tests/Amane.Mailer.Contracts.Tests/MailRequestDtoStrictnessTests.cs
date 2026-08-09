@@ -60,6 +60,6 @@ public sealed class MailRequestDtoStrictnessTests
 
         Assert.NotNull(request);
         Assert.Equal("example-service", request.SourceService);
-        Assert.Equal("user@example.com", request.To[0].Email);
+        Assert.Equal("user@example.com", request.To![0].Email);
     }
 }

@@ -86,8 +86,11 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
     public async Task Worker_enqueues_failed_webhook_on_non_retryable_provider_failure()
     {
         var ct = TestContext.Current.CancellationToken;
+        // AcsRequestFailed classifies as DefinitiveFailed/Failed (AttachmentProviderResultClassifier,
+        // shared with plain requests since Issue #546); a generic transport error code like the
+        // former "SMTP_CONNECT_FAILED" now converges to Unknown/DeliveryUnknown instead (ADR 0023 D-04).
         fixture.DeliveryProvider.QueueResult(MailDeliveryResult.Failure(
-            "SMTP_CONNECT_FAILED",
+            MailDeliveryErrorCodes.AcsRequestFailed,
             "transport failure",
             retryable: false));
 
@@ -104,7 +107,7 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
 
         var delivery = await fixture.WebhookHandler.WaitForSuccessfulDeliveryAsync(TimeSpan.FromSeconds(15), ct);
         Assert.Equal(MailDeliveryEventType.Failed, delivery.Payload.EventType);
-        Assert.Equal("SMTP_CONNECT_FAILED", delivery.Payload.LastErrorCode);
+        Assert.Equal(MailDeliveryErrorCodes.AcsRequestFailed, delivery.Payload.LastErrorCode);
     }
 
     [Fact]
@@ -208,12 +211,19 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
         Assert.Equal(MailDeliveryEventType.Cancelled, delivery.Payload.EventType);
     }
 
+    // ADR 0023 D-04/D-07 (Issue #546): once any plain submission evidence exists for a request --
+    // which now includes every plain request that reached Failed via a real (non-suppression)
+    // provider disposition, since Started always commits before the provider is ever called --
+    // Admin manual retry is rejected with 409 invalid_state, mirroring the existing attachment
+    // manual-retry-rejection contract. This replaces the test's old expectation that retry
+    // succeeds and causes a real second send; the "no duplicate webhook" invariant instead now
+    // holds because the rejected retry performs no state change and no resend at all.
     [Fact]
-    public async Task Admin_manual_retry_after_failed_does_not_enqueue_second_delivered_webhook()
+    public async Task Admin_manual_retry_is_rejected_for_failed_plain_request_with_evidence_and_does_not_enqueue_second_webhook()
     {
         var ct = TestContext.Current.CancellationToken;
         fixture.DeliveryProvider.QueueResult(MailDeliveryResult.Failure(
-            "SMTP_CONNECT_FAILED",
+            MailDeliveryErrorCodes.AcsRequestFailed,
             "transport failure",
             retryable: false));
 
@@ -243,11 +253,11 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
             CreateCsrfContent(csrf),
             ct);
 
-        Assert.Equal(HttpStatusCode.SeeOther, retryResponse.StatusCode);
-        await WaitUntilMailStatusAsync(request.MailRequestId, MailRequestState.Delivered, ct);
+        Assert.Equal(HttpStatusCode.Conflict, retryResponse.StatusCode);
 
-        // first-wins: later Delivered must not insert/replace the Failed outbox event (#273).
+        // Request stays Failed; no resend, no second webhook, no additional delivery event.
         await Task.Delay(1500, ct);
+        Assert.Equal(MailRequestState.Failed, await ReadMailStatusAsync(request.MailRequestId, ct));
         Assert.Equal(attemptsAfterFailedWebhook, fixture.WebhookHandler.AttemptCount);
         Assert.Equal(1, await CountDeliveryEventsAsync(request.MailRequestId, ct));
         Assert.Equal(MailDeliveryEventType.Failed, await ReadDeliveryEventTypeAsync(request.MailRequestId, ct));
@@ -485,6 +495,7 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
     {
         var body = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var now = DateTimeOffset.UtcNow;
+        var scheduledAt = now.AddDays(1);
         var internalId = Guid.CreateVersion7(now);
         var nowStorage = SqliteTime.ToStorageUtc(now);
 
@@ -496,14 +507,14 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
                 id, tenant_id, source_service, mail_request_id, purpose,
                 payload_json, payload_hash, subject, html_body, text_body, reply_to,
                 recipient_email, recipient_display_name, metadata_json,
-                status, attempt_count, max_attempts,
+                status, attempt_count, max_attempts, scheduled_at,
                 accepted_at, created_at, updated_at, completed_at, failed_at, last_error_message)
             VALUES (
                 @Id, @TenantId, @SourceService, @MailRequestId, @Purpose,
                 @PayloadJson, @PayloadHash, @Subject, @HtmlBody, @TextBody, @ReplyTo,
                 @RecipientEmail, @RecipientDisplayName, NULL,
-                @Status, @AttemptCount, @MaxAttempts,
-                @Now, @Now, @Now, @Now, @Now, @LastErrorMessage);
+                @Status, @AttemptCount, @MaxAttempts, @ScheduledAt,
+                @Now, @Now, @Now, NULL, NULL, NULL);
             """;
         command.Parameters.AddWithValue("@Id", internalId.ToString("D"));
         command.Parameters.AddWithValue("@TenantId", request.TenantId.ToString("D"));
@@ -518,11 +529,11 @@ public sealed class WebhookDeliveryTests(WebhookWorkerFixture fixture)
         command.Parameters.AddWithValue("@ReplyTo", (object?)request.ReplyTo ?? DBNull.Value);
         command.Parameters.AddWithValue("@RecipientEmail", request.To[0].Email);
         command.Parameters.AddWithValue("@RecipientDisplayName", (object?)request.To[0].DisplayName ?? DBNull.Value);
-        command.Parameters.AddWithValue("@Status", (int)MailRequestState.Failed);
-        command.Parameters.AddWithValue("@AttemptCount", 1);
+        command.Parameters.AddWithValue("@Status", (int)MailRequestState.Queued);
+        command.Parameters.AddWithValue("@AttemptCount", 0);
         command.Parameters.AddWithValue("@MaxAttempts", 3);
+        command.Parameters.AddWithValue("@ScheduledAt", SqliteTime.ToStorageUtc(scheduledAt));
         command.Parameters.AddWithValue("@Now", nowStorage);
-        command.Parameters.AddWithValue("@LastErrorMessage", "transport failure");
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         return internalId;

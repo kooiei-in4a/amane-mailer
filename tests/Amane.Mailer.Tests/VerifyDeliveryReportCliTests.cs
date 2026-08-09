@@ -470,11 +470,11 @@ public sealed class VerifyDeliveryReportCliTests
     }
 
     [Fact]
-    public void Inspector_keeps_delivered_unlike_production_parser()
+    public void Inspector_and_production_parser_keep_delivered()
     {
         var json = DeliveryReportJson(FixedMessageId, "Delivered", "recipient@example.com");
         var production = AcsEventParser.ParseOne(json);
-        Assert.Equal(AcsEventParseOutcome.Ignored, production.Outcome);
+        Assert.Equal(AcsEventParseOutcome.DeliveryReport, production.Outcome);
 
         var observations = DeliveryReportEventInspector.InspectBody(json);
         Assert.Single(observations);

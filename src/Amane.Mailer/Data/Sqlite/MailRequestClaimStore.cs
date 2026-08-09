@@ -25,6 +25,35 @@ public sealed class MailRequestClaimStore(
         AND (scheduled_at IS NULL OR scheduled_at <= @Now)
         """;
 
+    /// <summary>
+    /// Ordinary expired-Processing reclaim: bounded by <c>attempt_count &lt; max_attempts</c> so
+    /// automatic-retry-eligible rows do not reclaim forever.
+    /// </summary>
+    private const string ExpiredProcessingRetryEligiblePredicate = """
+        status = @ProcessingStatus
+        AND lock_expires_at IS NOT NULL
+        AND lock_expires_at <= @Now
+        AND attempt_count < max_attempts
+        """;
+
+    /// <summary>
+    /// ADR 0023 D-04 / Issue #546 review finding F1: a plain request with durable evidence
+    /// (Started or later) must always be reclaimable to converge from that evidence -- even past
+    /// max_attempts -- because such a reclaim never re-invokes the provider (it only reads
+    /// existing evidence and finalizes). Without this, a Started marker committed on the final
+    /// attempt before a crash would leave the row stuck: too old to reclaim under the ordinary
+    /// predicate, yet excluded from the max-attempts reaper (see
+    /// <see cref="DeadLetterExpiredProcessingAtMaxAttemptsAsync"/>), so evidence would never
+    /// resolve. Reclaiming converges it to a terminal state on the very next dispatch, so this
+    /// can never reclaim indefinitely.
+    /// </summary>
+    private const string ExpiredProcessingWithPlainEvidencePredicate = """
+        status = @ProcessingStatus
+        AND lock_expires_at IS NOT NULL
+        AND lock_expires_at <= @Now
+        AND EXISTS (SELECT 1 FROM mail_plain_submissions s WHERE s.request_id = mail_requests.id)
+        """;
+
     public async Task<MailRequestRow?> TryClaimOneAsync(
         DateTimeOffset now,
         TimeSpan leaseDuration,
@@ -44,29 +73,21 @@ public sealed class MailRequestClaimStore(
                 FROM mail_requests
                 WHERE
                     ({QueuedReadyPredicate})
-                    OR (
-                        status = @ProcessingStatus
-                        AND lock_expires_at IS NOT NULL
-                        AND lock_expires_at <= @Now
-                        AND attempt_count < max_attempts
-                    )
+                    OR ({ExpiredProcessingRetryEligiblePredicate})
+                    OR ({ExpiredProcessingWithPlainEvidencePredicate})
                 ORDER BY created_at ASC
                 LIMIT 1
             )
               AND (
                     ({QueuedReadyPredicate})
-                    OR (
-                        status = @ProcessingStatus
-                        AND lock_expires_at IS NOT NULL
-                        AND lock_expires_at <= @Now
-                        AND attempt_count < max_attempts
-                    )
+                    OR ({ExpiredProcessingRetryEligiblePredicate})
+                    OR ({ExpiredProcessingWithPlainEvidencePredicate})
                   )
             RETURNING
                 id, tenant_id, source_service, mail_request_id,
                 subject, html_body, text_body, reply_to,
                 recipient_email, recipient_display_name,
-                attempt_count, max_attempts, lock_token, lock_expires_at;
+                attempt_count, max_attempts, lock_token, lock_expires_at, attachment_count;
             """;
 
         var nowStorage = SqliteTime.ToStorageUtc(now);
@@ -108,6 +129,12 @@ public sealed class MailRequestClaimStore(
         int batchSize,
         CancellationToken cancellationToken = default)
     {
+        // NOT EXISTS mail_plain_submissions (Issue #546 review finding F1): a plain request with
+        // durable evidence must never be dead-lettered by this generic max-attempts reaper --
+        // ExpiredProcessingWithPlainEvidencePredicate in TryClaimOneAsync instead reclaims it so
+        // the Worker can converge from the existing evidence (Started -> Unknown/DeliveryUnknown,
+        // never re-invoking the provider). Dead-lettering it here would strand the evidence row
+        // permanently unresolved.
         const string selectSql = """
             SELECT id, tenant_id, mail_request_id, attempt_count, lock_token, updated_at
             FROM mail_requests
@@ -116,6 +143,9 @@ public sealed class MailRequestClaimStore(
               AND lock_expires_at IS NOT NULL
               AND lock_expires_at <= @Now
               AND attempt_count >= max_attempts
+              AND NOT EXISTS (
+                    SELECT 1 FROM mail_plain_submissions s WHERE s.request_id = mail_requests.id
+                  )
             ORDER BY lock_expires_at ASC, created_at ASC
             LIMIT @BatchSize;
             """;
@@ -374,6 +404,162 @@ public sealed class MailRequestClaimStore(
         }
     }
 
+    /// <summary>
+    /// Terminal commit for an attachment request (ADR 0022 D-08): the request terminal state,
+    /// the submission evidence terminal state, and the mail_attempts history row commit
+    /// atomically in one SQLite transaction -- request, submission, and attempt history must
+    /// never be left partially updated (post-merge review of #533/PR #537).
+    ///
+    /// <paramref name="requestLockToken"/> fences the <c>mail_requests</c> update, exactly as
+    /// before: <c>status = Processing AND lock_token = @RequestLockToken</c> only -- unlike the
+    /// ordinary <see cref="FinalizeAsync"/>, it deliberately does not also require
+    /// <c>lock_expires_at &gt; @Now</c>, since once durable submission evidence exists, that
+    /// evidence (not the lease timer) is the source of truth for whether this claim is still
+    /// allowed to finalize. If this update affects 0 rows, ownership was already lost (expired
+    /// lease reclaimed, or a later cycle terminalized the row first) and neither submission
+    /// evidence nor attempt history is touched.
+    ///
+    /// <paramref name="submissionLockToken"/> and <paramref name="expectedSubmissionState"/>
+    /// fence the <c>mail_attachment_submissions</c> update against the exact evidence version
+    /// the caller observed when it decided what to write. The submission row's own
+    /// <c>lock_token</c> is set once at <see cref="MailAttachmentSubmissionStore.TryInsertStartedAsync"/>
+    /// time and is never rewritten by a reclaim, so it is <em>not</em> always equal to
+    /// <paramref name="requestLockToken"/>: a fresh send-then-finalize call passes the same
+    /// token for both (it just created the Started row itself), while a recovery/convergence
+    /// call passes the request's current claim token for <paramref name="requestLockToken"/>
+    /// but the evidence's own token/state (as read by <c>FindAttachmentSubmissionAsync</c>) for
+    /// <paramref name="submissionLockToken"/> / <paramref name="expectedSubmissionState"/> --
+    /// which lets recovery idempotently re-affirm already-terminal evidence
+    /// (Succeeded/DefinitiveFailed/Unknown), not only a fresh Started marker. If the submission
+    /// update affects 0 rows after the request update already succeeded, the evidence the
+    /// caller read is stale (state changed or lock token superseded) and the whole transaction
+    /// -- including the request update -- is rolled back rather than committing a
+    /// request/evidence mismatch; the next dispatch cycle re-reads fresh evidence and retries.
+    /// </summary>
+    public async Task<bool> FinalizeAttachmentSubmissionAsync(
+        Guid id,
+        Guid requestLockToken,
+        Guid submissionLockToken,
+        DateTimeOffset now,
+        AttachmentSubmissionState expectedSubmissionState,
+        AttachmentSubmissionState targetSubmissionState,
+        string? providerMessageId,
+        MailRequestState requestTerminalState,
+        string? lastErrorMessage,
+        MailAttemptInsert attempt,
+        CancellationToken cancellationToken = default)
+    {
+        var nowStorage = SqliteTime.ToStorageUtc(now);
+
+        const string updateRequestSql = """
+            UPDATE mail_requests
+            SET
+                status = @NewStatus,
+                next_attempt_at = NULL,
+                lock_token = NULL,
+                lock_expires_at = NULL,
+                updated_at = @Now,
+                completed_at = @Now,
+                delivered_at = @DeliveredAt,
+                failed_at = @FailedAt,
+                delivery_unknown_at = @DeliveryUnknownAt,
+                last_error_message = @LastErrorMessage
+            WHERE id = @Id
+              AND status = @ProcessingStatus
+              AND lock_token = @RequestLockToken;
+            """;
+
+        const string updateSubmissionSql = """
+            UPDATE mail_attachment_submissions
+            SET
+                submission_state = @TargetSubmissionState,
+                provider_message_id = @ProviderMessageId,
+                completed_at = @Now,
+                updated_at = @Now
+            WHERE request_id = @Id
+              AND submission_state = @ExpectedSubmissionState
+              AND lock_token = @SubmissionLockToken;
+            """;
+
+        const string insertAttemptSql = """
+            INSERT INTO mail_attempts (
+                request_id, attempt_number, provider, status,
+                provider_message_id, error_code, error_message, retryable,
+                lock_token, started_at, completed_at)
+            VALUES (
+                @RequestId, @AttemptNumber, @Provider, @AttemptStatus,
+                @ProviderMessageId, @ErrorCode, @ErrorMessage, @Retryable,
+                @LockToken, @StartedAt, @CompletedAt);
+            """;
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            bool requestUpdated;
+            await using (var update = connection.CreateCommand())
+            {
+                update.CommandText = updateRequestSql;
+                update.Parameters.AddWithValue("@NewStatus", (int)requestTerminalState);
+                update.Parameters.AddWithValue("@Now", nowStorage);
+                update.Parameters.AddWithValue(
+                    "@DeliveredAt",
+                    requestTerminalState == MailRequestState.Delivered ? nowStorage : (object)DBNull.Value);
+                update.Parameters.AddWithValue(
+                    "@FailedAt",
+                    requestTerminalState == MailRequestState.Failed ? nowStorage : (object)DBNull.Value);
+                update.Parameters.AddWithValue(
+                    "@DeliveryUnknownAt",
+                    requestTerminalState == MailRequestState.DeliveryUnknown ? nowStorage : (object)DBNull.Value);
+                update.Parameters.AddWithValue("@LastErrorMessage", (object?)lastErrorMessage ?? DBNull.Value);
+                update.Parameters.AddWithValue("@Id", id.ToString("D"));
+                update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+                update.Parameters.AddWithValue("@RequestLockToken", requestLockToken.ToString("D"));
+
+                requestUpdated = await update.ExecuteNonQueryAsync(cancellationToken) > 0;
+            }
+
+            if (!requestUpdated)
+            {
+                // Ownership already lost under this exact claim: never touch submission
+                // evidence or attempt history for a request this caller no longer owns.
+                await transaction.CommitAsync(cancellationToken);
+                return false;
+            }
+
+            bool submissionUpdated;
+            await using (var updateSubmission = connection.CreateCommand())
+            {
+                updateSubmission.CommandText = updateSubmissionSql;
+                updateSubmission.Parameters.AddWithValue("@TargetSubmissionState", (int)targetSubmissionState);
+                updateSubmission.Parameters.AddWithValue("@ProviderMessageId", (object?)providerMessageId ?? DBNull.Value);
+                updateSubmission.Parameters.AddWithValue("@Now", nowStorage);
+                updateSubmission.Parameters.AddWithValue("@Id", id.ToString("D"));
+                updateSubmission.Parameters.AddWithValue("@ExpectedSubmissionState", (int)expectedSubmissionState);
+                updateSubmission.Parameters.AddWithValue("@SubmissionLockToken", submissionLockToken.ToString("D"));
+                submissionUpdated = await updateSubmission.ExecuteNonQueryAsync(cancellationToken) > 0;
+            }
+
+            if (!submissionUpdated)
+            {
+                throw new InvalidOperationException(
+                    $"Attachment submission evidence for request {id:D} was not in the expected " +
+                    $"state '{expectedSubmissionState}' under the observed lock token during finalize.");
+            }
+
+            await InsertMailAttemptAsync(connection, insertAttemptSql, attempt, cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+            _runtimeMetrics?.RecordAttemptCompleted(attempt);
+            return true;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
     public async Task<SuccessfulDeliveryAttempt?> FindSuccessfulDeliveryAttemptAsync(
         Guid requestId,
         CancellationToken cancellationToken = default)
@@ -468,12 +654,8 @@ public sealed class MailRequestClaimStore(
                 FROM mail_requests
                 WHERE
                     ({QueuedReadyPredicate})
-                    OR (
-                        status = @ProcessingStatus
-                        AND lock_expires_at IS NOT NULL
-                        AND lock_expires_at <= @Now
-                        AND attempt_count < max_attempts
-                    )
+                    OR ({ExpiredProcessingRetryEligiblePredicate})
+                    OR ({ExpiredProcessingWithPlainEvidencePredicate})
                 LIMIT 1
             );
             """;
@@ -550,13 +732,15 @@ public sealed class MailRequestClaimStore(
         CancellationToken cancellationToken = default)
     {
         // Select the expired batch once, then delete matching delivery_events,
-        // bounce_events, and mail_requests from that fixed set. Two independent
+        // recipient_delivery_events, and mail_requests from that fixed set. Two independent
         // ORDER BY ... LIMIT queries can diverge on completed_at ties; a single
         // selection avoids orphans.
         const string selectBatchSql = """
             SELECT id, tenant_id, source_service, mail_request_id
             FROM mail_requests
-            WHERE status IN (@DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus)
+            WHERE status IN (
+                    @DeliveredStatus, @FailedStatus, @DeadLetteredStatus, @CancelledStatus,
+                    @DeliveryUnknownStatus)
               AND completed_at IS NOT NULL
               AND completed_at < @CompletedBefore
             ORDER BY completed_at ASC, id ASC
@@ -580,6 +764,7 @@ public sealed class MailRequestClaimStore(
                 select.Parameters.AddWithValue("@FailedStatus", (int)MailRequestState.Failed);
                 select.Parameters.AddWithValue("@DeadLetteredStatus", (int)MailRequestState.DeadLettered);
                 select.Parameters.AddWithValue("@CancelledStatus", (int)MailRequestState.Cancelled);
+                select.Parameters.AddWithValue("@DeliveryUnknownStatus", (int)MailRequestState.DeliveryUnknown);
                 select.Parameters.AddWithValue("@CompletedBefore", completedBeforeStorage);
                 select.Parameters.AddWithValue("@BatchSize", effectiveBatchSize);
 
@@ -640,7 +825,7 @@ public sealed class MailRequestClaimStore(
                 }
 
                 deleteBounces.CommandText = $"""
-                    DELETE FROM bounce_events
+                    DELETE FROM recipient_delivery_events
                     WHERE (tenant_id, source_service, mail_request_id) IN ({bounceTuples});
                     """;
                 _ = await deleteBounces.ExecuteNonQueryAsync(cancellationToken);
@@ -678,7 +863,7 @@ public sealed class MailRequestClaimStore(
         }
     }
 
-    private static async Task InsertMailAttemptAsync(
+    internal static async Task InsertMailAttemptAsync(
         SqliteConnection connection,
         string insertAttemptSql,
         MailAttemptInsert attempt,
@@ -769,6 +954,7 @@ public sealed class MailRequestClaimStore(
             MaxAttempts = reader.GetInt32(11),
             LockToken = Guid.Parse(reader.GetString(12)),
             LockExpiresAt = SqliteTime.FromStorage(reader.GetString(13)),
+            AttachmentCount = reader.GetInt32(14),
             Status = MailRequestState.Processing,
         };
 

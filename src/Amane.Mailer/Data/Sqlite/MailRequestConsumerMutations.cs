@@ -29,6 +29,18 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
 
         var nowStorage = SqliteTime.ToStorageUtc(now);
 
+        // attachment_count = 0 is the explicit ADR 0022 D-08 exception to ADR 0015: a request
+        // carrying canonical attachment metadata can never be retried from any terminal state,
+        // regardless of status. attachment_count is a DB-only column set once at accept time
+        // from verified metadata -- never re-derived from public input (D-08).
+        //
+        // NOT EXISTS mail_plain_submissions is the ADR 0023 D-04/D-07 boundary (Issue #546): once
+        // any plain submission evidence exists for a request -- Started, the suppression-terminal
+        // DefinitelyNotSubmitted+Failed combination, Accepted, DefinitelyRejected, or Unknown --
+        // provider re-invocation is prohibited, so whole-request manual retry is denied
+        // regardless of mail_requests.status. Issue #546 does not implement any producer of the
+        // ordinary resumable DefinitelyNotSubmitted (Queued + fenced transition only); every
+        // plain evidence row this codebase can currently create is therefore retry-blocking.
         const string updateSql = """
             UPDATE mail_requests
             SET
@@ -43,6 +55,10 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
                 updated_at = @Now
             WHERE id = @Id
               AND status IN (@DeadLetteredStatus, @FailedStatus)
+              AND attachment_count = 0
+              AND NOT EXISTS (
+                    SELECT 1 FROM mail_plain_submissions s WHERE s.request_id = mail_requests.id
+                  )
             """;
 
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
@@ -97,17 +113,33 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
             }
 
             var current = await MailRequestRepositorySql.ReadScopedStatusAsync(connection, id, allowedTenantIds, cancellationToken);
-            var status = current is null
-                ? ManualMailRequestMutationStatus.NotFound
-                : ManualMailRequestMutationStatus.InvalidState;
+            ManualMailRequestMutationStatus status;
+            string errorCode;
+            if (current is null)
+            {
+                status = ManualMailRequestMutationStatus.NotFound;
+                errorCode = AdminAuditLog.ErrorCodes.NotFound;
+            }
+            else if (current.Value.AttachmentCount > 0 && IsTerminal(current.Value.Status))
+            {
+                // ADR 0022 D-08: prohibited from every terminal state, not just the two the
+                // retry UPDATE above actually targets (DeadLettered/Failed) -- Delivered,
+                // Cancelled, and DeliveryUnknown must return the same fixed reason code rather
+                // than falling through to a generic InvalidState.
+                status = ManualMailRequestMutationStatus.AttachmentManualRetryNotSupported;
+                errorCode = AdminAuditLog.ErrorCodes.AttachmentManualRetryNotSupported;
+            }
+            else
+            {
+                status = ManualMailRequestMutationStatus.InvalidState;
+                errorCode = AdminAuditLog.ErrorCodes.InvalidState;
+            }
 
             await auditRepository.WriteAsync(
                 auditTemplate with
                 {
                     Result = AdminAuditLog.Results.Failure,
-                    ErrorCode = status == ManualMailRequestMutationStatus.NotFound
-                        ? AdminAuditLog.ErrorCodes.NotFound
-                        : AdminAuditLog.ErrorCodes.InvalidState,
+                    ErrorCode = errorCode,
                 },
                 connection,
                 cancellationToken);
@@ -134,6 +166,13 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
 
         var nowStorage = SqliteTime.ToStorageUtc(now);
 
+        // Attachment submission evidence remains an absolute cancel boundary under ADR 0022
+        // D-08. Plain evidence keeps the ADR 0023 no-reinvocation boundary, but the Issue #546
+        // maintainer decision restores ADR 0015's Failed -> Cancelled administrative transition:
+        // a Failed plain request may be marked Cancelled without deleting or rewriting its
+        // evidence, recipient disposition, or attempt history and without invoking the provider.
+        // Every other state still requires no plain evidence, so queued/dead-lettered/stale-
+        // Processing cancellation cannot strand an unresolved submission lifecycle.
         const string updateSql = """
             UPDATE mail_requests
             SET
@@ -152,6 +191,15 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
                         status = @ProcessingStatus
                         AND lock_expires_at IS NOT NULL
                         AND lock_expires_at <= @Now
+                    )
+                  )
+              AND NOT EXISTS (
+                    SELECT 1 FROM mail_attachment_submissions s WHERE s.request_id = mail_requests.id
+                  )
+              AND (
+                    status = @FailedStatus
+                    OR NOT EXISTS (
+                        SELECT 1 FROM mail_plain_submissions p WHERE p.request_id = mail_requests.id
                     )
                   )
             """;
@@ -401,4 +449,11 @@ public sealed class MailRequestConsumerMutations(SqliteConnectionFactory connect
             throw;
         }
     }
+
+    private static bool IsTerminal(MailRequestState status) =>
+        status is MailRequestState.Delivered
+            or MailRequestState.Failed
+            or MailRequestState.DeadLettered
+            or MailRequestState.Cancelled
+            or MailRequestState.DeliveryUnknown;
 }
