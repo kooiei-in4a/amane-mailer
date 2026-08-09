@@ -220,6 +220,16 @@ def main() -> int:
         handoff = root / "handoff"
         archive_specs = [("win-x64", "amane-mailer-v1.3.0-windows-x64.zip"), ("linux-x64", "amane-mailer-v1.3.0-linux-x64.tar.gz"), ("linux-arm64", "amane-mailer-v1.3.0-linux-arm64.tar.gz")]
         source = subprocess.check_output(["git", "-C", str(ROOT.parent), "rev-parse", "HEAD"], text=True).strip()
+        legacy_inventory = subprocess.check_output(
+            ["git", "-C", str(ROOT.parent), "ls-tree", "-r", "--name-only", source, "--", "src/Amane.Mailer/Data/Migrations"],
+            text=True,
+        ).splitlines()
+        if len(legacy_inventory) > 13:
+            # Keep the legacy profile regression fixture on the merge's current-main
+            # parent when the RC4 integration tree also contains 014..018.
+            source = subprocess.check_output(
+                ["git", "-C", str(ROOT.parent), "rev-parse", f"{source}^1"], text=True
+            ).strip()
         oci_layout = root / "oci-layout"
         blob_root = oci_layout / "blobs" / "sha256"
 

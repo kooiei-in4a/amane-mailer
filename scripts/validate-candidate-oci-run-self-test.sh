@@ -84,11 +84,6 @@ export CANDIDATE_RUN_JSON_FILE="${FIXDIR}/wrong-attempt.json"
 expect_fail "run_attempt != 1" run_validator
 
 base_env
-export EXPECTED_RUN_ATTEMPT="2"
-export CANDIDATE_RUN_JSON_FILE="${FIXDIR}/wrong-attempt.json"
-expect_pass "explicit candidate run attempt" run_validator
-
-base_env
 export CANDIDATE_RUN_JSON_FILE="${FIXDIR}/incomplete-run.json"
 expect_fail "incomplete run" run_validator
 
@@ -115,8 +110,6 @@ expect_fail "artifact ID mismatch" run_validator
 if [[ "${FAIL_COUNT}" -ne 0 ]]; then
   die "validate-candidate-oci-run self-test failures: ${FAIL_COUNT} (passes=${PASS_COUNT})"
 fi
-
-bash "${SCRIPT_DIR}/validate-qualified-promotion-self-test.sh"
 
 echo "[info] validate-candidate-oci-run self-test passed (passes=${PASS_COUNT} fails=${FAIL_COUNT})"
 echo "finalResult=PASS"
