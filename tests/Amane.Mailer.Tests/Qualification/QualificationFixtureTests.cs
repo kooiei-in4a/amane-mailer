@@ -89,6 +89,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             BaseAddress = new Uri("https://localhost"),
         });
         using var response = await client.GetAsync("/admin/setup-status", TestContext.Current.CancellationToken);
+        var responseBody = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
         var observations = new Dictionary<string, object>
         {
             ["accessProfile"] = "local-dev",
@@ -96,7 +97,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             ["httpStatus"] = (int)response.StatusCode,
             ["adminRouteResult"] = response.StatusCode == HttpStatusCode.OK ? "available" : "unavailable",
             ["routeExposed"] = response.StatusCode == HttpStatusCode.OK,
-            ["sensitiveOutput"] = "absent",
+            ["sensitiveOutput"] = SafeText(responseBody) ? "absent" : "present",
         };
         Emit(nameof(Qualification_fixture_G456_11_local_dev), "g456-11-local-dev", "G456-11", "local-dev", observations);
     }
@@ -271,11 +272,16 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
         harness.SeedBundle(CandidateBundleId);
         harness.Runner.RecordedBundleIdOverride = "bundle-other01";
         var result = await harness.ApplyAsync(CandidateBundleId);
+        var record = harness.ReadRecord();
+        var launcherIdentityMatch = record?.ObservedBundleId == CandidateBundleId
+            && record.RuntimeIdentityBinding == SetupRuntimeIdentityBindingResult.Matched;
+        var imageIdentityMatch = result.VerificationCommitted
+            && record?.ImageReference == harness.Layout.ReleaseInventory.PinnedMailerImageReference;
         var observations = new Dictionary<string, object>
         {
             ["fault"] = "stale-launcher-image",
-            ["launcherIdentityMatch"] = false,
-            ["imageIdentityMatch"] = false,
+            ["launcherIdentityMatch"] = launcherIdentityMatch,
+            ["imageIdentityMatch"] = imageIdentityMatch,
             ["verificationResult"] = result.VerificationCommitted ? "accepted" : "rejected",
             ["activationResult"] = result.VerificationCommitted ? "activated" : "blocked",
             ["sensitiveOutput"] = SafeText(result.Message) ? "absent" : "present",
@@ -311,14 +317,16 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             ["setup", "apply", "--config", "C:\\qualification\\config.json", "--non-interactive", "--", "whoami"],
             out _,
             out var usageError);
+        var shellSpawned = parsed;
+        var environmentMutation = parsed;
         var observations = new Dictionary<string, object>
         {
             ["fault"] = "command-injection",
             ["injectionAttempted"] = injectionAttempted,
             ["inputRejected"] = !parsed,
             ["commandExecution"] = parsed ? "executed" : "not-executed",
-            ["shellSpawned"] = false,
-            ["environmentMutation"] = false,
+            ["shellSpawned"] = shellSpawned,
+            ["environmentMutation"] = environmentMutation,
             ["sensitiveOutput"] = SafeText(usageError) ? "absent" : "present",
         };
         Emit(nameof(Qualification_fixture_G456_24_ci_auto), "g456-24-ci-auto", "G456-24", "ci-auto", observations);
@@ -390,7 +398,8 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             ["activeGenerationUnique"] = active is not null
                 && record?.ActivationGeneration == active.ActivationGeneration
                 && binding?.ActivationGeneration == active.ActivationGeneration,
-            ["sensitiveOutput"] = "absent",
+            ["sensitiveOutput"] = SafeText(string.Join('\n', results.Select(result => result.Message)))
+                ? "absent" : "present",
         };
         Emit(nameof(Qualification_fixture_G456_27_ci_auto), "g456-27-ci-auto", "G456-27", "ci-auto", observations);
     }
@@ -406,6 +415,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
         var recordText = File.Exists(harness.Layout.LastRecordPath)
             ? File.ReadAllText(harness.Layout.LastRecordPath)
             : string.Empty;
+        var adminRouteResult = await ReadDisallowedAdminRouteResultAsync();
         var observations = new Dictionary<string, object>
         {
             ["fault"] = "crash-cancel-recovery",
@@ -416,8 +426,8 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             ["partialActivation"] = harness.ReadActive() is not null,
             ["stateConsistent"] = result.DeploymentState == SetupManagedDeploymentState.NoManaged,
             ["recoveryRecordValueFree"] = SafeText(recordText),
-            ["adminRouteResult"] = "unavailable",
-            ["sensitiveOutput"] = "absent",
+            ["adminRouteResult"] = adminRouteResult,
+            ["sensitiveOutput"] = SafeText(recordText) ? "absent" : "present",
         };
         Emit(nameof(Qualification_fixture_G456_28_ci_auto), "g456-28-ci-auto", "G456-28", "ci-auto", observations);
     }
@@ -450,6 +460,12 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
         };
         hostRequest.Headers.Host = "qualification-host.invalid";
         using var hostRejected = await client.SendAsync(hostRequest, ct);
+        var responseText = string.Join(
+            '\n',
+            await unauthenticated.Content.ReadAsStringAsync(ct),
+            await csrfRejected.Content.ReadAsStringAsync(ct),
+            await originRejected.Content.ReadAsStringAsync(ct),
+            await hostRejected.Content.ReadAsStringAsync(ct));
         var observations = new Dictionary<string, object>
         {
             ["fault"] = "web-security",
@@ -462,7 +478,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             ["unauthorizedResult"] = unauthenticated.StatusCode != HttpStatusCode.OK ? "rejected" : "accepted",
             ["crossOriginAdminAccess"] = originRejected.StatusCode == HttpStatusCode.OK
                 || hostRejected.StatusCode == HttpStatusCode.OK,
-            ["sensitiveOutput"] = "absent",
+            ["sensitiveOutput"] = SafeText(responseText) ? "absent" : "present",
         };
         Emit(nameof(Qualification_fixture_G456_30_ci_auto), "g456-30-ci-auto", "G456-30", "ci-auto", observations);
     }
@@ -608,7 +624,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
                 && admin.Kind == SetupAssistantOutcomeKind.Succeeded
                 && page.Contains("同一ユーザーで再適用する", StringComparison.Ordinal)
                 ? "idempotent" : "rejected",
-            ["credentialRotated"] = false,
+            ["credentialRotated"] = admin.AdminDatabaseState is not ("managed-same-user" or "unchanged"),
             ["statePreserved"] = harness.Operations.ApplyCalls == 1
                 && page.Contains("同一ユーザーで再適用する", StringComparison.Ordinal),
             ["routeResult"] = admin.AdminExposure == "enabled" ? "available" : "unavailable",
@@ -644,7 +660,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
         };
     }
 
-    private static async Task<Dictionary<string, object>> RunApplyRollbackAsync()
+    private async Task<Dictionary<string, object>> RunApplyRollbackAsync()
     {
         using var harness = SetupApplyEngineTests.ApplyHarness.Create();
         await harness.SeedActiveDeploymentAsync("bundle-active01");
@@ -660,6 +676,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
         var result = await harness.ApplyAsync(CandidateBundleId);
         var active = harness.ReadActive();
         var record = harness.ReadRecord();
+        var adminRouteResult = await ReadDisallowedAdminRouteResultAsync();
         return new Dictionary<string, object>
         {
             ["failureMode"] = "apply-failure",
@@ -670,17 +687,18 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
                 && active?.BundleId == "bundle-active01",
             ["integrityMatched"] = record?.IsCommittedSuccess == true
                 && record.BundleIntegrity == SetupIntegrityMerger.Matched,
-            ["adminRouteAfterRollback"] = "not-exposed",
+            ["adminRouteAfterRollback"] = adminRouteResult,
             ["rollbackClaimedSuccess"] = result.Code == SetupApplyResultCode.ApplyFailedRollbackSucceeded,
         };
     }
 
-    private static async Task<Dictionary<string, object>> RunFreshMigrationFailureAsync()
+    private async Task<Dictionary<string, object>> RunFreshMigrationFailureAsync()
     {
         using var harness = SetupApplyEngineTests.ApplyHarness.Create();
         harness.SeedBundle(CandidateBundleId);
         harness.Runner.FailWhen = args => IsCompose(args, "up");
         var result = await harness.ApplyAsync(CandidateBundleId);
+        var adminRouteResult = await ReadDisallowedAdminRouteResultAsync();
         return new Dictionary<string, object>
         {
             ["failureMode"] = "fresh-install-failure",
@@ -690,7 +708,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
                 ? "not-applicable" : "completed",
             ["rollbackClaimedSuccess"] = result.Code == SetupApplyResultCode.RollbackSucceeded,
             ["manualInterventionRequired"] = result.ActionCode == SetupApplyActionCode.ReviewDatabaseSchema,
-            ["adminRouteResult"] = "unavailable",
+            ["adminRouteResult"] = adminRouteResult,
             ["partialBundleActive"] = result.IsSuccess
                 && harness.ReadBinding()?.BundleId == CandidateBundleId,
         };
@@ -702,7 +720,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
         var accepted = SetupNonInteractiveInputValidator.TryParse(
             input,
             out _,
-            out _);
+            out var parseError);
         var sensitiveInput = input.Contains("password", StringComparison.OrdinalIgnoreCase)
             || input.Contains("token", StringComparison.OrdinalIgnoreCase)
             || input.Contains("connection", StringComparison.OrdinalIgnoreCase);
@@ -714,7 +732,7 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             ["sensitiveArgument"] = sensitiveInput,
             ["sensitiveHistory"] = sensitiveInput,
             ["sensitiveProcessList"] = sensitiveInput,
-            ["sensitiveOutput"] = "absent",
+            ["sensitiveOutput"] = SafeText(parseError?.Code) ? "absent" : "present",
         };
         Emit(methodName, fixtureId, "G456-17", variantId, observations);
     }
@@ -731,8 +749,8 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             fileSystem,
             root,
             candidate,
-            out _,
-            out _);
+            out var failureCode,
+            out var message);
         var observations = new Dictionary<string, object>
         {
             ["fault"] = "symlink-reparse",
@@ -741,25 +759,34 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             ["followed"] = !rejected,
             ["operationResult"] = rejected ? "rejected" : "completed",
             ["outsideRootAccess"] = !rejected,
-            ["sensitiveOutput"] = "absent",
+            ["sensitiveOutput"] = SafeText(failureCode) && SafeText(message) ? "absent" : "present",
         };
         Emit(methodName, fixtureId, "G456-26", variantId, observations);
     }
 
     private static void EmitTerminalBoundary(string fixtureId, string variantId, string methodName)
     {
+        var arguments = new[]
+        {
+            "setup", "apply", "--config", "C:\\qualification\\config.json", "--non-interactive", "--extra",
+        };
         var accepted = SetupApplyNonInteractiveCommand.TryParseArguments(
-            ["setup", "apply", "--config", "C:\\qualification\\config.json", "--non-interactive", "--extra"],
+            arguments,
             out _,
             out var error);
+        var sensitiveInput = arguments.Any(argument =>
+            argument.Contains("password", StringComparison.OrdinalIgnoreCase)
+            || argument.Contains("token", StringComparison.OrdinalIgnoreCase)
+            || argument.Contains("connection", StringComparison.OrdinalIgnoreCase));
         var observations = new Dictionary<string, object>
         {
             ["executionMode"] = "terminal-non-interactive",
-            ["sensitiveArgument"] = false,
-            ["sensitiveHistory"] = false,
-            ["sensitiveProcessList"] = false,
+            ["sensitiveArgument"] = sensitiveInput,
+            ["sensitiveHistory"] = sensitiveInput,
+            ["sensitiveProcessList"] = sensitiveInput,
             ["inputBoundaryResult"] = accepted ? "accepted" : "rejected",
-            ["interactivePromptShown"] = false,
+            ["interactivePromptShown"] = accepted
+                && !arguments.Contains("--non-interactive", StringComparer.Ordinal),
             ["outputResult"] = SafeText(error) ? "value-free" : "value-bearing",
             ["sensitiveOutput"] = SafeText(error) ? "absent" : "present",
         };
@@ -813,6 +840,21 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             ("admin_password", "qualification-admin-password"),
             ("admin_password_confirm", "qualification-admin-password"));
 
+    private static async Task<string> ReadDisallowedAdminRouteResultAsync()
+    {
+        await using var fixture = new MailerAdminDisallowedLocalAddressFixture();
+        await fixture.InitializeAsync();
+        using var client = fixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost"),
+        });
+        using var response = await client.GetAsync(
+            "/admin/setup-status",
+            TestContext.Current.CancellationToken);
+        return response.StatusCode == HttpStatusCode.OK ? "available" : "unavailable";
+    }
+
     private static async Task<bool> LoginAsync(HttpClient client, CancellationToken cancellationToken)
     {
         var csrf = await ReadCsrfTokenAsync(client, cancellationToken);
@@ -855,13 +897,14 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
         string variantId,
         IReadOnlyDictionary<string, object> observations)
     {
+        var fixturePredicatePassed = IsFixtureObservationValueFree(observations);
         var passed = QualificationFixtureResultWriter.WriteIfRequested(
             typeof(QualificationFixtureTests),
             methodName,
             fixtureId,
             scenarioId,
             variantId,
-            true,
+            fixturePredicatePassed,
             observations);
         Assert.True(passed);
     }
@@ -941,6 +984,13 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
             && !value.Contains("qualification-admin-password", StringComparison.Ordinal)
             && !value.Contains("correct horse battery staple", StringComparison.Ordinal)
             && !value.Contains("/private/", StringComparison.OrdinalIgnoreCase));
+
+    // The runner remains the sole owner of the full scenario predicate. The fixture only
+    // self-reports PASS when the operation-derived observation envelope is value-free.
+    private static bool IsFixtureObservationValueFree(IReadOnlyDictionary<string, object> observations) =>
+        observations.Values.All(value => value is not string text || SafeText(text))
+        && (!observations.TryGetValue("sensitiveOutput", out var sensitiveOutput)
+            || sensitiveOutput is "absent");
 
     private sealed record DockerIdentity(string OsType, string Architecture);
 }
