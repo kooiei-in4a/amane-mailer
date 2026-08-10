@@ -437,48 +437,88 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
     {
         RequireCi();
         var ct = TestContext.Current.CancellationToken;
-        using var client = adminFixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
+        await using var harness = await SetupAssistantHarness.StartAsync();
+
+        using var wrongToken = await harness.RedeemTokenAsync("not-the-real-token");
+        using var redeemedToken = await harness.RedeemTokenAsync();
+        using var replayedToken = await harness.RedeemTokenAsync();
+
+        var welcomePage = await harness.ReadCurrentPageAsync();
+        var csrf = SetupAssistantHarness.ExtractCsrfToken(welcomePage);
+        Assert.False(string.IsNullOrEmpty(csrf), "Web Assistant welcome page did not contain a CSRF token.");
+
+        using var missingCsrf = await harness.PostAsync("/welcome");
+        var afterMissingCsrf = await harness.ReadCurrentPageAsync();
+        using var forgedCsrf = await harness.PostAsync(
+            "/welcome",
+            csrfToken: new string('a', csrf!.Length));
+        var afterForgedCsrf = await harness.ReadCurrentPageAsync();
+
+        using var foreignOrigin = await harness.PostAsync(
+            "/welcome",
+            csrfToken: csrf,
+            origin: "http://attacker.invalid");
+        var afterForeignOrigin = await harness.ReadCurrentPageAsync();
+
+        using var invalidHostRequest = new HttpRequestMessage(HttpMethod.Get, "/");
+        invalidHostRequest.Headers.Host = "attacker.invalid";
+        using var invalidHost = await harness.Client.SendAsync(invalidHostRequest, ct);
+        var invalidHostBody = await invalidHost.Content.ReadAsStringAsync(ct);
+
+        using var forgedSessionHandler = new HttpClientHandler
         {
             AllowAutoRedirect = false,
-            BaseAddress = new Uri("https://localhost"),
-        });
-        using var unauthenticated = await client.GetAsync("/admin/setup-status", ct);
-        var csrf = await ReadCsrfTokenAsync(client, ct);
-        using var csrfRejected = await client.PostAsync(
-            "/admin/api/login",
-            LoginContent(csrf, MailerAdminFixture.Username, MailerAdminFixture.Password, csrfToken: "missing"),
-            ct);
-        using var originRequest = new HttpRequestMessage(HttpMethod.Post, "/admin/api/login")
-        {
-            Content = LoginContent(csrf, MailerAdminFixture.Username, MailerAdminFixture.Password),
+            UseCookies = false,
         };
-        originRequest.Headers.TryAddWithoutValidation("Origin", "https://qualification-cross-origin.invalid");
-        using var originRejected = await client.SendAsync(originRequest, ct);
-        using var hostRequest = new HttpRequestMessage(HttpMethod.Post, "/admin/api/login")
+        using var forgedSessionClient = new HttpClient(forgedSessionHandler)
         {
-            Content = LoginContent(csrf, MailerAdminFixture.Username, MailerAdminFixture.Password),
+            BaseAddress = new Uri(harness.Host.BaseAddress),
         };
-        hostRequest.Headers.Host = "qualification-host.invalid";
-        using var hostRejected = await client.SendAsync(hostRequest, ct);
+        using var forgedSessionRequest = new HttpRequestMessage(HttpMethod.Post, "/welcome")
+        {
+            Content = new FormUrlEncodedContent([]),
+        };
+        forgedSessionRequest.Headers.TryAddWithoutValidation(
+            "Cookie",
+            $"{SetupAssistantSecurity.SessionCookieName}=forged-session-id");
+        forgedSessionRequest.Headers.TryAddWithoutValidation("Origin", harness.Origin);
+        using var forgedSession = await forgedSessionClient.SendAsync(forgedSessionRequest, ct);
+        var forgedSessionBody = await forgedSession.Content.ReadAsStringAsync(ct);
+
+        var workflowRemainedAtWelcome =
+            afterMissingCsrf.Contains("ようこそ", StringComparison.Ordinal)
+            && afterForgedCsrf.Contains("ようこそ", StringComparison.Ordinal)
+            && afterForeignOrigin.Contains("ようこそ", StringComparison.Ordinal);
         var responseText = string.Join(
             '\n',
-            await unauthenticated.Content.ReadAsStringAsync(ct),
-            await csrfRejected.Content.ReadAsStringAsync(ct),
-            await originRejected.Content.ReadAsStringAsync(ct),
-            await hostRejected.Content.ReadAsStringAsync(ct));
+            welcomePage,
+            afterMissingCsrf,
+            afterForgedCsrf,
+            afterForeignOrigin,
+            invalidHostBody,
+            forgedSessionBody);
         var observations = new Dictionary<string, object>
         {
             ["fault"] = "web-security",
-            ["requestCredentialPolicy"] = unauthenticated.StatusCode != HttpStatusCode.OK ? "enforced" : "bypassed",
-            ["originPolicy"] = originRejected.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden
+            ["requestCredentialPolicy"] = wrongToken.StatusCode == HttpStatusCode.Forbidden
+                && redeemedToken.StatusCode == HttpStatusCode.SeeOther
+                && replayedToken.StatusCode == HttpStatusCode.Forbidden
                 ? "enforced" : "bypassed",
-            ["hostPolicy"] = hostRejected.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden
+            ["originPolicy"] = foreignOrigin.StatusCode == HttpStatusCode.Forbidden
+                && afterForeignOrigin.Contains("ようこそ", StringComparison.Ordinal)
                 ? "enforced" : "bypassed",
-            ["csrfPolicy"] = csrfRejected.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden
+            ["hostPolicy"] = invalidHost.StatusCode == HttpStatusCode.BadRequest
                 ? "enforced" : "bypassed",
-            ["unauthorizedResult"] = unauthenticated.StatusCode != HttpStatusCode.OK ? "rejected" : "accepted",
-            ["crossOriginAdminAccess"] = originRejected.StatusCode == HttpStatusCode.OK
-                || hostRejected.StatusCode == HttpStatusCode.OK,
+            ["csrfPolicy"] = missingCsrf.StatusCode == HttpStatusCode.BadRequest
+                && forgedCsrf.StatusCode == HttpStatusCode.BadRequest
+                && workflowRemainedAtWelcome
+                ? "enforced" : "bypassed",
+            ["unauthorizedResult"] = forgedSession.StatusCode == HttpStatusCode.Forbidden
+                && workflowRemainedAtWelcome
+                ? "rejected" : "accepted",
+            ["crossOriginAdminAccess"] = !(foreignOrigin.StatusCode == HttpStatusCode.Forbidden
+                && afterForeignOrigin.Contains("ようこそ", StringComparison.Ordinal)
+                && harness.Operations.AdminBootstrapCalls == 0),
             ["sensitiveOutput"] = SafeText(responseText) ? "absent" : "present",
         };
         Emit(nameof(Qualification_fixture_G456_30_ci_auto), "g456-30-ci-auto", "G456-30", "ci-auto", observations);
