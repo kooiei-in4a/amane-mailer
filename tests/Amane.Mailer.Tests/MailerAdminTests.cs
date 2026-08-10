@@ -540,18 +540,14 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         // AllowAnonymous login still goes through the Admin local-address branch.
         using var login = await client.GetAsync("/admin/login", ct);
         Assert.Equal(HttpStatusCode.NotFound, login.StatusCode);
+        Assert.Null(login.Headers.Location);
 
-        // RequireAuthorization may challenge before the local-address branch; either way the
-        // path remains under the same /admin policy and must not render setup-status HTML.
+        // Local-address rejection must fail closed before RequireAuthorization can challenge.
         using var setupStatus = await client.GetAsync("/admin/setup-status", ct);
-        Assert.True(
-            setupStatus.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Found or HttpStatusCode.Redirect,
-            $"Unexpected status: {setupStatus.StatusCode}");
-        if (setupStatus.StatusCode == HttpStatusCode.OK)
-        {
-            var html = await setupStatus.Content.ReadAsStringAsync(ct);
-            Assert.DoesNotContain("Setup status", html, StringComparison.Ordinal);
-        }
+        var setupStatusHtml = await setupStatus.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.NotFound, setupStatus.StatusCode);
+        Assert.Null(setupStatus.Headers.Location);
+        Assert.DoesNotContain("Setup status", setupStatusHtml, StringComparison.Ordinal);
     }
 
     [Fact]
