@@ -474,7 +474,8 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
                 ? "enforced" : "bypassed",
             ["hostPolicy"] = hostRejected.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden
                 ? "enforced" : "bypassed",
-            ["csrfPolicy"] = csrfRejected.StatusCode == HttpStatusCode.BadRequest ? "enforced" : "bypassed",
+            ["csrfPolicy"] = csrfRejected.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden
+                ? "enforced" : "bypassed",
             ["unauthorizedResult"] = unauthenticated.StatusCode != HttpStatusCode.OK ? "rejected" : "accepted",
             ["crossOriginAdminAccess"] = originRejected.StatusCode == HttpStatusCode.OK
                 || hostRejected.StatusCode == HttpStatusCode.OK,
