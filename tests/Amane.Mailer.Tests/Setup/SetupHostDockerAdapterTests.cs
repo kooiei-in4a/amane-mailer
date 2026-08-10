@@ -804,7 +804,7 @@ public sealed class SetupHostDockerAdapterTests
         || joinedArguments.Contains("context show", StringComparison.Ordinal)
         || joinedArguments.Contains("compose version", StringComparison.Ordinal);
 
-    private static async Task<Harness> CreateHarnessAsync(
+    internal static async Task<Harness> CreateHarnessAsync(
         bool seedMatchingActive = true,
         bool pinInputs = true)
     {
@@ -985,7 +985,7 @@ public sealed class SetupHostDockerAdapterTests
             StandardError = string.Empty,
         };
 
-    private sealed class Harness : IAsyncDisposable
+    internal sealed class Harness : IAsyncDisposable
     {
         public Harness(
             string root,
@@ -1025,7 +1025,7 @@ public sealed class SetupHostDockerAdapterTests
         }
     }
 
-    private sealed class ScriptedProcessRunner : IHostProcessRunner
+    internal sealed class ScriptedProcessRunner : IHostProcessRunner
     {
         private readonly Func<HostProcessSpec, HostProcessResult> _default;
 

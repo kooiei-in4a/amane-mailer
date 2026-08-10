@@ -41,7 +41,7 @@ def main() -> int:
     assert len(lanes) == 32
     procedures = producer.validate_registry(adapter.read_json(adapter.ADAPTER_MANIFEST, "adapter manifest"), runner)
     assert len(procedures) == 32
-    assert sum(1 for item in procedures if item["fixtureAvailable"]) == 1
+    assert sum(1 for item in procedures if item["fixtureAvailable"]) == 32
 
     scenario = "G456-07"
     variant = "admin-local-dev"
