@@ -65,6 +65,7 @@ jobs:
           python3 scripts/qualification-lane-adapter-self-test.py --scenario-id G456-24 --variant-id ci-auto
           python3 scripts/qualification-lane-adapter-self-test.py --scenario-id G456-28 --variant-id ci-auto
           python3 scripts/qualification-lane-adapter-self-test.py --scenario-id G456-30 --variant-id ci-auto
+          python3 scripts/qualification-lane-adapter-self-test.py --scenario-id G456-18 --variant-id linux-docker
 
       - name: PTY smoke (ACS test-acs-send interactive paths)
         run: python3 scripts/pty-smoke-test-acs-send.py

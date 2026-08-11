@@ -728,7 +728,8 @@ public sealed class QualificationFixtureTests(MailerAdminFixture adminFixture)
                 && active?.BundleId == "bundle-active01",
             ["integrityMatched"] = record?.IsCommittedSuccess == true
                 && record.BundleIntegrity == SetupIntegrityMerger.Matched,
-            ["adminRouteAfterRollback"] = adminRouteResult,
+            ["adminRouteAfterRollback"] =
+                adminRouteResult == "unavailable" ? "not-exposed" : "exposed",
             ["rollbackClaimedSuccess"] = result.Code == SetupApplyResultCode.ApplyFailedRollbackSucceeded,
         };
     }
