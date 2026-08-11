@@ -121,6 +121,32 @@ def main() -> int:
         "conditionalApproverRole": "conditional-approver", "conditionalApproverIdentity": "maintainer:conditional-self-test",
         "evidenceOwners": [{"scenarioId": scenario, "variantId": variant, "ownerRole": owner_class, "ownerIdentity": owner_identity}],
     }
+    synthetic_untracked = producer.REPO_ROOT / "tests" / "Amane.Mailer.Tests" / "QualificationLaneProducerSyntheticUntracked.cs"
+    if synthetic_untracked.exists():
+        raise AssertionError("synthetic untracked source already exists")
+    synthetic_untracked.write_text(
+        "namespace Amane.Mailer.Tests;\n\ninternal static class QualificationLaneProducerSyntheticUntracked { }\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    try:
+        relative_synthetic = synthetic_untracked.relative_to(producer.REPO_ROOT).as_posix()
+        if relative_synthetic not in producer.git_query("ls-files", "--others", "--exclude-standard").splitlines():
+            raise AssertionError("synthetic source was not detected as non-ignored untracked input")
+        original_build_fresh_binary = producer.build_fresh_binary
+        producer.build_fresh_binary = lambda *_args: (_ for _ in ()).throw(AssertionError("fresh build started before source preflight"))
+        try:
+            expect_rejected(
+                "non-ignored untracked source before fresh build",
+                lambda: producer.execute_procedure(procedure, scenario, variant, runner, binding),
+                adapter,
+                runner,
+                producer,
+            )
+        finally:
+            producer.build_fresh_binary = original_build_fresh_binary
+    finally:
+        synthetic_untracked.unlink(missing_ok=True)
     # The baseline report is produced by the exact fixture.  Negative cases
     # below mutate that real result rather than manufacturing PASS observations.
     report = producer.produce_with_context(

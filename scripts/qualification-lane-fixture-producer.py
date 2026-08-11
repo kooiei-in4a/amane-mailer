@@ -102,6 +102,25 @@ def git_query(*arguments: str) -> str:
     return result.stdout.strip()
 
 
+def git_require_no_changes(*arguments: str) -> None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProducerError("git source cleanliness could not be checked") from exc
+    if result.returncode == 1:
+        raise ProducerError("producer source worktree is dirty")
+    if result.returncode != 0:
+        raise ProducerError("git source cleanliness could not be checked")
+
+
 def verify_source_identity(binding: dict[str, Any]) -> str:
     expected = binding.get("releaseCommitSha")
     if not isinstance(expected, str) or not re.fullmatch(SOURCE_COMMIT_PATTERN, expected):
@@ -111,6 +130,10 @@ def verify_source_identity(binding: dict[str, Any]) -> str:
         raise ProducerError("producer checkout HEAD does not match binding releaseCommitSha")
     if git_query("status", "--porcelain", "--untracked-files=no"):
         raise ProducerError("producer tracked source worktree is dirty")
+    git_require_no_changes("diff", "--quiet")
+    git_require_no_changes("diff", "--cached", "--quiet")
+    if git_query("ls-files", "--others", "--exclude-standard"):
+        raise ProducerError("producer has non-ignored untracked files")
     return actual
 
 
