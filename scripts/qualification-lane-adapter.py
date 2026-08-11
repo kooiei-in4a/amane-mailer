@@ -92,7 +92,7 @@ def load_manifest(runner: Any) -> dict[str, Any]:
         raise AdapterError("adapter manifest schema mismatch")
     if manifest.get("targetGateClass") != "Hard":
         raise AdapterError("adapter manifest must be Hard-only")
-    if manifest.get("producerScript") != PRODUCER_PATH.name or manifest.get("producerRevision") != "1" or manifest.get("producerContractVersion") != 1 or manifest.get("fixtureContractVersion") != 1:
+    if manifest.get("producerScript") != PRODUCER_PATH.name or manifest.get("producerRevision") != "2" or manifest.get("producerContractVersion") != 2 or manifest.get("fixtureContractVersion") != 1:
         raise AdapterError("canonical producer contract is not fixed")
     lanes = manifest.get("lanes")
     if not isinstance(lanes, list) or not lanes:
@@ -136,6 +136,35 @@ def bound_row(binding: dict[str, Any], scenario: str, variant: str) -> dict[str,
     return matches[0]
 
 
+def require_commit(value: Any, label: str) -> str:
+    result = require_string(value, label)
+    if not re.fullmatch(r"[0-9a-f]{40}", result):
+        raise AdapterError(f"{label} must be a lowercase Git commit SHA")
+    return result
+
+
+def validate_provenance(provenance: Any, binding: dict[str, Any]) -> None:
+    allowed = {"schemaVersion", "sourceCommitSha", "bindingReleaseCommitSha", "sourceCommitIdentityMatch", "trackedTreeClean", "freshBuild"}
+    if not isinstance(provenance, dict) or set(provenance) != allowed or provenance.get("schemaVersion") != 1:
+        raise AdapterError("fixture binary provenance schema is invalid")
+    source_commit = require_commit(provenance.get("sourceCommitSha"), "provenance sourceCommitSha")
+    binding_commit = require_commit(provenance.get("bindingReleaseCommitSha"), "provenance bindingReleaseCommitSha")
+    expected_commit = require_commit(binding.get("releaseCommitSha"), "binding releaseCommitSha")
+    if source_commit != binding_commit or source_commit != expected_commit or provenance.get("sourceCommitIdentityMatch") is not True:
+        raise AdapterError("fixture source commit does not match the qualification binding")
+    if provenance.get("trackedTreeClean") is not True:
+        raise AdapterError("fixture tracked source tree was not clean")
+    build = provenance.get("freshBuild")
+    build_allowed = {"schemaVersion", "restore", "configuration", "freshBuild", "outputIsolation", "noIncremental", "testAssembly", "productAssembly"}
+    if not isinstance(build, dict) or set(build) != build_allowed or build.get("schemaVersion") != 1 or build.get("restore") != "locked" or build.get("configuration") != "Release" or build.get("freshBuild") is not True or build.get("outputIsolation") != "repository-output" or build.get("noIncremental") is not True:
+        raise AdapterError("fixture fresh-build provenance is invalid")
+    for role, file_name in (("testAssembly", "Amane.Mailer.Tests.dll"), ("productAssembly", "Amane.Mailer.dll")):
+        assembly = build.get(role)
+        if not isinstance(assembly, dict) or set(assembly) != {"fileName", "sha256"} or assembly.get("fileName") != file_name:
+            raise AdapterError("fixture executed assembly identity is invalid")
+        require_digest(assembly.get("sha256"), f"provenance {role} sha256")
+
+
 def validate_execution(report: dict[str, Any], lane: dict[str, Any], scenario: str, variant: str) -> None:
     execution = report.get("execution")
     if not isinstance(execution, dict) or set(execution) != {"platform", "osFamily", "runtimeKind", "fixtureCommandId"}:
@@ -151,8 +180,8 @@ def validate_execution(report: dict[str, Any], lane: dict[str, Any], scenario: s
 def validate_report(report: Any, binding: dict[str, Any], auth: dict[str, Any], lane: dict[str, Any], scenario: str, variant: str, runner: Any) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise AdapterError("fixture report must be an object")
-    allowed = {"schemaVersion", "kind", "scenarioId", "variantId", "candidateId", "releaseCommitSha", "bindingId", "qualificationRunId", "executedByRole", "executedByIdentity", "startedAtUtc", "finishedAtUtc", "attestedAtUtc", "execution", "producer", "fixtureResult", "checks"}
-    if report.get("schemaVersion") != 3 or report.get("kind") != "qualification-lane-fixture-observations" or set(report) != allowed:
+    allowed = {"schemaVersion", "kind", "scenarioId", "variantId", "candidateId", "releaseCommitSha", "bindingId", "qualificationRunId", "executedByRole", "executedByIdentity", "startedAtUtc", "finishedAtUtc", "attestedAtUtc", "execution", "producer", "provenance", "fixtureResult", "checks"}
+    if report.get("schemaVersion") != 4 or report.get("kind") != "qualification-lane-fixture-observations" or set(report) != allowed:
         raise AdapterError("fixture report schema or fields are invalid")
     for field in ("scenarioId", "variantId", "candidateId", "releaseCommitSha", "bindingId", "qualificationRunId", "executedByRole", "executedByIdentity"):
         require_string(report.get(field), f"fixture {field}")
@@ -164,6 +193,7 @@ def validate_report(report: Any, binding: dict[str, Any], auth: dict[str, Any], 
     if not isinstance(owner, dict) or report["executedByRole"] != owner.get("ownerRole") or report["executedByIdentity"] != owner.get("ownerIdentity"):
         raise AdapterError("fixture owner does not match authorization")
     validate_execution(report, lane, scenario, variant)
+    validate_provenance(report.get("provenance"), binding)
     producer_module = load_producer()
     try:
         expected_procedure = producer_module.procedure_for(lane, scenario)

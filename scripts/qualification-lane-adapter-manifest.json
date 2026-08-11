@@ -7,8 +7,8 @@
   "fixtureReportKind": "qualification-lane-fixture-observations",
   "fixtureContractVersion": 1,
   "producerScript": "qualification-lane-fixture-producer.py",
-  "producerRevision": "1",
-  "producerContractVersion": 1,
+  "producerRevision": "2",
+  "producerContractVersion": 2,
   "targetGateClass": "Hard",
   "lanes": [
     {"scenarioId": "G456-01", "variantId": "win-docker", "expectedPlatform": "win-docker", "expectedOsFamily": "windows", "fixtureCommandId": "g456-01-win-docker", "producerId": "g456-01-win-docker", "procedureId": "g456-01-win-docker-canonical", "canonicalFixture": {"fixtureId": "g456-01-win-docker", "fixtureRevision": "1", "sourceTestId": "Amane.Mailer.Tests.Qualification.QualificationFixtureTests.Qualification_fixture_G456_01_win_docker", "testSelector": "FullyQualifiedName=Amane.Mailer.Tests.Qualification.QualificationFixtureTests.Qualification_fixture_G456_01_win_docker"}},

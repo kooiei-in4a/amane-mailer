@@ -68,6 +68,26 @@ def main() -> int:
     adapter = load(ROOT / "qualification-lane-adapter.py", "qualification_lane_adapter_self_test")
     runner = load(ROOT / "qualification-runner.py", "qualification_runner_for_adapter_self_test")
     producer = load(ROOT / "qualification-lane-fixture-producer.py", "qualification_lane_fixture_producer_self_test")
+    source_commit = producer.git_query("rev-parse", "HEAD")
+    expect_rejected(
+        "wrong source commit",
+        lambda: producer.verify_source_identity({"releaseCommitSha": "0" * 40}),
+        adapter,
+        runner,
+        producer,
+    )
+    original_git_query = producer.git_query
+    producer.git_query = lambda *query: " M synthetic-tracked-file" if query[0] == "status" else source_commit
+    try:
+        expect_rejected(
+            "tracked source drift",
+            lambda: producer.verify_source_identity({"releaseCommitSha": source_commit}),
+            adapter,
+            runner,
+            producer,
+        )
+    finally:
+        producer.git_query = original_git_query
     lanes = adapter.load_manifest(runner)
     assert len(lanes) == 32
     procedures = producer.validate_registry(adapter.read_json(adapter.ADAPTER_MANIFEST, "adapter manifest"), runner)
@@ -90,8 +110,8 @@ def main() -> int:
     binding = {
         "scopeId": runner.V13_SCOPE_ID, "scopeVersion": 1, "scopeManifestSha256": "b" * 64,
         "candidateId": candidate_id, "bindingId": "c" * 64, "qualificationRunId": "d" * 64,
-        "runAttemptNonce": f"adapter-self-test:{scenario}/{variant}", "releaseCommitSha": "e" * 40,
-        "issueBodySha256": "f" * 64, "planRevision": "1", "planCommitSha": "e" * 40,
+        "runAttemptNonce": f"adapter-self-test:{scenario}/{variant}", "releaseCommitSha": source_commit,
+        "issueBodySha256": "f" * 64, "planRevision": "1", "planCommitSha": source_commit,
         "planFileSha256": "0" * 64,
         "rows": [{"scenarioId": scenario, "requiredVariants": [variant], "gateClass": "Hard", "predicateSet": predicate_set, "ownerRoleClass": owner_class}],
     }
@@ -124,6 +144,9 @@ def main() -> int:
     wrong_owner = copy.deepcopy(report)
     wrong_owner["executedByIdentity"] = "fixture:wrong-owner"
     expect_rejected("wrong owner", lambda: adapter.validate_report(wrong_owner, binding, auth, lane, scenario, variant, runner), adapter, runner)
+    expect_report_rejected("wrong provenance source commit", report, lambda value: value["provenance"].__setitem__("sourceCommitSha", "0" * 40), adapter, runner, binding, auth, lane, scenario, variant)
+    expect_report_rejected("stale binary provenance", report, lambda value: value["provenance"]["freshBuild"].__setitem__("freshBuild", False), adapter, runner, binding, auth, lane, scenario, variant)
+    expect_report_rejected("missing executed product digest", report, lambda value: value["provenance"]["freshBuild"]["productAssembly"].pop("sha256"), adapter, runner, binding, auth, lane, scenario, variant)
     expect_rejected("wrong fixture digest", lambda: adapter.validate_report({**report, "producer": {**report["producer"], "fixtureResultDigestSha256": "0" * 64}}, binding, auth, lane, scenario, variant, runner), adapter, runner)
     expect_report_rejected("wrong source test id", report, lambda value: value["fixtureResult"].__setitem__("sourceTestId", "not-the-exact-test-case"), adapter, runner, binding, auth, lane, scenario, variant)
     expect_report_rejected("missing fixture observation", report, lambda value: value["fixtureResult"]["observations"].pop(next(iter(spec["fields"]))), adapter, runner, binding, auth, lane, scenario, variant)

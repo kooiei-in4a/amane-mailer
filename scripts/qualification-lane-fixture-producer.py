@@ -16,6 +16,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -30,12 +31,14 @@ ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
 MANIFEST_PATH = ROOT / "qualification-lane-adapter-manifest.json"
 RUNNER_PATH = ROOT / "qualification-runner.py"
+SOLUTION_PATH = REPO_ROOT / "Amane.Mailer.slnx"
 SAFE_SCENARIOS = {
     "G456-01", "G456-02", "G456-07", "G456-11", "G456-13", "G456-14",
     "G456-15", "G456-16", "G456-17", "G456-18", "G456-19", "G456-20",
     "G456-21", "G456-22", "G456-23", "G456-24", "G456-25", "G456-26",
     "G456-27", "G456-28", "G456-30", "G456-31", "G456-32", "G456-33",
 }
+SOURCE_COMMIT_PATTERN = r"^[0-9a-f]{40}$"
 
 
 class ProducerError(Exception):
@@ -68,6 +71,99 @@ def digest(value: Any) -> str:
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                hasher.update(chunk)
+    except OSError as exc:
+        raise ProducerError("fresh build assembly is not readable") from exc
+    return hasher.hexdigest()
+
+
+def git_query(*arguments: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProducerError("git source identity could not be checked") from exc
+    if result.returncode != 0:
+        raise ProducerError("git source identity could not be checked")
+    return result.stdout.strip()
+
+
+def verify_source_identity(binding: dict[str, Any]) -> str:
+    expected = binding.get("releaseCommitSha")
+    if not isinstance(expected, str) or not re.fullmatch(SOURCE_COMMIT_PATTERN, expected):
+        raise ProducerError("binding releaseCommitSha is invalid")
+    actual = git_query("rev-parse", "HEAD")
+    if actual != expected:
+        raise ProducerError("producer checkout HEAD does not match binding releaseCommitSha")
+    if git_query("status", "--porcelain", "--untracked-files=no"):
+        raise ProducerError("producer tracked source worktree is dirty")
+    return actual
+
+
+def run_dotnet(command: list[str], environment: dict[str, str], error: str) -> None:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=1800,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProducerError(error) from exc
+    if result.returncode != 0:
+        raise ProducerError(error)
+
+
+def build_fresh_binary(
+    dotnet: str,
+    environment: dict[str, str],
+) -> dict[str, Any]:
+    run_dotnet(
+        [dotnet, "restore", str(SOLUTION_PATH), "--locked-mode", "--nologo", "--verbosity", "minimal"],
+        environment,
+        "locked restore for the canonical fixture failed",
+    )
+    run_dotnet(
+        [dotnet, "build", str(SOLUTION_PATH), "-c", "Release", "--no-restore", "--no-incremental", "--nologo", "--verbosity", "minimal"],
+        environment,
+        "fresh Release rebuild for the canonical fixture failed",
+    )
+    assemblies: dict[str, dict[str, str]] = {}
+    test_output = REPO_ROOT / "tests" / "Amane.Mailer.Tests" / "bin" / "Release" / "net10.0"
+    for role, file_name in (("test", "Amane.Mailer.Tests.dll"), ("product", "Amane.Mailer.dll")):
+        assembly_path = test_output / file_name
+        if not assembly_path.is_file() or assembly_path.is_symlink():
+            raise ProducerError("fresh build did not produce the expected canonical assembly")
+        assemblies[role] = {"fileName": file_name, "sha256": sha256_file(assembly_path)}
+    return {
+        "schemaVersion": 1,
+        "restore": "locked",
+        "configuration": "Release",
+        "freshBuild": True,
+        "outputIsolation": "repository-output",
+        "noIncremental": True,
+        "testAssembly": assemblies["test"],
+        "productAssembly": assemblies["product"],
+    }
 
 
 def require_lane(manifest: dict[str, Any], scenario: str, variant: str) -> dict[str, Any]:
@@ -105,7 +201,7 @@ def procedure_for(lane: dict[str, Any], scenario: str) -> dict[str, Any]:
             raise ProducerError("canonical fixture manifest identity is not bound to the lane")
     return {
         "producerId": lane["producerId"],
-        "producerRevision": "1",
+        "producerRevision": "2",
         "procedureId": lane["procedureId"],
         "procedureRevision": "1",
         "executionKind": "structured-dotnet-fixture",
@@ -117,7 +213,7 @@ def procedure_for(lane: dict[str, Any], scenario: str) -> dict[str, Any]:
 
 
 def validate_registry(manifest: dict[str, Any], runner: Any) -> list[dict[str, Any]]:
-    if manifest.get("schemaVersion") != 2 or manifest.get("producerScript") != Path(__file__).name or manifest.get("producerRevision") != "1" or manifest.get("fixtureContractVersion") != 1:
+    if manifest.get("schemaVersion") != 2 or manifest.get("producerScript") != Path(__file__).name or manifest.get("producerRevision") != "2" or manifest.get("fixtureContractVersion") != 1:
         raise ProducerError("producer manifest contract mismatch")
     lanes = manifest.get("lanes")
     if not isinstance(lanes, list) or len(lanes) != 32:
@@ -216,7 +312,13 @@ def validate_fixture_result(fixture_result: Any, procedure: dict[str, Any], scen
     return observations
 
 
-def execute_procedure(procedure: dict[str, Any], scenario: str, variant: str, runner: Any) -> tuple[dict[str, Any], dict[str, int]]:
+def execute_procedure(
+    procedure: dict[str, Any],
+    scenario: str,
+    variant: str,
+    runner: Any,
+    binding: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, int], dict[str, Any]]:
     if not procedure.get("fixtureAvailable"):
         raise ProducerError("canonical structured fixture is not available for this lane")
     probe_platform(procedure["platformProbe"])
@@ -228,13 +330,17 @@ def execute_procedure(procedure: dict[str, Any], scenario: str, variant: str, ru
         raise ProducerError("canonical fixture test project is unavailable")
     fixture = procedure["fixture"]
     with tempfile.TemporaryDirectory(prefix="amane-lane-fixture-") as temp:
+        source_commit = verify_source_identity(binding)
+        build_info = build_fresh_binary(dotnet, os.environ.copy())
+        if verify_source_identity(binding) != source_commit:
+            raise ProducerError("producer source changed during fresh build")
         result_path = Path(temp) / "fixture-result.json"
         trx_path = Path(temp) / "fixture.trx"
         environment = os.environ.copy()
         environment["AMANE_QUALIFICATION_FIXTURE_RESULT_PATH"] = str(result_path)
         environment["AMANE_QUALIFICATION_FIXTURE_SCENARIO"] = scenario
         environment["AMANE_QUALIFICATION_FIXTURE_VARIANT"] = variant
-        command = [dotnet, "test", str(project), "-c", "Release", "--no-build", "--no-restore", "--filter", fixture["testSelector"], "--logger", f"trx;LogFileName={trx_path}"]
+        command = [dotnet, "test", str(project), "-c", "Release", "--no-build", "--no-restore", "--nologo", "--filter", fixture["testSelector"], "--logger", f"trx;LogFileName={trx_path}"]
         try:
             result = subprocess.run(command, cwd=REPO_ROOT, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -246,7 +352,7 @@ def execute_procedure(procedure: dict[str, Any], scenario: str, variant: str, ru
             raise ProducerError("canonical fixture test case did not pass exactly")
         fixture_result = read_json(result_path)
         validate_fixture_result(fixture_result, procedure, scenario, variant, runner)
-        return fixture_result, counters
+        return fixture_result, counters, {"sourceCommitSha": source_commit, "build": build_info}
 
 
 def bound_context(run_root: Path, scenario: str, variant: str, runner: Any) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -270,16 +376,17 @@ def produce_with_context(manifest: dict[str, Any], runner: Any, lane: dict[str, 
     if not any(item["procedureId"] == procedure["procedureId"] for item in procedures):
         raise ProducerError("canonical procedure is not registered in the manifest")
     started = now_utc()
-    fixture_result, counters = execute_procedure(procedure, scenario, variant, runner)
+    fixture_result, counters, provenance = execute_procedure(procedure, scenario, variant, runner, binding)
     finished = now_utc()
     observations = validate_fixture_result(fixture_result, procedure, scenario, variant, runner)
     checks = [{"checkId": f"{scenario}/{variant}/{field}", "result": "PASS", "proofKind": "qualification-integration-observation", "sourceTestId": fixture_result["sourceTestId"], "observedFields": {field: value}} for field, value in observations.items()]
     report = {
-        "schemaVersion": 3, "kind": "qualification-lane-fixture-observations", "scenarioId": scenario, "variantId": variant,
+        "schemaVersion": 4, "kind": "qualification-lane-fixture-observations", "scenarioId": scenario, "variantId": variant,
         "candidateId": binding["candidateId"], "releaseCommitSha": binding["releaseCommitSha"], "bindingId": binding["bindingId"], "qualificationRunId": binding["qualificationRunId"],
         "executedByRole": owner["ownerRole"], "executedByIdentity": owner["ownerIdentity"], "startedAtUtc": started, "finishedAtUtc": finished, "attestedAtUtc": finished,
         "execution": {"platform": lane["expectedPlatform"], "osFamily": lane["expectedOsFamily"], "runtimeKind": "structured-dotnet-fixture", "fixtureCommandId": lane["fixtureCommandId"]},
         "producer": {"producerId": procedure["producerId"], "producerRevision": procedure["producerRevision"], "procedureId": procedure["procedureId"], "procedureRevision": procedure["procedureRevision"], "procedureDigestSha256": digest(procedure), "fixtureId": procedure["fixture"]["fixtureId"], "fixtureRevision": procedure["fixture"]["fixtureRevision"], "fixtureResultDigestSha256": digest(fixture_result), "fixtureSourceTestId": fixture_result["sourceTestId"], "exitCode": 0, "result": "PASS", "passedTestCount": counters["passed"], "totalTestCount": counters["total"], "skippedTestCount": counters["notExecuted"]},
+        "provenance": {"schemaVersion": 1, "sourceCommitSha": provenance["sourceCommitSha"], "bindingReleaseCommitSha": binding["releaseCommitSha"], "sourceCommitIdentityMatch": provenance["sourceCommitSha"] == binding["releaseCommitSha"], "trackedTreeClean": True, "freshBuild": provenance["build"]},
         "fixtureResult": fixture_result,
         "checks": checks,
     }
