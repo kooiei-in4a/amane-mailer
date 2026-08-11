@@ -22,16 +22,16 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 ROOT = Path(__file__).resolve().parent
 REPO_ROOT = ROOT.parent
 MANIFEST_PATH = ROOT / "qualification-lane-adapter-manifest.json"
 RUNNER_PATH = ROOT / "qualification-runner.py"
-SOLUTION_PATH = REPO_ROOT / "Amane.Mailer.slnx"
 SAFE_SCENARIOS = {
     "G456-01", "G456-02", "G456-07", "G456-11", "G456-13", "G456-14",
     "G456-15", "G456-16", "G456-17", "G456-18", "G456-19", "G456-20",
@@ -84,41 +84,42 @@ def sha256_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def git_query(*arguments: str) -> str:
+def git_command(repo_root: Path, arguments: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
     try:
-        result = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), *arguments],
+        return subprocess.run(
+            ["git", "-C", str(repo_root), *arguments],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProducerError("git source identity could not be checked") from exc
+
+
+def git_query_at(repo_root: Path, *arguments: str) -> str:
+    result = git_command(repo_root, list(arguments))
     if result.returncode != 0:
         raise ProducerError("git source identity could not be checked")
     return result.stdout.strip()
 
 
-def git_require_no_changes(*arguments: str) -> None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), *arguments],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise ProducerError("git source cleanliness could not be checked") from exc
+def git_query(*arguments: str) -> str:
+    return git_query_at(REPO_ROOT, *arguments)
+
+
+def git_require_no_changes_at(repo_root: Path, *arguments: str) -> None:
+    result = git_command(repo_root, list(arguments))
     if result.returncode == 1:
         raise ProducerError("producer source worktree is dirty")
     if result.returncode != 0:
         raise ProducerError("git source cleanliness could not be checked")
+
+
+def git_require_no_changes(*arguments: str) -> None:
+    git_require_no_changes_at(REPO_ROOT, *arguments)
 
 
 def verify_source_identity(binding: dict[str, Any]) -> str:
@@ -137,11 +138,69 @@ def verify_source_identity(binding: dict[str, Any]) -> str:
     return actual
 
 
-def run_dotnet(command: list[str], environment: dict[str, str], error: str) -> None:
+def verify_isolated_source_identity(worktree_root: Path, expected: str) -> str:
+    actual = git_query_at(worktree_root, "rev-parse", "HEAD")
+    if actual != expected:
+        raise ProducerError("isolated producer worktree does not match binding releaseCommitSha")
+    if git_query_at(worktree_root, "status", "--porcelain", "--untracked-files=no"):
+        raise ProducerError("isolated producer tracked source worktree is dirty")
+    git_require_no_changes_at(worktree_root, "diff", "--quiet")
+    git_require_no_changes_at(worktree_root, "diff", "--cached", "--quiet")
+    if git_query_at(worktree_root, "ls-files", "--others", "--exclude-standard"):
+        raise ProducerError("isolated producer has non-ignored untracked files")
+    return actual
+
+
+@contextmanager
+def isolated_git_worktree(commit: str) -> Iterator[Path]:
+    parent = Path(tempfile.mkdtemp(prefix="amane-lane-worktree-"))
+    worktree_root = parent / "source"
+    registered = False
+    cleanup_failure = False
+    try:
+        result = git_command(
+            REPO_ROOT,
+            ["worktree", "add", "--detach", str(worktree_root), commit],
+            timeout=120,
+        )
+        if result.returncode != 0:
+            raise ProducerError("isolated Git worktree could not be created")
+        registered = True
+        verify_isolated_source_identity(worktree_root, commit)
+        yield worktree_root
+    finally:
+        if registered:
+            try:
+                result = git_command(
+                    REPO_ROOT,
+                    ["worktree", "remove", "--force", str(worktree_root)],
+                    timeout=120,
+                )
+                if result.returncode != 0:
+                    cleanup_failure = True
+            except ProducerError:
+                cleanup_failure = True
+            if not cleanup_failure:
+                try:
+                    if parent.exists():
+                        shutil.rmtree(parent)
+                except OSError:
+                    cleanup_failure = True
+        else:
+            try:
+                if parent.exists():
+                    shutil.rmtree(parent)
+            except OSError:
+                cleanup_failure = True
+        if cleanup_failure:
+            raise ProducerError("isolated Git worktree cleanup failed")
+
+
+def run_dotnet(command: list[str], environment: dict[str, str], error: str, cwd: Path) -> None:
     try:
         result = subprocess.run(
             command,
-            cwd=REPO_ROOT,
+            cwd=cwd,
             env=environment,
             capture_output=True,
             text=True,
@@ -159,19 +218,29 @@ def run_dotnet(command: list[str], environment: dict[str, str], error: str) -> N
 def build_fresh_binary(
     dotnet: str,
     environment: dict[str, str],
+    worktree_root: Path,
 ) -> dict[str, Any]:
+    solution_path = worktree_root / "Amane.Mailer.slnx"
+    for output_dir in worktree_root.rglob("bin"):
+        if output_dir.is_dir() or output_dir.is_symlink():
+            raise ProducerError("isolated worktree contains pre-existing build output")
+    for output_dir in worktree_root.rglob("obj"):
+        if output_dir.is_dir() or output_dir.is_symlink():
+            raise ProducerError("isolated worktree contains pre-existing build output")
     run_dotnet(
-        [dotnet, "restore", str(SOLUTION_PATH), "--locked-mode", "--nologo", "--verbosity", "minimal"],
+        [dotnet, "restore", str(solution_path), "--locked-mode", "--nologo", "--verbosity", "minimal"],
         environment,
         "locked restore for the canonical fixture failed",
+        worktree_root,
     )
     run_dotnet(
-        [dotnet, "build", str(SOLUTION_PATH), "-c", "Release", "--no-restore", "--no-incremental", "--nologo", "--verbosity", "minimal"],
+        [dotnet, "build", str(solution_path), "-c", "Release", "--no-restore", "--no-incremental", "--nologo", "--verbosity", "minimal"],
         environment,
         "fresh Release rebuild for the canonical fixture failed",
+        worktree_root,
     )
     assemblies: dict[str, dict[str, str]] = {}
-    test_output = REPO_ROOT / "tests" / "Amane.Mailer.Tests" / "bin" / "Release" / "net10.0"
+    test_output = worktree_root / "tests" / "Amane.Mailer.Tests" / "bin" / "Release" / "net10.0"
     for role, file_name in (("test", "Amane.Mailer.Tests.dll"), ("product", "Amane.Mailer.dll")):
         assembly_path = test_output / file_name
         if not assembly_path.is_file() or assembly_path.is_symlink():
@@ -182,7 +251,7 @@ def build_fresh_binary(
         "restore": "locked",
         "configuration": "Release",
         "freshBuild": True,
-        "outputIsolation": "repository-output",
+        "outputIsolation": "isolated-git-worktree",
         "noIncremental": True,
         "testAssembly": assemblies["test"],
         "productAssembly": assemblies["product"],
@@ -348,34 +417,36 @@ def execute_procedure(
     dotnet = shutil.which("dotnet")
     if dotnet is None:
         raise ProducerError("dotnet is unavailable for the canonical fixture")
-    project = REPO_ROOT / procedure["testProject"]
-    if not project.is_file() or project.parent.parent != REPO_ROOT / "tests":
-        raise ProducerError("canonical fixture test project is unavailable")
     fixture = procedure["fixture"]
     with tempfile.TemporaryDirectory(prefix="amane-lane-fixture-") as temp:
         source_commit = verify_source_identity(binding)
-        build_info = build_fresh_binary(dotnet, os.environ.copy())
-        if verify_source_identity(binding) != source_commit:
-            raise ProducerError("producer source changed during fresh build")
-        result_path = Path(temp) / "fixture-result.json"
-        trx_path = Path(temp) / "fixture.trx"
-        environment = os.environ.copy()
-        environment["AMANE_QUALIFICATION_FIXTURE_RESULT_PATH"] = str(result_path)
-        environment["AMANE_QUALIFICATION_FIXTURE_SCENARIO"] = scenario
-        environment["AMANE_QUALIFICATION_FIXTURE_VARIANT"] = variant
-        command = [dotnet, "test", str(project), "-c", "Release", "--no-build", "--no-restore", "--nologo", "--filter", fixture["testSelector"], "--logger", f"trx;LogFileName={trx_path}"]
-        try:
-            result = subprocess.run(command, cwd=REPO_ROOT, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900, check=False)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ProducerError("canonical fixture could not be executed") from exc
-        if not trx_path.is_file():
-            raise ProducerError("canonical fixture did not produce a TRX")
-        counters, test_ids = parse_trx(trx_path)
-        if result.returncode != 0 or counters["total"] != 1 or counters["executed"] != 1 or counters["passed"] != 1 or counters["failed"] or counters["error"] or counters["timeout"] or counters["aborted"] or counters["inconclusive"] or counters["notExecuted"] or fixture["sourceTestId"] not in test_ids:
-            raise ProducerError("canonical fixture test case did not pass exactly")
-        fixture_result = read_json(result_path)
-        validate_fixture_result(fixture_result, procedure, scenario, variant, runner)
-        return fixture_result, counters, {"sourceCommitSha": source_commit, "build": build_info}
+        with isolated_git_worktree(source_commit) as worktree_root:
+            project = worktree_root / procedure["testProject"]
+            if not project.is_file() or project.parent.parent != worktree_root / "tests":
+                raise ProducerError("canonical fixture test project is unavailable")
+            build_info = build_fresh_binary(dotnet, os.environ.copy(), worktree_root)
+            if verify_isolated_source_identity(worktree_root, source_commit) != source_commit:
+                raise ProducerError("isolated producer source changed during fresh build")
+            result_path = Path(temp) / "fixture-result.json"
+            trx_path = Path(temp) / "fixture.trx"
+            environment = os.environ.copy()
+            environment["AMANE_QUALIFICATION_FIXTURE_RESULT_PATH"] = str(result_path)
+            environment["AMANE_QUALIFICATION_FIXTURE_SCENARIO"] = scenario
+            environment["AMANE_QUALIFICATION_FIXTURE_VARIANT"] = variant
+            command = [dotnet, "test", str(project), "-c", "Release", "--no-build", "--no-restore", "--nologo", "--filter", fixture["testSelector"], "--logger", f"trx;LogFileName={trx_path}"]
+            try:
+                result = subprocess.run(command, cwd=worktree_root, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900, check=False)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise ProducerError("canonical fixture could not be executed") from exc
+            if not trx_path.is_file():
+                raise ProducerError("canonical fixture did not produce a TRX")
+            counters, test_ids = parse_trx(trx_path)
+            if result.returncode != 0 or counters["total"] != 1 or counters["executed"] != 1 or counters["passed"] != 1 or counters["failed"] or counters["error"] or counters["timeout"] or counters["aborted"] or counters["inconclusive"] or counters["notExecuted"] or fixture["sourceTestId"] not in test_ids:
+                raise ProducerError("canonical fixture test case did not pass exactly")
+            fixture_result = read_json(result_path)
+            validate_fixture_result(fixture_result, procedure, scenario, variant, runner)
+            verify_isolated_source_identity(worktree_root, source_commit)
+            return fixture_result, counters, {"sourceCommitSha": source_commit, "build": build_info}
 
 
 def bound_context(run_root: Path, scenario: str, variant: str, runner: Any) -> tuple[dict[str, Any], dict[str, Any]]:

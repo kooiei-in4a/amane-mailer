@@ -77,17 +77,18 @@ def main() -> int:
         producer,
     )
     original_git_query = producer.git_query
-    producer.git_query = lambda *query: " M synthetic-tracked-file" if query[0] == "status" else source_commit
-    try:
-        expect_rejected(
-            "tracked source drift",
-            lambda: producer.verify_source_identity({"releaseCommitSha": source_commit}),
-            adapter,
-            runner,
-            producer,
-        )
-    finally:
-        producer.git_query = original_git_query
+    for drift_label, drift_status in (("tracked source drift", " M synthetic-tracked-file"), ("staged source drift", "M  synthetic-staged-file")):
+        producer.git_query = lambda *query, status=drift_status: status if query[0] == "status" else source_commit
+        try:
+            expect_rejected(
+                drift_label,
+                lambda: producer.verify_source_identity({"releaseCommitSha": source_commit}),
+                adapter,
+                runner,
+                producer,
+            )
+        finally:
+            producer.git_query = original_git_query
     lanes = adapter.load_manifest(runner)
     assert len(lanes) == 32
     procedures = producer.validate_registry(adapter.read_json(adapter.ADAPTER_MANIFEST, "adapter manifest"), runner)
@@ -147,12 +148,28 @@ def main() -> int:
             producer.build_fresh_binary = original_build_fresh_binary
     finally:
         synthetic_untracked.unlink(missing_ok=True)
-    # The baseline report is produced by the exact fixture.  Negative cases
-    # below mutate that real result rather than manufacturing PASS observations.
-    report = producer.produce_with_context(
-        adapter.read_json(adapter.ADAPTER_MANIFEST, "adapter manifest"), runner, lane, scenario, variant,
-        binding, auth["evidenceOwners"][0],
-    )
+    # The baseline report is produced by the exact fixture while an ignored
+    # source file is present in the operator checkout.  An isolated producer
+    # worktree must not see it; the #error makes accidental compilation fail.
+    synthetic_ignored = producer.REPO_ROOT / "tests" / "Amane.Mailer.Tests" / "orleans.codegen.cs"
+    if synthetic_ignored.exists():
+        raise AssertionError("synthetic ignored source already exists")
+    synthetic_ignored.write_text("#error SYNTHETIC_IGNORED_SOURCE_MUST_NOT_BE_COMPILED\n", encoding="utf-8", newline="\n")
+    try:
+        relative_ignored = synthetic_ignored.relative_to(producer.REPO_ROOT).as_posix()
+        try:
+            ignore_match = producer.git_query("check-ignore", "-v", relative_ignored)
+        except producer.ProducerError as exc:
+            raise AssertionError("synthetic source was not ignored by Git") from exc
+        if not ignore_match:
+            raise AssertionError("synthetic source was not ignored by Git")
+        report = producer.produce_with_context(
+            adapter.read_json(adapter.ADAPTER_MANIFEST, "adapter manifest"), runner, lane, scenario, variant,
+            binding, auth["evidenceOwners"][0],
+        )
+    finally:
+        synthetic_ignored.unlink()
+    print("[info] ignored source isolation negative passed")
     derived = adapter.validate_report(report, binding, auth, lane, scenario, variant, runner)
     envelope = adapter.build_envelope(report, derived, binding, lane, scenario, variant, runner)
     runner.validate_evidence_envelope(envelope, binding, auth, (scenario, variant))

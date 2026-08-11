@@ -12,7 +12,7 @@ structured result producerまで実装済みなのはmanifestの32 laneすべて
 
 canonical fixture自身が実操作を行い、validatorが要求する全fieldのobservationsをvalue-freeなstructured resultとして出力する。producerはPASS値を生成・補完せず、fixture resultのschema、fixture identity、exact test case、終了結果、skip/fail/errorのない単一実行、value-free性、登録predicateを検証する。stdout/stderr、private host path、secret、provider raw responseは保存も出力もしない。
 
-adapterはproducerを自ら起動し、producerのexit code/result、producerId、procedureId、procedure digest、fixture result digest、exact source test ID、candidate/binding/run identity、platform identity、source/binding commit一致、tracked/staged変更とnon-ignored untracked fileがないこと、fresh isolated build、実行assembly digestを再検証する。任意のfixture reportやoperator指定resultをCLIから渡す経路はない。
+adapterはproducerを自ら起動し、producerのexit code/result、producerId、procedureId、procedure digest、fixture result digest、exact source test ID、candidate/binding/run identity、platform identity、source/binding commit一致、tracked/staged変更とnon-ignored untracked fileがないこと、binding commitから作成したisolated Git worktreeでのfresh build、実行assembly digestを再検証する。任意のfixture reportやoperator指定resultをCLIから渡す経路はない。
 
 全validator fieldについて、fixture resultから次のcheckを1つずつ導出する。
 
@@ -53,9 +53,9 @@ fixtureは次のvalue-free resultを生成する。observationsの値は実操�
 }
 ```
 
-adapterへ渡すproducer reportはschema version 4で、`fixtureResult`本体とそのdigestに加えて、実行source commit、binding commit、tracked tree clean、locked restore、Release `--no-incremental` rebuild、実行したtest/product assemblyのvalue-free SHA-256を含む。全fieldのcheckはこの同じfixture resultとexact source test IDへ機械的に結合される。recipient、sender、subject/body、provider raw error、secret、token、connection string、private key、URL、private host pathはproducer reportへ出力しない。
+adapterへ渡すproducer reportはschema version 4で、`fixtureResult`本体とそのdigestに加えて、実行source commit、binding commit、tracked tree clean、locked restore、Release `--no-incremental` rebuild、`isolated-git-worktree`で作成した実行assemblyのvalue-free SHA-256を含む。一時worktreeのprivate pathはreportへ出力しない。全fieldのcheckはこの同じfixture resultとexact source test IDへ機械的に結合される。recipient、sender、subject/body、provider raw error、secret、token、connection string、private key、URL、private host pathはproducer reportへ出力しない。
 
-producerはevidence実行前に自身で `git rev-parse HEAD`、`git diff --quiet`、`git diff --cached --quiet`、`git ls-files --others --exclude-standard` を検査し、`binding.releaseCommitSha` と一致しないcheckout、tracked/staged drift、non-ignored untracked fileを拒否する。`bin/` / `obj/` 等のGit ignore済みbuild outputはこの検査では許可される。その後、repository lock contractに従う locked restore と solution全体の Release `--no-incremental` rebuildを自身で行い、再生成されたrepository outputに対してだけ `dotnet test --no-build --no-restore` を実行する。既存の `bin/` / `obj/` をcanonical evidence sourceとして信頼せず、test/product assemblyをfresh rebuildで置き換える。
+producerはevidence実行前に元checkoutの `git rev-parse HEAD`、`git diff --quiet`、`git diff --cached --quiet`、`git ls-files --others --exclude-standard` を検査し、`binding.releaseCommitSha` と一致しないcheckout、tracked/staged drift、non-ignored untracked fileを拒否する。ignored sourceを許可して元checkoutをbuildすることはしない。binding commitから一時のisolated Git worktreeを作成し、そのHEADとtracked/non-ignored source状態を再検証した後、worktree内でrepository lock contractに従う locked restore、solution全体の Release `--no-incremental` rebuild、`dotnet test --no-build --no-restore`を実行する。元checkoutの `bin/` / `obj/`、ignored source、stale binaryはbuild/test inputにならない。worktree cleanup failureは無視せずfail-closedにする。
 
 ## 実行
 

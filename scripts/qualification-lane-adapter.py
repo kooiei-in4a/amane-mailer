@@ -156,7 +156,7 @@ def validate_provenance(provenance: Any, binding: dict[str, Any]) -> None:
         raise AdapterError("fixture tracked source tree was not clean")
     build = provenance.get("freshBuild")
     build_allowed = {"schemaVersion", "restore", "configuration", "freshBuild", "outputIsolation", "noIncremental", "testAssembly", "productAssembly"}
-    if not isinstance(build, dict) or set(build) != build_allowed or build.get("schemaVersion") != 1 or build.get("restore") != "locked" or build.get("configuration") != "Release" or build.get("freshBuild") is not True or build.get("outputIsolation") != "repository-output" or build.get("noIncremental") is not True:
+    if not isinstance(build, dict) or set(build) != build_allowed or build.get("schemaVersion") != 1 or build.get("restore") != "locked" or build.get("configuration") != "Release" or build.get("freshBuild") is not True or build.get("outputIsolation") != "isolated-git-worktree" or build.get("noIncremental") is not True:
         raise AdapterError("fixture fresh-build provenance is invalid")
     for role, file_name in (("testAssembly", "Amane.Mailer.Tests.dll"), ("productAssembly", "Amane.Mailer.dll")):
         assembly = build.get(role)
