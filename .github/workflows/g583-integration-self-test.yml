@@ -1,0 +1,59 @@
+name: G583 Integration Self-Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/qualification-g583-**"
+      - "scripts/qualification-runner.py"
+      - "scripts/qualification-runner-self-test.py"
+      - "tests/Amane.Mailer.Tests/Qualification/G583**"
+      - "docs/qualification/g583-**"
+      - ".github/workflows/g583-integration-self-test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  g583-integration:
+    name: G583 formal qualification integration
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Compile qualification scripts
+        run: >-
+          python -m py_compile
+          scripts/qualification-g583-dispatch.py
+          scripts/qualification-g583-core-self-test.py
+          scripts/qualification-g583-migration-docker-adapter.py
+          scripts/qualification-g583-migration-fixture-producer.py
+          scripts/qualification-g583-mig03-ci-auto-adapter.py
+          scripts/qualification-g583-mig03-fixture-producer.py
+          scripts/qualification-g583-formal-adapter.py
+
+      - name: G583 Core self-test
+        run: python scripts/qualification-g583-core-self-test.py
+
+      - name: G583 MIG01/MIG02 adapter self-test
+        run: python scripts/qualification-g583-migration-docker-adapter.py self-test
+
+      - name: G583 MIG01/MIG02 producer self-test
+        run: python scripts/qualification-g583-migration-fixture-producer.py self-test
+
+      - name: G583 MIG03 adapter self-test
+        run: python scripts/qualification-g583-mig03-ci-auto-adapter.py self-test
+
+      - name: G583 MIG03 producer self-test
+        run: python scripts/qualification-g583-mig03-fixture-producer.py self-test
+
+      - name: G583 formal evidence bridge self-test
+        run: python scripts/qualification-g583-formal-adapter.py self-test
