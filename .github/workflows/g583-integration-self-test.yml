@@ -2,6 +2,9 @@ name: G583 Integration Self-Test
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - "release-prep/v1.3.0-rc12"
   pull_request:
     branches:
       - main
