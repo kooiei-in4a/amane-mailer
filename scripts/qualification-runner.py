@@ -21,6 +21,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,8 @@ ARCHIVE_RIDS = {"win-x64", "linux-x64", "linux-arm64"}
 OCI_PLATFORMS = {"linux/amd64", "linux/arm64"}
 JCS_VERSION = {"algorithm": "RFC8785-JCS", "version": 1}
 ROOT_DIGEST_ALGORITHM = "RFC8785-JCS-sorted-path-sha256/v1"
+RUN_LIFECYCLE_VERSION = 2
+RUN_READY_FILE = "run-ready.json"
 VARIANT_RULES_VERSION = 4
 SCOPE_MANIFEST_SCHEMA_VERSION = 1
 LEGACY_SCOPE_ID = "v1.2.0-issue-456"
@@ -939,17 +942,136 @@ def binding_id_for(binding: dict[str, Any], authorization: dict[str, Any]) -> st
             str(require_scope_version(binding.get("migrationSchemaAllowlistVersion"), "migrationSchemaAllowlistVersion")),
             require_hex(require_string(binding, "migrationSchemaAllowlistSha256"), "migrationSchemaAllowlistSha256"),
         ])
+    if binding.get("lifecycleVersion") is not None:
+        if binding.get("lifecycleVersion") != RUN_LIFECYCLE_VERSION:
+            fail("binding lifecycleVersion is unsupported")
+        preimage += "|" + "|".join([
+            f"lifecycle-v{RUN_LIFECYCLE_VERSION}",
+            require_hex(require_string(binding, "bindingNonce"), "bindingNonce"),
+        ])
     return sha_bytes(preimage.encode("utf-8"))
 
 
-def load_binding(run_root: Path) -> dict[str, Any]:
+def fresh_lifecycle_nonce(label: str, seed: str | None = None) -> str:
+    if not SAFE_ID.fullmatch(label):
+        fail("lifecycle nonce label is invalid")
+    seed_value = "" if seed is None else require_value_free_identity(seed, f"{label}-nonce-seed")
+    return sha_bytes(f"{label}|{seed_value}|{secrets.token_hex(32)}".encode("utf-8"))
+
+
+def create_staging_run_root(run_root: Path) -> None:
+    if run_root.exists() or run_root.is_symlink():
+        fail("qualificationRunId already exists; bind is write-once")
+    ensure_directory_chain(run_root.parent)
+    if run_root.parent.is_symlink():
+        fail("run root parent is a symlink")
+    try:
+        run_root.mkdir()
+    except FileExistsError:
+        fail("qualificationRunId already exists; bind is write-once")
+    if run_root.is_symlink() or not run_root.is_dir():
+        fail("staging run root is not a real directory")
+    fsync_directory(run_root.parent)
+
+
+def lifecycle_material_inventory(run_root: Path) -> list[dict[str, str]]:
+    exact_paths = {
+        "authorization.json", "binding.json", "migration-pin.json",
+        "phase-manifests/phase-2.json", "scope-manifest.json",
+    }
+    entries = []
+    for path in sorted(run_root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(run_root).as_posix()
+        if relative in exact_paths or relative.startswith("docs-extract/"):
+            entries.append({"path": relative, "sha256": file_sha(path)})
+    return entries
+
+
+def lifecycle_material_root(run_root: Path) -> str:
+    return object_root(lifecycle_material_inventory(run_root))
+
+
+def write_run_ready(run_root: Path, binding: dict[str, Any]) -> dict[str, Any]:
+    ready = {
+        "schemaVersion": 1,
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
+        "status": "ready",
+        "candidateId": binding["candidateId"],
+        "bindingId": binding["bindingId"],
+        "qualificationRunId": binding["qualificationRunId"],
+        "bindingSha256": file_sha(run_root / "binding.json"),
+        "authorizationSha256": file_sha(run_root / "authorization.json"),
+        "phase2Sha256": file_sha(run_root / "phase-manifests" / "phase-2.json"),
+        "materialRootSha256": lifecycle_material_root(run_root),
+        "readyAtUtc": utc_now(),
+    }
+    write_once(run_root / RUN_READY_FILE, ready)
+    return ready
+
+
+def validate_run_ready(run_root: Path, binding: dict[str, Any], ready: dict[str, Any]) -> None:
+    expected_identity = {
+        "candidateId": binding["candidateId"],
+        "bindingId": binding["bindingId"],
+        "qualificationRunId": binding["qualificationRunId"],
+    }
+    if ready.get("schemaVersion") != 1 or ready.get("lifecycleVersion") != RUN_LIFECYCLE_VERSION or ready.get("status") != "ready":
+        fail("run-ready.json lifecycle identity mismatch")
+    if any(ready.get(field) != value for field, value in expected_identity.items()):
+        fail("run-ready.json qualification identity mismatch")
+    for field in ("bindingSha256", "authorizationSha256", "phase2Sha256", "materialRootSha256"):
+        require_hex(require_string(ready, field), f"run-ready.{field}")
+    if ready["bindingSha256"] != file_sha(run_root / "binding.json"):
+        fail("run-ready.json binding digest mismatch")
+    if ready["authorizationSha256"] != file_sha(run_root / "authorization.json"):
+        fail("run-ready.json authorization digest mismatch")
+    if ready["phase2Sha256"] != file_sha(run_root / "phase-manifests" / "phase-2.json"):
+        fail("run-ready.json Phase 2 digest mismatch")
+    if ready["materialRootSha256"] != lifecycle_material_root(run_root):
+        fail("run-ready.json material root mismatch")
+    if not isinstance(ready.get("readyAtUtc"), str) or not UTC_TIMESTAMP.fullmatch(ready["readyAtUtc"]):
+        fail("run-ready.json readyAtUtc is invalid")
+
+
+def load_binding(run_root: Path, *, allow_staging: bool = False) -> dict[str, Any]:
     binding = read_json(run_root / "binding.json", "binding.json")
     if not isinstance(binding, dict):
         fail("binding.json: object required")
     for field in ("candidateId", "bindingId", "qualificationRunId"):
         require_hex(require_string(binding, field), f"binding.{field}")
     nonce = require_string(binding, "runAttemptNonce")
-    if sha_bytes((binding["bindingId"] + "|" + nonce).encode("utf-8")) != run_root.name:
+    lifecycle_version = binding.get("lifecycleVersion")
+    ready = None
+    if lifecycle_version is not None:
+        if lifecycle_version != RUN_LIFECYCLE_VERSION:
+            fail("binding lifecycleVersion is unsupported")
+        require_hex(require_string(binding, "bindingNonce"), "binding.bindingNonce")
+        require_hex(nonce, "binding.runAttemptNonce")
+        if allow_staging:
+            if (run_root / RUN_READY_FILE).exists() or (run_root / RUN_READY_FILE).is_symlink():
+                fail("staging verification cannot reuse a ready run")
+        else:
+            ready = read_json(run_root / RUN_READY_FILE, RUN_READY_FILE)
+            if not isinstance(ready, dict):
+                fail("run-ready.json: object required")
+    elif not allow_staging:
+        # Pre-remediation unsealed runs have no proof that binding,
+        # authorization, and Phase 2 were materialized atomically.  They are
+        # historical state only; sealed legacy runs remain readable for
+        # verification/handoff, but an incomplete legacy run cannot resume.
+        legacy_events = sorted((run_root / "run-status-events").glob("*.json"))
+        legacy_sealed = False
+        for event_path in legacy_events:
+            event = read_json(event_path, "legacy run-status event")
+            if isinstance(event, dict) and event.get("status") == "sealed" and event.get("qualificationRunId") == binding["qualificationRunId"]:
+                legacy_sealed = True
+                break
+        if not legacy_sealed:
+            fail("pre-remediation unsealed run is ineligible; create a fresh binding and qualification run")
+    expected_run_id = sha_bytes((binding["bindingId"] + "|" + nonce).encode("utf-8"))
+    if expected_run_id != run_root.name or binding["qualificationRunId"] != expected_run_id:
         fail("qualificationRunId/runAttemptNonce binding mismatch")
     scope_profile = None
     if binding.get("scopeId") is not None:
@@ -975,6 +1097,8 @@ def load_binding(run_root: Path) -> dict[str, Any]:
         fail("binding migration PIN fields are missing")
     phase2 = read_json(run_root / "phase-manifests/phase-2.json", "phase-2.json")
     phase2_fields = ("candidateId", "bindingId", "qualificationRunId", "runAttemptNonce", "releaseCommitSha", "releaseVersion", "ociPlatforms", "ociLayoutIndexSha256", "planFilePath", "producerWorkflowRef", "producerWorkflowRunId", "producerWorkflowRunAttempt", "candidateProvenanceSha256", "candidateImageIdentitySha256", "candidatePhase1ManifestSha256", "candidateArchivesDigestSha256")
+    if lifecycle_version is not None:
+        phase2_fields += ("lifecycleVersion", "bindingNonce")
     if scope_profile is not None:
         phase2_fields += ("scopeId", "scopeVersion", "scopeManifestSha256", "scopeAuthorityIssueNumber", "scopeAuthorityIssueBodySha256", "scopePlanFileSha256", "planRevision", "issueNumber", "variantRulesVersion", "migrationBaselineInventoryDigestSha256", "migrationDeltaInventoryDigestSha256", "migrationFullInventoryDigestSha256", "migrationPredicateSetVersion", "migrationSchemaAllowlistVersion", "migrationSchemaAllowlistSha256", "migrationSchemaAllowlist")
     if any(phase2.get(field) != binding.get(field) for field in phase2_fields) or phase2.get("docs") != binding.get("docs") or phase2.get("authorizationDigestSha256") != binding.get("authorizationDigestSha256"):
@@ -982,6 +1106,8 @@ def load_binding(run_root: Path) -> dict[str, Any]:
     auth = read_json(run_root / "authorization.json", "authorization.json")
     if not isinstance(auth, dict) or any(auth.get(field) != binding.get(field) for field in ("candidateId", "bindingId", "qualificationRunId")) or sha_object(auth) != binding.get("authorizationDigestSha256"):
         fail("authorization snapshot digest/identity mismatch")
+    if lifecycle_version is not None and auth.get("lifecycleVersion") != lifecycle_version:
+        fail("authorization lifecycle identity mismatch")
     if binding["bindingId"] != binding_id_for(binding, auth):
         fail("bindingId recomputation mismatch")
     saved_pin = load_migration_pin(run_root / "migration-pin.json", scope_profile)
@@ -1031,6 +1157,8 @@ def load_binding(run_root: Path) -> dict[str, Any]:
     objects = [{"path": p.relative_to(candidate_root.parent).as_posix(), "sha256": file_sha(p)} for p in sorted(candidate_root.rglob("*")) if p.is_file() and p.name != "phase-1.json"]
     if phase1.get("candidateId") != binding.get("candidateId") or phase1.get("sourceCommitSha") != binding.get("releaseCommitSha") or phase1.get("ociIndexDigest") != binding.get("ociIndexDigest") or phase1.get("workflowRunId") != provenance.get("workflowRunId") or phase1.get("workflowRunAttempt") != provenance.get("workflowRunAttempt") or phase1.get("workflowRef") != provenance.get("workflowRef") or phase1.get("objects") != objects:
         fail("phase-1 object inventory mismatch")
+    if ready is not None:
+        validate_run_ready(run_root, binding, ready)
     return binding
 
 
@@ -1838,7 +1966,7 @@ def command_bind(args: argparse.Namespace) -> None:
         archive_paths,
         rid_specific=scope_profile is not None,
     )
-    nonce = require_value_free_identity(args.run_attempt_nonce, "run-attempt-nonce")
+    run_nonce_seed = require_value_free_identity(args.run_attempt_nonce, "run-attempt-nonce")
     owners = load_owner_map(Path(args.evidence_owners))
     optional = scope_profile["optionalEvidenceKeys"] if scope_profile is not None else [{"scenarioId": "G456-38", "variantId": "nas"}, {"scenarioId": "G456-39", "variantId": "macos"}, {"scenarioId": "G456-40", "variantId": "mode5-manual"}, {"scenarioId": "G456-41", "variantId": "external-secret-manager-docs"}]
     required_keys = {(r["scenarioId"], v) for r in rows for v in r["requiredVariants"]}
@@ -1859,6 +1987,8 @@ def command_bind(args: argparse.Namespace) -> None:
     scope_predicate_version = scope_profile["migrationPredicateSetVersion"] if scope_profile is not None else None
     scope_schema_allowlist_version = scope_profile["migration"]["schemaAllowlistVersion"] if scope_profile is not None else None
     binding_material = {
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
+        "bindingNonce": fresh_lifecycle_nonce("binding"),
         "candidateId": args.candidate_id,
         "issueBodySha256": issue_body_sha,
         "planCommitSha": plan_commit,
@@ -1908,13 +2038,14 @@ def command_bind(args: argparse.Namespace) -> None:
         "evidenceOwners": owners,
     }
     binding_id = binding_id_for(binding_material, authorization_seed)
-    run_id = sha_bytes((binding_id + "|" + nonce).encode("utf-8"))
+    run_nonce = fresh_lifecycle_nonce("run", run_nonce_seed)
+    run_id = sha_bytes((binding_id + "|" + run_nonce).encode("utf-8"))
     run_root = store / "runs" / run_id
-    if run_root.exists():
-        fail("qualificationRunId already exists; bind is write-once")
+    create_staging_run_root(run_root)
     created = utc_now()
     authorization = {
         "schemaVersion": 1,
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
         "qualificationRunId": run_id,
         "bindingId": binding_id,
         "candidateId": args.candidate_id,
@@ -1927,9 +2058,11 @@ def command_bind(args: argparse.Namespace) -> None:
     }
     binding = {
         "schemaVersion": 1,
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
+        "bindingNonce": binding_material["bindingNonce"],
         "bindingId": binding_id,
         "qualificationRunId": run_id,
-        "runAttemptNonce": nonce,
+        "runAttemptNonce": run_nonce,
         "candidateId": args.candidate_id,
         "planRevision": scope_plan_revision,
         "planCommitSha": plan_commit,
@@ -1984,8 +2117,8 @@ def command_bind(args: argparse.Namespace) -> None:
             "migrationSchemaAllowlistSha256": scope_profile["migration"]["schemaAllowlistSha256"],
             "migrationSchemaAllowlist": scope_profile["migration"]["schemaAllowlist"],
         })
-    write_once(run_root / "authorization.json", authorization)
     write_once(run_root / "binding.json", binding)
+    write_once(run_root / "authorization.json", authorization)
     if scope_profile is not None:
         write_once(run_root / "scope-manifest.json", read_json(Path(args.scope_manifest), "scope manifest"))
     write_once(run_root / "migration-pin.json", read_json(Path(args.migration_pin), "migration pin"))
@@ -1999,11 +2132,13 @@ def command_bind(args: argparse.Namespace) -> None:
     write_once(run_root / "docs-extract" / "metadata.json", docs_metadata)
     phase2 = {
         "schemaVersion": 1,
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
         "phase": 2,
         "candidateId": args.candidate_id,
         "bindingId": binding_id,
         "qualificationRunId": run_id,
-        "runAttemptNonce": nonce,
+        "bindingNonce": binding["bindingNonce"],
+        "runAttemptNonce": run_nonce,
         "planFilePath": plan_relative_path,
         "authorizationDigestSha256": sha_object(authorization),
         "migrationPinDigestSha256": migration_pin["migrationPinDigestSha256"],
@@ -2043,7 +2178,12 @@ def command_bind(args: argparse.Namespace) -> None:
             "migrationSchemaAllowlist": binding["migrationSchemaAllowlist"],
         })
     write_once(run_root / "phase-manifests" / "phase-2.json", phase2)
-    print(json.dumps({"candidateId": args.candidate_id, "bindingId": binding_id, "qualificationRunId": run_id}, sort_keys=True))
+    # A run is ineligible until every Phase 2 object has been reloaded and
+    # cross-verified.  The ready marker is deliberately the final write.
+    load_binding(run_root, allow_staging=True)
+    write_run_ready(run_root, binding)
+    load_binding(run_root)
+    print(json.dumps({"candidateId": args.candidate_id, "bindingId": binding_id, "qualificationRunId": run_id, "ready": True}, sort_keys=True))
 
 
 def value_free(value: Any, path: str = "$ ") -> None:

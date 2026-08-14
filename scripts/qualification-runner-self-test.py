@@ -207,7 +207,7 @@ def main() -> int:
         runner.load_migration_pin = lambda _path, _profile: smoke_pin
         runner.candidate_documents = lambda _path: (smoke_provenance, smoke_identity, smoke_archives)
         try:
-            runner.load_binding(smoke_root)
+            runner.load_binding(smoke_root, allow_staging=True)
         finally:
             runner.load_migration_pin = original_pin_loader
             runner.candidate_documents = original_candidate_documents
@@ -547,9 +547,36 @@ def main() -> int:
             matches = [entry for entry in owner_entries if entry["scenarioId"] == scenario and entry["variantId"] == variant]
             assert len(matches) == 1
             return matches[0]["ownerRole"], matches[0]["ownerIdentity"]
-        bound = json.loads(run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(plan), "--plan-commit-sha", source, "--repo-root", str(repo_root), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "self-test-1", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional"))
+        def bind_candidate(nonce_seed):
+            return json.loads(run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(plan), "--plan-commit-sha", source, "--repo-root", str(repo_root), "--migration-pin", str(migration_pin), "--run-attempt-nonce", nonce_seed, "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional"))
+        bound = bind_candidate("self-test-1")
+        if bound.get("ready") is not True:
+            raise AssertionError("bind did not report ready lifecycle state")
         run_root = store / "runs" / bound["qualificationRunId"]
         binding = json.loads((run_root / "binding.json").read_text(encoding="utf-8"))
+        ready = json.loads((run_root / runner.RUN_READY_FILE).read_text(encoding="utf-8"))
+        if binding.get("lifecycleVersion") != runner.RUN_LIFECYCLE_VERSION or ready.get("status") != "ready":
+            raise AssertionError("fresh bind did not persist lifecycle readiness")
+        if not runner.HEX64.fullmatch(binding.get("bindingNonce", "")) or not runner.HEX64.fullmatch(binding.get("runAttemptNonce", "")):
+            raise AssertionError("fresh lifecycle nonces were not generated")
+        if binding["runAttemptNonce"] == "self-test-1":
+            raise AssertionError("operator nonce seed was reused as the run nonce")
+
+        partial = bind_candidate("partial-retry-seed")
+        partial_root = store / "runs" / partial["qualificationRunId"]
+        (partial_root / runner.RUN_READY_FILE).unlink()
+        try:
+            runner.load_binding(partial_root)
+        except runner.RunnerError:
+            pass
+        else:
+            raise AssertionError("partial run without ready marker was eligible")
+        retry = bind_candidate("partial-retry-seed")
+        if retry["bindingId"] == partial["bindingId"] or retry["qualificationRunId"] == partial["qualificationRunId"]:
+            raise AssertionError("partial-failure retry reused binding or run identity")
+        retry_root = store / "runs" / retry["qualificationRunId"]
+        if any((retry_root / name).exists() for name in ("evidence", "scans", "dispositions")):
+            raise AssertionError("fresh retry did not start with zero evidence state")
         evidence_counter = 10
         def envelope(evidence_id, scenario, variant, result, evidence_type, payload):
             owner_role, owner_identity = actor_for(scenario, variant)
@@ -754,7 +781,7 @@ def main() -> int:
 
         # Sealed runs reject new evidence and value-bearing observations.
         run("evidence", "--run-root", str(run_root), "--evidence-id", "9" * 64, "--scenario-id", "G456-01", "--variant-id", "win-docker", "--result", "PASS", "--executed-by-role", "lane-owner", "--executed-by-identity", "ci:test", expect=1)
-        bound2 = json.loads(run("bind", "--store-root", str(store), "--candidate-id", candidate_id, "--issue-snapshot", str(issue_path), "--plan-file", str(plan), "--plan-commit-sha", source, "--repo-root", str(repo_root), "--migration-pin", str(migration_pin), "--run-attempt-nonce", "self-test-2", "--evidence-owners", str(owners), "--qualification-lead-role", "qualification-lead", "--qualification-lead-identity", "maintainer:test", "--conditional-approver-role", "conditional-approver", "--conditional-approver-identity", "maintainer:conditional"))
+        bound2 = bind_candidate("self-test-2")
         observations = root / "secret-observations.json"
         saved_binding = binding
         binding = json.loads((store / "runs" / bound2["qualificationRunId"] / "binding.json").read_text(encoding="utf-8"))
