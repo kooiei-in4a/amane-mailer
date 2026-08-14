@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "dispatchKey": ["scenarioId", "variantId", "contractVersion"],
+  "adapterInterface": {
+    "name": "g583-s5a-adapter-v1",
+    "callable": "validate_and_build_observations",
+    "arguments": ["evidence", "artifactAuthority", "registration"],
+    "return": "value-free-qualification-observations"
+  },
+  "g456Isolation": {
+    "scenarioPrefix": "G456-",
+    "managedBy": "qualification-lane-adapter.py",
+    "behavioralChange": "none"
+  },
+  "registrations": [
+    {
+      "scenarioId": "G583-MIG-01",
+      "variantId": "win-docker",
+      "contractVersion": "g583-s5a-platform-v1",
+      "contractPath": "docs/qualification/g583-s5a-platform-contract-v1.json",
+      "adapterStatus": "metadata-only",
+      "adapterId": null
+    },
+    {
+      "scenarioId": "G583-MIG-02",
+      "variantId": "linux-docker",
+      "contractVersion": "g583-s5a-platform-v1",
+      "contractPath": "docs/qualification/g583-s5a-platform-contract-v1.json",
+      "adapterStatus": "metadata-only",
+      "adapterId": null
+    },
+    {
+      "scenarioId": "G583-MIG-03",
+      "variantId": "ci-auto",
+      "contractVersion": "g583-mig03-ci-auto-v1",
+      "contractPath": "docs/qualification/g583-s5a-mig03-ci-auto-contract-v1.json",
+      "adapterStatus": "metadata-only",
+      "adapterId": null
+    }
+  ]
+}

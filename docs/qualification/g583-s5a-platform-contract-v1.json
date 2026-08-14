@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "contracts": [
+    {
+      "scenarioId": "G583-MIG-01",
+      "laneVariant": "win-docker",
+      "contractVersion": "g583-s5a-platform-v1",
+      "hostPlatform": "windows-x64",
+      "dockerEngineOS": "linux",
+      "containerPlatform": "linux/amd64",
+      "artifactIdentity": {
+        "authority": "candidate-binding",
+        "requiredFields": ["candidateId", "releaseCommitSha", "ociIndexDigest", "selectedManifestDigest"],
+        "selectedManifestRule": "must-match-selected-oci-descriptor"
+      }
+    },
+    {
+      "scenarioId": "G583-MIG-02",
+      "laneVariant": "linux-docker",
+      "contractVersion": "g583-s5a-platform-v1",
+      "hostPlatform": "linux-x64",
+      "dockerEngineOS": "linux",
+      "containerPlatform": "linux/amd64",
+      "artifactIdentity": {
+        "authority": "candidate-binding",
+        "requiredFields": ["candidateId", "releaseCommitSha", "ociIndexDigest", "selectedManifestDigest"],
+        "selectedManifestRule": "must-match-selected-oci-descriptor"
+      }
+    },
+    {
+      "scenarioId": "G583-MIG-02",
+      "laneVariant": "linux-docker",
+      "contractVersion": "g583-s5a-platform-v1",
+      "hostPlatform": "linux-x64",
+      "dockerEngineOS": "linux",
+      "containerPlatform": "linux/arm64",
+      "artifactIdentity": {
+        "authority": "candidate-binding",
+        "requiredFields": ["candidateId", "releaseCommitSha", "ociIndexDigest", "selectedManifestDigest"],
+        "selectedManifestRule": "must-match-selected-oci-descriptor"
+      }
+    },
+    {
+      "scenarioId": "G583-MIG-02",
+      "laneVariant": "linux-docker",
+      "contractVersion": "g583-s5a-platform-v1",
+      "hostPlatform": "linux-arm64",
+      "dockerEngineOS": "linux",
+      "containerPlatform": "linux/amd64",
+      "artifactIdentity": {
+        "authority": "candidate-binding",
+        "requiredFields": ["candidateId", "releaseCommitSha", "ociIndexDigest", "selectedManifestDigest"],
+        "selectedManifestRule": "must-match-selected-oci-descriptor"
+      }
+    },
+    {
+      "scenarioId": "G583-MIG-02",
+      "laneVariant": "linux-docker",
+      "contractVersion": "g583-s5a-platform-v1",
+      "hostPlatform": "linux-arm64",
+      "dockerEngineOS": "linux",
+      "containerPlatform": "linux/arm64",
+      "artifactIdentity": {
+        "authority": "candidate-binding",
+        "requiredFields": ["candidateId", "releaseCommitSha", "ociIndexDigest", "selectedManifestDigest"],
+        "selectedManifestRule": "must-match-selected-oci-descriptor"
+      }
+    }
+  ]
+}
