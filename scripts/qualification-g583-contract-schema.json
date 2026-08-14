@@ -49,7 +49,7 @@
       "additionalProperties": false,
       "required": ["scenarioId", "laneVariant", "contractVersion", "hostPlatform", "dockerEngineOS", "containerPlatform", "artifactIdentity"],
       "properties": {
-        "scenarioId": {"const": "G583-MIG-01"},
+        "scenarioId": {"enum": ["G583-MIG-01", "G583-MIG-02"]},
         "laneVariant": {"const": "win-docker"},
         "contractVersion": {"const": "g583-s5a-platform-v1"},
         "hostPlatform": {"const": "windows-x64"},
@@ -63,7 +63,7 @@
       "additionalProperties": false,
       "required": ["scenarioId", "laneVariant", "contractVersion", "hostPlatform", "dockerEngineOS", "containerPlatform", "artifactIdentity"],
       "properties": {
-        "scenarioId": {"const": "G583-MIG-02"},
+        "scenarioId": {"enum": ["G583-MIG-01", "G583-MIG-02"]},
         "laneVariant": {"const": "linux-docker"},
         "contractVersion": {"const": "g583-s5a-platform-v1"},
         "hostPlatform": {"enum": ["linux-x64", "linux-arm64"]},

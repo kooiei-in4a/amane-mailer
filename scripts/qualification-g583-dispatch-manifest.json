@@ -22,6 +22,22 @@
       "adapterId": null
     },
     {
+      "scenarioId": "G583-MIG-01",
+      "variantId": "linux-docker",
+      "contractVersion": "g583-s5a-platform-v1",
+      "contractPath": "docs/qualification/g583-s5a-platform-contract-v1.json",
+      "adapterStatus": "metadata-only",
+      "adapterId": null
+    },
+    {
+      "scenarioId": "G583-MIG-02",
+      "variantId": "win-docker",
+      "contractVersion": "g583-s5a-platform-v1",
+      "contractPath": "docs/qualification/g583-s5a-platform-contract-v1.json",
+      "adapterStatus": "metadata-only",
+      "adapterId": null
+    },
+    {
       "scenarioId": "G583-MIG-02",
       "variantId": "linux-docker",
       "contractVersion": "g583-s5a-platform-v1",

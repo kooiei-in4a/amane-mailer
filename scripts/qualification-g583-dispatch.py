@@ -37,19 +37,31 @@ CI_POLICY = {
     "authority": "candidate-binding",
     "requiredFields": ["candidateId", "releaseCommitSha", "ociIndexDigest"],
 }
+PLATFORM_ROUTES = {
+    (scenario, variant, PLATFORM_CONTRACT)
+    for scenario in ("G583-MIG-01", "G583-MIG-02")
+    for variant in ("win-docker", "linux-docker")
+}
 PLATFORM_ALLOCATIONS = {
-    ("G583-MIG-01", "win-docker", "windows-x64", "linux", "linux/amd64"),
     *{
-        ("G583-MIG-02", "linux-docker", host, "linux", container)
+        (scenario, "win-docker", "windows-x64", "linux", "linux/amd64")
+        for scenario in ("G583-MIG-01", "G583-MIG-02")
+    },
+    *{
+        (scenario, "linux-docker", host, "linux", container)
+        for scenario in ("G583-MIG-01", "G583-MIG-02")
         for host in ("linux-x64", "linux-arm64")
         for container in ("linux/amd64", "linux/arm64")
     },
 }
-EXPECTED_ROUTES = {
-    ("G583-MIG-01", "win-docker", PLATFORM_CONTRACT),
-    ("G583-MIG-02", "linux-docker", PLATFORM_CONTRACT),
+EXPECTED_PLATFORM_CONTRACTS = {
+    (scenario, lane, PLATFORM_CONTRACT, host, engine, container)
+    for scenario, lane, host, engine, container in PLATFORM_ALLOCATIONS
+}
+EXPECTED_MIG03_CONTRACTS = {
     ("G583-MIG-03", "ci-auto", MIG03_CONTRACT),
 }
+EXPECTED_ROUTES = PLATFORM_ROUTES | EXPECTED_MIG03_CONTRACTS
 
 
 class DispatchError(Exception):
@@ -106,6 +118,33 @@ def validate_schema_artifact(schema: dict[str, Any]) -> None:
         "winDockerPlatformContract", "linuxDockerPlatformContract", "mig03Contract",
     }:
         fail("contract schema: required definitions are missing")
+    expected_scenarios = {"enum": ["G583-MIG-01", "G583-MIG-02"]}
+    win_properties = require_object(
+        require_object(definitions["winDockerPlatformContract"], "winDockerPlatformContract").get("properties"),
+        "winDockerPlatformContract.properties",
+    )
+    linux_properties = require_object(
+        require_object(definitions["linuxDockerPlatformContract"], "linuxDockerPlatformContract").get("properties"),
+        "linuxDockerPlatformContract.properties",
+    )
+    if win_properties.get("scenarioId") != expected_scenarios or linux_properties.get("scenarioId") != expected_scenarios:
+        fail("contract schema: MIG01 and MIG02 must both allow win-docker and linux-docker")
+    if win_properties.get("laneVariant") != {"const": "win-docker"}:
+        fail("contract schema: win-docker lane policy mismatch")
+    if (
+        win_properties.get("hostPlatform") != {"const": "windows-x64"}
+        or win_properties.get("dockerEngineOS") != {"const": "linux"}
+        or win_properties.get("containerPlatform") != {"const": "linux/amd64"}
+    ):
+        fail("contract schema: win-docker platform policy mismatch")
+    if linux_properties.get("laneVariant") != {"const": "linux-docker"}:
+        fail("contract schema: linux-docker lane policy mismatch")
+    if (
+        linux_properties.get("hostPlatform") != {"enum": ["linux-x64", "linux-arm64"]}
+        or linux_properties.get("dockerEngineOS") != {"const": "linux"}
+        or linux_properties.get("containerPlatform") != {"enum": ["linux/amd64", "linux/arm64"]}
+    ):
+        fail("contract schema: linux-docker concrete platform policy mismatch")
 
 
 def validate_contract_document(document: dict[str, Any], label: str = "contract document") -> list[dict[str, Any]]:
@@ -147,6 +186,15 @@ def validate_contract_document(document: dict[str, Any], label: str = "contract 
             fail(f"{label}: duplicate contract allocation")
         seen.add(identity)
         normalized.append(dict(contract))
+    families = {item[2] for item in seen}
+    if families == {PLATFORM_CONTRACT}:
+        if seen != EXPECTED_PLATFORM_CONTRACTS:
+            fail(f"{label}: platform route/allocation set mismatch")
+    elif families == {MIG03_CONTRACT}:
+        if seen != EXPECTED_MIG03_CONTRACTS:
+            fail(f"{label}: MIG03 route set mismatch")
+    else:
+        fail(f"{label}: contract families must remain separate")
     return normalized
 
 
@@ -177,7 +225,7 @@ def load_manifest(path: Path = DEFAULT_MANIFEST, repo_root: Path = ROOT) -> dict
         fail("dispatch manifest: G456 isolation boundary mismatch")
     registrations = manifest.get("registrations")
     if not isinstance(registrations, list) or len(registrations) != len(EXPECTED_ROUTES):
-        fail("dispatch manifest: exactly three G583 routes are required")
+        fail("dispatch manifest: exactly five G583 routes are required")
     routes: set[tuple[str, str, str]] = set()
     normalized = []
     contract_cache: dict[str, list[dict[str, Any]]] = {}
