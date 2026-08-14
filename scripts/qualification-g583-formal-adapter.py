@@ -98,6 +98,16 @@ def require_object(value: Any, label: str) -> dict[str, Any]:
     return value
 
 
+def require_hex64(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        fail(f"{label} must be lowercase 64-hex")
+    return value
+
+
 def bound_row(binding: dict[str, Any], scenario: str, variant: str) -> dict[str, Any]:
     matches = [
         row for row in binding.get("rows", [])
@@ -230,24 +240,88 @@ def migration_payload(binding: dict[str, Any], scenario: str, observations: dict
 
 
 def mig03_payload(binding: dict[str, Any], observations: dict[str, Any]) -> dict[str, Any]:
+    expected_top_level = {
+        "schemaVersion", "kind", "qualificationExecuted", "scenarioId", "variantId",
+        "laneVariant", "contractVersion", "ownerRole", "artifactIdentity", "migration",
+        "schema", "privacy", "fixture",
+    }
+    if (
+        set(observations) != expected_top_level
+        or observations.get("schemaVersion") != 1
+        or observations.get("kind") != "g583-mig03-ci-auto-prequalification-observations"
+        or observations.get("qualificationExecuted") is not False
+        or observations.get("scenarioId") != "G583-MIG-03"
+        or observations.get("variantId") != "ci-auto"
+        or observations.get("laneVariant") != "ci-auto"
+        or observations.get("contractVersion") != MIG03_CONTRACT
+        or observations.get("ownerRole") != "maintainer-migration"
+    ):
+        fail("MIG03 prequalification observations schema/route identity mismatch")
+
+    artifact_identity = require_object(observations.get("artifactIdentity"), "MIG03 artifactIdentity")
+    if set(artifact_identity) != {"candidateId", "releaseCommitSha", "ociIndexDigest"} or any(
+        artifact_identity.get(field) != binding.get(field)
+        for field in ("candidateId", "releaseCommitSha", "ociIndexDigest")
+    ):
+        fail("MIG03 artifact identity does not match qualification binding")
+
     migration = require_object(observations.get("migration"), "MIG03 migration observations")
+    migration_fields = {
+        "migrationDecision", "migrationPinDigestSha256", "migrationInventoryDigestSha256",
+        "baselineInventory", "deltaInventory", "fullInventory",
+        "baselineInventoryDigestSha256", "deltaInventoryDigestSha256", "fullInventoryDigestSha256",
+        "schemaAllowlistVersion", "schemaAllowlistSha256",
+    }
     full = binding["migrationFullInventory"]
     delta = binding["migrationDeltaInventory"]
     if (
-        observations.get("qualificationExecuted") is not False
+        set(migration) != migration_fields
         or migration.get("migrationDecision") != "INCLUDE"
+        or migration.get("migrationPinDigestSha256") != binding["migrationPinDigestSha256"]
+        or migration.get("migrationInventoryDigestSha256") != binding["migrationFullInventoryDigestSha256"]
         or migration.get("baselineInventory") != binding["migrationBaselineInventory"]
         or migration.get("deltaInventory") != delta
         or migration.get("fullInventory") != full
         or migration.get("baselineInventoryDigestSha256") != binding["migrationBaselineInventoryDigestSha256"]
         or migration.get("deltaInventoryDigestSha256") != binding["migrationDeltaInventoryDigestSha256"]
         or migration.get("fullInventoryDigestSha256") != binding["migrationFullInventoryDigestSha256"]
-        or migration.get("migrationInventoryDigestSha256") != binding["migrationFullInventoryDigestSha256"]
         or migration.get("schemaAllowlistVersion") != binding["migrationSchemaAllowlistVersion"]
         or migration.get("schemaAllowlistSha256") != binding["migrationSchemaAllowlistSha256"]
     ):
         fail("MIG03 prequalification observations do not match the bound schema authority")
+
+    schema = require_object(observations.get("schema"), "MIG03 schema observations")
+    if set(schema) != {"migrationRange", "schemaContractResult", "constraintsResult", "indexesResult"} or schema != {
+        "migrationRange": "014..018",
+        "schemaContractResult": "pass",
+        "constraintsResult": "pass",
+        "indexesResult": "pass",
+    }:
+        fail("MIG03 staged schema observations did not PASS exactly")
+
+    privacy = require_object(observations.get("privacy"), "MIG03 privacy observations")
+    if set(privacy) != {"piiValueCanaryResult", "valueFreeEvidenceCanaryResult", "prohibitedContentScan"}:
+        fail("MIG03 staged privacy observations schema mismatch")
+    if privacy.get("piiValueCanaryResult") != "pass" or privacy.get("valueFreeEvidenceCanaryResult") != "pass":
+        fail("MIG03 staged privacy observations did not PASS exactly")
+    scan = require_object(privacy.get("prohibitedContentScan"), "MIG03 prohibited content scan")
+    if set(scan) != {"result", "scannerId", "reportDigestSha256"} or scan.get("result") != "PASS" or scan.get("scannerId") != "g583-mig03-value-free/1":
+        fail("MIG03 staged prohibited-content scan did not PASS exactly")
+    scan_digest = require_hex64(scan.get("reportDigestSha256"), "MIG03 prohibited-content report digest")
+
     fixture = require_object(observations.get("fixture"), "MIG03 fixture identity")
+    if set(fixture) != {"fixtureId", "fixtureRevision", "fixtureResultDigestSha256"}:
+        fail("MIG03 fixture identity schema mismatch")
+    manifest = mig03_adapter_module().load_manifest()
+    fixture_authority = require_object(manifest.get("fixture"), "MIG03 fixture authority")
+    fixture_digest = require_hex64(fixture.get("fixtureResultDigestSha256"), "MIG03 fixture result digest")
+    if (
+        fixture.get("fixtureId") != fixture_authority.get("fixtureId")
+        or fixture.get("fixtureRevision") != fixture_authority.get("fixtureRevision")
+        or scan_digest != fixture_digest
+    ):
+        fail("MIG03 fixture identity/digest does not match the staged scan authority")
+
     payload = common_migration_payload(binding)
     payload.update({
         "outcome": "schema-checked",
@@ -257,13 +331,11 @@ def mig03_payload(binding: dict[str, Any], observations: dict[str, Any]) -> dict
         "postApplyPendingMigrations": [],
         "lastAppliedBefore": None,
         "lastAppliedAfter": delta[-1],
-        "schemaContractResult": "pass",
-        "piiValueCanaryResult": "pass",
-        "schemaAllowlistVersion": binding["migrationSchemaAllowlistVersion"],
-        "schemaAllowlistSha256": binding["migrationSchemaAllowlistSha256"],
+        "schemaContractResult": schema["schemaContractResult"],
+        "piiValueCanaryResult": privacy["piiValueCanaryResult"],
+        "schemaAllowlistVersion": migration["schemaAllowlistVersion"],
+        "schemaAllowlistSha256": migration["schemaAllowlistSha256"],
     })
-    if not isinstance(fixture.get("fixtureResultDigestSha256"), str):
-        fail("MIG03 fixture result digest is missing")
     return payload
 
 
@@ -500,7 +572,28 @@ def command_self_test(_: argparse.Namespace) -> int:
     if payload["outcome"] != "schema-checked" or payload["schemaContractResult"] != "pass":
         raise AssertionError("MIG03 formal payload conversion failed")
 
-    print(json.dumps({"result": "PASS", "routeCount": 5}, sort_keys=True))
+    negative_cases = [
+        ("missing schema", lambda item: item.pop("schema")),
+        ("schema fail", lambda item: item["schema"].update({"schemaContractResult": "fail"})),
+        ("constraints fail", lambda item: item["schema"].update({"constraintsResult": "fail"})),
+        ("missing privacy", lambda item: item.pop("privacy")),
+        ("PII canary fail", lambda item: item["privacy"].update({"piiValueCanaryResult": "fail"})),
+        ("value-free canary fail", lambda item: item["privacy"].update({"valueFreeEvidenceCanaryResult": "fail"})),
+        ("migration pin mismatch", lambda item: item["migration"].update({"migrationPinDigestSha256": "0" * 64})),
+        ("fixture digest malformed", lambda item: item["fixture"].update({"fixtureResultDigestSha256": "not-a-digest"})),
+        ("fixture scan digest mismatch", lambda item: item["privacy"]["prohibitedContentScan"].update({"reportDigestSha256": "0" * 64})),
+    ]
+    for label, mutate in negative_cases:
+        tampered = json.loads(json.dumps(observations))
+        mutate(tampered)
+        try:
+            mig03_payload(mig03_binding, tampered)
+        except FormalAdapterError:
+            pass
+        else:
+            raise AssertionError(f"MIG03 staged-observation negative case accepted: {label}")
+
+    print(json.dumps({"result": "PASS", "routeCount": 5, "mig03NegativeCases": len(negative_cases)}, sort_keys=True))
     return 0
 
 
