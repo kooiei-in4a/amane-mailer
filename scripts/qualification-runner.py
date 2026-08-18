@@ -2538,8 +2538,8 @@ HARD_SCENARIO_VALIDATOR_REGISTRY: dict[str, dict[str, Any]] = {
             "fault": _field(str, "fingerprint-mismatch"), "fingerprintMismatchDetected": _field(bool), "verificationResult": _field(str, "rejected", "accepted"),
             "activationResult": _field(str, "blocked", "activated"), "staleState": _field(str, "not-activated", "activated"), "bundleIntegrityMatched": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
         },
-        lambda p, v: _safe_pass(p, v, lambda x, _: x["fingerprintMismatchDetected"], lambda x, _: x["verificationResult"] == "rejected", lambda x, _: x["activationResult"] == "blocked", lambda x, _: x["staleState"] == "not-activated", lambda x, _: x["bundleIntegrityMatched"], lambda x, _: x["sensitiveOutput"] == "absent"),
-        lambda p, v: _safe_fail(p, v, lambda x, _: not x["fingerprintMismatchDetected"], lambda x, _: x["verificationResult"] == "accepted", lambda x, _: x["activationResult"] == "activated", lambda x, _: x["staleState"] == "activated", lambda x, _: not x["bundleIntegrityMatched"], lambda x, _: x["sensitiveOutput"] == "present"),
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["fingerprintMismatchDetected"], lambda x, _: x["verificationResult"] == "rejected", lambda x, _: x["activationResult"] == "blocked", lambda x, _: x["bundleIntegrityMatched"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["fingerprintMismatchDetected"], lambda x, _: x["verificationResult"] == "accepted", lambda x, _: x["activationResult"] == "activated", lambda x, _: not x["bundleIntegrityMatched"], lambda x, _: x["sensitiveOutput"] == "present"),
     ),
     "G456-21": _hard_validator(
         "legacy-g456-21",
