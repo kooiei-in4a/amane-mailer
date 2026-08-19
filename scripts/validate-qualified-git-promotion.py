@@ -14,7 +14,7 @@ from typing import Any, NoReturn
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
-RELEASE_BRANCH = re.compile(r"^release/v[0-9]+\.[0-9]+\.[0-9]+-rc(?:[1-9][0-9]*)?$")
+RELEASE_BRANCH = re.compile(r"^(?:release|release-prep)/v[0-9]+\.[0-9]+\.[0-9]+-rc(?:[1-9][0-9]*)?$")
 SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 CANDIDATE_WORKFLOW_PATH = ".github/workflows/generate-setup-release-candidate.yml"
 CANDIDATE_WORKFLOW_ID = 324880172
@@ -221,13 +221,14 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     version = require_string(promotion, "releaseVersion", VERSION)
     commit = require_string(promotion, "releaseCommitSha", HEX40)
     release_branch = require_string(promotion, "releaseBranch", RELEASE_BRANCH)
+    release_ref = release_branch.split("/", 1)[1]
     require_equal(
         "releaseBranch.version",
-        release_branch.split("/", 1)[1].split("-rc", 1)[0],
+        release_ref.split("-rc", 1)[0],
         f"v{version}",
     )
     if mode == "release":
-        release_suffix = release_branch[len(f"release/v{version}") :]
+        release_suffix = release_ref[len(f"v{version}") :]
         expected_handoff_branch = f"qualification-handoff/v{version}"
         if release_suffix != "-rc":
             expected_handoff_branch += release_suffix
