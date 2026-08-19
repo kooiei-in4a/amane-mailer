@@ -18,6 +18,8 @@ FINGERPRINTER = SCRIPT_DIR / "ruleset-fingerprint.py"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 OTHER_COMMIT = "89abcdef0123456789abcdef0123456789abcdef"
 OCI_DIGEST = "sha256:" + "a" * 64
+RELEASE_EVENT_ID = "4" * 32
+AUTHORIZATION_DIGEST = "b" * 64
 IDS = {
     "candidateRunId": 31203481547,
     "candidateAttempt": 1,
@@ -48,7 +50,117 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def run_validator(root: Path, manifest: dict[str, object]) -> subprocess.CompletedProcess[str]:
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write_release_qualification(
+    root: Path,
+    manifest: dict[str, object],
+    *,
+    binding_id: str | None = None,
+    candidate_run_id: int | None = None,
+    event_id: str | None = None,
+    source_commit_sha: str | None = None,
+    corrupt_object_digest: bool = False,
+    include_producer: bool = True,
+    include_unexpected_file: bool = False,
+) -> None:
+    actual_binding_id = binding_id or str(manifest["bindingId"])
+    actual_candidate_run_id = candidate_run_id or int(manifest["candidateRunId"])
+    actual_event_id = event_id or str(manifest["sealedEventId"])
+    actual_source_sha = source_commit_sha or str(manifest["releaseCommitSha"])
+    identity = {
+        "candidateId": manifest["candidateId"],
+        "bindingId": actual_binding_id,
+        "qualificationRunId": manifest["qualificationRunId"],
+    }
+    binding = {
+        **identity,
+        "authorizationDigestSha256": AUTHORIZATION_DIGEST,
+        "releaseCommitSha": manifest["releaseCommitSha"],
+        "sourceCommitSha": actual_source_sha,
+        "releaseVersion": manifest["releaseVersion"],
+        "ociIndexDigest": manifest["ociIndexDigest"],
+        "producerWorkflowRunId": str(actual_candidate_run_id),
+        "producerWorkflowRunAttempt": str(manifest["candidateAttempt"]),
+    }
+    decision = {
+        **identity,
+        "authorizationDigestSha256": AUTHORIZATION_DIGEST,
+        "sourceCommitSha": manifest["releaseCommitSha"],
+        "ociIndexDigest": manifest["ociIndexDigest"],
+        "machineVerdict": "GO_ELIGIBLE",
+        "humanDecision": "APPROVE",
+        "runSealed": True,
+    }
+    event = {
+        **identity,
+        "eventId": actual_event_id,
+        "status": "sealed",
+        "runStatusEventSequence": 1,
+        "canonicalization": {"algorithm": "RFC8785-JCS", "version": 1},
+        "previousRunStatusEventDigestSha256": None,
+        "decisionDigests": {
+            "evidenceIndexSha256": "c" * 64,
+            "goNoGoSha256": "d" * 64,
+            "phase4ManifestSha256": "e" * 64,
+        },
+    }
+    event["eventDigestSha256"] = hashlib.sha256(
+        json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    event_relative = f"run-status-events/{actual_event_id}.json"
+    documents = {
+        "binding.json": binding,
+        "decision/go-no-go.json": decision,
+        event_relative: event,
+    }
+    for relative, document in documents.items():
+        write_json(root / relative, document)
+
+    objects = [
+        {"path": relative, "sha256": file_sha256(root / relative)}
+        for relative in sorted(documents)
+    ]
+    if corrupt_object_digest:
+        objects[0]["sha256"] = "f" * 64
+    write_json(
+        root / "handoff-manifest.json",
+        {
+            "schemaVersion": 1,
+            "publicationOnly": True,
+            "candidateId": manifest["candidateId"],
+            "bindingId": actual_binding_id,
+            "qualificationRunId": manifest["qualificationRunId"],
+            "sealedEventId": actual_event_id,
+            "objects": objects,
+        },
+    )
+    if include_producer:
+        write_json(
+            root / "qualification-producer.json",
+            {
+                "repository": manifest["qualificationProducerRepository"],
+                "workflowPath": manifest["qualificationProducerWorkflowPath"],
+                "workflowId": manifest["qualificationProducerWorkflowId"],
+                "event": manifest["qualificationProducerEvent"],
+                "headBranch": manifest["qualificationProducerHeadBranch"],
+                "headSha": manifest["qualificationProducerHeadSha"],
+                "runId": manifest["qualificationProducerRunId"],
+                "runAttempt": manifest["qualificationWorkflowRunAttempt"],
+            },
+        )
+    if include_unexpected_file:
+        write_json(root / "unexpected.json", {"unexpected": True})
+
+
+def run_validator(
+    root: Path,
+    manifest: dict[str, object],
+    qualification_root: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     manifest_path = root / "promotion.json"
     write_json(manifest_path, manifest)
     return subprocess.run(
@@ -58,7 +170,7 @@ def run_validator(root: Path, manifest: dict[str, object]) -> subprocess.Complet
             "--manifest",
             str(manifest_path),
             "--qualification-root",
-            str(root / "qualification"),
+            str(qualification_root or root / "qualification"),
             "--candidate-root",
             str(root / "candidate"),
         ],
@@ -212,12 +324,73 @@ def main() -> None:
         release_prep["promotionPrHeadRef"] = release_prep["releaseBranch"]
         release_prep["promotionPrBaseRef"] = "main"
         release_prep["tagName"] = "v1.3.0"
+        release_prep["sealedEventId"] = RELEASE_EVENT_ID
+        release_prep["qualificationProducerWorkflowPath"] = ".github/workflows/publish-sealed-qualification-handoff.yml"
+        release_prep["qualificationProducerWorkflowId"] = 329865510
         release_prep_provenance = {
             **candidate_provenance,
             "workflowRef": "kooiei-in4a/amane-mailer/.github/workflows/generate-setup-release-candidate.yml@refs/heads/release-prep/v1.3.0-rc2",
         }
         write_json(candidate / "candidate-provenance.json", release_prep_provenance)
-        expect_pass("release-prep exact candidate", run_validator(root, release_prep))
+        release_positive = root / "release-positive"
+        write_release_qualification(release_positive, release_prep)
+        expect_pass(
+            "production-shaped release handoff",
+            run_validator(root, release_prep, release_positive),
+        )
+
+        release_bad_digest = root / "release-bad-digest"
+        write_release_qualification(release_bad_digest, release_prep, corrupt_object_digest=True)
+        expect_fail(
+            "release manifest object digest tamper",
+            run_validator(root, release_prep, release_bad_digest),
+        )
+
+        release_wrong_event = root / "release-wrong-event"
+        write_release_qualification(release_wrong_event, release_prep, event_id="8" * 32)
+        expect_fail(
+            "release sealed event ID mismatch",
+            run_validator(root, release_prep, release_wrong_event),
+        )
+
+        release_wrong_binding = root / "release-wrong-binding"
+        write_release_qualification(release_wrong_binding, release_prep, binding_id="8" * 64)
+        expect_fail(
+            "release binding ID mismatch",
+            run_validator(root, release_prep, release_wrong_binding),
+        )
+
+        release_wrong_candidate_run = root / "release-wrong-candidate-run"
+        write_release_qualification(
+            release_wrong_candidate_run,
+            release_prep,
+            candidate_run_id=int(release_prep["candidateRunId"]) + 1,
+        )
+        expect_fail(
+            "release candidate producer run ID mismatch",
+            run_validator(root, release_prep, release_wrong_candidate_run),
+        )
+
+        release_wrong_source = root / "release-wrong-source"
+        write_release_qualification(release_wrong_source, release_prep, source_commit_sha=OTHER_COMMIT)
+        expect_fail(
+            "release source commit mismatch",
+            run_validator(root, release_prep, release_wrong_source),
+        )
+
+        release_extra_file = root / "release-extra-file"
+        write_release_qualification(release_extra_file, release_prep, include_unexpected_file=True)
+        expect_fail(
+            "release unexpected extra sealed file",
+            run_validator(root, release_prep, release_extra_file),
+        )
+
+        release_missing_producer = root / "release-missing-producer"
+        write_release_qualification(release_missing_producer, release_prep, include_producer=False)
+        expect_fail(
+            "release missing qualification producer",
+            run_validator(root, release_prep, release_missing_producer),
+        )
         write_json(candidate / "candidate-provenance.json", candidate_provenance)
 
         (qual / "qualification-producer.json").unlink()
@@ -299,6 +472,8 @@ def main() -> None:
 
     print("[info] qualified Git promotion validator self-test passed")
     print("positiveFixture=PASS")
+    print("productionShapePositive=PASS")
+    print("productionNegativeFixtures=PASS")
     print("releasePrepCompatibility=PASS")
     print("negativeQualificationFixture=PASS")
     print("negativeHeadMismatchFixture=PASS")

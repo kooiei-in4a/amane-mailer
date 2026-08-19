@@ -47,7 +47,7 @@ on:
         required: true
         type: string
       sealed_event_id:
-        description: Exact 64-hex sealedEventId
+        description: Exact sealed event ID (32-hex release; 64-hex rehearsal fixture)
         required: true
         type: string
       oci_index_digest:
