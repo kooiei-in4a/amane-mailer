@@ -7,21 +7,39 @@ name: Publish Sealed Qualification Handoff
 
 on:
   workflow_dispatch:
+    inputs:
+      release_version:
+        description: Qualified release version (major.minor.patch)
+        required: true
+        type: string
+      release_commit_sha:
+        description: Exact qualified 40-hex releaseCommitSha
+        required: true
+        type: string
+      release_branch:
+        description: Exact candidate producer branch (release/* or release-prep/* RC)
+        required: true
+        type: string
+      candidate_id:
+        description: Exact 64-hex candidateId
+        required: true
+        type: string
+      qualification_run_id:
+        description: Exact 64-hex qualificationRunId
+        required: true
+        type: string
+      oci_index_digest:
+        description: Exact qualified OCI index digest
+        required: true
+        type: string
 
 permissions:
   actions: write
   contents: read
 
 env:
-  RELEASE_VERSION: 1.3.0
-  RELEASE_COMMIT_SHA: 85af2fb410ec6cdec4c6ec2bdb431c62b062e9eb
-  CANDIDATE_ID: 7582d42abc4467ddc2c33322c119072eacd75236b6d3b54aa905b0fd5b7ce11f
-  QUALIFICATION_RUN_ID: 49bc79002527cf09fbed2299c2f2bce857e0d66a8001597855857c1d5ba2a45d
-  SEALED_EVENT_ID: 7b5e2df848b754785889502276fdb74748b4e36d2926d41211f6fb55b2043b4d
-  OCI_INDEX_DIGEST: sha256:e65231d736d618810cc121e9ce07dcf967d3d3061bc5f97cb68ef48f094f5d45
-  HANDOFF_BRANCH: qualification-handoff/v1.3.0
   SOURCE_ROOT: qualification-handoff/source
-  ARTIFACT_NAME: qualification-handoff-v1.3.0
+  ARTIFACT_NAME: qualification-handoff
 
 jobs:
   publish:
@@ -33,27 +51,43 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate source identity and exact bytes
+      - name: Validate dispatch identity and exact sealed bytes
         shell: bash
         env:
-          EXPECTED_BINDING_SHA256: 4a77c917140aa187dd09e77fea065ea24889a73670c88ec42505b965d6653853
-          EXPECTED_DECISION_SHA256: f04efc051ebe290c4c4a4bdbad63f218bf63b5a7a57f8fdcf8d2d83172c4b964
-          EXPECTED_EVENT_SHA256: 8dda42c6710c2473cfab671b8f1af194b24076031825d748f325db35409d573f
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          OCI_INDEX_DIGEST: ${{ inputs.oci_index_digest }}
         run: |
           set -Eeuo pipefail
-          [[ "${GITHUB_REF}" == "refs/heads/${HANDOFF_BRANCH}" ]] \
-            || { echo "::error::workflow must run on the fixed handoff branch"; exit 1; }
+          [[ "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::release version is invalid"; exit 1; }
+          [[ "${RELEASE_COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::release commit SHA is invalid"; exit 1; }
+          [[ "${CANDIDATE_ID}" =~ ^[0-9a-f]{64}$ ]] \
+            || { echo "::error::candidate ID is invalid"; exit 1; }
+          [[ "${QUALIFICATION_RUN_ID}" =~ ^[0-9a-f]{64}$ ]] \
+            || { echo "::error::qualification run ID is invalid"; exit 1; }
+          [[ "${OCI_INDEX_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || { echo "::error::OCI index digest is invalid"; exit 1; }
+          [[ "${RELEASE_BRANCH}" =~ ^(release|release-prep)/v[0-9]+\.[0-9]+\.[0-9]+-rc([1-9][0-9]*)?$ ]] \
+            || { echo "::error::release branch is invalid"; exit 1; }
+
+          release_ref="${RELEASE_BRANCH#*/}"
+          [[ "${release_ref%%-rc*}" == "v${RELEASE_VERSION}" ]] \
+            || { echo "::error::release branch/version mismatch"; exit 1; }
+          handoff_suffix="${release_ref#v${RELEASE_VERSION}}"
+          expected_handoff_branch="qualification-handoff/v${RELEASE_VERSION}"
+          if [[ "${handoff_suffix}" != "-rc" ]]; then
+            expected_handoff_branch+="${handoff_suffix}"
+          fi
+          [[ "${GITHUB_REF}" == "refs/heads/${expected_handoff_branch}" ]] \
+            || { echo "::error::workflow must run on the release-specific handoff branch"; exit 1; }
+
           root="${SOURCE_ROOT}"
-          [[ -f "${root}/binding.json" ]] || { echo "::error::binding.json missing"; exit 1; }
-          [[ -f "${root}/decision/go-no-go.json" ]] || { echo "::error::decision/go-no-go.json missing"; exit 1; }
-          mapfile -t events < <(find "${root}/run-status-events" -maxdepth 1 -type f -name '*.json' -print)
-          [[ "${#events[@]}" -eq 1 ]] || { echo "::error::exactly one sealed event is required"; exit 1; }
-          [[ "$(sha256sum "${root}/binding.json" | cut -d' ' -f1)" == "${EXPECTED_BINDING_SHA256}" ]] \
-            || { echo "::error::binding.json bytes changed"; exit 1; }
-          [[ "$(sha256sum "${root}/decision/go-no-go.json" | cut -d' ' -f1)" == "${EXPECTED_DECISION_SHA256}" ]] \
-            || { echo "::error::go-no-go.json bytes changed"; exit 1; }
-          [[ "$(sha256sum "${events[0]}" | cut -d' ' -f1)" == "${EXPECTED_EVENT_SHA256}" ]] \
-            || { echo "::error::sealed event bytes changed"; exit 1; }
+          [[ -f "${root}/handoff-manifest.json" ]] || { echo "::error::handoff-manifest.json missing"; exit 1; }
           bash scripts/validate-qualification-handoff.sh \
             --root "${root}" \
             --candidate-id "${CANDIDATE_ID}" \
@@ -71,6 +105,7 @@ jobs:
           [[ "${workflow_id}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::workflow ID unavailable"; exit 1; }
           rm -rf publication
           mkdir -p publication/decision publication/run-status-events
+          cp -- "${SOURCE_ROOT}/handoff-manifest.json" publication/handoff-manifest.json
           cp -- "${SOURCE_ROOT}/binding.json" publication/binding.json
           cp -- "${SOURCE_ROOT}/decision/go-no-go.json" publication/decision/go-no-go.json
           event_file="$(find "${SOURCE_ROOT}/run-status-events" -maxdepth 1 -type f -name '*.json' -print -quit)"

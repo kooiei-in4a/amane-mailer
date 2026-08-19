@@ -206,6 +206,20 @@ def main() -> None:
 
         expect_pass("positive", run_validator(root, manifest))
 
+        release_prep = copy.deepcopy(manifest)
+        release_prep["mode"] = "release"
+        release_prep["releaseBranch"] = "release-prep/v1.3.0-rc2"
+        release_prep["promotionPrHeadRef"] = release_prep["releaseBranch"]
+        release_prep["promotionPrBaseRef"] = "main"
+        release_prep["tagName"] = "v1.3.0"
+        release_prep_provenance = {
+            **candidate_provenance,
+            "workflowRef": "kooiei-in4a/amane-mailer/.github/workflows/generate-setup-release-candidate.yml@refs/heads/release-prep/v1.3.0-rc2",
+        }
+        write_json(candidate / "candidate-provenance.json", release_prep_provenance)
+        expect_pass("release-prep exact candidate", run_validator(root, release_prep))
+        write_json(candidate / "candidate-provenance.json", candidate_provenance)
+
         (qual / "qualification-producer.json").unlink()
         expect_pass("existing sealed handoff compatibility", run_validator(root, manifest))
         write_json(qual / "qualification-producer.json", producer)
@@ -259,9 +273,14 @@ def main() -> None:
         invalid_branch["promotionPrHeadRef"] = invalid_branch["releaseBranch"]
         expect_fail("N10 invalid RC branch suffix", run_validator(root, invalid_branch))
 
+        invalid_namespace = copy.deepcopy(manifest)
+        invalid_namespace["releaseBranch"] = "release-candidate/v1.3.0-rc2"
+        invalid_namespace["promotionPrHeadRef"] = invalid_namespace["releaseBranch"]
+        expect_fail("N11 invalid release branch namespace", run_validator(root, invalid_namespace))
+
         sealed_event_mismatch = copy.deepcopy(manifest)
         sealed_event_mismatch["sealedEventId"] = "8" * 64
-        expect_fail("N7 sealedEventId mismatch", run_validator(root, sealed_event_mismatch))
+        expect_fail("N12 sealedEventId mismatch", run_validator(root, sealed_event_mismatch))
 
         changed_ruleset = copy.deepcopy(ruleset)
         changed_ruleset["bypass_actors"] = []
@@ -280,6 +299,7 @@ def main() -> None:
 
     print("[info] qualified Git promotion validator self-test passed")
     print("positiveFixture=PASS")
+    print("releasePrepCompatibility=PASS")
     print("negativeQualificationFixture=PASS")
     print("negativeHeadMismatchFixture=PASS")
     print("negativeSignatureFixture=PASS")

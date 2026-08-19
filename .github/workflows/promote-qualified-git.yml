@@ -267,6 +267,7 @@ jobs:
         shell: bash
         env:
           MODE: ${{ inputs.mode }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
           TARGET_BRANCH: ${{ inputs.promotion_target_branch }}
           RELEASE_BRANCH: ${{ inputs.release_branch }}
           TAG_NAME: ${{ inputs.tag_name }}
@@ -298,7 +299,7 @@ jobs:
             || { echo "::error::workflow must be dispatched from refs/heads/main"; exit 1; }
           [[ "${APP_ID}" =~ ^[1-9][0-9]*$ && -n "${APP_SLUG}" ]] \
             || { echo "::error::release promotion App configuration is missing"; exit 1; }
-          [[ "${RELEASE_BRANCH}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+-rc([1-9][0-9]*)?$ ]] \
+          [[ "${RELEASE_BRANCH}" =~ ^(release|release-prep)/v[0-9]+\.[0-9]+\.[0-9]+-rc([1-9][0-9]*)?$ ]] \
             || { echo "::error::release branch is invalid"; exit 1; }
           [[ "${CANDIDATE_RUN_ID}" =~ ^[1-9][0-9]*$ && "${CANDIDATE_ATTEMPT}" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::candidate run identity is invalid"; exit 1; }
@@ -340,13 +341,15 @@ jobs:
               || { echo "::error::trusted qualification producer configuration is missing"; exit 1; }
             [[ "${QUALIFICATION_PRODUCER_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ && "${QUALIFICATION_PRODUCER_EVENT}" == workflow_dispatch ]] \
               || { echo "::error::qualification producer workflow identity is invalid"; exit 1; }
-            # The sealed run was created on the immutable RC branch, but its
-            # existing sealed documents are published by a separate,
-            # publication-only workflow. Keep that transport producer bound to
-            # a release-specific immutable handoff branch and protected SHA;
-            # never accept an arbitrary producer branch from dispatch input.
-            handoff_suffix="${RELEASE_BRANCH#release/v${{ inputs.release_version }}}"
-            expected_handoff_branch="qualification-handoff/v${{ inputs.release_version }}"
+            # The qualified candidate may be produced from release/* or
+            # release-prep/*. The sealed documents are transported separately
+            # from a release-specific immutable handoff branch and protected
+            # producer SHA; never accept an arbitrary producer branch.
+            release_ref="${RELEASE_BRANCH#*/}"
+            [[ "${release_ref%%-rc*}" == "v${RELEASE_VERSION}" ]] \
+              || { echo "::error::release branch/version mismatch"; exit 1; }
+            handoff_suffix="${release_ref#v${RELEASE_VERSION}}"
+            expected_handoff_branch="qualification-handoff/v${RELEASE_VERSION}"
             if [[ "${handoff_suffix}" != "-rc" ]]; then
               expected_handoff_branch+="${handoff_suffix}"
             fi
