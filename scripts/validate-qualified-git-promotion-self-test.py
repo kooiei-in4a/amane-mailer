@@ -17,6 +17,9 @@ VALIDATOR = SCRIPT_DIR / "validate-qualified-git-promotion.py"
 FINGERPRINTER = SCRIPT_DIR / "ruleset-fingerprint.py"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 OTHER_COMMIT = "89abcdef0123456789abcdef0123456789abcdef"
+RC13_SOURCE_SHA = "c5a928eafe0e0f3527ad484993347d5035aa92bc"
+RC13_PROMOTION_BASE_SHA = "f3606f7b69c629473789f7df101cbd945f614cb9"
+RC13_FORK_BASE_SHA = "d6743dabc1813ea428081a49874680263ae54f7f"
 OCI_DIGEST = "sha256:" + "a" * 64
 RELEASE_EVENT_ID = "4" * 32
 AUTHORIZATION_DIGEST = "b" * 64
@@ -320,24 +323,83 @@ def main() -> None:
 
         release_prep = copy.deepcopy(manifest)
         release_prep["mode"] = "release"
-        release_prep["releaseBranch"] = "release-prep/v1.3.0-rc2"
+        release_prep["releaseCommitSha"] = RC13_SOURCE_SHA
+        release_prep["releaseBranch"] = "release-prep/v1.3.0-rc13"
         release_prep["promotionPrHeadRef"] = release_prep["releaseBranch"]
+        release_prep["promotionPrHeadSha"] = RC13_SOURCE_SHA
         release_prep["promotionPrBaseRef"] = "main"
+        release_prep["promotionPrBaseSha"] = RC13_PROMOTION_BASE_SHA
+        release_prep["promotionBaseSha"] = RC13_PROMOTION_BASE_SHA
+        release_prep["baseRefTipSha"] = RC13_PROMOTION_BASE_SHA
+        release_prep["rcTipSha"] = RC13_SOURCE_SHA
         release_prep["tagName"] = "v1.3.0"
+        release_prep["tagTargetSha"] = RC13_SOURCE_SHA
         release_prep["sealedEventId"] = RELEASE_EVENT_ID
+        release_prep["qualificationProducerHeadBranch"] = "qualification-handoff/v1.3.0-rc13"
+        release_prep["expectedRcForkBaseSha"] = RC13_FORK_BASE_SHA
+        release_prep["rcForkBaseSha"] = RC13_FORK_BASE_SHA
+        release_prep["prePromotionMainDeltaPaths"] = [
+            ".github/workflows/promote-qualified-git.yml",
+            ".github/workflows/publish-sealed-qualification-handoff.yml",
+            "global.json",
+            "scripts/validate-qualified-git-promotion-self-test.py",
+            "scripts/validate-qualified-git-promotion.py",
+        ]
+        release_prep["prePromotionMainDeltaPolicy"] = "RELEASE_CONTROL_PLANE_ONLY"
+        release_prep["globalJsonMatchesRc13"] = True
         release_prep["qualificationProducerWorkflowPath"] = ".github/workflows/publish-sealed-qualification-handoff.yml"
         release_prep["qualificationProducerWorkflowId"] = 329865510
         release_prep_provenance = {
             **candidate_provenance,
+            "sourceCommitSha": release_prep["releaseCommitSha"],
             "workflowRef": "kooiei-in4a/amane-mailer/.github/workflows/generate-setup-release-candidate.yml@refs/heads/release-prep/v1.3.0-rc2",
         }
+        release_prep_provenance["workflowRef"] = "kooiei-in4a/amane-mailer/.github/workflows/generate-setup-release-candidate.yml@refs/heads/release-prep/v1.3.0-rc13"
         write_json(candidate / "candidate-provenance.json", release_prep_provenance)
+        write_json(
+            candidate / "image-identity.json",
+            {
+                "sourceCommitSha": release_prep["releaseCommitSha"],
+                "mailerVersion": release_prep["releaseVersion"],
+                "imageDigest": release_prep["ociIndexDigest"],
+            },
+        )
         release_positive = root / "release-positive"
         write_release_qualification(release_positive, release_prep)
         expect_pass(
             "production-shaped release handoff",
             run_validator(root, release_prep, release_positive),
         )
+
+        for name, path in (
+            ("product source historical delta", "src/Amane.Mailer/Program.cs"),
+            ("migration historical delta", "migrations/999_bad.sql"),
+            ("unexpected control-plane path", ".github/workflows/unexpected.yml"),
+        ):
+            bad_delta = copy.deepcopy(release_prep)
+            bad_delta["prePromotionMainDeltaPaths"] = [path]
+            expect_fail(name, run_validator(root, bad_delta, release_positive))
+
+        wrong_fork_base = copy.deepcopy(release_prep)
+        wrong_fork_base["rcForkBaseSha"] = OTHER_COMMIT
+        expect_fail("wrong RC fork base SHA", run_validator(root, wrong_fork_base, release_positive))
+
+        duplicate_delta = copy.deepcopy(release_prep)
+        duplicate_delta["prePromotionMainDeltaPaths"] = [
+            ".github/workflows/promote-qualified-git.yml",
+            ".github/workflows/promote-qualified-git.yml",
+        ]
+        expect_fail("duplicate historical delta path", run_validator(root, duplicate_delta, release_positive))
+
+        global_json_mismatch = copy.deepcopy(release_prep)
+        global_json_mismatch["globalJsonMatchesRc13"] = False
+        expect_fail("global.json mismatch", run_validator(root, global_json_mismatch, release_positive))
+
+        promotion_base_drift = copy.deepcopy(release_prep)
+        promotion_base_drift["promotionBaseSha"] = OTHER_COMMIT
+        promotion_base_drift["promotionPrBaseSha"] = OTHER_COMMIT
+        promotion_base_drift["baseRefTipSha"] = OTHER_COMMIT
+        expect_fail("promotion base SHA drift", run_validator(root, promotion_base_drift, release_positive))
 
         release_bad_digest = root / "release-bad-digest"
         write_release_qualification(release_bad_digest, release_prep, corrupt_object_digest=True)
@@ -392,6 +454,7 @@ def main() -> None:
             run_validator(root, release_prep, release_missing_producer),
         )
         write_json(candidate / "candidate-provenance.json", candidate_provenance)
+        write_json(candidate / "image-identity.json", image_identity)
 
         (qual / "qualification-producer.json").unlink()
         expect_pass("existing sealed handoff compatibility", run_validator(root, manifest))
@@ -485,3 +548,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
