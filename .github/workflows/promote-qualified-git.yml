@@ -90,7 +90,7 @@ on:
         required: true
         type: string
       merge_freeze_confirmation:
-        description: Maintainer confirms target main remained frozen from successor RC creation through parent verification
+        description: Confirms machine-verified control-plane-only historical delta and hard freeze after promotion-base capture through parent verification
         required: true
         type: choice
         options:
@@ -501,10 +501,114 @@ jobs:
           REHEARSAL_RULESET_ID: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_ID }}
           EXPECTED_MAIN_FINGERPRINT: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_FINGERPRINT }}
           EXPECTED_POLICY_FINGERPRINT: ${{ vars.RELEASE_PROMOTION_POLICY_FINGERPRINT }}
+          EXPECTED_RC_FORK_BASE_SHA: ${{ vars.RELEASE_PROMOTION_RC_FORK_BASE_SHA }}
         run: |
           set -Eeuo pipefail
           mkdir -p artifacts/git-promotion-state
           state=artifacts/git-promotion-state
+          if [[ "${MODE}" == "release" ]]; then
+            [[ "${EXPECTED_RC_FORK_BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+              || { echo "::error::expected RC fork base SHA is missing or invalid"; exit 1; }
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" > "${state}/rc-ref-pre-delta.json"
+            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TARGET_BRANCH}" > "${state}/base-ref-pre-delta.json"
+            gh api "repos/${GITHUB_REPOSITORY}/compare/${RELEASE_COMMIT_SHA}...${PROMOTION_BASE_SHA}" > "${state}/source-base-compare.json"
+            merge_base_sha="$(python3 - "${state}/source-base-compare.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          value = (document.get("merge_base_commit") or {}).get("sha")
+          if not isinstance(value, str):
+              raise SystemExit("merge-base is unavailable")
+          print(value)
+          PY
+            )"
+            [[ "${merge_base_sha}" == "${EXPECTED_RC_FORK_BASE_SHA}" ]] \
+              || { echo "::error::RC fork base SHA does not match configured authority"; exit 1; }
+            gh api "repos/${GITHUB_REPOSITORY}/compare/${merge_base_sha}...${PROMOTION_BASE_SHA}" > "${state}/main-delta-compare.json"
+            gh api "repos/${GITHUB_REPOSITORY}/contents/global.json?ref=${PROMOTION_BASE_SHA}" > "${state}/global-json-promotion-base.json"
+            gh api "repos/${GITHUB_REPOSITORY}/contents/global.json?ref=${RELEASE_COMMIT_SHA}" > "${state}/global-json-rc-source.json"
+            STATE="${state}" PROMOTION_BASE_SHA="${PROMOTION_BASE_SHA}" EXPECTED_RC_FORK_BASE_SHA="${EXPECTED_RC_FORK_BASE_SHA}" python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import sys
+          from pathlib import Path, PurePosixPath
+
+          state = Path(os.environ["STATE"])
+          allowed = {
+              ".github/workflows/promote-qualified-git.yml",
+              ".github/workflows/publish-sealed-qualification-handoff.yml",
+              "scripts/validate-qualified-git-promotion.py",
+              "scripts/validate-qualified-git-promotion-self-test.py",
+              "docs/ops/qualified-git-promotion.md",
+              "global.json",
+          }
+
+          def load(name: str) -> dict:
+              value = json.loads((state / name).read_text(encoding="utf-8"))
+              if not isinstance(value, dict):
+                  raise SystemExit(f"{name}: object is required")
+              return value
+
+          base_ref = load("base-ref-pre-delta.json")
+          if (base_ref.get("object") or {}).get("sha") != os.environ["PROMOTION_BASE_SHA"]:
+              raise SystemExit("promotionBaseSha: live target tip drifted before capture")
+          rc_ref = load("rc-ref-pre-delta.json")
+          if (rc_ref.get("object") or {}).get("sha") != os.environ.get("RELEASE_COMMIT_SHA"):
+              # RELEASE_COMMIT_SHA is intentionally checked by the shell below;
+              # keep this branch fail-closed if the environment is changed.
+              raise SystemExit("releaseBranch.tip: drift")
+
+          compare = load("main-delta-compare.json")
+          if compare.get("status") not in {"ahead", "identical"}:
+              raise SystemExit("prePromotionMainDelta: comparison is not forward-only")
+          entries = compare.get("files")
+          if not isinstance(entries, list):
+              raise SystemExit("prePromotionMainDelta: file list is unavailable")
+          paths = []
+          for entry in entries:
+              if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str):
+                  raise SystemExit("prePromotionMainDelta: malformed file entry")
+              path = entry["filename"]
+              pure = PurePosixPath(path)
+              if not path or pure.is_absolute() or "\\" in path or ".." in pure.parts:
+                  raise SystemExit("prePromotionMainDelta: unsafe path")
+              paths.append(path)
+          if len(paths) != len(set(paths)):
+              raise SystemExit("prePromotionMainDelta: duplicate path")
+          unexpected = sorted(set(paths) - allowed)
+          if unexpected:
+              raise SystemExit("prePromotionMainDelta: unexpected path " + ",".join(unexpected))
+
+          def content(name: str) -> bytes:
+              document = load(name)
+              encoded = document.get("content")
+              if not isinstance(encoded, str):
+                  raise SystemExit(f"{name}: content is unavailable")
+              try:
+                  return base64.b64decode("".join(encoded.splitlines()), validate=True)
+              except ValueError as exc:
+                  raise SystemExit(f"{name}: invalid base64 content") from exc
+
+          global_matches = content("global-json-promotion-base.json") == content("global-json-rc-source.json")
+          if not global_matches:
+              raise SystemExit("global.json: promotion base bytes differ from RC13 source")
+
+          result = {
+              "expectedRcForkBaseSha": os.environ["EXPECTED_RC_FORK_BASE_SHA"],
+              "rcForkBaseSha": (load("source-base-compare.json").get("merge_base_commit") or {}).get("sha"),
+              "prePromotionMainDeltaPaths": sorted(paths),
+              "prePromotionMainDeltaPolicy": "RELEASE_CONTROL_PLANE_ONLY",
+              "promotionBaseSha": os.environ["PROMOTION_BASE_SHA"],
+              "globalJsonMatchesRc13": global_matches,
+          }
+          (state / "pre-promotion-main-delta.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+          else
+            printf '%s\n' '{"prePromotionMainDeltaPolicy":"REHEARSAL_NOT_APPLICABLE","prePromotionMainDeltaPaths":[]}' > "${state}/pre-promotion-main-delta.json"
+          fi
           target_ruleset_id="${MAIN_RULESET_ID}"
           if [[ "${MODE}" == "rehearsal" ]]; then target_ruleset_id="${REHEARSAL_RULESET_ID}"; fi
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${MAIN_RULESET_ID}" > "${state}/main-ruleset.json"
@@ -563,6 +667,7 @@ jobs:
           load = lambda name: json.loads((state / name).read_text(encoding="utf-8"))
           main_fingerprint = load("main-fingerprint.json")
           target_fingerprint = load("target-fingerprint-before.json")
+          pre_promotion_delta = load("pre-promotion-main-delta.json")
           ruleset = load("target-ruleset.json")
           normal_ruleset = ruleset
           app_ruleset = load("target-ruleset-app.json")
@@ -605,6 +710,11 @@ jobs:
               "promotionPrBaseRef": pr.get("base", {}).get("ref"),
               "promotionPrBaseSha": pr.get("base", {}).get("sha"),
               "promotionBaseSha": os.environ["PROMOTION_BASE_SHA"],
+              "expectedRcForkBaseSha": pre_promotion_delta.get("expectedRcForkBaseSha"),
+              "rcForkBaseSha": pre_promotion_delta.get("rcForkBaseSha"),
+              "prePromotionMainDeltaPaths": pre_promotion_delta.get("prePromotionMainDeltaPaths"),
+              "prePromotionMainDeltaPolicy": pre_promotion_delta.get("prePromotionMainDeltaPolicy"),
+              "globalJsonMatchesRc13": pre_promotion_delta.get("globalJsonMatchesRc13"),
               "baseRefTipSha": load("base-ref.json").get("object", {}).get("sha"),
               "promotionPrState": pr.get("state"),
               "promotionPrDraft": pr.get("draft"),
@@ -630,6 +740,32 @@ jobs:
               "observedStatusChecks": observed,
           }
           (state / "promotion-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Capture promotion-base hard-freeze boundary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ inputs.promotion_target_branch }}
+          PROMOTION_BASE_SHA: ${{ inputs.promotion_base_sha }}
+        run: |
+          set -Eeuo pipefail
+          state=artifacts/git-promotion-state
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TARGET_BRANCH}" > "${state}/base-ref-hard-freeze.json"
+          STATE="${state}" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          state = Path(os.environ["STATE"])
+          base = json.loads((state / "base-ref-hard-freeze.json").read_text(encoding="utf-8"))
+          live_sha = (base.get("object") or {}).get("sha")
+          if live_sha != os.environ["PROMOTION_BASE_SHA"]:
+              raise SystemExit("promotion-base hard-freeze capture failed: target main moved")
+          (state / "promotion-base-hard-freeze.json").write_text(
+              json.dumps({"promotionBaseSha": live_sha, "captured": True}, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
           PY
 
       - name: Validate exact qualified promotion preflight
@@ -833,6 +969,24 @@ jobs:
           PY
           echo "tag_object_sha=${tag_object_sha}" >> "${GITHUB_OUTPUT}"
 
+      - name: Verify target hard freeze through tag verification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ inputs.promotion_target_branch }}
+          MERGE_SHA: ${{ steps.merge.outputs.merge_sha }}
+        run: |
+          set -Eeuo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TARGET_BRANCH}" > artifacts/git-promotion-state/base-ref-after-tag.json
+          python3 - <<'PY'
+          import json
+          import os
+
+          base = json.load(open("artifacts/git-promotion-state/base-ref-after-tag.json", encoding="utf-8"))
+          if base.get("object", {}).get("sha") != os.environ["MERGE_SHA"]:
+              raise SystemExit("promotionTarget.tip: moved during tag verification")
+          PY
+
       - name: Remove rehearsal tag after verification
         if: inputs.mode == 'rehearsal'
         shell: bash
@@ -946,3 +1100,4 @@ jobs:
           path: artifacts/git-promotion-state
           if-no-files-found: error
           retention-days: 90
+
