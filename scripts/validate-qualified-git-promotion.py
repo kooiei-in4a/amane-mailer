@@ -22,6 +22,19 @@ CANDIDATE_WORKFLOW_PATH = ".github/workflows/generate-setup-release-candidate.ym
 CANDIDATE_WORKFLOW_ID = 324880172
 CANDIDATE_WORKFLOW_EVENT = "workflow_dispatch"
 CANDIDATE_REPOSITORY = "kooiei-in4a/amane-mailer"
+RC13_SOURCE_SHA = "c5a928eafe0e0f3527ad484993347d5035aa92bc"
+RC13_FORK_BASE_SHA = "d6743dabc1813ea428081a49874680263ae54f7f"
+RC13_PROMOTION_BASE_SHA = "f3606f7b69c629473789f7df101cbd945f614cb9"
+RELEASE_CONTROL_PLANE_ONLY_PATHS = frozenset(
+    {
+        ".github/workflows/promote-qualified-git.yml",
+        ".github/workflows/publish-sealed-qualification-handoff.yml",
+        "scripts/validate-qualified-git-promotion.py",
+        "scripts/validate-qualified-git-promotion-self-test.py",
+        "docs/ops/qualified-git-promotion.md",
+        "global.json",
+    }
+)
 
 
 def fail(field: str, message: str) -> NoReturn:
@@ -335,6 +348,41 @@ def validate_qualification(root: Path, promotion: dict[str, Any]) -> None:
         validate_rehearsal_qualification(root, promotion)
 
 
+def validate_pre_promotion_main_delta(promotion: dict[str, Any]) -> None:
+    """Allow only the machine-verified RC13 release-control-plane delta."""
+    if promotion["mode"] != "release":
+        return
+
+    expected_base = require_string(promotion, "expectedRcForkBaseSha", HEX40)
+    actual_base = require_string(promotion, "rcForkBaseSha", HEX40)
+    if promotion["releaseCommitSha"] == RC13_SOURCE_SHA:
+        require_equal("expectedRcForkBaseSha", expected_base, RC13_FORK_BASE_SHA)
+    require_equal("rcForkBaseSha", actual_base, expected_base)
+    require_equal(
+        "prePromotionMainDeltaPolicy",
+        promotion.get("prePromotionMainDeltaPolicy"),
+        "RELEASE_CONTROL_PLANE_ONLY",
+    )
+
+    paths = promotion.get("prePromotionMainDeltaPaths")
+    if not isinstance(paths, list):
+        fail("prePromotionMainDeltaPaths", "must be an array")
+    seen: set[str] = set()
+    for path in paths:
+        if not isinstance(path, str) or not path:
+            fail("prePromotionMainDeltaPaths", "contains an invalid path")
+        pure = Path(path)
+        if pure.is_absolute() or ".." in pure.parts or "\\" in path:
+            fail("prePromotionMainDeltaPaths", "contains an unsafe path")
+        if path in seen:
+            fail("prePromotionMainDeltaPaths", "contains a duplicate path")
+        seen.add(path)
+        if path not in RELEASE_CONTROL_PLANE_ONLY_PATHS:
+            fail("prePromotionMainDeltaPaths", "contains an unexpected path")
+
+    require_equal("globalJsonMatchesRc13", promotion.get("globalJsonMatchesRc13"), True)
+
+
 def validate_status_checks(promotion: dict[str, Any]) -> None:
     required = promotion.get("rulesetRequiredStatusChecks")
     observed = promotion.get("observedStatusChecks")
@@ -401,8 +449,11 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     require_equal("rcTipSha", promotion.get("rcTipSha"), commit)
     require_equal("promotionPrHeadSha", promotion.get("promotionPrHeadSha"), commit)
     require_equal("promotionPrHeadRef", promotion.get("promotionPrHeadRef"), promotion["releaseBranch"])
-    require_equal("promotionPrBaseSha", promotion.get("promotionPrBaseSha"), promotion.get("promotionBaseSha"))
-    require_equal("baseRefTipSha", promotion.get("baseRefTipSha"), promotion.get("promotionBaseSha"))
+    promotion_base_sha = require_string(promotion, "promotionBaseSha", HEX40)
+    require_equal("promotionPrBaseSha", promotion.get("promotionPrBaseSha"), promotion_base_sha)
+    require_equal("baseRefTipSha", promotion.get("baseRefTipSha"), promotion_base_sha)
+    if commit == RC13_SOURCE_SHA:
+        require_equal("promotionBaseSha", promotion_base_sha, RC13_PROMOTION_BASE_SHA)
     require_equal("tagTargetSha", promotion.get("tagTargetSha"), commit)
 
     if not isinstance(promotion.get("promotionPrNumber"), int) or promotion["promotionPrNumber"] <= 0:
@@ -469,6 +520,7 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     if not isinstance(allowed, list) or "merge" not in allowed:
         fail("rulesetAllowedMergeMethods", "merge is not allowed")
     validate_status_checks(promotion)
+    validate_pre_promotion_main_delta(promotion)
 
 
 def main() -> None:
@@ -490,3 +542,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
