@@ -222,10 +222,30 @@ OCI / NuGet / GitHub Release / deployはこのworkflowの後でも自動実行�
 ### Maintainer merge-freeze（必須）
 
 GitHubのPR merge APIはPR head SHAだけをatomicに比較し、base SHAのcompare-and-swapを提供しません。
-したがって、`merge_freeze_confirmation=CONFIRM_TARGET_MERGE_FREEZE`を必須入力とし、承認記録に
-次を明記します。後継RC branchを作成してcandidate / qualificationを開始してからparent検証完了まで、
-対象branchへの他PR merge、branch update、force-push、ruleset変更を行わないこと。workflowは直前にbase/head/RC/checksを再取得し、merge後に
-parent順を検証します。parent不一致なら即STOPし、tag作成・自動rollback・別SHA補完をしません。
+merge-freeze契約は次の2段階です。`merge_freeze_confirmation=CONFIRM_TARGET_MERGE_FREEZE`は、
+このmachine verificationとhard freezeの両方を確認する入力であり、RC作成時点からmainが一切変化していない
+という意味ではありません。
+
+**Phase 1 — RC forkからpromotionBaseShaまで**
+
+- workflowは`merge-base(RC source SHA, promotionBaseSha)`を取得し、設定済みの`rcForkBaseSha`と一致することを確認します。
+- merge-baseから`promotionBaseSha`までのmain-only changed path setを取得し、exact path allowlistに対して検証します。
+- 許可されるpolicyは`RELEASE_CONTROL_PLANE_ONLY`だけです。`.github/workflows/`や`scripts/`をprefixで
+  許可してはいけません。product/runtime source、`src/**`、`tests/**`、`sdk/**`、`infra/**`、`migrations/**`、
+  Contracts、OpenAPI product contract、DB migration、release payload/assetsが1件でも含まれる場合はSTOPです。
+- `promotionBaseSha:global.json`とRC13 source SHAの`global.json` bytesが一致することも確認します。
+
+**Phase 2 — promotionBaseSha captureからparent/tag verificationまで**
+
+`promotionBaseSha`をlive target tipと一致するものとしてcaptureした時点から、promotion PR preflight、required
+checks確認、workflow dispatch、merge直前recheck、merge、parent verification、annotated tag verificationの完了まで、
+target mainをhard freezeします。このwindowでmainが1 commitでも動いた場合はSTOPします。workflowが直前にbase/head/RC/checksを
+再取得する既存の`live base tip == promotionBaseSha` recheckは維持します。merge後はparent順を検証し、parent不一致ならtag作成・自動rollback・
+別SHA補完をしません。
+
+product/runtime deltaが1件でもある場合、この例外は使えません。successor RCを作成し、candidate、qualification、seal、handoffを
+最初からやり直して再qualificationしてください。historical deltaを人間のconfirmationだけで免除してはいけません。
+
 このfreezeは競合リスクを低減する運用制約であり、GitHub APIのatomic base保証ではありません。
 atomic保証が必要な場合は、merge queue（organization所有repositoryが必要）または専用lock rulesetの
 採用を別issueで決定するまでproduction releaseを実行しません。
@@ -255,3 +275,4 @@ RC / candidate / binding / qualification / sealの変更、rulesetの一時緩�
 exact head不一致、merge parent不一致、tag target不一致、required negative fixtureの予期しないPASS、
 positive rehearsal失敗、fingerprint drift、GitHub仕様上の安全な実現不能が1件でもあればSTOPします。
 main promotion、production tag、publishを続行しません。
+
