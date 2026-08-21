@@ -95,6 +95,13 @@ jobs:
     name: Promote OCI layout without rebuild
     runs-on: ubuntu-24.04
     environment: release
+    env:
+      QUALIFICATION_PRODUCER_REPOSITORY: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_REPOSITORY }}
+      QUALIFICATION_PRODUCER_WORKFLOW_ID: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_ID }}
+      QUALIFICATION_PRODUCER_WORKFLOW_PATH: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_PATH }}
+      QUALIFICATION_PRODUCER_EVENT: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_EVENT }}
+      QUALIFICATION_PRODUCER_HEAD_BRANCH: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_BRANCH }}
+      QUALIFICATION_PRODUCER_HEAD_SHA: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_SHA }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -158,17 +165,77 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          EXPECTED_CANDIDATE_HEAD_BRANCH: ${{ inputs.expected_head_branch }}
           QUALIFICATION_WORKFLOW_RUN_ID: ${{ inputs.qualification_workflow_run_id }}
           QUALIFICATION_ARTIFACT_ID: ${{ inputs.qualification_artifact_id }}
           QUALIFICATION_ARTIFACT_NAME: ${{ inputs.qualification_artifact_name }}
+          EXPECTED_PRODUCER_IDENTITY: ${{ runner.temp }}/qualification-producer-expected.json
         run: |
           set -Eeuo pipefail
+          [[ "${EXPECTED_CANDIDATE_HEAD_BRANCH}" =~ ^(release|release-prep)/v[0-9]+\.[0-9]+\.[0-9]+-rc([1-9][0-9]*)?$ ]] \
+            || { echo "::error::candidate head branch cannot identify the qualification handoff branch"; exit 1; }
+          release_ref="${EXPECTED_CANDIDATE_HEAD_BRANCH#*/}"
+          [[ "${release_ref%%-rc*}" == "v${RELEASE_VERSION}" ]] \
+            || { echo "::error::candidate head branch/release version mismatch"; exit 1; }
+          handoff_suffix="${release_ref#v${RELEASE_VERSION}}"
+          expected_handoff_branch="qualification-handoff/v${RELEASE_VERSION}"
+          if [[ "${handoff_suffix}" != "-rc" ]]; then
+            expected_handoff_branch+="${handoff_suffix}"
+          fi
+          [[ "${QUALIFICATION_PRODUCER_REPOSITORY}" == "${GITHUB_REPOSITORY}" ]] \
+            || { echo "::error::trusted qualification producer repository mismatch"; exit 1; }
+          [[ "${QUALIFICATION_PRODUCER_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::trusted qualification producer workflow ID is invalid"; exit 1; }
+          [[ "${QUALIFICATION_PRODUCER_WORKFLOW_PATH}" == ".github/workflows/publish-sealed-qualification-handoff.yml" ]] \
+            || { echo "::error::trusted qualification producer workflow path mismatch"; exit 1; }
+          [[ "${QUALIFICATION_PRODUCER_EVENT}" == "workflow_dispatch" ]] \
+            || { echo "::error::trusted qualification producer event mismatch"; exit 1; }
+          [[ "${QUALIFICATION_PRODUCER_HEAD_BRANCH}" == "${expected_handoff_branch}" ]] \
+            || { echo "::error::trusted qualification producer handoff branch mismatch"; exit 1; }
+          [[ "${QUALIFICATION_PRODUCER_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::trusted qualification producer head SHA is invalid"; exit 1; }
+
           run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${QUALIFICATION_WORKFLOW_RUN_ID}")"
           RUN_JSON="${run_json}" python3 - <<'PY'
-          import json, os, sys
+          import json
+          import os
+          from pathlib import Path
+
           run = json.loads(os.environ["RUN_JSON"])
           if run.get("status") != "completed" or run.get("conclusion") != "success":
               raise SystemExit("qualification workflow run is not completed successfully")
+          expected_run = {
+              "id": int(os.environ["QUALIFICATION_WORKFLOW_RUN_ID"]),
+              "workflow_id": int(os.environ["QUALIFICATION_PRODUCER_WORKFLOW_ID"]),
+              "path": os.environ["QUALIFICATION_PRODUCER_WORKFLOW_PATH"],
+              "event": os.environ["QUALIFICATION_PRODUCER_EVENT"],
+              "head_branch": os.environ["QUALIFICATION_PRODUCER_HEAD_BRANCH"],
+              "head_sha": os.environ["QUALIFICATION_PRODUCER_HEAD_SHA"],
+          }
+          for field, expected in expected_run.items():
+              if run.get(field) != expected:
+                  raise SystemExit(f"qualification producer run {field} mismatch")
+          repository = (run.get("repository") or {}).get("full_name")
+          if repository != os.environ["QUALIFICATION_PRODUCER_REPOSITORY"]:
+              raise SystemExit("qualification producer repository mismatch")
+          run_attempt = run.get("run_attempt")
+          if not isinstance(run_attempt, int) or run_attempt <= 0:
+              raise SystemExit("qualification producer run attempt is invalid")
+          expected_producer = {
+              "repository": repository,
+              "workflowPath": expected_run["path"],
+              "workflowId": expected_run["workflow_id"],
+              "event": expected_run["event"],
+              "headBranch": expected_run["head_branch"],
+              "headSha": expected_run["head_sha"],
+              "runId": expected_run["id"],
+              "runAttempt": run_attempt,
+          }
+          Path(os.environ["EXPECTED_PRODUCER_IDENTITY"]).write_text(
+              json.dumps(expected_producer, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
           PY
           arts_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${QUALIFICATION_WORKFLOW_RUN_ID}/artifacts" --paginate)"
           ARTS_JSON="${arts_json}" ARTIFACT_NAME="${QUALIFICATION_ARTIFACT_NAME}" ARTIFACT_ID="${QUALIFICATION_ARTIFACT_ID}" python3 - <<'PY'
@@ -267,9 +334,23 @@ jobs:
             --candidate-id "${CANDIDATE_ID}" \
             --repository "${IMAGE_REPOSITORY}"
 
+      - name: Validate qualification producer and prepare sealed-only view
+        id: qualification_view
+        env:
+          QUALIFICATION_ARTIFACT_ROOT: ${{ github.workspace }}/artifacts/qualification
+          EXPECTED_PRODUCER_IDENTITY: ${{ runner.temp }}/qualification-producer-expected.json
+        run: |
+          set -Eeuo pipefail
+          sealed_root="$(mktemp -d "${RUNNER_TEMP}/qualification-sealed.XXXXXX")"
+          python3 scripts/prepare-qualification-handoff.py \
+            --artifact-root "${QUALIFICATION_ARTIFACT_ROOT}" \
+            --expected-producer-identity "${EXPECTED_PRODUCER_IDENTITY}" \
+            --sealed-root "${sealed_root}"
+          echo "path=${sealed_root}" >> "${GITHUB_OUTPUT}"
+
       - name: Validate sealed qualification before registry login
         env:
-          QUALIFICATION_ROOT: ${{ github.workspace }}/artifacts/qualification
+          QUALIFICATION_ROOT: ${{ steps.qualification_view.outputs.path }}
           CANDIDATE_ID: ${{ inputs.candidate_id }}
           QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
           RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
