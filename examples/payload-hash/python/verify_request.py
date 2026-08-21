@@ -68,8 +68,12 @@ def verify_request_data(request: dict[str, Any]) -> VerifyResult:
     _validate_request_shape(request)
     included = tuple(sorted(key for key in request if key in INCLUDED_FIELDS))
     excluded_present = tuple(sorted(key for key in request if key in EXCLUDED_FIELDS))
-    canonical_json = build_delivery_payload_json(request)
-    computed_hash = compute_delivery_payload_sha256_hex(request)
+    # build_delivery_payload_json/compute_delivery_payload_sha256_hex take attachments as a
+    # separate parameter (ADR 0022 D-03), so pull it out of the request dict here rather than
+    # letting it fall through INCLUDED_FIELDS filtering and get silently dropped.
+    attachments = request.get("attachments") or None
+    canonical_json = build_delivery_payload_json(request, attachments)
+    computed_hash = compute_delivery_payload_sha256_hex(request, attachments)
     request_hash = request.get("payload_hash")
     if request_hash is None:
         matches = None

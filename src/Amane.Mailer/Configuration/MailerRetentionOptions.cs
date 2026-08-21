@@ -5,7 +5,7 @@ public sealed record MailerRetentionOptions
     public const int DefaultRetentionDays = 90;
     public const int DefaultSweepIntervalHours = 24;
     public const int DefaultBatchSize = 100;
-    // Caps bind variables for multi-row delivery_events / bounce_events DELETE
+    // Caps bind variables for multi-row delivery_events / recipient_delivery_events DELETE
     // (3 params/row each) under classic SQLite limits.
     public const int MaxBatchSize = 250;
 

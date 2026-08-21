@@ -156,7 +156,7 @@ internal static class MailRequestRepositorySql
             connection,
             cancellationToken);
 
-    internal static async Task<(MailRequestState Status, DateTimeOffset? LockExpiresAt)?> ReadScopedStatusAsync(
+    internal static async Task<(MailRequestState Status, DateTimeOffset? LockExpiresAt, int AttachmentCount)?> ReadScopedStatusAsync(
         SqliteConnection connection,
         Guid id,
         IReadOnlySet<Guid>? allowedTenantIds,
@@ -167,7 +167,7 @@ internal static class MailRequestRepositorySql
         command.Parameters.AddWithValue("@Id", id.ToString("D"));
         AppendTenantScopeFilter(where, command, allowedTenantIds);
         command.CommandText = $"""
-            SELECT status, lock_expires_at
+            SELECT status, lock_expires_at, attachment_count
             FROM mail_requests
             {where}
             LIMIT 1;
@@ -181,6 +181,7 @@ internal static class MailRequestRepositorySql
         DateTimeOffset? lockExpiresAt = reader.IsDBNull(1)
             ? null
             : SqliteTime.FromStorage(reader.GetString(1));
-        return (status, lockExpiresAt);
+        var attachmentCount = reader.GetInt32(2);
+        return (status, lockExpiresAt, attachmentCount);
     }
 }

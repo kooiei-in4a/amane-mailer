@@ -35,7 +35,7 @@ public sealed class MailDeliveryProviderRouterTests
             },
         };
         var request = MailRequestTestData.CreateRequest();
-        var job = new MailSendJob(
+        var job = MailSendJob.ForSingleRecipient(
             request.MailRequestId,
             request.SourceService,
             request.Subject,

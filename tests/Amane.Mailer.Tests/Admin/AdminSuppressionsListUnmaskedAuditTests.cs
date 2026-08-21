@@ -58,7 +58,10 @@ public sealed class AdminSuppressionsListUnmaskedAuditTests
         var html = await response.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains(recipient, html, StringComparison.Ordinal);
+        // A suppression without a durable request/role/ordinal correlation is fail-closed:
+        // unmasked list mode must not turn an unknown origin into raw recipient output.
+        Assert.DoesNotContain(recipient, html, StringComparison.Ordinal);
+        Assert.Contains(">***</td>", html, StringComparison.Ordinal);
 
         var rows = await ReadAuditEventsAsync(
             _unmaskedFixture.ConnectionString,
@@ -96,7 +99,7 @@ public sealed class AdminSuppressionsListUnmaskedAuditTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.DoesNotContain("masked-suppression@example.com", html, StringComparison.Ordinal);
-        Assert.Contains("m***@e***.com", html, StringComparison.Ordinal);
+        Assert.Contains(">***</td>", html, StringComparison.Ordinal);
 
         var rows = await ReadAuditEventsAsync(
             _maskedFixture.ConnectionString,

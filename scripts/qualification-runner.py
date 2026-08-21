@@ -21,6 +21,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,8 @@ ARCHIVE_RIDS = {"win-x64", "linux-x64", "linux-arm64"}
 OCI_PLATFORMS = {"linux/amd64", "linux/arm64"}
 JCS_VERSION = {"algorithm": "RFC8785-JCS", "version": 1}
 ROOT_DIGEST_ALGORITHM = "RFC8785-JCS-sorted-path-sha256/v1"
+RUN_LIFECYCLE_VERSION = 2
+RUN_READY_FILE = "run-ready.json"
 VARIANT_RULES_VERSION = 4
 SCOPE_MANIFEST_SCHEMA_VERSION = 1
 LEGACY_SCOPE_ID = "v1.2.0-issue-456"
@@ -507,7 +510,106 @@ def archive_member(path: Path, basename: str) -> bytes:
         fail(f"{path.name}: {basename} is invalid ({type(exc).__name__})")
 
 
-def docs_from_release_tree(repo_root: Path, release_commit: str, candidate_root: Path, archive_paths: Iterable[Path]) -> tuple[dict[str, str], dict[str, bytes]]:
+def readme_mapping_from_archives(
+    candidate_root: Path,
+    archive_records: Iterable[dict[str, Any]],
+) -> tuple[dict[str, dict[str, str]], dict[str, bytes]]:
+    mapping: dict[str, dict[str, str]] = {}
+    payloads: dict[str, bytes] = {}
+    for archive_record in archive_records:
+        rid = require_string(archive_record, "targetRid")
+        if rid not in ARCHIVE_RIDS:
+            fail(f"candidate README-SETUP.md has unexpected targetRid: {rid}")
+        if rid in mapping:
+            fail(f"candidate README-SETUP.md has duplicate targetRid: {rid}")
+        archive_name = require_string(archive_record, "archiveFileName")
+        archive_path = candidate_root / archive_name
+        if not archive_path.is_file() or archive_path.is_symlink():
+            fail(f"candidate README archive is missing: {archive_name}")
+        archive_digest = require_digest(require_string(archive_record, "archiveSha256"), f"archives[{rid}].archiveSha256")
+        if archive_digest != "sha256:" + file_sha(archive_path):
+            fail(f"candidate README archive digest mismatch: {archive_name}")
+        manifest = archive_manifest(archive_path)
+        if manifest.get("targetRid") != rid:
+            fail(f"candidate README archive manifest targetRid mismatch: {archive_name}")
+        payload = archive_member(archive_path, "README-SETUP.md")
+        mapping[rid] = {
+            "archiveFileName": archive_name,
+            "archiveSha256": archive_digest,
+            "targetRid": rid,
+            "manifestTargetRid": require_string(manifest, "targetRid"),
+            "sha256": sha_bytes(payload),
+        }
+        payloads[rid] = payload
+    if set(mapping) != ARCHIVE_RIDS:
+        missing = sorted(ARCHIVE_RIDS - set(mapping))
+        unexpected = sorted(set(mapping) - ARCHIVE_RIDS)
+        fail(f"candidate README-SETUP.md RID set mismatch (missing={missing}, unexpected={unexpected})")
+    return {rid: mapping[rid] for rid in sorted(mapping)}, {rid: payloads[rid] for rid in sorted(payloads)}
+
+
+def validate_rid_readme_binding(
+    docs: Any,
+    run_root: Path,
+    archive_records: Iterable[dict[str, Any]],
+) -> None:
+    if not isinstance(docs, dict) or "candidateReadmeSetupSha256" in docs:
+        fail("v1.3 docs must use candidateReadmeSetupByRid")
+    mapping = docs.get("candidateReadmeSetupByRid")
+    if not isinstance(mapping, dict) or set(mapping) != ARCHIVE_RIDS:
+        fail("v1.3 candidate README mapping must contain the exact RID set")
+    mapping_digest = docs.get("candidateReadmeSetupByRidSha256")
+    if not isinstance(mapping_digest, str) or not HEX64.fullmatch(mapping_digest) or sha_object(mapping) != mapping_digest:
+        fail("v1.3 candidate README mapping digest mismatch")
+    expected_archives = {}
+    for archive_record in archive_records:
+        rid = require_string(archive_record, "targetRid")
+        if rid in expected_archives:
+            fail(f"candidate archive provenance has duplicate targetRid: {rid}")
+        expected_archives[rid] = {
+            "archiveFileName": require_string(archive_record, "archiveFileName"),
+            "archiveSha256": require_digest(require_string(archive_record, "archiveSha256"), f"archives[{rid}].archiveSha256"),
+            "targetRid": rid,
+            "manifestTargetRid": rid,
+        }
+    if set(expected_archives) != ARCHIVE_RIDS:
+        fail("candidate archive provenance RID set does not match README mapping")
+    extract_dir = run_root / "docs-extract" / "candidate-readme-setup"
+    if not extract_dir.is_dir() or extract_dir.is_symlink():
+        fail("docs-extract candidate README directory is missing or unsafe")
+    expected_extract_names = {f"{rid}.md" for rid in ARCHIVE_RIDS}
+    try:
+        extract_entries = list(extract_dir.iterdir())
+    except OSError as exc:
+        fail(f"docs-extract candidate README directory is unreadable ({type(exc).__name__})")
+    actual_extract_names = set()
+    for entry in extract_entries:
+        if entry.is_symlink() or not entry.is_file():
+            fail(f"docs-extract candidate README entry is unsafe: {entry.name}")
+        actual_extract_names.add(entry.name)
+    if actual_extract_names != expected_extract_names:
+        fail("docs-extract candidate README directory must contain the exact RID set")
+    for rid in sorted(ARCHIVE_RIDS):
+        entry = mapping.get(rid)
+        if not isinstance(entry, dict) or any(not isinstance(entry.get(field), str) for field in ("archiveFileName", "archiveSha256", "targetRid", "manifestTargetRid", "sha256")):
+            fail(f"candidate README mapping entry is invalid: {rid}")
+        for field in ("archiveFileName", "archiveSha256", "targetRid", "manifestTargetRid"):
+            if entry[field] != expected_archives[rid][field]:
+                fail(f"candidate README mapping archive identity mismatch: {rid}.{field}")
+        if not HEX64.fullmatch(entry["sha256"]):
+            fail(f"candidate README mapping digest is invalid: {rid}")
+        path = run_root / "docs-extract" / "candidate-readme-setup" / f"{rid}.md"
+        if file_sha(path) != entry["sha256"]:
+            fail(f"docs-extract candidate README digest mismatch: {rid}")
+
+
+def docs_from_release_tree(
+    repo_root: Path,
+    release_commit: str,
+    candidate_root: Path,
+    archive_paths: Iterable[Path],
+    rid_specific: bool = False,
+) -> tuple[dict[str, Any], dict[str, bytes]]:
     paths = {
         "setupGuideJa": "docs/ops/setup-guide.md",
         "setupGuideEn": "docs/ops/setup-guide.en.md",
@@ -523,6 +625,26 @@ def docs_from_release_tree(repo_root: Path, release_commit: str, candidate_root:
         except (OSError, subprocess.CalledProcessError):
             fail(f"docs extract missing from release tree: {relative}")
         extracted[key] = payload
+    archive_paths = list(archive_paths)
+    if rid_specific:
+        archive_records = []
+        for archive in archive_paths:
+            manifest = archive_manifest(archive)
+            archive_records.append({
+                "targetRid": manifest.get("targetRid"),
+                "archiveFileName": archive.name,
+                "archiveSha256": "sha256:" + file_sha(archive),
+            })
+        mapping, candidate_setup = readme_mapping_from_archives(candidate_root, archive_records)
+        extracted.update({f"candidateReadmeSetup:{rid}": payload for rid, payload in candidate_setup.items()})
+        digests = {f"{key}Sha256": sha_bytes(payload) for key, payload in extracted.items()}
+        digests.update({
+            "candidateReadmeSetupByRid": mapping,
+            "candidateReadmeSetupByRidSha256": sha_object(mapping),
+            "extractionMethod": "git-archive-exact-source-plus-qualified-archive",
+            "sourceCommitSha": release_commit,
+        })
+        return digests, extracted
     candidate_setup: list[bytes] = []
     for archive in archive_paths:
         try:
@@ -820,17 +942,136 @@ def binding_id_for(binding: dict[str, Any], authorization: dict[str, Any]) -> st
             str(require_scope_version(binding.get("migrationSchemaAllowlistVersion"), "migrationSchemaAllowlistVersion")),
             require_hex(require_string(binding, "migrationSchemaAllowlistSha256"), "migrationSchemaAllowlistSha256"),
         ])
+    if binding.get("lifecycleVersion") is not None:
+        if binding.get("lifecycleVersion") != RUN_LIFECYCLE_VERSION:
+            fail("binding lifecycleVersion is unsupported")
+        preimage += "|" + "|".join([
+            f"lifecycle-v{RUN_LIFECYCLE_VERSION}",
+            require_hex(require_string(binding, "bindingNonce"), "bindingNonce"),
+        ])
     return sha_bytes(preimage.encode("utf-8"))
 
 
-def load_binding(run_root: Path) -> dict[str, Any]:
+def fresh_lifecycle_nonce(label: str, seed: str | None = None) -> str:
+    if not SAFE_ID.fullmatch(label):
+        fail("lifecycle nonce label is invalid")
+    seed_value = "" if seed is None else require_value_free_identity(seed, f"{label}-nonce-seed")
+    return sha_bytes(f"{label}|{seed_value}|{secrets.token_hex(32)}".encode("utf-8"))
+
+
+def create_staging_run_root(run_root: Path) -> None:
+    if run_root.exists() or run_root.is_symlink():
+        fail("qualificationRunId already exists; bind is write-once")
+    ensure_directory_chain(run_root.parent)
+    if run_root.parent.is_symlink():
+        fail("run root parent is a symlink")
+    try:
+        run_root.mkdir()
+    except FileExistsError:
+        fail("qualificationRunId already exists; bind is write-once")
+    if run_root.is_symlink() or not run_root.is_dir():
+        fail("staging run root is not a real directory")
+    fsync_directory(run_root.parent)
+
+
+def lifecycle_material_inventory(run_root: Path) -> list[dict[str, str]]:
+    exact_paths = {
+        "authorization.json", "binding.json", "migration-pin.json",
+        "phase-manifests/phase-2.json", "scope-manifest.json",
+    }
+    entries = []
+    for path in sorted(run_root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(run_root).as_posix()
+        if relative in exact_paths or relative.startswith("docs-extract/"):
+            entries.append({"path": relative, "sha256": file_sha(path)})
+    return entries
+
+
+def lifecycle_material_root(run_root: Path) -> str:
+    return object_root(lifecycle_material_inventory(run_root))
+
+
+def write_run_ready(run_root: Path, binding: dict[str, Any]) -> dict[str, Any]:
+    ready = {
+        "schemaVersion": 1,
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
+        "status": "ready",
+        "candidateId": binding["candidateId"],
+        "bindingId": binding["bindingId"],
+        "qualificationRunId": binding["qualificationRunId"],
+        "bindingSha256": file_sha(run_root / "binding.json"),
+        "authorizationSha256": file_sha(run_root / "authorization.json"),
+        "phase2Sha256": file_sha(run_root / "phase-manifests" / "phase-2.json"),
+        "materialRootSha256": lifecycle_material_root(run_root),
+        "readyAtUtc": utc_now(),
+    }
+    write_once(run_root / RUN_READY_FILE, ready)
+    return ready
+
+
+def validate_run_ready(run_root: Path, binding: dict[str, Any], ready: dict[str, Any]) -> None:
+    expected_identity = {
+        "candidateId": binding["candidateId"],
+        "bindingId": binding["bindingId"],
+        "qualificationRunId": binding["qualificationRunId"],
+    }
+    if ready.get("schemaVersion") != 1 or ready.get("lifecycleVersion") != RUN_LIFECYCLE_VERSION or ready.get("status") != "ready":
+        fail("run-ready.json lifecycle identity mismatch")
+    if any(ready.get(field) != value for field, value in expected_identity.items()):
+        fail("run-ready.json qualification identity mismatch")
+    for field in ("bindingSha256", "authorizationSha256", "phase2Sha256", "materialRootSha256"):
+        require_hex(require_string(ready, field), f"run-ready.{field}")
+    if ready["bindingSha256"] != file_sha(run_root / "binding.json"):
+        fail("run-ready.json binding digest mismatch")
+    if ready["authorizationSha256"] != file_sha(run_root / "authorization.json"):
+        fail("run-ready.json authorization digest mismatch")
+    if ready["phase2Sha256"] != file_sha(run_root / "phase-manifests" / "phase-2.json"):
+        fail("run-ready.json Phase 2 digest mismatch")
+    if ready["materialRootSha256"] != lifecycle_material_root(run_root):
+        fail("run-ready.json material root mismatch")
+    if not isinstance(ready.get("readyAtUtc"), str) or not UTC_TIMESTAMP.fullmatch(ready["readyAtUtc"]):
+        fail("run-ready.json readyAtUtc is invalid")
+
+
+def load_binding(run_root: Path, *, allow_staging: bool = False) -> dict[str, Any]:
     binding = read_json(run_root / "binding.json", "binding.json")
     if not isinstance(binding, dict):
         fail("binding.json: object required")
     for field in ("candidateId", "bindingId", "qualificationRunId"):
         require_hex(require_string(binding, field), f"binding.{field}")
     nonce = require_string(binding, "runAttemptNonce")
-    if sha_bytes((binding["bindingId"] + "|" + nonce).encode("utf-8")) != run_root.name:
+    lifecycle_version = binding.get("lifecycleVersion")
+    ready = None
+    if lifecycle_version is not None:
+        if lifecycle_version != RUN_LIFECYCLE_VERSION:
+            fail("binding lifecycleVersion is unsupported")
+        require_hex(require_string(binding, "bindingNonce"), "binding.bindingNonce")
+        require_hex(nonce, "binding.runAttemptNonce")
+        if allow_staging:
+            if (run_root / RUN_READY_FILE).exists() or (run_root / RUN_READY_FILE).is_symlink():
+                fail("staging verification cannot reuse a ready run")
+        else:
+            ready = read_json(run_root / RUN_READY_FILE, RUN_READY_FILE)
+            if not isinstance(ready, dict):
+                fail("run-ready.json: object required")
+    elif not allow_staging:
+        # Pre-remediation unsealed runs have no proof that binding,
+        # authorization, and Phase 2 were materialized atomically.  They are
+        # historical state only; sealed legacy runs remain readable for
+        # verification/handoff, but an incomplete legacy run cannot resume.
+        legacy_events = sorted((run_root / "run-status-events").glob("*.json"))
+        legacy_sealed = False
+        for event_path in legacy_events:
+            event = read_json(event_path, "legacy run-status event")
+            if isinstance(event, dict) and event.get("status") == "sealed" and event.get("qualificationRunId") == binding["qualificationRunId"]:
+                legacy_sealed = True
+                break
+        if not legacy_sealed:
+            fail("pre-remediation unsealed run is ineligible; create a fresh binding and qualification run")
+    expected_run_id = sha_bytes((binding["bindingId"] + "|" + nonce).encode("utf-8"))
+    if expected_run_id != run_root.name or binding["qualificationRunId"] != expected_run_id:
         fail("qualificationRunId/runAttemptNonce binding mismatch")
     scope_profile = None
     if binding.get("scopeId") is not None:
@@ -856,6 +1097,8 @@ def load_binding(run_root: Path) -> dict[str, Any]:
         fail("binding migration PIN fields are missing")
     phase2 = read_json(run_root / "phase-manifests/phase-2.json", "phase-2.json")
     phase2_fields = ("candidateId", "bindingId", "qualificationRunId", "runAttemptNonce", "releaseCommitSha", "releaseVersion", "ociPlatforms", "ociLayoutIndexSha256", "planFilePath", "producerWorkflowRef", "producerWorkflowRunId", "producerWorkflowRunAttempt", "candidateProvenanceSha256", "candidateImageIdentitySha256", "candidatePhase1ManifestSha256", "candidateArchivesDigestSha256")
+    if lifecycle_version is not None:
+        phase2_fields += ("lifecycleVersion", "bindingNonce")
     if scope_profile is not None:
         phase2_fields += ("scopeId", "scopeVersion", "scopeManifestSha256", "scopeAuthorityIssueNumber", "scopeAuthorityIssueBodySha256", "scopePlanFileSha256", "planRevision", "issueNumber", "variantRulesVersion", "migrationBaselineInventoryDigestSha256", "migrationDeltaInventoryDigestSha256", "migrationFullInventoryDigestSha256", "migrationPredicateSetVersion", "migrationSchemaAllowlistVersion", "migrationSchemaAllowlistSha256", "migrationSchemaAllowlist")
     if any(phase2.get(field) != binding.get(field) for field in phase2_fields) or phase2.get("docs") != binding.get("docs") or phase2.get("authorizationDigestSha256") != binding.get("authorizationDigestSha256"):
@@ -863,6 +1106,8 @@ def load_binding(run_root: Path) -> dict[str, Any]:
     auth = read_json(run_root / "authorization.json", "authorization.json")
     if not isinstance(auth, dict) or any(auth.get(field) != binding.get(field) for field in ("candidateId", "bindingId", "qualificationRunId")) or sha_object(auth) != binding.get("authorizationDigestSha256"):
         fail("authorization snapshot digest/identity mismatch")
+    if lifecycle_version is not None and auth.get("lifecycleVersion") != lifecycle_version:
+        fail("authorization lifecycle identity mismatch")
     if binding["bindingId"] != binding_id_for(binding, auth):
         fail("bindingId recomputation mismatch")
     saved_pin = load_migration_pin(run_root / "migration-pin.json", scope_profile)
@@ -883,12 +1128,17 @@ def load_binding(run_root: Path) -> dict[str, Any]:
     docs = binding.get("docs")
     if not isinstance(docs, dict) or docs.get("sourceCommitSha") != binding.get("releaseCommitSha") or docs.get("extractionMethod") != "git-archive-exact-source-plus-qualified-archive":
         fail("binding docs extraction metadata mismatch")
-    docs_files = {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}
+    docs_files = {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md"}
     for key, filename in docs_files.items():
         expected = docs.get(f"{key}Sha256")
         path = run_root / "docs-extract" / filename
         if not isinstance(expected, str) or not HEX64.fullmatch(expected) or file_sha(path) != expected:
             fail(f"docs-extract/{filename}: digest mismatch")
+    if scope_profile is None:
+        expected = docs.get("candidateReadmeSetupSha256")
+        path = run_root / "docs-extract" / "README-SETUP.md"
+        if not isinstance(expected, str) or not HEX64.fullmatch(expected) or file_sha(path) != expected:
+            fail("docs-extract/README-SETUP.md: digest mismatch")
     candidate_root = run_root.parent.parent / "candidates" / binding["candidateId"] / "intake"
     provenance, identity, archive_digests = candidate_documents(candidate_root)
     if candidate_id(provenance, archive_digests) != binding.get("candidateId"):
@@ -899,12 +1149,16 @@ def load_binding(run_root: Path) -> dict[str, Any]:
         fail("candidate producer identity does not match binding")
     if binding.get("candidateProvenanceSha256") != file_sha(candidate_root / "candidate-provenance.json") or binding.get("candidateImageIdentitySha256") != file_sha(candidate_root / "image-identity.json") or binding.get("candidatePhase1ManifestSha256") != file_sha(candidate_root / "phase-1.json") or binding.get("candidateArchivesDigestSha256") != sha_object({"archives": provenance["archives"], "archiveDigests": archive_digests}):
         fail("candidate provenance/archive digest does not match binding")
+    if scope_profile is not None:
+        validate_rid_readme_binding(docs, run_root, provenance["archives"])
     if binding.get("sourceCommitSha") != binding.get("releaseCommitSha") or not SHA40.fullmatch(str(binding.get("sourceCommitSha", ""))) or not SHA256_DIGEST.fullmatch(str(binding.get("ociIndexDigest", ""))):
         fail("binding source/OCI identity is invalid")
     phase1 = read_json(candidate_root / "phase-1.json", "phase-1.json")
     objects = [{"path": p.relative_to(candidate_root.parent).as_posix(), "sha256": file_sha(p)} for p in sorted(candidate_root.rglob("*")) if p.is_file() and p.name != "phase-1.json"]
     if phase1.get("candidateId") != binding.get("candidateId") or phase1.get("sourceCommitSha") != binding.get("releaseCommitSha") or phase1.get("ociIndexDigest") != binding.get("ociIndexDigest") or phase1.get("workflowRunId") != provenance.get("workflowRunId") or phase1.get("workflowRunAttempt") != provenance.get("workflowRunAttempt") or phase1.get("workflowRef") != provenance.get("workflowRef") or phase1.get("objects") != objects:
         fail("phase-1 object inventory mismatch")
+    if ready is not None:
+        validate_run_ready(run_root, binding, ready)
     return binding
 
 
@@ -1705,8 +1959,14 @@ def command_bind(args: argparse.Namespace) -> None:
     candidate_phase1_sha = file_sha(candidate_intake / "phase-1.json")
     candidate_archives_sha = sha_object({"archives": provenance["archives"], "archiveDigests": archive_digests})
     archive_paths = [candidate_intake / archive["archiveFileName"] for archive in provenance["archives"]]
-    docs_metadata, docs_payloads = docs_from_release_tree(Path(args.repo_root), intake_manifest["sourceCommitSha"], candidate_intake, archive_paths)
-    nonce = require_value_free_identity(args.run_attempt_nonce, "run-attempt-nonce")
+    docs_metadata, docs_payloads = docs_from_release_tree(
+        Path(args.repo_root),
+        intake_manifest["sourceCommitSha"],
+        candidate_intake,
+        archive_paths,
+        rid_specific=scope_profile is not None,
+    )
+    run_nonce_seed = require_value_free_identity(args.run_attempt_nonce, "run-attempt-nonce")
     owners = load_owner_map(Path(args.evidence_owners))
     optional = scope_profile["optionalEvidenceKeys"] if scope_profile is not None else [{"scenarioId": "G456-38", "variantId": "nas"}, {"scenarioId": "G456-39", "variantId": "macos"}, {"scenarioId": "G456-40", "variantId": "mode5-manual"}, {"scenarioId": "G456-41", "variantId": "external-secret-manager-docs"}]
     required_keys = {(r["scenarioId"], v) for r in rows for v in r["requiredVariants"]}
@@ -1727,6 +1987,8 @@ def command_bind(args: argparse.Namespace) -> None:
     scope_predicate_version = scope_profile["migrationPredicateSetVersion"] if scope_profile is not None else None
     scope_schema_allowlist_version = scope_profile["migration"]["schemaAllowlistVersion"] if scope_profile is not None else None
     binding_material = {
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
+        "bindingNonce": fresh_lifecycle_nonce("binding"),
         "candidateId": args.candidate_id,
         "issueBodySha256": issue_body_sha,
         "planCommitSha": plan_commit,
@@ -1776,13 +2038,14 @@ def command_bind(args: argparse.Namespace) -> None:
         "evidenceOwners": owners,
     }
     binding_id = binding_id_for(binding_material, authorization_seed)
-    run_id = sha_bytes((binding_id + "|" + nonce).encode("utf-8"))
+    run_nonce = fresh_lifecycle_nonce("run", run_nonce_seed)
+    run_id = sha_bytes((binding_id + "|" + run_nonce).encode("utf-8"))
     run_root = store / "runs" / run_id
-    if run_root.exists():
-        fail("qualificationRunId already exists; bind is write-once")
+    create_staging_run_root(run_root)
     created = utc_now()
     authorization = {
         "schemaVersion": 1,
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
         "qualificationRunId": run_id,
         "bindingId": binding_id,
         "candidateId": args.candidate_id,
@@ -1795,9 +2058,11 @@ def command_bind(args: argparse.Namespace) -> None:
     }
     binding = {
         "schemaVersion": 1,
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
+        "bindingNonce": binding_material["bindingNonce"],
         "bindingId": binding_id,
         "qualificationRunId": run_id,
-        "runAttemptNonce": nonce,
+        "runAttemptNonce": run_nonce,
         "candidateId": args.candidate_id,
         "planRevision": scope_plan_revision,
         "planCommitSha": plan_commit,
@@ -1852,21 +2117,28 @@ def command_bind(args: argparse.Namespace) -> None:
             "migrationSchemaAllowlistSha256": scope_profile["migration"]["schemaAllowlistSha256"],
             "migrationSchemaAllowlist": scope_profile["migration"]["schemaAllowlist"],
         })
-    write_once(run_root / "authorization.json", authorization)
     write_once(run_root / "binding.json", binding)
+    write_once(run_root / "authorization.json", authorization)
     if scope_profile is not None:
         write_once(run_root / "scope-manifest.json", read_json(Path(args.scope_manifest), "scope manifest"))
     write_once(run_root / "migration-pin.json", read_json(Path(args.migration_pin), "migration pin"))
+    docs_paths = {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}
     for key, payload in docs_payloads.items():
-        write_bytes_once(run_root / "docs-extract" / {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}[key], payload)
+        if key.startswith("candidateReadmeSetup:"):
+            rid = key.split(":", 1)[1]
+            write_bytes_once(run_root / "docs-extract" / "candidate-readme-setup" / f"{rid}.md", payload)
+        else:
+            write_bytes_once(run_root / "docs-extract" / docs_paths[key], payload)
     write_once(run_root / "docs-extract" / "metadata.json", docs_metadata)
     phase2 = {
         "schemaVersion": 1,
+        "lifecycleVersion": RUN_LIFECYCLE_VERSION,
         "phase": 2,
         "candidateId": args.candidate_id,
         "bindingId": binding_id,
         "qualificationRunId": run_id,
-        "runAttemptNonce": nonce,
+        "bindingNonce": binding["bindingNonce"],
+        "runAttemptNonce": run_nonce,
         "planFilePath": plan_relative_path,
         "authorizationDigestSha256": sha_object(authorization),
         "migrationPinDigestSha256": migration_pin["migrationPinDigestSha256"],
@@ -1906,7 +2178,12 @@ def command_bind(args: argparse.Namespace) -> None:
             "migrationSchemaAllowlist": binding["migrationSchemaAllowlist"],
         })
     write_once(run_root / "phase-manifests" / "phase-2.json", phase2)
-    print(json.dumps({"candidateId": args.candidate_id, "bindingId": binding_id, "qualificationRunId": run_id}, sort_keys=True))
+    # A run is ineligible until every Phase 2 object has been reloaded and
+    # cross-verified.  The ready marker is deliberately the final write.
+    load_binding(run_root, allow_staging=True)
+    write_run_ready(run_root, binding)
+    load_binding(run_root)
+    print(json.dumps({"candidateId": args.candidate_id, "bindingId": binding_id, "qualificationRunId": run_id, "ready": True}, sort_keys=True))
 
 
 def value_free(value: Any, path: str = "$ ") -> None:
@@ -1991,7 +2268,7 @@ def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any]
         if binding.get("scopeId") != V13_SCOPE_ID:
             fail(f"{scenario}: v1.3 migration evidence requires the v1.3 scope profile")
         common = {"migrationDecision", "baselineInventory", "deltaInventory", "fullInventory", "expectedFullMigrationInventory", "migrationDirectoryInventoryBefore", "migrationDirectoryInventoryDigestSha256", "migrationDeltaInventoryDigestSha256", "migrationFileDigests", "outcome", "preApplyAppliedMigrations", "preApplyPendingMigrations", "postApplyAppliedMigrations", "postApplyPendingMigrations", "lastAppliedBefore", "lastAppliedAfter"}
-        extra = {"schemaContractResult", "piiValueCanaryResult", "schemaAllowlistVersion", "schemaAllowlistSha256", "schemaAllowlist"} if scenario == "G583-MIG-03" else set()
+        extra = {"schemaContractResult", "piiValueCanaryResult", "schemaAllowlistVersion", "schemaAllowlistSha256"} if scenario == "G583-MIG-03" else set()
         if set(payload) - common - extra:
             fail(f"{scenario}: unknown v1.3 migration typePayload field")
         require_payload_fields(payload, common, scenario)
@@ -2014,7 +2291,6 @@ def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any]
                 and payload["piiValueCanaryResult"] == "pass"
                 and payload["schemaAllowlistVersion"] == binding["migrationSchemaAllowlistVersion"]
                 and payload["schemaAllowlistSha256"] == binding["migrationSchemaAllowlistSha256"]
-                and payload["schemaAllowlist"] == binding["migrationSchemaAllowlist"]
             )
         if envelope["result"] == "PASS" and not success:
             fail(f"{scenario}: PASS requires exact v1.3 migration predicate")
@@ -2056,6 +2332,379 @@ def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any]
             fail("G456-44: FAIL cannot carry a fully successful schema result")
 
 
+def _field(field_type: type, *allowed: Any) -> tuple[type, frozenset[Any] | None]:
+    return field_type, frozenset(allowed) if allowed else None
+
+
+def _hard_validator(
+    predicate_set: str,
+    fields: dict[str, tuple[type, frozenset[Any] | None]],
+    pass_predicate: Any,
+    fail_predicate: Any,
+) -> dict[str, Any]:
+    """Build one explicit hard-lane predicate definition.
+
+    The registry carries the scenario-specific field set and both directions of
+    the predicate.  The shared executor below only performs the structural
+    checks and invokes those declared predicates; it never accepts a generic
+    boolean or predicateResult field.
+    """
+    scenario = predicate_set.removeprefix("legacy-g456-")
+    return {
+        "predicateSet": predicate_set,
+        "procedureId": f"issue-456-g456-{scenario}",
+        "procedureRevision": "1",
+        "evidenceTypes": EVIDENCE_TYPES[f"G456-{scenario}"],
+        "fields": fields,
+        "pass": pass_predicate,
+        "fail": fail_predicate,
+    }
+
+
+def _safe_pass(payload: dict[str, Any], variant: str, *checks: Any) -> bool:
+    return all(check(payload, variant) for check in checks)
+
+
+def _safe_fail(payload: dict[str, Any], variant: str, *checks: Any) -> bool:
+    return any(check(payload, variant) for check in checks)
+
+
+# Issue #456 defines the meaning of these lanes; this registry defines the
+# value-free evidence shape needed to prove each meaning.  Gate classes and
+# required variants remain exclusively in the bound Issue #583 scope profile.
+HARD_SCENARIO_VALIDATOR_REGISTRY: dict[str, dict[str, Any]] = {
+    "G456-01": _hard_validator(
+        "legacy-g456-01",
+        {
+            "runtimeProfile": _field(str, "windows-docker-desktop"), "freshEnvironment": _field(bool),
+            "mailpitReady": _field(bool), "mailerStarted": _field(bool), "requestAccepted": _field(bool),
+            "deliveryObservedValueFree": _field(bool), "bundleIdentityMatch": _field(bool),
+            "outcome": _field(str, "completed", "failed"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["freshEnvironment"], lambda x, _: x["mailpitReady"], lambda x, _: x["mailerStarted"], lambda x, _: x["requestAccepted"], lambda x, _: x["deliveryObservedValueFree"], lambda x, _: x["bundleIdentityMatch"], lambda x, _: x["outcome"] == "completed", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["outcome"] == "failed", lambda x, _: not x["freshEnvironment"], lambda x, _: not x["mailpitReady"], lambda x, _: not x["mailerStarted"], lambda x, _: not x["requestAccepted"], lambda x, _: not x["deliveryObservedValueFree"], lambda x, _: not x["bundleIdentityMatch"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-02": _hard_validator(
+        "legacy-g456-02",
+        {
+            "runtimeProfile": _field(str, "linux-docker-engine"), "freshEnvironment": _field(bool),
+            "mailpitReady": _field(bool), "mailerStarted": _field(bool), "requestAccepted": _field(bool),
+            "deliveryObservedValueFree": _field(bool), "bundleIdentityMatch": _field(bool),
+            "outcome": _field(str, "completed", "failed"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["freshEnvironment"], lambda x, _: x["mailpitReady"], lambda x, _: x["mailerStarted"], lambda x, _: x["requestAccepted"], lambda x, _: x["deliveryObservedValueFree"], lambda x, _: x["bundleIdentityMatch"], lambda x, _: x["outcome"] == "completed", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["outcome"] == "failed", lambda x, _: not x["freshEnvironment"], lambda x, _: not x["mailpitReady"], lambda x, _: not x["mailerStarted"], lambda x, _: not x["requestAccepted"], lambda x, _: not x["deliveryObservedValueFree"], lambda x, _: not x["bundleIdentityMatch"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-07": _hard_validator(
+        "legacy-g456-07",
+        {
+            "accessProfile": _field(str, "development-loopback"), "transportProfile": _field(str, "http-loopback"),
+            "loopbackOnly": _field(bool), "loginResult": _field(str, "success", "rejected"),
+            "setupStatusResult": _field(str, "visible", "hidden"), "adminRouteResult": _field(str, "available", "unavailable"),
+            "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["loopbackOnly"], lambda x, _: x["loginResult"] == "success", lambda x, _: x["setupStatusResult"] == "visible", lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["loopbackOnly"], lambda x, _: x["loginResult"] == "rejected", lambda x, _: x["setupStatusResult"] == "hidden", lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-08": _hard_validator(
+        "legacy-g456-08",
+        {
+            "accessProfile": _field(str, "production-https"), "transportProfile": _field(str, "https"),
+            "secureSessionFlag": _field(bool), "loginResult": _field(str, "success", "rejected"),
+            "setupStatusResult": _field(str, "visible", "hidden"), "adminRouteResult": _field(str, "available", "unavailable"),
+            "deploymentOvConfirmedShown": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["secureSessionFlag"], lambda x, _: x["loginResult"] == "success", lambda x, _: x["setupStatusResult"] == "visible", lambda x, _: x["adminRouteResult"] == "available", lambda x, _: not x["deploymentOvConfirmedShown"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["secureSessionFlag"], lambda x, _: x["loginResult"] == "rejected", lambda x, _: x["setupStatusResult"] == "hidden", lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["deploymentOvConfirmedShown"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-09": _hard_validator(
+        "legacy-g456-09",
+        {
+            "accessProfile": _field(str, "production-https"), "transportProfile": _field(str, "http"),
+            "secureSessionFlag": _field(bool), "httpSessionAccepted": _field(bool), "loginResult": _field(str, "success", "rejected"),
+            "adminRouteResult": _field(str, "available", "unavailable"), "httpFallbackAccepted": _field(bool),
+            "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["secureSessionFlag"], lambda x, _: not x["httpSessionAccepted"], lambda x, _: x["loginResult"] == "rejected", lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: not x["httpFallbackAccepted"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["secureSessionFlag"], lambda x, _: x["httpSessionAccepted"], lambda x, _: x["loginResult"] == "success", lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["httpFallbackAccepted"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-10": _hard_validator(
+        "legacy-g456-10",
+        {
+            "accessProfile": _field(str, "production-https"), "transportProfile": _field(str, "http"),
+            "amaneAdminAllowHttp": _field(bool), "configRejected": _field(bool),
+            "adminRouteResult": _field(str, "available", "unavailable"), "outcome": _field(str, "rejected", "accepted"),
+            "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["amaneAdminAllowHttp"], lambda x, _: x["configRejected"], lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["outcome"] == "rejected", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["configRejected"], lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["outcome"] == "accepted", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-11": _hard_validator(
+        "legacy-g456-11",
+        {
+            "accessProfile": _field(str, "local-dev", "proxy-https"), "addressMismatch": _field(bool),
+            "httpStatus": _field(int, 404, 200), "adminRouteResult": _field(str, "available", "unavailable"),
+            "routeExposed": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, lane: x["accessProfile"] == lane, lambda x, _: x["addressMismatch"], lambda x, _: x["httpStatus"] == 404, lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: not x["routeExposed"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, lane: x["accessProfile"] != lane, lambda x, _: not x["addressMismatch"], lambda x, _: x["httpStatus"] != 404, lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["routeExposed"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-12": _hard_validator(
+        "legacy-g456-12",
+        {
+            "accessProfile": _field(str, "production-https"), "httpsPathAvailable": _field(bool),
+            "adminBootstrapResult": _field(str, "not-presented", "presented"), "adminEnabled": _field(bool),
+            "adminRouteResult": _field(str, "available", "unavailable"), "mainPathResult": _field(str, "available", "unavailable"),
+            "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["httpsPathAvailable"], lambda x, _: x["adminBootstrapResult"] == "not-presented", lambda x, _: not x["adminEnabled"], lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["mainPathResult"] == "available", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["httpsPathAvailable"], lambda x, _: x["adminBootstrapResult"] == "presented", lambda x, _: x["adminEnabled"], lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["mainPathResult"] == "unavailable", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-13": _hard_validator(
+        "legacy-g456-13",
+        {
+            "bootstrapProfile": _field(str, "fresh-bootstrap"), "freshInstall": _field(bool),
+            "bootstrapResult": _field(str, "completed", "failed"), "loginResult": _field(str, "success", "rejected"),
+            "setupStatusResult": _field(str, "visible", "hidden"), "bundleIdentityMatch": _field(bool),
+            "sendReadyStatusShown": _field(bool), "deploymentOvConfirmedShown": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["freshInstall"], lambda x, _: x["bootstrapResult"] == "completed", lambda x, _: x["loginResult"] == "success", lambda x, _: x["setupStatusResult"] == "visible", lambda x, _: x["bundleIdentityMatch"], lambda x, _: x["sendReadyStatusShown"], lambda x, _: not x["deploymentOvConfirmedShown"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["freshInstall"], lambda x, _: x["bootstrapResult"] == "failed", lambda x, _: x["loginResult"] == "rejected", lambda x, _: x["setupStatusResult"] == "hidden", lambda x, _: not x["bundleIdentityMatch"], lambda x, _: not x["sendReadyStatusShown"], lambda x, _: x["deploymentOvConfirmedShown"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-14": _hard_validator(
+        "legacy-g456-14",
+        {
+            "accessProfile": _field(str, "managed"), "usernameRelation": _field(str, "same-user"),
+            "reapplyResult": _field(str, "idempotent", "rejected"), "credentialRotated": _field(bool),
+            "statePreserved": _field(bool), "routeResult": _field(str, "available", "unavailable"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["reapplyResult"] == "idempotent", lambda x, _: not x["credentialRotated"], lambda x, _: x["statePreserved"], lambda x, _: x["routeResult"] == "available", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["reapplyResult"] == "rejected", lambda x, _: x["credentialRotated"], lambda x, _: not x["statePreserved"], lambda x, _: x["routeResult"] == "unavailable", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-15": _hard_validator(
+        "legacy-g456-15",
+        {
+            "accessProfile": _field(str, "managed"), "usernameRelation": _field(str, "different-user"),
+            "credentialRotationAttempt": _field(str, "rejected", "accepted"), "manualExistingAdmin": _field(str, "rejected", "accepted"),
+            "reapplyResult": _field(str, "rejected", "idempotent"), "credentialChanged": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["credentialRotationAttempt"] == "rejected", lambda x, _: x["manualExistingAdmin"] == "rejected", lambda x, _: x["reapplyResult"] == "rejected", lambda x, _: not x["credentialChanged"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["credentialRotationAttempt"] == "accepted", lambda x, _: x["manualExistingAdmin"] == "accepted", lambda x, _: x["reapplyResult"] == "idempotent", lambda x, _: x["credentialChanged"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-16": _hard_validator(
+        "legacy-g456-16",
+        {
+            "executionProfile": _field(str, "automated-fixture", "integrated-follow-on-failure"), "credentialSyncResult": _field(str, "completed", "failed"),
+            "subsequentStepResult": _field(str, "failed", "completed"), "configRollbackResult": _field(str, "completed", "failed", "not-applicable"),
+            "sqliteStateReport": _field(str, "separate"), "adminRouteAfterRollback": _field(str, "not-exposed", "exposed"),
+            "partialSuccessRecorded": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, lane: x["executionProfile"] == ("automated-fixture" if lane == "ci-auto" else "integrated-follow-on-failure"), lambda x, _: x["credentialSyncResult"] == "completed", lambda x, _: x["subsequentStepResult"] == "failed", lambda x, _: x["configRollbackResult"] == "completed", lambda x, _: x["sqliteStateReport"] == "separate", lambda x, _: x["adminRouteAfterRollback"] == "not-exposed", lambda x, _: x["partialSuccessRecorded"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, lane: x["executionProfile"] != ("automated-fixture" if lane == "ci-auto" else "integrated-follow-on-failure"), lambda x, _: x["credentialSyncResult"] == "failed", lambda x, _: x["subsequentStepResult"] == "completed", lambda x, _: x["configRollbackResult"] != "completed", lambda x, _: x["adminRouteAfterRollback"] == "exposed", lambda x, _: not x["partialSuccessRecorded"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-17": _hard_validator(
+        "legacy-g456-17",
+        {
+            "executionMode": _field(str, "non-interactive"), "enableRequestResult": _field(str, "rejected", "accepted"),
+            "adminEnabled": _field(bool), "sensitiveArgument": _field(bool), "sensitiveHistory": _field(bool),
+            "sensitiveProcessList": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["enableRequestResult"] == "rejected", lambda x, _: not x["adminEnabled"], lambda x, _: not x["sensitiveArgument"], lambda x, _: not x["sensitiveHistory"], lambda x, _: not x["sensitiveProcessList"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["enableRequestResult"] == "accepted", lambda x, _: x["adminEnabled"], lambda x, _: x["sensitiveArgument"], lambda x, _: x["sensitiveHistory"], lambda x, _: x["sensitiveProcessList"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-18": _hard_validator(
+        "legacy-g456-18",
+        {
+            "failureMode": _field(str, "apply-failure"), "previousBundlePresent": _field(bool), "applyResult": _field(str, "failed", "completed"),
+            "rollbackResult": _field(str, "completed", "failed", "not-attempted"), "effectiveStateRestored": _field(bool), "integrityMatched": _field(bool),
+            "adminRouteAfterRollback": _field(str, "not-exposed", "exposed"), "rollbackClaimedSuccess": _field(bool),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["previousBundlePresent"], lambda x, _: x["applyResult"] == "failed", lambda x, _: x["rollbackResult"] == "completed", lambda x, _: x["effectiveStateRestored"], lambda x, _: x["integrityMatched"], lambda x, _: x["adminRouteAfterRollback"] == "not-exposed", lambda x, _: x["rollbackClaimedSuccess"]),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["previousBundlePresent"], lambda x, _: x["applyResult"] == "completed", lambda x, _: x["rollbackResult"] != "completed", lambda x, _: not x["effectiveStateRestored"], lambda x, _: not x["integrityMatched"], lambda x, _: x["adminRouteAfterRollback"] == "exposed", lambda x, _: not x["rollbackClaimedSuccess"]),
+    ),
+    "G456-19": _hard_validator(
+        "legacy-g456-19",
+        {
+            "failureMode": _field(str, "fresh-install-failure"), "previousBundlePresent": _field(bool), "applyResult": _field(str, "failed", "completed"),
+            "rollbackResult": _field(str, "not-applicable", "completed"), "rollbackClaimedSuccess": _field(bool),
+            "manualInterventionRequired": _field(bool), "adminRouteResult": _field(str, "unavailable", "available"), "partialBundleActive": _field(bool),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["previousBundlePresent"], lambda x, _: x["applyResult"] == "failed", lambda x, _: x["rollbackResult"] == "not-applicable", lambda x, _: not x["rollbackClaimedSuccess"], lambda x, _: x["manualInterventionRequired"], lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: not x["partialBundleActive"]),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["previousBundlePresent"], lambda x, _: x["applyResult"] == "completed", lambda x, _: x["rollbackResult"] == "completed", lambda x, _: x["rollbackClaimedSuccess"], lambda x, _: not x["manualInterventionRequired"], lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["partialBundleActive"]),
+    ),
+    "G456-20": _hard_validator(
+        "legacy-g456-20",
+        {
+            "fault": _field(str, "fingerprint-mismatch"), "fingerprintMismatchDetected": _field(bool), "verificationResult": _field(str, "rejected", "accepted"),
+            "activationResult": _field(str, "blocked", "activated"), "staleState": _field(str, "not-activated", "activated"), "bundleIntegrityMatched": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["fingerprintMismatchDetected"], lambda x, _: x["verificationResult"] == "rejected", lambda x, _: x["activationResult"] == "blocked", lambda x, _: x["bundleIntegrityMatched"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["fingerprintMismatchDetected"], lambda x, _: x["verificationResult"] == "accepted", lambda x, _: x["activationResult"] == "activated", lambda x, _: not x["bundleIntegrityMatched"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-21": _hard_validator(
+        "legacy-g456-21",
+        {
+            "fault": _field(str, "credential-replacement"), "credentialBindingResult": _field(str, "rejected", "accepted"),
+            "oldCredentialAccepted": _field(bool), "otherBundleCredentialAccepted": _field(bool), "badMountCredentialAccepted": _field(bool),
+            "activationResult": _field(str, "blocked", "activated"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["credentialBindingResult"] == "rejected", lambda x, _: not x["oldCredentialAccepted"], lambda x, _: not x["otherBundleCredentialAccepted"], lambda x, _: not x["badMountCredentialAccepted"], lambda x, _: x["activationResult"] == "blocked", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["credentialBindingResult"] == "accepted", lambda x, _: x["oldCredentialAccepted"], lambda x, _: x["otherBundleCredentialAccepted"], lambda x, _: x["badMountCredentialAccepted"], lambda x, _: x["activationResult"] == "activated", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-22": _hard_validator(
+        "legacy-g456-22",
+        {
+            "fault": _field(str, "stale-launcher-image"), "launcherIdentityMatch": _field(bool), "imageIdentityMatch": _field(bool),
+            "verificationResult": _field(str, "rejected", "accepted"), "activationResult": _field(str, "blocked", "activated"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["launcherIdentityMatch"], lambda x, _: not x["imageIdentityMatch"], lambda x, _: x["verificationResult"] == "rejected", lambda x, _: x["activationResult"] == "blocked", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["launcherIdentityMatch"], lambda x, _: x["imageIdentityMatch"], lambda x, _: x["verificationResult"] == "accepted", lambda x, _: x["activationResult"] == "activated", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-23": _hard_validator(
+        "legacy-g456-23",
+        {
+            "fault": _field(str, "remote-docker-context"), "dockerContext": _field(str, "remote"), "remoteOperationAttempted": _field(bool),
+            "remoteMutation": _field(bool), "operationResult": _field(str, "rejected", "completed"), "localOnlyEnforced": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["remoteOperationAttempted"], lambda x, _: not x["remoteMutation"], lambda x, _: x["operationResult"] == "rejected", lambda x, _: x["localOnlyEnforced"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["remoteOperationAttempted"], lambda x, _: x["remoteMutation"], lambda x, _: x["operationResult"] == "completed", lambda x, _: not x["localOnlyEnforced"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-24": _hard_validator(
+        "legacy-g456-24",
+        {
+            "fault": _field(str, "command-injection"), "injectionAttempted": _field(bool), "inputRejected": _field(bool),
+            "commandExecution": _field(str, "not-executed", "executed"), "shellSpawned": _field(bool), "environmentMutation": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["injectionAttempted"], lambda x, _: x["inputRejected"], lambda x, _: x["commandExecution"] == "not-executed", lambda x, _: not x["shellSpawned"], lambda x, _: not x["environmentMutation"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["injectionAttempted"], lambda x, _: not x["inputRejected"], lambda x, _: x["commandExecution"] == "executed", lambda x, _: x["shellSpawned"], lambda x, _: x["environmentMutation"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-25": _hard_validator(
+        "legacy-g456-25",
+        {
+            "fault": _field(str, "path-traversal"), "traversalAttempted": _field(bool), "inputRejected": _field(bool),
+            "pathResolution": _field(str, "rejected", "resolved"), "fileReadOutsideRoot": _field(bool), "fileWriteOutsideRoot": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["traversalAttempted"], lambda x, _: x["inputRejected"], lambda x, _: x["pathResolution"] == "rejected", lambda x, _: not x["fileReadOutsideRoot"], lambda x, _: not x["fileWriteOutsideRoot"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["traversalAttempted"], lambda x, _: not x["inputRejected"], lambda x, _: x["pathResolution"] == "resolved", lambda x, _: x["fileReadOutsideRoot"], lambda x, _: x["fileWriteOutsideRoot"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-26": _hard_validator(
+        "legacy-g456-26",
+        {
+            "fault": _field(str, "symlink-reparse"), "filesystemObject": _field(str, "symlink", "reparse-point"), "objectDetected": _field(bool),
+            "followed": _field(bool), "operationResult": _field(str, "rejected", "completed"), "outsideRootAccess": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, lane: x["filesystemObject"] == ("reparse-point" if lane == "win-docker" else "symlink"), lambda x, _: x["objectDetected"], lambda x, _: not x["followed"], lambda x, _: x["operationResult"] == "rejected", lambda x, _: not x["outsideRootAccess"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, lane: x["filesystemObject"] != ("reparse-point" if lane == "win-docker" else "symlink"), lambda x, _: not x["objectDetected"], lambda x, _: x["followed"], lambda x, _: x["operationResult"] == "completed", lambda x, _: x["outsideRootAccess"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-27": _hard_validator(
+        "legacy-g456-27",
+        {
+            "fault": _field(str, "concurrent-setup"), "concurrentRequests": _field(int), "winnerCount": _field(int, 1, 2),
+            "loserResult": _field(str, "rejected", "serialized"), "duplicateApply": _field(bool), "stateConsistent": _field(bool), "activeGenerationUnique": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["concurrentRequests"] >= 2, lambda x, _: x["winnerCount"] == 1, lambda x, _: x["loserResult"] in {"rejected", "serialized"}, lambda x, _: not x["duplicateApply"], lambda x, _: x["stateConsistent"], lambda x, _: x["activeGenerationUnique"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["concurrentRequests"] < 2, lambda x, _: x["winnerCount"] != 1, lambda x, _: x["loserResult"] not in {"rejected", "serialized"}, lambda x, _: x["duplicateApply"], lambda x, _: not x["stateConsistent"], lambda x, _: not x["activeGenerationUnique"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-28": _hard_validator(
+        "legacy-g456-28",
+        {
+            "fault": _field(str, "crash-cancel-recovery"), "recoveryTrigger": _field(str, "crash", "cancel"),
+            "recoveryResult": _field(str, "resumed", "manual-intervention", "unsafe"), "partialActivation": _field(bool), "stateConsistent": _field(bool),
+            "recoveryRecordValueFree": _field(bool), "adminRouteResult": _field(str, "unavailable", "available"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["recoveryResult"] in {"resumed", "manual-intervention"}, lambda x, _: not x["partialActivation"], lambda x, _: x["stateConsistent"], lambda x, _: x["recoveryRecordValueFree"], lambda x, _: x["adminRouteResult"] == "unavailable", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["recoveryResult"] == "unsafe", lambda x, _: x["partialActivation"], lambda x, _: not x["stateConsistent"], lambda x, _: not x["recoveryRecordValueFree"], lambda x, _: x["adminRouteResult"] == "available", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-30": _hard_validator(
+        "legacy-g456-30",
+        {
+            "fault": _field(str, "web-security"), "requestCredentialPolicy": _field(str, "enforced", "bypassed"), "originPolicy": _field(str, "enforced", "bypassed"),
+            "hostPolicy": _field(str, "enforced", "bypassed"), "csrfPolicy": _field(str, "enforced", "bypassed"), "unauthorizedResult": _field(str, "rejected", "accepted"),
+            "crossOriginAdminAccess": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["requestCredentialPolicy"] == "enforced", lambda x, _: x["originPolicy"] == "enforced", lambda x, _: x["hostPolicy"] == "enforced", lambda x, _: x["csrfPolicy"] == "enforced", lambda x, _: x["unauthorizedResult"] == "rejected", lambda x, _: not x["crossOriginAdminAccess"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["requestCredentialPolicy"] == "bypassed", lambda x, _: x["originPolicy"] == "bypassed", lambda x, _: x["hostPolicy"] == "bypassed", lambda x, _: x["csrfPolicy"] == "bypassed", lambda x, _: x["unauthorizedResult"] == "accepted", lambda x, _: x["crossOriginAdminAccess"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-31": _hard_validator(
+        "legacy-g456-31",
+        {
+            "scanTarget": _field(str, "qualification-output"), "sensitiveScan": _field(str, "clean", "findings"), "deliveryAddressValue": _field(str, "absent", "present"),
+            "providerErrorOutput": _field(str, "absent", "present"), "hostPathOutput": _field(str, "absent", "present"), "credentialValue": _field(str, "absent", "present"), "outputResult": _field(str, "value-free", "value-bearing"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["sensitiveScan"] == "clean", lambda x, _: x["deliveryAddressValue"] == "absent", lambda x, _: x["providerErrorOutput"] == "absent", lambda x, _: x["hostPathOutput"] == "absent", lambda x, _: x["credentialValue"] == "absent", lambda x, _: x["outputResult"] == "value-free"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["sensitiveScan"] == "findings", lambda x, _: x["deliveryAddressValue"] == "present", lambda x, _: x["providerErrorOutput"] == "present", lambda x, _: x["hostPathOutput"] == "present", lambda x, _: x["credentialValue"] == "present", lambda x, _: x["outputResult"] == "value-bearing"),
+    ),
+    "G456-32": _hard_validator(
+        "legacy-g456-32",
+        {
+            "accessProfile": _field(str, "admin-status"), "authenticationRequired": _field(bool), "authorizationRequired": _field(bool),
+            "unauthenticatedResult": _field(str, "rejected", "accepted"), "wrongAddressStatus": _field(int, 404, 200), "authorizedStatus": _field(str, "value-free", "value-bearing"),
+            "statusRouteExposed": _field(bool), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["authenticationRequired"], lambda x, _: x["authorizationRequired"], lambda x, _: x["unauthenticatedResult"] == "rejected", lambda x, _: x["wrongAddressStatus"] == 404, lambda x, _: x["authorizedStatus"] == "value-free", lambda x, _: x["statusRouteExposed"], lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["authenticationRequired"], lambda x, _: not x["authorizationRequired"], lambda x, _: x["unauthenticatedResult"] == "accepted", lambda x, _: x["wrongAddressStatus"] == 200, lambda x, _: x["authorizedStatus"] == "value-bearing", lambda x, _: not x["statusRouteExposed"], lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-33": _hard_validator(
+        "legacy-g456-33",
+        {
+            "executionMode": _field(str, "terminal-non-interactive"), "sensitiveArgument": _field(bool), "sensitiveHistory": _field(bool),
+            "sensitiveProcessList": _field(bool), "inputBoundaryResult": _field(str, "rejected", "accepted"), "interactivePromptShown": _field(bool),
+            "outputResult": _field(str, "value-free", "value-bearing"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: not x["sensitiveArgument"], lambda x, _: not x["sensitiveHistory"], lambda x, _: not x["sensitiveProcessList"], lambda x, _: x["inputBoundaryResult"] == "rejected", lambda x, _: not x["interactivePromptShown"], lambda x, _: x["outputResult"] == "value-free", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: x["sensitiveArgument"], lambda x, _: x["sensitiveHistory"], lambda x, _: x["sensitiveProcessList"], lambda x, _: x["inputBoundaryResult"] == "accepted", lambda x, _: x["interactivePromptShown"], lambda x, _: x["outputResult"] == "value-bearing", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+    "G456-35": _hard_validator(
+        "legacy-g456-35",
+        {
+            "targetRid": _field(str, "linux-arm64"), "artifactSourceCommitMatch": _field(bool), "artifactIntegrityMatch": _field(bool),
+            "startupSmoke": _field(str, "passed", "failed"), "helpCommand": _field(str, "passed", "failed"), "aotBinary": _field(bool),
+            "runtimeIdentityMatch": _field(bool), "outputResult": _field(str, "value-free", "value-bearing"), "sensitiveOutput": _field(str, "absent", "present"),
+        },
+        lambda p, v: _safe_pass(p, v, lambda x, _: x["artifactSourceCommitMatch"], lambda x, _: x["artifactIntegrityMatch"], lambda x, _: x["startupSmoke"] == "passed", lambda x, _: x["helpCommand"] == "passed", lambda x, _: x["aotBinary"], lambda x, _: x["runtimeIdentityMatch"], lambda x, _: x["outputResult"] == "value-free", lambda x, _: x["sensitiveOutput"] == "absent"),
+        lambda p, v: _safe_fail(p, v, lambda x, _: not x["artifactSourceCommitMatch"], lambda x, _: not x["artifactIntegrityMatch"], lambda x, _: x["startupSmoke"] == "failed", lambda x, _: x["helpCommand"] == "failed", lambda x, _: not x["aotBinary"], lambda x, _: not x["runtimeIdentityMatch"], lambda x, _: x["outputResult"] == "value-bearing", lambda x, _: x["sensitiveOutput"] == "present"),
+    ),
+}
+
+
+V13_IMPLEMENTED_SCENARIO_VALIDATORS = IMPLEMENTED_SCENARIO_VALIDATORS | set(HARD_SCENARIO_VALIDATOR_REGISTRY)
+
+
+def validate_registered_hard_payload(envelope: dict[str, Any], row: dict[str, Any], spec: dict[str, Any]) -> None:
+    scenario = row["scenarioId"]
+    bound_predicate_set = row.get("predicateSet", SCOPE_PREDICATE_SETS.get(scenario))
+    if bound_predicate_set != spec["predicateSet"]:
+        fail(f"{scenario}: predicateSet is not registered for this lane")
+    if envelope.get("evidenceType") not in spec["evidenceTypes"]:
+        fail(f"{scenario}: evidenceType is not registered for this lane")
+    if envelope.get("procedureId") != spec["procedureId"] or envelope.get("procedureRevision") != spec["procedureRevision"]:
+        fail(f"{scenario}: procedure identity/revision mismatch")
+    payload = envelope["typePayload"]
+    expected_fields = set(spec["fields"])
+    missing = sorted(expected_fields - set(payload))
+    unknown = sorted(set(payload) - expected_fields)
+    if missing:
+        fail(f"{scenario}: typePayload missing fields: {','.join(missing)}")
+    if unknown:
+        fail(f"{scenario}: unknown typePayload field: {','.join(unknown)}")
+    for field_name, (field_type, allowed) in spec["fields"].items():
+        value = payload[field_name]
+        if type(value) is not field_type:
+            fail(f"{scenario}: typePayload field {field_name} has wrong type")
+        if allowed is not None and value not in allowed:
+            fail(f"{scenario}: typePayload field {field_name} has an unexpected value")
+    if envelope["result"] not in {"PASS", "FAIL"}:
+        fail(f"{scenario}: dedicated Hard evidence result must be PASS or FAIL")
+    variant = envelope["variantId"]
+    if envelope["result"] == "PASS" and not spec["pass"](payload, variant):
+        fail(f"{scenario}: PASS predicate mismatch")
+    if envelope["result"] == "FAIL":
+        if spec["pass"](payload, variant):
+            fail(f"{scenario}: FAIL payload is a successful predicate")
+        if not spec["fail"](payload, variant):
+            fail(f"{scenario}: FAIL payload lacks an explicit failed predicate")
+
+
 def validate_type_payload(envelope: dict[str, Any], binding: dict[str, Any], row: dict[str, Any]) -> None:
     scenario = row["scenarioId"]
     if binding.get("scopeId") is not None and (row.get("predicateSet") != SCOPE_PREDICATE_SETS.get(scenario) or row.get("ownerRoleClass") != SCOPE_OWNER_CLASSES.get(scenario)):
@@ -2066,6 +2715,9 @@ def validate_type_payload(envelope: dict[str, Any], binding: dict[str, Any], row
     payload = envelope["typePayload"]
     if scenario in {"G456-42", "G456-43", "G456-44", "G583-MIG-01", "G583-MIG-02", "G583-MIG-03"}:
         validate_migration_payload(envelope, binding, scenario, payload)
+        return
+    if binding.get("scopeId") == V13_SCOPE_ID and scenario in HARD_SCENARIO_VALIDATOR_REGISTRY:
+        validate_registered_hard_payload(envelope, row, HARD_SCENARIO_VALIDATOR_REGISTRY[scenario])
         return
     required: dict[str, tuple[str, ...]] = {
         "G456-03": ("acsEnvironment", "liveSending", "sendKind", "mailSendAttempted", "testBypassUsed", "outcome", "mailboxConfirmation"),

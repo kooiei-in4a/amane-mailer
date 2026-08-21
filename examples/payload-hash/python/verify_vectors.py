@@ -9,37 +9,41 @@ from pathlib import Path
 
 from mail_payload_hash import (
     build_delivery_payload_json,
-    canonicalize,
     compute_delivery_payload_sha256_hex,
-    compute_sha256_hex,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
-VECTORS_PATH = (
-    ROOT
-    / "tests"
-    / "Amane.Mailer.Contracts.Tests"
-    / "TestVectors"
-    / "payload-hash-vectors.json"
-)
+VECTORS_DIR = ROOT / "tests" / "Amane.Mailer.Contracts.Tests" / "TestVectors"
+# Baseline: pre-ADR-0023 single-To/attachment fixture, also read by the Python/TypeScript SDK
+# test suites (sdk/python, sdk/typescript).
+# Recipient v1.3: ADR 0023 to/cc/bcc conformance vectors, read by the SDK test suites after #542.
+VECTOR_FILES = [
+    VECTORS_DIR / "payload-hash-vectors.json",
+    VECTORS_DIR / "payload-hash-recipient-v1.3-vectors.json",
+]
 
 
 def main() -> int:
-    vectors = json.loads(VECTORS_PATH.read_text(encoding="utf-8"))
+    vectors = [
+        vector
+        for vectors_path in VECTOR_FILES
+        for vector in json.loads(vectors_path.read_text(encoding="utf-8"))
+    ]
     for vector in vectors:
         name = vector["name"]
         payload = vector["input"]
+        attachments = vector.get("attachments")
         expected_canonical = vector["expected_canonical_json"]
         expected_hash = vector["expected_sha256_hex"]
 
-        actual_canonical = canonicalize(payload)
+        actual_canonical = build_delivery_payload_json(payload, attachments)
         if actual_canonical != expected_canonical:
             print(f"[FAIL] {name}: canonical JSON mismatch")
             print(f"  expected: {expected_canonical}")
             print(f"  actual:   {actual_canonical}")
             return 1
 
-        actual_hash = compute_sha256_hex(payload)
+        actual_hash = compute_delivery_payload_sha256_hex(payload, attachments)
         if actual_hash != expected_hash:
             print(f"[FAIL] {name}: SHA-256 mismatch")
             print(f"  expected: {expected_hash}")
@@ -52,14 +56,14 @@ def main() -> int:
             "payload_hash": "caller-provided-placeholder",
             **payload,
         }
-        delivery_json = build_delivery_payload_json(envelope_request)
+        delivery_json = build_delivery_payload_json(envelope_request, attachments)
         if delivery_json != expected_canonical:
             print(f"[FAIL] {name}: delivery payload JSON mismatch")
             print(f"  expected: {expected_canonical}")
             print(f"  actual:   {delivery_json}")
             return 1
 
-        delivery_hash = compute_delivery_payload_sha256_hex(envelope_request)
+        delivery_hash = compute_delivery_payload_sha256_hex(envelope_request, attachments)
         if delivery_hash != expected_hash:
             print(f"[FAIL] {name}: delivery payload hash mismatch")
             print(f"  expected: {expected_hash}")

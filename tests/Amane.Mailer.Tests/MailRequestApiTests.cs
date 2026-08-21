@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Net;
 using System.Text;
 using Amane.Mailer.Api;
@@ -273,6 +274,37 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     {
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
+
+        // ADR 0023 D-01: To allows up to 10 recipients; 11 exceeds the per-role limit and is
+        // TOO_MANY_RECIPIENTS.
+        var request = MailRequestTestData.CreateRequest() with
+        {
+            To = Enumerable.Range(1, 11)
+                .Select(i => new MailRecipientDto { Email = $"recipient{i}@example.com" })
+                .ToArray(),
+        };
+        request = request with
+        {
+            PayloadHash = global::Amane.Mailer.Contracts.Security.MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+        };
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(
+            MailerErrorCodes.TooManyRecipients,
+            await MailRequestTestData.ReadCodeAsync(response, ct));
+    }
+
+    [Fact]
+    public async Task Multiple_to_recipients_within_limit_is_accepted_and_persisted()
+    {
+        // ADR 0023: the public acceptance path persists the complete canonical recipient set.
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
         var request = MailRequestTestData.CreateRequest() with
         {
             To =
@@ -291,9 +323,159 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             MailRequestTestData.ToJsonContent(request),
             ct);
 
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(MailRequestAcceptanceStatus.Accepted, await MailRequestTestData.ReadStatusAsync(response, ct));
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var stored = await repository.FindByIdempotencyKeyAsync(
+            MailerWebApplicationFixtureBase.TenantId,
+            MailerWebApplicationFixtureBase.SourceService,
+            request.MailRequestId,
+            ct);
+        Assert.NotNull(stored);
+        Assert.Equal(
+            [MailRecipientRole.To, MailRecipientRole.To],
+            (await repository.ListRecipientsAsync(stored!.Id, ct)).Select(row => row.Role));
+    }
+
+    [Fact]
+    public async Task Cc_only_is_accepted_and_persisted()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest() with
+        {
+            To = null,
+            Cc = [new MailRecipientDto { Email = "cc@example.com" }],
+        };
+        request = request with
+        {
+            PayloadHash = global::Amane.Mailer.Contracts.Security.MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+        };
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal(MailRequestAcceptanceStatus.Accepted, await MailRequestTestData.ReadStatusAsync(response, ct));
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var stored = await repository.FindByIdempotencyKeyAsync(
+            MailerWebApplicationFixtureBase.TenantId,
+            MailerWebApplicationFixtureBase.SourceService,
+            request.MailRequestId,
+            ct);
+        Assert.NotNull(stored);
+        var recipients = await repository.ListRecipientsAsync(stored!.Id, ct);
+        var recipient = Assert.Single(recipients);
+        Assert.Equal(MailRecipientRole.Cc, recipient.Role);
+        Assert.Equal("cc@example.com", recipient.Address);
+    }
+
+    [Theory]
+    [MemberData(nameof(PublicRecipientShapes))]
+    public async Task Public_http_accepts_all_recipient_shapes_and_persists_canonical_rows(
+        string _shape,
+        IReadOnlyList<MailRecipientDto>? to,
+        IReadOnlyList<MailRecipientDto>? cc,
+        IReadOnlyList<MailRecipientDto>? bcc)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest() with { To = to, Cc = cc, Bcc = bcc };
+        request = request with
+        {
+            PayloadHash = global::Amane.Mailer.Contracts.Security.MailPayloadHasher
+                .ComputeDeliveryPayloadSha256Hex(request),
+        };
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
+        Assert.True(response.StatusCode == HttpStatusCode.Accepted, _shape);
+        Assert.Equal(MailRequestAcceptanceStatus.Accepted, await MailRequestTestData.ReadStatusAsync(response, ct));
+
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var stored = await repository.FindByIdempotencyKeyAsync(
+            MailerWebApplicationFixtureBase.TenantId,
+            MailerWebApplicationFixtureBase.SourceService,
+            request.MailRequestId,
+            ct);
+        Assert.NotNull(stored);
+
+        var expected = (to ?? Array.Empty<MailRecipientDto>())
+            .Select((recipient, ordinal) => (Role: MailRecipientRole.To, Ordinal: ordinal, recipient.Email, recipient.DisplayName))
+            .Concat((cc ?? Array.Empty<MailRecipientDto>())
+                .Select((recipient, ordinal) => (Role: MailRecipientRole.Cc, Ordinal: ordinal, recipient.Email, recipient.DisplayName)))
+            .Concat((bcc ?? Array.Empty<MailRecipientDto>())
+                .Select((recipient, ordinal) => (Role: MailRecipientRole.Bcc, Ordinal: ordinal, recipient.Email, recipient.DisplayName)))
+            .ToArray();
+        var actual = await repository.ListRecipientsAsync(stored!.Id, ct);
+
+        Assert.Equal(
+            expected.Select(row => (row.Role, row.Ordinal, row.Email, row.DisplayName)),
+            actual.Select(row => (row.Role, row.Ordinal, row.Address, row.DisplayName)));
+        Assert.All(actual, row => Assert.Equal(MailRecipientDeliveryState.NotSent, row.DeliveryState));
+    }
+
+    public static TheoryData<string, IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?> PublicRecipientShapes()
+    {
+        var data = new TheoryData<string, IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?, IReadOnlyList<MailRecipientDto>?>();
+        data.Add("single-to", [new MailRecipientDto { Email = "to@example.com" }], null, null);
+        data.Add(
+            "multiple-to",
+            [
+                new MailRecipientDto { Email = "to-one@example.com" },
+                new MailRecipientDto { Email = "to-two@example.com" },
+            ],
+            null,
+            null);
+        data.Add("cc-only", null, [new MailRecipientDto { Email = "cc@example.com" }], null);
+        data.Add("bcc-only", null, null, [new MailRecipientDto { Email = "bcc@example.com" }]);
+        data.Add(
+            "to-cc",
+            [new MailRecipientDto { Email = "to@example.com" }],
+            [new MailRecipientDto { Email = "cc@example.com" }],
+            null);
+        data.Add(
+            "to-bcc",
+            [new MailRecipientDto { Email = "to@example.com" }],
+            null,
+            [new MailRecipientDto { Email = "bcc@example.com" }]);
+        data.Add(
+            "to-cc-bcc",
+            [new MailRecipientDto { Email = "to@example.com" }],
+            [new MailRecipientDto { Email = "cc@example.com" }],
+            [new MailRecipientDto { Email = "bcc@example.com" }]);
+        return data;
+    }
+
+    [Fact]
+    public async Task No_recipients_at_all_returns_invalid_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest() with { To = null };
+        request = request with
+        {
+            PayloadHash = global::Amane.Mailer.Contracts.Security.MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+        };
+
+        using var response = await client.PostAsync(
+            "/internal/mail-requests",
+            MailRequestTestData.ToJsonContent(request),
+            ct);
+
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.TooManyRecipients,
+            MailerErrorCodes.InvalidRequest,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
@@ -595,10 +777,12 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     [Fact]
     public async Task Oversized_request_body_returns_413()
     {
+        // /internal/mail-requests accepts attachments (ADR 0022 D-02), so its cap is
+        // MailAttachmentLimits.MaxConsumerHttpEnvelopeBytes (16 MiB), not the base 256,000 bytes.
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
         using var content = new StringContent(
-            "{\"html_body\":\"" + new string('x', 260_000) + "\"}",
+            "{\"html_body\":\"" + new string('x', 16 * 1024 * 1024) + "\"}",
             Encoding.UTF8,
             "application/json");
 
@@ -619,7 +803,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
         using var content = new UnknownLengthStringContent(
-            "{\"html_body\":\"" + new string('x', 260_000) + "\"}",
+            "{\"html_body\":\"" + new string('x', 16 * 1024 * 1024) + "\"}",
             Encoding.UTF8,
             "application/json");
 
@@ -722,7 +906,11 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
                                 sp.GetRequiredService<MailRequestAcceptStore>(),
                                 sp.GetRequiredService<MailRequestConsumerMutations>(),
                                 sp.GetRequiredService<MailRequestAdminQueries>(),
-                                sp.GetRequiredService<WorkerHeartbeatStore>()));
+                                sp.GetRequiredService<WorkerHeartbeatStore>(),
+                                sp.GetRequiredService<MailRequestAttachmentStore>(),
+                                sp.GetRequiredService<MailAttachmentSubmissionStore>(),
+                                sp.GetRequiredService<MailRequestRecipientStore>(),
+                                sp.GetRequiredService<MailPlainSubmissionStore>()));
                     });
                 });
 
@@ -824,8 +1012,21 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         MailRequestAcceptStore acceptStore,
         MailRequestConsumerMutations consumerMutations,
         MailRequestAdminQueries adminQueries,
-        WorkerHeartbeatStore heartbeatStore)
-        : MailRequestRepository(claimStore, acceptStore, consumerMutations, adminQueries, heartbeatStore)
+        WorkerHeartbeatStore heartbeatStore,
+        MailRequestAttachmentStore attachmentStore,
+        MailAttachmentSubmissionStore attachmentSubmissionStore,
+        MailRequestRecipientStore recipientStore,
+        MailPlainSubmissionStore plainSubmissionStore)
+        : MailRequestRepository(
+            claimStore,
+            acceptStore,
+            consumerMutations,
+            adminQueries,
+            heartbeatStore,
+            attachmentStore,
+            attachmentSubmissionStore,
+            recipientStore,
+            plainSubmissionStore)
     {
         public override Task<MailRequestIdempotencyRow?> FindByIdempotencyKeyAsync(
             Guid tenantId,

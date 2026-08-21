@@ -1623,7 +1623,7 @@ public sealed class SetupApplyEngineTests
         return false;
     }
 
-    private sealed class ApplyHarness : IDisposable
+    internal sealed class ApplyHarness : IDisposable
     {
         private ApplyHarness(
             string root,
@@ -1967,7 +1967,7 @@ public sealed class SetupApplyEngineTests
     /// path is remembered and handed to the predicates: a test names the write it cares about by
     /// what the document says, not by counting invocations.
     /// </summary>
-    private sealed class InstrumentedSetupFileSystem(HostSetupFileSystem inner) : ISetupFileSystem
+    internal sealed class InstrumentedSetupFileSystem(HostSetupFileSystem inner) : ISetupFileSystem
     {
         private readonly Dictionary<string, string> _staged = new(StringComparer.OrdinalIgnoreCase);
 
@@ -2069,7 +2069,7 @@ public sealed class SetupApplyEngineTests
     /// recorded so tests can assert ordering, and can be failed selectively via
     /// <see cref="FailWhen"/>.
     /// </summary>
-    private sealed class ApplyProcessRunner : IHostProcessRunner
+    internal sealed class ApplyProcessRunner : IHostProcessRunner
     {
         public const string SecretCanary = "canary-token-value-must-not-leak";
         public const string MailerVersion = "1.0.0";
@@ -2223,7 +2223,7 @@ public sealed class SetupApplyEngineTests
     /// Advances its own clock by a fixed step on every read so retry deadlines can be reached
     /// without sleeping. A zero step behaves like a frozen clock.
     /// </summary>
-    private sealed class SteppingTimeProvider : TimeProvider
+    internal sealed class SteppingTimeProvider : TimeProvider
     {
         private DateTimeOffset _now = new(2026, 7, 29, 0, 0, 0, TimeSpan.Zero);
 

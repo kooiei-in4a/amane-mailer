@@ -346,11 +346,13 @@ const requestDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailReq
 const responseDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailRequestCreateResponse.cs');
 const statusResponseDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailRequestStatusResponse.cs');
 const recipientDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailRecipientDto.cs');
+const attachmentDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailAttachmentDto.cs');
 
 const requestSchema = parseOpenApiSchema(openapi, 'MailRequestCreateRequest');
 const responseSchema = parseOpenApiSchema(openapi, 'MailRequestCreateResponse');
 const statusResponseSchema = parseOpenApiSchema(openapi, 'MailRequestStatusResponse');
 const recipientSchema = parseOpenApiSchema(openapi, 'MailRecipient');
+const attachmentSchema = parseOpenApiSchema(openapi, 'MailAttachment');
 const errorSchema = parseOpenApiSchema(openapi, 'Error');
 
 compareDtoToOpenApiSchema('MailRequestCreateRequest', requestDto, requestSchema, {
@@ -358,6 +360,9 @@ compareDtoToOpenApiSchema('MailRequestCreateRequest', requestDto, requestSchema,
 });
 compareDtoToOpenApiSchema('MailRecipientDto', recipientDto, recipientSchema, {
   expectClosedSchema: recipientDto.rejectsUnknownMembers,
+});
+compareDtoToOpenApiSchema('MailAttachmentDto', attachmentDto, attachmentSchema, {
+  expectClosedSchema: attachmentDto.rejectsUnknownMembers,
 });
 compareDtoToOpenApiSchema('MailRequestCreateResponse', responseDto, responseSchema);
 compareDtoToOpenApiSchema('MailRequestStatusResponse', statusResponseDto, statusResponseSchema);
@@ -540,6 +545,10 @@ const runtimeContractSources = [
   read('src/Amane.Mailer/Api/MailRequestHttpErrorMapper.cs'),
   read('src/Amane.Mailer/Api/MailRequestScheduleValidator.cs'),
   read('src/Amane.Mailer/Json/MailerJsonResults.cs'),
+  // ADR 0022 attachment acceptance: these fixed error codes are surfaced from the attachment
+  // validation pipeline, not from MailRequestCreateHandler.cs directly.
+  read('src/Amane.Mailer/Attachments/Validation/AttachmentAcceptanceValidator.cs'),
+  read('src/Amane.Mailer/Attachments/Validation/AttachmentStructureResult.cs'),
 ].join('\n');
 
 assertMatches(
@@ -566,7 +575,9 @@ assertMatches(
 );
 assertMatches(
   runtimeContractSources,
-  /MailPayloadHasher\.ComputeDeliveryPayloadSha256Hex\s*\(\s*requestBody\s*\)/s,
+  // ADR 0022: the acceptance-path call gained an optional second argument (attachment hash
+  // inputs) but must still hash requestBody as its first argument.
+  /MailPayloadHasher\.ComputeDeliveryPayloadSha256Hex\s*\(\s*requestBody\s*(?:,[^)]*)?\)/s,
   'Runtime payload hash validation',
   'MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(requestBody)',
 );

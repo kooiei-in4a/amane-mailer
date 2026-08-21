@@ -22,6 +22,32 @@ public static class PrometheusMetricsFormatter
             "Total mail requests accepted since process start.");
         AppendCounter(builder, "mail_requests_accepted_total", runtime.AcceptedTotal);
 
+        AppendHelpType(builder, "mail_attachment_requests_accepted_total", "counter",
+            "Total mail requests with one or more attachments accepted since process start (ADR 0022).");
+        AppendCounter(builder, "mail_attachment_requests_accepted_total", runtime.AttachmentRequestsAcceptedTotal);
+
+        AppendHelpType(builder, "mail_attachment_validation_rejected_total", "counter",
+            "Total attachment-bearing requests rejected at acceptance time by fixed reason code since process start (ADR 0022 D-12).");
+        foreach (var rejected in runtime.AttachmentValidationRejected.OrderBy(entry => entry.ReasonCode, StringComparer.Ordinal))
+        {
+            AppendCounter(
+                builder,
+                "mail_attachment_validation_rejected_total",
+                rejected.Count,
+                ("reason_code", rejected.ReasonCode));
+        }
+
+        AppendHelpType(builder, "mail_attachment_spool_cleanup_total", "counter",
+            "Total attachment spool entries removed by lifecycle stage since process start (ADR 0022 D-06/D-09).");
+        foreach (var cleanup in runtime.AttachmentSpoolCleanups.OrderBy(entry => entry.Kind, StringComparer.Ordinal))
+        {
+            AppendCounter(
+                builder,
+                "mail_attachment_spool_cleanup_total",
+                cleanup.Count,
+                ("kind", cleanup.Kind));
+        }
+
         AppendHelpType(builder, "mail_deliveries_total", "counter",
             "Total completed delivery attempts since process start.");
         foreach (var delivery in runtime.Deliveries.OrderBy(entry => entry.Provider, StringComparer.Ordinal)

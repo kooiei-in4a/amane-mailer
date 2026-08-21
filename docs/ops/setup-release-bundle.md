@@ -21,6 +21,14 @@ tools へ分離した packaging、artifact smoke、workflow artifact
 #458 promote（再 attest で digest 変化の可能性）、非目標、Agent B 指摘対応）は
 [英語版](setup-release-bundle.en.md)を正本としてください。
 
+なお、OCI candidate の生成は #557 で native platform build + assemble 方式に
+なりました。`linux/amd64` は `ubuntu-24.04`、`linux/arm64` は
+`ubuntu-24.04-arm` で個別にBuildxを実行し、QEMU・registry login・push・cacheは
+使いません。既存の論理job `build-oci` が両方の検証済みgraphを決定的にassembleし、
+最終の `buildx-metadata.json`、`oci-index.digest`、`image-identity.json` を従来どおり
+`setup-release-candidate-oci` に生成します。`oci-index.digest` は `index.json` が参照する
+最終image-index blobのdigestであり、`sha256(index.json)`ではありません。
+
 ```bash
 export MAILER_VERSION=1.2.0
 export MAILPIT_IMAGE='axllent/mailpit@sha256:replace-with-64-lowercase-hex-digest-here-000000000000'

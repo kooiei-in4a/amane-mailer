@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a local multi-arch OCI image layout for Easy Setup release candidates (#455).
+# Build a local single- or multi-platform OCI image layout for Easy Setup release candidates (#455).
 # Does NOT push to GHCR and does NOT create tags or GitHub Releases.
 #
 # Output:
@@ -16,6 +16,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd)"
 
 DEST="${1:-}"
 PLATFORM="${2:-linux/amd64,linux/arm64}"
+REQUIRED_PLATFORMS="${REQUIRED_PLATFORMS:-${PLATFORM}}"
+WRITE_IMAGE_IDENTITY="${WRITE_IMAGE_IDENTITY:-1}"
 SOURCE_SHA="${SOURCE_SHA:-}"
 MAILER_VERSION="${MAILER_VERSION:-}"
 IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}"
@@ -126,24 +128,32 @@ echo "${IMAGE_DIGEST}" > "${PARENT}/oci-index.digest"
 
 # oci-index.digest / ImageDigest / OciIndexDigest mean the Buildx image/index
 # descriptor digest (manifests[] target), not sha256(index.json bytes).
-# Validate descriptor graph via tools project (exact amd64+arm64); bind Buildx digest to layout.
-dotnet run --project "${REPO_ROOT}/tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" \
-  -c "${CONFIGURATION:-Release}" --no-launch-profile -- \
-  validate-oci \
-  --layout "${DEST}" \
-  --image-digest "${IMAGE_DIGEST}" \
-  --require-platforms "linux/amd64,linux/arm64" \
+# Validate descriptor graph via tools project; bind Buildx digest to layout.
+VALIDATE_ARGS=(
+  validate-oci
+  --layout "${DEST}"
+  --image-digest "${IMAGE_DIGEST}"
+  --require-platforms "${REQUIRED_PLATFORMS}"
   --metadata-file "${METADATA_FILE}"
-
+)
+if [[ "${REQUIRED_PLATFORMS}" != *,* ]]; then
+  VALIDATE_ARGS+=(--allow-single-platform)
+fi
 dotnet run --project "${REPO_ROOT}/tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" \
   -c "${CONFIGURATION:-Release}" --no-launch-profile -- \
-  write-image-identity \
-  --output "${IDENTITY_FILE}" \
-  --repository "${IMAGE_REPOSITORY}" \
-  --tag "${IMAGE_TAG}" \
-  --digest "${IMAGE_DIGEST}" \
-  --source-sha "${SOURCE_SHA}" \
-  --mailer-version "${MAILER_VERSION}" \
-  --platforms "${PLATFORM}"
+  "${VALIDATE_ARGS[@]}"
 
-echo "[info] Wrote ${IDENTITY_FILE}"
+if [[ "${WRITE_IMAGE_IDENTITY}" != "0" ]]; then
+  dotnet run --project "${REPO_ROOT}/tools/Amane.Mailer.ReleaseBundle/Amane.Mailer.ReleaseBundle.csproj" \
+    -c "${CONFIGURATION:-Release}" --no-launch-profile -- \
+    write-image-identity \
+    --output "${IDENTITY_FILE}" \
+    --repository "${IMAGE_REPOSITORY}" \
+    --tag "${IMAGE_TAG}" \
+    --digest "${IMAGE_DIGEST}" \
+    --source-sha "${SOURCE_SHA}" \
+    --mailer-version "${MAILER_VERSION}" \
+    --platforms "${PLATFORM}"
+
+  echo "[info] Wrote ${IDENTITY_FILE}"
+fi

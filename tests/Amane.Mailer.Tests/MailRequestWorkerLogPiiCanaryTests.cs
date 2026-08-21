@@ -45,7 +45,10 @@ public sealed class MailRequestWorkerLogPiiCanaryTests
         const string bearerCanary = "canary-bearer-token-value-abc123xyz";
         const string accessKeyCanary = "CanaryAccessKeyValue==XYZ9f2";
         const string acsEndpointHost = "canary-acs.communication.azure.com";
-        const string errorCode = "SMTP_CONNECT_FAILED";
+        // AcsRequestFailed classifies as DefinitiveFailed/Failed (AttachmentProviderResultClassifier,
+        // shared with plain requests since Issue #546); a generic code like the former
+        // "SMTP_CONNECT_FAILED" now converges to Unknown/DeliveryUnknown instead (ADR 0023 D-04).
+        const string errorCode = MailDeliveryErrorCodes.AcsRequestFailed;
         const string triageMessage = "SMTP connect failed";
 
         await File.WriteAllTextAsync(tenantConfigPath, TenantConfigJson, ct);

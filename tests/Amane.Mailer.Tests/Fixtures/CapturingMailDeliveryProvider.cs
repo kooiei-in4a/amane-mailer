@@ -164,7 +164,13 @@ public sealed class CapturingMailDeliveryProvider : IMailDeliveryProvider
                 await Task.Delay(delay.Value, cancellationToken);
             }
 
-            _sent.Enqueue(new CapturedMail(job.MailRequestId, job.RecipientEmail, job.Subject, provider));
+            _sent.Enqueue(new CapturedMail(
+                job.MailRequestId,
+                job.To.Count > 0 ? job.To[0].Address : string.Empty,
+                job.Subject,
+                provider,
+                Cc: job.Cc.Select(r => r.Address).ToArray(),
+                Bcc: job.Bcc.Select(r => r.Address).ToArray()));
             return _results.TryDequeue(out var result)
                 ? result
                 : MailDeliveryResult.Success($"stub-{job.MailRequestId:N}");
@@ -180,4 +186,6 @@ public sealed record CapturedMail(
     Guid MailRequestId,
     string To,
     string Subject,
-    string Provider);
+    string Provider,
+    IReadOnlyList<string>? Cc = null,
+    IReadOnlyList<string>? Bcc = null);

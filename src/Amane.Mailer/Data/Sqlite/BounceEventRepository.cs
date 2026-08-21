@@ -5,7 +5,7 @@ using Microsoft.Data.Sqlite;
 namespace Amane.Mailer.Data.Sqlite;
 
 /// <summary>
-/// Persists correlated bounce domain facts (ADR 0020 D-05). No FK to mail_requests.
+/// Existing Admin-compatible query surface over recipient-aware delivery-event history.
 /// </summary>
 public sealed class BounceEventRepository(SqliteConnectionFactory connections)
 {
@@ -17,14 +17,16 @@ public sealed class BounceEventRepository(SqliteConnectionFactory connections)
 
         // status_message must already be sanitized by the caller (#26 / ADR 0020 D-08).
         const string sql = """
-            INSERT INTO bounce_events (
+            INSERT INTO recipient_delivery_events (
                 id, tenant_id, source_service, mail_request_id,
+                recipient_role, recipient_ordinal,
                 provider, provider_event_id, provider_message_id,
-                delivery_status, status_message, occurred_at, created_at)
+                provider_status, applied_delivery_state, status_message, occurred_at, created_at)
             VALUES (
                 @Id, @TenantId, @SourceService, @MailRequestId,
+                @RecipientRole, @RecipientOrdinal,
                 @Provider, @ProviderEventId, @ProviderMessageId,
-                @DeliveryStatus, @StatusMessage, @OccurredAt, @CreatedAt)
+                @DeliveryStatus, @AppliedDeliveryState, @StatusMessage, @OccurredAt, @CreatedAt)
             ON CONFLICT (provider, provider_event_id) DO NOTHING;
             """;
 
@@ -35,10 +37,15 @@ public sealed class BounceEventRepository(SqliteConnectionFactory connections)
         command.Parameters.AddWithValue("@TenantId", row.TenantId.ToString("D"));
         command.Parameters.AddWithValue("@SourceService", row.SourceService);
         command.Parameters.AddWithValue("@MailRequestId", row.MailRequestId.ToString("D"));
+        command.Parameters.AddWithValue("@RecipientRole", row.RecipientRole);
+        command.Parameters.AddWithValue("@RecipientOrdinal", row.RecipientOrdinal);
         command.Parameters.AddWithValue("@Provider", row.Provider);
         command.Parameters.AddWithValue("@ProviderEventId", row.ProviderEventId);
         command.Parameters.AddWithValue("@ProviderMessageId", row.ProviderMessageId);
         command.Parameters.AddWithValue("@DeliveryStatus", row.DeliveryStatus);
+        command.Parameters.AddWithValue(
+            "@AppliedDeliveryState",
+            row.AppliedDeliveryState is null ? DBNull.Value : (int)row.AppliedDeliveryState.Value);
         command.Parameters.AddWithValue("@StatusMessage", (object?)row.StatusMessage ?? DBNull.Value);
         command.Parameters.AddWithValue("@OccurredAt", SqliteTime.ToStorageUtc(row.OccurredAt));
         command.Parameters.AddWithValue("@CreatedAt", SqliteTime.ToStorageUtc(row.CreatedAt));
@@ -54,7 +61,7 @@ public sealed class BounceEventRepository(SqliteConnectionFactory connections)
         const string sql = """
             SELECT EXISTS (
                 SELECT 1
-                FROM bounce_events
+                FROM recipient_delivery_events
                 WHERE id = @Id
             );
             """;
@@ -87,14 +94,15 @@ public sealed class BounceEventRepository(SqliteConnectionFactory connections)
             WHERE tenant_id = @TenantId
               AND source_service = @SourceService
               AND mail_request_id = @MailRequestId
+              AND provider_status <> 'Delivered'
             """);
         MailRequestRepositorySql.AppendTenantScopeFilter(where, command, allowedTenantIds);
 
         command.CommandText = $"""
             SELECT
                 id, provider, provider_event_id, provider_message_id,
-                delivery_status, status_message, occurred_at, created_at
-            FROM bounce_events
+                provider_status, status_message, occurred_at, created_at
+            FROM recipient_delivery_events
             {where}
             ORDER BY occurred_at ASC, id ASC;
             """;

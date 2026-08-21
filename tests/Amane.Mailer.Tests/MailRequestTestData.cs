@@ -19,7 +19,8 @@ internal static class MailRequestTestData
         string subject = "Form response received",
         string? replyTo = null,
         IReadOnlyDictionary<string, string>? metadata = null,
-        DateTimeOffset? scheduledAt = null)
+        DateTimeOffset? scheduledAt = null,
+        IReadOnlyList<MailAttachmentDto>? attachments = null)
     {
         var request = new MailRequestCreateRequest
         {
@@ -44,12 +45,27 @@ internal static class MailRequestTestData
                 ["form_id"] = "form-123",
             },
             ScheduledAt = scheduledAt,
+            Attachments = attachments,
             PayloadHash = new string('0', 64),
         };
 
         return request with
         {
             PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+        };
+    }
+
+    /// <summary>Builds a valid single-attachment .txt <see cref="MailAttachmentDto"/> for tests.</summary>
+    public static MailAttachmentDto CreateTextAttachment(string fileName = "note.txt", string content = "hello attachment")
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(content);
+        return new MailAttachmentDto
+        {
+            FileName = fileName,
+            ContentType = "text/plain",
+            ContentBase64 = Convert.ToBase64String(bytes),
+            ContentSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+            ByteLength = bytes.Length,
         };
     }
 

@@ -11,6 +11,7 @@ return args[0] switch
 {
     "stage" => RunStage(args.AsSpan(1)),
     "validate-oci" => RunValidateOci(args.AsSpan(1)),
+    "assemble-oci" => RunAssembleOci(args.AsSpan(1)),
     "assert-binary-version" => RunAssertBinaryVersion(args.AsSpan(1)),
     "assert-image-identity" => RunAssertImageIdentity(args.AsSpan(1)),
     "write-image-identity" => RunWriteImageIdentity(args.AsSpan(1)),
@@ -36,7 +37,8 @@ static void PrintUsage()
 
         Commands:
           stage --output <dir> --staging-parent <dir> --rid <rid> ...
-          validate-oci --layout <dir> --image-digest <sha256:...> [--require-platforms linux/amd64,linux/arm64] [--metadata-file <buildx.json>]
+          validate-oci --layout <dir> --image-digest <sha256:...> [--require-platforms linux/amd64,linux/arm64] [--metadata-file <buildx.json>] [--allow-single-platform]
+          assemble-oci --amd64-layout <dir> --amd64-metadata <file> --arm64-layout <dir> --arm64-metadata <file> --output <dir> --repository <repo> --tag <tag> --source-sha <sha> --mailer-version <ver>
           assert-binary-version --binary <path> --expected-core <major.minor.patch>
           assert-image-identity --identity <file> --source-sha <sha> --mailer-version <ver>
           write-image-identity --output <file> --repository <repo> --tag <tag> --digest <sha256:...> --source-sha <sha> --mailer-version <ver> --platforms <csv>
@@ -212,7 +214,8 @@ static int RunValidateOci(ReadOnlySpan<string> args)
         values["--layout"],
         values["--image-digest"],
         platforms,
-        expectedDescriptor);
+        expectedDescriptor,
+        values.ContainsKey("--allow-single-platform"));
     if (!result.Success)
     {
         Console.Error.WriteLine(
@@ -221,6 +224,64 @@ static int RunValidateOci(ReadOnlySpan<string> args)
     }
 
     Console.Out.WriteLine("validate-oci: ok");
+    return 0;
+}
+
+static int RunAssembleOci(ReadOnlySpan<string> args)
+{
+    if (!TryParseKv(args, out var values, out var error))
+    {
+        Console.Error.WriteLine(error);
+        return 2;
+    }
+
+    string[] required =
+    [
+        "--amd64-layout",
+        "--amd64-metadata",
+        "--arm64-layout",
+        "--arm64-metadata",
+        "--output",
+        "--repository",
+        "--tag",
+        "--source-sha",
+        "--mailer-version",
+    ];
+    foreach (var flag in required)
+    {
+        if (!values.ContainsKey(flag))
+        {
+            Console.Error.WriteLine("Missing required argument: " + flag);
+            return 2;
+        }
+    }
+
+    var result = ReleaseBundlePackaging.AssembleOciLayouts(
+        new ReleaseBundlePackaging.OciAssemblyRequest
+        {
+            Amd64LayoutDirectory = values["--amd64-layout"],
+            Amd64MetadataPath = values["--amd64-metadata"],
+            Arm64LayoutDirectory = values["--arm64-layout"],
+            Arm64MetadataPath = values["--arm64-metadata"],
+            OutputDirectory = values["--output"],
+            ImageRepository = values["--repository"],
+            ImageTag = values["--tag"],
+            SourceCommitSha = values["--source-sha"],
+            MailerVersion = values["--mailer-version"],
+        },
+        out var imageDigest);
+    if (!result.Success)
+    {
+        Console.Error.WriteLine(
+            "assemble-oci failed: "
+            + (result.ReasonCode ?? "unknown")
+            + " — "
+            + (result.Message ?? "invalid."));
+        return 1;
+    }
+
+    Console.Out.WriteLine("assemble-oci: ok");
+    Console.Out.WriteLine("imageDigest=" + imageDigest);
     return 0;
 }
 
@@ -555,7 +616,7 @@ static bool TryParseKv(
             return false;
         }
 
-        if (arg is "--skip-binary-version-assert")
+        if (arg is "--skip-binary-version-assert" or "--allow-single-platform")
         {
             values[arg] = "1";
             continue;

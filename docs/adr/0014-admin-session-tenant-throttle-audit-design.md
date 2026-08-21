@@ -2,6 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-06-28
+- **Amended by:** [ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md)（2026-08-05）
+- **Related PR:** [#539](https://github.com/kooiei-in4a/amane-mailer/pull/539)
+- **Related issues:** [#519](https://github.com/kooiei-in4a/amane-mailer/issues/519)、[#517](https://github.com/kooiei-in4a/amane-mailer/issues/517)
+- **Decision owner:** Koo
+- **Design approval:** 2026-08-05（production implementationは未承認・未実施）
 - **Supersedes planning gaps in:** [ADR 0013: 管理画面の脅威モデル・公開範囲・PII 取り扱い方針](0013-admin-threat-model-and-pii-policy.md)（現行実装状況は [実装ステータスマニフェスト](../implementation-status.json) を正本とする）
 - **Tracks:** [#55](https://github.com/kooiei-in4a/amane-mailer/issues/55)
 
@@ -195,6 +200,16 @@ Phase 1〜3 の実装 issue は、上記タイトル案に加え、該当フェ�
 | Phase 1 | D-04 の hash 鍵 env を実装し、`MAILER_ADMIN_AUDIT_HASH_NETWORK_IDENTIFIERS=true` 時に鍵未設定なら startup fail-closed。鍵ローテーションの運用影響（throttle リセット・audit 相関不可）を runbook に記載 |
 | Phase 2 | D-02 の tenant 数判定をコード化。DB に履歴 tenant 行が残る場合の blocker と確認手順を runbook に記載 |
 | Phase 3 | retention sweep が PII を含まないこと。backup/restore ドキュメントを更新 |
+
+### D-07. ADR 0023 amendment: BCC capability registry and recipient scope
+
+[ADR 0023](0023-multiple-recipient-contract-and-delivery-semantics.md) の `bcc_recipient_reveal` をcapability registryとgrant mappingへ追加する。view_unmasked_list_piiだけではBCCをrevealできない。BCCはdefault deny、general operator deny、専用capabilityの明示grantが必要な高機密recipient情報とする。
+
+Admin sessionのtenant scopeとrecipient repository queryのtenant scopeを同時に強制する。requestのtenantがsessionの許可集合外、source_service scopeが一致しない、またはscope判定が不明な場合はcross-tenant／cross-source-service取得を行わずfail-closedまたは既存の存在秘匿境界へ収束させる。
+
+Admin detailでraw BCCをserveする場合は、authentication、tenant／source_service scope、`bcc_recipient_reveal` capability、durable audit save、audit成功後serveの順序を固定する。auditにはraw BCC、recipient address、display name、BCC本文を保存しない。audit保存失敗時はserveしない。
+
+このamendmentはcapabilityとscopeの設計正本を追加するだけであり、production implementation、migration SQL、releaseを承認しない。
 
 ## Alternatives Considered
 

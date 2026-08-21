@@ -26,6 +26,15 @@
     </ProjectReference>
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526AcsEnvelopeCapture.cs" Link="Spike526Probe\Spike526AcsEnvelopeCapture.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526FixtureFactory.cs" Link="Spike526Probe\Spike526FixtureFactory.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526GeneratedFixtures.cs" Link="Spike526Probe\Spike526GeneratedFixtures.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526Models.cs" Link="Spike526Probe\Spike526Models.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526TempStore.cs" Link="Spike526Probe\Spike526TempStore.cs" />
+    <Compile Include="..\Amane.Mailer.Spike526.Probe\Spike526TokenBufferProcessor.cs" Link="Spike526Probe\Spike526TokenBufferProcessor.cs" />
+  </ItemGroup>
+
   <Target Name="CopyProcessFixtureToOutput" AfterTargets="Build">
     <PropertyGroup>
       <_ProcessFixtureOutDir>$(MSBuildThisFileDirectory)..\Amane.Mailer.ProcessFixture\bin\$(Configuration)\$(TargetFramework)\</_ProcessFixtureOutDir>
@@ -43,6 +52,26 @@
           DestinationFolder="$(TargetDir)"
           SkipUnchangedFiles="true"
           Condition="'@(_ProcessFixtureCopy)' != ''" />
+  </Target>
+
+  <Target Name="StageSpike526ProbeForVSTest" BeforeTargets="VSTest">
+    <PropertyGroup>
+      <_Spike526ProbeOutDir>$(MSBuildThisFileDirectory)..\Amane.Mailer.Spike526.Probe\bin\$(Configuration)\$(TargetFramework)\</_Spike526ProbeOutDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_Spike526ProbeRuntime Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.dll" />
+      <_Spike526ProbeRuntime Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.deps.json" />
+      <_Spike526ProbeRuntime Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.runtimeconfig.json" />
+      <_Spike526ProbeRuntime Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.exe"
+                            Condition="Exists('$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.exe')" />
+      <_Spike526ProbeRuntime Include="$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe"
+                            Condition="Exists('$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe')" />
+    </ItemGroup>
+    <Error Condition="!Exists('$(_Spike526ProbeOutDir)Amane.Mailer.Spike526.Probe.dll')"
+           Text="Spike526 probe must be built before running tests." />
+    <Copy SourceFiles="@(_Spike526ProbeRuntime)"
+          DestinationFolder="$(TargetDir)"
+          SkipUnchangedFiles="true" />
   </Target>
 
   <ItemGroup>

@@ -123,6 +123,17 @@ matching bytes and a clean worktree. The saved binding, authorization, Phase-2
 manifest, migration PIN, candidate documents, and archive digests are
 cross-checked again at every later command.
 
+Host archives contain RID-specific `README-SETUP.md` documents because the
+launcher path is host-qualified (`win-x64`, `linux-x64`, or `linux-arm64`). In
+the v1.3 ScopeProfile, each archive's README is bound independently through
+`candidateReadmeSetupByRid`: the exact target RID, archive filename and digest,
+embedded release-bundle-manifest target RID, and README SHA-256 are recorded in
+one JCS mapping digest. The corresponding bytes are stored under
+`docs-extract/candidate-readme-setup/<rid>.md` and rechecked during binding and
+verification. Cross-RID byte equality is not required; missing, duplicate,
+unexpected, swapped, or tampered RID documents fail closed. Legacy #456 runs
+retain their historical single `candidateReadmeSetupSha256` contract.
+
 ### Evidence envelope
 
 `evidence --observations` is mandatory; the runner does not construct a
@@ -148,6 +159,14 @@ The ACS and migration validators enforce the exact #456 predicates and both
 PASS/FAIL directions. Direct `result=EXCEPTION` evidence is rejected. For
 unsupported scenario lanes, a PASS is rejected until its dedicated validator
 is implemented.
+
+For v1.3.0 `G583-MIG-03`, the value-free evidence payload must contain
+`schemaContractResult=pass`, `piiValueCanaryResult=pass`,
+`schemaAllowlistVersion`, and `schemaAllowlistSha256`. The version and digest
+must exactly match the bound migration authority. The complete
+`schemaAllowlist` remains authority-bound in the scope manifest, binding,
+Phase 2, and verify/seal/handoff contracts; it is not copied into evidence.
+The value-free scanner and unknown-field rejection remain unchanged.
 
 Each evidence envelope also creates a write-once `scans/<evidenceId>.json`
 attestation containing the scanner identity and report digest. `seal` records

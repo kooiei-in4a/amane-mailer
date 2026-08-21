@@ -178,52 +178,32 @@ public sealed class BounceIngestionWorker(
             return;
         }
 
-        if (BounceClassifier.IsDelivered(row.DeliveryStatus))
-        {
-            stageTracker(FailureStageFinalize);
-            await FinalizeDiscardedAsync(row, now, lastErrorCode: null, stoppingToken);
-            return;
-        }
-
         stageTracker(FailureStageProcess);
-        var match = await ingestionStore.FindByProviderMessageIdAsync(row.ProviderMessageId, stoppingToken);
-        if (match is null)
-        {
-            runtimeMetrics.RecordBounceUnmatched();
-            stageTracker(FailureStageFinalize);
-            await FinalizeDiscardedAsync(row, now, lastErrorCode: null, stoppingToken);
-            return;
-        }
-
-        if (!RecipientsMatch(row.RecipientEmail, match.RecipientEmail))
-        {
-            runtimeMetrics.RecordBounceRecipientMismatch();
-            stageTracker(FailureStageFinalize);
-            await FinalizeDiscardedAsync(row, now, lastErrorCode: null, stoppingToken);
-            return;
-        }
-
-        var suppress = BounceClassifier.IsHardBounce(row.DeliveryStatus);
+        var result = await ingestionStore.ProcessClaimedAsync(row, now, stoppingToken);
         stageTracker(FailureStageFinalize);
-        var persisted = await ingestionStore.PersistCorrelatedAsync(
-            row,
-            match,
-            statusMessage: row.StatusMessage,
-            suppress,
-            now,
-            stoppingToken);
-
-        if (!persisted)
+        switch (result)
         {
-            logger.LogWarning(
-                "Bounce inbox finalize fencing skipped for event {EventId}. Provider={Provider}; InboxId={InboxId}",
-                row.EventId,
-                row.Provider,
-                row.Id);
-            return;
+            case RecipientFeedbackProcessResult.Processed:
+                runtimeMetrics.RecordBounceEvent();
+                break;
+            case RecipientFeedbackProcessResult.Unmatched:
+                runtimeMetrics.RecordBounceUnmatched();
+                break;
+            case RecipientFeedbackProcessResult.RecipientMismatch:
+                runtimeMetrics.RecordBounceRecipientMismatch();
+                break;
+            case RecipientFeedbackProcessResult.FenceFailed:
+                logger.LogWarning(
+                    "Bounce inbox finalize fencing skipped for event {EventId}. Provider={Provider}; InboxId={InboxId}",
+                    row.EventId,
+                    row.Provider,
+                    row.Id);
+                break;
+            case RecipientFeedbackProcessResult.Duplicate:
+                break;
+            default:
+                throw new InvalidOperationException("Unknown recipient feedback process result.");
         }
-
-        runtimeMetrics.RecordBounceEvent();
     }
 
     private async Task FinalizeDiscardedAsync(
@@ -249,19 +229,6 @@ public sealed class BounceIngestionWorker(
                 row.Provider,
                 row.Id);
         }
-    }
-
-    internal static bool RecipientsMatch(string? eventRecipient, string dbRecipient)
-    {
-        if (string.IsNullOrWhiteSpace(eventRecipient) || string.IsNullOrWhiteSpace(dbRecipient))
-        {
-            return false;
-        }
-
-        return string.Equals(
-            RecipientEmailNormalizer.Normalize(eventRecipient),
-            RecipientEmailNormalizer.Normalize(dbRecipient),
-            StringComparison.Ordinal);
     }
 
     private async Task DelayIsolatedFailureBackoffAsync(CancellationToken stoppingToken)

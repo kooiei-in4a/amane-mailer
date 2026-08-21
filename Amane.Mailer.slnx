@@ -9,6 +9,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Amane.Mailer.Contracts.Tests/Amane.Mailer.Contracts.Tests.csproj" />
     <Project Path="tests/Amane.Mailer.ProcessFixture/Amane.Mailer.ProcessFixture.csproj" />
+    <Project Path="tests/Amane.Mailer.Spike526.Probe/Amane.Mailer.Spike526.Probe.csproj" />
     <Project Path="tests/Amane.Mailer.Tests/Amane.Mailer.Tests.csproj" />
     <Project Path="tests/Amane.Mailer.ReleaseBundle.Tests/Amane.Mailer.ReleaseBundle.Tests.csproj" />
   </Folder>

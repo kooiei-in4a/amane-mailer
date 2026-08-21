@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "adapterId": "g583-mig03-ci-auto-adapter",
+  "adapterRevision": "1",
+  "scenarioId": "G583-MIG-03",
+  "laneVariant": "ci-auto",
+  "contractVersion": "g583-mig03-ci-auto-v1",
+  "ownerRole": "maintainer-migration",
+  "adapterInterface": "g583-mig03-ci-auto-observations-v1",
+  "fixture": {
+    "producerScript": "qualification-g583-mig03-fixture-producer.py",
+    "fixtureId": "g583-mig03-ci-auto-schema-contract",
+    "fixtureRevision": "1",
+    "sourceTestId": "Amane.Mailer.Tests.Qualification.G583MigrationSchemaContractFixtureTests.Qualification_fixture_G583_MIG_03_ci_auto_emits_value_free_schema_contract_result",
+    "testSelector": "FullyQualifiedName=Amane.Mailer.Tests.Qualification.G583MigrationSchemaContractFixtureTests.Qualification_fixture_G583_MIG_03_ci_auto_emits_value_free_schema_contract_result"
+  },
+  "inputFields": [
+    "scenarioId",
+    "variantId",
+    "laneVariant",
+    "contractVersion",
+    "ownerRole",
+    "artifactIdentity",
+    "binding",
+    "migrationPin",
+    "fixtureResult"
+  ],
+  "forbiddenDockerFields": [
+    "hostPlatform",
+    "dockerEngineOS",
+    "containerPlatform",
+    "selectedManifestDigest"
+  ],
+  "qualificationExecution": "forbidden"
+}
