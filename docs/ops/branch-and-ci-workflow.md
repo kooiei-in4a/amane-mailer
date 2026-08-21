@@ -118,6 +118,12 @@ required status checks の job 名は変更していません。
   - `Local compose fresh data dir`
 - 追加 rule: required signatures、non-fast-forward block、deletion block
 
+Issue #504導入後のqualification済みexact-RC promotionは、通常actorやadmin bypassではなく、
+repository専用GitHub Appの`pull_request` bypassだけを使用します。required checks/signatures自体は
+維持し、workflow側でも全required checkのsuccessを再検証します。恒久設定、fingerprint、
+main同等rehearsal、negative fixture、merge parent / tag target検証は
+[Qualification 済み Git source の main promotion](qualified-git-promotion.md)を参照してください。
+
 この repository は solo maintainer 運用のため、現時点では required review count 0 を維持します。
 その代わり、`main` 向け PR と release 前 review では次の maintainer checklist を必須運用にします。
 

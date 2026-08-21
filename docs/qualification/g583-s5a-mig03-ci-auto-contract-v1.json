@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "contracts": [
+    {
+      "scenarioId": "G583-MIG-03",
+      "laneVariant": "ci-auto",
+      "contractVersion": "g583-mig03-ci-auto-v1",
+      "artifactIdentity": {
+        "authority": "candidate-binding",
+        "requiredFields": ["candidateId", "releaseCommitSha", "ociIndexDigest"]
+      }
+    }
+  ]
+}

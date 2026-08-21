@@ -120,6 +120,14 @@ by a repository ruleset.
   - `Local compose fresh data dir`
 - Additional rules: required signatures, non-fast-forward block, deletion block
 
+After Issue #504, exact-RC promotion uses only the repository-specific GitHub App
+with `pull_request` bypass. Normal actors and generic admin bypass are not part of
+the release path. Required checks and signatures remain enabled, and the workflow
+revalidates every required check as successful. See
+[Qualified Git source promotion](qualified-git-promotion.md) for the permanent
+configuration, fingerprints, main-equivalent rehearsal, negative fixtures, merge
+parent checks, and annotated-tag target checks.
+
 This repository currently keeps required review count at 0 for solo-maintainer
 operation. In exchange, maintainers must use this checklist for PRs into `main`
 and for release review:

@@ -1,10 +1,12 @@
 using System.Net;
+using System.Text.Json;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
 using Microsoft.Data.Sqlite;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,6 +26,74 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    [Fact]
+    public async Task Qualification_fixture_G456_07_emits_value_free_result()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var developmentFactory = fixture.Factory.WithWebHostBuilder(builder =>
+        {
+            builder.UseEnvironment("Development");
+            builder.ConfigureAppConfiguration((_, configuration) =>
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["AMANE_ADMIN_ALLOW_HTTP"] = "true",
+                }));
+        });
+        using var client = developmentFactory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("http://127.0.0.1"),
+        });
+
+        using var loginPage = await client.GetAsync("/admin/login", ct);
+        var csrfToken = await ReadCsrfTokenFromResponseAsync(loginPage, ct);
+        using var login = await client.PostAsync(
+            "/admin/api/login",
+            CreateLoginContent(csrfToken, MailerAdminFixture.Username, MailerAdminFixture.Password),
+            ct);
+        using var status = await client.GetAsync("/admin/setup-status", ct);
+        var statusHtml = await status.Content.ReadAsStringAsync(ct);
+        var options = fixture.Factory.Services.GetRequiredService<MailerAdminOptions>();
+
+        var loginResult = login.StatusCode == HttpStatusCode.Redirect ? "success" : "rejected";
+        var statusVisible = status.StatusCode == HttpStatusCode.OK
+            && statusHtml.Contains("Setup status", StringComparison.Ordinal);
+        var sensitiveOutput = statusHtml.Contains(MailerAdminFixture.Password, StringComparison.Ordinal)
+            || statusHtml.Contains(fixture.ConnectionString, StringComparison.OrdinalIgnoreCase)
+            || statusHtml.Contains(fixture.TenantConfigPath, StringComparison.OrdinalIgnoreCase)
+            ? "present"
+            : "absent";
+        var observations = new Dictionary<string, object>
+        {
+            ["accessProfile"] = options.Enabled && options.AllowedLocalAddress == "127.0.0.1"
+                ? "development-loopback"
+                : "unexpected",
+            ["transportProfile"] = client.BaseAddress?.Scheme == Uri.UriSchemeHttp
+                ? "http-loopback"
+                : "unexpected",
+            ["loopbackOnly"] = options.AllowedLocalAddress == "127.0.0.1",
+            ["loginResult"] = loginResult,
+            ["setupStatusResult"] = statusVisible ? "visible" : "hidden",
+            ["adminRouteResult"] = status.StatusCode == HttpStatusCode.OK ? "available" : "unavailable",
+            ["sensitiveOutput"] = sensitiveOutput,
+        };
+        var predicatePassed = observations["accessProfile"] is "development-loopback"
+            && observations["transportProfile"] is "http-loopback"
+            && observations["loopbackOnly"] is true
+            && observations["loginResult"] is "success"
+            && observations["setupStatusResult"] is "visible"
+            && observations["adminRouteResult"] is "available"
+            && observations["sensitiveOutput"] is "absent";
+        WriteQualificationFixtureResult(
+            "g456-07-admin-local-dev",
+            "G456-07",
+            "admin-local-dev",
+            nameof(Qualification_fixture_G456_07_emits_value_free_result),
+            predicatePassed ? "PASS" : "FAIL",
+            observations);
+        Assert.True(predicatePassed, "The qualification fixture predicate did not pass.");
+    }
 
     [Fact]
     public void Allowed_local_address_matches_exact_address()
@@ -470,18 +540,14 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         // AllowAnonymous login still goes through the Admin local-address branch.
         using var login = await client.GetAsync("/admin/login", ct);
         Assert.Equal(HttpStatusCode.NotFound, login.StatusCode);
+        Assert.Null(login.Headers.Location);
 
-        // RequireAuthorization may challenge before the local-address branch; either way the
-        // path remains under the same /admin policy and must not render setup-status HTML.
+        // Local-address rejection must fail closed before RequireAuthorization can challenge.
         using var setupStatus = await client.GetAsync("/admin/setup-status", ct);
-        Assert.True(
-            setupStatus.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Found or HttpStatusCode.Redirect,
-            $"Unexpected status: {setupStatus.StatusCode}");
-        if (setupStatus.StatusCode == HttpStatusCode.OK)
-        {
-            var html = await setupStatus.Content.ReadAsStringAsync(ct);
-            Assert.DoesNotContain("Setup status", html, StringComparison.Ordinal);
-        }
+        var setupStatusHtml = await setupStatus.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.NotFound, setupStatus.StatusCode);
+        Assert.Null(setupStatus.Headers.Location);
+        Assert.DoesNotContain("Setup status", setupStatusHtml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1332,6 +1398,51 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         var end = html.IndexOf('"', start);
         Assert.True(end > start, "Login page CSRF token value was empty.");
         return html[start..end];
+    }
+
+    private static async Task<string> ReadCsrfTokenFromResponseAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var html = await response.Content.ReadAsStringAsync(cancellationToken);
+        const string marker = "name=\"__RequestVerificationToken\" value=\"";
+        var start = html.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(start >= 0, "Login page did not contain a CSRF token.");
+        start += marker.Length;
+        var end = html.IndexOf('"', start);
+        Assert.True(end > start, "CSRF token value was empty.");
+        return html[start..end];
+    }
+
+    private static void WriteQualificationFixtureResult(
+        string fixtureId,
+        string scenarioId,
+        string variantId,
+        string sourceTestMethod,
+        string result,
+        IReadOnlyDictionary<string, object> observations)
+    {
+        var outputPath = Environment.GetEnvironmentVariable("AMANE_QUALIFICATION_FIXTURE_RESULT_PATH");
+        if (string.IsNullOrWhiteSpace(outputPath))
+            return;
+
+        var fixtureResult = new
+        {
+            schemaVersion = 1,
+            kind = "qualification-fixture-result",
+            fixtureId,
+            fixtureRevision = "1",
+            scenarioId,
+            variantId,
+            sourceTestId = $"Amane.Mailer.Tests.MailerAdminTests.{sourceTestMethod}",
+            result,
+            operationExitCode = result == "PASS" ? 0 : 1,
+            observations,
+        };
+        File.WriteAllText(
+            outputPath,
+            JsonSerializer.Serialize(fixtureResult, new JsonSerializerOptions { WriteIndented = false }));
     }
 
     private static FormUrlEncodedContent CreateLoginContent(

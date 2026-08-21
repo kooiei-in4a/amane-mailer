@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Setup;
@@ -143,6 +144,7 @@ public sealed class SetupRound4ReviewTests
 
         var work = Path.Combine(Path.GetTempPath(), "amane-compose-cfg-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(work);
+        Exception? testFailure = null;
         try
         {
             const string secret = "tok$ENV${HOME}a\\b\"c #frag";
@@ -182,14 +184,93 @@ public sealed class SetupRound4ReviewTests
             using var process = Process.Start(psi);
             Assert.NotNull(process);
             var stdout = process!.StandardOutput.ReadToEnd().TrimEnd('\r', '\n');
-            var stderr = process.StandardError.ReadToEnd();
+            _ = process.StandardError.ReadToEnd();
             process.WaitForExit(180_000);
-            Assert.True(process.ExitCode == 0, stderr);
-            Assert.Equal(secret, stdout);
+            Assert.True(process.ExitCode == 0, "Docker Compose run did not complete successfully.");
+            Assert.True(
+                string.Equals(secret, stdout, StringComparison.Ordinal),
+                "Compose env-file round-trip did not preserve the literal value.");
+        }
+        catch (Exception ex)
+        {
+            testFailure = ex;
         }
         finally
         {
-            try { Directory.Delete(work, recursive: true); } catch { }
+            Exception? cleanupFailure = null;
+            try
+            {
+                TearDownComposeProject(work, Path.GetFileName(work));
+            }
+            catch (Exception ex)
+            {
+                cleanupFailure = ex;
+            }
+
+            try
+            {
+                Directory.Delete(work, recursive: true);
+            }
+            catch (Exception ex)
+            {
+                cleanupFailure ??= ex;
+            }
+
+            if (testFailure is not null && cleanupFailure is not null)
+            {
+                throw new AggregateException(
+                    "Docker Compose test failed and its project cleanup also failed.",
+                    testFailure,
+                    cleanupFailure);
+            }
+
+            if (testFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(testFailure).Throw();
+            }
+
+            if (cleanupFailure is not null)
+            {
+                throw cleanupFailure;
+            }
+        }
+    }
+
+    private static void TearDownComposeProject(string work, string projectName)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "docker",
+            ArgumentList =
+            {
+                "compose",
+                "--project-directory",
+                work,
+                "--project-name",
+                projectName,
+                "down",
+                "--remove-orphans",
+            },
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        using var process = Process.Start(psi)
+            ?? throw new InvalidOperationException("Docker Compose cleanup process could not be started.");
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(180_000))
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+            throw new TimeoutException("Docker Compose project cleanup timed out.");
+        }
+
+        Task.WaitAll(stdoutTask, stderrTask);
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"Docker Compose project cleanup failed with exit code {process.ExitCode}.");
         }
     }
 

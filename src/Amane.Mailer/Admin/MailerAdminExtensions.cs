@@ -40,8 +40,7 @@ public static class MailerAdminExtensions
 
         // Credential sync / tenant-scope readiness run in EnsureAdminReadyAsync before this mapping (#350).
 
-        app.UseAuthentication();
-        app.UseAuthorization();
+        // Reject disallowed Admin requests before authentication can issue a challenge.
         app.UseWhen(IsAdminRequest, branch =>
         {
             branch.Use(async (context, next) =>
@@ -55,6 +54,8 @@ public static class MailerAdminExtensions
                 await next(context);
             });
         });
+        app.UseAuthentication();
+        app.UseAuthorization();
         app.UseWhen(IsAdminStaticFileRequest, branch =>
         {
             branch.Use(async (context, next) =>

@@ -102,7 +102,6 @@ request field is removed or renamed.
   downgrade.
 
 ## [1.2.0] - 2026-08-03
-
 Minor release. Ships Easy Setup (modes 1–4) for first-time Mailpit / ACS
 configuration, keeps Manual / Hardened paths, and **INCLUDEs** SQLite migrations
 `012_provider_event_inbox_details.sql` / `013_provider_queue_dead_letters.sql`

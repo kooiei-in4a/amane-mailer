@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "scopeId": "v1.3.0-rc-qualification",
+  "scopeVersion": 1,
+  "releaseVersion": "1.3.0",
+  "authorityIssueNumber": 583,
+  "authorityIssueBodySha256": "37319e0638405573b6594497392513a2b4230c54908f557a2d67f48fe2d87219",
+  "planRevision": "1",
+  "planFilePath": "docs/agent-workflows/issue-583-v1.3-qualification-scope.md",
+  "planFileSha256": "2ae24b626636635105fb7fd3a19ff7b86a025401f084a2a83f486f931ebe5049",
+  "variantRulesVersion": 5,
+  "migrationPredicateSetVersion": 1,
+  "scenarioRows": [
+    {"rowIndex": 0, "scenarioId": "G456-01", "reuseOf": "G456-01", "predicateSet": "legacy-g456-01", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 1, "scenarioId": "G456-02", "reuseOf": "G456-02", "predicateSet": "legacy-g456-02", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 2, "scenarioId": "G456-03", "reuseOf": "G456-03", "predicateSet": "legacy-g456-03", "ownerRoleClass": "maintainer-acs-staging"},
+    {"rowIndex": 3, "scenarioId": "G456-04", "reuseOf": "G456-04", "predicateSet": "legacy-g456-04", "ownerRoleClass": "maintainer-acs-staging"},
+    {"rowIndex": 4, "scenarioId": "G456-05", "reuseOf": "G456-05", "predicateSet": "legacy-g456-05", "ownerRoleClass": "maintainer-acs-production"},
+    {"rowIndex": 5, "scenarioId": "G456-06", "reuseOf": "G456-06", "predicateSet": "legacy-g456-06", "ownerRoleClass": "maintainer-acs-production"},
+    {"rowIndex": 6, "scenarioId": "G456-07", "reuseOf": "G456-07", "predicateSet": "legacy-g456-07", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 7, "scenarioId": "G456-08", "reuseOf": "G456-08", "predicateSet": "legacy-g456-08", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 8, "scenarioId": "G456-09", "reuseOf": "G456-09", "predicateSet": "legacy-g456-09", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 9, "scenarioId": "G456-10", "reuseOf": "G456-10", "predicateSet": "legacy-g456-10", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 10, "scenarioId": "G456-11", "reuseOf": "G456-11", "predicateSet": "legacy-g456-11", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 11, "scenarioId": "G456-12", "reuseOf": "G456-12", "predicateSet": "legacy-g456-12", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 12, "scenarioId": "G456-13", "reuseOf": "G456-13", "predicateSet": "legacy-g456-13", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 13, "scenarioId": "G456-14", "reuseOf": "G456-14", "predicateSet": "legacy-g456-14", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 14, "scenarioId": "G456-15", "reuseOf": "G456-15", "predicateSet": "legacy-g456-15", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 15, "scenarioId": "G456-16", "reuseOf": "G456-16", "predicateSet": "legacy-g456-16", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 16, "scenarioId": "G456-17", "reuseOf": "G456-17", "predicateSet": "legacy-g456-17", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 17, "scenarioId": "G456-18", "reuseOf": "G456-18", "predicateSet": "legacy-g456-18", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 18, "scenarioId": "G456-19", "reuseOf": "G456-19", "predicateSet": "legacy-g456-19", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 19, "scenarioId": "G456-20", "reuseOf": "G456-20", "predicateSet": "legacy-g456-20", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 20, "scenarioId": "G456-21", "reuseOf": "G456-21", "predicateSet": "legacy-g456-21", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 21, "scenarioId": "G456-22", "reuseOf": "G456-22", "predicateSet": "legacy-g456-22", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 22, "scenarioId": "G456-23", "reuseOf": "G456-23", "predicateSet": "legacy-g456-23", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 23, "scenarioId": "G456-24", "reuseOf": "G456-24", "predicateSet": "legacy-g456-24", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 24, "scenarioId": "G456-25", "reuseOf": "G456-25", "predicateSet": "legacy-g456-25", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 25, "scenarioId": "G456-26", "reuseOf": "G456-26", "predicateSet": "legacy-g456-26", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 26, "scenarioId": "G456-27", "reuseOf": "G456-27", "predicateSet": "legacy-g456-27", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 27, "scenarioId": "G456-28", "reuseOf": "G456-28", "predicateSet": "legacy-g456-28", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 28, "scenarioId": "G456-29", "reuseOf": "G456-29", "predicateSet": "legacy-g456-29", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 29, "scenarioId": "G456-30", "reuseOf": "G456-30", "predicateSet": "legacy-g456-30", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 30, "scenarioId": "G456-31", "reuseOf": "G456-31", "predicateSet": "legacy-g456-31", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 31, "scenarioId": "G456-32", "reuseOf": "G456-32", "predicateSet": "legacy-g456-32", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 32, "scenarioId": "G456-33", "reuseOf": "G456-33", "predicateSet": "legacy-g456-33", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 33, "scenarioId": "G456-34", "reuseOf": "G456-34", "predicateSet": "legacy-g456-34", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 34, "scenarioId": "G456-35", "reuseOf": "G456-35", "predicateSet": "legacy-g456-35", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 35, "scenarioId": "G456-36", "reuseOf": "G456-36", "predicateSet": "legacy-g456-36", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 36, "scenarioId": "G456-37", "reuseOf": "G456-37", "predicateSet": "legacy-g456-37", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 37, "scenarioId": "G456-38", "reuseOf": "G456-38", "predicateSet": "legacy-g456-38", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 38, "scenarioId": "G456-39", "reuseOf": "G456-39", "predicateSet": "legacy-g456-39", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 39, "scenarioId": "G456-40", "reuseOf": "G456-40", "predicateSet": "legacy-g456-40", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 40, "scenarioId": "G456-41", "reuseOf": "G456-41", "predicateSet": "legacy-g456-41", "ownerRoleClass": "lane-owner"},
+    {"rowIndex": 41, "scenarioId": "G583-MIG-01", "gateClass": "Hard", "requiredVariants": ["win-docker", "linux-docker"], "predicateSet": "v1.3-migration-fresh", "ownerRoleClass": "maintainer-migration"},
+    {"rowIndex": 42, "scenarioId": "G583-MIG-02", "gateClass": "Hard", "requiredVariants": ["win-docker", "linux-docker"], "predicateSet": "v1.3-migration-upgrade", "ownerRoleClass": "maintainer-migration"},
+    {"rowIndex": 43, "scenarioId": "G583-MIG-03", "gateClass": "Hard", "requiredVariants": ["ci-auto"], "predicateSet": "v1.3-migration-schema-contract", "ownerRoleClass": "maintainer-migration"}
+  ],
+  "migration": {
+    "baselineReleaseVersion": "1.2.0",
+    "baselineInventory": [
+      "001_initial.sql", "002_worker_heartbeats.sql", "003_admin_indexes.sql", "004_admin_audit_events.sql", "005_admin_session_and_throttle.sql", "006_admin_users_and_tenant_scopes.sql", "007_mail_request_cancelled_status.sql", "008_delivery_events.sql", "009_mail_request_scheduled_at.sql", "010_admin_audit_events_tenant_id.sql", "011_bounce_ingestion.sql", "012_provider_event_inbox_details.sql", "013_provider_queue_dead_letters.sql"
+    ],
+    "deltaInventory": [
+      "014_mail_request_delivery_unknown_status.sql", "015_attachment_spool_and_submission_evidence.sql", "016_recipient_persistence_and_plain_submission_evidence.sql", "017_recipient_delivery_events.sql", "018_admin_user_capabilities.sql"
+    ],
+    "fullInventory": [
+      "001_initial.sql", "002_worker_heartbeats.sql", "003_admin_indexes.sql", "004_admin_audit_events.sql", "005_admin_session_and_throttle.sql", "006_admin_users_and_tenant_scopes.sql", "007_mail_request_cancelled_status.sql", "008_delivery_events.sql", "009_mail_request_scheduled_at.sql", "010_admin_audit_events_tenant_id.sql", "011_bounce_ingestion.sql", "012_provider_event_inbox_details.sql", "013_provider_queue_dead_letters.sql", "014_mail_request_delivery_unknown_status.sql", "015_attachment_spool_and_submission_evidence.sql", "016_recipient_persistence_and_plain_submission_evidence.sql", "017_recipient_delivery_events.sql", "018_admin_user_capabilities.sql"
+    ],
+    "inventoryAlgorithm": "RFC8785-JCS-runner-order-migration-inventory-sha256/v2",
+    "predicateSetVersion": 1,
+    "schemaAllowlistVersion": 1,
+    "scenarioIds": ["G583-MIG-01", "G583-MIG-02", "G583-MIG-03"],
+    "schemaAllowlist": {
+      "014_mail_request_delivery_unknown_status.sql": {"sqlSha256": "db4ffe02069d0b899958f191a4de5cbae4327ea1cee14892cda268f61edb31f6", "tables": ["mail_requests (table rewrite; status CHECK IN (0,1,2,3,4,5,6))"], "indexes": ["idx_mail_requests_queued_due", "idx_mail_requests_processing_expired", "idx_mail_requests_status_updated", "idx_mail_requests_tenant_status_updated", "idx_mail_requests_source_service_status_updated", "idx_mail_requests_deadletter_completed"], "constraints": ["uq_mail_requests_idempotency (tenant_id, source_service, mail_request_id)"]},
+      "015_attachment_spool_and_submission_evidence.sql": {"sqlSha256": "f5cd7f7b885bab55fb77ff630c6ee42ce2094e22d5fe1615123d2cc4b2fdd7f8", "tables": ["mail_attempts (table rewrite; status CHECK IN (2,3,4,6); retryable CHECK IN (0,1))", "mail_request_attachments", "mail_attachment_submissions", "mailer_maintenance_leases"], "indexes": ["idx_mail_attempts_request_id_attempt", "ix_mail_attempts_provider_message_id", "idx_mail_requests_delivery_unknown_completed", "idx_mail_attachment_submissions_state"], "constraints": ["mail_requests.attachment_count CHECK (0..5)", "mail_requests.delivery_unknown_at TEXT NULL", "uq_mail_request_attachments_request_order (request_id, attachment_order)", "mail_attachment_submissions.request_id PRIMARY KEY", "mailer_maintenance_leases.lease_name PRIMARY KEY"]},
+      "016_recipient_persistence_and_plain_submission_evidence.sql": {"sqlSha256": "c95e5b5c2d7b3ac52ab7ce6afc591f0a0e97aac59a151b9476bfca751dccc0c5", "tables": ["mail_request_recipients (recipient_role CHECK IN (0,1,2); ordinal CHECK 0..9; delivery_state CHECK IN (0,1,2,3,4,5,6))", "mail_plain_submissions (evidence_state CHECK IN (0,1,2,3,4); evidence_origin CHECK IN (0,1))"], "indexes": ["idx_mail_request_recipients_request", "idx_mail_plain_submissions_state"], "constraints": ["mail_request_recipients PRIMARY KEY (request_id, recipient_role, ordinal)", "uq_mail_request_recipients_request_address_key (request_id, address_key)", "mail_plain_submissions.request_id PRIMARY KEY"]},
+      "017_recipient_delivery_events.sql": {"sqlSha256": "4e7f15fb61bc1bccd0386fecb3d267c23b0ce6044c87f7999c8fe1a74a1b2bdb", "tables": ["recipient_delivery_events (recipient_role CHECK IN (0,1,2); recipient_ordinal CHECK 0..9; applied_delivery_state CHECK IN (2,3,4); provider_status length > 0)"], "indexes": ["ix_recipient_delivery_events_request_occurred", "ix_recipient_delivery_events_provider_message"], "constraints": ["uq_recipient_delivery_events_provider_event (provider, provider_event_id)", "mail_request_recipients.last_feedback_occurred_at TEXT NULL", "mail_request_recipients.last_feedback_provider TEXT NULL", "mail_request_recipients.last_feedback_event_id TEXT NULL"]},
+      "018_admin_user_capabilities.sql": {"sqlSha256": "94af8770dec3a0e0ec925ce6a1946ad73f51f564e7137f2d82934b4fffb7f471", "tables": ["admin_user_capabilities"], "indexes": [], "constraints": ["admin_user_capabilities PRIMARY KEY (admin_user_id, capability)", "admin_user_capabilities.admin_user_id REFERENCES admin_users(id) ON DELETE CASCADE", "admin_user_capabilities.capability length > 0"]}
+    }
+  }
+}

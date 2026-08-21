@@ -1,0 +1,151 @@
+name: Publish Sealed Qualification Handoff
+
+# Publication-only transport for an already sealed qualification run.
+# This workflow never runs qualification, changes a seal, or derives evidence.
+# The source files are committed byte-for-byte on the release-specific handoff
+# branch and are validated before being uploaded as a separate Actions artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Qualified release version (major.minor.patch)
+        required: true
+        type: string
+      release_commit_sha:
+        description: Exact qualified 40-hex releaseCommitSha
+        required: true
+        type: string
+      release_branch:
+        description: Exact candidate producer branch (release/* or release-prep/* RC)
+        required: true
+        type: string
+      candidate_id:
+        description: Exact 64-hex candidateId
+        required: true
+        type: string
+      qualification_run_id:
+        description: Exact 64-hex qualificationRunId
+        required: true
+        type: string
+      oci_index_digest:
+        description: Exact qualified OCI index digest
+        required: true
+        type: string
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  SOURCE_ROOT: qualification-handoff/source
+  ARTIFACT_NAME: qualification-handoff
+
+jobs:
+  publish:
+    name: Publish existing sealed handoff only
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout immutable handoff branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate dispatch identity and exact sealed bytes
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          RELEASE_BRANCH: ${{ inputs.release_branch }}
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          OCI_INDEX_DIGEST: ${{ inputs.oci_index_digest }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo "::error::release version is invalid"; exit 1; }
+          [[ "${RELEASE_COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::release commit SHA is invalid"; exit 1; }
+          [[ "${CANDIDATE_ID}" =~ ^[0-9a-f]{64}$ ]] \
+            || { echo "::error::candidate ID is invalid"; exit 1; }
+          [[ "${QUALIFICATION_RUN_ID}" =~ ^[0-9a-f]{64}$ ]] \
+            || { echo "::error::qualification run ID is invalid"; exit 1; }
+          [[ "${OCI_INDEX_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || { echo "::error::OCI index digest is invalid"; exit 1; }
+          [[ "${RELEASE_BRANCH}" =~ ^(release|release-prep)/v[0-9]+\.[0-9]+\.[0-9]+-rc([1-9][0-9]*)?$ ]] \
+            || { echo "::error::release branch is invalid"; exit 1; }
+
+          release_ref="${RELEASE_BRANCH#*/}"
+          [[ "${release_ref%%-rc*}" == "v${RELEASE_VERSION}" ]] \
+            || { echo "::error::release branch/version mismatch"; exit 1; }
+          handoff_suffix="${release_ref#v${RELEASE_VERSION}}"
+          expected_handoff_branch="qualification-handoff/v${RELEASE_VERSION}"
+          if [[ "${handoff_suffix}" != "-rc" ]]; then
+            expected_handoff_branch+="${handoff_suffix}"
+          fi
+          [[ "${GITHUB_REF}" == "refs/heads/${expected_handoff_branch}" ]] \
+            || { echo "::error::workflow must run on the release-specific handoff branch"; exit 1; }
+
+          root="${SOURCE_ROOT}"
+          [[ -f "${root}/handoff-manifest.json" ]] || { echo "::error::handoff-manifest.json missing"; exit 1; }
+          bash scripts/validate-qualification-handoff.sh \
+            --root "${root}" \
+            --candidate-id "${CANDIDATE_ID}" \
+            --qualification-run-id "${QUALIFICATION_RUN_ID}" \
+            --release-commit-sha "${RELEASE_COMMIT_SHA}" \
+            --expected-digest "${OCI_INDEX_DIGEST}"
+
+      - name: Add live producer metadata without changing sealed documents
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          workflow_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/publish-sealed-qualification-handoff.yml" --jq '.id')"
+          [[ "${workflow_id}" =~ ^[1-9][0-9]*$ ]] || { echo "::error::workflow ID unavailable"; exit 1; }
+          rm -rf publication
+          mkdir -p publication/decision publication/run-status-events
+          cp -- "${SOURCE_ROOT}/handoff-manifest.json" publication/handoff-manifest.json
+          cp -- "${SOURCE_ROOT}/binding.json" publication/binding.json
+          cp -- "${SOURCE_ROOT}/decision/go-no-go.json" publication/decision/go-no-go.json
+          event_file="$(find "${SOURCE_ROOT}/run-status-events" -maxdepth 1 -type f -name '*.json' -print -quit)"
+          cp -- "${event_file}" publication/run-status-events/"$(basename "${event_file}")"
+          WORKFLOW_ID="${workflow_id}" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          producer = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflowPath": ".github/workflows/publish-sealed-qualification-handoff.yml",
+              "workflowId": int(os.environ["WORKFLOW_ID"]),
+              "event": os.environ["GITHUB_EVENT_NAME"],
+              "headBranch": os.environ["GITHUB_REF_NAME"],
+              "headSha": os.environ["GITHUB_SHA"],
+              "runId": int(os.environ["GITHUB_RUN_ID"]),
+              "runAttempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+          }
+          Path("publication/qualification-producer.json").write_text(
+              json.dumps(producer, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Upload immutable qualification handoff artifact
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: publication
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Write value-free publication identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "artifact_id=${{ steps.upload.outputs.artifact-id }}"
+          echo "artifact_name=${ARTIFACT_NAME}"
+          echo "producer_run_id=${GITHUB_RUN_ID}"
+          echo "producer_run_attempt=${GITHUB_RUN_ATTEMPT}"
+          echo "producer_head_branch=${GITHUB_REF_NAME}"
+          echo "producer_head_sha=${GITHUB_SHA}"

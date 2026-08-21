@@ -4,6 +4,7 @@
 #   CANDIDATE_RUN_ID, OCI_ARTIFACT_NAME, CANDIDATE_ARTIFACT_ID (required),
 #   CANDIDATE_HANDOFF_ARTIFACT_NAME, CANDIDATE_HANDOFF_ARTIFACT_ID (optional),
 #   RELEASE_COMMIT_SHA, EXPECTED_HEAD_BRANCH, EXPECTED_RUN_ATTEMPT (default 1),
+#   CANDIDATE_WORKFLOW_ID (optional; required by the #504 Git promotion path),
 #   CANDIDATE_WORKFLOW_NAME, CANDIDATE_WORKFLOW_PATH, GITHUB_REPOSITORY
 # Optional fixture overrides (for self-test; skips gh api):
 #   CANDIDATE_RUN_JSON_FILE, CANDIDATE_ARTIFACTS_JSON_FILE
@@ -22,7 +23,6 @@ die() { echo "[error] $*" >&2; exit 1; }
 : "${CANDIDATE_WORKFLOW_NAME:?}"
 : "${CANDIDATE_WORKFLOW_PATH:?}"
 : "${GITHUB_REPOSITORY:?}"
-
 [[ "${CANDIDATE_RUN_ID}" =~ ^[0-9]+$ ]] || die "candidate_workflow_run_id must be numeric"
 [[ "${CANDIDATE_ARTIFACT_ID}" =~ ^[0-9]+$ ]] || die "candidate_artifact_id must be numeric"
 EXPECTED_RUN_ATTEMPT="${EXPECTED_RUN_ATTEMPT:-1}"
@@ -53,12 +53,15 @@ import json, os, sys
 run = json.loads(os.environ["CANDIDATE_RUN_JSON"])
 errors = []
 checks = [
+    ("id", int(os.environ["CANDIDATE_RUN_ID"])),
     ("name", os.environ["CANDIDATE_WORKFLOW_NAME"]),
     ("path", os.environ["CANDIDATE_WORKFLOW_PATH"]),
     ("event", "workflow_dispatch"),
     ("head_branch", os.environ["EXPECTED_HEAD_BRANCH"]),
     ("head_sha", os.environ["RELEASE_COMMIT_SHA"]),
 ]
+if os.environ.get("CANDIDATE_WORKFLOW_ID"):
+    checks.insert(1, ("workflow_id", int(os.environ["CANDIDATE_WORKFLOW_ID"])))
 for key, expect in checks:
     got = run.get(key)
     if got != expect:

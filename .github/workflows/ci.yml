@@ -3,7 +3,7 @@ name: CI
 # CI tiers (single workflow + job-level `if`; job names unchanged for branch protection):
 # - feature/** / fix/** push: build-test only
 # - develop push or PR targeting develop: build-test + openapi-validation + native-aot-smoke
-# - PR targeting main: release-gate CI (incl. Native AOT, amd64 Docker)
+# - PR targeting main or release-rehearsal/**: release-gate CI (incl. Native AOT, amd64 Docker)
 # - main push, workflow_dispatch: final CI (incl. Native AOT, amd64/arm64 Docker)
 # Fail-secure: workflow_dispatch and unrecognized paths use final CI when triggered.
 
@@ -12,6 +12,7 @@ on:
     branches:
       - main
       - develop
+      - "release-rehearsal/**"
   push:
     branches:
       - main
@@ -57,11 +58,26 @@ jobs:
       - name: Test
         run: dotnet test Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-build --verbosity normal
 
+      - name: Canonical qualification formal-route self-test (ci-auto)
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/qualification-lane-adapter-self-test.py --scenario-id G456-22 --variant-id ci-auto
+          python3 scripts/qualification-lane-adapter-self-test.py --scenario-id G456-24 --variant-id ci-auto
+          python3 scripts/qualification-lane-adapter-self-test.py --scenario-id G456-28 --variant-id ci-auto
+          python3 scripts/qualification-lane-adapter-self-test.py --scenario-id G456-30 --variant-id ci-auto
+          python3 scripts/qualification-lane-adapter-self-test.py --scenario-id G456-18 --variant-id linux-docker
+
       - name: PTY smoke (ACS test-acs-send interactive paths)
         run: python3 scripts/pty-smoke-test-acs-send.py
 
       - name: PTY smoke (ACS register-acs interactive paths)
         run: python3 scripts/pty-smoke-register-acs.py
+
+      - name: Qualified Git promotion validator self-test
+        run: python3 scripts/validate-qualified-git-promotion-self-test.py
+
+      - name: Qualification runner durable-store self-test
+        run: python3 scripts/qualification-runner-self-test.py
 
       - name: "Guard setup-bundle MSBuild -p args (MSYS-safe)"
         run: |
@@ -116,6 +132,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
       github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/') ||
       github.base_ref == 'develop'
     runs-on: ubuntu-24.04
     steps:
@@ -300,7 +317,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
-      github.base_ref == 'main'
+      github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -354,6 +372,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
       github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/') ||
       startsWith(github.head_ref, 'release-infra/') ||
       startsWith(github.ref_name, 'release-infra/')
     runs-on: ubuntu-24.04
@@ -370,6 +389,9 @@ jobs:
       - name: Run candidate-run validator self-test (fixtures)
         run: bash scripts/validate-candidate-oci-run-self-test.sh
 
+      - name: Run qualification producer handoff self-test (fixtures)
+        run: python3 scripts/prepare-qualification-handoff-self-test.py
+
       - name: Run promote self-test (local registry)
         run: bash scripts/promote-candidate-oci-self-test.sh
 
@@ -378,7 +400,8 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.ref == 'refs/heads/main' ||
-      github.base_ref == 'main'
+      github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/')
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -396,6 +419,7 @@ jobs:
       github.ref == 'refs/heads/main' ||
       github.ref == 'refs/heads/develop' ||
       github.base_ref == 'main' ||
+      startsWith(github.base_ref, 'release-rehearsal/') ||
       github.base_ref == 'develop'
     runs-on: ubuntu-24.04
     steps:

@@ -10,6 +10,13 @@ by the pre-login validator.
 The product ref owns candidate bytes and qualification; `main` owns only the
 release-infrastructure promotion wrapper and proof generation.
 
+> **v1.2.0 note:** The public OCI was published via **P-OCI-PROMOTE** (promote the
+> qualified layout) with `EXTERNAL_PROVENANCE` — no registry attestation
+> manifests. See [docs/releases/v1.2.0.md](../releases/v1.2.0.md), the GitHub
+> Release attachments, and [release artifact verification](release-artifact-verification.en.md).
+> The steps below describe the classic rebuild-as-publish workflow
+> (`publish-image.yml`).
+
 ## Required handoff
 
 Promotion consumes the OCI layout and handoff artifacts from one successful
