@@ -206,11 +206,9 @@ def validate_rehearsal_qualification(root: Path, promotion: dict[str, Any]) -> N
 
 
 def validate_release_qualification(root: Path, promotion: dict[str, Any]) -> None:
-    """Validate the publication-only production handoff without mutating evidence."""
+    """Validate the prepared sealed-only production handoff."""
     manifest_path = root / "handoff-manifest.json"
-    producer_path = root / "qualification-producer.json"
     manifest = load_json(manifest_path, "handoff-manifest.json")
-    producer = load_json(producer_path, "qualification-producer.json")
     if not isinstance(manifest, dict):
         fail("handoff-manifest.json", "document must be an object")
 
@@ -259,7 +257,7 @@ def validate_release_qualification(root: Path, promotion: dict[str, Any]) -> Non
     require_equal(
         "qualificationRoot.files",
         all_paths,
-        expected_objects | {"handoff-manifest.json", "qualification-producer.json"},
+        expected_objects | {"handoff-manifest.json"},
     )
     for object_path, expected_digest in object_map.items():
         actual_digest = hashlib.sha256((root / object_path).read_bytes()).hexdigest()
@@ -334,8 +332,6 @@ def validate_release_qualification(root: Path, promotion: dict[str, Any]) -> Non
     issue_check = decision.get("issueFreshnessCheck") or {}
     if issue_check and issue_check.get("matchedBinding") is not True:
         fail("decision.issueFreshnessCheck.matchedBinding", "must be true")
-
-    validate_qualification_producer(producer, promotion)
 
 
 def validate_qualification(root: Path, promotion: dict[str, Any]) -> None:

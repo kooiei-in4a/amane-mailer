@@ -1,0 +1,12 @@
+{
+  "authorizationDigestSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "bindingId": "2222222222222222222222222222222222222222222222222222222222222222",
+  "candidateId": "1111111111111111111111111111111111111111111111111111111111111111",
+  "ociIndexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "producerWorkflowRunAttempt": "1",
+  "producerWorkflowRunId": "31203481547",
+  "qualificationRunId": "3333333333333333333333333333333333333333333333333333333333333333",
+  "releaseCommitSha": "c5a928eafe0e0f3527ad484993347d5035aa92bc",
+  "releaseVersion": "1.3.0",
+  "sourceCommitSha": "c5a928eafe0e0f3527ad484993347d5035aa92bc"
+}

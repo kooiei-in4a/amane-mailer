@@ -1,0 +1,22 @@
+{
+  "bindingId": "2222222222222222222222222222222222222222222222222222222222222222",
+  "candidateId": "1111111111111111111111111111111111111111111111111111111111111111",
+  "objects": [
+    {
+      "path": "binding.json",
+      "sha256": "bb5b9ca130786ebf6272ee7530b583bce849472dba32897df43cf8a26c1ad38b"
+    },
+    {
+      "path": "decision/go-no-go.json",
+      "sha256": "cfbce09ed8c54ce11b792d5fa7a6b7113db15db8bfe3304ded28bf7a4809ea27"
+    },
+    {
+      "path": "run-status-events/44444444444444444444444444444444.json",
+      "sha256": "21fe71e67471334ceb87f4d0be6c45dd80642892ceebf12eaa5034866de90128"
+    }
+  ],
+  "publicationOnly": true,
+  "qualificationRunId": "3333333333333333333333333333333333333333333333333333333333333333",
+  "schemaVersion": 1,
+  "sealedEventId": "44444444444444444444444444444444"
+}

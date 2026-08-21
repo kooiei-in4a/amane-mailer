@@ -1,0 +1,14 @@
+{
+  "authorizationDigestSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "bindingId": "2222222222222222222222222222222222222222222222222222222222222222",
+  "candidateId": "1111111111111111111111111111111111111111111111111111111111111111",
+  "humanDecision": "APPROVE",
+  "issueFreshnessCheck": {
+    "matchedBinding": true
+  },
+  "machineVerdict": "GO_ELIGIBLE",
+  "ociIndexDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "qualificationRunId": "3333333333333333333333333333333333333333333333333333333333333333",
+  "runSealed": true,
+  "sourceCommitSha": "c5a928eafe0e0f3527ad484993347d5035aa92bc"
+}

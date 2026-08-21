@@ -66,9 +66,9 @@ def validate_expected_identity(expected: dict[str, Any]) -> None:
 
 
 def validate_producer(producer: dict[str, Any], expected: dict[str, Any]) -> None:
+    if set(producer) != set(PRODUCER_FIELDS):
+        fail("qualificationProducer", "must contain exactly the eight producer identity fields")
     for field in PRODUCER_FIELDS:
-        if field not in producer:
-            fail(f"qualificationProducer.{field}", "is required")
         if field in INTEGER_FIELDS:
             actual = positive_integer(producer[field], f"qualificationProducer.{field}")
             wanted = positive_integer(expected[field], f"expectedProducerIdentity.{field}")
@@ -108,11 +108,6 @@ def qualification_files(root: Path) -> tuple[set[str], str]:
 def copy_sealed_view(artifact_root: Path, sealed_root: Path, event_relative: str) -> None:
     if sealed_root.is_symlink():
         fail("sealedRoot", "must not be a symlink")
-    if sealed_root.exists():
-        if not sealed_root.is_dir() or any(sealed_root.iterdir()):
-            fail("sealedRoot", "must be an empty directory")
-    else:
-        sealed_root.mkdir(parents=True)
 
     try:
         sealed_root.resolve().relative_to(artifact_root.resolve())
@@ -120,6 +115,12 @@ def copy_sealed_view(artifact_root: Path, sealed_root: Path, event_relative: str
         pass
     else:
         fail("sealedRoot", "must be outside the immutable artifact root")
+
+    if sealed_root.exists():
+        if not sealed_root.is_dir() or any(sealed_root.iterdir()):
+            fail("sealedRoot", "must be an empty directory")
+    else:
+        sealed_root.mkdir(parents=True)
 
     sealed_paths = (
         "handoff-manifest.json",

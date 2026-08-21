@@ -110,6 +110,12 @@ production入力はartifactを一つに混ぜません。既存の #455 `setup-r
 再生成して互換性を作ることは禁止です。現行v1.3.0 artifact `9004008439`は候補handoffであり、
 sealed qualification artifactの代替ではありません。
 
+production sealed qualification artifactは
+[`shared qualification artifact contract`](shared-qualification-artifact-contract.md)に従います。
+workflowはtrusted Actions run metadataからexpected producer identityを作り、shared preparation
+helperでexact artifact shape / producer identity / symlink拒否を検証してbyte-identicalな
+sealed-only viewを作成します。そのviewを既存strict sealed validatorとGit固有preflightへ渡します。
+
 `humanDecision=APPROVE` は exact-candidate qualification の判定であり、release execution
 approvalではありません。workflowの`release` environment承認が別のexecution gateです。
 
@@ -121,7 +127,8 @@ approvalではありません。workflowの`release` environment承認が別のe
 - candidate provenanceのproducer workflow path/ref、run ID/attempt、release SHA、release version、
   OCI digestが固定値と一致し、image identityも同じSHA/version/digestを持つ。
 - qualification artifactのActions runはrelease environmentで設定したtrusted repository、workflow ID/path、
-  event、head branch/SHA、run attemptとAPI上で一致する。設定値がない、run/artifactが別producer、
+  event、head branch/SHA、run attemptとAPI上で一致し、downloaded `qualification-producer.json`も
+  shared preparation helperで同じidentityと一致する。設定値がない、run/artifactが別producer、
   または期待SHA/branch/eventと違う場合はFAILとする。
 - `machineVerdict=GO_ELIGIBLE`、`humanDecision=APPROVE`、`runSealed=true`、terminal eventが
   `sealed`かつ入力`sealedEventId`と一致する。
@@ -187,7 +194,7 @@ python3 scripts/validate-qualified-git-promotion-self-test.py
 - N5: `qualificationRunId` mismatch -> FAIL
 - N6: ruleset fingerprint mismatch -> FAIL
 - N7: `candidateId` / `sealedEventId` mismatch -> FAIL
-- N8: qualification producer workflow ID/path/run identity mismatch -> FAIL
+- N8: qualification producer repository/workflow/head SHA/run identity mismatch -> shared preparationでFAIL
 - N9: candidate-provenance workflow run/attempt/ref mismatch -> FAIL
 
 N3bはproduction RCを使いません。validation branchからsynthetic source branchを作り、署名なし
@@ -275,4 +282,3 @@ RC / candidate / binding / qualification / sealの変更、rulesetの一時緩�
 exact head不一致、merge parent不一致、tag target不一致、required negative fixtureの予期しないPASS、
 positive rehearsal失敗、fingerprint drift、GitHub仕様上の安全な実現不能が1件でもあればSTOPします。
 main promotion、production tag、publishを続行しません。
-

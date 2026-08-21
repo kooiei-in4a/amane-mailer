@@ -1,0 +1,10 @@
+{
+  "event": "workflow_dispatch",
+  "headBranch": "qualification-handoff/v1.3.0-rc13",
+  "headSha": "fba3f0cc8cbdef60c129dbffa214228f6967d073",
+  "repository": "kooiei-in4a/amane-mailer",
+  "runAttempt": 1,
+  "runId": 32225560868,
+  "workflowId": 329865510,
+  "workflowPath": ".github/workflows/publish-sealed-qualification-handoff.yml"
+}
