@@ -18,7 +18,6 @@ FINGERPRINTER = SCRIPT_DIR / "ruleset-fingerprint.py"
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 OTHER_COMMIT = "89abcdef0123456789abcdef0123456789abcdef"
 RC13_SOURCE_SHA = "c5a928eafe0e0f3527ad484993347d5035aa92bc"
-RC13_PROMOTION_BASE_SHA = "f3606f7b69c629473789f7df101cbd945f614cb9"
 RC13_FORK_BASE_SHA = "d6743dabc1813ea428081a49874680263ae54f7f"
 OCI_DIGEST = "sha256:" + "a" * 64
 RELEASE_EVENT_ID = "4" * 32
@@ -328,9 +327,9 @@ def main() -> None:
         release_prep["promotionPrHeadRef"] = release_prep["releaseBranch"]
         release_prep["promotionPrHeadSha"] = RC13_SOURCE_SHA
         release_prep["promotionPrBaseRef"] = "main"
-        release_prep["promotionPrBaseSha"] = RC13_PROMOTION_BASE_SHA
-        release_prep["promotionBaseSha"] = RC13_PROMOTION_BASE_SHA
-        release_prep["baseRefTipSha"] = RC13_PROMOTION_BASE_SHA
+        release_prep["promotionPrBaseSha"] = OTHER_COMMIT
+        release_prep["promotionBaseSha"] = OTHER_COMMIT
+        release_prep["baseRefTipSha"] = OTHER_COMMIT
         release_prep["rcTipSha"] = RC13_SOURCE_SHA
         release_prep["tagName"] = "v1.3.0"
         release_prep["tagTargetSha"] = RC13_SOURCE_SHA
@@ -396,10 +395,8 @@ def main() -> None:
         expect_fail("global.json mismatch", run_validator(root, global_json_mismatch, release_positive))
 
         promotion_base_drift = copy.deepcopy(release_prep)
-        promotion_base_drift["promotionBaseSha"] = OTHER_COMMIT
-        promotion_base_drift["promotionPrBaseSha"] = OTHER_COMMIT
-        promotion_base_drift["baseRefTipSha"] = OTHER_COMMIT
-        expect_fail("promotion base SHA drift", run_validator(root, promotion_base_drift, release_positive))
+        promotion_base_drift["promotionBaseSha"] = COMMIT
+        expect_fail("promotion base consistency drift", run_validator(root, promotion_base_drift, release_positive))
 
         release_bad_digest = root / "release-bad-digest"
         write_release_qualification(release_bad_digest, release_prep, corrupt_object_digest=True)

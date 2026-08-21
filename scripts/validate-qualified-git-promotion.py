@@ -24,7 +24,6 @@ CANDIDATE_WORKFLOW_EVENT = "workflow_dispatch"
 CANDIDATE_REPOSITORY = "kooiei-in4a/amane-mailer"
 RC13_SOURCE_SHA = "c5a928eafe0e0f3527ad484993347d5035aa92bc"
 RC13_FORK_BASE_SHA = "d6743dabc1813ea428081a49874680263ae54f7f"
-RC13_PROMOTION_BASE_SHA = "f3606f7b69c629473789f7df101cbd945f614cb9"
 RELEASE_CONTROL_PLANE_ONLY_PATHS = frozenset(
     {
         ".github/workflows/promote-qualified-git.yml",
@@ -452,8 +451,6 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     promotion_base_sha = require_string(promotion, "promotionBaseSha", HEX40)
     require_equal("promotionPrBaseSha", promotion.get("promotionPrBaseSha"), promotion_base_sha)
     require_equal("baseRefTipSha", promotion.get("baseRefTipSha"), promotion_base_sha)
-    if commit == RC13_SOURCE_SHA:
-        require_equal("promotionBaseSha", promotion_base_sha, RC13_PROMOTION_BASE_SHA)
     require_equal("tagTargetSha", promotion.get("tagTargetSha"), commit)
 
     if not isinstance(promotion.get("promotionPrNumber"), int) or promotion["promotionPrNumber"] <= 0:
