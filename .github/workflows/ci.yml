@@ -58,6 +58,9 @@ jobs:
       - name: Test
         run: dotnet test Amane.Mailer.slnx -c ${{ env.CONFIGURATION }} --no-build --verbosity normal
 
+      - name: Shared qualification artifact contract self-test
+        run: python3 scripts/prepare-qualification-handoff-self-test.py
+
       - name: Canonical qualification formal-route self-test (ci-auto)
         run: |
           set -Eeuo pipefail
@@ -389,7 +392,7 @@ jobs:
       - name: Run candidate-run validator self-test (fixtures)
         run: bash scripts/validate-candidate-oci-run-self-test.sh
 
-      - name: Run qualification producer handoff self-test (fixtures)
+      - name: Run shared qualification artifact contract self-test (fixtures)
         run: python3 scripts/prepare-qualification-handoff-self-test.py
 
       - name: Run promote self-test (local registry)

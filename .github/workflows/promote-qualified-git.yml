@@ -390,6 +390,7 @@ jobs:
           QUALIFICATION_PRODUCER_HEAD_BRANCH: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_BRANCH }}
           QUALIFICATION_PRODUCER_HEAD_SHA: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_SHA }}
           QUALIFICATION_RUN_ATTEMPT: ${{ env.QUALIFICATION_WORKFLOW_RUN_ATTEMPT }}
+          EXPECTED_PRODUCER_IDENTITY: ${{ runner.temp }}/qualification-producer-expected.json
           MODE: ${{ inputs.mode }}
           RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
           RELEASE_BRANCH: ${{ inputs.release_branch }}
@@ -401,6 +402,7 @@ jobs:
           RUN_JSON="${run_json}" ARTIFACTS_JSON="${artifacts_json}" python3 - <<'PY'
           import json
           import os
+          from pathlib import Path
 
           run = json.loads(os.environ["RUN_JSON"])
           if run.get("status") != "completed" or run.get("conclusion") != "success":
@@ -418,6 +420,23 @@ jobs:
               for key, value in expected.items():
                   if run.get(key) != value:
                       raise SystemExit(f"qualificationProducer.{key}: mismatch")
+              repository = (run.get("repository") or {}).get("full_name")
+              if repository != os.environ["QUALIFICATION_REPOSITORY"]:
+                  raise SystemExit("qualificationProducer.repository: mismatch")
+              expected_producer = {
+                  "repository": repository,
+                  "workflowPath": expected["path"],
+                  "workflowId": expected["workflow_id"],
+                  "event": expected["event"],
+                  "headBranch": expected["head_branch"],
+                  "headSha": expected["head_sha"],
+                  "runId": expected["id"],
+                  "runAttempt": expected["run_attempt"],
+              }
+              Path(os.environ["EXPECTED_PRODUCER_IDENTITY"]).write_text(
+                  json.dumps(expected_producer, indent=2, sort_keys=True) + "\n",
+                  encoding="utf-8",
+              )
           artifacts = json.loads(os.environ["ARTIFACTS_JSON"]).get("artifacts") or []
           matches = [item for item in artifacts if item.get("name") == os.environ["QUALIFICATION_ARTIFACT_NAME"]]
           if len(matches) != 1:
@@ -445,6 +464,40 @@ jobs:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ env.CANDIDATE_ARTIFACT_RUN_ID }}
+
+      - name: Validate qualification producer and prepare sealed-only view
+        if: inputs.mode == 'release'
+        id: qualification_view
+        shell: bash
+        env:
+          QUALIFICATION_ARTIFACT_ROOT: ${{ github.workspace }}/artifacts/qualification
+          EXPECTED_PRODUCER_IDENTITY: ${{ runner.temp }}/qualification-producer-expected.json
+        run: |
+          set -Eeuo pipefail
+          sealed_root="$(mktemp -d "${RUNNER_TEMP}/qualification-sealed.XXXXXX")"
+          python3 scripts/prepare-qualification-handoff.py \
+            --artifact-root "${QUALIFICATION_ARTIFACT_ROOT}" \
+            --expected-producer-identity "${EXPECTED_PRODUCER_IDENTITY}" \
+            --sealed-root "${sealed_root}"
+          echo "path=${sealed_root}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate prepared qualification with strict sealed validator
+        if: inputs.mode == 'release'
+        shell: bash
+        env:
+          QUALIFICATION_ROOT: ${{ steps.qualification_view.outputs.path }}
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          EXPECTED_DIGEST: ${{ inputs.oci_index_digest }}
+        run: |
+          set -Eeuo pipefail
+          bash scripts/validate-qualification-handoff.sh \
+            --root "${QUALIFICATION_ROOT}" \
+            --candidate-id "${CANDIDATE_ID}" \
+            --qualification-run-id "${QUALIFICATION_RUN_ID}" \
+            --release-commit-sha "${RELEASE_COMMIT_SHA}" \
+            --expected-digest "${EXPECTED_DIGEST}"
 
       - name: Mint repository-scoped release App token
         id: app-token
@@ -773,7 +826,7 @@ jobs:
         run: >-
           python3 scripts/validate-qualified-git-promotion.py
           --manifest artifacts/git-promotion-state/promotion-manifest.json
-          --qualification-root artifacts/qualification
+          --qualification-root ${{ inputs.mode == 'release' && steps.qualification_view.outputs.path || 'artifacts/qualification' }}
           --candidate-root artifacts/candidate
 
       - name: Recheck ruleset immediately before mutation
@@ -1101,4 +1154,3 @@ jobs:
           path: artifacts/git-promotion-state
           if-no-files-found: error
           retention-days: 90
-
