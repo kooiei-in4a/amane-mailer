@@ -2,13 +2,15 @@
 
 Official TypeScript and Python SDKs for posting mail delivery requests to Amane Mailer.
 
-Phase 1 scope (issue #218):
+Phase 1 scope (issue #218), with v1.3 recipient and attachment support:
 
 - Request builder with pre-validation
 - Automatic `payload_hash` computation (matches Contracts test vectors)
 - UUID generation (UUIDv7 preferred; UUIDv4 fallback documented)
 - Typed handling for `accepted`, `already_accepted`, `IDEMPOTENCY_CONFLICT`, and retryable 503
 - Idempotent resend and exponential backoff for retryable errors
+- Multiple `To` / `CC` / `BCC` roles, including optional `to` for Cc-only / Bcc-only requests
+- Attachment metadata builders and v1.3 payload-hash projection
 
 Status GET (#216) is available on the HTTP API. SDK status-polling helpers remain
 a follow-up (Phase 2). Webhook signature helpers wait on Consumer SDK follow-up
@@ -45,6 +47,42 @@ const response = await client.sendMail(
 
 console.log(response.status); // 'accepted' | 'already_accepted'
 ```
+
+#### v1.3 recipients and attachment
+
+The builder API mirrors the HTTP fields. `to()`, `cc()`, and `bcc()` set the
+first recipient for a role; `addTo()`, `addCc()`, and `addBcc()` append in role
+order. Each role accepts at most 10 recipients and all roles at most 20. A
+Cc-only request is expressible by omitting `.to()`; the Python builder can use
+`.to(email=None)` when an explicit `null` is useful. The server still validates
+duplicates and canonical addresses.
+
+```javascript
+const request = MailRequestBuilder.create()
+  .tenantId('00000000-0000-0000-0000-000000000101')
+  .sourceService('example-service')
+  .generateMailRequestId()
+  .purpose('FormResponseNotification')
+  .to({ email: 'admin@example.com' })
+  .cc({ email: 'team@example.com' })
+  .bcc({ email: 'audit@example.com' })
+  .subject('Invoice attached')
+  .textBody('Please find the invoice attached.')
+  .attachments([{
+    file_name: 'hello.txt',
+    content_type: 'text/plain',
+    content_base64: 'SGVsbG8=',
+    content_sha256: '185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969',
+    byte_length: 5,
+  }])
+  .build(); // computes payload_hash automatically
+```
+
+The attachment list is bounded at 5 items, 2 MiB per decoded file, and 5 MiB
+decoded total. The service also enforces provider / HTTP envelope limits and
+revalidates filename, content type, structure, digest, and length. For a
+Bcc-only request, use `.cc(null)` / `.to(null)` as needed and provide at least
+one `.bcc(...)`.
 
 Scheduled send uses OpenAPI `date-time` with timezone `Z` or an explicit offset.
 Omit `scheduled_at` (or set it to `null`) for immediate delivery. The field is
@@ -117,6 +155,17 @@ response = client.send_mail(
 ```
 
 See [python/README.md](python/README.md) for error handling, retries, and local Mailer integration.
+
+### Retry and delivery status boundary
+
+SDK retries are HTTP-client behavior: a retryable `503` or transport failure can
+repeat the POST with the same `mail_request_id` and payload. This is separate
+from Mailer's provider-delivery boundary. In v1.3, once durable submission
+evidence exists, Mailer does not invoke ACS/Mailpit again for the same request.
+An ambiguous provider outcome becomes terminal `delivery_unknown`; do not resend
+that request. If a business resend is required, create a new request with a new
+`mail_request_id`. The SDKs do not yet provide a status-polling helper; use the
+HTTP GET documented in the service spec.
 
 ## payload_hash verification
 

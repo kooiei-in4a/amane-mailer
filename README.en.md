@@ -6,7 +6,20 @@ Amane Mailer is a general-purpose mail delivery microservice. It accepts mail
 requests, persists them, and delivers them asynchronously via Azure Communication
 Services (ACS) or Mailpit through a background Worker. Consumer applications
 assemble the body, recipients, and subject, then POST a delivery request — the
-Mailer handles transport.
+Mailer handles transport. It supports multiple To / CC / BCC recipients,
+validated attachments, idempotent acceptance, scheduled delivery, and delivery
+status queries.
+
+## v1.3.0 highlights
+
+- Multiple `to` / `cc` / `bcc` recipients, including Cc-only / Bcc-only requests, with recipient-level delivery state
+- Bounded attachments (PDF, JPEG, PNG, DOCX, XLSX, CSV, and TXT) with validation and spool storage
+- Durable submission evidence that suppresses duplicate provider invocation after an ambiguous outcome; the public terminal state is `delivery_unknown`
+- BCC omitted from MIME headers, masked by default in Admin, and revealed only through an explicit audited capability
+- Multi-arch `linux/amd64` / `linux/arm64` release images and Native AOT setup bundles
+
+See the [service specification](docs/service-spec.en.md) and [v1.3.0 release record](docs/releases/v1.3.0.md)
+for the detailed contract, limits, and upgrade procedure.
 
 ## Layout
 
@@ -112,17 +125,17 @@ Operational runbooks:
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
 
-After v1.2.0 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v1.2.0`)
+After v1.3.0 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v1.3.0`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
 run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
 `scripts/release-smoke.ps1` (Windows / PowerShell with Docker Desktop). See
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration. Published identities:
-[v1.2.0 release record](docs/releases/v1.2.0.md) /
-[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0).
+[v1.3.0 release record](docs/releases/v1.3.0.md) /
+[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.0).
 
-For the v1.2.0 release, the default smoke tag `v1.2.0` is a
+For the v1.3.0 release, the default smoke tag `v1.3.0` is a
 **multi-arch** GHCR runtime image
 (`linux/amd64` and `linux/arm64`). For smoke runs, confirm the platform in the
 release notes or Docker manifest, then set `MAILER_IMAGE_PLATFORM=linux/amd64` or
@@ -166,7 +179,7 @@ Minimum information to POST a mail request to a running Mailer and, when needed,
 - **Endpoint**: `POST http://mailer:8080/internal/mail-requests`
 - **Auth**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
   - Default local token: `local-mail-service-token`
-- **Required fields**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `to`, `subject`, `payload_hash`
+- **Required fields**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `subject`, `payload_hash`, plus at least one recipient across `to`, `cc`, and `bcc`
 - **`payload_hash`**: SHA-256 of the canonical delivery payload.
   Use `MailPayloadHasher` from `Amane.Mailer.Contracts` (.NET),
   or see [examples/payload-hash/](examples/payload-hash/README.md) for Python / JavaScript / Go,
@@ -231,7 +244,42 @@ To safely try a conflict, use a local environment only, keep the same
 - **Optional**: POST `scheduled_at` (UTC) for deferred send. Pre-send cancel / reschedule are documented under OpenAPI `/cancel` and `/reschedule`
 - **No PII**: recipient, subject, and body are not returned
 
-`status` values describe Worker delivery state (`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`). They are separate from POST acceptance values `accepted` / `already_accepted`.
+`status` values describe Worker delivery state (`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`, `delivery_unknown`). They are separate from POST acceptance values `accepted` / `already_accepted`.
+
+`delivery_unknown` is terminal when provider invocation started but acceptance could not be proved. Do not automatically or manually resend
+the same `mail_request_id`. If business requirements require another send, assess duplicate risk and submit a new request with a new ID.
+
+### v1.3 advanced request (To + CC + BCC + attachment)
+
+`to` may be omitted, `null`, or empty when `cc` or `bcc` supplies a recipient. Each role allows at most 10 recipients and the combined
+total is 20; duplicate canonical addresses are rejected across and within roles. Attachments allow at most 5 items, 2 MiB per file,
+5 MiB decoded total, an 8 MiB provider envelope, and a 16 MiB HTTP envelope. The server revalidates file type, filename, digest, and size.
+
+```json
+{
+  "tenant_id": "00000000-0000-0000-0000-000000000101",
+  "mail_request_id": "<new-uuid>",
+  "source_service": "example-service",
+  "purpose": "FormResponseNotification",
+  "to": [{ "email": "admin@example.com" }],
+  "cc": [{ "email": "team@example.com" }],
+  "bcc": [{ "email": "audit@example.com" }],
+  "subject": "Invoice attached",
+  "text_body": "Please find the invoice attached.",
+  "attachments": [{
+    "file_name": "hello.txt",
+    "content_type": "text/plain",
+    "content_base64": "SGVsbG8=",
+    "content_sha256": "185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969",
+    "byte_length": 5
+  }],
+  "payload_hash": "9c093783657de26bab51d19b69a23d73d0c9c005f58c5e1762ef0d2514289bc6"
+}
+```
+
+`payload_hash` is the SHA-256 of the canonical delivery payload. It projects recipient roles and attachment metadata (NFC filename,
+canonical content type, byte length, digest, and array order), not raw Base64. See [Contracts](src/Amane.Mailer.Contracts/README.md),
+[SDKs](sdk/README.md), and the [payload-hash examples](examples/payload-hash/README.md) for the shared vectors.
 
 Missing IDs and other tenants' IDs both return **404 `NOT_FOUND`** without leaking existence.
 
@@ -254,7 +302,7 @@ Expected response right after acceptance:
 }
 ```
 
-After the Worker finishes delivery, `status` becomes `delivered` and related fields update. See [docs/api/openapi.yaml](docs/api/openapi.yaml) and the [service spec delivery-status section](docs/service-spec.en.md#delivery-status-query-get) for the full HTTP status table and error codes.
+After the Worker finishes delivery, `status` becomes `delivered` and related fields update. See [docs/api/openapi.yaml](docs/api/openapi.yaml) and the [service spec delivery-status section](docs/service-spec.en.md#delivery-status-query-get) for the full HTTP status table, error codes, and v1.3 resend boundary.
 
 For the Consumer app compose network setup, see the comments in [infra/deploy/compose.yml](infra/deploy/compose.yml).
 

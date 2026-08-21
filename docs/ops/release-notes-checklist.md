@@ -31,8 +31,16 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
 
 - `202 Accepted` は「Mailer が依頼を永続化した」ことを表し、provider delivery
   完了ではない。
-- Delivery は at-least-once。provider 送信成功後、Mailer DB の `delivered`
-  更新前に停止した場合、同じメールが再送される可能性がある。
+- `202 Accepted`、Mailer の provider invocation、provider 側の実配送結果を
+  別々に説明する。`exactly-once delivery` を保証する表現は使わない。
+- submission evidence を採用する release では、provider invocation 開始後の
+  lease expiry / process restart を理由に同じ request を自動再 invoke しない。
+  受理可否が曖昧な場合の公開状態、consumer の exhaustive enum 対応、同じ
+  `mail_request_id` を再送してはいけない条件、業務上の新規 request による
+  resend 手順を release notes に明記する（v1.3.0 では `delivery_unknown`）。
+- SDK / HTTP client の 503 retry と Mailer 内部の provider 再 invoke は別概念で
+  あることを確認する。HTTP acceptance の冪等再送を provider delivery の安全性と
+  混同しない。
 - SQLite deployment は single-node / single-replica 前提。単一 SQLite file を
   共有する複数 Worker の水平化は現在の運用対象外
   （着手条件と非目標は [ADR 0019](../adr/0019-sqlite-single-process-boundaries.md)）。

@@ -7,9 +7,9 @@
 Windows x64 / Linux x64 / Linux arm64 向け Easy Setup **release-candidate** 配布
 bundle の生成手順です。公開（tag / GHCR / GitHub Release）は
 [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) が所有して完了しました。
-公開済み v1.2.0 の消費は [setup-guide](setup-guide.md)、
-[release record](../releases/v1.2.0.md)、
-[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0)
+公開済み v1.3.0 の消費は [setup-guide](setup-guide.md)、
+[release record](../releases/v1.3.0.md)、
+[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.0)
 （Windows / Linux x64 / Linux arm64 archive + checksum / provenance 添付）を使います。
 
 詳細（構成、manifest schemaVersion 1 additive、`payloadTreeSha256` /
@@ -30,7 +30,7 @@ tools へ分離した packaging、artifact smoke、workflow artifact
 最終image-index blobのdigestであり、`sha256(index.json)`ではありません。
 
 ```bash
-export MAILER_VERSION=1.2.0
+export MAILER_VERSION=1.3.0
 export MAILPIT_IMAGE='axllent/mailpit@sha256:replace-with-64-lowercase-hex-digest-here-000000000000'
 # Requires image-identity.json from build-candidate-oci-image.sh
 bash scripts/generate-setup-release-bundle.sh linux-x64

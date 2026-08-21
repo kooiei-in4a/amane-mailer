@@ -4,7 +4,19 @@
 
 Amane Mailer は汎用メール送信マイクロサービスです。送信依頼を受け付けて永続化し、
 バックグラウンド Worker が Azure Communication Services (ACS) または Mailpit 経由で
-非同期に配送します。Consumer アプリは本文・宛先・件名を組み立てて送信依頼を POST するだけです。
+非同期に配送します。複数の To / CC / BCC、検証済みの添付ファイル、冪等受付、予約送信、
+配送ステータス照会に対応し、Consumer アプリは本文・宛先・件名を組み立てて送信依頼を POST するだけです。
+
+## v1.3.0 highlights
+
+- 複数の `to` / `cc` / `bcc`（Cc-only / Bcc-only を含む）と recipient 単位の配送状態
+- 上限付き添付ファイル（PDF、JPEG、PNG、DOCX、XLSX、CSV、TXT）の検証と spool
+- durable submission evidence による provider の曖昧な受理後の重複再送防止。曖昧な結果は終端状態 `delivery_unknown`
+- BCC の MIME header 非表示、Admin の既定 mask、明示 capability + 監査付き reveal
+- `linux/amd64` / `linux/arm64` の multi-arch release と Native AOT setup bundle
+
+詳細な契約・制限・upgrade 手順は [サービス仕様](docs/service-spec.md) と
+[v1.3.0 release record](docs/releases/v1.3.0.md) を参照してください。
 
 ## 構成
 
@@ -107,15 +119,15 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
-v1.2.0 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v1.2.0`）を clean state から
+v1.3.0 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v1.3.0`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
 conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（Linux / macOS / Git Bash）または
 `scripts/release-smoke.ps1`（Windows / PowerShell + Docker Desktop）を使います。手順と設定は
 [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
-公開 identities は [v1.2.0 release record](docs/releases/v1.2.0.md) /
-[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0) です。
+公開 identities は [v1.3.0 release record](docs/releases/v1.3.0.md) /
+[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.0) です。
 
-v1.2.0 release では、既定 smoke tag `v1.2.0` の GHCR runtime image は
+v1.3.0 release では、既定 smoke tag `v1.3.0` の GHCR runtime image は
 **multi-arch**（`linux/amd64` と
 `linux/arm64`）です。smoke では release notes または Docker manifest の platform を確認し、
 `MAILER_IMAGE_PLATFORM=linux/amd64` または `MAILER_IMAGE_PLATFORM=linux/arm64` を指定してください。
@@ -156,7 +168,7 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 - **エンドポイント**: `POST http://mailer:8080/internal/mail-requests`
 - **認証**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
   - ローカル既定トークン: `local-mail-service-token`
-- **必須フィールド**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `to`, `subject`, `payload_hash`
+- **必須フィールド**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `subject`, `payload_hash` と、`to` / `cc` / `bcc` のいずれか1件以上
 - **`payload_hash`**: 配送フィールドの canonical JSON SHA-256。
   .NET は `Amane.Mailer.Contracts` の `MailPayloadHasher` を使用。
   Python / JavaScript / Go の実装例: [examples/payload-hash/](examples/payload-hash/README.md)
@@ -217,7 +229,42 @@ hash 対象フィールドを変更し、その payload に合わせて `payload
 - **任意**: POST の `scheduled_at`（UTC）で予約送信。送信前キャンセル / 再スケジュールは OpenAPI の `/cancel`・`/reschedule` を参照
 - **PII なし**: 宛先・件名・本文は返しません
 
-`status` の値は Worker 配送状態です（`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`）。POST レスポンスの `accepted` / `already_accepted` とは別物です。
+`status` の値は Worker 配送状態です（`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`, `delivery_unknown`）。POST レスポンスの `accepted` / `already_accepted` とは別物です。
+
+`delivery_unknown` は provider invocation が始まった後に受理を証明できなかった終端状態です。同じ `mail_request_id` を
+自動・手動で再送してはいけません。業務上の再送が必要な場合は重複リスクを評価し、新しい `mail_request_id` で新しい依頼を作成します。
+
+### v1.3 advanced request（To + CC + BCC + attachment）
+
+`to` は `cc` または `bcc` があれば省略、`null`、空配列でも構いません。各 role は最大10件、合計は最大20件で、
+同じ address（trim + lowercase invariant）は role 内・role 間とも重複不可です。添付は最大5件、1件2 MiB、合計5 MiB、
+provider envelope 8 MiB、HTTP envelope 16 MiB です。許可 type と filename / content の検証はサーバーでも行われます。
+
+```json
+{
+  "tenant_id": "00000000-0000-0000-0000-000000000101",
+  "mail_request_id": "<new-uuid>",
+  "source_service": "example-service",
+  "purpose": "FormResponseNotification",
+  "to": [{ "email": "admin@example.com" }],
+  "cc": [{ "email": "team@example.com" }],
+  "bcc": [{ "email": "audit@example.com" }],
+  "subject": "Invoice attached",
+  "text_body": "Please find the invoice attached.",
+  "attachments": [{
+    "file_name": "hello.txt",
+    "content_type": "text/plain",
+    "content_base64": "SGVsbG8=",
+    "content_sha256": "185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969",
+    "byte_length": 5
+  }],
+  "payload_hash": "9c093783657de26bab51d19b69a23d73d0c9c005f58c5e1762ef0d2514289bc6"
+}
+```
+
+`payload_hash` は raw Base64 全体ではなく、recipient role と添付 metadata（filename NFC、canonical content type、byte length、
+digest、配列 order）を canonicalize した delivery payload の SHA-256 です。実装は [Contracts](src/Amane.Mailer.Contracts/README.md)、
+[SDK](sdk/README.md)、[payload-hash examples](examples/payload-hash/README.md) の同じ vector を使用します。
 
 存在しない ID、または他 tenant の ID に対しては **404 `NOT_FOUND`** を返します（存在有無を漏らしません）。
 
@@ -240,7 +287,7 @@ curl -fsS "http://127.0.0.1:5280/internal/mail-requests/${request_id}?tenant_id=
 }
 ```
 
-Worker が配送を完了すると `status` は `delivered` などに変わります。詳細なエラーコード一覧・HTTP ステータス表は [docs/api/openapi.yaml](docs/api/openapi.yaml) と [サービス仕様](docs/service-spec.md#配送ステータス照会get) を参照してください。
+Worker が配送を完了すると `status` は `delivered` などに変わります。詳細なエラーコード一覧・HTTP ステータス表と v1.3 の再送境界は [docs/api/openapi.yaml](docs/api/openapi.yaml) と [サービス仕様](docs/service-spec.md#配送ステータス照会get) を参照してください。
 
 Consumer アプリの compose ネットワーク接続例は [infra/deploy/compose.yml](infra/deploy/compose.yml) のコメントを参照してください。
 

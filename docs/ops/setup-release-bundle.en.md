@@ -9,9 +9,9 @@ This runbook describes how to generate **release-candidate** Easy Setup host
 bundles for Windows x64 / Linux x64 / Linux arm64. Packaging stops at candidate
 qualification handoff. Publishing was owned by
 [#458](https://github.com/kooiei-in4a/amane-mailer/issues/458) and is complete for
-v1.2.0. Consuming the published release: [setup guide](setup-guide.en.md),
-[release record](../releases/v1.2.0.md), and
-[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.2.0)
+v1.3.0. Consuming the published release: [setup guide](setup-guide.en.md),
+[release record](../releases/v1.3.0.md), and
+[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.0)
 (Windows / Linux x64 / Linux arm64 archives plus checksum / provenance assets).
 
 Design authority: [ADR 0021](../adr/0021-easy-setup-boundaries.md).

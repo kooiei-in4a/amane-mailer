@@ -33,9 +33,18 @@ after publishing a release, verify and record the following items.
 
 - `202 Accepted` means the Mailer persisted the request; it does not mean
   provider delivery has completed.
-- Delivery is at-least-once. If the process stops after a provider send succeeds
-  but before the Mailer DB is updated to `delivered`, the same mail may be sent
-  again.
+- Explain `202 Accepted`, Mailer provider invocation, and the provider's actual
+  delivery result as separate concepts. Do not imply an `exactly-once delivery`
+  guarantee.
+- When the release uses submission evidence, state that lease expiry or a
+  process restart after provider invocation does not re-invoke the provider for
+  the same request. Document the public state for ambiguous acceptance, the
+  required exhaustive-enum handling, the condition under which the same
+  `mail_request_id` must not be resent, and the new-request procedure for a
+  deliberate resend (v1.3.0 uses terminal `delivery_unknown`).
+- Confirm that SDK / HTTP-client 503 retries are distinct from Mailer's internal
+  provider re-invocation policy. HTTP acceptance idempotency is not provider
+  delivery safety.
 - SQLite deployment assumes single-node / single-replica operation. Horizontally
   scaling multiple Workers over one shared SQLite file is currently out of
   operational scope (start gates and non-goals:

@@ -168,6 +168,18 @@ if [ "$mailpit_found" -ne 1 ]; then
 fi
 ```
 
+## Next steps / v1.3 features
+
+Once the first message works, keep this quickstart simple and choose the relevant guide:
+
+- Multiple recipients, CC, and BCC: [service specification](../service-spec.en.md#recipient-contract-to-cc-bcc-adr-0023-d-01)
+- Attachment contract and validation limits: [ADR 0022](../adr/0022-attachment-contract-validation-and-delivery-boundaries.md)
+- `delivery_unknown`, status queries, and resend boundary: [Consumer quick start in README](../../README.en.md#consumer-quick-start)
+- Python / TypeScript SDKs and `payload_hash`: [SDK guide](../../sdk/README.md)
+
+`delivery_unknown` is terminal when provider acceptance cannot be confirmed. Do not resend the same request; if a business resend is
+required, create a new request with a new `mail_request_id`.
+
 ## When something fails
 
 Check these six items in order:

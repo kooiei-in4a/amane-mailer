@@ -167,6 +167,18 @@ if [ "$mailpit_found" -ne 1 ]; then
 fi
 ```
 
+## Next steps / v1.3 features
+
+最初の1通を確認できたら、基本手順を複雑にせず、用途に応じて次を参照してください。
+
+- 複数宛先、CC、BCC: [サービス仕様](../service-spec.md#recipient-contract-to-cc-bcc-adr-0023-d-01)
+- 添付ファイルと検証上限: [ADR 0022](../adr/0022-attachment-contract-validation-and-delivery-boundaries.md)
+- `delivery_unknown`、ステータス照会、再送境界: [README の Consumer クイックスタート](../../README.md#consumer-クイックスタート)
+- Python / TypeScript SDK と `payload_hash`: [SDK guide](../../sdk/README.md)
+
+`delivery_unknown` は provider の受理が確認できない終端状態です。同じ request を再送せず、業務上必要なら新しい
+`mail_request_id` で新しい依頼を作成してください。
+
 ## 失敗したときに見る場所
 
 次の 6 点を順に確認してください。

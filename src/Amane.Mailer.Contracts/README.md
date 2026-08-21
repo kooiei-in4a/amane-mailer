@@ -101,7 +101,10 @@ dotnet add package Amane.Mailer.Contracts
 | `MailRequestScheduleLimits` | `Amane.Mailer.Contracts.MailRequests` | Max schedule horizon (`MaxScheduledAhead`) |
 | `MailDeliveryEventPayload` | `Amane.Mailer.Contracts.MailRequests` | Outbound delivery-result webhook JSON body (first-wins: one event per mail-request generation) |
 | `MailDeliveryEventType` | `Amane.Mailer.Contracts.MailRequests` | Webhook `event_type` / terminal status constants |
-| `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient in `to` array |
+| `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient in `to`, `cc`, or `bcc` array |
+| `MailRecipientValidator` | `Amane.Mailer.Contracts.MailRequests` | Canonical recipient validation and role / aggregate limits |
+| `MailAttachmentDto` | `Amane.Mailer.Contracts.MailRequests` | Validated attachment metadata and Base64 payload |
+| `MailAttachmentLimits` | `Amane.Mailer.Contracts.MailRequests` | v1.3 attachment count / size limits |
 | `MailPayloadHasher` | `Amane.Mailer.Contracts.Security` | `payload_hash` computation helper |
 | `MailRequestAcceptanceStatus` | `Amane.Mailer.Contracts.MailRequests` | Response `status` constants |
 | `MailRequestStatus` | `Amane.Mailer.Contracts.MailRequests` | Worker delivery status constants |
@@ -169,6 +172,43 @@ if (accepted.Status == MailRequestAcceptanceStatus.AlreadyAccepted)
     // The same mail_request_id and payload_hash were already accepted.
 }
 ```
+
+### v1.3 recipient and attachment contract
+
+`to`, `cc`, and `bcc` are each optional. At least one role must contain a
+recipient; each role allows 10 and the aggregate allows 20. Duplicate canonical
+addresses are rejected across roles. Attachments use `MailAttachmentDto` with
+`file_name`, `content_type`, `content_base64`, `content_sha256`, and
+`byte_length`; the runtime revalidates the declared metadata and binary.
+
+```csharp
+var attachment = new MailAttachmentDto
+{
+    FileName = "hello.txt",
+    ContentType = "text/plain",
+    ContentBase64 = "SGVsbG8=",
+    ContentSha256 = "185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969",
+    ByteLength = 5,
+};
+
+request = request with
+{
+    To = [new MailRecipientDto { Email = "admin@example.com" }],
+    Cc = [new MailRecipientDto { Email = "team@example.com" }],
+    Bcc = [new MailRecipientDto { Email = "audit@example.com" }],
+    Attachments = [attachment],
+};
+request = request with
+{
+    PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
+};
+```
+
+The hash includes recipient roles and the canonical attachment metadata (NFC
+filename, canonical content type, decoded byte length, lowercase digest, and
+array order). It omits raw Base64 and omits `attachments` when the list is empty.
+The public delivery status enum includes terminal `delivery_unknown`; consumers
+must not treat it as safe to retry the same request.
 
 The bundled JSON context omits null optional properties. If you compute the
 hash from raw JSON instead, pass the exact JSON string that will be sent.

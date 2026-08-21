@@ -74,11 +74,10 @@ request field is removed or renamed.
 
 ### Documentation
 
-- Add pre-publication release record `docs/releases/v1.3.0.md` with explicit
-  `PENDING` / `NOT YET PUBLISHED` public artifact identities and the exact
-  candidate qualification gates.
-- Published-image README / SECURITY / release-smoke defaults intentionally remain
-  on `v1.2.0` until v1.3.0 is actually promoted and published.
+- Complete the post-publish release record `docs/releases/v1.3.0.md` with the
+  published Git, OCI, NuGet, setup-bundle, checksum, and public-smoke evidence.
+- Synchronize the published-image README / SECURITY / release-smoke defaults to
+  the current `v1.3.0` release while preserving historical v1.2.0 records.
 
 ### Breaking / Migration
 
