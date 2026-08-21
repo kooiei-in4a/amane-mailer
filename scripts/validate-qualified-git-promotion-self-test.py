@@ -371,24 +371,11 @@ def main() -> None:
         promotion_base_drift["promotionBaseSha"] = COMMIT
         expect_fail("promotion base consistency drift", run_validator(root, promotion_base_drift, release_positive))
 
-        release_bad_digest = root / "release-bad-digest"
-        shutil.copytree(release_positive, release_bad_digest)
-        bad_digest_manifest = load_json(release_bad_digest / "handoff-manifest.json")
-        bad_digest_manifest["objects"][0]["sha256"] = "f" * 64
-        write_json(release_bad_digest / "handoff-manifest.json", bad_digest_manifest)
-        expect_fail(
-            "release manifest object digest tamper",
-            run_validator(root, release_prep, release_bad_digest),
-        )
-
-        release_wrong_event = root / "release-wrong-event"
-        shutil.copytree(release_positive, release_wrong_event)
-        wrong_event_manifest = load_json(release_wrong_event / "handoff-manifest.json")
-        wrong_event_manifest["sealedEventId"] = "8" * 32
-        write_json(release_wrong_event / "handoff-manifest.json", wrong_event_manifest)
+        release_wrong_event = copy.deepcopy(release_prep)
+        release_wrong_event["sealedEventId"] = "8" * 32
         expect_fail(
             "release sealed event ID mismatch",
-            run_validator(root, release_prep, release_wrong_event),
+            run_validator(root, release_wrong_event, release_positive),
         )
 
         release_wrong_binding = root / "release-wrong-binding"
@@ -413,6 +400,17 @@ def main() -> None:
             run_validator(root, release_prep, release_wrong_binding),
         )
 
+        release_wrong_version = root / "release-wrong-version"
+        shutil.copytree(release_positive, release_wrong_version)
+        wrong_version_binding = load_json(release_wrong_version / "binding.json")
+        wrong_version_binding["releaseVersion"] = "9.9.9"
+        write_json(release_wrong_version / "binding.json", wrong_version_binding)
+        refresh_manifest_digests(release_wrong_version)
+        expect_fail(
+            "release version mismatch",
+            run_validator(root, release_prep, release_wrong_version),
+        )
+
         release_wrong_candidate_run = root / "release-wrong-candidate-run"
         shutil.copytree(release_positive, release_wrong_candidate_run)
         wrong_run_binding = load_json(release_wrong_candidate_run / "binding.json")
@@ -424,23 +422,15 @@ def main() -> None:
             run_validator(root, release_prep, release_wrong_candidate_run),
         )
 
-        release_wrong_source = root / "release-wrong-source"
-        shutil.copytree(release_positive, release_wrong_source)
-        wrong_source_binding = load_json(release_wrong_source / "binding.json")
-        wrong_source_binding["sourceCommitSha"] = OTHER_COMMIT
-        write_json(release_wrong_source / "binding.json", wrong_source_binding)
-        refresh_manifest_digests(release_wrong_source)
+        release_wrong_candidate_attempt = root / "release-wrong-candidate-attempt"
+        shutil.copytree(release_positive, release_wrong_candidate_attempt)
+        wrong_attempt_binding = load_json(release_wrong_candidate_attempt / "binding.json")
+        wrong_attempt_binding["producerWorkflowRunAttempt"] = str(int(release_prep["candidateAttempt"]) + 1)
+        write_json(release_wrong_candidate_attempt / "binding.json", wrong_attempt_binding)
+        refresh_manifest_digests(release_wrong_candidate_attempt)
         expect_fail(
-            "release source commit mismatch",
-            run_validator(root, release_prep, release_wrong_source),
-        )
-
-        release_extra_file = root / "release-extra-file"
-        shutil.copytree(release_positive, release_extra_file)
-        write_json(release_extra_file / "unexpected.json", {"unexpected": True})
-        expect_fail(
-            "release unexpected extra sealed file",
-            run_validator(root, release_prep, release_extra_file),
+            "release candidate producer run attempt mismatch",
+            run_validator(root, release_prep, release_wrong_candidate_attempt),
         )
 
         write_json(candidate / "candidate-provenance.json", candidate_provenance)

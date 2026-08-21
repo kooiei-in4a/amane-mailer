@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
@@ -206,132 +205,21 @@ def validate_rehearsal_qualification(root: Path, promotion: dict[str, Any]) -> N
 
 
 def validate_release_qualification(root: Path, promotion: dict[str, Any]) -> None:
-    """Validate the prepared sealed-only production handoff."""
-    manifest_path = root / "handoff-manifest.json"
-    manifest = load_json(manifest_path, "handoff-manifest.json")
-    if not isinstance(manifest, dict):
-        fail("handoff-manifest.json", "document must be an object")
-
-    require_equal("handoff-manifest.schemaVersion", manifest.get("schemaVersion"), 1)
-    require_equal("handoff-manifest.publicationOnly", manifest.get("publicationOnly"), True)
-    for field in ("candidateId", "bindingId", "qualificationRunId", "sealedEventId"):
-        require_equal(f"handoff-manifest.{field}", manifest.get(field), promotion[field])
-
-    object_entries = manifest.get("objects")
-    if not isinstance(object_entries, list) or len(object_entries) != 3:
-        fail("handoff-manifest.objects", "exactly three sealed objects are required")
-    object_map: dict[str, str] = {}
-    for entry in object_entries:
-        if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
-            fail("handoff-manifest.objects", "entries must contain only path and sha256")
-        object_path = entry.get("path")
-        digest = entry.get("sha256")
-        if (
-            not isinstance(object_path, str)
-            or not object_path
-            or Path(object_path).is_absolute()
-            or ".." in Path(object_path).parts
-            or "\\" in object_path
-        ):
-            fail("handoff-manifest.objects.path", "unsafe path")
-        if object_path in object_map or not isinstance(digest, str) or not HEX64.fullmatch(digest):
-            fail("handoff-manifest.objects.sha256", "invalid or duplicate entry")
-        object_map[object_path] = digest
-
-    event_paths = list(root.glob("run-status-events/*.json"))
-    event_path = exactly_one(event_paths, "run-status-events")
-    event_relative = event_path.relative_to(root).as_posix()
-    expected_objects = {
-        "binding.json",
-        "decision/go-no-go.json",
-        event_relative,
-    }
-    require_equal("handoff-manifest.objects", set(object_map), expected_objects)
-
-    all_paths: set[str] = set()
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            fail("qualificationRoot", "symlink entries are forbidden")
-        if path.is_file():
-            all_paths.add(path.relative_to(root).as_posix())
-    require_equal(
-        "qualificationRoot.files",
-        all_paths,
-        expected_objects | {"handoff-manifest.json"},
-    )
-    for object_path, expected_digest in object_map.items():
-        actual_digest = hashlib.sha256((root / object_path).read_bytes()).hexdigest()
-        require_equal(f"handoff-manifest.objects.{object_path}", actual_digest, expected_digest)
-
+    """Validate only Git-specific bindings after strict sealed validation."""
+    # validate-qualification-handoff.sh owns the common sealed contract and is
+    # required to pass before this Git-specific validator runs.
+    manifest = load_json(root / "handoff-manifest.json", "handoff-manifest.json")
     binding = load_json(root / "binding.json", "binding.json")
-    decision = load_json(root / "decision/go-no-go.json", "decision/go-no-go.json")
-    event = load_json(event_path, "run-status-event")
-    if not all(isinstance(item, dict) for item in (binding, decision, event)):
-        fail("qualification", "sealed documents must be objects")
 
-    for field in ("candidateId", "bindingId", "qualificationRunId"):
-        expected = promotion[field]
-        for prefix, document in (("binding", binding), ("decision", decision), ("event", event)):
-            require_equal(f"{prefix}.{field}", document.get(field), expected)
-
-    commit = promotion["releaseCommitSha"]
-    require_equal("binding.releaseCommitSha", binding.get("releaseCommitSha"), commit)
-    require_equal("binding.sourceCommitSha", binding.get("sourceCommitSha"), commit)
+    require_equal("handoff-manifest.bindingId", manifest.get("bindingId"), promotion["bindingId"])
+    require_equal("handoff-manifest.sealedEventId", manifest.get("sealedEventId"), promotion["sealedEventId"])
     require_equal("binding.releaseVersion", binding.get("releaseVersion"), promotion["releaseVersion"])
-    require_equal("binding.ociIndexDigest", binding.get("ociIndexDigest"), promotion["ociIndexDigest"])
     require_int_equal("binding.producerWorkflowRunId", binding.get("producerWorkflowRunId"), promotion["candidateRunId"])
     require_int_equal(
         "binding.producerWorkflowRunAttempt",
         binding.get("producerWorkflowRunAttempt"),
         promotion["candidateAttempt"],
     )
-
-    require_equal("decision.sourceCommitSha", decision.get("sourceCommitSha"), commit)
-    require_equal("decision.ociIndexDigest", decision.get("ociIndexDigest"), promotion["ociIndexDigest"])
-    require_equal("decision.machineVerdict", decision.get("machineVerdict"), "GO_ELIGIBLE")
-    require_equal("decision.humanDecision", decision.get("humanDecision"), "APPROVE")
-    require_equal("decision.runSealed", decision.get("runSealed"), True)
-
-    require_equal("run-status-event.eventId", event.get("eventId"), promotion["sealedEventId"])
-    require_equal("run-status-event.filename", event_path.stem, event.get("eventId"))
-    require_equal("handoff-manifest.sealedEventId", manifest.get("sealedEventId"), event.get("eventId"))
-    require_equal("run-status-event.status", event.get("status"), "sealed")
-    if event.get("runStatusEventSequence") not in (1, "1"):
-        fail("run-status-event.runStatusEventSequence", "must be 1")
-    require_equal(
-        "run-status-event.canonicalization",
-        event.get("canonicalization"),
-        {"algorithm": "RFC8785-JCS", "version": 1},
-    )
-    require_equal(
-        "run-status-event.previousRunStatusEventDigestSha256",
-        event.get("previousRunStatusEventDigestSha256"),
-        None,
-    )
-    event_digest = event.get("eventDigestSha256")
-    unsigned_event = {key: value for key, value in event.items() if key != "eventDigestSha256"}
-    calculated_event_digest = hashlib.sha256(
-        json.dumps(unsigned_event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    if not isinstance(event_digest, str) or not HEX64.fullmatch(event_digest):
-        fail("run-status-event.eventDigestSha256", "invalid format")
-    require_equal("run-status-event.eventDigestSha256", calculated_event_digest, event_digest)
-
-    decision_digests = event.get("decisionDigests")
-    if (
-        not isinstance(decision_digests, dict)
-        or set(decision_digests) != {"evidenceIndexSha256", "goNoGoSha256", "phase4ManifestSha256"}
-        or any(not isinstance(value, str) or not HEX64.fullmatch(value) for value in decision_digests.values())
-    ):
-        fail("run-status-event.decisionDigests", "invalid digest set")
-    require_equal(
-        "decision.authorizationDigestSha256",
-        decision.get("authorizationDigestSha256"),
-        binding.get("authorizationDigestSha256"),
-    )
-    issue_check = decision.get("issueFreshnessCheck") or {}
-    if issue_check and issue_check.get("matchedBinding") is not True:
-        fail("decision.issueFreshnessCheck.matchedBinding", "must be true")
 
 
 def validate_qualification(root: Path, promotion: dict[str, Any]) -> None:
