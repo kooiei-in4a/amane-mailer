@@ -23,6 +23,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -995,6 +996,15 @@ def lifecycle_material_inventory(run_root: Path) -> list[dict[str, str]]:
         "authorization.json", "binding.json", "migration-pin.json",
         "phase-manifests/phase-2.json", "scope-manifest.json",
     }
+    stored_scope_path = run_root / "scope-manifest.json"
+    if stored_scope_path.is_file() and not path_is_link_or_reparse(stored_scope_path):
+        stored_scope = load_scope_manifest(stored_scope_path)
+        if stored_scope["scopeId"] == V131_SCOPE_ID:
+            dependency_path, _ = v131_base_scope_source(
+                stored_scope_path,
+                stored_scope["baseScope"]["manifestPath"],
+            )
+            exact_paths.add(dependency_path)
     entries = []
     for path in sorted(run_root.rglob("*")):
         if not path.is_file() or path.is_symlink():
@@ -1706,11 +1716,7 @@ def load_scope_manifest(path: Path) -> dict[str, Any]:
     if base_scope.get("scopeId") != V13_SCOPE_ID or base_scope.get("scopeVersion") != V13_SCOPE_VERSION:
         fail("scope manifest: v1.3.1 base scope identity mismatch")
     base_manifest_path = require_arg(base_scope.get("manifestPath"), "baseScope.manifestPath")
-    if Path(base_manifest_path).is_absolute() or ".." in Path(base_manifest_path).parts:
-        fail("scope manifest: unsafe baseScope.manifestPath")
-    base_path = (path.parent / base_manifest_path).resolve()
-    if base_path == path.resolve() or not base_path.is_file() or base_path.is_symlink():
-        fail("scope manifest: base scope manifest is unavailable")
+    _, base_path = v131_base_scope_source(path, base_manifest_path)
     base_manifest_sha = require_hex(require_arg(base_scope.get("manifestSha256"), "baseScope.manifestSha256"), "baseScope.manifestSha256")
     base_profile = load_scope_manifest(base_path)
     if base_profile["scopeManifestSha256"] != base_manifest_sha:
@@ -1762,6 +1768,83 @@ def load_scope_manifest(path: Path) -> dict[str, Any]:
         "migration": copy.deepcopy(base_profile["migration"]),
         "scopeManifestSha256": sha_object(manifest),
     }
+
+
+def path_is_link_or_reparse(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        if path.is_junction():
+            return True
+    except (AttributeError, OSError):
+        pass
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def path_has_link_or_reparse_component(path: Path, boundary: Path) -> bool:
+    current = path.absolute()
+    boundary = boundary.absolute()
+    while True:
+        if path_is_link_or_reparse(current):
+            return True
+        if current == boundary:
+            return False
+        parent = current.parent
+        if parent == current:
+            return True
+        current = parent
+
+
+def v131_base_scope_source(scope_manifest_path: Path, manifest_path: str) -> tuple[str, Path]:
+    raw_path = require_arg(manifest_path, "baseScope.manifestPath")
+    raw_parts = raw_path.split("/")
+    if (
+        raw_path.startswith("/")
+        or re.match(r"^[A-Za-z]:", raw_path) is not None
+        or ":" in raw_path
+        or "\\" in raw_path
+        or "\x00" in raw_path
+        or any(part in ("", ".", "..") for part in raw_parts)
+        or any(part.endswith((".", " ")) for part in raw_parts)
+    ):
+        fail("scope manifest: unsafe baseScope.manifestPath")
+    relative = Path(raw_path)
+    if relative.is_absolute() or bool(relative.drive):
+        fail("scope manifest: unsafe baseScope.manifestPath")
+    scope_source = scope_manifest_path.absolute()
+    base_source = scope_source.parent / relative
+    try:
+        base_source.resolve().relative_to(scope_source.parent.resolve())
+    except (OSError, ValueError):
+        fail("scope manifest: unsafe baseScope.manifestPath")
+    if (
+        base_source.resolve() == scope_source.resolve()
+        or not base_source.is_file()
+        or path_has_link_or_reparse_component(base_source, scope_source.parent)
+    ):
+        fail("scope manifest: base scope manifest is unavailable")
+    return relative.as_posix(), base_source
+
+
+def v131_scope_dependency_material(
+    scope_manifest_path: Path,
+    scope_profile: dict[str, Any],
+) -> tuple[str, bytes] | None:
+    if scope_profile["scopeId"] != V131_SCOPE_ID:
+        return None
+    base_scope = scope_profile["baseScope"]
+    relative, base_source = v131_base_scope_source(scope_manifest_path, base_scope["manifestPath"])
+    payload = base_source.read_bytes()
+    base_profile = load_scope_manifest(base_source)
+    if base_source.read_bytes() != payload:
+        fail("scope manifest: base scope changed during validation")
+    if base_profile["scopeManifestSha256"] != base_scope["manifestSha256"]:
+        fail("scope manifest: base scope digest mismatch")
+    return relative, payload
 
 
 def bind_rows(snapshot: dict[str, Any], scope_profile: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -2059,7 +2142,9 @@ def command_bind(args: argparse.Namespace) -> None:
     if intake_manifest.get("candidateId") != args.candidate_id:
         fail("phase-1 candidateId does not match bind input")
     snapshot = read_json(Path(args.issue_snapshot), "issue snapshot")
-    scope_profile = load_scope_manifest(Path(args.scope_manifest)) if args.scope_manifest else None
+    scope_manifest_path = Path(args.scope_manifest) if args.scope_manifest else None
+    scope_profile = load_scope_manifest(scope_manifest_path) if scope_manifest_path is not None else None
+    scope_dependency = v131_scope_dependency_material(scope_manifest_path, scope_profile) if scope_manifest_path is not None and scope_profile is not None else None
     provenance, identity, archive_digests = candidate_documents(candidate_store / "intake")
     validate_scope_release_compatibility(provenance["releaseVersion"], scope_profile)
     if scope_profile is None:
@@ -2253,7 +2338,13 @@ def command_bind(args: argparse.Namespace) -> None:
     write_once(run_root / "binding.json", binding)
     write_once(run_root / "authorization.json", authorization)
     if scope_profile is not None:
-        write_once(run_root / "scope-manifest.json", read_json(Path(args.scope_manifest), "scope manifest"))
+        write_once(run_root / "scope-manifest.json", read_json(scope_manifest_path, "scope manifest"))
+        if scope_dependency is not None:
+            dependency_path, dependency_payload = scope_dependency
+            dependency_target = safe_child(run_root, dependency_path)
+            if dependency_target == run_root / "scope-manifest.json":
+                fail("scope manifest: base scope destination conflicts with selected scope")
+            write_bytes_once(dependency_target, dependency_payload)
     write_once(run_root / "migration-pin.json", read_json(Path(args.migration_pin), "migration pin"))
     docs_paths = {"setupGuideJa": "setup-guide.md", "setupGuideEn": "setup-guide.en.md", "setupReleaseBundleJa": "setup-release-bundle.md", "setupReleaseBundleEn": "setup-release-bundle.en.md", "readmeJa": "README.md", "readmeEn": "README.en.md", "candidateReadmeSetup": "README-SETUP.md"}
     for key, payload in docs_payloads.items():
