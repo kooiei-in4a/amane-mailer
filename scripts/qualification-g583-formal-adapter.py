@@ -155,8 +155,8 @@ def load_context(run_root: Path) -> tuple[Any, dict[str, Any], dict[str, Any]]:
         auth = runner.load_authorization(run_root)
     except runner.RunnerError as exc:
         raise FormalAdapterError("qualification binding/authorization is invalid") from exc
-    if binding.get("scopeId") != runner.V13_SCOPE_ID:
-        fail("G583 formal evidence requires the v1.3 qualification scope")
+    if not runner.is_v13_scope_profile(binding):
+        fail("G583 formal evidence requires an approved v1.3 qualification scope")
     return runner, binding, auth
 
 
