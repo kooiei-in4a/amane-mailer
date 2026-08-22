@@ -18,6 +18,8 @@ generation; it never checks out and rebuilds product image bytes.
 - Candidate validator: `scripts/validate-candidate-oci-run.sh`
 - Candidate handoff validator: `scripts/validate-candidate-oci-handoff.sh`
 - Qualification validator: `scripts/validate-qualification-handoff.sh`
+- Shared artifact preparation contract:
+  [`docs/ops/shared-qualification-artifact-contract.md`](shared-qualification-artifact-contract.md)
 - Tool: pinned `crane` (`go-containerregistry` `v0.20.3`), checksum-verified by
   `scripts/install-pinned-crane.sh`
 
@@ -26,6 +28,12 @@ ID/name, candidateId, qualificationRunId, releaseCommitSha, and OCI index digest
 are all compared before registry login. The qualification handoff must contain
 one immutable `binding.json`, an approved `decision/go-no-go.json`, and exactly
 one sealed run-status event. Any mismatch or missing field stops the workflow.
+
+Before the strict qualification validator runs, the workflow derives the
+expected producer identity from the trusted Actions run, validates the exact
+five-file production artifact with `prepare-qualification-handoff.py`, and
+creates a byte-identical sealed-only view outside the immutable download root.
+Git promotion uses the same preparation boundary and production-shape fixture.
 
 The workflow generates `promote-proof.json` from the runtime destination
 digests and workflow identity after promotion, then uploads it as an artifact.

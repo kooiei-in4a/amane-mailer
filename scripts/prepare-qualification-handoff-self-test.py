@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Regression tests for OCI qualification producer validation and sealed view."""
+"""Shared production-shape qualification artifact contract regressions."""
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,23 +17,18 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 PREPARER = SCRIPT_DIR / "prepare-qualification-handoff.py"
 SEALED_VALIDATOR = SCRIPT_DIR / "validate-qualification-handoff.sh"
-CANDIDATE_ID = "a" * 64
-BINDING_ID = "b" * 64
-QUALIFICATION_RUN_ID = "c" * 64
-EVENT_ID = "d" * 32
-RELEASE_COMMIT_SHA = "c5a928eafe0e0f3527ad484993347d5035aa92bc"
-OCI_DIGEST = "sha256:" + "e" * 64
-AUTHORIZATION_DIGEST = "f" * 64
-PRODUCER = {
-    "repository": "kooiei-in4a/amane-mailer",
-    "workflowPath": ".github/workflows/publish-sealed-qualification-handoff.yml",
-    "workflowId": 339000001,
-    "event": "workflow_dispatch",
-    "headBranch": "qualification-handoff/v1.3.0-rc13",
-    "headSha": "fba3f0cc8cbdef60c129dbffa214228f6967d073",
-    "runId": 32225560868,
-    "runAttempt": 1,
-}
+FIXTURE_ROOT = SCRIPT_DIR / "fixtures/qualification-handoff"
+PRODUCTION_FIXTURE = FIXTURE_ROOT / "production-shape/artifact"
+EXPECTED_PRODUCER = FIXTURE_ROOT / "production-shape/expected-producer-identity.json"
+WRONG_HEAD_PRODUCER = FIXTURE_ROOT / "negative/wrong-producer-head-sha.json"
+BASH = os.environ.get("AMANE_BASH", "bash")
+
+
+def load_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise AssertionError(f"fixture must be a JSON object: {path}")
+    return value
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -45,66 +40,12 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def create_fixture(root: Path) -> None:
-    identity = {
-        "candidateId": CANDIDATE_ID,
-        "bindingId": BINDING_ID,
-        "qualificationRunId": QUALIFICATION_RUN_ID,
-    }
-    binding = {
-        **identity,
-        "authorizationDigestSha256": AUTHORIZATION_DIGEST,
-        "releaseCommitSha": RELEASE_COMMIT_SHA,
-        "sourceCommitSha": RELEASE_COMMIT_SHA,
-        "ociIndexDigest": OCI_DIGEST,
-    }
-    decision = {
-        **identity,
-        "authorizationDigestSha256": AUTHORIZATION_DIGEST,
-        "sourceCommitSha": RELEASE_COMMIT_SHA,
-        "ociIndexDigest": OCI_DIGEST,
-        "machineVerdict": "GO_ELIGIBLE",
-        "humanDecision": "APPROVE",
-        "runSealed": True,
-        "issueFreshnessCheck": {"matchedBinding": True},
-    }
-    event = {
-        **identity,
-        "eventId": EVENT_ID,
-        "status": "sealed",
-        "runStatusEventSequence": 1,
-        "canonicalization": {"algorithm": "RFC8785-JCS", "version": 1},
-        "previousRunStatusEventDigestSha256": None,
-        "decisionDigests": {
-            "evidenceIndexSha256": "1" * 64,
-            "goNoGoSha256": "2" * 64,
-            "phase4ManifestSha256": "3" * 64,
-        },
-    }
-    event["eventDigestSha256"] = hashlib.sha256(
-        json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-    write_json(root / "binding.json", binding)
-    write_json(root / "decision/go-no-go.json", decision)
-    write_json(root / f"run-status-events/{EVENT_ID}.json", event)
-    object_paths = (
-        "binding.json",
-        "decision/go-no-go.json",
-        f"run-status-events/{EVENT_ID}.json",
-    )
-    manifest = {
-        "schemaVersion": 1,
-        "publicationOnly": True,
-        **identity,
-        "sealedEventId": EVENT_ID,
-        "objects": [{"path": path, "sha256": sha256(root / path)} for path in object_paths],
-    }
-    write_json(root / "handoff-manifest.json", manifest)
-    write_json(root / "qualification-producer.json", PRODUCER)
+def copy_artifact(destination: Path) -> Path:
+    shutil.copytree(PRODUCTION_FIXTURE, destination)
+    return destination
 
 
-def run_preparer(artifact: Path, expected: Path, sealed: Path) -> subprocess.CompletedProcess[str]:
+def run_preparer(artifact: Path, sealed: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -112,7 +53,7 @@ def run_preparer(artifact: Path, expected: Path, sealed: Path) -> subprocess.Com
             "--artifact-root",
             str(artifact),
             "--expected-producer-identity",
-            str(expected),
+            str(EXPECTED_PRODUCER),
             "--sealed-root",
             str(sealed),
         ],
@@ -123,20 +64,21 @@ def run_preparer(artifact: Path, expected: Path, sealed: Path) -> subprocess.Com
 
 
 def run_sealed_validator(root: Path) -> subprocess.CompletedProcess[str]:
+    binding = load_json(PRODUCTION_FIXTURE / "binding.json")
     return subprocess.run(
         [
-            "bash",
+            BASH,
             str(SEALED_VALIDATOR),
             "--root",
             str(root),
             "--candidate-id",
-            CANDIDATE_ID,
+            str(binding["candidateId"]),
             "--qualification-run-id",
-            QUALIFICATION_RUN_ID,
+            str(binding["qualificationRunId"]),
             "--release-commit-sha",
-            RELEASE_COMMIT_SHA,
+            str(binding["releaseCommitSha"]),
             "--expected-digest",
-            OCI_DIGEST,
+            str(binding["ociIndexDigest"]),
         ],
         check=False,
         capture_output=True,
@@ -160,58 +102,132 @@ def snapshot(root: Path) -> dict[str, str]:
     return {
         path.relative_to(root).as_posix(): sha256(path)
         for path in root.rglob("*")
-        if path.is_file()
+        if path.is_file() and not path.is_symlink()
     }
 
 
+def producer_mismatch(work: Path, name: str, field: str, value: Any) -> None:
+    artifact = copy_artifact(work / name)
+    producer_path = artifact / "qualification-producer.json"
+    producer = load_json(producer_path)
+    producer[field] = value
+    write_json(producer_path, producer)
+    expect_fail(
+        f"wrong producer {name.replace('-', ' ')} is rejected",
+        run_preparer(artifact, work / f"{name}-sealed"),
+    )
+
+
 def main() -> None:
-    with tempfile.TemporaryDirectory(prefix="qualification-producer-self-test-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="shared-qualification-handoff-") as temporary:
         work = Path(temporary)
-        artifact = work / "artifact"
-        expected = work / "expected-producer.json"
+        artifact = copy_artifact(work / "artifact")
         sealed = work / "sealed"
-        create_fixture(artifact)
-        write_json(expected, PRODUCER)
         before = snapshot(artifact)
 
-        expect_pass("valid producer metadata prepares sealed-only view", run_preparer(artifact, expected, sealed))
-        expect_pass("sealed-only view passes strict validator", run_sealed_validator(sealed))
+        expect_pass("production-shape artifact prepares sealed-only view", run_preparer(artifact, sealed))
+        expect_pass("sealed-only view passes unchanged strict validator", run_sealed_validator(sealed))
         if snapshot(artifact) != before:
             raise AssertionError("immutable qualification artifact changed")
-        for relative in (
-            "handoff-manifest.json",
-            "binding.json",
-            "decision/go-no-go.json",
-            f"run-status-events/{EVENT_ID}.json",
-        ):
+
+        manifest = load_json(artifact / "handoff-manifest.json")
+        sealed_paths = ["handoff-manifest.json", *(str(entry["path"]) for entry in manifest["objects"])]
+        for relative in sealed_paths:
             if (artifact / relative).read_bytes() != (sealed / relative).read_bytes():
                 raise AssertionError(f"sealed view changed bytes: {relative}")
         print("[PASS] immutable artifact unchanged and sealed bytes copied byte-for-byte")
 
         expect_fail(
-            "strict sealed validator still rejects producer metadata as an extra file",
+            "strict sealed validator rejects producer metadata as an extra file",
             run_sealed_validator(artifact),
         )
 
-        mismatch = work / "producer-mismatch"
-        shutil.copytree(artifact, mismatch)
-        mismatched_producer = copy.deepcopy(PRODUCER)
-        mismatched_producer["headSha"] = "0" * 40
-        write_json(mismatch / "qualification-producer.json", mismatched_producer)
+        missing_producer = copy_artifact(work / "missing-producer")
+        (missing_producer / "qualification-producer.json").unlink()
         expect_fail(
-            "qualification producer identity mismatch is rejected",
-            run_preparer(mismatch, expected, work / "mismatch-sealed"),
+            "missing producer metadata is rejected",
+            run_preparer(missing_producer, work / "missing-producer-sealed"),
         )
 
-        extra = work / "unexpected-extra"
-        shutil.copytree(artifact, extra)
-        (extra / "unexpected.txt").write_text("must fail\n", encoding="utf-8")
+        expected = load_json(EXPECTED_PRODUCER)
+        wrong_head = load_json(WRONG_HEAD_PRODUCER)
+        producer_mismatch(work, "repository", "repository", "example.invalid/amane-mailer")
+        producer_mismatch(work, "workflow-path", "workflowPath", ".github/workflows/untrusted.yml")
+        producer_mismatch(work, "workflow-id", "workflowId", int(expected["workflowId"]) + 1)
+        producer_mismatch(work, "head-sha", "headSha", wrong_head["headSha"])
+        producer_mismatch(work, "run-id", "runId", int(expected["runId"]) + 1)
+        producer_mismatch(work, "run-attempt", "runAttempt", int(expected["runAttempt"]) + 1)
+
+        extra_producer_field = copy_artifact(work / "extra-producer-field")
+        producer_path = extra_producer_field / "qualification-producer.json"
+        producer = load_json(producer_path)
+        producer["unexpected"] = "forbidden"
+        write_json(producer_path, producer)
+        expect_fail(
+            "unexpected producer metadata field is rejected",
+            run_preparer(extra_producer_field, work / "extra-producer-field-sealed"),
+        )
+
+        unexpected_file = copy_artifact(work / "unexpected-file")
+        (unexpected_file / "unexpected.txt").write_text("must fail\n", encoding="utf-8")
         expect_fail(
             "unexpected qualification artifact file is rejected",
-            run_preparer(extra, expected, work / "extra-sealed"),
+            run_preparer(unexpected_file, work / "unexpected-file-sealed"),
         )
 
-    print("[info] qualification producer handoff self-test passed")
+        missing_sealed_file = copy_artifact(work / "missing-sealed-file")
+        (missing_sealed_file / "binding.json").unlink()
+        expect_fail(
+            "missing sealed file is rejected",
+            run_preparer(missing_sealed_file, work / "missing-sealed-file-view"),
+        )
+
+        nested_layout = work / "nested-layout"
+        copy_artifact(nested_layout / "artifact-wrapper")
+        expect_fail(
+            "nested artifact layout is rejected",
+            run_preparer(nested_layout, work / "nested-layout-sealed"),
+        )
+
+        symlink_artifact = copy_artifact(work / "symlink")
+        try:
+            (symlink_artifact / "unexpected-link.json").symlink_to(symlink_artifact / "binding.json")
+        except OSError:
+            if os.name != "nt":
+                raise
+            print("[SKIP] symlink creation is unavailable on this Windows host; CI covers rejection")
+        else:
+            expect_fail(
+                "symlink entry is rejected",
+                run_preparer(symlink_artifact, work / "symlink-sealed"),
+            )
+
+        mutated_artifact = copy_artifact(work / "sealed-mutation")
+        binding_path = mutated_artifact / "binding.json"
+        binding = load_json(binding_path)
+        binding["sourceCommitSha"] = "0" * 40
+        write_json(binding_path, binding)
+        mutated_sealed = work / "sealed-mutation-view"
+        expect_pass(
+            "shared preparation preserves mutated sealed bytes for downstream validation",
+            run_preparer(mutated_artifact, mutated_sealed),
+        )
+        expect_fail(
+            "unchanged strict validator rejects sealed document mutation",
+            run_sealed_validator(mutated_sealed),
+        )
+
+        inside_artifact = copy_artifact(work / "inside-artifact")
+        inside_before = snapshot(inside_artifact)
+        expect_fail(
+            "sealed view inside immutable artifact is rejected",
+            run_preparer(inside_artifact, inside_artifact / "sealed-view"),
+        )
+        if snapshot(inside_artifact) != inside_before or (inside_artifact / "sealed-view").exists():
+            raise AssertionError("rejected sealed view mutated immutable artifact")
+        print("[PASS] rejected output path leaves immutable artifact unchanged")
+
+    print("[info] shared qualification handoff self-test passed")
     print("finalResult=PASS")
 
 

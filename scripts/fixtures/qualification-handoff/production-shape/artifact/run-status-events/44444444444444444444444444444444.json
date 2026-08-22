@@ -1,0 +1,19 @@
+{
+  "bindingId": "2222222222222222222222222222222222222222222222222222222222222222",
+  "candidateId": "1111111111111111111111111111111111111111111111111111111111111111",
+  "canonicalization": {
+    "algorithm": "RFC8785-JCS",
+    "version": 1
+  },
+  "decisionDigests": {
+    "evidenceIndexSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "goNoGoSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "phase4ManifestSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "eventDigestSha256": "9e2095871f05be8eb24726d3ce865d3e8b83829bf550a6521b38307a95640483",
+  "eventId": "44444444444444444444444444444444",
+  "previousRunStatusEventDigestSha256": null,
+  "qualificationRunId": "3333333333333333333333333333333333333333333333333333333333333333",
+  "runStatusEventSequence": 1,
+  "status": "sealed"
+}
