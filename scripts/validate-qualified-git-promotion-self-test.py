@@ -168,7 +168,7 @@ def base_manifest(fingerprint: str, policy_fingerprint: str) -> dict[str, object
         "mainRulesetPolicyFingerprint": policy_fingerprint,
         "targetRulesetPolicyFingerprint": policy_fingerprint,
         "rulesetEnforcement": "active",
-        "requiredSignatures": True,
+        "requiredSignatures": False,
         "normalActorBypass": "never",
         "expectedReleaseAppId": APP_ID,
         "rulesetBypassActors": [{"actor_id": APP_ID, "actor_type": "Integration", "bypass_mode": "pull_request"}],
@@ -245,7 +245,6 @@ def main() -> None:
             "enforcement": "active",
             "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
             "rules": [
-                {"type": "required_signatures"},
                 {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": True, "do_not_enforce_on_create": False, "required_status_checks": list(reversed(CHECKS))}},
                 {"type": "pull_request", "parameters": {"allowed_merge_methods": ["squash", "merge", "rebase"]}},
             ],
@@ -265,6 +264,54 @@ def main() -> None:
         manifest = base_manifest(fingerprints["fingerprint"], fingerprints["policyFingerprint"])
 
         expect_pass("positive", run_validator(root, manifest))
+
+        signatures_enabled_ruleset = copy.deepcopy(ruleset)
+        signatures_enabled_ruleset["rules"].append({"type": "required_signatures"})
+        write_json(root / "ruleset-signatures-enabled.json", signatures_enabled_ruleset)
+        write_json(
+            root / "effective-signatures-enabled.json",
+            list(reversed(signatures_enabled_ruleset["rules"])),
+        )
+        signatures_enabled_output = root / "fingerprint-signatures-enabled.json"
+        signatures_enabled_result = subprocess.run(
+            [
+                sys.executable,
+                str(FINGERPRINTER),
+                "--ruleset",
+                str(root / "ruleset-signatures-enabled.json"),
+                "--effective-rules",
+                str(root / "effective-signatures-enabled.json"),
+                "--output",
+                str(signatures_enabled_output),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        expect_pass("signature-enabled fingerprint", signatures_enabled_result)
+        signatures_enabled_fingerprints = json.loads(
+            signatures_enabled_output.read_text(encoding="utf-8")
+        )
+        signatures_enabled_manifest = base_manifest(
+            signatures_enabled_fingerprints["fingerprint"],
+            signatures_enabled_fingerprints["policyFingerprint"],
+        )
+        signatures_enabled_manifest["requiredSignatures"] = True
+        expect_pass(
+            "signature-enabled approved authority",
+            run_validator(root, signatures_enabled_manifest),
+        )
+
+        signature_rule_drift = copy.deepcopy(manifest)
+        signature_rule_drift["requiredSignatures"] = True
+        signature_rule_drift["rulesetFingerprint"] = signatures_enabled_fingerprints["fingerprint"]
+        signature_rule_drift["targetRulesetPolicyFingerprint"] = signatures_enabled_fingerprints[
+            "policyFingerprint"
+        ]
+        expect_fail(
+            "signature rule drift without approved fingerprints",
+            run_validator(root, signature_rule_drift),
+        )
 
         production_binding = load_json(PRODUCTION_QUALIFICATION / "binding.json")
         production_handoff = load_json(PRODUCTION_QUALIFICATION / "handoff-manifest.json")
@@ -448,9 +495,9 @@ def main() -> None:
         head_mismatch["promotionPrHeadSha"] = OTHER_COMMIT
         expect_fail("N2 head SHA mismatch", run_validator(root, head_mismatch))
 
-        signatures_disabled = copy.deepcopy(manifest)
-        signatures_disabled["requiredSignatures"] = False
-        expect_fail("N3 signature requirement failure", run_validator(root, signatures_disabled))
+        malformed_signatures = copy.deepcopy(manifest)
+        malformed_signatures["requiredSignatures"] = "false"
+        expect_fail("N3 signature state must be boolean", run_validator(root, malformed_signatures))
 
         rc_drift = copy.deepcopy(manifest)
         rc_drift["rcTipSha"] = OTHER_COMMIT
@@ -463,6 +510,10 @@ def main() -> None:
         ruleset_mismatch = copy.deepcopy(manifest)
         ruleset_mismatch["expectedRulesetFingerprint"] = "6" * 64
         expect_fail("N6 ruleset fingerprint mismatch", run_validator(root, ruleset_mismatch))
+
+        policy_mismatch = copy.deepcopy(manifest)
+        policy_mismatch["targetRulesetPolicyFingerprint"] = "9" * 64
+        expect_fail("N6 policy fingerprint mismatch", run_validator(root, policy_mismatch))
 
         candidate_mismatch = copy.deepcopy(manifest)
         candidate_mismatch["candidateId"] = "7" * 64
@@ -521,6 +572,8 @@ def main() -> None:
     print("negativeQualificationFixture=PASS")
     print("negativeHeadMismatchFixture=PASS")
     print("negativeSignatureFixture=PASS")
+    print("signatureStateBooleanCompatibility=PASS")
+    print("signaturePolicyDriftFixture=PASS")
     print("sealedHandoffCompatibility=PASS")
     print("additionalNegativeFixtures=PASS")
     print("finalResult=PASS")
