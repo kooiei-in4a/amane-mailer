@@ -1065,6 +1065,10 @@ def main() -> int:
             ("absolute base scope path", str(scope_manifest.resolve()), "unsafe baseScope.manifestPath"),
             ("drive-relative base scope path", "C:v1.3.0-scope.json", "unsafe baseScope.manifestPath"),
             ("NTFS alternate data stream base path", "scope-manifest.json:base", "unsafe baseScope.manifestPath"),
+            ("trailing-dot base scope path", "v1.3.0-scope.json.", "unsafe baseScope.manifestPath"),
+            ("trailing-space base scope path", "v1.3.0-scope.json ", "unsafe baseScope.manifestPath"),
+            ("intermediate trailing-dot base scope path", "nested./v1.3.0-scope.json", "unsafe baseScope.manifestPath"),
+            ("intermediate trailing-space base scope path", "nested /v1.3.0-scope.json", "unsafe baseScope.manifestPath"),
             ("missing base scope source", "missing-v1.3.0-scope.json", "base scope manifest is unavailable"),
         ):
             unsafe_overlay = json.loads(v131_scope_source.read_text(encoding="utf-8"))

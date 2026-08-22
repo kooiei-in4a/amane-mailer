@@ -1809,6 +1809,7 @@ def v131_base_scope_source(scope_manifest_path: Path, manifest_path: str) -> tup
         or ":" in manifest_path
         or "\\" in manifest_path
         or "\x00" in manifest_path
+        or any(part.endswith((".", " ")) for part in relative.parts)
         or any(part in ("", ".", "..") for part in relative.parts)
     ):
         fail("scope manifest: unsafe baseScope.manifestPath")
