@@ -67,6 +67,29 @@ def main() -> int:
         assert spec.loader is not None
         spec.loader.exec_module(runner)
         profile = runner.load_scope_manifest(scope_manifest)
+        runner.validate_scope_release_compatibility("1.3.0", profile)
+        runner.validate_scope_release_compatibility("1.3.1", profile)
+        runner.validate_scope_release_compatibility("1.2.0", None)
+
+        def expect_scope_compatibility_failure(label, release_version, scope):
+            try:
+                runner.validate_scope_release_compatibility(release_version, scope)
+            except runner.RunnerError:
+                return
+            raise AssertionError(f"scope compatibility unexpectedly passed: {label}")
+
+        expect_scope_compatibility_failure("v1.3.0 without scope", "1.3.0", None)
+        expect_scope_compatibility_failure("v1.3.1 without scope", "1.3.1", None)
+        expect_scope_compatibility_failure("v1.3.2 without scope", "1.3.2", None)
+        expect_scope_compatibility_failure("v1.3.2 with v1.3.0 scope", "1.3.2", profile)
+        expect_scope_compatibility_failure("v1.2.0 with v1.3.0 scope", "1.2.0", profile)
+
+        modified_scope = root / "modified-v1.3.1-scope.json"
+        modified = json.loads(scope_manifest.read_text(encoding="utf-8"))
+        modified["releaseVersion"] = "1.3.1"
+        write(modified_scope, modified)
+        run("validate-scope", "--scope-manifest", str(modified_scope), "--repo-root", str(ROOT.parent), expect=1)
+
         v13_hard = {row["scenarioId"] for row in profile["scenarioRows"] if row["gateClass"] == "Hard"}
         rc5_dedicated = {
             "G456-03", "G456-04", "G456-05", "G456-06",

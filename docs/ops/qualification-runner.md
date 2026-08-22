@@ -37,6 +37,13 @@ the legacy table. The checked-in v1.3 scope authority is
 Issue/body digest, plan identity, G456-01..41 reuse rules, and the new
 `G583-MIG-01`/`G583-MIG-02`/`G583-MIG-03` Hard migration scenarios.
 
+The v1.3.1 candidate explicitly reuses the v1.3.0 / Issue #583 scope authority
+as a patch-compatible profile. The checked-in authority manifest remains
+v1.3.0 and is not rewritten; the candidate `releaseVersion` remains `1.3.1`.
+The `--scope-manifest` is still mandatory for v1.3.1, and an omitted scope
+must not fall back to the legacy profile. v1.3.2 and later patch versions are
+not implicitly approved and require a future explicit compatibility decision.
+
 The v1.3 migration contract distinguishes the v1.2.0 baseline (001..013), the
 v1.3.0 delta (014..018), and the full RC inventory (001..018). A migration PIN
 must carry all three ordered inventories and their file/blob/digest records.
