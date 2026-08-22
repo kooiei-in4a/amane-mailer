@@ -15,6 +15,30 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-08-22
+
+Patch release focused on Release Engineering hardening. There is no product
+feature, runtime semantics, database migration, or public HTTP contract delta.
+
+### Changed
+
+- Establish the #622 Shared Qualification Artifact Contract so Git and OCI
+  promotion use the same production-shape preparation path.
+- Require exact producer identity and exact artifact file-set validation, reject
+  symlinks, and create a sealed-only byte-identical view without relaxing the
+  existing strict sealed validator.
+- Explicitly reuse the v1.3.0 / Issue #583 qualification authority as the
+  patch-compatible authority for v1.3.1; the checked-in v1.3.0 scope authority
+  remains unchanged.
+- Evaluate Git promotion signature policy against the approved ruleset and policy
+  fingerprint authority.
+- Align the servicing baseline on .NET `10.0.11` and SDK `10.0.303`.
+
+### Compatibility
+
+- No product feature, runtime semantic, database migration, or public HTTP
+  contract change. The migration inventory remains `001` through `018`.
+
 ## [1.3.0] - 2026-08-07
 
 Minor release. Adds multiple `To` / `CC` / `BCC` recipients and bounded file
