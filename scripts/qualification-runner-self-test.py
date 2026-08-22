@@ -52,6 +52,223 @@ def run(*args: str, expect: int = 0) -> str:
     return result.stdout.strip()
 
 
+def build_v13_candidate_fixture(
+    root: Path,
+    source: str,
+    release_version: str,
+) -> tuple[Path, Path, str, str]:
+    fixture = root / f"candidate-{release_version.replace('.', '')}"
+    candidate = fixture / "candidate"
+    oci_layout = fixture / "oci-layout"
+    blob_root = oci_layout / "blobs" / "sha256"
+    workflow_ref = f"local/v13{release_version.replace('.', '')}-bind-regression"
+
+    def put_blob(payload: bytes) -> tuple[str, int]:
+        digest = "sha256:" + sha(payload)
+        write(blob_root / digest.removeprefix("sha256:"), payload)
+        return digest, len(payload)
+
+    runtime_descriptors = []
+    for architecture in ("amd64", "arm64"):
+        config_bytes = json.dumps({
+            "architecture": architecture,
+            "os": "linux",
+            "config": {"Labels": {
+                "org.opencontainers.image.version": release_version,
+                "org.opencontainers.image.revision": source,
+            }},
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        config_digest, config_size = put_blob(config_bytes)
+        manifest_bytes = json.dumps({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": "application/vnd.oci.image.config.v1+json",
+                "digest": config_digest,
+                "size": config_size,
+            },
+            "layers": [],
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        manifest_digest, manifest_size = put_blob(manifest_bytes)
+        runtime_descriptors.append({
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "digest": manifest_digest,
+            "size": manifest_size,
+            "platform": {"os": "linux", "architecture": architecture},
+        })
+    nested_bytes = json.dumps({
+        "schemaVersion": 2,
+        "manifests": runtime_descriptors,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    oci_digest, nested_size = put_blob(nested_bytes)
+    write(oci_layout / "oci-layout", {"imageLayoutVersion": "1.0.0"})
+    write(oci_layout / "index.json", {
+        "schemaVersion": 2,
+        "manifests": [{
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "digest": oci_digest,
+            "size": nested_size,
+        }],
+    })
+    (fixture / "oci-index.digest").write_text(oci_digest + "\n", encoding="utf-8")
+
+    archive_specs = [
+        ("win-x64", f"amane-mailer-v{release_version}-windows-x64.zip"),
+        ("linux-x64", f"amane-mailer-v{release_version}-linux-x64.tar.gz"),
+        ("linux-arm64", f"amane-mailer-v{release_version}-linux-arm64.tar.gz"),
+    ]
+    archive_digests = {}
+    for rid, archive_name in archive_specs:
+        manifest = {
+            "schemaVersion": 1,
+            "packagingKind": "setup-release-candidate",
+            "artifactId": f"synthetic-{release_version}-{rid}",
+            "sourceCommitSha": source,
+            "mailerVersion": release_version,
+            "setupLauncherVersion": release_version,
+            "hostRid": rid,
+            "targetRid": rid,
+            "platform": "win" if rid == "win-x64" else "linux",
+            "architecture": "arm64" if rid == "linux-arm64" else "amd64",
+            "imageDigest": oci_digest,
+            "ociIndexDigest": oci_digest,
+            "artifactFileName": archive_name,
+            "mailpitImageReference": "axllent/mailpit@sha256:" + "c" * 64,
+            "composeSha256": "sha256:" + "d" * 64,
+            "composeImageDigestSha256": "sha256:" + "e" * 64,
+            "composeRecordedMetadataSha256": "sha256:" + "f" * 64,
+            "composeMailpitSha256": "sha256:" + "0" * 64,
+            "payloadTreeSha256": "sha256:" + "b" * 64,
+            "supportedRecordedSchemaMin": 1,
+            "supportedRecordedSchemaMax": 1,
+            "supportedInspectEffectiveSchemaMin": 1,
+            "supportedInspectEffectiveSchemaMax": 1,
+            "supportedReleaseManifestSchemaMin": 1,
+            "supportedReleaseManifestSchemaMax": 1,
+        }
+        manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        readme_bytes = f"synthetic setup guide {release_version} {rid}\n".encode("utf-8")
+        archive_buffer = io.BytesIO()
+        if archive_name.endswith(".zip"):
+            with zipfile.ZipFile(archive_buffer, "w", zipfile.ZIP_DEFLATED) as archive_file:
+                archive_file.writestr("release-bundle-manifest.json", manifest_bytes)
+                archive_file.writestr("README-SETUP.md", readme_bytes)
+        else:
+            with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive_file:
+                manifest_info = tarfile.TarInfo("release-bundle-manifest.json")
+                manifest_info.size = len(manifest_bytes)
+                archive_file.addfile(manifest_info, io.BytesIO(manifest_bytes))
+                readme_info = tarfile.TarInfo("README-SETUP.md")
+                readme_info.size = len(readme_bytes)
+                archive_file.addfile(readme_info, io.BytesIO(readme_bytes))
+        archive_bytes = archive_buffer.getvalue()
+        write(candidate / archive_name, archive_bytes)
+        archive_digests[rid] = sha(archive_bytes)
+
+    provenance = {
+        "schemaVersion": 1,
+        "sourceCommitSha": source,
+        "releaseVersion": release_version,
+        "workflowRunId": "622000001" if release_version == "1.3.1" else "583000001",
+        "workflowRunAttempt": "1",
+        "workflowRef": workflow_ref,
+        "ociIndexDigest": oci_digest,
+        "ociPlatforms": ["linux/amd64", "linux/arm64"],
+        "archives": [{
+            "artifactName": f"synthetic-{release_version}-{rid}",
+            "targetRid": rid,
+            "archiveFileName": archive_name,
+            "archiveSha256": "sha256:" + archive_digests[rid],
+            "mailerVersion": release_version,
+            "setupLauncherVersion": release_version,
+            "payloadTreeSha256": "sha256:" + "b" * 64,
+            "smokeResult": "passed",
+        } for rid, archive_name in archive_specs],
+    }
+    write(candidate / "candidate-provenance.json", provenance)
+    write(candidate / "image-identity.json", {
+        "sourceCommitSha": source,
+        "imageDigest": oci_digest,
+        "mailerVersion": release_version,
+        "platforms": ["linux/amd64", "linux/arm64"],
+    })
+    (candidate / "CANDIDATE-SHA256SUMS").write_text("".join(
+        f"{archive_digests[rid]}  {archive_name}\n" for rid, archive_name in archive_specs
+    ), encoding="utf-8")
+    write(candidate / "CANDIDATE-HANDOFF.md", b"synthetic value-free handoff\n")
+    return candidate, oci_layout, oci_digest, workflow_ref
+
+
+def build_v13_migration_pin(
+    runner,
+    path: Path,
+    repo_root: Path,
+    source: str,
+    profile: dict,
+) -> None:
+    migration = profile["migration"]
+    baseline_paths = [f"src/Amane.Mailer/Data/Migrations/{name}" for name in migration["baselineInventory"]]
+    delta_paths = [f"src/Amane.Mailer/Data/Migrations/{name}" for name in migration["deltaInventory"]]
+    full_paths = baseline_paths + delta_paths
+
+    def file_record(file_path: str) -> dict[str, str]:
+        payload = subprocess.check_output(["git", "-C", str(repo_root), "show", f"{source}:{file_path}"])
+        blob_sha = subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", f"{source}:{file_path}"],
+            text=True,
+        ).strip()
+        return {"path": file_path, "sha256": sha(payload), "gitBlobSha": blob_sha}
+
+    full_files = [file_record(file_path) for file_path in full_paths]
+    baseline_digest = runner.sha_object({
+        "scopeId": profile["scopeId"],
+        "scopeVersion": profile["scopeVersion"],
+        "releaseCommitSha": source,
+        "runnerOrderPaths": baseline_paths,
+    })
+    delta_digest = runner.sha_object({
+        "scopeId": profile["scopeId"],
+        "scopeVersion": profile["scopeVersion"],
+        "releaseCommitSha": source,
+        "runnerOrderPaths": delta_paths,
+    })
+    full_digest = runner.sha_object({
+        "schemaVersion": 1,
+        "releaseCommitSha": source,
+        "runnerOrderPaths": full_paths,
+        "scopeId": profile["scopeId"],
+        "scopeVersion": profile["scopeVersion"],
+        "baselineInventory": migration["baselineInventory"],
+        "deltaInventory": migration["deltaInventory"],
+    })
+    without_digest = {
+        "schemaVersion": 1,
+        "releaseCommitSha": source,
+        "scopeId": profile["scopeId"],
+        "scopeVersion": profile["scopeVersion"],
+        "authorityIssueNumber": profile["authorityIssueNumber"],
+        "authorityIssueBodySha256": profile["authorityIssueBodySha256"],
+        "inventoryAlgorithm": migration["inventoryAlgorithm"],
+        "inventoryDigestSha256": full_digest,
+        "baselineInventory": migration["baselineInventory"],
+        "deltaInventory": migration["deltaInventory"],
+        "fullInventory": migration["fullInventory"],
+        "baselineInventoryDigestSha256": baseline_digest,
+        "deltaInventoryDigestSha256": delta_digest,
+        "fullInventoryDigestSha256": full_digest,
+        "predicateSetVersion": migration["predicateSetVersion"],
+        "schemaAllowlistVersion": migration["schemaAllowlistVersion"],
+        "baselineFiles": full_files[:len(baseline_paths)],
+        "deltaFiles": full_files[len(baseline_paths):],
+        "fullFiles": full_files,
+    }
+    write(path, {
+        "migrationPinWithoutDigest": without_digest,
+        "migrationPinDigestSha256": runner.sha_object(without_digest),
+        "migrationInventoryDigestSha256": full_digest,
+    })
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="qualification-runner-self-test-") as temp:
         root = Path(temp)
@@ -590,6 +807,295 @@ def main() -> int:
             raise AssertionError("fresh lifecycle nonces were not generated")
         if binding["runAttemptNonce"] == "self-test-1":
             raise AssertionError("operator nonce seed was reused as the run nonce")
+
+        v13_repo_root = ROOT.parent
+        v13_source = subprocess.check_output(
+            ["git", "-C", str(v13_repo_root), "rev-parse", "HEAD"],
+            text=True,
+        ).strip()
+
+        def expect_runner_failure(label, callback, message=None):
+            try:
+                callback()
+            except runner.RunnerError as error:
+                if message is not None and message not in str(error):
+                    raise AssertionError(f"unexpected failure for {label}: {error}") from error
+                return
+            raise AssertionError(f"negative case unexpectedly passed: {label}")
+
+        def prepare_scope_fixture(label, source_scope, issue_body, *, copy_base=False):
+            scope_root = root / label / "scope-source"
+            if copy_base:
+                write(scope_root / "v1.3.0-scope.json", scope_manifest.read_bytes())
+            selected = json.loads(source_scope.read_text(encoding="utf-8"))
+            selected["authorityIssueBodySha256"] = sha(issue_body.encode("utf-8"))
+            selected_path = scope_root / source_scope.name
+            write(selected_path, selected)
+            return selected_path, runner.load_scope_manifest(selected_path)
+
+        def bind_v13_fixture(label, release_version, selected_scope, selected_profile, issue_body):
+            fixture_root = root / label
+            candidate_root, layout_root, expected_oci, workflow_ref = build_v13_candidate_fixture(
+                fixture_root,
+                v13_source,
+                release_version,
+            )
+            store_root = fixture_root / "store"
+            intake_result = json.loads(run(
+                "intake",
+                "--candidate-root", str(candidate_root),
+                "--store-root", str(store_root),
+                "--release-commit-sha", v13_source,
+                "--expected-oci-digest", expected_oci,
+                "--oci-layout", str(layout_root),
+                "--expected-workflow-ref", workflow_ref,
+            ))
+            issue_path = fixture_root / "issue.json"
+            issue_rows = [
+                {
+                    **row,
+                    "scenarioText": f"synthetic {row['scenarioId']}",
+                    "environmentText": f"synthetic {release_version} lane",
+                }
+                for row in selected_profile["scenarioRows"]
+            ]
+            write(issue_path, {
+                "number": selected_profile["authorityIssueNumber"],
+                "updatedAt": "2026-08-23T00:00:00Z",
+                "body": issue_body,
+                "rows": issue_rows,
+            })
+            migration_pin_path = fixture_root / "migration-pin.json"
+            build_v13_migration_pin(
+                runner,
+                migration_pin_path,
+                v13_repo_root,
+                v13_source,
+                selected_profile,
+            )
+            owner_keys = {
+                (row["scenarioId"], variant)
+                for row in selected_profile["scenarioRows"]
+                for variant in row["requiredVariants"]
+            }
+            owner_keys.update(
+                (entry["scenarioId"], entry["variantId"])
+                for entry in selected_profile["optionalEvidenceKeys"]
+            )
+            owner_entries = []
+            for scenario, variant in sorted(owner_keys):
+                role = runner.SCOPE_OWNER_CLASSES[scenario]
+                identity = (
+                    f"maintainer:{role.removeprefix('maintainer-')}"
+                    if role.startswith("maintainer-")
+                    else "ci:scope-regression"
+                )
+                owner_entries.append({
+                    "scenarioId": scenario,
+                    "variantId": variant,
+                    "ownerRole": role,
+                    "ownerIdentity": identity,
+                })
+            owners_path = fixture_root / "owners.json"
+            write(owners_path, owner_entries)
+            plan_path = v13_repo_root / selected_profile["planFilePath"]
+            bound_result = json.loads(run(
+                "bind",
+                "--store-root", str(store_root),
+                "--candidate-id", intake_result["candidateId"],
+                "--issue-snapshot", str(issue_path),
+                "--plan-file", str(plan_path),
+                "--plan-commit-sha", v13_source,
+                "--repo-root", str(v13_repo_root),
+                "--migration-pin", str(migration_pin_path),
+                "--scope-manifest", str(selected_scope),
+                "--run-attempt-nonce", f"{label}-nonce",
+                "--evidence-owners", str(owners_path),
+                "--qualification-lead-role", "qualification-lead",
+                "--qualification-lead-identity", "maintainer:scope-regression",
+                "--conditional-approver-role", "conditional-approver",
+                "--conditional-approver-identity", "maintainer:conditional",
+            ))
+            bound_root = store_root / "runs" / bound_result["qualificationRunId"]
+            return bound_result, bound_root
+
+        v130_issue_body = "synthetic Issue 583 body for historical bind regression"
+        v130_scope_source, v130_profile = prepare_scope_fixture(
+            "v130-bind-regression",
+            scope_manifest,
+            v130_issue_body,
+        )
+        v130_bound, v130_run_root = bind_v13_fixture(
+            "v130-bind-regression",
+            "1.3.0",
+            v130_scope_source,
+            v130_profile,
+            v130_issue_body,
+        )
+        if v130_bound.get("ready") is not True:
+            raise AssertionError("historical v1.3.0 bind did not become ready")
+        runner.load_binding(v130_run_root)
+        if (v130_run_root / "v1.3.0-scope.json").exists():
+            raise AssertionError("historical v1.3.0 bind unexpectedly persisted a dependency")
+
+        v131_issue_body = "synthetic Issue 622 body for scope dependency bind regression"
+        v131_scope_source, v131_profile = prepare_scope_fixture(
+            "v131-bind-regression",
+            revised_scope_manifest,
+            v131_issue_body,
+            copy_base=True,
+        )
+        v131_bound, v131_run_root = bind_v13_fixture(
+            "v131-bind-regression",
+            "1.3.1",
+            v131_scope_source,
+            v131_profile,
+            v131_issue_body,
+        )
+        if v131_bound.get("ready") is not True:
+            raise AssertionError("v1.3.1 bind did not become ready")
+        v131_binding = runner.load_binding(v131_run_root)
+        expected_run_files = {
+            "authorization.json",
+            "binding.json",
+            "migration-pin.json",
+            "phase-manifests/phase-2.json",
+            "run-ready.json",
+            "scope-manifest.json",
+            "v1.3.0-scope.json",
+        }
+        actual_run_files = {
+            path.relative_to(v131_run_root).as_posix()
+            for path in v131_run_root.rglob("*")
+            if path.is_file()
+        }
+        if not expected_run_files.issubset(actual_run_files):
+            raise AssertionError(f"v1.3.1 bind files are missing: {sorted(expected_run_files - actual_run_files)}")
+        expected_docs_extract = {
+            "docs-extract/README.en.md",
+            "docs-extract/README.md",
+            "docs-extract/candidate-readme-setup/linux-arm64.md",
+            "docs-extract/candidate-readme-setup/linux-x64.md",
+            "docs-extract/candidate-readme-setup/win-x64.md",
+            "docs-extract/metadata.json",
+            "docs-extract/setup-guide.en.md",
+            "docs-extract/setup-guide.md",
+            "docs-extract/setup-release-bundle.en.md",
+            "docs-extract/setup-release-bundle.md",
+        }
+        actual_docs_extract = {path for path in actual_run_files if path.startswith("docs-extract/")}
+        if actual_docs_extract != expected_docs_extract:
+            raise AssertionError("v1.3.1 bind docs-extract inventory changed")
+        persisted_base = v131_run_root / "v1.3.0-scope.json"
+        approved_base = v131_scope_source.parent / "v1.3.0-scope.json"
+        if persisted_base.read_bytes() != approved_base.read_bytes():
+            raise AssertionError("v1.3.1 bind did not preserve approved base scope bytes")
+        ready_path = v131_run_root / runner.RUN_READY_FILE
+        ready_document = json.loads(ready_path.read_text(encoding="utf-8"))
+        expected_ready_fields = {
+            "schemaVersion", "lifecycleVersion", "status", "candidateId",
+            "bindingId", "qualificationRunId", "bindingSha256",
+            "authorizationSha256", "phase2Sha256", "materialRootSha256",
+            "readyAtUtc",
+        }
+        if set(ready_document) != expected_ready_fields:
+            raise AssertionError("v1.3.1 run-ready field set changed")
+        if ready_document["materialRootSha256"] != runner.lifecycle_material_root(v131_run_root):
+            raise AssertionError("v1.3.1 run-ready material root is not exact")
+        material_paths = {
+            entry["path"] for entry in runner.lifecycle_material_inventory(v131_run_root)
+        }
+        if not {"scope-manifest.json", "v1.3.0-scope.json"}.issubset(material_paths):
+            raise AssertionError("v1.3.1 ready material omits scope dependency closure")
+        if any(key.startswith("baseScope") for key in v131_binding):
+            raise AssertionError("v1.3.1 bind introduced an unnecessary binding schema field")
+
+        persisted_base_bytes = persisted_base.read_bytes()
+        persisted_scope_path = v131_run_root / "scope-manifest.json"
+        persisted_scope_bytes = persisted_scope_path.read_bytes()
+
+        persisted_base.unlink()
+        expect_runner_failure(
+            "missing persisted base scope",
+            lambda: runner.load_binding(v131_run_root),
+            "base scope manifest is unavailable",
+        )
+        persisted_base.write_bytes(persisted_base_bytes)
+
+        semantically_modified_base = json.loads(persisted_base_bytes.decode("utf-8"))
+        semantically_modified_base["releaseVersion"] = "1.3.9"
+        write(persisted_base, semantically_modified_base)
+        expect_runner_failure(
+            "semantically modified persisted base scope",
+            lambda: runner.load_binding(v131_run_root),
+        )
+        persisted_base.write_bytes(persisted_base_bytes)
+
+        wrong_digest_overlay = json.loads(persisted_scope_bytes.decode("utf-8"))
+        wrong_digest_overlay["baseScope"]["manifestSha256"] = "0" * 64
+        write(persisted_scope_path, wrong_digest_overlay)
+        expect_runner_failure(
+            "wrong base scope manifest digest",
+            lambda: runner.load_binding(v131_run_root),
+            "base scope digest mismatch",
+        )
+        persisted_scope_path.write_bytes(persisted_scope_bytes)
+
+        persisted_base.write_bytes(b"\n" + persisted_base_bytes)
+        expect_runner_failure(
+            "whitespace-only base scope material mutation",
+            lambda: runner.load_binding(v131_run_root),
+            "run-ready.json material root mismatch",
+        )
+        persisted_base.write_bytes(persisted_base_bytes)
+        runner.load_binding(v131_run_root)
+
+        unsafe_scope_root = root / "unsafe-v131-scope"
+        write(unsafe_scope_root / "v1.3.0-scope.json", scope_manifest.read_bytes())
+        unsafe_overlay = json.loads(v131_scope_source.read_text(encoding="utf-8"))
+        unsafe_overlay["baseScope"]["manifestPath"] = "../v1.3.0-scope.json"
+        unsafe_overlay_path = unsafe_scope_root / "nested" / "v1.3.1-scope.json"
+        write(unsafe_overlay_path, unsafe_overlay)
+        expect_runner_failure(
+            "base scope path traversal",
+            lambda: runner.load_scope_manifest(unsafe_overlay_path),
+            "unsafe baseScope.manifestPath",
+        )
+        for label, unsafe_path, expected_message in (
+            ("absolute base scope path", str(scope_manifest.resolve()), "unsafe baseScope.manifestPath"),
+            ("drive-relative base scope path", "C:v1.3.0-scope.json", "unsafe baseScope.manifestPath"),
+            ("missing base scope source", "missing-v1.3.0-scope.json", "base scope manifest is unavailable"),
+        ):
+            unsafe_overlay = json.loads(v131_scope_source.read_text(encoding="utf-8"))
+            unsafe_overlay["baseScope"]["manifestPath"] = unsafe_path
+            unsafe_overlay_path = unsafe_scope_root / f"{label.replace(' ', '-')}.json"
+            write(unsafe_overlay_path, unsafe_overlay)
+            expect_runner_failure(
+                label,
+                lambda path=unsafe_overlay_path: runner.load_scope_manifest(path),
+                expected_message,
+            )
+        self_referencing_overlay = json.loads(v131_scope_source.read_text(encoding="utf-8"))
+        self_referencing_overlay["baseScope"]["manifestPath"] = "v1.3.1-scope.json"
+        self_referencing_path = unsafe_scope_root / "self-reference" / "v1.3.1-scope.json"
+        write(self_referencing_path, self_referencing_overlay)
+        expect_runner_failure(
+            "self-referencing base scope",
+            lambda: runner.load_scope_manifest(self_referencing_path),
+            "base scope manifest is unavailable",
+        )
+        original_link_check = runner.path_is_link_or_reparse
+        runner.path_is_link_or_reparse = lambda path: (
+            path.name == "v1.3.0-scope.json" or original_link_check(path)
+        )
+        try:
+            expect_runner_failure(
+                "base scope reparse source",
+                lambda: runner.load_scope_manifest(v131_scope_source),
+                "base scope manifest is unavailable",
+            )
+        finally:
+            runner.path_is_link_or_reparse = original_link_check
 
         partial = bind_candidate("partial-retry-seed")
         partial_root = store / "runs" / partial["qualificationRunId"]
