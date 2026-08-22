@@ -1806,6 +1806,7 @@ def v131_base_scope_source(scope_manifest_path: Path, manifest_path: str) -> tup
         or bool(relative.drive)
         or manifest_path.startswith("/")
         or re.match(r"^[A-Za-z]:", manifest_path) is not None
+        or ":" in manifest_path
         or "\\" in manifest_path
         or "\x00" in manifest_path
         or any(part in ("", ".", "..") for part in relative.parts)
