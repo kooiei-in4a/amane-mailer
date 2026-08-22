@@ -56,7 +56,9 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="qualification-runner-self-test-") as temp:
         root = Path(temp)
         scope_manifest = ROOT.parent / "docs" / "qualification" / "v1.3.0-scope.json"
+        revised_scope_manifest = ROOT.parent / "docs" / "qualification" / "v1.3.1-scope.json"
         run("validate-scope", "--scope-manifest", str(scope_manifest), "--repo-root", str(ROOT.parent))
+        run("validate-scope", "--scope-manifest", str(revised_scope_manifest), "--repo-root", str(ROOT.parent))
         malformed_scope = root / "malformed-scope.json"
         malformed = json.loads(scope_manifest.read_text(encoding="utf-8"))
         malformed["migration"]["deltaInventory"] = malformed["migration"]["deltaInventory"][:-1]
@@ -67,8 +69,9 @@ def main() -> int:
         assert spec.loader is not None
         spec.loader.exec_module(runner)
         profile = runner.load_scope_manifest(scope_manifest)
+        revised_profile = runner.load_scope_manifest(revised_scope_manifest)
         runner.validate_scope_release_compatibility("1.3.0", profile)
-        runner.validate_scope_release_compatibility("1.3.1", profile)
+        runner.validate_scope_release_compatibility("1.3.1", revised_profile)
         runner.validate_scope_release_compatibility("1.2.0", None)
 
         def expect_scope_compatibility_failure(label, release_version, scope):
@@ -80,8 +83,11 @@ def main() -> int:
 
         expect_scope_compatibility_failure("v1.3.0 without scope", "1.3.0", None)
         expect_scope_compatibility_failure("v1.3.1 without scope", "1.3.1", None)
+        expect_scope_compatibility_failure("v1.3.1 with historical v1.3.0 scope", "1.3.1", profile)
+        expect_scope_compatibility_failure("v1.3.0 with revised v1.3.1 scope", "1.3.0", revised_profile)
         expect_scope_compatibility_failure("v1.3.2 without scope", "1.3.2", None)
         expect_scope_compatibility_failure("v1.3.2 with v1.3.0 scope", "1.3.2", profile)
+        expect_scope_compatibility_failure("v1.3.2 with v1.3.1 scope", "1.3.2", revised_profile)
         expect_scope_compatibility_failure("v1.2.0 with v1.3.0 scope", "1.2.0", profile)
 
         modified_scope = root / "modified-v1.3.1-scope.json"
