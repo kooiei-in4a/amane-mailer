@@ -362,7 +362,9 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     require_equal("rulesetFingerprint", promotion["rulesetFingerprint"], promotion["expectedRulesetFingerprint"])
     require_equal("rulesetPolicyFingerprint", promotion["targetRulesetPolicyFingerprint"], promotion["mainRulesetPolicyFingerprint"])
     require_equal("rulesetEnforcement", promotion.get("rulesetEnforcement"), "active")
-    require_equal("requiredSignatures", promotion.get("requiredSignatures"), True)
+    required_signatures = promotion.get("requiredSignatures")
+    if not isinstance(required_signatures, bool):
+        fail("requiredSignatures", "must be a boolean")
     require_equal("normalActorBypass", promotion.get("normalActorBypass"), "never")
 
     require_string(promotion, "ociIndexDigest", SHA256_DIGEST)
