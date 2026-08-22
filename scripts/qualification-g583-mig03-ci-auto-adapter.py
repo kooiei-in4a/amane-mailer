@@ -192,11 +192,24 @@ def load_manifest() -> dict[str, Any]:
     return manifest
 
 
-def load_scope() -> dict[str, Any]:
-    scope = require_object(read_json(SCOPE_PATH, "v1.3 scope"), "v1.3 scope")
-    if scope.get("scopeId") != "v1.3.0-rc-qualification" or scope.get("scopeVersion") != 1 or scope.get("authorityIssueNumber") != 583:
+def load_scope(scope_id: str | None = None) -> dict[str, Any]:
+    scope_path = SCOPE_PATH
+    if scope_id == "v1.3.1-rc-qualification":
+        scope_path = ROOT / "docs" / "qualification" / "v1.3.1-scope.json"
+    scope = require_object(read_json(scope_path, "v1.3 scope"), "v1.3 scope")
+    if scope.get("scopeId") not in {"v1.3.0-rc-qualification", "v1.3.1-rc-qualification"} or scope.get("scopeVersion") != 1:
         fail("v1.3 scope identity mismatch")
-    migration = require_object(scope.get("migration"), "v1.3 migration scope")
+    if scope_id is not None and scope.get("scopeId") != scope_id:
+        fail("requested v1.3 scope profile is unavailable")
+    if scope.get("scopeId") == "v1.3.1-rc-qualification":
+        base_scope = require_object(scope.get("baseScope"), "v1.3.1 base scope")
+        base_path = scope_path.parent / require_string(base_scope.get("manifestPath"), "baseScope.manifestPath")
+        base = require_object(read_json(base_path, "v1.3.0 base scope"), "v1.3.0 base scope")
+        if base.get("scopeId") != "v1.3.0-rc-qualification" or base.get("scopeVersion") != 1 or base_scope.get("manifestSha256") != sha_object(base):
+            fail("v1.3.1 base scope identity mismatch")
+        migration = require_object(base.get("migration"), "v1.3 migration scope")
+    else:
+        migration = require_object(scope.get("migration"), "v1.3 migration scope")
     for key in ("baselineInventory", "deltaInventory", "fullInventory", "schemaAllowlist"):
         if key not in migration:
             fail("v1.3 migration scope is incomplete")
@@ -394,9 +407,9 @@ def validate_input(value: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str
         or item.get("ownerRole") != OWNER
     ):
         fail("MIG03 scenario/variant/contract/owner mismatch")
-    manifest = load_manifest()
-    scope = load_scope()
     binding_without_pin = require_object(item.get("binding"), "binding")
+    manifest = load_manifest()
+    scope = load_scope(binding_without_pin.get("scopeId"))
     release = require_commit(binding_without_pin.get("releaseCommitSha"), "binding.releaseCommitSha")
     pin = validate_migration_pin(item.get("migrationPin"), scope, release)
     binding = validate_binding(binding_without_pin, scope, pin)

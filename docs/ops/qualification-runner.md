@@ -37,12 +37,14 @@ the legacy table. The checked-in v1.3 scope authority is
 Issue/body digest, plan identity, G456-01..41 reuse rules, and the new
 `G583-MIG-01`/`G583-MIG-02`/`G583-MIG-03` Hard migration scenarios.
 
-The v1.3.1 candidate explicitly reuses the v1.3.0 / Issue #583 scope authority
-as a patch-compatible profile. The checked-in authority manifest remains
-v1.3.0 and is not rewritten; the candidate `releaseVersion` remains `1.3.1`.
-The `--scope-manifest` is still mandatory for v1.3.1, and an omitted scope
-must not fall back to the legacy profile. v1.3.2 and later patch versions are
-not implicitly approved and require a future explicit compatibility decision.
+The v1.3.1 candidate requires the separate
+`docs/qualification/v1.3.1-scope.json` / Issue #622 authority profile. That
+profile is an immutable overlay of the v1.3.0 / Issue #583 authority: exactly
+the eight G456 Windows-Docker Hard keys are removed, while all Linux
+counterparts, other required keys, and G583 migration routes remain bound.
+The checked-in v1.3.0 authority is not rewritten. The `--scope-manifest` is
+mandatory for both v1.3.0 and v1.3.1; a missing scope, cross-version scope,
+or v1.3.2+ candidate fails closed.
 
 The v1.3 migration contract distinguishes the v1.2.0 baseline (001..013), the
 v1.3.0 delta (014..018), and the full RC inventory (001..018). A migration PIN
@@ -59,11 +61,16 @@ python scripts/qualification-runner.py validate-scope `
   --repo-root .
 ```
 
-For a v1.3 candidate, `bind` must include the same `--scope-manifest` and a
-fresh #583 snapshot. A #456 snapshot, a missing scope manifest, a stale body
+The v1.3.1 path uses `docs/qualification/v1.3.1-scope.json` and a fresh
+Issue #622 snapshot. It recomputes the Hard variant total as 39 from the
+base scope and the exact overlay; it does not migrate or reuse RC2 evidence.
+
+For a v1.3.0 candidate, `bind` must include the v1.3.0 scope and a fresh #583
+snapshot. For a v1.3.1 candidate, `bind` must include the v1.3.1 scope and a
+fresh #622 snapshot. A #456 snapshot, a missing scope manifest, a stale body
 digest, a legacy G456-42..44 migration payload, or an inventory mismatch is a
-fail-closed error. RC2 qualification must not start until this scope contract
-has passed fixed-head CI and independent review.
+fail-closed error. Qualification must not start until this scope contract has
+passed fixed-head CI and independent review.
 
 ## Lifecycle
 

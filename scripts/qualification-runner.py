@@ -53,7 +53,22 @@ LEGACY_SCOPE_ID = "v1.2.0-issue-456"
 V13_SCOPE_ID = "v1.3.0-rc-qualification"
 V13_SCOPE_VERSION = 1
 V13_AUTHORITY_ISSUE = 583
-V13_SCOPE_COMPATIBLE_RELEASES = frozenset({"1.3.0", "1.3.1"})
+V131_SCOPE_ID = "v1.3.1-rc-qualification"
+V131_SCOPE_VERSION = 1
+V131_AUTHORITY_ISSUE = 622
+V131_VARIANT_RULES_VERSION = 6
+V131_SCOPE_PROFILE_VERSION = 1
+V13_SCOPE_IDS = frozenset({V13_SCOPE_ID, V131_SCOPE_ID})
+V131_REMOVED_VARIANT_KEYS = (
+    "G456-01/win-docker",
+    "G456-13/win-docker",
+    "G456-14/win-docker",
+    "G456-17/win-docker",
+    "G456-18/win-docker",
+    "G456-19/win-docker",
+    "G456-26/win-docker",
+    "G456-33/win-docker",
+)
 V13_MIGRATION_FULL_INVENTORY = [
     "001_initial.sql", "002_worker_heartbeats.sql", "003_admin_indexes.sql",
     "004_admin_audit_events.sql", "005_admin_session_and_throttle.sql",
@@ -1516,15 +1531,25 @@ def validate_scope_release_compatibility(
     is_v13_family = (major, minor) == (1, 3)
     if not is_v13_family:
         if scope_profile is not None:
-            fail("v1.3.0 scope authority is only compatible with v1.3 candidates")
+            fail("v1.3 scope authority is only compatible with v1.3 candidates")
         return
-    if candidate_release_version not in V13_SCOPE_COMPATIBLE_RELEASES:
-        fail("candidate releaseVersion is not explicitly approved for the v1.3.0 scope authority")
     if scope_profile is None:
         fail(f"{candidate_release_version} candidate requires an explicit --scope-manifest")
+    expected_scope_id = {
+        "1.3.0": V13_SCOPE_ID,
+        "1.3.1": V131_SCOPE_ID,
+    }.get(candidate_release_version)
+    if expected_scope_id is None:
+        fail("candidate releaseVersion is not explicitly approved for a v1.3 scope authority")
+    if scope_profile.get("scopeId") != expected_scope_id:
+        fail(f"{candidate_release_version} candidate requires scope authority {expected_scope_id}")
 
 
-def load_scope_manifest(path: Path) -> dict[str, Any]:
+def is_v13_scope_profile(value: dict[str, Any]) -> bool:
+    return value.get("scopeId") in V13_SCOPE_IDS and value.get("scopeVersion") == 1
+
+
+def _load_v130_scope_manifest(path: Path) -> dict[str, Any]:
     manifest = read_json(path, "scope manifest")
     if not isinstance(manifest, dict):
         fail("scope manifest: object required")
@@ -1645,6 +1670,96 @@ def load_scope_manifest(path: Path) -> dict[str, Any]:
             "schemaAllowlistSha256": sha_object(schema_allowlist),
             "scenarioIds": sorted(V13_MIGRATION_SCENARIOS),
         },
+        "scopeManifestSha256": sha_object(manifest),
+    }
+
+
+def load_scope_manifest(path: Path) -> dict[str, Any]:
+    manifest = read_json(path, "scope manifest")
+    if not isinstance(manifest, dict):
+        fail("scope manifest: object required")
+    if manifest.get("schemaVersion") != SCOPE_MANIFEST_SCHEMA_VERSION:
+        fail("scope manifest: unsupported schemaVersion")
+    scope_id = require_string(manifest, "scopeId")
+    if scope_id != V131_SCOPE_ID:
+        return _load_v130_scope_manifest(path)
+    if manifest.get("scopeVersion") != V131_SCOPE_VERSION or manifest.get("releaseVersion") != "1.3.1":
+        fail("scope manifest: invalid v1.3.1 scope identity")
+    if manifest.get("authorityIssueNumber") != V131_AUTHORITY_ISSUE:
+        fail("scope manifest: v1.3.1 authority issue mismatch")
+    authority_body_sha = require_hex(require_string(manifest, "authorityIssueBodySha256"), "authorityIssueBodySha256")
+    plan_revision = require_value_free_identity(manifest.get("planRevision"), "planRevision")
+    plan_path = require_string(manifest, "planFilePath")
+    if Path(plan_path).is_absolute() or ".." in Path(plan_path).parts:
+        fail("scope manifest: unsafe planFilePath")
+    plan_sha = require_hex(require_string(manifest, "planFileSha256"), "planFileSha256")
+    if manifest.get("variantRulesVersion") != V131_VARIANT_RULES_VERSION:
+        fail("scope manifest: v1.3.1 variant rules version mismatch")
+    if manifest.get("migrationPredicateSetVersion") != 1:
+        fail("scope manifest: v1.3.1 migration predicate version mismatch")
+    if manifest.get("scopeProfileVersion") != V131_SCOPE_PROFILE_VERSION:
+        fail("scope manifest: invalid v1.3.1 scope profile version")
+
+    base_scope = manifest.get("baseScope")
+    if not isinstance(base_scope, dict) or set(base_scope) != {"scopeId", "scopeVersion", "manifestPath", "manifestSha256"}:
+        fail("scope manifest: invalid v1.3.1 base scope authority")
+    if base_scope.get("scopeId") != V13_SCOPE_ID or base_scope.get("scopeVersion") != V13_SCOPE_VERSION:
+        fail("scope manifest: v1.3.1 base scope identity mismatch")
+    base_manifest_path = require_arg(base_scope.get("manifestPath"), "baseScope.manifestPath")
+    if Path(base_manifest_path).is_absolute() or ".." in Path(base_manifest_path).parts:
+        fail("scope manifest: unsafe baseScope.manifestPath")
+    base_path = (path.parent / base_manifest_path).resolve()
+    if base_path == path.resolve() or not base_path.is_file() or base_path.is_symlink():
+        fail("scope manifest: base scope manifest is unavailable")
+    base_manifest_sha = require_hex(require_arg(base_scope.get("manifestSha256"), "baseScope.manifestSha256"), "baseScope.manifestSha256")
+    base_profile = load_scope_manifest(base_path)
+    if base_profile["scopeManifestSha256"] != base_manifest_sha:
+        fail("scope manifest: base scope digest mismatch")
+
+    overlay = manifest.get("variantOverlay")
+    expected_overlay = {
+        "profileId": "v1.3.1-remove-windows-docker-hard",
+        "version": 1,
+        "removedRequiredVariants": list(V131_REMOVED_VARIANT_KEYS),
+        "addedRequiredVariants": [],
+        "reclassified": [],
+    }
+    if overlay != expected_overlay:
+        fail("scope manifest: v1.3.1 variant overlay is not the approved exact overlay")
+
+    normalized_rows = copy.deepcopy(base_profile["scenarioRows"])
+    rows_by_key = {
+        (row["scenarioId"], variant): row
+        for row in normalized_rows
+        for variant in row["requiredVariants"]
+    }
+    for key in V131_REMOVED_VARIANT_KEYS:
+        scenario, variant = key.split("/", 1)
+        row = rows_by_key.get((scenario, variant))
+        if row is None:
+            fail(f"scope manifest: overlay target is not in base scope: {key}")
+        row["requiredVariants"].remove(variant)
+    if sum(len(row["requiredVariants"]) for row in normalized_rows if row["gateClass"] == "Hard") != 39:
+        fail("scope manifest: v1.3.1 Hard variant total must be 39")
+
+    return {
+        "schemaVersion": manifest["schemaVersion"],
+        "scopeId": scope_id,
+        "scopeVersion": manifest["scopeVersion"],
+        "releaseVersion": manifest["releaseVersion"],
+        "authorityIssueNumber": manifest["authorityIssueNumber"],
+        "authorityIssueBodySha256": authority_body_sha,
+        "planRevision": plan_revision,
+        "planFilePath": plan_path,
+        "planFileSha256": plan_sha,
+        "variantRulesVersion": manifest["variantRulesVersion"],
+        "scopeProfileVersion": manifest["scopeProfileVersion"],
+        "variantOverlay": copy.deepcopy(overlay),
+        "baseScope": copy.deepcopy(base_scope),
+        "migrationPredicateSetVersion": base_profile["migrationPredicateSetVersion"],
+        "scenarioRows": normalized_rows,
+        "optionalEvidenceKeys": copy.deepcopy(base_profile["optionalEvidenceKeys"]),
+        "migration": copy.deepcopy(base_profile["migration"]),
         "scopeManifestSha256": sha_object(manifest),
     }
 
@@ -2283,7 +2398,7 @@ def require_payload_fields(payload: dict[str, Any], fields: Iterable[str], scena
 
 def validate_migration_payload(envelope: dict[str, Any], binding: dict[str, Any], scenario: str, payload: dict[str, Any]) -> None:
     if scenario in V13_MIGRATION_SCENARIOS:
-        if binding.get("scopeId") != V13_SCOPE_ID:
+        if not is_v13_scope_profile(binding):
             fail(f"{scenario}: v1.3 migration evidence requires the v1.3 scope profile")
         common = {"migrationDecision", "baselineInventory", "deltaInventory", "fullInventory", "expectedFullMigrationInventory", "migrationDirectoryInventoryBefore", "migrationDirectoryInventoryDigestSha256", "migrationDeltaInventoryDigestSha256", "migrationFileDigests", "outcome", "preApplyAppliedMigrations", "preApplyPendingMigrations", "postApplyAppliedMigrations", "postApplyPendingMigrations", "lastAppliedBefore", "lastAppliedAfter"}
         extra = {"schemaContractResult", "piiValueCanaryResult", "schemaAllowlistVersion", "schemaAllowlistSha256"} if scenario == "G583-MIG-03" else set()
@@ -2734,7 +2849,7 @@ def validate_type_payload(envelope: dict[str, Any], binding: dict[str, Any], row
     if scenario in {"G456-42", "G456-43", "G456-44", "G583-MIG-01", "G583-MIG-02", "G583-MIG-03"}:
         validate_migration_payload(envelope, binding, scenario, payload)
         return
-    if binding.get("scopeId") == V13_SCOPE_ID and scenario in HARD_SCENARIO_VALIDATOR_REGISTRY:
+    if is_v13_scope_profile(binding) and scenario in HARD_SCENARIO_VALIDATOR_REGISTRY:
         validate_registered_hard_payload(envelope, row, HARD_SCENARIO_VALIDATOR_REGISTRY[scenario])
         return
     required: dict[str, tuple[str, ...]] = {
