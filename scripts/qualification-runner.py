@@ -1800,18 +1800,20 @@ def path_has_link_or_reparse_component(path: Path, boundary: Path) -> bool:
 
 
 def v131_base_scope_source(scope_manifest_path: Path, manifest_path: str) -> tuple[str, Path]:
-    relative = Path(require_arg(manifest_path, "baseScope.manifestPath"))
+    raw_path = require_arg(manifest_path, "baseScope.manifestPath")
+    raw_parts = raw_path.split("/")
     if (
-        relative.is_absolute()
-        or bool(relative.drive)
-        or manifest_path.startswith("/")
-        or re.match(r"^[A-Za-z]:", manifest_path) is not None
-        or ":" in manifest_path
-        or "\\" in manifest_path
-        or "\x00" in manifest_path
-        or any(part.endswith((".", " ")) for part in relative.parts)
-        or any(part in ("", ".", "..") for part in relative.parts)
+        raw_path.startswith("/")
+        or re.match(r"^[A-Za-z]:", raw_path) is not None
+        or ":" in raw_path
+        or "\\" in raw_path
+        or "\x00" in raw_path
+        or any(part in ("", ".", "..") for part in raw_parts)
+        or any(part.endswith((".", " ")) for part in raw_parts)
     ):
+        fail("scope manifest: unsafe baseScope.manifestPath")
+    relative = Path(raw_path)
+    if relative.is_absolute() or bool(relative.drive):
         fail("scope manifest: unsafe baseScope.manifestPath")
     scope_source = scope_manifest_path.absolute()
     base_source = scope_source.parent / relative
