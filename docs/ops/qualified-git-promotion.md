@@ -34,7 +34,7 @@ digest-preserving promotion は #505 と
 - annotated tag object は必ず `releaseCommitSha` を指す。merge commit を tag target にしない。
 
 単なる admin bypass、通常 user の bypass、GitHub Actions App 全体の bypass、required
-signatures / required checks の一時 OFF、ruleset の disable / restore は禁止です。
+checks の一時 OFF、ruleset の disable / restore、承認済みfingerprintと一致しないpolicy変更は禁止です。
 
 ## 一回限りの恒久設定
 
@@ -56,8 +56,9 @@ rehearsal と release 中は main / rehearsal ruleset の値を一切変更し�
    - `RELEASE_PROMOTION_POLICY_FINGERPRINT`
 
 4. `main protection` の既存 rules / conditions / enforcement を保持したまま、bypass listへ
-   Appを `pull_request` modeで1件追加する。required signatures、8 required checks、PR rule、
-   non-fast-forward、deletion ruleを削除・緩和しない。
+   Appを `pull_request` modeで1件追加する。signature enforcementの有効/無効を含むexact ruleset
+   policy、8 required checks、PR rule、non-fast-forward、deletion ruleは、別途承認したfingerprint
+   authorityと一致させる。
 5. `release-rehearsal/**` を対象とする active branch ruleset を作る。rules、enforcement、
    bypass actorは main と同一にし、ref conditionだけを rehearsal namespaceへ変える。
 6. validation branch `release-rehearsal/504-main-equivalent` を main baselineから作る。
@@ -75,7 +76,7 @@ python3 scripts/ruleset-fingerprint.py \
 
 fingerprint対象はruleset ID / name / target / source / enforcement / ref conditions / rules /
 bypass actors / effective rulesです。timestamp、node ID、URLは除外します。App actor ID、
-`pull_request` bypass mode、required signatures、required checksは意味のある入力として含まれます。
+`pull_request` bypass mode、signature ruleの有無、required checksは意味のある入力として含まれます。
 
 ## Promotion preflight
 
@@ -134,8 +135,10 @@ approvalではありません。workflowの`release` environment承認が別のe
   `sealed`かつ入力`sealedEventId`と一致する。
 - live RC tipとpromotion PR headがどちらも`releaseCommitSha`と完全一致する。
 - PR head refが`releaseBranch`、PR baseとlive base tipが固定`promotionBaseSha`と一致する。
-- rulesetがactive、required signatures有効、required checksがすべてexpected GitHub Actions
-  integrationから`success`である。
+- rulesetがactiveで、exact pre-approved ruleset/config fingerprintとpolicy fingerprintが一致し、
+  required checksがすべてexpected GitHub Actions integrationから`success`である。
+- live signature rule stateはpromotion evidenceのbooleanとして保持する。署名enforcementを変更すると
+  ruleset / policy fingerprintが変わるため、別途承認したauthorityを更新しない限りpromotionはFAILする。
 - bypass listが専用App 1件 / `Integration` / `pull_request`だけである。
   これにより通常user、repository role、GitHub Actions Appはbypass actorにならない。
 - main / rehearsalのpolicy fingerprintが一致し、target config fingerprintが事前承認値と一致する。
@@ -185,8 +188,8 @@ python3 scripts/validate-qualified-git-promotion-self-test.py
 
 - N1: `machineVerdict=NO_GO` または `humanDecision!=APPROVE` -> FAIL
 - N2: promotion PR head != `releaseCommitSha` -> FAIL
-- N3a: rulesetでrequired signaturesが無効 -> validator FAIL
-- N3b: validation branchに対するunsigned fixture PRを通常actorでmerge -> GitHub ruleset FAIL
+- N3a: `requiredSignatures`がmissingまたはboolean以外 -> validator FAIL
+- N3b: signature ruleを変更したruleset / policy fingerprintが承認済みauthorityと不一致 -> FAIL
 
 追加fixture:
 
@@ -197,12 +200,10 @@ python3 scripts/validate-qualified-git-promotion-self-test.py
 - N8: qualification producer repository/workflow/head SHA/run identity mismatch -> shared preparationでFAIL
 - N9: candidate-provenance workflow run/attempt/ref mismatch -> FAIL
 
-N3bはproduction RCを使いません。validation branchからsynthetic source branchを作り、署名なし
-fixture commitを1件追加します。required checksをgreenにした後、通常actor tokenでmerge APIを
-呼び、非ゼロ終了を要求します。ruleset responseで通常actorの
-`current_user_can_bypass=never`を再確認します。失敗がsignature条件以外（red check、base drift、
-draft等）でも起きていないことをruleset insight / API evidenceで確認します。fixture PRはcloseし、
-source branchだけを削除できます。validation branchやrulesetは変更しません。
+N3bはruleset fixtureのsignature ruleだけを変更してfingerprintを再計算し、承認済み
+`expectedRulesetFingerprint` / `mainRulesetPolicyFingerprint`を更新しない場合にvalidatorが
+拒否することを確認します。signature enforcementの有効/無効をvalidator内で独立に固定せず、
+exact fingerprint authorityからのdriftとしてfail-closedに扱います。
 
 ## Actual release（別セッションの明示承認が必要）
 
