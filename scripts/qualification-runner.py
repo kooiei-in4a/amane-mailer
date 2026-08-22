@@ -53,6 +53,7 @@ LEGACY_SCOPE_ID = "v1.2.0-issue-456"
 V13_SCOPE_ID = "v1.3.0-rc-qualification"
 V13_SCOPE_VERSION = 1
 V13_AUTHORITY_ISSUE = 583
+V13_SCOPE_COMPATIBLE_RELEASES = frozenset({"1.3.0", "1.3.1"})
 V13_MIGRATION_FULL_INVENTORY = [
     "001_initial.sql", "002_worker_heartbeats.sql", "003_admin_indexes.sql",
     "004_admin_audit_events.sql", "005_admin_session_and_throttle.sql",
@@ -1505,6 +1506,24 @@ def object_root(entries: Iterable[dict[str, str]]) -> str:
     return sha_bytes(jcs(normalized))
 
 
+def validate_scope_release_compatibility(
+    candidate_release_version: str,
+    scope_profile: dict[str, Any] | None,
+) -> None:
+    if not RELEASE_VERSION.fullmatch(candidate_release_version):
+        fail("candidate releaseVersion must be a stable semantic version")
+    major, minor, _patch = (int(part) for part in candidate_release_version.split("."))
+    is_v13_family = (major, minor) == (1, 3)
+    if not is_v13_family:
+        if scope_profile is not None:
+            fail("v1.3.0 scope authority is only compatible with v1.3 candidates")
+        return
+    if candidate_release_version not in V13_SCOPE_COMPATIBLE_RELEASES:
+        fail("candidate releaseVersion is not explicitly approved for the v1.3.0 scope authority")
+    if scope_profile is None:
+        fail(f"{candidate_release_version} candidate requires an explicit --scope-manifest")
+
+
 def load_scope_manifest(path: Path) -> dict[str, Any]:
     manifest = read_json(path, "scope manifest")
     if not isinstance(manifest, dict):
@@ -1926,8 +1945,8 @@ def command_bind(args: argparse.Namespace) -> None:
         fail("phase-1 candidateId does not match bind input")
     snapshot = read_json(Path(args.issue_snapshot), "issue snapshot")
     scope_profile = load_scope_manifest(Path(args.scope_manifest)) if args.scope_manifest else None
-    if intake_manifest.get("releaseVersion") == "1.3.0" and scope_profile is None:
-        fail("v1.3.0 candidate requires an explicit --scope-manifest")
+    provenance, identity, archive_digests = candidate_documents(candidate_store / "intake")
+    validate_scope_release_compatibility(provenance["releaseVersion"], scope_profile)
     if scope_profile is None:
         if snapshot.get("number") != 456:
             fail("issue snapshot number: expected 456")
@@ -1951,7 +1970,6 @@ def command_bind(args: argparse.Namespace) -> None:
         fail("phase-1 OCI layout index digest is missing")
     verify_migration_pin_tree(Path(args.repo_root).resolve(), intake_manifest["sourceCommitSha"], migration_pin, scope_profile)
     candidate_intake = candidate_store / "intake"
-    provenance, identity, archive_digests = candidate_documents(candidate_intake)
     if candidate_id(provenance, archive_digests) != args.candidate_id:
         fail("candidate intake candidateId recomputation mismatch")
     candidate_provenance_sha = file_sha(candidate_intake / "candidate-provenance.json")
