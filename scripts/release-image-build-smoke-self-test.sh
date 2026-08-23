@@ -18,9 +18,10 @@ grep -F -- '--platform "${PLATFORM}"' "${TARGET}" >/dev/null
 grep -F -- '--build-arg "SOURCE_COMMIT=${SOURCE_SHA}"' "${TARGET}" >/dev/null
 grep -F -- '--provenance=false' "${TARGET}" >/dev/null
 grep -F -- '--sbom=false' "${TARGET}" >/dev/null
+grep -F -- '--output "type=docker,dest=${DOCKER_IMAGE_TAR}"' "${TARGET}" >/dev/null
 grep -F -- '--output "type=oci,dest=${IMAGE_TAR},rewrite-timestamp=true"' "${TARGET}" >/dev/null
 grep -F -- 'tar -xf "${IMAGE_TAR}" -C "${OCI_LAYOUT_DIR}"' "${TARGET}" >/dev/null
-grep -F -- 'docker load --input "${IMAGE_TAR}"' "${TARGET}" >/dev/null
+grep -F -- 'docker load --input "${DOCKER_IMAGE_TAR}"' "${TARGET}" >/dev/null
 grep -F -- 'OCI layout digest does not match Buildx metadata digest' "${TARGET}" >/dev/null
 grep -F -- 'oci-layout' "${TARGET}" >/dev/null
 grep -F -- '--build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"' "${TARGET}" >/dev/null
