@@ -117,6 +117,27 @@ and a UTC timestamp. A local run without the build/reproducibility inputs marks
 those two statuses `NOT_PROVIDED`. Tokens, credentials, PII, secret
 URLs, and raw registry errors are not stored.
 
+### Verify-only recheck for an existing publication
+
+When the publish job succeeded but the post-publish public-consumer verification
+needs to be rerun, dispatch
+`.github/workflows/verify-public-release-image.yml` from `refs/heads/main`.
+This workflow reads the publication input artifact from the selected publish run,
+binds the source SHA, release version, and expected digest to that artifact, and
+then verifies the existing public image read-only. It does not build, log in to
+GHCR, push, or create tags, and it has no `packages: write` permission.
+
+The four inputs are:
+
+- `publication_run_id`: publish workflow run ID
+- `publication_source_sha`: source SHA recorded in the publication artifact
+- `release_version`: artifact release version in `major.minor.patch` form
+- `expected_digest`: artifact digest in `sha256:<64 hex>` form
+
+On success, the workflow stores `public-consumer-verification.json` and
+`release-publication-evidence.json` in the
+`publish-release-image-evidence-<sourceSha>-<verifyRunId>` artifact.
+
 ## Runtime Manifest And OCI Labels
 
 Verify the runtime manifest digest inside the image index for each platform.
