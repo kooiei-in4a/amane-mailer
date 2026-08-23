@@ -48,6 +48,13 @@ grep -F -- '--sbom=false' "${REPRO_TARGET}" >/dev/null
 grep -F -- 'reproducibility digest mismatch' "${REPRO_TARGET}" >/dev/null
 grep -F -- 'Rebuild without cache and require the same digest' "${WORKFLOW}" "${PUBLISH_WORKFLOW}" >/dev/null
 grep -E -- 'MAILPIT_IMAGE: axllent/mailpit@sha256:[0-9a-f]{64}$' "${WORKFLOW}" "${PUBLISH_WORKFLOW}" >/dev/null
+grep -F -- 'ref: ${{ github.sha }}' "${WORKFLOW}" "${PUBLISH_WORKFLOW}" >/dev/null
+grep -F -- 'source_sha must equal the workflow commit GITHUB_SHA' "${WORKFLOW}" "${PUBLISH_WORKFLOW}" >/dev/null
+
+if grep -F -- 'ref: ${{ inputs.source_sha }}' "${WORKFLOW}" "${PUBLISH_WORKFLOW}"; then
+  echo '[error] release workflows must not checkout an arbitrary source_sha input' >&2
+  exit 1
+fi
 
 if grep -nE 'docker (login|push)|packages:[[:space:]]*write' "${TARGET}" "${WORKFLOW}"; then
   echo '[error] initial build-smoke slice must not publish or request package write permission' >&2

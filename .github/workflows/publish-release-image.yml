@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       source_sha:
-        description: Exact 40-hex commit SHA to build and publish
+        description: Exact 40-hex SHA; must equal the workflow commit GITHUB_SHA
         required: true
         type: string
       release_version:
@@ -26,10 +26,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: ${{ inputs.source_sha }}
+  SOURCE_SHA: ${{ github.sha }}
   MAILER_VERSION: ${{ inputs.release_version }}
   IMAGE_REPOSITORY: amane-mailer-release-smoke
-  IMAGE_TAG: sha-${{ inputs.source_sha }}
+  IMAGE_TAG: sha-${{ github.sha }}
   REPORT_DIR: artifacts/publish-release-image
   PUBLISH_REPOSITORY: ghcr.io/${{ github.repository_owner }}/amane-mailer
   MAILPIT_IMAGE: axllent/mailpit@sha256:7f33095f80e901f6ad08028f06ca284aa58fe84942be5496008d041d3b9f4d4d
@@ -51,10 +51,21 @@ jobs:
           [[ "${GITHUB_WORKFLOW_REF}" == "${expected_ref}" ]] \
             || { echo '::error::workflow identity mismatch'; exit 1; }
 
+      - name: Require source input to match workflow commit
+        shell: bash
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${REQUESTED_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo '::error::source_sha must be a lowercase 40-hex SHA'; exit 1; }
+          [[ "${REQUESTED_SOURCE_SHA}" == "${GITHUB_SHA}" ]] \
+            || { echo '::error::source_sha must equal the workflow commit GITHUB_SHA'; exit 1; }
+
       - name: Checkout exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -110,7 +121,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: publish-release-image-${{ inputs.source_sha }}
+          name: publish-release-image-${{ github.sha }}
           if-no-files-found: warn
           retention-days: 14
           path: |
