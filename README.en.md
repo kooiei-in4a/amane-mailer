@@ -166,7 +166,9 @@ Minimum information to POST a mail request to a running Mailer and, when needed,
 - **Endpoint**: `POST http://mailer:8080/internal/mail-requests`
 - **Auth**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
   - Default local token: `local-mail-service-token`
-- **Required fields**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `to`, `subject`, `payload_hash`
+- **Required JSON fields**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `subject`, `payload_hash`
+- **Recipient requirement**: at least one recipient across the `to`, `cc`, and `bcc` roles. Treat an omitted, `null`, or empty role as zero recipients.
+- **Content requirement**: at least one of `html_body` and `text_body` is required.
 - **`payload_hash`**: SHA-256 of the canonical delivery payload.
   Use `MailPayloadHasher` from `Amane.Mailer.Contracts` (.NET),
   or see [examples/payload-hash/](examples/payload-hash/README.md) for Python / JavaScript / Go,
@@ -231,7 +233,9 @@ To safely try a conflict, use a local environment only, keep the same
 - **Optional**: POST `scheduled_at` (UTC) for deferred send. Pre-send cancel / reschedule are documented under OpenAPI `/cancel` and `/reschedule`
 - **No PII**: recipient, subject, and body are not returned
 
-`status` values describe Worker delivery state (`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`). They are separate from POST acceptance values `accepted` / `already_accepted`.
+`status` values describe Worker delivery state (`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`, `delivery_unknown`). They are separate from POST acceptance values `accepted` / `already_accepted`.
+
+`delivery_unknown` is a terminal status. It means provider invocation started but provider acceptance could not be proved; it does not mean the message was unsent or safe to retry. Mailer does not automatically or manually resend delivery for the same `mail_request_id`. This is distinct from a Consumer SDK retry of a transient HTTP 503, an idempotent retry of the same JSON POST, or a deliberate business resend with a new `mail_request_id` after assessing duplicate risk.
 
 Missing IDs and other tenants' IDs both return **404 `NOT_FOUND`** without leaking existence.
 
