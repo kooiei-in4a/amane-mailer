@@ -1,0 +1,93 @@
+name: Release Image Build Smoke
+
+# First, deliberately small release-engineering slice for #649.
+# This workflow builds and smoke-tests one exact linux/amd64 image. It does
+# not publish to a registry or run the historical qualification platform.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-hex commit SHA to build and smoke-test
+        required: true
+        type: string
+      release_version:
+        description: Image version label (major.minor.patch)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  MAILER_VERSION: ${{ inputs.release_version }}
+  IMAGE_REPOSITORY: amane-mailer-release-smoke
+  IMAGE_TAG: sha-${{ inputs.source_sha }}
+  REPORT_DIR: artifacts/release-image-build-smoke
+  MAILPIT_IMAGE: axllent/mailpit@sha256:7f33095f80e901f6ad08028f06ca284aa58fe84942be5496008d041d3b9f4d4d
+
+jobs:
+  build-smoke:
+    name: Build and smoke linux/amd64 image
+    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v3.12.0
+
+      - name: Static release-image smoke contract self-test
+        run: bash scripts/release-image-build-smoke-self-test.sh
+
+      - name: Build and smoke exact image
+        run: bash scripts/release-image-build-smoke.sh
+
+      - name: Rebuild without cache and require the same digest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          digest="$(python3 -c 'import json; print(json.load(open("artifacts/release-image-build-smoke/identity.json"))["image"]["digest"])')"
+          EXPECTED_DIGEST="${digest}" \
+            REPORT_DIR=artifacts/release-image-build-smoke/reproducibility \
+            bash scripts/check-release-image-reproducibility.sh
+
+      - name: Upload value-free image smoke report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-image-build-smoke-${{ inputs.source_sha }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            artifacts/release-image-build-smoke/report.json
+            artifacts/release-image-build-smoke/identity.json
+            artifacts/release-image-build-smoke/buildx-metadata.json
+            artifacts/release-image-build-smoke/docker-image-inspect.json
+            artifacts/release-image-build-smoke/healthz.json
+            artifacts/release-image-build-smoke/readyz.json
+            artifacts/release-image-build-smoke/help.txt
+            artifacts/release-image-build-smoke/reproducibility/report.json
+
+      - name: Write report summary
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -f artifacts/release-image-build-smoke/report.json ]]; then
+            {
+              echo '## Release image build smoke'
+              echo
+              echo '```json'
+              cat artifacts/release-image-build-smoke/report.json
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo 'Release image smoke report was not produced.' >> "${GITHUB_STEP_SUMMARY}"
+          fi

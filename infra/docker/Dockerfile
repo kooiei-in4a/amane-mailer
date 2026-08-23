@@ -28,12 +28,15 @@ COPY src/Amane.Mailer/ ./src/Amane.Mailer/
 
 ARG SOURCE_COMMIT=unknown
 ARG MAILER_VERSION=0.0.0
+ARG SOURCE_DATE_EPOCH=
+# CI=true enables the Contracts project's deterministic SourceLink/PDB path.
 RUN target_arch="${TARGETARCH}" \
     && case "${target_arch}" in \
         amd64) runtime_id="linux-x64" ;; \
         arm64) runtime_id="linux-arm64" ;; \
         *) echo "Unsupported Docker target architecture: ${target_arch}" >&2; exit 1 ;; \
     esac \
+    && if [ -n "${SOURCE_DATE_EPOCH}" ]; then deterministic_assets_timestamp="$(date -u -d "@${SOURCE_DATE_EPOCH}" '+%Y-%m-%dT%H:%M:%SZ')"; else deterministic_assets_timestamp=""; fi \
     && dotnet restore src/Amane.Mailer/Amane.Mailer.csproj --locked-mode \
     && dotnet publish src/Amane.Mailer/Amane.Mailer.csproj \
     -c Release \
@@ -45,7 +48,10 @@ RUN target_arch="${TARGETARCH}" \
     /p:IlcTreatWarningsAsErrors=true \
     /p:Version="${MAILER_VERSION}" \
     /p:InformationalVersion="${MAILER_VERSION}+${SOURCE_COMMIT}" \
-    /p:IncludeSourceRevisionInInformationalVersion=false
+    /p:CI=true \
+    /p:ContinuousIntegrationBuild=true \
+    /p:IncludeSourceRevisionInInformationalVersion=false \
+    /p:DeterministicStaticWebAssetsTimestamp="${deterministic_assets_timestamp}"
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled@sha256:bc6ba0158e93277ca1a5bc0881d13b08e6ca7f6d98db623592095eaf7fd7a816 AS runtime
 ARG SOURCE_COMMIT=unknown

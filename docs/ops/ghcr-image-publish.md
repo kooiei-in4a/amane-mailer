@@ -2,10 +2,18 @@
 
 # GHCR イメージ publish
 
-公式 Amane Mailer image の publish は、資格済み OCI layout を digest-preserving
-に昇格する **P-OCI-PROMOTE** のみを使います。canonical workflow は
-`.github/workflows/promote-qualified-oci.yml` です。
-canonical workflowは `refs/heads/main` からdispatchし、candidateのrefは
+公式 Amane Mailer image の publish には、用途の異なる二つの経路があります。
+
+- #649 の早期経路: `.github/workflows/publish-release-image.yml`。指定した
+  source SHA から `linux/amd64` を一度だけ build し、smoke test と no-cache
+  digest 再現性 gate を通した同じ OCI layout を publish します。
+- 資格済みリリース経路: 資格済み OCI layout を digest-preserving に昇格する
+  **P-OCI-PROMOTE**。canonical workflow は
+  `.github/workflows/promote-qualified-oci.yml` です。
+
+早期経路は amd64 の最小公開対象であり、multi-arch qualification の代替では
+ありません。どちらの経路も build 後に別の bytes を再 build して publish しません。
+資格済み経路の canonical workflow は `refs/heads/main` から dispatch し、candidate の ref は
 pre-login validatorで別途固定します。
 product refはcandidate bytesとqualificationを所有し、`main`はrelease-infrastructure
 のpromotion wrapperとproof生成だけを所有します。
@@ -14,7 +22,23 @@ product refはcandidate bytesとqualificationを所有し、`main`はrelease-inf
 > `EXTERNAL_PROVENANCE` のため registry attestation manifest は添付しません。
 > 証跡は [docs/releases/v1.2.0.md](../releases/v1.2.0.md) と GitHub Release 添付、
 > 検証手順は [release-artifact-verification](release-artifact-verification.md) を参照。
-> 以下は従来の rebuild-as-publish workflow（`publish-image.yml`）の手順です。
+> 以下の「必須 handoff」以降は資格済み P-OCI-PROMOTE の手順です。
+> `publish-image.yml` は廃止済みの fail-closed tombstone です。
+
+## #649 早期経路
+
+`.github/workflows/publish-release-image.yml` は `refs/heads/main` から
+maintainer が dispatch します。`source_sha` は 40 桁の commit SHA、
+`release_version` は `major.minor.patch` を指定します。既存の `release`
+environment 承認後、次を順に行います:
+
+1. 指定 SHA の `linux/amd64` image を build し、`--help`、`/healthz`、`/readyz` を確認。
+2. cache を使わずに同じ build を行い、manifest digest が一致することを確認。
+3. smoke 済み OCI layout を `vX.Y.Z` と `sha-<sourceSha>` にだけ push し、両方の digest を再確認。
+
+`latest` は作成せず、registry attestation manifest も追加しません。失敗時は
+registry login 前なら publish されません。multi-arch の資格・handoff が必要な
+リリースは、以下の P-OCI-PROMOTE 経路を使います。
 
 ## 必須 handoff
 

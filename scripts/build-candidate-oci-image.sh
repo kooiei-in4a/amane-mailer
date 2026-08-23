@@ -20,6 +20,7 @@ REQUIRED_PLATFORMS="${REQUIRED_PLATFORMS:-${PLATFORM}}"
 WRITE_IMAGE_IDENTITY="${WRITE_IMAGE_IDENTITY:-1}"
 SOURCE_SHA="${SOURCE_SHA:-}"
 MAILER_VERSION="${MAILER_VERSION:-}"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-}"
 IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}"
 IMAGE_TAG="${IMAGE_TAG:-}"
 
@@ -37,6 +38,10 @@ if [[ -z "${SOURCE_SHA}" ]]; then
   SOURCE_SHA="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 fi
 
+if [[ -z "${SOURCE_DATE_EPOCH}" ]]; then
+  SOURCE_DATE_EPOCH="$(git -C "${REPO_ROOT}" show -s --format=%ct "${SOURCE_SHA}")"
+fi
+
 if [[ -z "${MAILER_VERSION}" ]]; then
   echo "[error] MAILER_VERSION (major.minor.patch) is required." >&2
   exit 1
@@ -44,6 +49,11 @@ fi
 
 if [[ ! "${MAILER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "[error] MAILER_VERSION must be major.minor.patch only (not ${MAILER_VERSION})." >&2
+  exit 1
+fi
+
+if [[ ! "${SOURCE_DATE_EPOCH}" =~ ^[0-9]+$ ]]; then
+  echo "[error] SOURCE_DATE_EPOCH must be a Unix timestamp in seconds." >&2
   exit 1
 fi
 
@@ -72,6 +82,7 @@ docker buildx build \
   --sbom=false \
   --build-arg "SOURCE_COMMIT=${SOURCE_SHA}" \
   --build-arg "MAILER_VERSION=${MAILER_VERSION}" \
+  --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
   --label "org.opencontainers.image.source=https://github.com/kooiei-in4a/amane-mailer" \
   --label "org.opencontainers.image.revision=${SOURCE_SHA}" \
   --label "org.opencontainers.image.version=${MAILER_VERSION}" \

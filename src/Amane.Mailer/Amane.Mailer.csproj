@@ -45,4 +45,45 @@
     </Content>
   </ItemGroup>
 
+  <!--
+    The static-web-assets SDK records each asset's Last-Modified value in its
+    generated endpoint manifest. Compressed assets are created during publish,
+    so their filesystem timestamp otherwise changes on every release build.
+    Release image builds opt in with a fixed timestamp; ordinary development
+    builds keep the SDK default behavior.
+  -->
+  <Target Name="NormalizeDeterministicStaticWebAssetSourceTimestamps"
+          BeforeTargets="ResolveStaticWebAssetsInputs"
+          Condition="'$(DeterministicStaticWebAssetsTimestamp)' != ''">
+    <ItemGroup>
+      <_DeterministicStaticWebAssetSourceFiles Include="$(MSBuildProjectDirectory)\wwwroot\**\*" />
+    </ItemGroup>
+    <Touch Files="@(_DeterministicStaticWebAssetSourceFiles)"
+           Time="$(DeterministicStaticWebAssetsTimestamp)"
+           AlwaysCreate="false" />
+  </Target>
+
+  <Target Name="NormalizeDeterministicStaticWebAssetTimestamps"
+          AfterTargets="GenerateBuildCompressedStaticWebAssets"
+          BeforeTargets="ResolveBuildCompressedStaticWebAssets"
+          Condition="'$(DeterministicStaticWebAssetsTimestamp)' != ''">
+    <Touch Files="@(_CompressedStaticWebAssets)"
+           Time="$(DeterministicStaticWebAssetsTimestamp)"
+           AlwaysCreate="false" />
+  </Target>
+
+  <Target Name="NormalizeDeterministicPublishStaticWebAssetTimestamps"
+          AfterTargets="GeneratePublishCompressedStaticWebAssets"
+          BeforeTargets="ResolvePublishCompressedStaticWebAssets"
+          Condition="'$(DeterministicStaticWebAssetsTimestamp)' != ''">
+    <ItemGroup>
+      <_DeterministicStaticWebAssetFiles Include="@(StaticWebAsset)" />
+      <_DeterministicStaticWebAssetFiles Include="@(_CompressedStaticWebAssets)" />
+      <_DeterministicStaticWebAssetFiles Include="@(_CompressedStaticWebAssetsForPublish)" />
+    </ItemGroup>
+    <Touch Files="@(_DeterministicStaticWebAssetFiles)"
+           Time="$(DeterministicStaticWebAssetsTimestamp)"
+           AlwaysCreate="false" />
+  </Target>
+
 </Project>
