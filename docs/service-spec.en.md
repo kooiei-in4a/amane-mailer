@@ -90,7 +90,7 @@ uses the fixed redacted sentinel in that shadow; the raw Bcc address is not stor
 | Token / tenant mismatch | 401 | `UNAUTHORIZED_TENANT` |
 | source_service not allowed | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | Same ID, different content | 409 | `IDEMPOTENCY_CONFLICT` |
-| Body > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
+| Body > 16 MiB (16,777,216 bytes) | 413 | `REQUEST_TOO_LARGE` |
 | Per-role or combined recipient limit exceeded | 422 | `TOO_MANY_RECIPIENTS` |
 | Invalid/duplicate recipient / metadata / hash mismatch | 422 | `INVALID_REQUEST` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` |
 | Past `scheduled_at` / beyond max schedule horizon | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |

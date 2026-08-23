@@ -156,7 +156,9 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 - **エンドポイント**: `POST http://mailer:8080/internal/mail-requests`
 - **認証**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
   - ローカル既定トークン: `local-mail-service-token`
-- **必須フィールド**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `to`, `subject`, `payload_hash`
+- **JSON上の必須フィールド**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `subject`, `payload_hash`
+- **宛先要件**: `to` / `cc` / `bcc` の全 role 合計で1件以上。各 role は未指定・`null`・空配列を0件として扱います。
+- **本文要件**: `html_body` / `text_body` の少なくとも一方が必要です。
 - **`payload_hash`**: 配送フィールドの canonical JSON SHA-256。
   .NET は `Amane.Mailer.Contracts` の `MailPayloadHasher` を使用。
   Python / JavaScript / Go の実装例: [examples/payload-hash/](examples/payload-hash/README.md)
@@ -217,7 +219,9 @@ hash 対象フィールドを変更し、その payload に合わせて `payload
 - **任意**: POST の `scheduled_at`（UTC）で予約送信。送信前キャンセル / 再スケジュールは OpenAPI の `/cancel`・`/reschedule` を参照
 - **PII なし**: 宛先・件名・本文は返しません
 
-`status` の値は Worker 配送状態です（`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`）。POST レスポンスの `accepted` / `already_accepted` とは別物です。
+`status` の値は Worker 配送状態です（`queued`, `processing`, `delivered`, `failed`, `dead_lettered`, `cancelled`, `delivery_unknown`）。POST レスポンスの `accepted` / `already_accepted` とは別物です。
+
+`delivery_unknown` は終端 status です。provider invocation 開始後に provider acceptance を証明できなかった状態で、未送信または安全に retry 可能であることを意味しません。同じ `mail_request_id` の配送を Mailer が自動・手動で再送することはありません。これは Consumer SDK の一時的な HTTP 503 retry、同じ JSON の idempotent POST retry、新しい `mail_request_id` を使った重複可能性評価済みの業務上の再送とは別概念です。
 
 存在しない ID、または他 tenant の ID に対しては **404 `NOT_FOUND`** を返します（存在有無を漏らしません）。
 
