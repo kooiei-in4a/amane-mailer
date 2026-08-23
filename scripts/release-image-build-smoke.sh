@@ -101,7 +101,8 @@ READY_FILE="${REPORT_DIR}/readyz.json"
 BUILD_LOG="${REPORT_DIR}/build.log"
 COMPOSE_LOG="${REPORT_DIR}/compose-up.log"
 REPORT_FILE="${REPORT_DIR}/report.json"
-IMAGE_TAR="${REPORT_DIR}/image.tar"
+IMAGE_TAR="${REPORT_DIR}/image.oci.tar"
+DOCKER_IMAGE_TAR="${REPORT_DIR}/image.docker.tar"
 OCI_LAYOUT_DIR="${REPORT_DIR}/oci-layout"
 
 printf '== Amane Mailer release image build smoke ==\n'
@@ -111,12 +112,17 @@ printf 'platform: %s\n' "${PLATFORM}"
 printf 'timestamp: %s\n' "${SOURCE_DATE_EPOCH}"
 printf 'image:    %s\n' "${IMAGE_REF}"
 
+# Keep the Docker archive first and the OCI archive last. Buildx writes the
+# last exporter descriptor to the metadata file, so the publication digest
+# must remain the OCI layout digest while docker load gets a compatible
+# single-platform archive for the runtime smoke checks.
 if ! docker buildx build \
   --platform "${PLATFORM}" \
   --file "${REPO_ROOT}/infra/docker/Dockerfile" \
   --tag "${IMAGE_REF}" \
   --provenance=false \
   --sbom=false \
+  --output "type=docker,dest=${DOCKER_IMAGE_TAR}" \
   --output "type=oci,dest=${IMAGE_TAR},rewrite-timestamp=true" \
   --build-arg "SOURCE_COMMIT=${SOURCE_SHA}" \
   --build-arg "MAILER_VERSION=${MAILER_VERSION}" \
@@ -135,11 +141,11 @@ if ! tar -xf "${IMAGE_TAR}" -C "${OCI_LAYOUT_DIR}"; then
   die 'OCI layout extraction failed'
 fi
 
-if ! docker load --input "${IMAGE_TAR}" >"${REPORT_DIR}/docker-load.log" 2>&1; then
+if ! docker load --input "${DOCKER_IMAGE_TAR}" >"${REPORT_DIR}/docker-load.log" 2>&1; then
   cat "${REPORT_DIR}/docker-load.log" >&2
   die 'docker image load failed'
 fi
-rm -f "${IMAGE_TAR}"
+rm -f "${IMAGE_TAR}" "${DOCKER_IMAGE_TAR}"
 
 [[ -f "${OCI_LAYOUT_DIR}/oci-layout" && -f "${OCI_LAYOUT_DIR}/index.json" ]] \
   || die 'built OCI layout is incomplete'
