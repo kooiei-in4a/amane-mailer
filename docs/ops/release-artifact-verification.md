@@ -106,6 +106,24 @@ build/reproducibility input を省略したローカル実行では、その二�
 `NOT_PROVIDED` になります。token、認証情報、PII、秘密 URL、raw registry
 error は保存しません。
 
+### 既存 publish の verify-only 再検証
+
+publish job は成功したが、後続の公開 consumer 検証だけを再実行する必要がある場合は、
+`.github/workflows/verify-public-release-image.yml` を `refs/heads/main` から dispatch します。
+この workflow は指定した publish run の入力 artifact を読み取り、source SHA、release version、
+期待 digest が artifact と一致することを確認してから、既存の公開 image を read-only で検証します。
+build、GHCR login、push、tag 作成は行わず、`packages: write` も持ちません。
+
+入力は次の 4 つです。
+
+- `publication_run_id`: publish workflow の run ID
+- `publication_source_sha`: publish artifact に記録された source SHA
+- `release_version`: publish artifact に記録された `major.minor.patch`
+- `expected_digest`: publish artifact と一致する `sha256:<64 hex>` digest
+
+検証成功時は `publish-release-image-evidence-<sourceSha>-<verifyRunId>` artifact に
+`public-consumer-verification.json` と `release-publication-evidence.json` を保存します。
+
 ## Runtime manifest と OCI labels
 
 image index 内の runtime manifest digest を platform ごとに確認します。`TARGET_PLATFORM` と

@@ -61,6 +61,9 @@ jobs:
       - name: Shared qualification artifact contract self-test
         run: python3 scripts/prepare-qualification-handoff-self-test.py
 
+      - name: Verify-only public release image workflow contract self-test
+        run: bash scripts/verify-public-release-image-workflow-self-test.sh
+
       - name: Canonical qualification formal-route self-test (ci-auto)
         run: |
           set -Eeuo pipefail
