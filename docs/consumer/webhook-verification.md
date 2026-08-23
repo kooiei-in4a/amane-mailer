@@ -7,6 +7,7 @@ request reaches a terminal delivery state:
 - `failed`
 - `dead_lettered`
 - `cancelled`
+- `delivery_unknown`
 
 The JSON body matches `MailDeliveryEventPayload` in `docs/api/openapi.yaml` and
 `src/Amane.Mailer.Contracts/MailRequests/MailDeliveryEventPayload.cs`. It never includes
@@ -60,19 +61,24 @@ Reject requests when:
 Mailer enqueues at most one delivery-result event per
 `(tenant_id, source_service, mail_request_id)` **while the corresponding mail request row
 exists** (**first-wins**). The first terminal state that reaches the outbox
-(`failed`, `dead_lettered`, `cancelled`, or `delivered`) is the only event for that
+(`failed`, `dead_lettered`, `cancelled`, `delivery_unknown`, or `delivered`) is the only event for that
 idempotency key. Later terminal transitions on the same row do **not** insert or replace
 the event. Webhook HTTP retries reuse the same `event_id` and body. Consumers must treat
-duplicate POSTs with the same `event_id` as success.
+duplicate POSTs with the same `event_id` as success. A webhook HTTP retry is a retry of
+the same event delivery; it is not a request to resend the mail through the provider.
 
 ### Admin manual retry
 
-Admin manual retry may move `Failed` / `DeadLettered` back to `Queued` and later reach a
-different terminal state (for example `delivered`). Mailer does **not** enqueue a second
-delivery-result webhook for that later state. `GET /internal/mail-requests/{mail_request_id}`
-can therefore show `delivered` while the Consumer still holds only the earlier webhook
-(for example `failed`). Status GET is authoritative for the current mail-request state;
-the webhook is a one-shot first-terminal notification, not a live mirror of status.
+Admin manual retry is not an unconditional `Failed` / `DeadLettered` → `Queued` transition.
+The current runtime permits it only for an attachment-free request with no plain submission
+evidence; requests with attachment metadata or a `mail_plain_submissions` evidence row are
+rejected. `delivery_unknown` is never manually retryable, and a `Failed` request with
+submission evidence must not be described as always retryable. If a permitted retry later
+reaches a different terminal state (for example `delivered`), Mailer does **not** enqueue a
+second delivery-result webhook. `GET /internal/mail-requests/{mail_request_id}` can therefore
+show `delivered` while the Consumer still holds only the earlier webhook (for example `failed`).
+Status GET is authoritative for the current mail-request state; the webhook is a one-shot
+first-terminal notification, not a live mirror of status.
 
 Per-delivery-cycle webhook re-notification (latest terminal always pushed) remains
 **out of scope**. [ADR 0017](../adr/0017-webhook-first-wins-delivery-cycle.md) keeps

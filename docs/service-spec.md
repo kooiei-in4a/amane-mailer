@@ -89,7 +89,7 @@ recipient-aware処理の正本ではない。Bcc-only requestのshadowには固�
 | トークン/テナント不一致 | 401 | `UNAUTHORIZED_TENANT` |
 | source_service 許可外 | 403 | `SOURCE_SERVICE_NOT_ALLOWED` |
 | 同一ID・内容差異 | 409 | `IDEMPOTENCY_CONFLICT` |
-| ボディ > 256,000 byte | 413 | `REQUEST_TOO_LARGE` |
+| ボディ > 16 MiB (16,777,216 byte) | 413 | `REQUEST_TOO_LARGE` |
 | 宛先 role 別／合計上限超過 | 422 | `TOO_MANY_RECIPIENTS` |
 | 宛先不正・重複 / メタデータ / hash 不一致 | 422 | `INVALID_REQUEST` / `INVALID_METADATA` / `INVALID_PAYLOAD_HASH` |
 | 過去の `scheduled_at` / 最大予約期間超過 | 422 | `SCHEDULED_AT_IN_PAST` / `SCHEDULED_AT_TOO_FAR` |

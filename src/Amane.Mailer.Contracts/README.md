@@ -101,7 +101,7 @@ dotnet add package Amane.Mailer.Contracts
 | `MailRequestScheduleLimits` | `Amane.Mailer.Contracts.MailRequests` | Max schedule horizon (`MaxScheduledAhead`) |
 | `MailDeliveryEventPayload` | `Amane.Mailer.Contracts.MailRequests` | Outbound delivery-result webhook JSON body (first-wins: one event per mail-request generation) |
 | `MailDeliveryEventType` | `Amane.Mailer.Contracts.MailRequests` | Webhook `event_type` / terminal status constants |
-| `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient in `to` array |
+| `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient DTO used by `to`, `cc`, and `bcc` arrays |
 | `MailPayloadHasher` | `Amane.Mailer.Contracts.Security` | `payload_hash` computation helper |
 | `MailRequestAcceptanceStatus` | `Amane.Mailer.Contracts.MailRequests` | Response `status` constants |
 | `MailRequestStatus` | `Amane.Mailer.Contracts.MailRequests` | Worker delivery status constants |
