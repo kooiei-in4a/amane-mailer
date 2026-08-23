@@ -1,0 +1,153 @@
+name: Publish Release Image
+
+# Early #649 publication path for the first supported public image target.
+# The image is built and smoke-tested once, then the exact OCI layout is
+# promoted without a rebuild. The historical multi-platform qualification
+# route remains separate until its replacement is agreed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-hex SHA; must equal the workflow commit GITHUB_SHA
+        required: true
+        type: string
+      release_version:
+        description: Image version label (major.minor.patch)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-release-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: ${{ github.sha }}
+  MAILER_VERSION: ${{ inputs.release_version }}
+  IMAGE_REPOSITORY: amane-mailer-release-smoke
+  IMAGE_TAG: sha-${{ github.sha }}
+  REPORT_DIR: artifacts/publish-release-image
+  PUBLISH_REPOSITORY: ghcr.io/${{ github.repository_owner }}/amane-mailer
+  MAILPIT_IMAGE: axllent/mailpit@sha256:7f33095f80e901f6ad08028f06ca284aa58fe84942be5496008d041d3b9f4d4d
+
+jobs:
+  publish:
+    name: Smoke and publish linux/amd64 image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    steps:
+      - name: Require canonical main workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "${GITHUB_REF}" == "refs/heads/main" ]] \
+            || { echo '::error::publication must be dispatched from refs/heads/main'; exit 1; }
+          expected_ref="${GITHUB_REPOSITORY}/.github/workflows/publish-release-image.yml@refs/heads/main"
+          [[ "${GITHUB_WORKFLOW_REF}" == "${expected_ref}" ]] \
+            || { echo '::error::workflow identity mismatch'; exit 1; }
+
+      - name: Require source input to match workflow commit
+        shell: bash
+        env:
+          REQUESTED_SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${REQUESTED_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo '::error::source_sha must be a lowercase 40-hex SHA'; exit 1; }
+          [[ "${REQUESTED_SOURCE_SHA}" == "${GITHUB_SHA}" ]] \
+            || { echo '::error::source_sha must equal the workflow commit GITHUB_SHA'; exit 1; }
+
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v3.12.0
+
+      - name: Static release-image smoke contract self-test
+        run: bash scripts/release-image-build-smoke-self-test.sh
+
+      - name: Build and smoke exact image
+        run: bash scripts/release-image-build-smoke.sh
+
+      - name: Rebuild without cache and require the same digest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          digest="$(python3 -c 'import json; print(json.load(open("artifacts/publish-release-image/identity.json"))["image"]["digest"])')"
+          EXPECTED_DIGEST="${digest}" \
+            REPORT_DIR=artifacts/publish-release-image/reproducibility \
+            bash scripts/check-release-image-reproducibility.sh
+
+      - name: Install pinned crane
+        id: crane
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pin_dir="${RUNNER_TEMP}/pinned-crane"
+          bash scripts/install-pinned-crane.sh "${pin_dir}"
+          echo "bin=${pin_dir}/crane" >> "${GITHUB_OUTPUT}"
+
+      - name: Login to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish exact smoke-tested digest without rebuild
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          digest="$(python3 -c 'import json; print(json.load(open("artifacts/publish-release-image/identity.json"))["image"]["digest"])')"
+          bash scripts/publish-release-image.sh \
+            --oci-layout "artifacts/publish-release-image/oci-layout" \
+            --expected-digest "${digest}" \
+            --repository "${PUBLISH_REPOSITORY}" \
+            --release-version "${MAILER_VERSION}" \
+            --release-commit-sha "${SOURCE_SHA}" \
+            --crane "${{ steps.crane.outputs.bin }}" \
+            | tee artifacts/publish-release-image/publish.log
+
+      - name: Upload publication evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publish-release-image-${{ github.sha }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            artifacts/publish-release-image/report.json
+            artifacts/publish-release-image/identity.json
+            artifacts/publish-release-image/buildx-metadata.json
+            artifacts/publish-release-image/docker-image-inspect.json
+            artifacts/publish-release-image/healthz.json
+            artifacts/publish-release-image/readyz.json
+            artifacts/publish-release-image/help.txt
+            artifacts/publish-release-image/reproducibility/report.json
+            artifacts/publish-release-image/publish.log
+
+      - name: Write publication summary
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          {
+            echo '## Release image publication'
+            echo
+            if [[ -f artifacts/publish-release-image/identity.json ]]; then
+              echo '```json'
+              cat artifacts/publish-release-image/identity.json
+              echo '```'
+            else
+              echo 'No image identity was produced.'
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
