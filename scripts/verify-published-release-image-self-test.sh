@@ -89,7 +89,7 @@ bash "$TARGET" \
   --build-report "$BUILD_REPORT_FILE" \
   --reproducibility-report "$REPRO_REPORT_FILE"
 
-python3 "$WORK_DIR/public.json" "$WORK_DIR/evidence.json" "$DIGEST" <<'PY'
+python3 - "$WORK_DIR/public.json" "$WORK_DIR/evidence.json" "$DIGEST" <<'PY'
 import json
 import sys
 from pathlib import Path
