@@ -35,10 +35,37 @@ Maintainers dispatch `.github/workflows/publish-release-image.yml` from
 1. Builds the exact `linux/amd64` image and checks `--help`, `/healthz`, and `/readyz`.
 2. Rebuilds without cache and requires the same manifest digest.
 3. Pushes only `vX.Y.Z` and `sha-<sourceSha>` from the smoke-tested OCI layout, then verifies both digests.
+4. Runs the `verify-public-image` job after a successful publish. The job
+   verifies the same digest read-only from GHCR; it does not build, login, or
+   push, and it has no `packages: write` permission.
 
 It never creates `latest` or adds registry attestation manifests. If the
 pre-publish checks fail, the workflow does not log in or publish. Use the
 P-OCI-PROMOTE path below when a multi-arch qualified handoff is required.
+
+## Publication evidence
+
+The publish job keeps the build smoke, no-cache reproducibility, and publication
+inputs in a value-free artifact with 14-day retention. The following
+read-only verification job stores a final evidence artifact with 30-day
+retention after checking:
+
+- the `vX.Y.Z` and `sha-<sourceSha>` tags resolve to the expected digest;
+- both tag digests are equal;
+- the published digest pulls as `linux/amd64`;
+- the digest image's OCI `source` / `revision` / `version` labels match; and
+- `--help` succeeds from the digest reference.
+
+The final record is
+`artifacts/publish-release-image/release-publication-evidence.json` inside the
+workflow artifact. Its `schemaVersion: 1`, `evidenceType:
+release-image-publication` schema records `workflowRunId` /
+`workflowRunAttempt` / `workflowName` / `workflowRef` /
+`gitRef`, source SHA, release version, platform, published digest, both tags,
+per-tag verified digests, OCI labels, all three gate results, and
+`recordedAtUtc`. The companion `public-consumer-verification.json` contains the
+read-only consumer checks. Tokens, credentials, PII, secret URLs, and raw
+registry errors are not written to either record.
 
 ## Required handoff
 

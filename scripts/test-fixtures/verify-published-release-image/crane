@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+case "$1" in
+  version)
+    echo '0.20.3'
+    ;;
+  digest)
+    case "$2" in
+      ghcr.io/kooiei-in4a/amane-mailer:v9.9.9|ghcr.io/kooiei-in4a/amane-mailer:sha-0000000000000000000000000000000000000000)
+        echo "$DIGEST"
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    exit 1
+    ;;
+esac

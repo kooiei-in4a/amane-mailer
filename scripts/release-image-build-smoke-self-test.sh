@@ -9,10 +9,15 @@ WORKFLOW="${REPO_ROOT}/.github/workflows/release-image-build-smoke.yml"
 PUBLISH_TARGET="${REPO_ROOT}/scripts/publish-release-image.sh"
 PUBLISH_WORKFLOW="${REPO_ROOT}/.github/workflows/publish-release-image.yml"
 REPRO_TARGET="${REPO_ROOT}/scripts/check-release-image-reproducibility.sh"
+VERIFY_TARGET="${REPO_ROOT}/scripts/verify-published-release-image.sh"
+VERIFY_PYTHON_TARGET="${REPO_ROOT}/scripts/verify-published-release-image.py"
+VERIFY_SELF_TEST="${REPO_ROOT}/scripts/verify-published-release-image-self-test.sh"
 
 bash -n "${TARGET}"
 bash -n "${PUBLISH_TARGET}"
 bash -n "${REPRO_TARGET}"
+bash -n "${VERIFY_TARGET}" "${VERIFY_SELF_TEST}"
+python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))' "${VERIFY_PYTHON_TARGET}"
 
 grep -F -- '--platform "${PLATFORM}"' "${TARGET}" >/dev/null
 grep -F -- '--build-arg "SOURCE_COMMIT=${SOURCE_SHA}"' "${TARGET}" >/dev/null
@@ -51,6 +56,11 @@ grep -F -- 'Rebuild without cache and require the same digest' "${WORKFLOW}" "${
 grep -E -- 'MAILPIT_IMAGE: axllent/mailpit@sha256:[0-9a-f]{64}$' "${WORKFLOW}" "${PUBLISH_WORKFLOW}" >/dev/null
 grep -F -- 'ref: ${{ github.sha }}' "${WORKFLOW}" "${PUBLISH_WORKFLOW}" >/dev/null
 grep -F -- 'source_sha must equal the workflow commit GITHUB_SHA' "${WORKFLOW}" "${PUBLISH_WORKFLOW}" >/dev/null
+grep -F -- 'public-consumer-verification' "${VERIFY_PYTHON_TARGET}" >/dev/null
+grep -F -- 'release-image-publication' "${VERIFY_PYTHON_TARGET}" >/dev/null
+grep -F -- '["pull", "--platform", PLATFORM' "${VERIFY_PYTHON_TARGET}" >/dev/null
+grep -F -- 'digestImageHelp' "${VERIFY_PYTHON_TARGET}" >/dev/null
+grep -F -- 'release-publication-evidence.json' "${PUBLISH_WORKFLOW}" "${VERIFY_PYTHON_TARGET}" >/dev/null
 
 if grep -F -- 'ref: ${{ inputs.source_sha }}' "${WORKFLOW}" "${PUBLISH_WORKFLOW}"; then
   echo '[error] release workflows must not checkout an arbitrary source_sha input' >&2
@@ -71,5 +81,14 @@ if grep -nF 'ALLOW_DIRTY_WORKTREE' "${WORKFLOW}"; then
   echo '[error] workflow must always enforce an exact clean source checkout' >&2
   exit 1
 fi
+
+verification_job="$(awk '/^  verify-public-image:/{in_job=1; next} in_job && /^  [A-Za-z0-9_-]+:/{exit} in_job{print}' "${PUBLISH_WORKFLOW}")"
+if printf '%s\n' "${verification_job}" | grep -Eiq 'packages:[[:space:]]*write'; then
+  echo '[error] public verification job must not request package write permission' >&2
+  exit 1
+fi
+printf '%s\n' "${verification_job}" | grep -F -- 'contents: read' >/dev/null
+printf '%s\n' "${verification_job}" | grep -F -- 'needs: publish' >/dev/null
+printf '%s\n' "${verification_job}" | grep -F -- 'scripts/verify-published-release-image-self-test.sh' >/dev/null
 
 echo 'release-image-build-smoke-self-test: PASS'
