@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+case "$1" in
+  pull)
+    exit 0
+    ;;
+  image)
+    [[ "$2" == 'inspect' ]] || exit 1
+    printf '%s\n' '{"org.opencontainers.image.source":"https://github.com/kooiei-in4a/amane-mailer","org.opencontainers.image.revision":"0000000000000000000000000000000000000000","org.opencontainers.image.version":"9.9.9"}'
+    ;;
+  run)
+    [[ "$*" == *' --help' ]] || exit 1
+    exit 0
+    ;;
+  *)
+    exit 1
+    ;;
+esac

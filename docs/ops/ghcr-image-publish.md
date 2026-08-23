@@ -35,10 +35,35 @@ environment 承認後、次を順に行います:
 1. 指定 SHA の `linux/amd64` image を build し、`--help`、`/healthz`、`/readyz` を確認。
 2. cache を使わずに同じ build を行い、manifest digest が一致することを確認。
 3. smoke 済み OCI layout を `vX.Y.Z` と `sha-<sourceSha>` にだけ push し、両方の digest を再確認。
+4. `verify-public-image` job が、publish job の成功後に同じ digest を read-only で
+   GHCR から確認する。検証 job は build、login、push を行わず、`packages: write`
+   も持たない。
 
 `latest` は作成せず、registry attestation manifest も追加しません。失敗時は
 registry login 前なら publish されません。multi-arch の資格・handoff が必要な
 リリースは、以下の P-OCI-PROMOTE 経路を使います。
+
+## 公開証跡
+
+publish job は build smoke、no-cache reproducibility、publish 入力を value-free
+artifact（retention 14 日）として保存します。続く検証 job は、次の read-only
+確認を行い、最終 artifact（retention 30 日）を保存します。
+
+- `vX.Y.Z` tag と `sha-<sourceSha>` tag が期待 digest を指すこと
+- 両 tag の digest が一致すること
+- 公開済み digest を `linux/amd64` として pull できること
+- digest 指定 image の OCI `source` / `revision` / `version` label が一致すること
+- digest 指定 image の `--help` が成功すること
+
+最終証跡の保存先は artifact 内の
+`artifacts/publish-release-image/release-publication-evidence.json` です。
+`schemaVersion: 1` の `release-image-publication` schema は、
+`workflowRunId` / `workflowRunAttempt` / `workflowName` /
+`workflowRef` / `gitRef`、source SHA、release version、platform、published digest、
+両 tag、tag ごとの確認済み digest、OCI labels、三つの gate 結果、
+`recordedAtUtc` を含みます。公開 consumer の詳細は同じ artifact の
+`public-consumer-verification.json` に分離します。token、認証情報、PII、
+秘密 URL、raw registry error は証跡に保存しません。
 
 ## 必須 handoff
 

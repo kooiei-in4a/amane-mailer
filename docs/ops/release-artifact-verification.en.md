@@ -74,6 +74,49 @@ TARGET_PLATFORM=linux/amd64
 docker pull --platform "$TARGET_PLATFORM" "${IMAGE_REPO}@${EXPECTED_INDEX_DIGEST}"
 ```
 
+## #649 Automated Post-Publish Verification
+
+The `verify-public-image` job in
+__.github/workflows/publish-release-image.yml` verifies the published digest
+read-only. It does not rebuild, repush, or log in to GHCR. The verification-only
+job has no `packages: write` permission.
+
+- the `vX.Y.Z` and `sha-<sourceSha>` tag digests match the expected digest;
+- both tag digests are equal;
+- the digest reference pulls as `linux/amd64`;
+- the digest image's OCI `source` / `revision` / `version` labels match; and
+- `--help` succeeds from the digest reference.
+
+The read-only implementation is
+[`scripts/verify-published-release-image.sh`](../../scripts/verify-published-release-image.sh).
+When the public package can be read without authentication, it can also be run
+locally:
+
+```bash
+IMAGE_REPO=ghcr.io/kooiei-in4a/amane-mailer
+EXPECTED_DIGEST=sha256:replace-with-release-image-digest
+EXPECTED_REVISION=replace-with-release-commit-sha
+CRANE_DIR=$(mktemp -d)
+bash scripts/install-pinned-crane.sh "$CRANE_DIR"
+bash scripts/verify-published-release-image.sh \
+  --repository "$IMAGE_REPO" \
+  --expected-digest "$EXPECTED_DIGEST" \
+  --release-version X.Y.Z \
+  --release-commit-sha "$EXPECTED_REVISION" \
+  --crane "$CRANE_DIR/crane"
+```
+
+The final workflow artifact record is
+`artifacts/publish-release-image/release-publication-evidence.json` with
+`schemaVersion: 1` and `evidenceType: release-image-publication`. It
+contains `workflowRunId` / `workflowRunAttempt` /
+`workflowName` / `workflowRef` / `gitRef`, source SHA, release
+version, platform, published digest, both tags, per-tag verified digests, OCI
+labels, build smoke, no-cache reproducibility, public consumer verification,
+and a UTC timestamp. A local run without the build/reproducibility inputs marks
+those two statuses `NOT_PROVIDED`. Tokens, credentials, PII, secret
+URLs, and raw registry errors are not stored.
+
 ## Runtime Manifest And OCI Labels
 
 Verify the runtime manifest digest inside the image index for each platform.

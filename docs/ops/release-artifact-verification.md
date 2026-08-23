@@ -66,6 +66,46 @@ TARGET_PLATFORM=linux/amd64
 docker pull --platform "$TARGET_PLATFORM" "${IMAGE_REPO}@${EXPECTED_INDEX_DIGEST}"
 ```
 
+## #649 自動公開後検証
+
+`.github/workflows/publish-release-image.yml` の `verify-public-image` job は、
+publish 済み digest を対象に read-only で次を確認します。再build、再push、GHCR
+login は行いません。検証専用 job は `packages: write` を持ちません。
+
+- `vX.Y.Z` tag と `sha-<sourceSha>` tag の digest が期待値と一致
+- 両 tag の digest が一致
+- digest 指定 image の `linux/amd64` pull
+- digest 指定 image の OCI `source` / `revision` / `version` label
+- digest 指定 image の `--help`
+
+処理は [`scripts/verify-published-release-image.sh`](../../scripts/verify-published-release-image.sh)
+に切り出しています。公開 package が read-only で取得できる環境では、次のように
+ローカルでも実行できます。
+
+```bash
+IMAGE_REPO=ghcr.io/kooiei-in4a/amane-mailer
+EXPECTED_DIGEST=sha256:replace-with-release-image-digest
+EXPECTED_REVISION=replace-with-release-commit-sha
+CRANE_DIR=$(mktemp -d)
+bash scripts/install-pinned-crane.sh "$CRANE_DIR"
+bash scripts/verify-published-release-image.sh \
+  --repository "$IMAGE_REPO" \
+  --expected-digest "$EXPECTED_DIGEST" \
+  --release-version X.Y.Z \
+  --release-commit-sha "$EXPECTED_REVISION" \
+  --crane "$CRANE_DIR/crane"
+```
+
+最終 workflow artifact の `artifacts/publish-release-image/release-publication-evidence.json`
+は `schemaVersion: 1` / `evidenceType: release-image-publication` です。
+`workflowRunId` / `workflowRunAttempt` / `workflowName` /
+`workflowRef` / `gitRef`、source SHA、release version、platform、
+published digest、両 tag、tag ごとの確認済み digest、OCI labels、build smoke、
+no-cache reproducibility、public consumer verification、UTC timestamp を含みます。
+build/reproducibility input を省略したローカル実行では、その二つの状態は
+`NOT_PROVIDED` になります。token、認証情報、PII、秘密 URL、raw registry
+error は保存しません。
+
 ## Runtime manifest と OCI labels
 
 image index 内の runtime manifest digest を platform ごとに確認します。`TARGET_PLATFORM` と

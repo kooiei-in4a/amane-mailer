@@ -19,7 +19,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: publish-release-image-${{ github.ref }}
@@ -40,6 +39,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Require canonical main workflow
         shell: bash
@@ -149,5 +151,110 @@ jobs:
               echo '```'
             else
               echo 'No image identity was produced.'
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  verify-public-image:
+    name: Verify published public linux/amd64 image
+    if: needs.publish.result == 'success'
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Require canonical main workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] \
+            || { echo '::error::verification must run from refs/heads/main'; exit 1; }
+          expected_ref="$GITHUB_REPOSITORY/.github/workflows/publish-release-image.yml@refs/heads/main"
+          [[ "$GITHUB_WORKFLOW_REF" == "$expected_ref" ]] \
+            || { echo '::error::workflow identity mismatch'; exit 1; }
+
+      - name: Checkout exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download publication inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: publish-release-image-${{ github.sha }}
+          path: artifacts/publish-release-image
+
+      - name: Locate publication inputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          identity_count="$(find artifacts/publish-release-image -type f -name identity.json -print | wc -l)"
+          build_count="$(find artifacts/publish-release-image -type f -name report.json -not -path '*/reproducibility/*' -print | wc -l)"
+          repro_count="$(find artifacts/publish-release-image -type f -path '*/reproducibility/report.json' -print | wc -l)"
+          [[ "$identity_count" == "1" && "$build_count" == "1" && "$repro_count" == "1" ]] \
+            || { echo '::error::publication inputs are missing or ambiguous'; find artifacts/publish-release-image -type f -print; exit 1; }
+          identity_file="$(find artifacts/publish-release-image -type f -name identity.json -print)"
+          expected_digest="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["image"]["digest"])' "$identity_file")"
+          [[ "$expected_digest" =~ ^sha256:[a-f0-9]{64}$ ]] \
+            || { echo '::error::publication identity has an invalid digest'; exit 1; }
+          echo "EXPECTED_DIGEST=$expected_digest" >> "$GITHUB_ENV"
+
+      - name: Install pinned crane
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pin_dir="$RUNNER_TEMP/pinned-crane"
+          bash scripts/install-pinned-crane.sh "$pin_dir"
+          echo "CRANE_BIN=$pin_dir/crane" >> "$GITHUB_ENV"
+
+      - name: Static public consumer verification self-test
+        run: bash scripts/verify-published-release-image-self-test.sh
+
+      - name: Verify public image by published digest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          identity_file="$(find artifacts/publish-release-image -type f -name identity.json -print)"
+          build_report="$(find artifacts/publish-release-image -type f -name report.json -not -path '*/reproducibility/*' -print)"
+          repro_report="$(find artifacts/publish-release-image -type f -path '*/reproducibility/report.json' -print)"
+          bash scripts/verify-published-release-image.sh \
+            --repository "$PUBLISH_REPOSITORY" \
+            --expected-digest "$EXPECTED_DIGEST" \
+            --release-version "$MAILER_VERSION" \
+            --release-commit-sha "$SOURCE_SHA" \
+            --crane "$CRANE_BIN" \
+            --report-file artifacts/publish-release-image/public-consumer-verification.json \
+            --evidence-file artifacts/publish-release-image/release-publication-evidence.json \
+            --identity-file "$identity_file" \
+            --build-report "$build_report" \
+            --reproducibility-report "$repro_report"
+
+      - name: Upload release publication evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: publish-release-image-evidence-${{ github.sha }}-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            artifacts/publish-release-image/public-consumer-verification.json
+            artifacts/publish-release-image/release-publication-evidence.json
+
+      - name: Write public verification summary
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          {
+            echo '## Published public image verification'
+            echo
+            if [[ -f artifacts/publish-release-image/release-publication-evidence.json ]]; then
+              echo '```json'
+              cat artifacts/publish-release-image/release-publication-evidence.json
+              echo '```'
+            else
+              echo 'Publication evidence was not produced.'
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
