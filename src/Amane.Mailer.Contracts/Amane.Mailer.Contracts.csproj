@@ -7,7 +7,7 @@
     <RootNamespace>Amane.Mailer.Contracts</RootNamespace>
     <IsPackable>true</IsPackable>
     <PackageId>Amane.Mailer.Contracts</PackageId>
-    <Version>1.3.1</Version>
+    <Version>1.3.4</Version>
     <Authors>kooiei-in4a</Authors>
     <Description>HTTP contract DTOs, status constants, and payload hash helpers for the Amane Mailer service.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

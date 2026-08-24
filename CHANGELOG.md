@@ -15,6 +15,72 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-08-24
+
+Patch release that restores one synchronized **full service release** identity
+after the v1.3.2 and v1.3.3 OCI-only Release Engineering publications. Relative
+to the v1.3.1 service source, there is no product feature, runtime semantic,
+database migration, or public HTTP contract shape change.
+
+### Changed
+
+- Align `Amane.Mailer.Contracts` package version and OpenAPI `info.version` on
+  `1.3.4` for the synchronized full release.
+- Establish `docs/agent-workflows/release.md` as the durable AI-oriented release
+  runbook, including source freeze, collision guards, exactly-once publication,
+  Human approval boundaries, recovery, and final cross-artifact verification.
+- Harden the normal GHCR publication path with machine-readable publication and
+  public-consumer verification evidence, plus a read-only verify-only recovery
+  path for already-published images.
+- Preserve the normal publication order `GHCR -> Git tag -> NuGet -> GitHub
+  Release` so the current-main-coupled image workflow binds the release source
+  before later immutable artifacts are created.
+
+### Compatibility
+
+- No product feature, runtime semantic, database migration, or public HTTP
+  contract shape change relative to v1.3.1.
+- The migration inventory remains `001` through `018`.
+- `Amane.Mailer.Contracts` advances to `1.3.4` for release identity alignment;
+  its public DTO / constant / payload-hash behavior is unchanged by this patch.
+
+### Release history
+
+- `1.3.2` and `1.3.3` were intentionally OCI-only Release Engineering
+  publications. They did **not** advance the synchronized Contracts/OpenAPI/NuGet
+  / Git-tag / GitHub-Release service identity.
+- `1.3.4` resumes the repository versioning policy by publishing the applicable
+  Git tag, GHCR image, Contracts NuGet package, OpenAPI version, CHANGELOG,
+  release record, and GitHub Release from one frozen source identity.
+
+## [1.3.3] - 2026-08-24
+
+OCI-only Release Engineering publication used to benchmark the established
+normal GHCR release path. It was not a synchronized full service release and did
+not publish a `1.3.3` Contracts NuGet package, service Git tag, or GitHub Release.
+
+### Release Engineering
+
+- Published the `linux/amd64` GHCR image once from frozen `main` source
+  `c4819ea495e2f11cc6440fe499437cfa03aa2e5f`.
+- Completed primary public verification and machine-readable evidence generation
+  without recovery; the publish workflow completed in 8m15s from dispatch.
+- No `latest` tag, same-version republish, or existing-tag overwrite was used.
+
+## [1.3.2] - 2026-08-23
+
+OCI-only Release Engineering publication. It was not a synchronized full service
+release and did not advance the Contracts/OpenAPI/NuGet/Git-tag/GitHub-Release
+service identity beyond `1.3.1`.
+
+### Release Engineering
+
+- Exercised the hardened GHCR publication/public-verification path.
+- Completed read-only verify-only recovery verification for the existing public
+  image without rebuilding or republishing the version.
+- Kept same-version republish, existing-tag overwrite, and `latest` publication
+  prohibited.
+
 ## [1.3.1] - 2026-08-22
 
 Patch release focused on Release Engineering hardening. There is no product
