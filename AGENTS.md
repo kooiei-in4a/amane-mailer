@@ -45,6 +45,7 @@ When using an AI tool, prefer these workflow files over ad-hoc long prompts:
 - Review response: `docs/agent-workflows/review-fix.md`
 - Merge: `docs/agent-workflows/merge.md`
 - Cleanup: `docs/agent-workflows/cleanup.md`
+- Release: `docs/agent-workflows/release.md`
 
 Tool-specific adapters:
 
@@ -127,6 +128,7 @@ Native AOT and full trimming are mandatory (`PublishAot`, `IsTrimmable`, `TrimMo
 
 ### Release and CI
 
+- Before any maintainer-authorized release or publish operation, follow [docs/agent-workflows/release.md](docs/agent-workflows/release.md). Do not substitute an ad-hoc partial release unless the maintainer explicitly scopes it as partial in the current session.
 - Changes to `.github/workflows/` must preserve existing SHA-pinned actions, existing validation, and any existing approval boundaries.
 - Publish workflow hardening from [#23](https://github.com/kooiei-in4a/amane-mailer/issues/23) is **completed and closed**. Do not reopen #23 or describe it as incomplete. Follow-on release-path improvements are tracked by later issues (for example #504–#507), not by treating #23 as unfinished.
 - For v1.2.0, public OCI publish used **P-OCI-PROMOTE** with `EXTERNAL_PROVENANCE` (no registry attestation manifests). See [docs/releases/v1.2.0.md](docs/releases/v1.2.0.md) and [release artifact verification](docs/ops/release-artifact-verification.md).
