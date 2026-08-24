@@ -95,8 +95,9 @@ intentional `latest` usage and how to pin it when needed.
 
 ## Recorded smoke results
 
-Value-free smoke results for `v1.2.0` (digest, date, environment, per-check pass/fail)
-are recorded in [docs/releases/v1.2.0.md](../releases/v1.2.0.md).
+Value-free smoke results for `v1.3.4` (digest, date, environment, per-check pass/fail)
+are recorded in [docs/releases/v1.3.4.md](../releases/v1.3.4.md).
+Previous `v1.2.0` results remain in [docs/releases/v1.2.0.md](../releases/v1.2.0.md).
 Previous `v1.1.0` results remain in [docs/releases/v1.1.0.md](../releases/v1.1.0.md).
 Previous `v1.0.1` results remain in [docs/releases/v1.0.1.md](../releases/v1.0.1.md),
 and `v1.0.0` results in [docs/releases/v1.0.0.md](../releases/v1.0.0.md).

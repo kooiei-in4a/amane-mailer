@@ -92,8 +92,9 @@ Mailpit は release artifact に含まれない smoke helper です。`latest` �
 
 ## 記録済み smoke 結果
 
-`v1.2.0` の value-free smoke 結果（digest、日付、環境、各 check の pass/fail）は
-[docs/releases/v1.2.0.md](../releases/v1.2.0.md) に記録します。過去の `v1.1.0` 結果は
+`v1.3.4` の value-free smoke 結果（digest、日付、環境、各 check の pass/fail）は
+[docs/releases/v1.3.4.md](../releases/v1.3.4.md) に記録します。過去の `v1.2.0` 結果は
+[docs/releases/v1.2.0.md](../releases/v1.2.0.md)、`v1.1.0` 結果は
 [docs/releases/v1.1.0.md](../releases/v1.1.0.md)、`v1.0.1` 結果は
 [docs/releases/v1.0.1.md](../releases/v1.0.1.md)、`v1.0.0` 結果は
 [docs/releases/v1.0.0.md](../releases/v1.0.0.md)、`v0.9.2` 結果は
