@@ -33,7 +33,7 @@ The Git tag target, GHCR OCI revision/source, NuGet SourceLink revision, and ver
 - Read this workflow before inventing any ad-hoc release procedure.
 - Never publish from a dirty, diverged, ambiguous, or stale local repository.
 - Refresh remote state before every irreversible boundary.
-- Once `releaseCommitSha` is frozen, any source change invalidates the freeze. Stop and rebind; do not silently move forward.
+- Once `releaseCommitSha` is frozen, do not silently change source identity.
 - Do not create or move an existing release tag to a different commit.
 - Do not overwrite existing GHCR version or immutable SHA tags.
 - Do not republish an existing NuGet package version.
@@ -42,6 +42,14 @@ The Git tag target, GHCR OCI revision/source, NuGet SourceLink revision, and ver
 - Preserve the `release` environment Human approval boundary. AI agents must not bypass required reviewers.
 - Side-effecting release operations require explicit maintainer instruction in the current session.
 - `verify-public-release-image.yml` is recovery for an already-published image whose post-publish verification did not complete. It is not the normal publication path and must not build, log in, push, or mutate tags.
+
+## Why GHCR Publication Comes Before Git Tag / NuGet
+
+The current `.github/workflows/publish-release-image.yml` requires canonical `refs/heads/main` and binds the requested `source_sha` to the workflow run's `GITHUB_SHA`. Therefore the normal image publication path can publish only the exact current `main` workflow commit.
+
+For a stable full release, freeze `main` and dispatch the image workflow first while that identity is still current. Once that workflow is dispatched, GitHub pins its source commit for the run. After the image is publicly verified, create the immutable Git release tag at the same `releaseCommitSha`, then publish NuGet from that tag.
+
+This order minimizes the risk of publishing a Git tag/NuGet package first and then discovering that `main` advanced so the normal image workflow can no longer publish the same source identity.
 
 ## Phase 0 — Explore Current Authority
 
@@ -129,9 +137,21 @@ After the version-prep PR is reviewed and merged to `main`:
 5. Freeze that exact SHA as `releaseCommitSha`.
 6. Record the freeze in the release issue before publication.
 
-From this point, treat `releaseCommitSha` as immutable release authority.
+From this point, treat `releaseCommitSha` as immutable release authority for the planned publication.
 
-If `main` changes before publication, do not automatically adopt the new tip. Stop and decide whether to keep the frozen SHA or create a new version-prep authority. A changed source requires an explicit rebind decision.
+### Main-advance rule before the first public artifact
+
+Because the current image workflow requires `source_sha == GITHUB_SHA` on canonical `main`, `main` must still equal `releaseCommitSha` at image dispatch.
+
+If `main` advances before Phase 4:
+
+- Stop before publication.
+- Do not publish from the old frozen SHA through an ad-hoc path.
+- Inspect the new `main` changes and re-run version/source alignment checks.
+- The maintainer may explicitly rebind the still-unpublished `X.Y.Z` release to the new `main` SHA only if no public artifact for `X.Y.Z` exists and the new SHA is acceptable release content.
+- Record the new authority in the issue before continuing.
+
+After any public artifact for `X.Y.Z` exists, do not rebind source under the same version.
 
 ## Phase 3 — Final Read-Only Preflight
 
@@ -139,9 +159,10 @@ Immediately before the first release mutation, re-check:
 
 ### Source
 
-- `main` and `releaseCommitSha` relationship is understood and approved.
-- The intended tag target is exactly `releaseCommitSha`.
-- Version alignment at `releaseCommitSha` is still `X.Y.Z`.
+- GitHub `main == releaseCommitSha`.
+- local `main == origin/main == releaseCommitSha`.
+- worktree is clean.
+- version alignment at `releaseCommitSha` is still `X.Y.Z`.
 
 ### Collision guards
 
@@ -166,53 +187,9 @@ Confirm current workflows retain expected guards:
 
 If any collision or identity check is ambiguous, stop before mutation.
 
-## Phase 4 — Create the Release Tag
+## Phase 4 — Publish GHCR Image Exactly Once
 
-The Git tag is the immutable full-release identity used by the NuGet workflow.
-
-Create `vX.Y.Z` targeting exactly `releaseCommitSha`. Prefer an annotated release tag when following the existing project convention.
-
-Before pushing the tag, require explicit maintainer authorization in the current session.
-
-After tag creation/push:
-
-- Read it back from GitHub.
-- Verify `vX.Y.Z^{commit} == releaseCommitSha`.
-- Record tag object/target identity when available.
-
-If the tag points at the wrong commit, stop. Do not move, delete, or recreate the same public release tag automatically. Resolve with the maintainer; normally a new version is safer than rewriting published identity.
-
-## Phase 5 — Publish NuGet Exactly Once
-
-Use `.github/workflows/publish-contracts.yml` from the `vX.Y.Z` tag ref.
-
-The workflow itself must verify:
-
-- event ref is a release tag.
-- tag is valid SemVer.
-- checked-out revision == tag target == event commit.
-- project `<Version>` == tag-derived package version.
-- restore/audit/build/contracts tests pass.
-- `.nupkg` and `.snupkg` are produced.
-
-### Dispatch rule
-
-- Dispatch once.
-- If command output is ambiguous, do not dispatch again. Locate the matching workflow run read-only.
-- Require the `release` environment Human approval when GitHub requests it.
-- Track one run ID and one attempt unless the maintainer explicitly authorizes recovery after a proven pre-publication infrastructure failure.
-
-After success, record:
-
-- workflow run ID.
-- package version.
-- release tag.
-- revision.
-- package and symbol publish result.
-
-Then verify public NuGet indexing/availability. NuGet immutability means a wrong package version cannot be replaced.
-
-## Phase 6 — Publish GHCR Image Exactly Once
+This is the first public artifact in the normal full-release sequence because it has the strongest coupling to the current `main` commit.
 
 Use `.github/workflows/publish-release-image.yml` from canonical `main` with:
 
@@ -221,7 +198,14 @@ source_sha=<releaseCommitSha>
 release_version=X.Y.Z
 ```
 
-Before dispatch, fresh-check that the workflow commit and `releaseCommitSha` binding satisfy the workflow's canonical-main guard. If the workflow requires `source_sha == GITHUB_SHA`, the selected `main` workflow commit must be the release source; otherwise stop and resolve the source/workflow identity instead of weakening the guard.
+Before dispatch, fresh-confirm `main == releaseCommitSha`. If the workflow's `source_sha == GITHUB_SHA` guard would fail, stop and resolve authority instead of weakening the guard.
+
+### Dispatch rule
+
+- Dispatch once.
+- If command output is ambiguous, do not dispatch again. Locate the matching workflow run read-only.
+- Require the `release` environment Human approval when GitHub requests it.
+- Track one run ID and one attempt for the normal path.
 
 ### Normal path
 
@@ -264,9 +248,59 @@ If it is unclear whether publication happened, inspect GHCR and workflow evidenc
 
 If an error occurred before any public mutation and recovery might be safe, do not retry automatically. Require an explicit maintainer decision after proving the mutation state.
 
+After GHCR publication succeeds, `releaseCommitSha` is permanently bound to `X.Y.Z` for this release. Do not change source identity under the same version.
+
+## Phase 5 — Create the Release Tag
+
+After public image verification succeeds, create the immutable Git release tag at the exact same source SHA.
+
+Create `vX.Y.Z` targeting exactly `releaseCommitSha`. Prefer an annotated release tag when following the existing project convention.
+
+Before pushing the tag, require explicit maintainer authorization in the current session.
+
+After tag creation/push:
+
+- Read it back from GitHub.
+- Verify `vX.Y.Z^{commit} == releaseCommitSha`.
+- Record tag object/target identity when available.
+
+If the tag points at the wrong commit, stop. Do not move, delete, or recreate the same public release tag automatically. Preserve evidence and let the maintainer choose the incident/recovery path.
+
+## Phase 6 — Publish NuGet Exactly Once
+
+Use `.github/workflows/publish-contracts.yml` from the `vX.Y.Z` tag ref.
+
+The workflow itself must verify:
+
+- event ref is a release tag.
+- tag is valid SemVer.
+- checked-out revision == tag target == event commit.
+- project `<Version>` == tag-derived package version.
+- restore/audit/build/contracts tests pass.
+- `.nupkg` and `.snupkg` are produced.
+
+### Dispatch rule
+
+- Dispatch once.
+- If command output is ambiguous, do not dispatch again. Locate the matching workflow run read-only.
+- Require the `release` environment Human approval when GitHub requests it.
+- Track one run ID and one attempt unless the maintainer explicitly authorizes recovery after a proven pre-publication infrastructure failure.
+
+After success, record:
+
+- workflow run ID.
+- package version.
+- release tag.
+- revision.
+- package and symbol publish result.
+
+Then verify public NuGet indexing/availability. NuGet immutability means a wrong package version cannot be replaced.
+
+If GHCR `X.Y.Z` exists but tag or NuGet publication cannot be completed against the same `releaseCommitSha`, treat the version as a partial-release incident. Do not change source identity or republish the image under the same version to hide the mismatch.
+
 ## Phase 7 — Create GitHub Release
 
-Create GitHub Release `vX.Y.Z` only after the release tag, NuGet package, GHCR image, and primary/recovery public verification facts are known.
+Create GitHub Release `vX.Y.Z` only after the Git tag, NuGet package, GHCR image, and primary/recovery public verification facts are known.
 
 Use `docs/ops/release-notes-checklist.md` as the content checklist. At minimum include:
 
@@ -328,12 +362,12 @@ Recommended timestamps:
 T0 RELEASE_REQUEST_ACCEPTED
 T1 VERSION_PREP_MERGED
 T2 RELEASE_AUTHORITY_FROZEN
-T3 TAG_PUBLISHED
-T4 NUGET_PUBLISHED
-T5 OCI_WORKFLOW_DISPATCHED
-T6 OCI_JOB_STARTED
-T7 OCI_PUBLISHED
-T8 PUBLIC_VERIFICATION_COMPLETE
+T3 OCI_WORKFLOW_DISPATCHED
+T4 OCI_JOB_STARTED
+T5 OCI_PUBLISHED
+T6 PUBLIC_VERIFICATION_COMPLETE
+T7 TAG_PUBLISHED
+T8 NUGET_PUBLISHED
 T9 GITHUB_RELEASE_CREATED
 T10 POST_RELEASE_SYNC_MERGED
 T11 RELEASE_COMPLETE
@@ -343,7 +377,7 @@ Report at least:
 
 - `T0 -> T11`: full wall-clock release operation.
 - `T2 -> T9`: frozen-source to public full-release completion.
-- `T5 -> T8`: OCI Actions path.
+- `T3 -> T6`: OCI Actions path.
 - Human approval / queue delay separately from runner execution.
 - Version-prep and post-release documentation time separately.
 
@@ -355,9 +389,18 @@ Use a compact final record like this in the release issue:
 
 ```yaml
 FULL_RELEASE:
-  RESULT: SUCCESS | STOP | FAILED
+  RESULT: SUCCESS | STOP | FAILED | PARTIAL
   VERSION: X.Y.Z
   RELEASE_COMMIT_SHA:
+
+  OCI:
+    WORKFLOW_RUN_ID:
+    DIGEST:
+    VERSION_TAG:
+    SHA_TAG:
+    PUBLIC_VERIFY: PASS | FAIL | NOT_RUN
+    PUBLICATION_ARTIFACT_ID:
+    EVIDENCE_ARTIFACT_ID:
 
   GIT:
     TAG: vX.Y.Z
@@ -369,15 +412,6 @@ FULL_RELEASE:
     WORKFLOW_RUN_ID:
     PACKAGE_AVAILABLE:
     SYMBOL_PACKAGE_STATUS:
-
-  OCI:
-    WORKFLOW_RUN_ID:
-    DIGEST:
-    VERSION_TAG:
-    SHA_TAG:
-    PUBLIC_VERIFY: PASS | FAIL | NOT_RUN
-    PUBLICATION_ARTIFACT_ID:
-    EVIDENCE_ARTIFACT_ID:
 
   GITHUB_RELEASE:
     URL:
@@ -405,10 +439,10 @@ FULL_RELEASE:
 A full service release is complete only when:
 
 - One immutable release source SHA is recorded.
+- GHCR version/SHA tags point to the verified digest built from that SHA.
 - Git tag targets that SHA.
 - Contracts and OpenAPI versions match the release.
-- NuGet package and symbols are published/verified as required.
-- GHCR version/SHA tags point to the verified digest.
+- NuGet package and symbols are published/verified as required from that tag/SHA.
 - Public image verification and evidence exist.
 - GitHub Release exists with truthful notes.
 - `docs/releases/vX.Y.Z.md` contains published evidence.
