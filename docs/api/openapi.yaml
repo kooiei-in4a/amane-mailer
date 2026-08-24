@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Amane Mailer Service API
-  version: "1.3.1"
+  version: "1.3.4"
   description: >-
     汎用メール送信マイクロサービス。送信依頼を受け付けて永続化し、
     バックグラウンド Worker が ACS (Azure Communication Services) または Mailpit
@@ -28,7 +28,6 @@ info:
 servers:
   - url: http://mailer:8080
     description: コンテナ内部ネットワーク（internal）からの呼び出し
-
 tags:
   - name: mail-requests
     description: 送信依頼の受付
@@ -303,7 +302,7 @@ paths:
               examples:
                 forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
         '404':
-          description: 指定スコープ内に mail request が存在しない
+          description: 指定スコープ内に mail request が存在しない（他 tenant の ID も同様）
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -596,7 +595,7 @@ components:
           description: >-
             初回配送予定時刻（UTC）。省略または null は即時配送。
             Worker / Sweep は scheduled_at 到来前に claim しない。
-            next_attempt_at（再試行バックオフ）とは独立。
+            next_attempt_at（再試行）とは独立。
             過去時刻は 422 SCHEDULED_AT_IN_PAST、受付時刻から 30 日超は 422 SCHEDULED_AT_TOO_FAR。
             payload_hash 対象外（ルーティング / スケジュール envelope）。
         payload_hash:
