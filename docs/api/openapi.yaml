@@ -303,7 +303,7 @@ paths:
               examples:
                 forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
         '404':
-          description: 指定スコープ内に mail request が存在しない（他 tenant の ID も同様）
+          description: 指定スコープ内に mail request が存在しない
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
