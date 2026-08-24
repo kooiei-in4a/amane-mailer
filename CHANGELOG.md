@@ -495,7 +495,11 @@ stabilization work already on `develop` (no additional feature wait).
 
 - No breaking public HTTP contract change. Existing POST acceptance behavior is
   unchanged.
-- No manual database migration is required for this release.
+- **DB migration 010** adds nullable `admin_audit_events.tenant_id` (and index)
+  so scoped Admin audit list/get can survive independent mail-request retention
+  (#282). Existing SQLite databases apply this automatically via `db migrate` /
+  normal startup; no manual SQL is required. Auth / session / db_ops audit rows
+  remain `tenant_id` NULL (service-wide).
 - Operators enabling metrics outside Development must set
   `Mailer:Metrics:BearerToken` (or `MAILER_METRICS_BEARER_TOKEN`), or disable
   metrics with `Mailer:Metrics:Enabled=false`.
@@ -714,7 +718,8 @@ stabilization work already on `develop` (no additional feature wait).
 
 - Exclude tenant secrets and backup paths from the Docker build context (#117).
 - Mask subject and reply-to PII consistently in Admin masked mode (#118).
-- Sync README, SECURITY, and Admin runbooks with current Admin security posture (#119).
+- Sync README, SECURITY, and Admin runbooks with current Admin security posture
+  (#119).
 
 ### Changed
 
@@ -786,4 +791,5 @@ stabilization work already on `develop` (no additional feature wait).
   deploy-time files, not committed to the repository.
 - Public examples use placeholder tokens, example tenant IDs, and example email
   addresses only.
-- Security reporting is handled through the repository security policy and GitHub private vulnerability reporting.
+- Security reporting is handled through the repository security policy and
+  GitHub private vulnerability reporting.
