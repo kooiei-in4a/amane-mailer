@@ -110,7 +110,8 @@ Assert-Equal 'version alignment fail' (Get-VersionAlignment -RequestedVersion '1
 Assert-Equal 'version alignment incomplete' (Get-VersionAlignment -RequestedVersion '1.3.5' -ContractsVersion '' -OpenApiVersion '1.3.4') 'INCOMPLETE'
 
 Assert-Equal 'record published' (Get-ReleaseRecordStateFromText -Text "> Status: **PUBLISHED**`n") 'PUBLISHED'
-Assert-Equal 'record pending' (Get-ReleaseRecordStateFromText -Text "> Status: **RELEASE PREPARATION — NOT YET PUBLISHED**`n") 'PENDING'
+$pendingRecord = '> Status: **RELEASE PREPARATION ' + [char]0x2014 + ' NOT YET PUBLISHED**' + "`n"
+Assert-Equal 'record pending' (Get-ReleaseRecordStateFromText -Text $pendingRecord) 'PENDING'
 Assert-Equal 'record incomplete header' (Get-ReleaseRecordStateFromText -Text "# no status header`n") 'INCOMPLETE'
 
 $commitRef = '{"ref":"refs/tags/v1.3.4","object":{"sha":"' + $RelSha + '","type":"commit"}}'
@@ -270,7 +271,44 @@ $dirtyObs.Worktree = 'DIRTY'
 $dirty = Get-Map $dirtyObs
 Assert-Equal 'dirty local is DRIFT' $dirty['LOCAL_REPO'] 'DRIFT'
 Assert-Equal 'dirty local still UNPUBLISHED' $dirty['STATE'] 'UNPUBLISHED'
+Assert-Equal 'dirty local NEXT STOP' $dirty['NEXT_ACTION'] 'STOP'
 Assert-Equal 'dirty local MUTATION' $dirty['MUTATION_PERFORMED'] 'FALSE'
+
+$caseA = New-AbsentObs -Version '1.3.5' -Alignment 'PASS' -LocalRepo 'DRIFT'
+$caseA.LocalBranch = 'feature/version-prep'
+$caseA.LocalHead = $RelSha
+$caseA.GitHubMainSha = $MainSha
+$caseA.ContractsVersion = '1.3.5'
+$caseA.OpenApiVersion = '1.3.5'
+$caseAMap = Get-Map $caseA
+Assert-Equal 'case A feature version-prep NEXT' $caseAMap['NEXT_ACTION'] 'STOP'
+Assert-Equal 'case A does not bind feature files to github main' $caseAMap['SOURCE_BASIS'] 'GITHUB_MAIN'
+Assert-Equal 'case A SOURCE_SHA stays github main' $caseAMap['SOURCE_SHA'] $MainSha
+Assert-Equal 'case A MUTATION' $caseAMap['MUTATION_PERFORMED'] 'FALSE'
+
+$caseB = New-AbsentObs -Version '1.3.5' -Alignment 'PASS' -LocalRepo 'DRIFT'
+$caseB.Worktree = 'DIRTY'
+$caseBMap = Get-Map $caseB
+Assert-Equal 'case B dirty LOCAL_REPO' $caseBMap['LOCAL_REPO'] 'DRIFT'
+Assert-Equal 'case B dirty NEXT' $caseBMap['NEXT_ACTION'] 'STOP'
+Assert-Equal 'case B alignment fact remains PASS' $caseBMap['VERSION_ALIGNMENT'] 'PASS'
+
+$caseC = New-AbsentObs -Version '1.3.5' -Alignment 'PASS' -LocalRepo 'DRIFT'
+$caseC.LocalHead = $MainSha
+$caseC.GitHubMainSha = $WrongSha
+$caseCMap = Get-Map $caseC
+Assert-Equal 'case C main mismatch LOCAL_REPO' $caseCMap['LOCAL_REPO'] 'DRIFT'
+Assert-Equal 'case C main mismatch NEXT' $caseCMap['NEXT_ACTION'] 'STOP'
+
+$publishedDrift = New-AbsentObs -Version '1.3.4' -Record 'PUBLISHED' -LocalRepo 'DRIFT'
+$publishedDrift.LocalBranch = 'feature/docs'
+$publishedDrift.GitTag = New-ArtifactFact -State 'PRESENT' -TargetSha $RelSha
+$publishedDrift.Ghcr = New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $RelSha -ShaTagState 'PRESENT' -ShaTagDigest $DigestA
+$publishedDrift.Nuget = New-ArtifactFact -State 'PRESENT'
+$publishedDrift.GitHubRelease = New-ArtifactFact -State 'PRESENT'
+$publishedDriftMap = Get-Map $publishedDrift
+Assert-Equal 'published drift STATE' $publishedDriftMap['STATE'] 'PUBLISHED'
+Assert-Equal 'published drift NEXT' $publishedDriftMap['NEXT_ACTION'] 'NONE'
 
 $localIncompleteObs = New-AbsentObs -LocalRepo 'INCOMPLETE'
 $localIncomplete = Get-Map $localIncompleteObs
@@ -291,7 +329,7 @@ Assert-Equal 'sha-tag incomplete STATE' $ghcrShaIncomplete['STATE'] 'INCOMPLETE'
 Assert-Equal 'sha-tag incomplete NEXT' $ghcrShaIncomplete['NEXT_ACTION'] 'STOP'
 
 # Every derived map keeps MUTATION_PERFORMED=FALSE
-$allMaps = @($pre, $image, $tagged, $full, $wrongTag, $digestMismatch, $align, $alignPublished, $httpIncomplete, $dirty, $localIncomplete, $inverted, $ghcrShaIncomplete)
+$allMaps = @($pre, $image, $tagged, $full, $wrongTag, $digestMismatch, $align, $alignPublished, $httpIncomplete, $dirty, $caseAMap, $caseBMap, $caseCMap, $publishedDriftMap, $localIncomplete, $inverted, $ghcrShaIncomplete)
 $mutationOk = $true
 foreach ($item in $allMaps) {
     if ($item['MUTATION_PERFORMED'] -ne 'FALSE') { $mutationOk = $false }
@@ -400,6 +438,93 @@ foreach ($file in $sourceFiles) {
 if (-not $guardFailed) {
     Write-TestPass -Name 'mutation-guard: no mutating tokens in client sources'
 }
+
+# --- GitHub Release state ---
+$relPresent = Resolve-GitHubReleaseStateFromJson -Json '{"tag_name":"v1.3.4","draft":false,"prerelease":false}' -ExpectedTag 'v1.3.4'
+Assert-Equal 'github release published PRESENT' $relPresent.State 'PRESENT'
+$relWrongTag = Resolve-GitHubReleaseStateFromJson -Json '{"tag_name":"v1.3.3","draft":false,"prerelease":false}' -ExpectedTag 'v1.3.4'
+Assert-Equal 'github release wrong tag CONFLICT' $relWrongTag.State 'CONFLICT'
+$relDraft = Resolve-GitHubReleaseStateFromJson -Json '{"tag_name":"v1.3.4","draft":true,"prerelease":false}' -ExpectedTag 'v1.3.4'
+Assert-Equal 'github release draft CONFLICT' $relDraft.State 'CONFLICT'
+$relPre = Resolve-GitHubReleaseStateFromJson -Json '{"tag_name":"v1.3.4","draft":false,"prerelease":true}' -ExpectedTag 'v1.3.4'
+Assert-Equal 'github release prerelease CONFLICT' $relPre.State 'CONFLICT'
+$relBad = Resolve-GitHubReleaseStateFromJson -Json '{"html_url":"https://example.invalid"}' -ExpectedTag 'v1.3.4'
+Assert-Equal 'github release malformed INCOMPLETE' $relBad.State 'INCOMPLETE'
+
+# --- GHCR nested failure propagation ---
+function New-HttpResult {
+    param(
+        [int]$StatusCode,
+        [string]$BodyText = '',
+        [string]$Digest = '',
+        [bool]$TransportFailure = $false,
+        [string]$FailureClass = ''
+    )
+    return [pscustomobject]@{
+        StatusCode       = $StatusCode
+        BodyText         = $BodyText
+        Digest           = $Digest
+        TransportFailure = $TransportFailure
+        FailureClass     = $FailureClass
+    }
+}
+
+$imageManifest = '{"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"' + $DigestA + '","size":1}}'
+$configOk = '{"config":{"Labels":{"org.opencontainers.image.revision":"' + $RelSha + '"}}}'
+$childDigest = Get-FixtureDigest 'c'
+$indexManifest = '{"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"digest":"' + $childDigest + '","platform":{"os":"linux","architecture":"amd64"}}]}'
+
+function Get-GhcrWithBlob {
+    param($BlobResult)
+    $request = {
+        param($Uri, $Headers)
+        if ($Uri -like '*blobs*') { return $BlobResult }
+        return New-HttpResult -StatusCode 200 -BodyText $imageManifest -Digest $DigestA
+    }.GetNewClosure()
+    return Get-GhcrManifestFact -Reference 'v1.3.4' -Token 't' -ReadRevision -Request $request
+}
+
+$ghcrOk = Get-GhcrWithBlob -BlobResult (New-HttpResult -StatusCode 200 -BodyText $configOk)
+Assert-Equal 'ghcr happy path PRESENT' $ghcrOk.State 'PRESENT'
+Assert-Equal 'ghcr happy path revision' $ghcrOk.Revision $RelSha
+
+$ghcr401 = Get-GhcrWithBlob -BlobResult (New-HttpResult -StatusCode 401)
+Assert-Equal 'ghcr config 401 INCOMPLETE' $ghcr401.State 'INCOMPLETE'
+$ghcr429 = Get-GhcrWithBlob -BlobResult (New-HttpResult -StatusCode 429)
+Assert-Equal 'ghcr config 429 INCOMPLETE' $ghcr429.State 'INCOMPLETE'
+$ghcr500 = Get-GhcrWithBlob -BlobResult (New-HttpResult -StatusCode 500)
+Assert-Equal 'ghcr config 5xx INCOMPLETE' $ghcr500.State 'INCOMPLETE'
+$ghcrNet = Get-GhcrWithBlob -BlobResult (New-HttpResult -StatusCode 0 -TransportFailure $true -FailureClass 'NETWORK')
+Assert-Equal 'ghcr config network INCOMPLETE' $ghcrNet.State 'INCOMPLETE'
+$ghcr404 = Get-GhcrWithBlob -BlobResult (New-HttpResult -StatusCode 404)
+Assert-Equal 'ghcr required config 404 INCOMPLETE' $ghcr404.State 'INCOMPLETE'
+$ghcrBad = Get-GhcrWithBlob -BlobResult (New-HttpResult -StatusCode 200 -BodyText '{"config":{}}')
+Assert-Equal 'ghcr missing revision INCOMPLETE' $ghcrBad.State 'INCOMPLETE'
+
+$childFail = {
+    param($Uri, $Headers)
+    if ($Uri -like ('*' + $childDigest + '*')) {
+        return New-HttpResult -StatusCode 500
+    }
+    return New-HttpResult -StatusCode 200 -BodyText $indexManifest -Digest $DigestB
+}.GetNewClosure()
+$ghcrChild = Get-GhcrManifestFact -Reference 'v1.3.4' -Token 't' -ReadRevision -Request $childFail
+Assert-Equal 'ghcr child manifest failure INCOMPLETE' $ghcrChild.State 'INCOMPLETE'
+
+$versionAbsent = {
+    param($Uri, $Headers)
+    return New-HttpResult -StatusCode 404
+}.GetNewClosure()
+$ghcrAbsent = Get-GhcrManifestFact -Reference 'v9.9.9' -Token 't' -ReadRevision -Request $versionAbsent
+Assert-Equal 'ghcr version tag 404 ABSENT' $ghcrAbsent.State 'ABSENT'
+
+# --- self-test source stays ASCII ---
+$sourceBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)
+$nonAscii = 0
+foreach ($b in $sourceBytes) {
+    if ($b -gt 127) { $nonAscii++ }
+}
+Assert-Equal 'self-test source is ASCII' $nonAscii 0
 
 Write-Host ''
 Write-Host ("Self-test result: {0} passed, {1} failed" -f $script:PassCount, $script:FailCount)

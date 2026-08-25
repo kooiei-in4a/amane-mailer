@@ -568,6 +568,20 @@ function Get-ReleaseDerivedStatus {
         $next = 'STOP'
     }
 
+    $mutating = @('PUBLISH_IMAGE', 'CREATE_TAG', 'PUBLISH_NUGET', 'CREATE_GITHUB_RELEASE', 'PREPARE_POST_SYNC')
+    if ($mutating -contains $next) {
+        $onCanonicalMain = (
+            ($localOut -eq 'PASS') -and
+            ($Observations.LocalBranch -eq 'main') -and
+            (Test-ReleaseSha $Observations.LocalHead) -and
+            ($Observations.GitHubMainState -eq 'PRESENT') -and
+            ($Observations.LocalHead -eq $Observations.GitHubMainSha)
+        )
+        if (-not $onCanonicalMain) {
+            $next = 'STOP'
+        }
+    }
+
     $map = [ordered]@{}
     $map['VERSION'] = $Observations.Version
     $map['SOURCE_SHA'] = $source.Sha
@@ -857,6 +871,35 @@ function Get-GitTagObservation {
     return New-ArtifactFact -State $resolved.State -Reason $resolved.Reason
 }
 
+function Resolve-GitHubReleaseStateFromJson {
+    param(
+        [string]$Json,
+        [string]$ExpectedTag
+    )
+    if ([string]::IsNullOrWhiteSpace($Json) -or [string]::IsNullOrWhiteSpace($ExpectedTag)) {
+        return New-ArtifactFact -State 'INCOMPLETE' -Reason 'EMPTY_RELEASE'
+    }
+    $tagName = $null
+    $draftRaw = $null
+    $prereleaseRaw = $null
+    if ($Json -match '"tag_name"\s*:\s*"([^"]+)"') { $tagName = $Matches[1] }
+    if ($Json -match '"draft"\s*:\s*(true|false)') { $draftRaw = $Matches[1] }
+    if ($Json -match '"prerelease"\s*:\s*(true|false)') { $prereleaseRaw = $Matches[1] }
+    if ($null -eq $tagName -or $null -eq $draftRaw -or $null -eq $prereleaseRaw) {
+        return New-ArtifactFact -State 'INCOMPLETE' -Reason 'RELEASE_PARSE'
+    }
+    if ($tagName -ne $ExpectedTag) {
+        return New-ArtifactFact -State 'CONFLICT' -Reason 'TAG_NAME'
+    }
+    if ($prereleaseRaw -eq 'true') {
+        return New-ArtifactFact -State 'CONFLICT' -Reason 'PRERELEASE'
+    }
+    if ($draftRaw -eq 'true') {
+        return New-ArtifactFact -State 'CONFLICT' -Reason 'DRAFT'
+    }
+    return New-ArtifactFact -State 'PRESENT'
+}
+
 function Get-GitHubReleaseObservation {
     param([string]$Version)
     $headers = Get-GitHubAuthHeaders
@@ -869,7 +912,7 @@ function Get-GitHubReleaseObservation {
     if ($presence -ne 'HTTP_OK') {
         return New-ArtifactFact -State 'INCOMPLETE' -Reason (ConvertTo-RemoteFailureClass -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure -FailureClass $resp.FailureClass)
     }
-    return New-ArtifactFact -State 'PRESENT'
+    return Resolve-GitHubReleaseStateFromJson -Json $resp.BodyText -ExpectedTag $tagName
 }
 
 function Get-NugetObservation {
@@ -903,11 +946,24 @@ function Get-GhcrPullToken {
     return $null
 }
 
+function Invoke-GhcrReadOnlyRequest {
+    param(
+        [string]$Uri,
+        [hashtable]$Headers,
+        $Request
+    )
+    if ($null -ne $Request) {
+        return & $Request $Uri $Headers
+    }
+    return Invoke-ReleaseReadOnlyRequest -Uri $Uri -Headers $Headers
+}
+
 function Get-GhcrManifestFact {
     param(
         [string]$Reference,
         [string]$Token,
-        [switch]$ReadRevision
+        [switch]$ReadRevision,
+        $Request
     )
 
     $headers = @{
@@ -915,7 +971,7 @@ function Get-GhcrManifestFact {
         Accept        = 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'
     }
     $uri = 'https://ghcr.io/v2/' + $script:GhcrRepository + '/manifests/' + $Reference
-    $resp = Invoke-ReleaseReadOnlyRequest -Uri $uri -Headers $headers
+    $resp = Invoke-GhcrReadOnlyRequest -Uri $uri -Headers $headers -Request $Request
     $presence = ConvertTo-RemotePresence -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure
     if ($presence -eq 'ABSENT') {
         return New-ArtifactFact -State 'ABSENT'
@@ -928,42 +984,52 @@ function Get-GhcrManifestFact {
         return New-ArtifactFact -State 'INCOMPLETE' -Reason 'DIGEST_HEADER'
     }
 
-    $revision = ''
-    if ($ReadRevision) {
-        $mediaType = ''
-        if ($resp.BodyText -match '"mediaType"\s*:\s*"([^"]+)"') {
-            $mediaType = $Matches[1]
-        }
-        if ($mediaType -match 'image\.manifest') {
-            $configDigest = Get-GhcrConfigDigestFromManifest -ManifestJson $resp.BodyText
-            if (Test-ReleaseDigest $configDigest) {
-                $blobHeaders = @{
-                    Authorization = ('Bearer {0}' -f $Token)
-                    Accept        = 'application/vnd.oci.image.config.v1+json'
-                }
-                $blobUri = 'https://ghcr.io/v2/' + $script:GhcrRepository + '/blobs/' + $configDigest
-                $blob = Invoke-ReleaseReadOnlyRequest -Uri $blobUri -Headers $blobHeaders
-                $blobPresence = ConvertTo-RemotePresence -StatusCode $blob.StatusCode -TransportFailure $blob.TransportFailure
-                if ($blobPresence -eq 'HTTP_OK') {
-                    $parsedRevision = Get-OciRevisionFromConfigText -ConfigText $blob.BodyText
-                    if (Test-ReleaseSha $parsedRevision) {
-                        $revision = $parsedRevision
-                    }
-                }
-            }
-        }
-        elseif ($mediaType -match 'image\.index|manifest\.list') {
-            $childDigests = @([regex]::Matches($resp.BodyText, '"digest"\s*:\s*"(sha256:[0-9a-f]{64})"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
-            if ($childDigests.Count -eq 1) {
-                $child = Get-GhcrManifestFact -Reference $childDigests[0] -Token $Token -ReadRevision
-                if ($child.State -eq 'PRESENT' -and (Test-ReleaseSha $child.Revision)) {
-                    $revision = $child.Revision
-                }
-            }
-        }
+    if (-not $ReadRevision) {
+        return New-ArtifactFact -State 'PRESENT' -Digest $digest
     }
 
-    return New-ArtifactFact -State 'PRESENT' -Digest $digest -Revision $revision
+    $mediaType = ''
+    if ($resp.BodyText -match '"mediaType"\s*:\s*"([^"]+)"') {
+        $mediaType = $Matches[1]
+    }
+    if ($mediaType -match 'image\.manifest') {
+        $configDigest = Get-GhcrConfigDigestFromManifest -ManifestJson $resp.BodyText
+        if (-not (Test-ReleaseDigest $configDigest)) {
+            return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason 'CONFIG_DIGEST'
+        }
+        $blobHeaders = @{
+            Authorization = ('Bearer {0}' -f $Token)
+            Accept        = 'application/vnd.oci.image.config.v1+json'
+        }
+        $blobUri = 'https://ghcr.io/v2/' + $script:GhcrRepository + '/blobs/' + $configDigest
+        $blob = Invoke-GhcrReadOnlyRequest -Uri $blobUri -Headers $blobHeaders -Request $Request
+        $blobPresence = ConvertTo-RemotePresence -StatusCode $blob.StatusCode -TransportFailure $blob.TransportFailure
+        if ($blobPresence -ne 'HTTP_OK') {
+            $reason = ConvertTo-RemoteFailureClass -StatusCode $blob.StatusCode -TransportFailure $blob.TransportFailure -FailureClass $blob.FailureClass
+            if ($blobPresence -eq 'ABSENT') { $reason = 'CONFIG_BLOB_ABSENT' }
+            return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason $reason
+        }
+        $parsedRevision = Get-OciRevisionFromConfigText -ConfigText $blob.BodyText
+        if (-not (Test-ReleaseSha $parsedRevision)) {
+            return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason 'REVISION_PARSE'
+        }
+        return New-ArtifactFact -State 'PRESENT' -Digest $digest -Revision $parsedRevision
+    }
+    if ($mediaType -match 'image\.index|manifest\.list') {
+        $childDigests = @([regex]::Matches($resp.BodyText, '"digest"\s*:\s*"(sha256:[0-9a-f]{64})"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+        if ($childDigests.Count -ne 1) {
+            return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason 'INDEX_NOT_UNIQUE'
+        }
+        $child = Get-GhcrManifestFact -Reference $childDigests[0] -Token $Token -ReadRevision -Request $Request
+        if ($child.State -ne 'PRESENT' -or -not (Test-ReleaseSha $child.Revision)) {
+            $reason = $child.Reason
+            if ($child.State -eq 'ABSENT') { $reason = 'CHILD_MANIFEST_ABSENT' }
+            if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'CHILD_MANIFEST' }
+            return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason $reason
+        }
+        return New-ArtifactFact -State 'PRESENT' -Digest $digest -Revision $child.Revision
+    }
+    return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason 'MEDIA_TYPE'
 }
 
 function Get-GhcrObservation {
@@ -1145,10 +1211,20 @@ function Invoke-ReleaseStatus {
         $ghcr = Get-GhcrObservation -Version $Version -SourceSha $sourceShaGuess
     }
 
-    if ($local.State -eq 'PASS' -and (Test-ReleaseSha $githubMain.Sha) -and (Test-ReleaseSha $local.LocalMain)) {
+    if ($githubMain.State -ne 'PRESENT' -or -not (Test-ReleaseSha $githubMain.Sha)) {
+        if ($local.State -eq 'PASS') {
+            $local.State = 'INCOMPLETE'
+            $local.Reason = 'GITHUB_MAIN'
+        }
+    }
+    elseif ($local.State -eq 'PASS') {
         if ($local.LocalMain -ne $githubMain.Sha -or $local.OriginMain -ne $githubMain.Sha) {
             $local.State = 'DRIFT'
             $local.Reason = 'GITHUB_MAIN'
+        }
+        elseif ($local.Head -ne $githubMain.Sha -or $local.Branch -ne 'main') {
+            $local.State = 'DRIFT'
+            $local.Reason = 'NOT_CANONICAL_HEAD'
         }
     }
 
@@ -1198,5 +1274,7 @@ Export-ModuleMember -Function @(
     'Get-ReleaseDerivedStatus',
     'Format-ReleaseStatusLines',
     'Test-ReleaseVersion',
-    'Invoke-ReleaseStatus'
+    'Invoke-ReleaseStatus',
+    'Get-GhcrManifestFact',
+    'Resolve-GitHubReleaseStateFromJson'
 )
