@@ -1735,11 +1735,11 @@ function Test-PublishImageWorkflowContract {
     if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'GITHUB_WORKFLOW_REF')) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'publish-release-image.yml@refs/heads/main')) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @('REQUESTED_SOURCE_SHA', '==', 'GITHUB_SHA'))) { return 'FAIL' }
-    if (-not (Test-WorkflowActiveContains -Lines $lines -Needle 'release-image-build-smoke.sh')) { return 'FAIL' }
-    if (-not (Test-WorkflowActiveContains -Lines $lines -Needle 'check-release-image-reproducibility.sh')) { return 'FAIL' }
-    if (-not (Test-WorkflowActiveContains -Lines $lines -Needle 'publish-release-image.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'release-image-build-smoke.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'check-release-image-reproducibility.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'publish-release-image.sh')) { return 'FAIL' }
     if (-not (Test-WorkflowJobKeyExists -Lines $lines -Job 'verify-public-image')) { return 'FAIL' }
-    if (-not (Test-WorkflowActiveContains -Lines $lines -Needle 'verify-published-release-image.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'verify-public-image' -Needle 'verify-published-release-image.sh')) { return 'FAIL' }
     return 'PASS'
 }
 
@@ -1784,9 +1784,10 @@ function Test-VerifyPublicImageWorkflowContract {
     if (Test-WorkflowActiveHasAnyNeedle -Lines $lines -Needles $forbidden) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Needles @('GITHUB_REF', '==', 'refs/heads/main'))) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableContains -Lines $lines -Needle 'verify-public-release-image.yml@refs/heads/main')) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableContains -Lines $lines -Needle 'sourceCommitSha')) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableContains -Lines $lines -Needle 'releaseVersion')) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableContains -Lines $lines -Needle 'EXPECTED_DIGEST')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'verify-public-image' -Needle 'verify-published-release-image.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'verify-public-image' -Needles @('identity_source_sha', '==', 'SOURCE_SHA'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'verify-public-image' -Needles @('identity_version', '==', 'MAILER_VERSION'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'verify-public-image' -Needles @('identity_digest', '==', 'EXPECTED_DIGEST'))) { return 'FAIL' }
     return 'PASS'
 }
 

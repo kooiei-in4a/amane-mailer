@@ -852,6 +852,38 @@ Assert-Equal 'verify mutation comment-only PASS' (Test-VerifyPublicImageWorkflow
 $verifyActualMutation = $verifyText + "`n      - run: " + ('docker' + ' log' + 'in') + "`n"
 Assert-Equal 'verify actual mutation FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyActualMutation) 'FAIL'
 
+function Add-WorkflowEnvNote {
+    param(
+        [string]$Text,
+        [string]$Note
+    )
+    $needle = "env:`n  SOURCE_SHA:"
+    $insert = "env:`n  NOTE: $Note`n  SOURCE_SHA:"
+    if ($Text.IndexOf($needle) -lt 0) {
+        return ($Text + "`nenv:`n  NOTE: $Note`n")
+    }
+    return $Text.Replace($needle, $insert)
+}
+
+$imageSmokeMeta = Add-WorkflowEnvNote -Text ($imageText.Replace('bash scripts/release-image-build-smoke.sh', 'true')) -Note 'release-image-build-smoke.sh'
+Assert-Equal 'image smoke script env NOTE spoof FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeMeta) 'FAIL'
+
+$imageReproMeta = Add-WorkflowEnvNote -Text ($imageText.Replace('bash scripts/check-release-image-reproducibility.sh', 'true')) -Note 'check-release-image-reproducibility.sh'
+Assert-Equal 'image repro script env NOTE spoof FAIL' (Test-PublishImageWorkflowContract -Text $imageReproMeta) 'FAIL'
+
+$imagePublishMeta = Add-WorkflowEnvNote -Text ($imageText.Replace('bash scripts/publish-release-image.sh', 'true')) -Note 'publish-release-image.sh'
+Assert-Equal 'image publish script env NOTE spoof FAIL' (Test-PublishImageWorkflowContract -Text $imagePublishMeta) 'FAIL'
+
+$imageVerifyMeta = Add-WorkflowEnvNote -Text ($imageText.Replace('bash scripts/verify-published-release-image.sh', 'true')) -Note 'verify-published-release-image.sh'
+Assert-Equal 'image verify script env NOTE spoof FAIL' (Test-PublishImageWorkflowContract -Text $imageVerifyMeta) 'FAIL'
+
+$verifyCmpSource = ('          [[ "${identity_source_sha}" == "${SOURCE_SHA}" ]] ' + '\')
+$verifyCmpVersion = ('          [[ "${identity_version}" == "${MAILER_VERSION}" ]] ' + '\')
+$verifyCmpDigest = ('          [[ "${identity_digest}" == "${EXPECTED_DIGEST}" ]] ' + '\')
+$verifyEchoSpoof = $verifyText.Replace($verifyCmpSource, '').Replace($verifyCmpVersion, '').Replace($verifyCmpDigest, '')
+$verifyEchoSpoof = $verifyEchoSpoof + "`n          echo sourceCommitSha releaseVersion EXPECTED_DIGEST`n"
+Assert-Equal 'verify binding echo spoof FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyEchoSpoof) 'FAIL'
+
 $imageRun = New-DispatchRun -Id '32726533661' -Path '.github/workflows/publish-release-image.yml' -HeadSha $MainSha
 $imageRunObs = New-ReadyPreflightObservers -Sha $MainSha
 $imageRunObs['WorkflowRuns'] = { param($shaArg) @($imageRun) }.GetNewClosure()
