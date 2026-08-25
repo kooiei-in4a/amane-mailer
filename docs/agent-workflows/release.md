@@ -79,6 +79,24 @@ PAGER=cat
 
 Safe synchronization is fast-forward-only. Do not use `reset --hard`, rebase, force push, or discard local changes to make a release appear clean.
 
+### Canonical read-only status (RO-1)
+
+Reconstruct current release state with the repository client. `Version` is required and is never inferred. `status` is observation-only: it does not update refs, dispatch workflows, or publish.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 status -Version X.Y.Z
+```
+
+Stdout is a stable `KEY=VALUE` summary. Diagnostics go to stderr. `MUTATION_PERFORMED=FALSE` on every `status` path. Treat `CONFLICT` / `INCOMPLETE` and `NEXT_ACTION=STOP` as a halt before any release mutation.
+
+Self-test (fixture-backed; does not use live GitHub / GHCR / NuGet as pass/fail):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-client-self-test.ps1
+```
+
+RO-1 implements `status` only. `preflight`, `verify`, and mutation commands are later slices.
+
 ### Exploration Gate
 
 Stop before version preparation if:
