@@ -95,7 +95,28 @@ Self-test (fixture-backed; does not use live GitHub / GHCR / NuGet as pass/fail)
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-client-self-test.ps1
 ```
 
-RO-1 implements `status` only. `preflight`, `verify`, and mutation commands are later slices.
+RO-2 implements read-only `status` and `preflight`. `verify` and mutation commands are later slices.
+
+### Canonical read-only preflight (RO-2)
+
+`preflight` is the first-mutation gate. Both `-Version` and `-ReleaseCommitSha` are required; the client never infers source SHA. The command is observation-only: it does not update refs, dispatch workflows, approve environment gates, or publish.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 preflight `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <40-lowercase-hex>
+```
+
+Stdout is a stable `KEY=VALUE` contract. Diagnostics go to stderr. Every path prints:
+
+```text
+HUMAN_AUTHORIZATION_REQUIRED=TRUE
+MUTATION_PERFORMED=FALSE
+```
+
+`TECHNICAL_READINESS=READY` is not Human authorization. READY requires source binding, version preparation, all public collisions ABSENT, canonical workflow semantic identity, and no existing source-bound publish workflow runs. Deterministic mismatch is `FAIL`. Missing required observation is `INCOMPLETE`. Aggregation is `FAIL` over `INCOMPLETE` over `PASS`. STOP is reported in stdout; it is not a CLI crash (`exit 0` once the contract is generated).
+
+Do not treat an existing matching Git tag, GHCR tag, NuGet package, GitHub Release, or source-bound publish run as READY. Already-applied / recovery decisions belong to later mutation slices.
 
 ### Exploration Gate
 

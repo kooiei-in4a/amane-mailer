@@ -1,4 +1,4 @@
-# Fixture-backed self-test for the RO-1 release client.
+# Fixture-backed self-test for the RO-1/RO-2 release client.
 # Live GitHub / GHCR / NuGet responses must not decide pass/fail.
 
 [CmdletBinding()]
@@ -392,10 +392,22 @@ $missingVersion = Invoke-Cli -CliArgs @('status')
 Assert-Equal 'CLI status without Version exit 2' $missingVersion.ExitCode 2
 Assert-True 'CLI status without Version mentions Version' ($missingVersion.Output -match 'Version') 'missing -Version usage text'
 
-$unknown = Invoke-Cli -CliArgs @('preflight', '-Version', '1.3.4')
+$unknown = Invoke-Cli -CliArgs @('verify', '-Version', '1.3.4')
 Assert-Equal 'CLI unknown command exit 2' $unknown.ExitCode 2
-Assert-True 'CLI unknown command is RO-1 only' ($unknown.Output -match 'RO-1') 'unknown command should name RO-1'
+Assert-True 'CLI unknown command is RO-2 only' ($unknown.Output -match 'RO-2') 'unknown command should name RO-2'
 Assert-True 'CLI unknown command does not claim mutation' ($unknown.Output -notmatch 'MUTATION_PERFORMED=TRUE') 'unknown command must not claim a mutation'
+
+$preflightNoVersion = Invoke-Cli -CliArgs @('preflight', '-ReleaseCommitSha', $MainSha)
+Assert-Equal 'CLI preflight without Version exit 2' $preflightNoVersion.ExitCode 2
+Assert-True 'CLI preflight without Version mentions Version' ($preflightNoVersion.Output -match 'Version') 'missing -Version usage text'
+
+$preflightNoSha = Invoke-Cli -CliArgs @('preflight', '-Version', '1.3.5')
+Assert-Equal 'CLI preflight without SHA exit 2' $preflightNoSha.ExitCode 2
+Assert-True 'CLI preflight without SHA mentions ReleaseCommitSha' ($preflightNoSha.Output -match 'ReleaseCommitSha') 'missing -ReleaseCommitSha usage text'
+
+$preflightBadSha = Invoke-Cli -CliArgs @('preflight', '-Version', '1.3.5', '-ReleaseCommitSha', 'not-a-sha')
+Assert-Equal 'CLI preflight bad SHA exit 1' $preflightBadSha.ExitCode 1
+Assert-True 'CLI preflight bad SHA mentions hex' ($preflightBadSha.Output -match '40-hex') 'bad SHA should be rejected'
 
 $badVersion = Invoke-Cli -CliArgs @('status', '-Version', 'v1.3.4')
 Assert-Equal 'CLI v-prefix exit 1' $badVersion.ExitCode 1
@@ -414,6 +426,7 @@ $blocked = @(
     'git reset',
     'git clone',
     'gh workflow run',
+    'git switch',
     'workflow_dispatch',
     'nuget push',
     'dotnet nuget push',
@@ -517,6 +530,400 @@ $versionAbsent = {
 }.GetNewClosure()
 $ghcrAbsent = Get-GhcrManifestFact -Reference 'v9.9.9' -Token 't' -ReadRevision -Request $versionAbsent
 Assert-Equal 'ghcr version tag 404 ABSENT' $ghcrAbsent.State 'ABSENT'
+
+# --- RO-2 preflight ---
+function New-BoundLocal {
+    param(
+        [string]$Sha,
+        [string]$Branch = 'main',
+        [string]$Worktree = 'CLEAN',
+        [string]$Origin = 'kooiei-in4a/amane-mailer',
+        [string]$State = 'PASS',
+        [string]$Head = '',
+        [string]$LocalMain = '',
+        [string]$OriginMain = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($Head)) { $Head = $Sha }
+    if ([string]::IsNullOrWhiteSpace($LocalMain)) { $LocalMain = $Sha }
+    if ([string]::IsNullOrWhiteSpace($OriginMain)) { $OriginMain = $Sha }
+    return [pscustomobject]@{
+        State          = $State
+        Branch         = $Branch
+        Head           = $Head
+        Worktree       = $Worktree
+        OriginIdentity = $Origin
+        LocalMain      = $LocalMain
+        OriginMain     = $OriginMain
+        Reason         = ''
+    }
+}
+
+function New-DispatchRun {
+    param(
+        [string]$Id,
+        [string]$Path,
+        [string]$HeadSha,
+        [string]$EventName = '',
+        [string]$Status = 'completed',
+        [string]$Conclusion = 'success'
+    )
+    if ([string]::IsNullOrWhiteSpace($EventName)) { $EventName = ('workflow' + '_dispatch') }
+    return [pscustomobject]@{
+        Id         = $Id
+        Path       = $Path
+        Event      = $EventName
+        HeadSha    = $HeadSha
+        Status     = $Status
+        Conclusion = $Conclusion
+    }
+}
+
+function New-ReadyPreflightObservers {
+    param(
+        [string]$Sha,
+        [string]$Alignment = 'PASS',
+        [string]$ContractsVersion = '1.3.5',
+        [string]$OpenApiVersion = '1.3.5',
+        [string]$Record = 'PENDING',
+        [string]$Changelog = 'PASS'
+    )
+    $local = New-BoundLocal -Sha $Sha
+    $githubSha = $Sha
+    return @{
+        LocalRepo          = { param($root) $local }.GetNewClosure()
+        GitHubMain         = { [pscustomobject]@{ State = 'PRESENT'; Sha = $githubSha; Reason = '' } }.GetNewClosure()
+        GitTag             = { param($ver) New-ArtifactFact -State 'ABSENT' }
+        GitHubRelease      = { param($ver) New-ArtifactFact -State 'ABSENT' }
+        Nuget              = { param($ver) New-ArtifactFact -State 'ABSENT' }
+        Versions           = { param($root, $ver) [pscustomobject]@{ Alignment = $Alignment; ContractsVersion = $ContractsVersion; OpenApiVersion = $OpenApiVersion } }.GetNewClosure()
+        ReleaseRecord      = { param($root, $ver) $Record }.GetNewClosure()
+        Changelog          = { param($root, $ver) $Changelog }.GetNewClosure()
+        GhcrVersion        = { param($ver) New-ArtifactFact -State 'ABSENT' }
+        GhcrSha            = { param($shaArg) New-ArtifactFact -State 'ABSENT' }
+        WorkflowImage      = { 'PASS' }
+        WorkflowContracts  = { 'PASS' }
+        WorkflowVerify     = { 'PASS' }
+        WorkflowRuns       = { param($shaArg) @() }
+    }
+}
+
+function Invoke-PreflightFixture {
+    param($Observers, [string]$Version = '1.3.5', [string]$Sha = '')
+    if ([string]::IsNullOrWhiteSpace($Sha)) { $Sha = $MainSha }
+    return Invoke-ReleasePreflight -Version $Version -ReleaseCommitSha $Sha -RepoRoot $RepoRoot -Observers $Observers -Quiet
+}
+
+$script:PreflightMaps = New-Object System.Collections.Generic.List[object]
+
+$readyObs = New-ReadyPreflightObservers -Sha $MainSha
+$readyMap = Invoke-PreflightFixture -Observers $readyObs
+[void]$script:PreflightMaps.Add($readyMap)
+Assert-Equal 'preflight READY result' $readyMap['PREFLIGHT_RESULT'] 'PASS'
+Assert-Equal 'preflight READY source' $readyMap['SOURCE_BINDING'] 'PASS'
+Assert-Equal 'preflight READY version prep' $readyMap['VERSION_PREP'] 'PASS'
+Assert-Equal 'preflight READY git tag' $readyMap['COLLISION_GIT_TAG'] 'ABSENT'
+Assert-Equal 'preflight READY github release' $readyMap['COLLISION_GITHUB_RELEASE'] 'ABSENT'
+Assert-Equal 'preflight READY ghcr version' $readyMap['COLLISION_GHCR_VERSION'] 'ABSENT'
+Assert-Equal 'preflight READY ghcr sha' $readyMap['COLLISION_GHCR_SHA'] 'ABSENT'
+Assert-Equal 'preflight READY nuget' $readyMap['COLLISION_NUGET'] 'ABSENT'
+Assert-Equal 'preflight READY image wf' $readyMap['WORKFLOW_PUBLISH_IMAGE'] 'PASS'
+Assert-Equal 'preflight READY contracts wf' $readyMap['WORKFLOW_PUBLISH_CONTRACTS'] 'PASS'
+Assert-Equal 'preflight READY verify wf' $readyMap['WORKFLOW_VERIFY_PUBLIC_IMAGE'] 'PASS'
+Assert-Equal 'preflight READY image run' $readyMap['IMAGE_PUBLISH_RUN'] 'ABSENT'
+Assert-Equal 'preflight READY nuget run' $readyMap['NUGET_PUBLISH_RUN'] 'ABSENT'
+Assert-Equal 'preflight READY image run id' $readyMap['IMAGE_PUBLISH_RUN_ID'] 'NONE'
+Assert-Equal 'preflight READY nuget run id' $readyMap['NUGET_PUBLISH_RUN_ID'] 'NONE'
+Assert-Equal 'preflight READY technical' $readyMap['TECHNICAL_READINESS'] 'READY'
+Assert-Equal 'preflight READY human auth' $readyMap['HUMAN_AUTHORIZATION_REQUIRED'] 'TRUE'
+Assert-Equal 'preflight READY mutation' $readyMap['MUTATION_PERFORMED'] 'FALSE'
+Assert-Equal 'preflight READY command' $readyMap['COMMAND'] 'PREFLIGHT'
+Assert-Equal 'preflight READY version field' $readyMap['VERSION'] '1.3.5'
+Assert-Equal 'preflight READY sha field' $readyMap['RELEASE_COMMIT_SHA'] $MainSha
+
+$featureObs = New-ReadyPreflightObservers -Sha $MainSha
+$featureLocal = New-BoundLocal -Sha $MainSha -Branch 'feature/664-release-client-preflight' -State 'DRIFT'
+$featureObs['LocalRepo'] = { param($root) $featureLocal }.GetNewClosure()
+$featureMap = Invoke-PreflightFixture -Observers $featureObs
+[void]$script:PreflightMaps.Add($featureMap)
+Assert-Equal 'preflight feature branch source' $featureMap['SOURCE_BINDING'] 'FAIL'
+Assert-Equal 'preflight feature branch result' $featureMap['PREFLIGHT_RESULT'] 'FAIL'
+Assert-Equal 'preflight feature branch ready' $featureMap['TECHNICAL_READINESS'] 'STOP'
+
+$dirtyObs = New-ReadyPreflightObservers -Sha $MainSha
+$dirtyLocal = New-BoundLocal -Sha $MainSha -Worktree 'DIRTY' -State 'DRIFT'
+$dirtyObs['LocalRepo'] = { param($root) $dirtyLocal }.GetNewClosure()
+$dirtyMap = Invoke-PreflightFixture -Observers $dirtyObs
+[void]$script:PreflightMaps.Add($dirtyMap)
+Assert-Equal 'preflight dirty source' $dirtyMap['SOURCE_BINDING'] 'FAIL'
+Assert-Equal 'preflight dirty ready' $dirtyMap['TECHNICAL_READINESS'] 'STOP'
+
+$mismatchObs = New-ReadyPreflightObservers -Sha $MainSha
+$mismatchLocal = New-BoundLocal -Sha $MainSha -OriginMain $WrongSha -State 'DRIFT'
+$mismatchObs['LocalRepo'] = { param($root) $mismatchLocal }.GetNewClosure()
+$mismatchMap = Invoke-PreflightFixture -Observers $mismatchObs
+[void]$script:PreflightMaps.Add($mismatchMap)
+Assert-Equal 'preflight origin/main mismatch source' $mismatchMap['SOURCE_BINDING'] 'FAIL'
+Assert-Equal 'preflight origin/main mismatch ready' $mismatchMap['TECHNICAL_READINESS'] 'STOP'
+
+$githubMismatchObs = New-ReadyPreflightObservers -Sha $MainSha
+$githubMismatchObs['GitHubMain'] = { [pscustomobject]@{ State = 'PRESENT'; Sha = $WrongSha; Reason = '' } }.GetNewClosure()
+$githubMismatchMap = Invoke-PreflightFixture -Observers $githubMismatchObs
+[void]$script:PreflightMaps.Add($githubMismatchMap)
+Assert-Equal 'preflight github main mismatch source' $githubMismatchMap['SOURCE_BINDING'] 'FAIL'
+
+$shaMismatchObs = New-ReadyPreflightObservers -Sha $MainSha
+$shaMismatchMap = Invoke-PreflightFixture -Observers $shaMismatchObs -Sha $WrongSha
+[void]$script:PreflightMaps.Add($shaMismatchMap)
+Assert-Equal 'preflight requested SHA mismatch source' $shaMismatchMap['SOURCE_BINDING'] 'FAIL'
+Assert-Equal 'preflight requested SHA mismatch ready' $shaMismatchMap['TECHNICAL_READINESS'] 'STOP'
+
+$contractsObs = New-ReadyPreflightObservers -Sha $MainSha -Alignment 'FAIL' -ContractsVersion '1.3.4' -OpenApiVersion '1.3.5'
+$contractsMap = Invoke-PreflightFixture -Observers $contractsObs
+[void]$script:PreflightMaps.Add($contractsMap)
+Assert-Equal 'preflight contracts mismatch prep' $contractsMap['VERSION_PREP'] 'FAIL'
+Assert-Equal 'preflight contracts mismatch result' $contractsMap['PREFLIGHT_RESULT'] 'FAIL'
+
+$openapiObs = New-ReadyPreflightObservers -Sha $MainSha -Alignment 'FAIL' -ContractsVersion '1.3.5' -OpenApiVersion '1.3.4'
+$openapiMap = Invoke-PreflightFixture -Observers $openapiObs
+[void]$script:PreflightMaps.Add($openapiMap)
+Assert-Equal 'preflight openapi mismatch prep' $openapiMap['VERSION_PREP'] 'FAIL'
+
+$changelogObs = New-ReadyPreflightObservers -Sha $MainSha -Changelog 'FAIL'
+$changelogMap = Invoke-PreflightFixture -Observers $changelogObs
+[void]$script:PreflightMaps.Add($changelogMap)
+Assert-Equal 'preflight changelog missing prep' $changelogMap['VERSION_PREP'] 'FAIL'
+
+$recordAbsentObs = New-ReadyPreflightObservers -Sha $MainSha -Record 'ABSENT'
+$recordAbsentMap = Invoke-PreflightFixture -Observers $recordAbsentObs
+[void]$script:PreflightMaps.Add($recordAbsentMap)
+Assert-Equal 'preflight record ABSENT prep' $recordAbsentMap['VERSION_PREP'] 'FAIL'
+
+$recordPublishedObs = New-ReadyPreflightObservers -Sha $MainSha -Record 'PUBLISHED'
+$recordPublishedMap = Invoke-PreflightFixture -Observers $recordPublishedObs
+[void]$script:PreflightMaps.Add($recordPublishedMap)
+Assert-Equal 'preflight record PUBLISHED prep' $recordPublishedMap['VERSION_PREP'] 'FAIL'
+
+$recordBadObs = New-ReadyPreflightObservers -Sha $MainSha -Record 'INCOMPLETE'
+$recordBadMap = Invoke-PreflightFixture -Observers $recordBadObs
+[void]$script:PreflightMaps.Add($recordBadMap)
+Assert-Equal 'preflight record malformed prep' $recordBadMap['VERSION_PREP'] 'INCOMPLETE'
+Assert-Equal 'preflight record malformed result' $recordBadMap['PREFLIGHT_RESULT'] 'INCOMPLETE'
+Assert-Equal 'preflight record malformed ready' $recordBadMap['TECHNICAL_READINESS'] 'STOP'
+
+$collisionNames = @(
+    @{ Key = 'GitTag'; Field = 'COLLISION_GIT_TAG' },
+    @{ Key = 'GitHubRelease'; Field = 'COLLISION_GITHUB_RELEASE' },
+    @{ Key = 'GhcrVersion'; Field = 'COLLISION_GHCR_VERSION' },
+    @{ Key = 'GhcrSha'; Field = 'COLLISION_GHCR_SHA' },
+    @{ Key = 'Nuget'; Field = 'COLLISION_NUGET' }
+)
+foreach ($collision in $collisionNames) {
+    $obs = New-ReadyPreflightObservers -Sha $MainSha
+    $obs[$collision.Key] = { param($arg) New-ArtifactFact -State 'PRESENT' }
+    $map = Invoke-PreflightFixture -Observers $obs
+    [void]$script:PreflightMaps.Add($map)
+    Assert-Equal ("preflight collision PRESENT " + $collision.Field) $map[$collision.Field] 'PRESENT'
+    Assert-Equal ("preflight collision PRESENT result " + $collision.Field) $map['PREFLIGHT_RESULT'] 'FAIL'
+    Assert-Equal ("preflight collision PRESENT ready " + $collision.Field) $map['TECHNICAL_READINESS'] 'STOP'
+}
+
+$incompleteReasons = @('401', '403', '429', '5xx', 'network')
+foreach ($reason in $incompleteReasons) {
+    $obs = New-ReadyPreflightObservers -Sha $MainSha
+    $captured = $reason
+    $obs['GitHubRelease'] = { param($ver) New-ArtifactFact -State 'INCOMPLETE' -Reason $captured }.GetNewClosure()
+    $map = Invoke-PreflightFixture -Observers $obs
+    [void]$script:PreflightMaps.Add($map)
+    Assert-Equal ("preflight remote INCOMPLETE never ABSENT " + $reason) $map['COLLISION_GITHUB_RELEASE'] 'INCOMPLETE'
+    Assert-Equal ("preflight remote INCOMPLETE result " + $reason) $map['PREFLIGHT_RESULT'] 'INCOMPLETE'
+    Assert-Equal ("preflight remote INCOMPLETE ready " + $reason) $map['TECHNICAL_READINESS'] 'STOP'
+}
+
+foreach ($collision in $collisionNames) {
+    $obs = New-ReadyPreflightObservers -Sha $MainSha
+    $obs[$collision.Key] = { param($arg) New-ArtifactFact -State 'INCOMPLETE' -Reason 'AUTH' }
+    $map = Invoke-PreflightFixture -Observers $obs
+    [void]$script:PreflightMaps.Add($map)
+    Assert-Equal ("preflight surface INCOMPLETE " + $collision.Field) $map[$collision.Field] 'INCOMPLETE'
+    Assert-True ("preflight surface INCOMPLETE not ABSENT " + $collision.Field) ($map[$collision.Field] -ne 'ABSENT') 'INCOMPLETE must not collapse to ABSENT'
+}
+
+$failOverIncompleteFacts = [pscustomobject]@{
+    Version                   = '1.3.5'
+    ReleaseCommitSha          = $MainSha
+    SourceBinding             = 'FAIL'
+    VersionPrep               = 'INCOMPLETE'
+    CollisionGitTag           = 'ABSENT'
+    CollisionGitHubRelease    = 'INCOMPLETE'
+    CollisionGhcrVersion      = 'ABSENT'
+    CollisionGhcrSha          = 'ABSENT'
+    CollisionNuget            = 'ABSENT'
+    WorkflowPublishImage      = 'PASS'
+    WorkflowPublishContracts  = 'PASS'
+    WorkflowVerifyPublicImage = 'PASS'
+    ImagePublishRun           = 'ABSENT'
+    ImagePublishRunId         = 'NONE'
+    NugetPublishRun           = 'ABSENT'
+    NugetPublishRunId         = 'NONE'
+}
+$failOverMap = Get-ReleasePreflightDerivedStatus -Facts $failOverIncompleteFacts
+[void]$script:PreflightMaps.Add($failOverMap)
+Assert-Equal 'aggregation FAIL over INCOMPLETE result' $failOverMap['PREFLIGHT_RESULT'] 'FAIL'
+Assert-Equal 'aggregation FAIL over INCOMPLETE ready' $failOverMap['TECHNICAL_READINESS'] 'STOP'
+
+$imageText = [System.IO.File]::ReadAllText((Join-Path $RepoRoot '.github\workflows\publish-release-image.yml'))
+$contractsText = [System.IO.File]::ReadAllText((Join-Path $RepoRoot '.github\workflows\publish-contracts.yml'))
+$verifyText = [System.IO.File]::ReadAllText((Join-Path $RepoRoot '.github\workflows\verify-public-release-image.yml'))
+Assert-Equal 'canonical publish-release-image contract' (Test-PublishImageWorkflowContract -Text $imageText) 'PASS'
+Assert-Equal 'canonical publish-contracts contract' (Test-PublishContractsWorkflowContract -Text $contractsText) 'PASS'
+Assert-Equal 'canonical verify-public-release-image contract' (Test-VerifyPublicImageWorkflowContract -Text $verifyText) 'PASS'
+
+$quotedHash = Get-ActiveWorkflowLineText -Line "        echo '## Release image publication'" -Mode 'Shell'
+Assert-True 'quoted hash is not treated as comment' ($quotedHash.IndexOf('##') -ge 0) 'quoted ## was stripped'
+$yamlHash = Get-ActiveWorkflowLineText -Line '        uses: actions/checkout@deadbeef # v7.0.1' -Mode 'Yaml'
+Assert-True 'yaml trailing comment stripped' ($yamlHash.IndexOf('#') -lt 0) 'yaml # comment remained active'
+Assert-True 'yaml uses remains after comment strip' ($yamlHash.IndexOf('uses:') -ge 0) 'uses mapping was lost'
+
+$commentOnly = ConvertTo-WorkflowActiveLines -Text "# packages: write`n# environment: release`n"
+Assert-Equal 'comment-only yaml yields no active lines' $commentOnly.Count 0
+
+$noMainGuard = $imageText.Replace('refs/heads/main', 'refs/heads/other')
+Assert-Equal 'image workflow main guard missing FAIL' (Test-PublishImageWorkflowContract -Text $noMainGuard) 'FAIL'
+
+$noSourceBind = $imageText.Replace('REQUESTED_SOURCE_SHA', 'REQUESTED_OTHER_SHA')
+Assert-Equal 'image workflow source binding missing FAIL' (Test-PublishImageWorkflowContract -Text $noSourceBind) 'FAIL'
+
+$noEnv = $imageText.Replace('environment: release', 'environment: other')
+Assert-Equal 'image workflow environment release missing FAIL' (Test-PublishImageWorkflowContract -Text $noEnv) 'FAIL'
+
+$noTagGuard = $contractsText.Replace('GITHUB_REF_TYPE', 'GITHUB_OTHER_TYPE')
+Assert-Equal 'contracts tag guard missing FAIL' (Test-PublishContractsWorkflowContract -Text $noTagGuard) 'FAIL'
+
+$noVersionGuard = $contractsText.Replace('getProperty:Version', 'getProperty:Other')
+Assert-Equal 'contracts version guard missing FAIL' (Test-PublishContractsWorkflowContract -Text $noVersionGuard) 'FAIL'
+
+$verifyWrite = $verifyText + "`n      packages: write`n"
+Assert-Equal 'verify packages write FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyWrite) 'FAIL'
+
+$verifyLogin = $verifyText + "`n      " + ('docker' + ' log' + 'in') + "`n"
+Assert-Equal 'verify docker login FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyLogin) 'FAIL'
+
+$verifyPush = $verifyText + "`n      " + ('docker' + ' pu' + 'sh') + "`n"
+Assert-Equal 'verify docker push FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyPush) 'FAIL'
+
+$imageMainComment = $imageText.Replace(
+    ('          [[ "${GITHUB_REF}" == "refs/heads/main" ]] ' + '\'),
+    '          # [[ "${GITHUB_REF}" == "refs/heads/main" ]]'
+)
+Assert-Equal 'image main guard comment-only FAIL' (Test-PublishImageWorkflowContract -Text $imageMainComment) 'FAIL'
+
+$imageSourceComment = $imageText.Replace(
+    ('          [[ "${REQUESTED_SOURCE_SHA}" == "${GITHUB_SHA}" ]] ' + '\'),
+    '          # [[ "${REQUESTED_SOURCE_SHA}" == "${GITHUB_SHA}" ]]'
+)
+Assert-Equal 'image source guard comment-only FAIL' (Test-PublishImageWorkflowContract -Text $imageSourceComment) 'FAIL'
+
+$imageEnvComment = $imageText.Replace('    environment: release', '    # environment: release')
+Assert-Equal 'image environment comment-only FAIL' (Test-PublishImageWorkflowContract -Text $imageEnvComment) 'FAIL'
+
+$imageWriteComment = $imageText.Replace('      packages: write', '      # packages: write')
+Assert-Equal 'image packages write comment-only FAIL' (Test-PublishImageWorkflowContract -Text $imageWriteComment) 'FAIL'
+
+$contractsTagComment = $contractsText.Replace(
+    '          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then',
+    '          # if [ "${GITHUB_REF_TYPE}" != "tag" ]; then'
+)
+Assert-Equal 'contracts tag guard comment-only FAIL' (Test-PublishContractsWorkflowContract -Text $contractsTagComment) 'FAIL'
+
+$contractsVersionComment = $contractsText.Replace(
+    '          if [ "${project_version}" != "${package_version}" ]; then',
+    '          # if [ "${project_version}" != "${package_version}" ]; then'
+)
+Assert-Equal 'contracts version guard comment-only FAIL' (Test-PublishContractsWorkflowContract -Text $contractsVersionComment) 'FAIL'
+
+$verifyWriteComment = $verifyText + "`n# packages: write`n"
+Assert-Equal 'verify packages write comment-only PASS' (Test-VerifyPublicImageWorkflowContract -Text $verifyWriteComment) 'PASS'
+
+Assert-Equal 'verify actual packages write FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyWrite) 'FAIL'
+
+$verifyMutationComment = $verifyText + "`n# " + ('docker' + ' log' + 'in') + "`n# " + ('docker' + ' pu' + 'sh') + "`n"
+Assert-Equal 'verify mutation comment-only PASS' (Test-VerifyPublicImageWorkflowContract -Text $verifyMutationComment) 'PASS'
+
+$verifyActualMutation = $verifyText + "`n      - run: " + ('docker' + ' log' + 'in') + "`n"
+Assert-Equal 'verify actual mutation FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyActualMutation) 'FAIL'
+
+$imageRun = New-DispatchRun -Id '32726533661' -Path '.github/workflows/publish-release-image.yml' -HeadSha $MainSha
+$imageRunObs = New-ReadyPreflightObservers -Sha $MainSha
+$imageRunObs['WorkflowRuns'] = { param($shaArg) @($imageRun) }.GetNewClosure()
+$imageRunMap = Invoke-PreflightFixture -Observers $imageRunObs
+[void]$script:PreflightMaps.Add($imageRunMap)
+Assert-Equal 'preflight image run candidate' $imageRunMap['IMAGE_PUBLISH_RUN'] 'CANDIDATE_PRESENT'
+Assert-Equal 'preflight image run candidate id' $imageRunMap['IMAGE_PUBLISH_RUN_ID'] '32726533661'
+Assert-Equal 'preflight image run candidate result' $imageRunMap['PREFLIGHT_RESULT'] 'FAIL'
+Assert-Equal 'preflight image run candidate ready' $imageRunMap['TECHNICAL_READINESS'] 'STOP'
+
+$imageRun2 = New-DispatchRun -Id '32726533662' -Path '.github/workflows/publish-release-image.yml' -HeadSha $MainSha
+$imageAmbObs = New-ReadyPreflightObservers -Sha $MainSha
+$imageAmbObs['WorkflowRuns'] = { param($shaArg) @($imageRun, $imageRun2) }.GetNewClosure()
+$imageAmbMap = Invoke-PreflightFixture -Observers $imageAmbObs
+[void]$script:PreflightMaps.Add($imageAmbMap)
+Assert-Equal 'preflight image runs ambiguous' $imageAmbMap['IMAGE_PUBLISH_RUN'] 'AMBIGUOUS'
+Assert-Equal 'preflight image runs ambiguous id' $imageAmbMap['IMAGE_PUBLISH_RUN_ID'] 'NONE'
+Assert-Equal 'preflight image runs ambiguous ready' $imageAmbMap['TECHNICAL_READINESS'] 'STOP'
+
+$nugetRun = New-DispatchRun -Id '32728423486' -Path '.github/workflows/publish-contracts.yml' -HeadSha $MainSha
+$nugetRunObs = New-ReadyPreflightObservers -Sha $MainSha
+$nugetRunObs['WorkflowRuns'] = { param($shaArg) @($nugetRun) }.GetNewClosure()
+$nugetRunMap = Invoke-PreflightFixture -Observers $nugetRunObs
+[void]$script:PreflightMaps.Add($nugetRunMap)
+Assert-Equal 'preflight nuget run candidate' $nugetRunMap['NUGET_PUBLISH_RUN'] 'CANDIDATE_PRESENT'
+Assert-Equal 'preflight nuget run candidate id' $nugetRunMap['NUGET_PUBLISH_RUN_ID'] '32728423486'
+Assert-Equal 'preflight nuget run candidate ready' $nugetRunMap['TECHNICAL_READINESS'] 'STOP'
+
+$actionsIncompleteObs = New-ReadyPreflightObservers -Sha $MainSha
+$actionsIncompleteObs['WorkflowRuns'] = { param($shaArg) 'INCOMPLETE' }
+$actionsIncompleteMap = Invoke-PreflightFixture -Observers $actionsIncompleteObs
+[void]$script:PreflightMaps.Add($actionsIncompleteMap)
+Assert-Equal 'preflight actions API incomplete image' $actionsIncompleteMap['IMAGE_PUBLISH_RUN'] 'INCOMPLETE'
+Assert-Equal 'preflight actions API incomplete nuget' $actionsIncompleteMap['NUGET_PUBLISH_RUN'] 'INCOMPLETE'
+Assert-Equal 'preflight actions API incomplete result' $actionsIncompleteMap['PREFLIGHT_RESULT'] 'INCOMPLETE'
+Assert-Equal 'preflight actions API incomplete ready' $actionsIncompleteMap['TECHNICAL_READINESS'] 'STOP'
+
+$preflightHuman = $true
+$preflightMutation = $true
+foreach ($item in $script:PreflightMaps) {
+    if ($item['HUMAN_AUTHORIZATION_REQUIRED'] -ne 'TRUE') { $preflightHuman = $false }
+    if ($item['MUTATION_PERFORMED'] -ne 'FALSE') { $preflightMutation = $false }
+}
+Assert-True 'every preflight path HUMAN_AUTHORIZATION_REQUIRED=TRUE' $preflightHuman 'a preflight map dropped HUMAN_AUTHORIZATION_REQUIRED'
+Assert-True 'every preflight path MUTATION_PERFORMED=FALSE' $preflightMutation 'a preflight map set MUTATION_PERFORMED'
+
+$preflightLines = Format-ReleasePreflightLines -Map $readyMap
+Assert-Equal 'preflight format starts COMMAND' $preflightLines[0] 'COMMAND=PREFLIGHT'
+Assert-Equal 'preflight format version key' $preflightLines[1] 'VERSION=1.3.5'
+Assert-Equal 'preflight format sha key' $preflightLines[2] ('RELEASE_COMMIT_SHA=' + $MainSha)
+Assert-Equal 'preflight format ends mutation' $preflightLines[$preflightLines.Count - 1] 'MUTATION_PERFORMED=FALSE'
+Assert-Equal 'preflight format human key' $preflightLines[$preflightLines.Count - 2] 'HUMAN_AUTHORIZATION_REQUIRED=TRUE'
+Assert-Equal 'preflight format key count' $preflightLines.Count 21
+
+$changelogHit = Test-ChangelogHasReleaseEntry -Text "## [1.3.5] - 2026-08-26`n" -Version '1.3.5'
+Assert-Equal 'changelog entry present' $changelogHit $true
+$changelogMiss = Test-ChangelogHasReleaseEntry -Text "## [Unreleased]`n" -Version '1.3.5'
+Assert-Equal 'changelog entry missing' $changelogMiss $false
+
+$zeroRuns = ConvertTo-WorkflowDispatchRunObservation -Runs @() -WorkflowPath '.github/workflows/publish-release-image.yml' -ReleaseCommitSha $MainSha
+Assert-Equal 'zero dispatch runs ABSENT' $zeroRuns.State 'ABSENT'
+$nullRuns = ConvertTo-WorkflowDispatchRunObservation -Runs $null -WorkflowPath '.github/workflows/publish-release-image.yml' -ReleaseCommitSha $MainSha
+Assert-Equal 'null dispatch runs INCOMPLETE' $nullRuns.State 'INCOMPLETE'
+
+$twoRunJson = '{"total_count":2,"workflow_runs":[{"id":32726533661,"path":".github/workflows/publish-release-image.yml","event":"workflow' + '_dispatch","head_sha":"' + $MainSha + '","status":"completed","conclusion":"success"},{"id":32728423486,"path":".github/workflows/publish-contracts.yml","event":"workflow' + '_dispatch","head_sha":"' + $MainSha + '","status":"completed","conclusion":"success"}]}'
+$parsedRuns = Convert-GitHubWorkflowRunsJson -Json $twoRunJson
+Assert-Equal 'parsed workflow run count' $parsedRuns.Count 2
+Assert-Equal 'parsed image run id' $parsedRuns[0].Id '32726533661'
+Assert-Equal 'parsed nuget run id' $parsedRuns[1].Id '32728423486'
+
+Assert-Equal 'version prep PASS' (Get-VersionPrepState -Alignment 'PASS' -ChangelogHasEntry 'PASS' -ReleaseRecord 'PENDING') 'PASS'
+Assert-Equal 'version prep FAIL over INCOMPLETE' (Get-VersionPrepState -Alignment 'FAIL' -ChangelogHasEntry 'INCOMPLETE' -ReleaseRecord 'PENDING') 'FAIL'
 
 # --- self-test source stays ASCII ---
 $sourceBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)

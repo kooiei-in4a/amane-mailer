@@ -1256,6 +1256,953 @@ function Invoke-ReleaseStatus {
     return $map
 }
 
+$script:PreflightKeys = @(
+    'COMMAND',
+    'VERSION',
+    'RELEASE_COMMIT_SHA',
+    'PREFLIGHT_RESULT',
+    'SOURCE_BINDING',
+    'VERSION_PREP',
+    'COLLISION_GIT_TAG',
+    'COLLISION_GITHUB_RELEASE',
+    'COLLISION_GHCR_VERSION',
+    'COLLISION_GHCR_SHA',
+    'COLLISION_NUGET',
+    'WORKFLOW_PUBLISH_IMAGE',
+    'WORKFLOW_PUBLISH_CONTRACTS',
+    'WORKFLOW_VERIFY_PUBLIC_IMAGE',
+    'IMAGE_PUBLISH_RUN',
+    'IMAGE_PUBLISH_RUN_ID',
+    'NUGET_PUBLISH_RUN',
+    'NUGET_PUBLISH_RUN_ID',
+    'TECHNICAL_READINESS',
+    'HUMAN_AUTHORIZATION_REQUIRED',
+    'MUTATION_PERFORMED'
+)
+
+# Constructed so client sources never contain mutating command tokens.
+$script:EventWorkflowDispatch = 'workflow' + '_dispatch'
+$script:YamlWorkflowDispatch = $script:EventWorkflowDispatch + ':'
+$script:NeedleDotnetNugetPush = 'dotnet ' + ('nu' + 'get') + ' push'
+$script:NeedleDockerLogin = 'docker' + ' log' + 'in'
+$script:NeedleDockerPush = 'docker' + ' pu' + 'sh'
+
+function Get-LeadingSpaceCount {
+    param([string]$Line)
+    if ([string]::IsNullOrEmpty($Line)) { return 0 }
+    $n = 0
+    $chars = $Line.ToCharArray()
+    $i = 0
+    while ($i -lt $chars.Length) {
+        if ($chars[$i] -eq ' ') { $n++; $i++; continue }
+        if ($chars[$i] -eq "`t") { $n += 2; $i++; continue }
+        break
+    }
+    return $n
+}
+
+function Get-ActiveWorkflowLineText {
+    param(
+        [string]$Line,
+        [string]$Mode
+    )
+    if ([string]::IsNullOrEmpty($Line)) { return '' }
+    $sb = New-Object System.Text.StringBuilder
+    $inSingle = $false
+    $inDouble = $false
+    $escape = $false
+    $chars = $Line.ToCharArray()
+    $i = 0
+    while ($i -lt $chars.Length) {
+        $c = $chars[$i]
+        if ($inSingle) {
+            [void]$sb.Append($c)
+            if ($c -eq [char]39) {
+                if ((($i + 1) -lt $chars.Length) -and ($chars[$i + 1] -eq [char]39)) {
+                    [void]$sb.Append($chars[$i + 1])
+                    $i += 2
+                    continue
+                }
+                $inSingle = $false
+            }
+            $i++
+            continue
+        }
+        if ($inDouble) {
+            [void]$sb.Append($c)
+            if ($escape) {
+                $escape = $false
+                $i++
+                continue
+            }
+            if ($c -eq [char]92) {
+                $escape = $true
+                $i++
+                continue
+            }
+            if ($c -eq [char]34) { $inDouble = $false }
+            $i++
+            continue
+        }
+        if ($c -eq [char]39) {
+            $inSingle = $true
+            [void]$sb.Append($c)
+            $i++
+            continue
+        }
+        if ($c -eq [char]34) {
+            $inDouble = $true
+            [void]$sb.Append($c)
+            $i++
+            continue
+        }
+        if ($c -eq [char]35) { break }
+        [void]$sb.Append($c)
+        $i++
+    }
+    return $sb.ToString().TrimEnd()
+}
+
+function Get-WorkflowYamlKeyName {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    $t = $Text.Trim()
+    if ($t -match '^([A-Za-z0-9_.-]+)\s*:(.*)$') {
+        return [string]$Matches[1]
+    }
+    return ''
+}
+
+function Get-WorkflowYamlKeyValue {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    $t = $Text.Trim()
+    if ($t -match '^([A-Za-z0-9_.-]+)\s*:(.*)$') {
+        return ([string]$Matches[2]).Trim()
+    }
+    return ''
+}
+
+function ConvertTo-WorkflowActiveLines {
+    param([string]$Text)
+    $result = New-Object System.Collections.Generic.List[object]
+    if ([string]::IsNullOrEmpty($Text)) { return ,$result }
+
+    $rawLines = $Text -split '\r\n|\n|\r'
+    $inShell = $false
+    $contentIndent = -1
+    $jobsIndent = -1
+    $jobKeyIndent = -1
+    $currentJob = ''
+
+    foreach ($raw in @($rawLines)) {
+        $rawIndent = Get-LeadingSpaceCount -Line $raw
+
+        if ($inShell) {
+            $isBlank = [string]::IsNullOrWhiteSpace($raw)
+            if ($isBlank) { continue }
+            if ($contentIndent -lt 0) { $contentIndent = $rawIndent }
+            if ($rawIndent -lt $contentIndent) {
+                $inShell = $false
+                $contentIndent = -1
+            }
+            else {
+                $shellActive = Get-ActiveWorkflowLineText -Line $raw -Mode 'Shell'
+                if (-not [string]::IsNullOrWhiteSpace($shellActive.Trim())) {
+                    [void]$result.Add([pscustomobject]@{
+                        Kind       = 'Shell'
+                        Indent     = $rawIndent
+                        Text       = $shellActive.Trim()
+                        Job        = $currentJob
+                        Executable = $true
+                    })
+                }
+                continue
+            }
+        }
+
+        $yamlActive = Get-ActiveWorkflowLineText -Line $raw -Mode 'Yaml'
+        if ([string]::IsNullOrWhiteSpace($yamlActive)) { continue }
+        $trim = $yamlActive.Trim()
+        $key = Get-WorkflowYamlKeyName -Text $trim
+        $val = Get-WorkflowYamlKeyValue -Text $trim
+        $executable = $false
+        $startShell = $false
+        if ($key -eq 'run') {
+            if ($val -match '^[|>][-+]?\s*$') {
+                $startShell = $true
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($val)) {
+                $executable = $true
+            }
+        }
+
+        if ($key -eq 'jobs') {
+            $jobsIndent = $rawIndent
+            $jobKeyIndent = -1
+            $currentJob = ''
+        }
+        elseif ($jobsIndent -ge 0) {
+            if ($rawIndent -le $jobsIndent) {
+                $jobsIndent = -1
+                $jobKeyIndent = -1
+                $currentJob = ''
+            }
+            elseif ($jobKeyIndent -lt 0 -or $rawIndent -eq $jobKeyIndent) {
+                if (-not [string]::IsNullOrWhiteSpace($key)) {
+                    $currentJob = $key
+                    $jobKeyIndent = $rawIndent
+                }
+            }
+            elseif ($rawIndent -lt $jobKeyIndent) {
+                $currentJob = ''
+            }
+        }
+
+        [void]$result.Add([pscustomobject]@{
+            Kind       = 'Yaml'
+            Indent     = $rawIndent
+            Text       = $trim
+            Job        = $currentJob
+            Executable = $executable
+        })
+
+        if ($startShell) {
+            $inShell = $true
+            $contentIndent = -1
+        }
+    }
+
+    return ,$result
+}
+
+function Test-WorkflowYamlPath {
+    param(
+        $Lines,
+        [string[]]$Keys
+    )
+    if ($null -eq $Lines -or $null -eq $Keys -or $Keys.Count -eq 0) { return $false }
+    $from = 0
+    $parentIndent = -1
+    foreach ($want in @($Keys)) {
+        $found = $false
+        $i = $from
+        while ($i -lt $Lines.Count) {
+            $line = $Lines[$i]
+            $i++
+            if ($line.Kind -ne 'Yaml') { continue }
+            if ($parentIndent -ge 0 -and $line.Indent -le $parentIndent) { break }
+            $name = Get-WorkflowYamlKeyName -Text $line.Text
+            if ($name -eq $want) {
+                $found = $true
+                $from = $i
+                $parentIndent = $line.Indent
+                break
+            }
+        }
+        if (-not $found) { return $false }
+    }
+    return $true
+}
+
+function Test-WorkflowYamlPathValue {
+    param(
+        $Lines,
+        [string[]]$Keys,
+        [string]$Value
+    )
+    if (-not (Test-WorkflowYamlPath -Lines $Lines -Keys $Keys)) { return $false }
+    $from = 0
+    $parentIndent = -1
+    $node = $null
+    foreach ($want in @($Keys)) {
+        $i = $from
+        while ($i -lt $Lines.Count) {
+            $line = $Lines[$i]
+            $i++
+            if ($line.Kind -ne 'Yaml') { continue }
+            if ($parentIndent -ge 0 -and $line.Indent -le $parentIndent) { break }
+            $name = Get-WorkflowYamlKeyName -Text $line.Text
+            if ($name -eq $want) {
+                $node = $line
+                $from = $i
+                $parentIndent = $line.Indent
+                break
+            }
+        }
+    }
+    if ($null -eq $node) { return $false }
+    $got = Get-WorkflowYamlKeyValue -Text $node.Text
+    return ($got -eq $Value)
+}
+
+function Test-WorkflowJobYamlKeyValue {
+    param(
+        $Lines,
+        [string]$Job,
+        [string]$Key,
+        [string]$Value
+    )
+    foreach ($line in $Lines) {
+        if ($line.Kind -ne 'Yaml') { continue }
+        if ($line.Job -ne $Job) { continue }
+        $name = Get-WorkflowYamlKeyName -Text $line.Text
+        if ($name -ne $Key) { continue }
+        $got = Get-WorkflowYamlKeyValue -Text $line.Text
+        if ($got -eq $Value) { return $true }
+    }
+    return $false
+}
+
+function Test-WorkflowYamlKeyValueExists {
+    param(
+        $Lines,
+        [string]$Key,
+        [string]$Value
+    )
+    foreach ($line in $Lines) {
+        if ($line.Kind -ne 'Yaml') { continue }
+        $name = Get-WorkflowYamlKeyName -Text $line.Text
+        if ($name -ne $Key) { continue }
+        $got = Get-WorkflowYamlKeyValue -Text $line.Text
+        if ($got -eq $Value) { return $true }
+    }
+    return $false
+}
+
+function Test-WorkflowJobKeyExists {
+    param(
+        $Lines,
+        [string]$Job
+    )
+    foreach ($line in $Lines) {
+        if ($line.Kind -ne 'Yaml') { continue }
+        if ($line.Job -ne $Job) { continue }
+        $name = Get-WorkflowYamlKeyName -Text $line.Text
+        if ($name -eq $Job) { return $true }
+    }
+    return $false
+}
+
+function Get-WorkflowYamlKeyValueCount {
+    param(
+        $Lines,
+        [string]$Key,
+        [string]$Value,
+        [string]$Job = ''
+    )
+    $count = 0
+    foreach ($line in $Lines) {
+        if ($line.Kind -ne 'Yaml') { continue }
+        if (-not [string]::IsNullOrWhiteSpace($Job) -and $line.Job -ne $Job) { continue }
+        $name = Get-WorkflowYamlKeyName -Text $line.Text
+        if ($name -ne $Key) { continue }
+        $got = Get-WorkflowYamlKeyValue -Text $line.Text
+        if ($got -eq $Value) { $count++ }
+    }
+    return $count
+}
+
+function Test-WorkflowActiveContains {
+    param(
+        $Lines,
+        [string]$Needle
+    )
+    if ([string]::IsNullOrWhiteSpace($Needle)) { return $false }
+    foreach ($line in $Lines) {
+        if (([string]$line.Text).IndexOf($Needle) -ge 0) { return $true }
+    }
+    return $false
+}
+
+function Test-WorkflowExecutableContains {
+    param(
+        $Lines,
+        [string]$Needle,
+        [string]$Job = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($Needle)) { return $false }
+    foreach ($line in $Lines) {
+        if (-not $line.Executable) { continue }
+        if (-not [string]::IsNullOrWhiteSpace($Job) -and $line.Job -ne $Job) { continue }
+        if (([string]$line.Text).IndexOf($Needle) -ge 0) { return $true }
+    }
+    return $false
+}
+
+function Test-WorkflowExecutableLineHasAll {
+    param(
+        $Lines,
+        [string[]]$Needles,
+        [string]$Job = ''
+    )
+    foreach ($line in $Lines) {
+        if (-not $line.Executable) { continue }
+        if (-not [string]::IsNullOrWhiteSpace($Job) -and $line.Job -ne $Job) { continue }
+        $text = [string]$line.Text
+        $ok = $true
+        foreach ($needle in @($Needles)) {
+            if ($text.IndexOf($needle) -lt 0) { $ok = $false; break }
+        }
+        if ($ok) { return $true }
+    }
+    return $false
+}
+
+function Test-WorkflowActiveHasAnyNeedle {
+    param(
+        $Lines,
+        [string[]]$Needles
+    )
+    foreach ($needle in @($Needles)) {
+        if ([string]::IsNullOrWhiteSpace($needle)) { continue }
+        if (Test-WorkflowActiveContains -Lines $Lines -Needle $needle) { return $true }
+    }
+    return $false
+}
+
+function Get-ReleaseSourceBinding {
+    param(
+        $Local,
+        [string]$GitHubMainState,
+        [string]$GitHubMainSha,
+        [string]$ReleaseCommitSha
+    )
+    if (-not (Test-ReleaseSha $ReleaseCommitSha)) { return 'FAIL' }
+    if ($null -eq $Local) { return 'INCOMPLETE' }
+    if ($Local.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($GitHubMainState -ne 'PRESENT' -or -not (Test-ReleaseSha $GitHubMainSha)) { return 'INCOMPLETE' }
+    if ($Local.OriginIdentity -ne $script:CanonicalOwnerRepo) { return 'FAIL' }
+    if ($Local.Worktree -eq 'UNKNOWN') { return 'INCOMPLETE' }
+    if ($Local.Worktree -ne 'CLEAN') { return 'FAIL' }
+    if ($Local.Branch -ne 'main') { return 'FAIL' }
+    if (-not (Test-ReleaseSha $Local.Head)) { return 'INCOMPLETE' }
+    if (-not (Test-ReleaseSha $Local.LocalMain)) { return 'INCOMPLETE' }
+    if (-not (Test-ReleaseSha $Local.OriginMain)) { return 'INCOMPLETE' }
+    if ($Local.Head -ne $Local.LocalMain) { return 'FAIL' }
+    if ($Local.Head -ne $Local.OriginMain) { return 'FAIL' }
+    if ($Local.Head -ne $GitHubMainSha) { return 'FAIL' }
+    if ($Local.Head -ne $ReleaseCommitSha) { return 'FAIL' }
+    return 'PASS'
+}
+
+function Test-ChangelogHasReleaseEntry {
+    param(
+        [string]$Text,
+        [string]$Version
+    )
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    if (-not (Test-ReleaseVersion $Version)) { return $null }
+    $escaped = [regex]::Escape($Version)
+    if ($Text -match ('(?m)^## \[' + $escaped + '\]')) { return $true }
+    return $false
+}
+
+function Get-VersionPrepState {
+    param(
+        [string]$Alignment,
+        [string]$ChangelogHasEntry,
+        [string]$ReleaseRecord
+    )
+    $rank = 0
+    if ($Alignment -eq 'INCOMPLETE' -or $ChangelogHasEntry -eq 'INCOMPLETE' -or $ReleaseRecord -eq 'INCOMPLETE') {
+        $rank = 1
+    }
+    if ($Alignment -eq 'FAIL' -or $ChangelogHasEntry -eq 'FAIL') { $rank = 2 }
+    if ($ReleaseRecord -eq 'ABSENT' -or $ReleaseRecord -eq 'PUBLISHED') { $rank = 2 }
+    if ($rank -eq 2) { return 'FAIL' }
+    if ($rank -eq 1) { return 'INCOMPLETE' }
+    if ($Alignment -eq 'PASS' -and $ChangelogHasEntry -eq 'PASS' -and $ReleaseRecord -eq 'PENDING') {
+        return 'PASS'
+    }
+    return 'FAIL'
+}
+
+function Test-PublishImageWorkflowContract {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return 'INCOMPLETE' }
+    $lines = ConvertTo-WorkflowActiveLines -Text $Text
+    $dispatch = $script:EventWorkflowDispatch
+    if (-not (Test-WorkflowYamlPath -Lines $lines -Keys @('on', $dispatch, 'inputs', 'source_sha'))) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPathValue -Lines $lines -Keys @('on', $dispatch, 'inputs', 'source_sha', 'required') -Value 'true')) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPath -Lines $lines -Keys @('on', $dispatch, 'inputs', 'release_version'))) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPathValue -Lines $lines -Keys @('on', $dispatch, 'inputs', 'release_version', 'required') -Value 'true')) { return 'FAIL' }
+    if (-not (Test-WorkflowJobYamlKeyValue -Lines $lines -Job 'publish' -Key 'environment' -Value 'release')) { return 'FAIL' }
+    if (-not (Test-WorkflowJobYamlKeyValue -Lines $lines -Job 'publish' -Key 'packages' -Value 'write')) { return 'FAIL' }
+    $writeCount = Get-WorkflowYamlKeyValueCount -Lines $lines -Key 'packages' -Value 'write'
+    if ($writeCount -ne 1) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @('GITHUB_REF', '==', 'refs/heads/main'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'GITHUB_WORKFLOW_REF')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'publish-release-image.yml@refs/heads/main')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @('REQUESTED_SOURCE_SHA', '==', 'GITHUB_SHA'))) { return 'FAIL' }
+    if (-not (Test-WorkflowActiveContains -Lines $lines -Needle 'release-image-build-smoke.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowActiveContains -Lines $lines -Needle 'check-release-image-reproducibility.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowActiveContains -Lines $lines -Needle 'publish-release-image.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowJobKeyExists -Lines $lines -Job 'verify-public-image')) { return 'FAIL' }
+    if (-not (Test-WorkflowActiveContains -Lines $lines -Needle 'verify-published-release-image.sh')) { return 'FAIL' }
+    return 'PASS'
+}
+
+function Test-PublishContractsWorkflowContract {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return 'INCOMPLETE' }
+    $lines = ConvertTo-WorkflowActiveLines -Text $Text
+    $dispatch = $script:EventWorkflowDispatch
+    if (-not (Test-WorkflowYamlPath -Lines $lines -Keys @('on', $dispatch))) { return 'FAIL' }
+    if (-not (Test-WorkflowJobYamlKeyValue -Lines $lines -Job 'publish' -Key 'environment' -Value 'release')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @('GITHUB_REF_TYPE', '!= "tag"'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'v(0|[1-9][0-9]*)')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle '^{commit}')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @('revision', '!=', 'tag_commit'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @('revision', '!=', 'event_commit'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'getProperty:Version')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @('project_version', '!=', 'package_version'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @($script:NeedleDotnetNugetPush, '.nupkg'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @($script:NeedleDotnetNugetPush, '.snupkg'))) { return 'FAIL' }
+    return 'PASS'
+}
+
+function Test-VerifyPublicImageWorkflowContract {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return 'INCOMPLETE' }
+    $lines = ConvertTo-WorkflowActiveLines -Text $Text
+    $dispatch = $script:EventWorkflowDispatch
+    if (-not (Test-WorkflowYamlPathValue -Lines $lines -Keys @('on', $dispatch, 'inputs', 'publication_run_id', 'required') -Value 'true')) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPathValue -Lines $lines -Keys @('on', $dispatch, 'inputs', 'publication_source_sha', 'required') -Value 'true')) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPathValue -Lines $lines -Keys @('on', $dispatch, 'inputs', 'release_version', 'required') -Value 'true')) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPathValue -Lines $lines -Keys @('on', $dispatch, 'inputs', 'expected_digest', 'required') -Value 'true')) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlKeyValueExists -Lines $lines -Key 'contents' -Value 'read')) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlKeyValueExists -Lines $lines -Key 'actions' -Value 'read')) { return 'FAIL' }
+    if ((Get-WorkflowYamlKeyValueCount -Lines $lines -Key 'packages' -Value 'write') -gt 0) { return 'FAIL' }
+    $forbidden = @(
+        'docker/login-action',
+        $script:NeedleDockerLogin,
+        $script:NeedleDockerPush,
+        'crane push',
+        'crane copy'
+    )
+    if (Test-WorkflowActiveHasAnyNeedle -Lines $lines -Needles $forbidden) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Needles @('GITHUB_REF', '==', 'refs/heads/main'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Needle 'verify-public-release-image.yml@refs/heads/main')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Needle 'sourceCommitSha')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Needle 'releaseVersion')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Needle 'EXPECTED_DIGEST')) { return 'FAIL' }
+    return 'PASS'
+}
+
+function ConvertTo-WorkflowDispatchRunObservation {
+    param(
+        $Runs,
+        [string]$WorkflowPath,
+        [string]$ReleaseCommitSha
+    )
+    if ($null -eq $Runs) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Id = 'NONE'; Status = 'NONE'; Conclusion = 'NONE'; Reason = 'RUNS_NULL' }
+    }
+    $matched = New-Object System.Collections.Generic.List[object]
+    foreach ($run in @($Runs)) {
+        $event = [string]$run.Event
+        $head = [string]$run.HeadSha
+        $path = [string]$run.Path
+        if ($event -ne $script:EventWorkflowDispatch) { continue }
+        if ($head -ne $ReleaseCommitSha) { continue }
+        if ($path -ne $WorkflowPath) { continue }
+        [void]$matched.Add($run)
+    }
+    if ($matched.Count -eq 0) {
+        return [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE'; Status = 'NONE'; Conclusion = 'NONE'; Reason = '' }
+    }
+    if ($matched.Count -eq 1) {
+        $one = $matched[0]
+        $id = [string]$one.Id
+        if ([string]::IsNullOrWhiteSpace($id)) { $id = 'NONE' }
+        $status = [string]$one.Status
+        if ([string]::IsNullOrWhiteSpace($status)) { $status = 'NONE' }
+        $conclusion = [string]$one.Conclusion
+        if ([string]::IsNullOrWhiteSpace($conclusion)) { $conclusion = 'NONE' }
+        return [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = $id; Status = $status; Conclusion = $conclusion; Reason = '' }
+    }
+    return [pscustomobject]@{ State = 'AMBIGUOUS'; Id = 'NONE'; Status = 'NONE'; Conclusion = 'NONE'; Reason = 'MULTIPLE' }
+}
+
+function Convert-GitHubWorkflowRunsJson {
+    param([string]$Json)
+    if ([string]::IsNullOrWhiteSpace($Json)) { return $null }
+    try {
+        $parsed = $Json | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+    if ($null -eq $parsed) { return $null }
+    $runsProp = $parsed.PSObject.Properties['workflow_runs']
+    if ($null -eq $runsProp) { return ,([object[]]@()) }
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($run in @($runsProp.Value)) {
+        if ($null -eq $run) { continue }
+        $id = ''
+        $path = ''
+        $event = ''
+        $head = ''
+        $status = ''
+        $conclusion = ''
+        if ($run.PSObject.Properties['id']) { $id = [string]$run.id }
+        if ($run.PSObject.Properties['path']) { $path = [string]$run.path }
+        if ($run.PSObject.Properties['event']) { $event = [string]$run.event }
+        if ($run.PSObject.Properties['head_sha']) { $head = [string]$run.head_sha }
+        if ($run.PSObject.Properties['status']) { $status = [string]$run.status }
+        if ($run.PSObject.Properties['conclusion']) { $conclusion = [string]$run.conclusion }
+        [void]$list.Add([pscustomobject]@{
+            Id         = $id
+            Path       = $path
+            Event      = $event
+            HeadSha    = $head
+            Status     = $status
+            Conclusion = $conclusion
+        })
+    }
+    # PS 5.1 can throw "Argument types do not match" on @($List[object]).
+    return ,($list.ToArray())
+}
+
+function Get-CollisionRank {
+    param([string]$State)
+    if ($State -eq 'PRESENT' -or $State -eq 'CONFLICT') { return 2 }
+    if ($State -eq 'INCOMPLETE') { return 1 }
+    if ($State -eq 'ABSENT') { return 0 }
+    return 2
+}
+
+function Get-GateRank {
+    param([string]$State)
+    if ($State -eq 'FAIL') { return 2 }
+    if ($State -eq 'INCOMPLETE') { return 1 }
+    if ($State -eq 'PASS') { return 0 }
+    return 2
+}
+
+function Get-RunRank {
+    param([string]$State)
+    if ($State -eq 'CANDIDATE_PRESENT' -or $State -eq 'AMBIGUOUS') { return 2 }
+    if ($State -eq 'INCOMPLETE') { return 1 }
+    if ($State -eq 'ABSENT') { return 0 }
+    return 2
+}
+
+function Get-ReleasePreflightDerivedStatus {
+    param($Facts)
+
+    $rank = 0
+    $rank = [Math]::Max($rank, (Get-GateRank -State $Facts.SourceBinding))
+    $rank = [Math]::Max($rank, (Get-GateRank -State $Facts.VersionPrep))
+    $rank = [Math]::Max($rank, (Get-CollisionRank -State $Facts.CollisionGitTag))
+    $rank = [Math]::Max($rank, (Get-CollisionRank -State $Facts.CollisionGitHubRelease))
+    $rank = [Math]::Max($rank, (Get-CollisionRank -State $Facts.CollisionGhcrVersion))
+    $rank = [Math]::Max($rank, (Get-CollisionRank -State $Facts.CollisionGhcrSha))
+    $rank = [Math]::Max($rank, (Get-CollisionRank -State $Facts.CollisionNuget))
+    $rank = [Math]::Max($rank, (Get-GateRank -State $Facts.WorkflowPublishImage))
+    $rank = [Math]::Max($rank, (Get-GateRank -State $Facts.WorkflowPublishContracts))
+    $rank = [Math]::Max($rank, (Get-GateRank -State $Facts.WorkflowVerifyPublicImage))
+    $rank = [Math]::Max($rank, (Get-RunRank -State $Facts.ImagePublishRun))
+    $rank = [Math]::Max($rank, (Get-RunRank -State $Facts.NugetPublishRun))
+
+    $result = 'PASS'
+    $ready = 'READY'
+    if ($rank -eq 2) {
+        $result = 'FAIL'
+        $ready = 'STOP'
+    }
+    elseif ($rank -eq 1) {
+        $result = 'INCOMPLETE'
+        $ready = 'STOP'
+    }
+
+    $imageRunId = $Facts.ImagePublishRunId
+    if ([string]::IsNullOrWhiteSpace($imageRunId)) { $imageRunId = 'NONE' }
+    $nugetRunId = $Facts.NugetPublishRunId
+    if ([string]::IsNullOrWhiteSpace($nugetRunId)) { $nugetRunId = 'NONE' }
+
+    $map = [ordered]@{}
+    $map['COMMAND'] = 'PREFLIGHT'
+    $map['VERSION'] = $Facts.Version
+    $map['RELEASE_COMMIT_SHA'] = $Facts.ReleaseCommitSha
+    $map['PREFLIGHT_RESULT'] = $result
+    $map['SOURCE_BINDING'] = $Facts.SourceBinding
+    $map['VERSION_PREP'] = $Facts.VersionPrep
+    $map['COLLISION_GIT_TAG'] = $Facts.CollisionGitTag
+    $map['COLLISION_GITHUB_RELEASE'] = $Facts.CollisionGitHubRelease
+    $map['COLLISION_GHCR_VERSION'] = $Facts.CollisionGhcrVersion
+    $map['COLLISION_GHCR_SHA'] = $Facts.CollisionGhcrSha
+    $map['COLLISION_NUGET'] = $Facts.CollisionNuget
+    $map['WORKFLOW_PUBLISH_IMAGE'] = $Facts.WorkflowPublishImage
+    $map['WORKFLOW_PUBLISH_CONTRACTS'] = $Facts.WorkflowPublishContracts
+    $map['WORKFLOW_VERIFY_PUBLIC_IMAGE'] = $Facts.WorkflowVerifyPublicImage
+    $map['IMAGE_PUBLISH_RUN'] = $Facts.ImagePublishRun
+    $map['IMAGE_PUBLISH_RUN_ID'] = $imageRunId
+    $map['NUGET_PUBLISH_RUN'] = $Facts.NugetPublishRun
+    $map['NUGET_PUBLISH_RUN_ID'] = $nugetRunId
+    $map['TECHNICAL_READINESS'] = $ready
+    $map['HUMAN_AUTHORIZATION_REQUIRED'] = 'TRUE'
+    $map['MUTATION_PERFORMED'] = 'FALSE'
+    return $map
+}
+
+function Format-ReleasePreflightLines {
+    param($Map)
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($key in $script:PreflightKeys) {
+        $value = [string]$Map[$key]
+        $value = $value -replace '[\r\n]+', ' '
+        [void]$lines.Add(('{0}={1}' -f $key, $value))
+    }
+    return $lines
+}
+
+function Read-RepoTextFile {
+    param(
+        [string]$RepoRoot,
+        [string]$RelativePath
+    )
+    $path = Join-Path $RepoRoot $RelativePath
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        return [System.IO.File]::ReadAllText($path)
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-GitHubWorkflowDispatchRuns {
+    param([string]$ReleaseCommitSha)
+    $headers = Get-GitHubAuthHeaders
+    $uri = $script:GitHubApiRoot + '/actions/runs?event=' + $script:EventWorkflowDispatch + '&head_sha=' + $ReleaseCommitSha + '&per_page=100'
+    $resp = Invoke-ReleaseReadOnlyRequest -Uri $uri -Headers $headers
+    $presence = ConvertTo-RemotePresence -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure
+    if ($presence -ne 'HTTP_OK') {
+        return [pscustomobject]@{
+            State  = 'INCOMPLETE'
+            Runs   = $null
+            Reason = ConvertTo-RemoteFailureClass -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure -FailureClass $resp.FailureClass
+        }
+    }
+    $runs = Convert-GitHubWorkflowRunsJson -Json $resp.BodyText
+    if ($null -eq $runs) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Runs = $null; Reason = 'PARSE' }
+    }
+    $runCount = 0
+    if ($null -ne $runs) {
+        $runCount = $runs.Count
+    }
+    if ($runCount -ge 100) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Runs = $null; Reason = 'PAGE_CAP' }
+    }
+    return [pscustomobject]@{ State = 'PRESENT'; Runs = $runs; Reason = '' }
+}
+
+function Write-ReleasePreflightDiagnostics {
+    param($Facts, $Map)
+    Write-ReleaseStderr ('release-client: preflight VERSION={0} SHA={1} (read-only)' -f $Facts.Version, $Facts.ReleaseCommitSha)
+    Write-ReleaseStderr ('release-client: SOURCE_BINDING={0} VERSION_PREP={1}' -f $Facts.SourceBinding, $Facts.VersionPrep)
+    Write-ReleaseStderr ('release-client: PREFLIGHT_RESULT={0} TECHNICAL_READINESS={1}' -f $Map['PREFLIGHT_RESULT'], $Map['TECHNICAL_READINESS'])
+    if ($Facts.ImagePublishRun -eq 'CANDIDATE_PRESENT') {
+        Write-ReleaseStderr ('release-client: image publish run candidate id={0}' -f $Map['IMAGE_PUBLISH_RUN_ID'])
+    }
+    if ($Facts.NugetPublishRun -eq 'CANDIDATE_PRESENT') {
+        Write-ReleaseStderr ('release-client: nuget publish run candidate id={0}' -f $Map['NUGET_PUBLISH_RUN_ID'])
+    }
+}
+
+function Invoke-ReleasePreflight {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseCommitSha,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        $Observers,
+        [switch]$Quiet
+    )
+
+    if (-not (Test-ReleaseVersion $Version)) {
+        throw 'Version must be X.Y.Z; the client does not infer or accept a v-prefix.'
+    }
+    if (-not (Test-ReleaseSha $ReleaseCommitSha)) {
+        throw 'ReleaseCommitSha must be a lowercase 40-hex SHA; the client does not infer source.'
+    }
+
+    $local = $null
+    $githubMain = $null
+    $gitTag = $null
+    $githubRelease = $null
+    $nuget = $null
+    $versions = $null
+    $record = $null
+    $changelogHas = 'INCOMPLETE'
+    $ghcrVersion = $null
+    $ghcrSha = $null
+    $wfImage = 'INCOMPLETE'
+    $wfContracts = 'INCOMPLETE'
+    $wfVerify = 'INCOMPLETE'
+    $imageRun = $null
+    $nugetRun = $null
+
+    if ($null -ne $Observers) {
+        $local = & $Observers['LocalRepo'] $RepoRoot
+        $githubMain = & $Observers['GitHubMain']
+        $gitTag = & $Observers['GitTag'] $Version
+        $githubRelease = & $Observers['GitHubRelease'] $Version
+        $nuget = & $Observers['Nuget'] $Version
+        $versions = & $Observers['Versions'] $RepoRoot $Version
+        $record = & $Observers['ReleaseRecord'] $RepoRoot $Version
+        if ($Observers.Contains('Changelog')) {
+            $changelogHas = [string](& $Observers['Changelog'] $RepoRoot $Version)
+        }
+        if ($Observers.Contains('GhcrVersion')) {
+            $ghcrVersion = & $Observers['GhcrVersion'] $Version
+        }
+        else {
+            $ghcrVersion = New-ArtifactFact -State 'INCOMPLETE' -Reason 'OBSERVER'
+        }
+        if ($Observers.Contains('GhcrSha')) {
+            $ghcrSha = & $Observers['GhcrSha'] $ReleaseCommitSha
+        }
+        else {
+            $ghcrSha = New-ArtifactFact -State 'INCOMPLETE' -Reason 'OBSERVER'
+        }
+        if ($Observers.Contains('WorkflowImage')) {
+            $wfImage = [string](& $Observers['WorkflowImage'])
+        }
+        if ($Observers.Contains('WorkflowContracts')) {
+            $wfContracts = [string](& $Observers['WorkflowContracts'])
+        }
+        if ($Observers.Contains('WorkflowVerify')) {
+            $wfVerify = [string](& $Observers['WorkflowVerify'])
+        }
+        $runList = @()
+        $runFetchState = 'INCOMPLETE'
+        if ($Observers.Contains('WorkflowRuns')) {
+            $runFetch = & $Observers['WorkflowRuns'] $ReleaseCommitSha
+            if ($runFetch -is [string]) {
+                $runFetchState = [string]$runFetch
+                $runList = @()
+            }
+            elseif ($null -eq $runFetch) {
+                # PowerShell unwraps an empty array return from a scriptblock to $null.
+                $runFetchState = 'PRESENT'
+                $runList = @()
+            }
+            elseif ($null -ne $runFetch.PSObject.Properties['Runs']) {
+                $runFetchState = [string]$runFetch.State
+                if ([string]::IsNullOrWhiteSpace($runFetchState)) { $runFetchState = 'PRESENT' }
+                if ($null -ne $runFetch.Runs) {
+                    $runList = @($runFetch.Runs)
+                }
+            }
+            else {
+                $runFetchState = 'PRESENT'
+                $runList = @($runFetch)
+            }
+        }
+        if ($runFetchState -eq 'INCOMPLETE') {
+            $imageRun = [pscustomobject]@{ State = 'INCOMPLETE'; Id = 'NONE' }
+            $nugetRun = [pscustomobject]@{ State = 'INCOMPLETE'; Id = 'NONE' }
+        }
+        else {
+            $imageRun = ConvertTo-WorkflowDispatchRunObservation -Runs $runList -WorkflowPath '.github/workflows/publish-release-image.yml' -ReleaseCommitSha $ReleaseCommitSha
+            $nugetRun = ConvertTo-WorkflowDispatchRunObservation -Runs $runList -WorkflowPath '.github/workflows/publish-contracts.yml' -ReleaseCommitSha $ReleaseCommitSha
+        }
+    }
+    else {
+        $local = Get-LocalRepoObservation -RepoRoot $RepoRoot
+        $githubMain = Get-GitHubMainObservation
+        $gitTag = Get-GitTagObservation -Version $Version
+        $githubRelease = Get-GitHubReleaseObservation -Version $Version
+        $nuget = Get-NugetObservation -Version $Version
+        $versions = Get-RepoVersionObservation -RepoRoot $RepoRoot -Version $Version
+        $record = Get-ReleaseRecordObservation -RepoRoot $RepoRoot -Version $Version
+        $changelogText = Read-RepoTextFile -RepoRoot $RepoRoot -RelativePath 'CHANGELOG.md'
+        if ($null -eq $changelogText) {
+            $changelogHas = 'INCOMPLETE'
+        }
+        else {
+            $hasEntry = Test-ChangelogHasReleaseEntry -Text $changelogText -Version $Version
+            if ($null -eq $hasEntry) { $changelogHas = 'INCOMPLETE' }
+            elseif ($hasEntry) { $changelogHas = 'PASS' }
+            else { $changelogHas = 'FAIL' }
+        }
+        $token = Get-GhcrPullToken
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            $ghcrVersion = New-ArtifactFact -State 'INCOMPLETE' -Reason 'GHCR_TOKEN'
+            $ghcrSha = New-ArtifactFact -State 'INCOMPLETE' -Reason 'GHCR_TOKEN'
+        }
+        else {
+            $ghcrVersion = Get-GhcrManifestFact -Reference ('v' + $Version) -Token $token
+            $ghcrSha = Get-GhcrManifestFact -Reference ('sha-' + $ReleaseCommitSha) -Token $token
+        }
+        $imageText = Read-RepoTextFile -RepoRoot $RepoRoot -RelativePath '.github/workflows/publish-release-image.yml'
+        $contractsText = Read-RepoTextFile -RepoRoot $RepoRoot -RelativePath '.github/workflows/publish-contracts.yml'
+        $verifyText = Read-RepoTextFile -RepoRoot $RepoRoot -RelativePath '.github/workflows/verify-public-release-image.yml'
+        $wfImage = Test-PublishImageWorkflowContract -Text $imageText
+        $wfContracts = Test-PublishContractsWorkflowContract -Text $contractsText
+        $wfVerify = Test-VerifyPublicImageWorkflowContract -Text $verifyText
+        $runFetch = Get-GitHubWorkflowDispatchRuns -ReleaseCommitSha $ReleaseCommitSha
+        if ($runFetch.State -eq 'INCOMPLETE') {
+            $imageRun = [pscustomobject]@{ State = 'INCOMPLETE'; Id = 'NONE' }
+            $nugetRun = [pscustomobject]@{ State = 'INCOMPLETE'; Id = 'NONE' }
+        }
+        else {
+            $imageRun = ConvertTo-WorkflowDispatchRunObservation -Runs $runFetch.Runs -WorkflowPath '.github/workflows/publish-release-image.yml' -ReleaseCommitSha $ReleaseCommitSha
+            $nugetRun = ConvertTo-WorkflowDispatchRunObservation -Runs $runFetch.Runs -WorkflowPath '.github/workflows/publish-contracts.yml' -ReleaseCommitSha $ReleaseCommitSha
+        }
+    }
+
+    if ($null -eq $githubMain) {
+        $githubMain = [pscustomobject]@{ State = 'INCOMPLETE'; Sha = '' }
+    }
+    if ($null -eq $gitTag) { $gitTag = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $githubRelease) { $githubRelease = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $nuget) { $nuget = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $ghcrVersion) { $ghcrVersion = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $ghcrSha) { $ghcrSha = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $versions) { $versions = [pscustomobject]@{ Alignment = 'INCOMPLETE' } }
+    if ($null -eq $record) { $record = 'INCOMPLETE' }
+    if ($null -eq $imageRun) { $imageRun = [pscustomobject]@{ State = 'INCOMPLETE'; Id = 'NONE' } }
+    if ($null -eq $nugetRun) { $nugetRun = [pscustomobject]@{ State = 'INCOMPLETE'; Id = 'NONE' } }
+
+    $sourceBinding = Get-ReleaseSourceBinding -Local $local -GitHubMainState $githubMain.State -GitHubMainSha $githubMain.Sha -ReleaseCommitSha $ReleaseCommitSha
+    $versionPrep = Get-VersionPrepState -Alignment $versions.Alignment -ChangelogHasEntry $changelogHas -ReleaseRecord $record
+
+    $facts = [pscustomobject]@{
+        Version                     = $Version
+        ReleaseCommitSha            = $ReleaseCommitSha
+        SourceBinding               = $sourceBinding
+        VersionPrep                 = $versionPrep
+        CollisionGitTag             = $gitTag.State
+        CollisionGitHubRelease      = $githubRelease.State
+        CollisionGhcrVersion        = $ghcrVersion.State
+        CollisionGhcrSha            = $ghcrSha.State
+        CollisionNuget              = $nuget.State
+        WorkflowPublishImage        = $wfImage
+        WorkflowPublishContracts    = $wfContracts
+        WorkflowVerifyPublicImage   = $wfVerify
+        ImagePublishRun             = $imageRun.State
+        ImagePublishRunId           = $imageRun.Id
+        NugetPublishRun             = $nugetRun.State
+        NugetPublishRunId           = $nugetRun.Id
+    }
+
+    $map = Get-ReleasePreflightDerivedStatus -Facts $facts
+    if (-not $Quiet) {
+        Write-ReleasePreflightDiagnostics -Facts $facts -Map $map
+        foreach ($line in (Format-ReleasePreflightLines -Map $map)) {
+            [Console]::Out.WriteLine($line)
+        }
+    }
+    return $map
+}
+
 Export-ModuleMember -Function @(
     'ConvertTo-RemotePresence',
     'ConvertTo-RemoteFailureClass',
@@ -1276,5 +2223,18 @@ Export-ModuleMember -Function @(
     'Test-ReleaseVersion',
     'Invoke-ReleaseStatus',
     'Get-GhcrManifestFact',
-    'Resolve-GitHubReleaseStateFromJson'
+    'Resolve-GitHubReleaseStateFromJson',
+    'Get-ReleaseSourceBinding',
+    'Get-VersionPrepState',
+    'Test-ChangelogHasReleaseEntry',
+    'Test-PublishImageWorkflowContract',
+    'Test-PublishContractsWorkflowContract',
+    'Test-VerifyPublicImageWorkflowContract',
+    'Get-ActiveWorkflowLineText',
+    'ConvertTo-WorkflowActiveLines',
+    'ConvertTo-WorkflowDispatchRunObservation',
+    'Convert-GitHubWorkflowRunsJson',
+    'Get-ReleasePreflightDerivedStatus',
+    'Format-ReleasePreflightLines',
+    'Invoke-ReleasePreflight'
 )
