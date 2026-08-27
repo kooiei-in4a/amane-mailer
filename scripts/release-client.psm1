@@ -1630,6 +1630,72 @@ function Test-WorkflowExecutableContains {
     return $false
 }
 
+function Get-WorkflowExecutableText {
+    param($Line)
+    if ($null -eq $Line -or -not $Line.Executable) { return '' }
+    $text = [string]$Line.Text
+    if ($Line.Kind -eq 'Yaml' -and (Get-WorkflowYamlKeyName -Text $text) -eq 'run') {
+        return (Get-WorkflowYamlKeyValue -Text $text).Trim()
+    }
+    return $text.Trim()
+}
+
+function Test-WorkflowScriptInvocation {
+    param(
+        $Lines,
+        [string]$ScriptPath,
+        [string]$Job = ''
+    )
+    if ([string]::IsNullOrWhiteSpace($ScriptPath)) { return $false }
+    $script = [regex]::Escape($ScriptPath.TrimStart('.', '/'))
+    $assign = '(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|''[^'']*''|[^\s]+)\s+)*'
+    $shellInvocation = '(?:(?:bash|sh)\s+(?:--\s+)?["'']?(?:\./)?' + $script + '["'']?'
+    $directInvocation = '|["'']?\./' + $script + '["'']?)'
+    $pattern = '^' + $assign + $shellInvocation + $directInvocation + '(?=\s|\\|$)'
+    foreach ($line in $Lines) {
+        if (-not $line.Executable) { continue }
+        if (-not [string]::IsNullOrWhiteSpace($Job) -and $line.Job -ne $Job) { continue }
+        $text = Get-WorkflowExecutableText -Line $line
+        if ([regex]::IsMatch($text, $pattern, [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) { return $true }
+    }
+    return $false
+}
+
+function Test-WorkflowFailClosedEqualityBinding {
+    param(
+        $Lines,
+        [string]$Job,
+        [string]$LeftVariable,
+        [string]$RightVariable
+    )
+    if ([string]::IsNullOrWhiteSpace($LeftVariable) -or [string]::IsNullOrWhiteSpace($RightVariable)) { return $false }
+    $left = [regex]::Escape(('${' + $LeftVariable + '}'))
+    $right = [regex]::Escape(('${' + $RightVariable + '}'))
+    $comparisonPattern = '^\[\[\s*"' + $left + '"\s*==\s*"' + $right + '"\s*\]\]\s*(?<tail>.*)$'
+    $inlineFailClosePattern = '^\|\|\s*(?:exit\s+[1-9][0-9]*|\{.*;\s*exit\s+[1-9][0-9]*\s*;\s*\})\s*$'
+
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        $line = $Lines[$i]
+        if (-not $line.Executable -or $line.Job -ne $Job) { continue }
+        $text = Get-WorkflowExecutableText -Line $line
+        $match = [regex]::Match($text, $comparisonPattern, [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
+        if (-not $match.Success) { continue }
+        $tail = $match.Groups['tail'].Value.Trim()
+        if ([regex]::IsMatch($tail, $inlineFailClosePattern, [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) { return $true }
+        if ($tail -ne '\') { continue }
+
+        for ($j = $i + 1; $j -lt $Lines.Count; $j++) {
+            $next = $Lines[$j]
+            if ($next.Job -ne $Job) { break }
+            if (-not $next.Executable) { continue }
+            $nextText = Get-WorkflowExecutableText -Line $next
+            if ([regex]::IsMatch($nextText, $inlineFailClosePattern, [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) { return $true }
+            break
+        }
+    }
+    return $false
+}
+
 function Test-WorkflowExecutableLineHasAll {
     param(
         $Lines,
@@ -1735,11 +1801,11 @@ function Test-PublishImageWorkflowContract {
     if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'GITHUB_WORKFLOW_REF')) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'publish-release-image.yml@refs/heads/main')) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'publish' -Needles @('REQUESTED_SOURCE_SHA', '==', 'GITHUB_SHA'))) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'release-image-build-smoke.sh')) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'check-release-image-reproducibility.sh')) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'publish' -Needle 'publish-release-image.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowScriptInvocation -Lines $lines -Job 'publish' -ScriptPath 'scripts/release-image-build-smoke.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowScriptInvocation -Lines $lines -Job 'publish' -ScriptPath 'scripts/check-release-image-reproducibility.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowScriptInvocation -Lines $lines -Job 'publish' -ScriptPath 'scripts/publish-release-image.sh')) { return 'FAIL' }
     if (-not (Test-WorkflowJobKeyExists -Lines $lines -Job 'verify-public-image')) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'verify-public-image' -Needle 'verify-published-release-image.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowScriptInvocation -Lines $lines -Job 'verify-public-image' -ScriptPath 'scripts/verify-published-release-image.sh')) { return 'FAIL' }
     return 'PASS'
 }
 
@@ -1784,10 +1850,10 @@ function Test-VerifyPublicImageWorkflowContract {
     if (Test-WorkflowActiveHasAnyNeedle -Lines $lines -Needles $forbidden) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Needles @('GITHUB_REF', '==', 'refs/heads/main'))) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableContains -Lines $lines -Needle 'verify-public-release-image.yml@refs/heads/main')) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'verify-public-image' -Needle 'verify-published-release-image.sh')) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'verify-public-image' -Needles @('identity_source_sha', '==', 'SOURCE_SHA'))) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'verify-public-image' -Needles @('identity_version', '==', 'MAILER_VERSION'))) { return 'FAIL' }
-    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'verify-public-image' -Needles @('identity_digest', '==', 'EXPECTED_DIGEST'))) { return 'FAIL' }
+    if (-not (Test-WorkflowScriptInvocation -Lines $lines -Job 'verify-public-image' -ScriptPath 'scripts/verify-published-release-image.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowFailClosedEqualityBinding -Lines $lines -Job 'verify-public-image' -LeftVariable 'identity_source_sha' -RightVariable 'SOURCE_SHA')) { return 'FAIL' }
+    if (-not (Test-WorkflowFailClosedEqualityBinding -Lines $lines -Job 'verify-public-image' -LeftVariable 'identity_version' -RightVariable 'MAILER_VERSION')) { return 'FAIL' }
+    if (-not (Test-WorkflowFailClosedEqualityBinding -Lines $lines -Job 'verify-public-image' -LeftVariable 'identity_digest' -RightVariable 'EXPECTED_DIGEST')) { return 'FAIL' }
     return 'PASS'
 }
 

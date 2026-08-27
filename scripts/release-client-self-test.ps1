@@ -877,12 +877,64 @@ Assert-Equal 'image publish script env NOTE spoof FAIL' (Test-PublishImageWorkfl
 $imageVerifyMeta = Add-WorkflowEnvNote -Text ($imageText.Replace('bash scripts/verify-published-release-image.sh', 'true')) -Note 'verify-published-release-image.sh'
 Assert-Equal 'image verify script env NOTE spoof FAIL' (Test-PublishImageWorkflowContract -Text $imageVerifyMeta) 'FAIL'
 
+$imageSmokeDirect = $imageText.Replace('bash scripts/release-image-build-smoke.sh', './scripts/release-image-build-smoke.sh --fixture')
+Assert-Equal 'image smoke direct command invocation PASS' (Test-PublishImageWorkflowContract -Text $imageSmokeDirect) 'PASS'
+
+$imageSmokeBashDot = $imageText.Replace('bash scripts/release-image-build-smoke.sh', 'bash ./scripts/release-image-build-smoke.sh --fixture')
+Assert-Equal 'image smoke bash command invocation PASS' (Test-PublishImageWorkflowContract -Text $imageSmokeBashDot) 'PASS'
+
+$imageSmokeEcho = $imageText.Replace('bash scripts/release-image-build-smoke.sh', 'echo ./scripts/release-image-build-smoke.sh')
+Assert-Equal 'image smoke exact-token echo FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeEcho) 'FAIL'
+
+$imageSmokePrintf = $imageText.Replace('bash scripts/release-image-build-smoke.sh', "printf './scripts/release-image-build-smoke.sh'")
+Assert-Equal 'image smoke printf mention FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokePrintf) 'FAIL'
+
+$imageSmokeAssignment = $imageText.Replace('bash scripts/release-image-build-smoke.sh', 'SCRIPT=./scripts/release-image-build-smoke.sh')
+Assert-Equal 'image smoke variable assignment only FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeAssignment) 'FAIL'
+
+$imageSmokeComment = $imageText.Replace('bash scripts/release-image-build-smoke.sh', '# ./scripts/release-image-build-smoke.sh')
+Assert-Equal 'image smoke comment-only occurrence FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeComment) 'FAIL'
+
+$imageSmokeWrongJob = $imageText.Replace('bash scripts/release-image-build-smoke.sh', 'true')
+$imageSmokeWrongJob = $imageSmokeWrongJob.Replace(
+    "jobs:`n  publish:",
+    "jobs:`n  unrelated:`n    runs-on: ubuntu-latest`n    steps:`n      - run: bash ./scripts/release-image-build-smoke.sh`n  publish:"
+)
+Assert-Equal 'image smoke unrelated executable job FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeWrongJob) 'FAIL'
+
 $verifyCmpSource = ('          [[ "${identity_source_sha}" == "${SOURCE_SHA}" ]] ' + '\')
 $verifyCmpVersion = ('          [[ "${identity_version}" == "${MAILER_VERSION}" ]] ' + '\')
 $verifyCmpDigest = ('          [[ "${identity_digest}" == "${EXPECTED_DIGEST}" ]] ' + '\')
+$verifyFailSource = "            || { echo '::error::artifact source SHA does not match publication_source_sha'; exit 1; }"
 $verifyEchoSpoof = $verifyText.Replace($verifyCmpSource, '').Replace($verifyCmpVersion, '').Replace($verifyCmpDigest, '')
 $verifyEchoSpoof = $verifyEchoSpoof + "`n          echo sourceCommitSha releaseVersion EXPECTED_DIGEST`n"
 Assert-Equal 'verify binding echo spoof FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyEchoSpoof) 'FAIL'
+
+$verifyExactEcho = $verifyText.Replace($verifyCmpSource, '          echo "identity_source_sha == SOURCE_SHA" ' + '\')
+Assert-Equal 'verify exact comparison text inside echo FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyExactEcho) 'FAIL'
+
+$verifyComparisonMissing = $verifyText.Replace($verifyCmpSource, '').Replace($verifyFailSource, '')
+Assert-Equal 'verify source comparison missing FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyComparisonMissing) 'FAIL'
+
+$verifyWrongLeft = $verifyText.Replace($verifyCmpSource, ('          [[ "${wrong_source_sha}" == "${SOURCE_SHA}" ]] ' + '\'))
+Assert-Equal 'verify wrong left-hand binding FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyWrongLeft) 'FAIL'
+
+$verifyWrongRight = $verifyText.Replace($verifyCmpSource, ('          [[ "${identity_source_sha}" == "${WRONG_SHA}" ]] ' + '\'))
+Assert-Equal 'verify wrong right-hand binding FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyWrongRight) 'FAIL'
+
+$verifySwapped = $verifyText.Replace($verifyCmpSource, ('          [[ "${identity_source_sha}" == "${MAILER_VERSION}" ]] ' + '\'))
+$verifySwapped = $verifySwapped.Replace($verifyCmpVersion, ('          [[ "${identity_version}" == "${EXPECTED_DIGEST}" ]] ' + '\'))
+$verifySwapped = $verifySwapped.Replace($verifyCmpDigest, ('          [[ "${identity_digest}" == "${SOURCE_SHA}" ]] ' + '\'))
+Assert-Equal 'verify source version digest relationships swapped FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifySwapped) 'FAIL'
+
+$verifyComparisonAssignment = $verifyText.Replace($verifyCmpSource, '          CHECK="identity_source_sha == SOURCE_SHA" ' + '\')
+Assert-Equal 'verify comparison variable assignment only FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyComparisonAssignment) 'FAIL'
+
+$verifyComparisonComment = $verifyText.Replace($verifyCmpSource, '          # [[ "${identity_source_sha}" == "${SOURCE_SHA}" ]] ' + '\')
+Assert-Equal 'verify comparison comment-only occurrence FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyComparisonComment) 'FAIL'
+
+$verifyNoFailClose = $verifyText.Replace($verifyCmpSource, '          [[ "${identity_source_sha}" == "${SOURCE_SHA}" ]]').Replace($verifyFailSource, '')
+Assert-Equal 'verify comparison without fail-close FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyNoFailClose) 'FAIL'
 
 $imageRun = New-DispatchRun -Id '32726533661' -Path '.github/workflows/publish-release-image.yml' -HeadSha $MainSha
 $imageRunObs = New-ReadyPreflightObservers -Sha $MainSha
