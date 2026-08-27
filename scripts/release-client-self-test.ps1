@@ -889,6 +889,9 @@ Assert-Equal 'image smoke exact-token echo FAIL' (Test-PublishImageWorkflowContr
 $imageSmokePrintf = $imageText.Replace('bash scripts/release-image-build-smoke.sh', "printf './scripts/release-image-build-smoke.sh'")
 Assert-Equal 'image smoke printf mention FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokePrintf) 'FAIL'
 
+$imageSmokeMismatchedQuote = $imageText.Replace('bash scripts/release-image-build-smoke.sh', 'bash "./scripts/release-image-build-smoke.sh''')
+Assert-Equal 'image smoke mismatched quote FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeMismatchedQuote) 'FAIL'
+
 $imageSmokeAssignment = $imageText.Replace('bash scripts/release-image-build-smoke.sh', 'SCRIPT=./scripts/release-image-build-smoke.sh')
 Assert-Equal 'image smoke variable assignment only FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeAssignment) 'FAIL'
 

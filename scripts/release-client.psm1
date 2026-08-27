@@ -1649,9 +1649,8 @@ function Test-WorkflowScriptInvocation {
     if ([string]::IsNullOrWhiteSpace($ScriptPath)) { return $false }
     $script = [regex]::Escape($ScriptPath.TrimStart('.', '/'))
     $assign = '(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|''[^'']*''|[^\s]+)\s+)*'
-    $shellInvocation = '(?:(?:bash|sh)\s+(?:--\s+)?["'']?(?:\./)?' + $script + '["'']?'
-    $directInvocation = '|["'']?\./' + $script + '["'']?)'
-    $pattern = '^' + $assign + $shellInvocation + $directInvocation + '(?=\s|\\|$)'
+    $invocation = '(?:(?:bash|sh)\s+(?:--\s+)?(?:\./)?' + $script + '|\./' + $script + ')'
+    $pattern = '^' + $assign + $invocation + '(?=\s|\\|$)'
     foreach ($line in $Lines) {
         if (-not $line.Executable) { continue }
         if (-not [string]::IsNullOrWhiteSpace($Job) -and $line.Job -ne $Job) { continue }
