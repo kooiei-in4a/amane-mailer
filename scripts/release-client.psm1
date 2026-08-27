@@ -1650,7 +1650,7 @@ function Test-WorkflowScriptInvocation {
     $script = [regex]::Escape($ScriptPath.TrimStart('.', '/'))
     $assign = '(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|''[^'']*''|[^\s]+)\s+)*'
     $invocation = '(?:(?:bash|sh)\s+(?:--\s+)?(?:\./)?' + $script + '|\./' + $script + ')'
-    $pattern = '^' + $assign + $invocation + '(?=\s|\\|$)'
+    $pattern = '^' + $assign + $invocation + '(?=\s|$)'
     foreach ($line in $Lines) {
         if (-not $line.Executable) { continue }
         if (-not [string]::IsNullOrWhiteSpace($Job) -and $line.Job -ne $Job) { continue }
@@ -1683,14 +1683,11 @@ function Test-WorkflowFailClosedEqualityBinding {
         if ([regex]::IsMatch($tail, $inlineFailClosePattern, [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) { return $true }
         if ($tail -ne '\') { continue }
 
-        for ($j = $i + 1; $j -lt $Lines.Count; $j++) {
-            $next = $Lines[$j]
-            if ($next.Job -ne $Job) { break }
-            if (-not $next.Executable) { continue }
-            $nextText = Get-WorkflowExecutableText -Line $next
-            if ([regex]::IsMatch($nextText, $inlineFailClosePattern, [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) { return $true }
-            break
-        }
+        if (($i + 1) -ge $Lines.Count) { continue }
+        $next = $Lines[$i + 1]
+        if (-not $next.Executable -or $next.Kind -ne 'Shell' -or $next.Job -ne $Job) { continue }
+        $nextText = Get-WorkflowExecutableText -Line $next
+        if ([regex]::IsMatch($nextText, $inlineFailClosePattern, [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)) { return $true }
     }
     return $false
 }

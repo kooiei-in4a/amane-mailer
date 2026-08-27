@@ -892,6 +892,12 @@ Assert-Equal 'image smoke printf mention FAIL' (Test-PublishImageWorkflowContrac
 $imageSmokeMismatchedQuote = $imageText.Replace('bash scripts/release-image-build-smoke.sh', 'bash "./scripts/release-image-build-smoke.sh''')
 Assert-Equal 'image smoke mismatched quote FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeMismatchedQuote) 'FAIL'
 
+$imageSmokeTokenSplice = $imageText.Replace(
+    '        run: bash scripts/release-image-build-smoke.sh',
+    ('        run: |' + "`n" + '          bash scripts/release-image-build-smoke.sh\' + "`n" + '          -spoofed-suffix')
+)
+Assert-Equal 'image smoke escaped-newline token splice FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeTokenSplice) 'FAIL'
+
 $imageSmokeAssignment = $imageText.Replace('bash scripts/release-image-build-smoke.sh', 'SCRIPT=./scripts/release-image-build-smoke.sh')
 Assert-Equal 'image smoke variable assignment only FAIL' (Test-PublishImageWorkflowContract -Text $imageSmokeAssignment) 'FAIL'
 
@@ -938,6 +944,12 @@ Assert-Equal 'verify comparison comment-only occurrence FAIL' (Test-VerifyPublic
 
 $verifyNoFailClose = $verifyText.Replace($verifyCmpSource, '          [[ "${identity_source_sha}" == "${SOURCE_SHA}" ]]').Replace($verifyFailSource, '')
 Assert-Equal 'verify comparison without fail-close FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyNoFailClose) 'FAIL'
+
+$verifyCrossStepFailClose = $verifyText.Replace(
+    ($verifyCmpSource + "`n" + $verifyFailSource),
+    ($verifyCmpSource + "`n" + "      - name: Unrelated fail-close text`n        run: |`n" + $verifyFailSource)
+)
+Assert-Equal 'verify fail-close from unrelated step FAIL' (Test-VerifyPublicImageWorkflowContract -Text $verifyCrossStepFailClose) 'FAIL'
 
 $imageRun = New-DispatchRun -Id '32726533661' -Path '.github/workflows/publish-release-image.yml' -HeadSha $MainSha
 $imageRunObs = New-ReadyPreflightObservers -Sha $MainSha
