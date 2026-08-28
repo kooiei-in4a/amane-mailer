@@ -95,7 +95,7 @@ Self-test (fixture-backed; does not use live GitHub / GHCR / NuGet as pass/fail)
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-client-self-test.ps1
 ```
 
-RO-2 implements read-only `status` and `preflight`. `verify` and mutation commands are later slices.
+RO-3 implements read-only `status`, `preflight`, and `verify`. Mutation commands are later slices.
 
 ### Canonical read-only preflight (RO-2)
 
@@ -117,6 +117,44 @@ MUTATION_PERFORMED=FALSE
 `TECHNICAL_READINESS=READY` is not Human authorization. READY requires source binding, version preparation, all public collisions ABSENT, canonical workflow semantic identity, and no existing source-bound publish workflow runs. Deterministic mismatch is `FAIL`. Missing required observation is `INCOMPLETE`. Aggregation is `FAIL` over `INCOMPLETE` over `PASS`. STOP is reported in stdout; it is not a CLI crash (`exit 0` once the contract is generated).
 
 Do not treat an existing matching Git tag, GHCR tag, NuGet package, GitHub Release, or source-bound publish run as READY. Already-applied / recovery decisions belong to later mutation slices.
+
+### Canonical read-only verify (RO-3)
+
+`verify` is the final cross-artifact identity gate for a **published** full release. Both `-Version` and `-ReleaseCommitSha` are required; the client never infers source SHA. The command is observation-only.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 verify `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <40-lowercase-hex>
+```
+
+Stdout is a stable `KEY=VALUE` contract. Diagnostics go to stderr. Every path prints `MUTATION_PERFORMED=FALSE`.
+
+Required published identities (Phase 9):
+
+| Check | Required identity |
+|---|---|
+| Git tag | `vX.Y.Z -> releaseCommitSha` |
+| Contracts source | `<Version>X.Y.Z</Version>` at `releaseCommitSha` |
+| OpenAPI | `info.version == X.Y.Z` at `releaseCommitSha` |
+| NuGet package | `Amane.Mailer.Contracts X.Y.Z` public |
+| NuGet source | nuspec `<repository commit>` == `releaseCommitSha` |
+| GHCR version tag | `vX.Y.Z -> publicDigest` |
+| GHCR SHA tag | `sha-<releaseCommitSha> -> same publicDigest` |
+| OCI labels | version `X.Y.Z`, revision == `releaseCommitSha` |
+| GitHub Release | tag `vX.Y.Z`, non-draft/non-prerelease |
+| Release record | `PUBLISHED` at `releaseCommitSha`; recorded digest/commit facts match public observations |
+
+Semantics:
+
+```text
+verified absence of required artifact     -> ABSENT (FAIL)
+exact expected identity                   -> EXACT_MATCH
+identity contradiction                    -> CONFLICT (FAIL)
+network/auth/rate-limit/5xx/parse/tool    -> INCOMPLETE
+```
+
+Aggregation is `FAIL` over `INCOMPLETE` over `PASS`. Transport/auth failure is never treated as ABSENT. `VERIFY_RESULT=PASS` means all required identities verified; it is not Human authorization to mutate.
 
 ### Exploration Gate
 
