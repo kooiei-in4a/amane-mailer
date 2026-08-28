@@ -5,10 +5,12 @@
 .DESCRIPTION
   RO-3 implements read-only `status`, `preflight`, and `verify`.
   M-1 adds guarded mutation commands that require explicit `-Execute`.
+  A-1 adds local `prepare-post-sync` that requires explicit `-Execute` for file writes.
 
 .PARAMETER Command
   Release command. Read-only: `status`, `preflight`, `verify`.
   Mutations (M-1): `publish-image`, `create-tag`, `publish-nuget`, `create-github-release`.
+  Post-sync (A-1): `prepare-post-sync`.
 
 .PARAMETER Version
   Required target version as X.Y.Z. The client never infers this value.
@@ -32,6 +34,9 @@
 
 .EXAMPLE
   .\scripts\release.ps1 publish-image -Version 1.3.5 -ReleaseCommitSha 528c73498136182810841009db4878364daa9fb1 -Execute
+
+.EXAMPLE
+  .\scripts\release.ps1 prepare-post-sync -Version 1.3.4 -ReleaseCommitSha ed0ac3aec5d4dc61c8a9c2978d78a04b362f01c4
 #>
 [CmdletBinding()]
 param(
@@ -166,5 +171,17 @@ if ($Command -eq 'create-github-release') {
     }
 }
 
-[Console]::Error.WriteLine("release.ps1: command '$Command' is not implemented (status, preflight, verify, publish-image, create-tag, publish-nuget, create-github-release).")
+if ($Command -eq 'prepare-post-sync') {
+    Test-MutationParameters -CommandName 'prepare-post-sync' -VersionValue $Version -ShaValue $ReleaseCommitSha
+    try {
+        $null = Invoke-ReleasePreparePostSync -Version $Version -ReleaseCommitSha $ReleaseCommitSha -RepoRoot $repoRoot -Execute:$Execute
+        exit 0
+    }
+    catch {
+        [Console]::Error.WriteLine(('release.ps1: ' + $_.Exception.Message))
+        exit 1
+    }
+}
+
+[Console]::Error.WriteLine("release.ps1: command '$Command' is not implemented (status, preflight, verify, publish-image, create-tag, publish-nuget, create-github-release, prepare-post-sync).")
 exit 2

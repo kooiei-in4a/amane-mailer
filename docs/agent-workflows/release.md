@@ -222,6 +222,82 @@ Self-test uses injectable fake executors and fake command runners only. It must 
 
 Production executors are wired automatically when `-Execute` is supplied on the CLI path. They invoke `gh` / `git` through an injectable argv-based command runner; self-test substitutes a fake runner to assert exact command composition without live mutation.
 
+### Canonical release command sequence
+
+Use this order for a full service release. Do not substitute ad-hoc shell for these boundaries unless the maintainer explicitly authorizes an exception in the current session.
+
+```text
+status
+preflight
+publish-image
+create-tag
+publish-nuget
+create-github-release
+verify
+prepare-post-sync
+```
+
+Each command requires explicit `-Version X.Y.Z`. Mutation and post-sync write commands additionally require `-ReleaseCommitSha` and `-Execute` for any file or external mutation.
+
+### Current public release authority (A-1)
+
+The machine-readable **current public release** (not the next release candidate) lives at:
+
+```text
+release/current-public.json
+```
+
+It drives release smoke drift checking and the deterministic post-sync follower set. Version preparation for the next release must **not** advance this authority before full publication is verified.
+
+### Deterministic post-release sync (`prepare-post-sync`)
+
+After `verify` reports public artifact identity PASS, synchronize current-public followers locally:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <40-lowercase-hex>
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <40-lowercase-hex> `
+  -Execute
+```
+
+Without `-Execute`: `MUTATION_ATTEMPTED=FALSE` and zero file writes. With `-Execute`: updates `release/current-public.json`, README / SECURITY / release smoke docs and scripts / compose defaults, and promotes `docs/releases/vX.Y.Z.md` from PENDING to PUBLISHED using externally observed facts only.
+
+Preconditions (Fresh, fail-closed):
+
+- explicit `Version` and `ReleaseCommitSha`
+- canonical repository identity and clean worktree
+- public cross-artifact identity equivalent to `verify` PASS (release record may still be PENDING locally)
+- target release record exists
+- current-public authority is either the preceding public release or already exact to the requested target
+- no mixed/ambiguous follower state
+
+`prepare-post-sync` never commits, pushes, or opens a PR. After `-Execute`, require local validation before any commit:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-client-self-test.ps1
+node scripts/check-release-smoke-tag-drift.mjs
+git diff --check
+```
+
+Post-sync mutation results mirror M-1: `NOT_ATTEMPTED`, `APPLIED`, `ALREADY_APPLIED`, `CONFLICT`, `INCOMPLETE`.
+
+### Retry / recovery matrix
+
+| Operation | Policy |
+|---|---|
+| `status` / `preflight` / `verify` | Repeatable read-only |
+| Normal PR CI | Rerun when appropriate |
+| Corrected PR HEAD | Prefer a new CI run for the new head |
+| `publish-image` dispatch | No blind retry; inspect matching workflow run first |
+| `publish-nuget` dispatch | No blind retry; inspect matching workflow run first |
+| `create-tag` | Fresh remote tag read-back before any retry decision |
+| `create-github-release` | Fresh release + tag read-back before any retry decision |
+| `prepare-post-sync` | Local and idempotent; mixed/unknown follower state = STOP |
+
 ### Exploration Gate
 
 Stop before version preparation if:
@@ -463,14 +539,27 @@ Do not claim multi-arch, attestations, assets, migrations, or verification that 
 
 ## Phase 8 — Post-Release Documentation Sync
 
-After public artifacts exist, update the repository with factual evidence.
+After public artifacts exist and `verify` PASS, run deterministic local sync:
 
-At minimum:
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <releaseCommitSha> `
+  -Execute
+```
 
-- Change `docs/releases/vX.Y.Z.md` from PENDING to PUBLISHED.
-- Record exact tag target, GHCR digest/tags, workflow run IDs, evidence artifact IDs, NuGet package/status, GitHub Release URL, platform, smoke/verification result, and known limitations.
+Then run the local validation gate (`release-client-self-test`, `check-release-smoke-tag-drift.mjs`, `git diff --check`) before commit.
+
+The command updates at minimum:
+
+- `release/current-public.json` current-public authority
+- `docs/releases/vX.Y.Z.md` PENDING -> PUBLISHED with observed public facts only
+- README / README.en / SECURITY / release smoke docs, scripts, and compose defaults aligned to the new current public release
+
+At minimum (manual checklist after sync):
+
+- Record exact tag target, GHCR digest/tags, workflow run IDs, evidence artifact IDs, NuGet package/status, GitHub Release URL, platform, smoke/verification result, and known limitations where not already filled by `prepare-post-sync`.
 - Confirm CHANGELOG wording still matches what was actually released.
-- Update README / README.en release references only where current-public-release references are intended.
 - Keep historical OCI-only or failed release attempts accurate; do not rewrite history to look cleaner.
 
 This post-release documentation commit is **not** the release source and must not move the already-published Git tag.

@@ -6,16 +6,74 @@ import path from 'node:path';
 const root = process.cwd();
 const errors = [];
 
-// Update this constant when the latest published release tag changes.
-const expectedImageTag = 'v1.3.4';
-const expectedSupportedVersion = expectedImageTag.slice(1);
+const authorityPath = 'release/current-public.json';
+
+function fail(message) {
+  errors.push(message);
+}
 
 function read(relativePath) {
   return readFileSync(path.join(root, relativePath), 'utf8');
 }
 
-function fail(message) {
-  errors.push(message);
+function parseCurrentPublicAuthority() {
+  const absolutePath = path.join(root, authorityPath);
+  if (!existsSync(absolutePath)) {
+    fail(`Missing current-public authority: ${authorityPath}.`);
+    return null;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(read(authorityPath));
+  } catch {
+    fail(`Malformed JSON in ${authorityPath}.`);
+    return null;
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    fail(`${authorityPath} must be a JSON object.`);
+    return null;
+  }
+
+  if (parsed.schemaVersion !== 1) {
+    fail(`${authorityPath} schemaVersion must be 1.`);
+    return null;
+  }
+
+  const versionPattern = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+  if (typeof parsed.version !== 'string' || !versionPattern.test(parsed.version)) {
+    fail(`${authorityPath} version must be X.Y.Z.`);
+    return null;
+  }
+
+  const expectedTag = `v${parsed.version}`;
+  if (typeof parsed.tag !== 'string' || parsed.tag !== expectedTag) {
+    fail(`${authorityPath} tag must be v<version> (${expectedTag}).`);
+    return null;
+  }
+
+  if (!Array.isArray(parsed.platforms) || parsed.platforms.length === 0) {
+    fail(`${authorityPath} platforms must be a non-empty array.`);
+    return null;
+  }
+
+  const expectedRecord = `docs/releases/${expectedTag}.md`;
+  if (typeof parsed.releaseRecord !== 'string' || parsed.releaseRecord !== expectedRecord) {
+    fail(`${authorityPath} releaseRecord must be ${expectedRecord}.`);
+    return null;
+  }
+
+  if (!existsSync(path.join(root, parsed.releaseRecord))) {
+    fail(`${authorityPath} releaseRecord file is missing: ${parsed.releaseRecord}.`);
+    return null;
+  }
+
+  return {
+    version: parsed.version,
+    tag: parsed.tag,
+    releaseRecord: parsed.releaseRecord,
+  };
 }
 
 function assertEqual(label, actual, expected) {
@@ -39,6 +97,19 @@ function assertContains(source, needle, label) {
     fail(`${label} is missing '${needle}'.`);
   }
 }
+
+const authority = parseCurrentPublicAuthority();
+if (!authority) {
+  console.error('Release smoke default tag drift check failed:');
+  for (const error of errors) {
+    console.error(`- ${error}`);
+  }
+  process.exit(1);
+}
+
+const expectedImageTag = authority.tag;
+const expectedSupportedVersion = authority.version;
+const releaseRecordPath = authority.releaseRecord;
 
 const releaseSmokeSh = read('scripts/release-smoke.sh');
 const releaseSmokePs1 = read('scripts/release-smoke.ps1');
@@ -116,7 +187,6 @@ assertContains(
   'SECURITY.md supported version table',
 );
 
-const releaseRecordPath = `docs/releases/${expectedImageTag}.md`;
 if (!existsSync(path.join(root, releaseRecordPath))) {
   fail(`Missing release record for ${expectedImageTag}: ${releaseRecordPath}.`);
 } else {
@@ -137,6 +207,6 @@ if (errors.length > 0) {
 }
 
 console.log(
-  `Release smoke default tag drift check passed: README, release smoke docs/scripts/compose, `
-  + `and SECURITY supported version are aligned on ${expectedImageTag}.`,
+  `Release smoke default tag drift check passed: authority ${expectedImageTag}, README, release smoke docs/scripts/compose, `
+  + `and SECURITY supported version are aligned.`,
 );

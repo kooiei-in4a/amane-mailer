@@ -4100,6 +4100,8 @@ function Invoke-ReleaseCreateGitHubRelease {
     return $map
 }
 
+. (Join-Path $PSScriptRoot 'release-client-post-sync.ps1')
+
 Export-ModuleMember -Function @(
     'ConvertTo-RemotePresence',
     'ConvertTo-RemoteFailureClass',
@@ -4187,5 +4189,19 @@ Export-ModuleMember -Function @(
     'Invoke-ReleasePublishNuget',
     'Test-ReleaseNotesPathGuard',
     'Get-ReleaseCreateGitHubReleaseMutationStatus',
-    'Invoke-ReleaseCreateGitHubRelease'
+    'Invoke-ReleaseCreateGitHubRelease',
+    'ConvertFrom-CurrentPublicAuthorityText',
+    'Get-CurrentPublicAuthorityObservation',
+    'New-CurrentPublicAuthorityJson',
+    'Test-ReleasePostSyncPublicVerify',
+    'Get-PostSyncFollowerReplacementRules',
+    'Get-PostSyncRulesForPath',
+    'Apply-PostSyncReplacementRules',
+    'Get-PostSyncFollowerFileState',
+    'Get-ReleaseRecordPlatformsFromText',
+    'Resolve-PostSyncPlatforms',
+    'Build-PublishedReleaseRecordForPostSync',
+    'Get-ReleasePreparePostSyncPlan',
+    'Format-ReleasePreparePostSyncLines',
+    'Invoke-ReleasePreparePostSync'
 )
