@@ -1832,9 +1832,9 @@ function Initialize-PostSyncFixtureRepo {
 
     $authorityVer = if ($SynchronizedTo135) { '1.3.5' } else { $AuthorityVersion }
     $authorityJson = New-CurrentPublicAuthorityJson -Version $authorityVer
-    [System.IO.File]::WriteAllText((Join-Path $Root 'release/current-public.json'), $authorityJson)
-
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText((Join-Path $Root 'release/current-public.json'), $authorityJson, $utf8NoBom)
+
     function Copy-FixtureFile {
         param([string]$Source, [string]$Destination)
         $content = [System.IO.File]::ReadAllText($Source, $utf8NoBom)
@@ -1863,19 +1863,19 @@ function Initialize-PostSyncFixtureRepo {
 - release version: ``1.3.5``
 - releaseCommitSha: **PENDING**
 "@
-    [System.IO.File]::WriteAllText((Join-Path $Root 'docs/releases/v1.3.5.md'), $pending135)
+    [System.IO.File]::WriteAllText((Join-Path $Root 'docs/releases/v1.3.5.md'), $pending135, $utf8NoBom)
 
     if ($SynchronizedTo135) {
         $applyRules = Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5'
         foreach ($path in @('README.md', 'README.en.md', 'SECURITY.md', 'docs/ops/release-image-smoke.md', 'docs/ops/release-image-smoke.en.md', 'scripts/release-smoke.sh', 'scripts/release-smoke.ps1', 'infra/docker/docker-compose.release-smoke.yml')) {
             $full = Join-Path $Root $path
-            $content = [System.IO.File]::ReadAllText($full)
+            $content = [System.IO.File]::ReadAllText($full, $utf8NoBom)
             $pathRules = Get-PostSyncRulesForPath -RelativePath $path -AllRules $applyRules
             $updated = Apply-PostSyncReplacementRules -Content $content -Rules $pathRules
-            [System.IO.File]::WriteAllText($full, $updated)
+            [System.IO.File]::WriteAllText($full, $updated, $utf8NoBom)
         }
         $published = Build-PublishedReleaseRecordForPostSync -Text $pending135 -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -PublicDigest $PostSyncDigest135 -Platforms @('linux/amd64')
-        [System.IO.File]::WriteAllText((Join-Path $Root 'docs/releases/v1.3.5.md'), $published.Text)
+        [System.IO.File]::WriteAllText((Join-Path $Root 'docs/releases/v1.3.5.md'), $published.Text, $utf8NoBom)
     }
 }
 

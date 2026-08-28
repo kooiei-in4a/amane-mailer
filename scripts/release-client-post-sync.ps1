@@ -57,12 +57,26 @@ function Expand-PostSyncTokens {
     return $Template.Replace('{prevVersion}', $PrevVersion).Replace('{prevTag}', $prevTag).Replace('{targetVersion}', $TargetVersion).Replace('{targetTag}', $targetTag)
 }
 
+function Get-PostSyncJaPatternTokens {
+    $no = [char]0x306E
+    $ha = [char]0x306F
+    $kitei = ([char]0x65E2).ToString() + [char]0x5B9A
+    $kekkka = ([char]0x7D50).ToString() + [char]0x679C
+    return [pscustomobject]@{
+        No     = $no
+        Ha     = $ha
+        Kitei  = $kitei
+        Kekkka = $kekkka
+    }
+}
+
 function Get-PostSyncFollowerReplacementRules {
     param(
         [string]$PrevVersion,
         [string]$TargetVersion
     )
     $rules = New-Object System.Collections.Generic.List[hashtable]
+    $ja = Get-PostSyncJaPatternTokens
 
     function Add-Rules {
         param([string]$Path, [string[]]$FromTemplates, [string[]]$ToTemplates, [int[]]$ExpectedCounts)
@@ -82,16 +96,16 @@ function Get-PostSyncFollowerReplacementRules {
         'v{prevVersion} release record'
         'docs/releases/v{prevVersion}.md'
         'releases/tag/v{prevVersion}'
-        'v{prevVersion} release の GHCR runtime image'
-        '既定 smoke tag は `{prevTag}`'
+        ('v{prevVersion} release ' + $ja.No + ' GHCR runtime image')
+        ($ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{prevTag}`')
     ) @(
         'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
         'v{targetVersion} publish'
         'v{targetVersion} release record'
         'docs/releases/v{targetVersion}.md'
         'releases/tag/v{targetVersion}'
-        'v{targetVersion} release の GHCR runtime image'
-        '既定 smoke tag は `{targetTag}`'
+        ('v{targetVersion} release ' + $ja.No + ' GHCR runtime image')
+        ($ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{targetTag}`')
     ) @(1, 1, 1, 1, 1, 1, 1)
 
     Add-Rules 'README.en.md' @(
@@ -121,16 +135,16 @@ function Get-PostSyncFollowerReplacementRules {
     Add-Rules 'docs/ops/release-image-smoke.md' @(
         'v{prevVersion} publish'
         'ghcr.io/kooiei-in4a/amane-mailer:{prevTag}'
-        '- v{prevVersion} release の既定 smoke tag は `{prevTag}`'
+        ('- v{prevVersion} release ' + $ja.No + $ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{prevTag}`')
         '| `MAILER_IMAGE_TAG` | `{prevTag}` |'
-        '`{prevTag}` の value-free smoke 結果'
+        ('`{prevTag}` ' + $ja.No + ' value-free smoke ' + $ja.Kekkka)
         '../releases/v{prevVersion}.md'
     ) @(
         'v{targetVersion} publish'
         'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
-        '- v{targetVersion} release の既定 smoke tag は `{targetTag}`'
+        ('- v{targetVersion} release ' + $ja.No + $ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{targetTag}`')
         '| `MAILER_IMAGE_TAG` | `{targetTag}` |'
-        '`{targetTag}` の value-free smoke 結果'
+        ('`{targetTag}` ' + $ja.No + ' value-free smoke ' + $ja.Kekkka)
         '../releases/v{targetVersion}.md'
     ) @(1, 1, 1, 1, 1, 1)
 
@@ -359,6 +373,10 @@ function Get-PostSyncFollowerFileState {
 
     foreach ($rule in $Rules) {
         $counts = Get-PostSyncReplacementMatchCounts -Content $Content -Rule $rule
+        if ($rule.From -eq $rule.To) {
+            if ($counts.FromCount -ne $rule.Expected) { $conflict = $true }
+            continue
+        }
         if ($Mode -eq 'PREDECESSOR') {
             if ($counts.ToCount -gt 0) { $conflict = $true }
             if ($counts.FromCount -ne $rule.Expected) { $conflict = $true }
@@ -417,7 +435,7 @@ function Build-PublishedReleaseRecordForPostSync {
     }
 
     $published = @"
-# Release evidence — $tag
+# Release evidence - $tag
 
 > Status: **PUBLISHED**
 >
