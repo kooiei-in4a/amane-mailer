@@ -402,7 +402,7 @@ Assert-True 'CLI verify bad SHA mentions hex' ($verifyBadSha.Output -match '40')
 
 $notImplemented = Invoke-Cli -CliArgs @('freeze', '-Version', '1.3.4')
 Assert-Equal 'CLI not implemented command exit 2' $notImplemented.ExitCode 2
-Assert-True 'CLI not implemented names RO-3' ($notImplemented.Output -match 'RO-3') 'unknown command should name RO-3'
+Assert-True 'CLI not implemented names mutations' ($notImplemented.Output -match 'publish-image') 'unknown command should list mutations'
 
 $preflightNoVersion = Invoke-Cli -CliArgs @('preflight', '-ReleaseCommitSha', $MainSha)
 Assert-Equal 'CLI preflight without Version exit 2' $preflightNoVersion.ExitCode 2
@@ -1288,6 +1288,288 @@ $verifyLines = Format-ReleaseVerifyLines -Map $readyVerifyMap
 Assert-Equal 'verify format starts COMMAND' $verifyLines[0] 'COMMAND=VERIFY'
 Assert-Equal 'verify format ends mutation' $verifyLines[$verifyLines.Count - 1] 'MUTATION_PERFORMED=FALSE'
 Assert-Equal 'verify format key count' $verifyLines.Count 18
+
+# --- M-1 guarded mutation commands (fixture executors only) ---
+function New-ExactGhcrFact {
+    param(
+        [string]$Sha = $MainSha,
+        [string]$VersionValue = '1.3.5',
+        [string]$Digest = $DigestA
+    )
+    return New-ArtifactFact -State 'PRESENT' -Digest $Digest -Revision $Sha -OciVersion $VersionValue -ShaTagState 'PRESENT' -ShaTagDigest $Digest
+}
+
+function New-ReadyPublishImageObservers {
+    param(
+        [string]$Sha = $MainSha,
+        [hashtable]$Overrides = @{}
+    )
+    $obs = New-ReadyPreflightObservers -Sha $Sha
+    $obs['Ghcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'ABSENT' }
+    foreach ($key in $Overrides.Keys) {
+        $obs[$key] = $Overrides[$key]
+    }
+    return $obs
+}
+
+$script:MutationExecutorCalls = @{ Count = 0 }
+function New-FakeMutationExecutor {
+    param([string]$Outcome = 'SUCCESS')
+    $script:MutationExecutorCalls.Count = 0
+    $counter = $script:MutationExecutorCalls
+    return {
+        param($Args)
+        $counter.Count++
+        return [pscustomobject]@{ State = $Outcome }
+    }.GetNewClosure()
+}
+
+function Invoke-PublishImageFixture {
+    param(
+        $Observers,
+        $Executor = $null,
+        [switch]$Execute,
+        [string]$Version = '1.3.5',
+        [string]$Sha = $MainSha
+    )
+    return Invoke-ReleasePublishImage -Version $Version -ReleaseCommitSha $Sha -RepoRoot $RepoRoot -Observers $Observers -Executor $Executor -Execute:$Execute -Quiet
+}
+
+$publishReadyObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishDry = Invoke-PublishImageFixture -Observers $publishReadyObs
+Assert-Equal 'publish-image dry MUTATION_RESULT' $publishDry['MUTATION_RESULT'] 'NOT_ATTEMPTED'
+Assert-Equal 'publish-image dry MUTATION_ATTEMPTED' $publishDry['MUTATION_ATTEMPTED'] 'FALSE'
+Assert-Equal 'publish-image dry MUTATION_PERFORMED' $publishDry['MUTATION_PERFORMED'] 'FALSE'
+Assert-Equal 'publish-image dry GUARD_GHCR' $publishDry['GUARD_GHCR'] 'ABSENT'
+Assert-Equal 'publish-image dry GUARD_IMAGE_PUBLISH_RUN' $publishDry['GUARD_IMAGE_PUBLISH_RUN'] 'ABSENT'
+Assert-Equal 'publish-image dry COMMAND' $publishDry['COMMAND'] 'PUBLISH_IMAGE'
+
+$publishExec = New-FakeMutationExecutor -Outcome 'SUCCESS'
+$publishReadyObs['ReadBackGhcr'] = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }.GetNewClosure()
+$publishApplied = Invoke-PublishImageFixture -Observers $publishReadyObs -Executor $publishExec -Execute
+Assert-Equal 'publish-image execute APPLIED' $publishApplied['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'publish-image execute MUTATION_ATTEMPTED' $publishApplied['MUTATION_ATTEMPTED'] 'TRUE'
+Assert-Equal 'publish-image execute MUTATION_PERFORMED' $publishApplied['MUTATION_PERFORMED'] 'TRUE'
+Assert-Equal 'publish-image execute one executor call' $script:MutationExecutorCalls.Count 1
+
+$publishAlreadyObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishAlreadyObs['GhcrVersion'] = { param($ver) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }.GetNewClosure()
+$publishAlreadyObs['GhcrSha'] = { param($shaArg) New-ArtifactFact -State 'PRESENT' -Digest $DigestA }.GetNewClosure()
+$publishAlreadyObs['Ghcr'] = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }.GetNewClosure()
+$publishAlready = Invoke-PublishImageFixture -Observers $publishAlreadyObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'publish-image GHCR exact ALREADY_APPLIED' $publishAlready['MUTATION_RESULT'] 'ALREADY_APPLIED'
+Assert-Equal 'publish-image GHCR exact no attempt' $publishAlready['MUTATION_ATTEMPTED'] 'FALSE'
+
+$publishRunObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishRunObs['WorkflowRuns'] = { param($shaArg) @(New-DispatchRun -Id '9001' -Path '.github/workflows/publish-release-image.yml' -HeadSha $MainSha) }.GetNewClosure()
+$publishRun = Invoke-PublishImageFixture -Observers $publishRunObs -Execute
+Assert-Equal 'publish-image existing run ALREADY_APPLIED' $publishRun['MUTATION_RESULT'] 'ALREADY_APPLIED'
+Assert-Equal 'publish-image existing run guard' $publishRun['GUARD_IMAGE_PUBLISH_RUN'] 'EXACT_MATCH'
+
+$publishAmbigObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishAmbigObs['WorkflowRuns'] = { param($shaArg) @(New-DispatchRun -Id '9001' -Path '.github/workflows/publish-release-image.yml' -HeadSha $MainSha), (New-DispatchRun -Id '9002' -Path '.github/workflows/publish-release-image.yml' -HeadSha $MainSha) }.GetNewClosure()
+$publishAmbig = Invoke-PublishImageFixture -Observers $publishAmbigObs -Execute
+Assert-Equal 'publish-image ambiguous run CONFLICT' $publishAmbig['MUTATION_RESULT'] 'CONFLICT'
+Assert-Equal 'publish-image ambiguous run guard' $publishAmbig['GUARD_IMAGE_PUBLISH_RUN'] 'CONFLICT'
+
+$publishConflictObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishConflictObs['Ghcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $WrongSha -ShaTagState 'PRESENT' -ShaTagDigest $DigestA -OciVersion '1.3.5' }.GetNewClosure()
+$publishConflict = Invoke-PublishImageFixture -Observers $publishConflictObs -Execute
+Assert-Equal 'publish-image GHCR mismatch CONFLICT' $publishConflict['MUTATION_RESULT'] 'CONFLICT'
+
+$publishIncompleteObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishIncompleteObs['Ghcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'INCOMPLETE' -Reason 'AUTH' }.GetNewClosure()
+$publishIncomplete = Invoke-PublishImageFixture -Observers $publishIncompleteObs -Execute
+Assert-Equal 'publish-image GHCR incomplete' $publishIncomplete['MUTATION_RESULT'] 'INCOMPLETE'
+
+$publishPreflightFailObs = New-ReadyPublishImageObservers -Sha $MainSha
+$dirtyLocal = New-BoundLocal -Sha $MainSha -Worktree 'DIRTY' -State 'DRIFT'
+$publishPreflightFailObs['LocalRepo'] = { param($root) $dirtyLocal }.GetNewClosure()
+$publishPreflightFail = Invoke-PublishImageFixture -Observers $publishPreflightFailObs -Execute
+Assert-Equal 'publish-image preflight fail CONFLICT' $publishPreflightFail['MUTATION_RESULT'] 'CONFLICT'
+
+$publishAmbigExec = New-FakeMutationExecutor -Outcome 'AMBIGUOUS'
+$publishAmbigAfter = Invoke-PublishImageFixture -Observers $publishReadyObs -Executor $publishAmbigExec -Execute
+Assert-Equal 'publish-image ambiguous executor' $publishAmbigAfter['MUTATION_RESULT'] 'AMBIGUOUS_AFTER_ATTEMPT'
+Assert-Equal 'publish-image ambiguous performed unknown' $publishAmbigAfter['MUTATION_PERFORMED'] 'UNKNOWN'
+
+$publishReadbackFailObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishReadbackFailObs['ReadBackGhcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'ABSENT' }.GetNewClosure()
+$publishReadbackFail = Invoke-PublishImageFixture -Observers $publishReadbackFailObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'publish-image readback mismatch' $publishReadbackFail['MUTATION_RESULT'] 'CONFLICT'
+Assert-Equal 'publish-image readback performed unknown' $publishReadbackFail['MUTATION_PERFORMED'] 'UNKNOWN'
+
+function Invoke-CreateTagFixture {
+    param(
+        $Observers,
+        $Executor = $null,
+        [switch]$Execute,
+        [string]$Version = '1.3.5',
+        [string]$Sha = $MainSha
+    )
+    return Invoke-ReleaseCreateTag -Version $Version -ReleaseCommitSha $Sha -RepoRoot $RepoRoot -Observers $Observers -Executor $Executor -Execute:$Execute -Quiet
+}
+
+$tagObs = @{
+    Ghcr   = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag = { param($ver) New-ArtifactFact -State 'ABSENT' }
+}
+$tagDry = Invoke-CreateTagFixture -Observers $tagObs
+Assert-Equal 'create-tag dry NOT_ATTEMPTED' $tagDry['MUTATION_RESULT'] 'NOT_ATTEMPTED'
+Assert-Equal 'create-tag dry GUARD_GHCR exact' $tagDry['GUARD_GHCR'] 'EXACT_MATCH'
+Assert-Equal 'create-tag dry GUARD_GIT_TAG absent' $tagDry['GUARD_GIT_TAG'] 'ABSENT'
+
+$tagExec = New-FakeMutationExecutor
+$tagObs['ReadBackGitTag'] = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }.GetNewClosure()
+$tagApplied = Invoke-CreateTagFixture -Observers $tagObs -Executor $tagExec -Execute
+Assert-Equal 'create-tag execute APPLIED' $tagApplied['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'create-tag execute one call' $script:MutationExecutorCalls.Count 1
+
+$tagAlreadyObs = @{
+    Ghcr   = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+}
+$tagAlready = Invoke-CreateTagFixture -Observers $tagAlreadyObs -Execute
+Assert-Equal 'create-tag exact ALREADY_APPLIED' $tagAlready['MUTATION_RESULT'] 'ALREADY_APPLIED'
+
+$tagGhcrAbsentObs = @{
+    Ghcr   = { param($ver, $shaArg) New-ArtifactFact -State 'ABSENT' }
+    GitTag = { param($ver) New-ArtifactFact -State 'ABSENT' }
+}
+$tagGhcrAbsent = Invoke-CreateTagFixture -Observers $tagGhcrAbsentObs -Execute
+Assert-Equal 'create-tag GHCR absent CONFLICT' $tagGhcrAbsent['MUTATION_RESULT'] 'CONFLICT'
+
+$tagWrongObs = @{
+    Ghcr   = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $WrongSha }
+}
+$tagWrong = Invoke-CreateTagFixture -Observers $tagWrongObs -Execute
+Assert-Equal 'create-tag wrong target CONFLICT' $tagWrong['MUTATION_RESULT'] 'CONFLICT'
+
+function Invoke-PublishNugetFixture {
+    param(
+        $Observers,
+        $Executor = $null,
+        [switch]$Execute,
+        [string]$Version = '1.3.5',
+        [string]$Sha = $MainSha
+    )
+    return Invoke-ReleasePublishNuget -Version $Version -ReleaseCommitSha $Sha -RepoRoot $RepoRoot -Observers $Observers -Executor $Executor -Execute:$Execute -Quiet
+}
+
+$nugetObs = @{
+    Ghcr            = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag          = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget           = { param($ver) New-ArtifactFact -State 'ABSENT' }
+    NugetPublishRun = { param($shaArg) [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE' } }
+}
+$nugetDry = Invoke-PublishNugetFixture -Observers $nugetObs
+Assert-Equal 'publish-nuget dry NOT_ATTEMPTED' $nugetDry['MUTATION_RESULT'] 'NOT_ATTEMPTED'
+Assert-Equal 'publish-nuget dry GUARD_NUGET absent' $nugetDry['GUARD_NUGET'] 'ABSENT'
+
+$nugetExec = New-FakeMutationExecutor
+$nugetObs['ReadBackNuget'] = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+$nugetApplied = Invoke-PublishNugetFixture -Observers $nugetObs -Executor $nugetExec -Execute
+Assert-Equal 'publish-nuget execute APPLIED' $nugetApplied['MUTATION_RESULT'] 'APPLIED'
+
+$nugetAlreadyObs = @{
+    Ghcr            = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag          = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget           = { param($ver) New-ArtifactFact -State 'PRESENT' }
+    NugetPublishRun = { param($shaArg) [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE' } }
+}
+$nugetAlready = Invoke-PublishNugetFixture -Observers $nugetAlreadyObs -Execute
+Assert-Equal 'publish-nuget exact ALREADY_APPLIED' $nugetAlready['MUTATION_RESULT'] 'ALREADY_APPLIED'
+
+$nugetRunObs = @{
+    Ghcr            = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag          = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget           = { param($ver) New-ArtifactFact -State 'ABSENT' }
+    NugetPublishRun = { param($shaArg) [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = '8001' } }
+}
+$nugetRun = Invoke-PublishNugetFixture -Observers $nugetRunObs -Execute
+Assert-Equal 'publish-nuget existing run ALREADY_APPLIED' $nugetRun['MUTATION_RESULT'] 'ALREADY_APPLIED'
+Assert-Equal 'publish-nuget existing run id' $nugetRun['NUGET_PUBLISH_RUN_ID'] '8001'
+
+$nugetTagMissingObs = @{
+    Ghcr            = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag          = { param($ver) New-ArtifactFact -State 'ABSENT' }
+    Nuget           = { param($ver) New-ArtifactFact -State 'ABSENT' }
+    NugetPublishRun = { param($shaArg) [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE' } }
+}
+$nugetTagMissing = Invoke-PublishNugetFixture -Observers $nugetTagMissingObs -Execute
+Assert-Equal 'publish-nuget tag absent CONFLICT' $nugetTagMissing['MUTATION_RESULT'] 'CONFLICT'
+
+function Invoke-CreateReleaseFixture {
+    param(
+        $Observers,
+        $Executor = $null,
+        [switch]$Execute,
+        [string]$ReleaseNotes = 'docs/releases/v1.3.4.md',
+        [string]$Version = '1.3.5',
+        [string]$Sha = $MainSha
+    )
+    return Invoke-ReleaseCreateGitHubRelease -Version $Version -ReleaseCommitSha $Sha -RepoRoot $RepoRoot -ReleaseNotesPath $ReleaseNotes -Observers $Observers -Executor $Executor -Execute:$Execute -Quiet
+}
+
+$releaseObs = @{
+    Ghcr          = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag        = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget         = { param($ver) New-ArtifactFact -State 'PRESENT' }
+    GitHubRelease = { param($ver) New-ArtifactFact -State 'ABSENT' }
+}
+$releaseDry = Invoke-CreateReleaseFixture -Observers $releaseObs
+Assert-Equal 'create-github-release dry NOT_ATTEMPTED' $releaseDry['MUTATION_RESULT'] 'NOT_ATTEMPTED'
+Assert-Equal 'create-github-release dry GUARD_GITHUB_RELEASE absent' $releaseDry['GUARD_GITHUB_RELEASE'] 'ABSENT'
+
+$releaseExec = New-FakeMutationExecutor
+$releaseObs['ReadBackGitHubRelease'] = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+$releaseApplied = Invoke-CreateReleaseFixture -Observers $releaseObs -Executor $releaseExec -Execute
+Assert-Equal 'create-github-release execute APPLIED' $releaseApplied['MUTATION_RESULT'] 'APPLIED'
+
+$releaseAlreadyObs = @{
+    Ghcr          = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag        = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget         = { param($ver) New-ArtifactFact -State 'PRESENT' }
+    GitHubRelease = { param($ver) New-ArtifactFact -State 'PRESENT' }
+}
+$releaseAlready = Invoke-CreateReleaseFixture -Observers $releaseAlreadyObs -Execute
+Assert-Equal 'create-github-release exact ALREADY_APPLIED' $releaseAlready['MUTATION_RESULT'] 'ALREADY_APPLIED'
+
+$releaseNoNotes = Invoke-ReleaseCreateGitHubRelease -Version '1.3.5' -ReleaseCommitSha $MainSha -RepoRoot $RepoRoot -Observers $releaseObs -Quiet
+Assert-Equal 'create-github-release missing notes NOT_ATTEMPTED' $releaseNoNotes['MUTATION_RESULT'] 'NOT_ATTEMPTED'
+Assert-Equal 'create-github-release missing notes path NONE' $releaseNoNotes['RELEASE_NOTES_PATH'] 'NONE'
+
+$releaseBadNotes = Invoke-CreateReleaseFixture -Observers $releaseObs -ReleaseNotes 'docs/releases/does-not-exist.md' -Execute
+Assert-Equal 'create-github-release bad notes INCOMPLETE' $releaseBadNotes['MUTATION_RESULT'] 'INCOMPLETE'
+
+$releaseDraftObs = @{
+    Ghcr          = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag        = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget         = { param($ver) New-ArtifactFact -State 'PRESENT' }
+    GitHubRelease = { param($ver) New-ArtifactFact -State 'CONFLICT' -Reason 'DRAFT' }
+}
+$releaseDraft = Invoke-CreateReleaseFixture -Observers $releaseDraftObs -Execute
+Assert-Equal 'create-github-release draft CONFLICT' $releaseDraft['MUTATION_RESULT'] 'CONFLICT'
+
+$publishImageLines = Format-ReleaseMutationLines -Map $publishDry -Keys @(
+    'COMMAND', 'VERSION', 'RELEASE_COMMIT_SHA', 'MUTATION_RESULT', 'MUTATION_ATTEMPTED',
+    'HUMAN_AUTHORIZATION_REQUIRED', 'SOURCE_BINDING', 'VERSION_PREP', 'GUARD_GHCR', 'GUARD_IMAGE_PUBLISH_RUN', 'IMAGE_PUBLISH_RUN_ID', 'MUTATION_PERFORMED'
+)
+Assert-Equal 'publish-image format starts COMMAND' $publishImageLines[0] 'COMMAND=PUBLISH_IMAGE'
+Assert-Equal 'publish-image format ends MUTATION_PERFORMED' $publishImageLines[$publishImageLines.Count - 1] 'MUTATION_PERFORMED=FALSE'
+Assert-Equal 'publish-image format key count' $publishImageLines.Count 12
+
+$mutationCliNoExecute = Invoke-Cli -CliArgs @('publish-image', '-Version', '1.3.5', '-ReleaseCommitSha', $MainSha)
+Assert-Equal 'CLI publish-image without Execute exit 0' $mutationCliNoExecute.ExitCode 0
+Assert-True 'CLI publish-image without Execute MUTATION_ATTEMPTED=FALSE' ($mutationCliNoExecute.Output -match 'MUTATION_ATTEMPTED=FALSE') 'dry CLI should not attempt mutation'
+
+$mutationCliNoSha = Invoke-Cli -CliArgs @('publish-image', '-Version', '1.3.5')
+Assert-Equal 'CLI publish-image without SHA exit 2' $mutationCliNoSha.ExitCode 2
+
+$mutationCliReleaseNoNotes = Invoke-Cli -CliArgs @('create-github-release', '-Version', '1.3.5', '-ReleaseCommitSha', $MainSha)
+Assert-Equal 'CLI create-github-release without notes exit 2' $mutationCliReleaseNoNotes.ExitCode 2
+Assert-True 'CLI create-github-release mentions ReleaseNotesPath' ($mutationCliReleaseNoNotes.Output -match 'ReleaseNotesPath') 'missing notes usage text'
 
 # --- self-test source stays ASCII ---
 $sourceBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)

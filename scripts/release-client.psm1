@@ -2823,6 +2823,903 @@ function Invoke-ReleaseVerify {
     return $map
 }
 
+$script:PublishImageMutationKeys = @(
+    'COMMAND',
+    'VERSION',
+    'RELEASE_COMMIT_SHA',
+    'MUTATION_RESULT',
+    'MUTATION_ATTEMPTED',
+    'HUMAN_AUTHORIZATION_REQUIRED',
+    'SOURCE_BINDING',
+    'VERSION_PREP',
+    'GUARD_GHCR',
+    'GUARD_IMAGE_PUBLISH_RUN',
+    'IMAGE_PUBLISH_RUN_ID',
+    'MUTATION_PERFORMED'
+)
+
+$script:CreateTagMutationKeys = @(
+    'COMMAND',
+    'VERSION',
+    'RELEASE_COMMIT_SHA',
+    'MUTATION_RESULT',
+    'MUTATION_ATTEMPTED',
+    'HUMAN_AUTHORIZATION_REQUIRED',
+    'GUARD_GHCR',
+    'GUARD_GIT_TAG',
+    'MUTATION_PERFORMED'
+)
+
+$script:PublishNugetMutationKeys = @(
+    'COMMAND',
+    'VERSION',
+    'RELEASE_COMMIT_SHA',
+    'MUTATION_RESULT',
+    'MUTATION_ATTEMPTED',
+    'HUMAN_AUTHORIZATION_REQUIRED',
+    'GUARD_GHCR',
+    'GUARD_GIT_TAG',
+    'GUARD_NUGET',
+    'GUARD_NUGET_PUBLISH_RUN',
+    'NUGET_PUBLISH_RUN_ID',
+    'MUTATION_PERFORMED'
+)
+
+$script:CreateGitHubReleaseMutationKeys = @(
+    'COMMAND',
+    'VERSION',
+    'RELEASE_COMMIT_SHA',
+    'MUTATION_RESULT',
+    'MUTATION_ATTEMPTED',
+    'HUMAN_AUTHORIZATION_REQUIRED',
+    'GUARD_GHCR',
+    'GUARD_GIT_TAG',
+    'GUARD_NUGET',
+    'GUARD_GITHUB_RELEASE',
+    'RELEASE_NOTES_PATH',
+    'MUTATION_PERFORMED'
+)
+
+function Get-MutationGuardRank {
+    param([string]$State)
+    if ($State -eq 'INCOMPLETE') { return 1 }
+    if ($State -eq 'CONFLICT' -or $State -eq 'EXACT_MATCH') { return 2 }
+    if ($State -eq 'ABSENT') { return 0 }
+    return 2
+}
+
+function ConvertTo-IdentityGuardStates {
+    param([string[]]$States)
+    $rank = 0
+    foreach ($state in $States) {
+        $rank = [Math]::Max($rank, (Get-MutationGuardRank -State $state))
+    }
+    if ($rank -eq 2) {
+        foreach ($state in $States) {
+            if ($state -eq 'CONFLICT') { return 'CONFLICT' }
+        }
+        return 'EXACT_MATCH'
+    }
+    if ($rank -eq 1) { return 'INCOMPLETE' }
+    foreach ($state in $States) {
+        if ($state -eq 'ABSENT') { return 'ABSENT' }
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-GhcrPrerequisiteGuardState {
+    param(
+        $GhcrFact,
+        [string]$ReleaseCommitSha,
+        [string]$Version
+    )
+    if ($null -eq $GhcrFact) { return 'INCOMPLETE' }
+    if ($GhcrFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($GhcrFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($GhcrFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($GhcrFact.State -eq 'PRESENT') {
+        $states = @(
+            (ConvertTo-GhcrTagVerifyState -Fact $GhcrFact),
+            (ConvertTo-GhcrShaTagVerifyState -VersionFact $GhcrFact -ShaTagState $GhcrFact.ShaTagState -ShaTagDigest $GhcrFact.ShaTagDigest),
+            (ConvertTo-GhcrDigestBindingVerifyState -VersionFact $GhcrFact -ShaTagState $GhcrFact.ShaTagState -ShaTagDigest $GhcrFact.ShaTagDigest),
+            (ConvertTo-OciRevisionVerifyState -VersionFact $GhcrFact -ReleaseCommitSha $ReleaseCommitSha),
+            (ConvertTo-OciVersionVerifyState -VersionFact $GhcrFact -ExpectedVersion $Version)
+        )
+        return ConvertTo-IdentityGuardStates -States $states
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-GhcrPublishTargetGuardState {
+    param(
+        $GhcrFact,
+        [string]$ReleaseCommitSha,
+        [string]$Version
+    )
+    return ConvertTo-GhcrPrerequisiteGuardState -GhcrFact $GhcrFact -ReleaseCommitSha $ReleaseCommitSha -Version $Version
+}
+
+function ConvertTo-GitTagMutationGuardState {
+    param(
+        $TagFact,
+        [string]$ReleaseCommitSha
+    )
+    if ($null -eq $TagFact) { return 'INCOMPLETE' }
+    if ($TagFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($TagFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($TagFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($TagFact.State -eq 'PRESENT') {
+        if ((Test-ReleaseSha $TagFact.TargetSha) -and $TagFact.TargetSha -eq $ReleaseCommitSha) {
+            return 'EXACT_MATCH'
+        }
+        return 'CONFLICT'
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-NugetMutationGuardState {
+    param($NugetFact)
+    if ($null -eq $NugetFact) { return 'INCOMPLETE' }
+    if ($NugetFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($NugetFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($NugetFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($NugetFact.State -eq 'PRESENT') { return 'EXACT_MATCH' }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-GitHubReleaseMutationGuardState {
+    param(
+        $ReleaseFact,
+        [string]$Version
+    )
+    if ($null -eq $ReleaseFact) { return 'INCOMPLETE' }
+    if ($ReleaseFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($ReleaseFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($ReleaseFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($ReleaseFact.State -eq 'PRESENT') {
+        $tagName = 'v' + $Version
+        if ($ReleaseFact.Reason -eq 'TAG_NAME') { return 'CONFLICT' }
+        if ($ReleaseFact.Reason -eq 'DRAFT' -or $ReleaseFact.Reason -eq 'PRERELEASE') { return 'CONFLICT' }
+        return 'EXACT_MATCH'
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-WorkflowRunMutationGuardState {
+    param([string]$RunState)
+    if ($RunState -eq 'ABSENT') { return 'ABSENT' }
+    if ($RunState -eq 'CANDIDATE_PRESENT') { return 'EXACT_MATCH' }
+    if ($RunState -eq 'AMBIGUOUS') { return 'CONFLICT' }
+    if ($RunState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    return 'CONFLICT'
+}
+
+function Test-ReleaseMutationPreflightEligible {
+    param($PreflightMap)
+    if ($null -eq $PreflightMap) { return $false }
+    if ($PreflightMap['PREFLIGHT_RESULT'] -ne 'PASS') { return $false }
+    if ($PreflightMap['TECHNICAL_READINESS'] -ne 'READY') { return $false }
+    return $true
+}
+
+function ConvertTo-PreflightMutationGuardState {
+    param($PreflightMap)
+    if ($null -eq $PreflightMap) { return 'INCOMPLETE' }
+    if ($PreflightMap['PREFLIGHT_RESULT'] -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if (-not (Test-ReleaseMutationPreflightEligible -PreflightMap $PreflightMap)) { return 'CONFLICT' }
+    return 'ABSENT'
+}
+
+function Resolve-ReleaseMutationPrecheck {
+    param(
+        [string[]]$GuardStates,
+        [string]$TargetGuardState,
+        [string[]]$PrerequisiteGuardStates = @(),
+        [bool]$Execute,
+        [string]$ReleaseNotesGuard = ''
+    )
+
+    foreach ($pre in @($PrerequisiteGuardStates)) {
+        if ($pre -eq 'EXACT_MATCH') { continue }
+        if ($pre -eq 'INCOMPLETE') {
+            return [pscustomobject]@{
+                Result    = 'INCOMPLETE'
+                Attempted = 'FALSE'
+                Performed = 'FALSE'
+            }
+        }
+        return [pscustomobject]@{
+            Result    = 'CONFLICT'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    $rank = 0
+    foreach ($state in @($GuardStates)) {
+        $rank = [Math]::Max($rank, (Get-MutationGuardRank -State $state))
+    }
+    $targetRank = Get-MutationGuardRank -State $TargetGuardState
+
+    if (-not [string]::IsNullOrWhiteSpace($ReleaseNotesGuard)) {
+        if ($ReleaseNotesGuard -eq 'ABSENT') {
+            return [pscustomobject]@{
+                Result    = 'NOT_ATTEMPTED'
+                Attempted = 'FALSE'
+                Performed = 'FALSE'
+            }
+        }
+        if ($ReleaseNotesGuard -eq 'INCOMPLETE') {
+            return [pscustomobject]@{
+                Result    = 'INCOMPLETE'
+                Attempted = 'FALSE'
+                Performed = 'FALSE'
+            }
+        }
+    }
+
+    if ($TargetGuardState -eq 'EXACT_MATCH') {
+        return [pscustomobject]@{
+            Result    = 'ALREADY_APPLIED'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    foreach ($state in @($GuardStates)) {
+        if ($state -eq 'EXACT_MATCH') {
+            return [pscustomobject]@{
+                Result    = 'ALREADY_APPLIED'
+                Attempted = 'FALSE'
+                Performed = 'FALSE'
+            }
+        }
+    }
+
+    if ($rank -eq 1 -or $TargetGuardState -eq 'INCOMPLETE') {
+        return [pscustomobject]@{
+            Result    = 'INCOMPLETE'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    if ($rank -eq 2 -or $TargetGuardState -eq 'CONFLICT') {
+        return [pscustomobject]@{
+            Result    = 'CONFLICT'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    if (-not $Execute) {
+        return [pscustomobject]@{
+            Result    = 'NOT_ATTEMPTED'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    if ($TargetGuardState -eq 'ABSENT') {
+        return $null
+    }
+
+    return [pscustomobject]@{
+        Result    = 'CONFLICT'
+        Attempted = 'FALSE'
+        Performed = 'FALSE'
+    }
+}
+
+function Resolve-ReleaseMutationPostAttempt {
+    param(
+        [string]$ExecutorState,
+        [string]$ReadBackGuardState,
+        [string]$TargetGuardState
+    )
+    if ($ExecutorState -eq 'AMBIGUOUS') {
+        return [pscustomobject]@{
+            Result    = 'AMBIGUOUS_AFTER_ATTEMPT'
+            Attempted = 'TRUE'
+            Performed = 'UNKNOWN'
+        }
+    }
+    if ($ExecutorState -ne 'SUCCESS') {
+        return [pscustomobject]@{
+            Result    = 'INCOMPLETE'
+            Attempted = 'TRUE'
+            Performed = 'UNKNOWN'
+        }
+    }
+    if ($ReadBackGuardState -eq 'EXACT_MATCH') {
+        return [pscustomobject]@{
+            Result    = 'APPLIED'
+            Attempted = 'TRUE'
+            Performed = 'TRUE'
+        }
+    }
+    if ($ReadBackGuardState -eq 'INCOMPLETE') {
+        return [pscustomobject]@{
+            Result    = 'INCOMPLETE'
+            Attempted = 'TRUE'
+            Performed = 'UNKNOWN'
+        }
+    }
+    return [pscustomobject]@{
+        Result    = 'CONFLICT'
+        Attempted = 'TRUE'
+        Performed = 'UNKNOWN'
+    }
+}
+
+function Invoke-ReleaseMutationExecutor {
+    param(
+        $Executor,
+        $ArgumentTable
+    )
+    if ($null -eq $Executor) {
+        return [pscustomobject]@{ State = 'NOT_CONFIGURED' }
+    }
+    return & $Executor $ArgumentTable
+}
+
+function Format-ReleaseMutationLines {
+    param(
+        $Map,
+        [string[]]$Keys
+    )
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($key in $Keys) {
+        $value = [string]$Map[$key]
+        $value = $value -replace '[\r\n]+', ' '
+        [void]$lines.Add(('{0}={1}' -f $key, $value))
+    }
+    return $lines
+}
+
+function Get-ReleasePublishImageMutationStatus {
+    param($Facts)
+
+    $guardGhcr = ConvertTo-GhcrPublishTargetGuardState -GhcrFact $Facts.Ghcr -ReleaseCommitSha $Facts.ReleaseCommitSha -Version $Facts.Version
+    $guardRun = ConvertTo-WorkflowRunMutationGuardState -RunState $Facts.ImagePublishRun
+
+    $precheck = Resolve-ReleaseMutationPrecheck -GuardStates @($guardRun, (ConvertTo-PreflightMutationGuardState -PreflightMap $Facts.PreflightMap)) -TargetGuardState $guardGhcr -Execute $Facts.Execute
+
+    $result = 'NOT_ATTEMPTED'
+    $attempted = 'FALSE'
+    $performed = 'FALSE'
+    if ($null -ne $precheck) {
+        $result = $precheck.Result
+        $attempted = $precheck.Attempted
+        $performed = $precheck.Performed
+    }
+    elseif ($Facts.Execute) {
+        $execResult = Invoke-ReleaseMutationExecutor -Executor $Facts.Executor -ArgumentTable @{
+            Version          = $Facts.Version
+            ReleaseCommitSha = $Facts.ReleaseCommitSha
+        }
+        if ($execResult.State -eq 'NOT_CONFIGURED') {
+            $result = 'INCOMPLETE'
+            $attempted = 'FALSE'
+            $performed = 'FALSE'
+        }
+        else {
+            $readGhcr = ConvertTo-GhcrPublishTargetGuardState -GhcrFact $Facts.ReadBackGhcr -ReleaseCommitSha $Facts.ReleaseCommitSha -Version $Facts.Version
+            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readGhcr -TargetGuardState 'EXACT_MATCH'
+            $result = $post.Result
+            $attempted = $post.Attempted
+            $performed = $post.Performed
+        }
+    }
+
+    $runId = $Facts.ImagePublishRunId
+    if ([string]::IsNullOrWhiteSpace($runId)) { $runId = 'NONE' }
+
+    $map = [ordered]@{}
+    $map['COMMAND'] = 'PUBLISH_IMAGE'
+    $map['VERSION'] = $Facts.Version
+    $map['RELEASE_COMMIT_SHA'] = $Facts.ReleaseCommitSha
+    $map['MUTATION_RESULT'] = $result
+    $map['MUTATION_ATTEMPTED'] = $attempted
+    $map['MUTATION_PERFORMED'] = $performed
+    $map['HUMAN_AUTHORIZATION_REQUIRED'] = 'TRUE'
+    $map['SOURCE_BINDING'] = $Facts.SourceBinding
+    $map['VERSION_PREP'] = $Facts.VersionPrep
+    $map['GUARD_GHCR'] = $guardGhcr
+    $map['GUARD_IMAGE_PUBLISH_RUN'] = $guardRun
+    $map['IMAGE_PUBLISH_RUN_ID'] = $runId
+    return $map
+}
+
+function Invoke-ReleasePublishImage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseCommitSha,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        $Observers,
+        $Executor,
+        [switch]$Execute,
+        [switch]$Quiet
+    )
+
+    if (-not (Test-ReleaseVersion $Version)) {
+        throw 'Version must be X.Y.Z; the client does not infer or accept a v-prefix.'
+    }
+    if (-not (Test-ReleaseSha $ReleaseCommitSha)) {
+        throw 'ReleaseCommitSha must be a lowercase 40-hex SHA; the client does not infer source.'
+    }
+
+    $preflightMap = Invoke-ReleasePreflight -Version $Version -ReleaseCommitSha $ReleaseCommitSha -RepoRoot $RepoRoot -Observers $Observers -Quiet
+
+    $ghcr = $null
+    if ($null -ne $Observers -and $Observers.Contains('Ghcr')) {
+        $ghcr = & $Observers['Ghcr'] $Version $ReleaseCommitSha
+    }
+    elseif ($null -ne $Observers -and $Observers.Contains('GhcrVersion') -and $Observers.Contains('GhcrSha')) {
+        $ghcrVersion = & $Observers['GhcrVersion'] $Version
+        $ghcrSha = & $Observers['GhcrSha'] $ReleaseCommitSha
+        if ($null -ne $ghcrVersion -and $ghcrVersion.State -eq 'PRESENT') {
+            $ghcr = $ghcrVersion
+            if ($null -ne $ghcrSha) {
+                $ghcr.ShaTagState = $ghcrSha.State
+                $ghcr.ShaTagDigest = $ghcrSha.Digest
+            }
+        }
+        elseif ($null -ne $ghcrVersion) {
+            $ghcr = $ghcrVersion
+        }
+    }
+    else {
+        $ghcr = Get-GhcrVerifyObservation -Version $Version -ReleaseCommitSha $ReleaseCommitSha
+    }
+    if ($null -eq $ghcr) { $ghcr = New-ArtifactFact -State 'INCOMPLETE' }
+
+    $readBackGhcr = $ghcr
+    if ($Execute -and $null -ne $Observers -and $Observers.Contains('ReadBackGhcr')) {
+        $readBackGhcr = & $Observers['ReadBackGhcr'] $Version $ReleaseCommitSha
+        if ($null -eq $readBackGhcr) { $readBackGhcr = New-ArtifactFact -State 'INCOMPLETE' }
+    }
+
+    $facts = [pscustomobject]@{
+        Version           = $Version
+        ReleaseCommitSha  = $ReleaseCommitSha
+        PreflightMap      = $preflightMap
+        SourceBinding     = $preflightMap['SOURCE_BINDING']
+        VersionPrep       = $preflightMap['VERSION_PREP']
+        Ghcr              = $ghcr
+        ReadBackGhcr      = $readBackGhcr
+        ImagePublishRun   = $preflightMap['IMAGE_PUBLISH_RUN']
+        ImagePublishRunId = $preflightMap['IMAGE_PUBLISH_RUN_ID']
+        Execute           = [bool]$Execute
+        Executor          = $Executor
+    }
+
+    $map = Get-ReleasePublishImageMutationStatus -Facts $facts
+    if (-not $Quiet) {
+        Write-ReleaseStderr ('release-client: publish-image VERSION={0} SHA={1}' -f $Version, $ReleaseCommitSha)
+        Write-ReleaseStderr ('release-client: MUTATION_RESULT={0} MUTATION_ATTEMPTED={1} MUTATION_PERFORMED={2}' -f $map['MUTATION_RESULT'], $map['MUTATION_ATTEMPTED'], $map['MUTATION_PERFORMED'])
+        foreach ($line in (Format-ReleaseMutationLines -Map $map -Keys $script:PublishImageMutationKeys)) {
+            [Console]::Out.WriteLine($line)
+        }
+    }
+    return $map
+}
+
+function Get-ReleaseCreateTagMutationStatus {
+    param($Facts)
+
+    $guardGhcr = ConvertTo-GhcrPrerequisiteGuardState -GhcrFact $Facts.Ghcr -ReleaseCommitSha $Facts.ReleaseCommitSha -Version $Facts.Version
+    $guardTag = ConvertTo-GitTagMutationGuardState -TagFact $Facts.GitTag -ReleaseCommitSha $Facts.ReleaseCommitSha
+
+    $precheck = Resolve-ReleaseMutationPrecheck -PrerequisiteGuardStates @($guardGhcr) -GuardStates @() -TargetGuardState $guardTag -Execute $Facts.Execute
+
+    $result = 'NOT_ATTEMPTED'
+    $attempted = 'FALSE'
+    $performed = 'FALSE'
+    if ($null -ne $precheck) {
+        $result = $precheck.Result
+        $attempted = $precheck.Attempted
+        $performed = $precheck.Performed
+    }
+    elseif ($Facts.Execute) {
+        $execResult = Invoke-ReleaseMutationExecutor -Executor $Facts.Executor -ArgumentTable @{
+            Version          = $Facts.Version
+            ReleaseCommitSha = $Facts.ReleaseCommitSha
+            TagName          = ('v' + $Facts.Version)
+        }
+        if ($execResult.State -eq 'NOT_CONFIGURED') {
+            $result = 'INCOMPLETE'
+            $attempted = 'FALSE'
+            $performed = 'FALSE'
+        }
+        else {
+            $readTag = ConvertTo-GitTagMutationGuardState -TagFact $Facts.ReadBackGitTag -ReleaseCommitSha $Facts.ReleaseCommitSha
+            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readTag -TargetGuardState 'EXACT_MATCH'
+            $result = $post.Result
+            $attempted = $post.Attempted
+            $performed = $post.Performed
+        }
+    }
+
+    $map = [ordered]@{}
+    $map['COMMAND'] = 'CREATE_TAG'
+    $map['VERSION'] = $Facts.Version
+    $map['RELEASE_COMMIT_SHA'] = $Facts.ReleaseCommitSha
+    $map['MUTATION_RESULT'] = $result
+    $map['MUTATION_ATTEMPTED'] = $attempted
+    $map['MUTATION_PERFORMED'] = $performed
+    $map['HUMAN_AUTHORIZATION_REQUIRED'] = 'TRUE'
+    $map['GUARD_GHCR'] = $guardGhcr
+    $map['GUARD_GIT_TAG'] = $guardTag
+    return $map
+}
+
+function Invoke-ReleaseCreateTag {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseCommitSha,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        $Observers,
+        $Executor,
+        [switch]$Execute,
+        [switch]$Quiet
+    )
+
+    if (-not (Test-ReleaseVersion $Version)) {
+        throw 'Version must be X.Y.Z; the client does not infer or accept a v-prefix.'
+    }
+    if (-not (Test-ReleaseSha $ReleaseCommitSha)) {
+        throw 'ReleaseCommitSha must be a lowercase 40-hex SHA; the client does not infer source.'
+    }
+
+    $gitTag = $null
+    $ghcr = $null
+    if ($null -ne $Observers) {
+        if ($Observers.Contains('GitTag')) { $gitTag = & $Observers['GitTag'] $Version }
+        if ($Observers.Contains('Ghcr')) { $ghcr = & $Observers['Ghcr'] $Version $ReleaseCommitSha }
+    }
+    else {
+        $gitTag = Get-GitTagObservation -Version $Version
+        $ghcr = Get-GhcrVerifyObservation -Version $Version -ReleaseCommitSha $ReleaseCommitSha
+    }
+    if ($null -eq $gitTag) { $gitTag = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $ghcr) { $ghcr = New-ArtifactFact -State 'INCOMPLETE' }
+
+    $readBackTag = $gitTag
+    if ($Execute -and $null -ne $Observers -and $Observers.Contains('ReadBackGitTag')) {
+        $readBackTag = & $Observers['ReadBackGitTag'] $Version
+        if ($null -eq $readBackTag) { $readBackTag = New-ArtifactFact -State 'INCOMPLETE' }
+    }
+
+    $facts = [pscustomobject]@{
+        Version          = $Version
+        ReleaseCommitSha = $ReleaseCommitSha
+        GitTag           = $gitTag
+        ReadBackGitTag   = $readBackTag
+        Ghcr             = $ghcr
+        Execute          = [bool]$Execute
+        Executor         = $Executor
+    }
+
+    $map = Get-ReleaseCreateTagMutationStatus -Facts $facts
+    if (-not $Quiet) {
+        Write-ReleaseStderr ('release-client: create-tag VERSION={0} SHA={1}' -f $Version, $ReleaseCommitSha)
+        Write-ReleaseStderr ('release-client: MUTATION_RESULT={0} MUTATION_ATTEMPTED={1} MUTATION_PERFORMED={2}' -f $map['MUTATION_RESULT'], $map['MUTATION_ATTEMPTED'], $map['MUTATION_PERFORMED'])
+        foreach ($line in (Format-ReleaseMutationLines -Map $map -Keys $script:CreateTagMutationKeys)) {
+            [Console]::Out.WriteLine($line)
+        }
+    }
+    return $map
+}
+
+function Get-ReleasePublishNugetMutationStatus {
+    param($Facts)
+
+    $guardGhcr = ConvertTo-GhcrPrerequisiteGuardState -GhcrFact $Facts.Ghcr -ReleaseCommitSha $Facts.ReleaseCommitSha -Version $Facts.Version
+    $guardTag = ConvertTo-GitTagMutationGuardState -TagFact $Facts.GitTag -ReleaseCommitSha $Facts.ReleaseCommitSha
+    $guardNuget = ConvertTo-NugetMutationGuardState -NugetFact $Facts.Nuget
+    $guardRun = ConvertTo-WorkflowRunMutationGuardState -RunState $Facts.NugetPublishRun
+
+    $precheck = Resolve-ReleaseMutationPrecheck -PrerequisiteGuardStates @($guardGhcr, $guardTag) -GuardStates @($guardRun) -TargetGuardState $guardNuget -Execute $Facts.Execute
+
+    $result = 'NOT_ATTEMPTED'
+    $attempted = 'FALSE'
+    $performed = 'FALSE'
+    if ($null -ne $precheck) {
+        $result = $precheck.Result
+        $attempted = $precheck.Attempted
+        $performed = $precheck.Performed
+    }
+    elseif ($Facts.Execute) {
+        $execResult = Invoke-ReleaseMutationExecutor -Executor $Facts.Executor -ArgumentTable @{
+            Version          = $Facts.Version
+            ReleaseCommitSha = $Facts.ReleaseCommitSha
+            Ref              = ('v' + $Facts.Version)
+        }
+        if ($execResult.State -eq 'NOT_CONFIGURED') {
+            $result = 'INCOMPLETE'
+            $attempted = 'FALSE'
+            $performed = 'FALSE'
+        }
+        else {
+            $readNuget = ConvertTo-NugetMutationGuardState -NugetFact $Facts.ReadBackNuget
+            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readNuget -TargetGuardState 'EXACT_MATCH'
+            $result = $post.Result
+            $attempted = $post.Attempted
+            $performed = $post.Performed
+        }
+    }
+
+    $runId = $Facts.NugetPublishRunId
+    if ([string]::IsNullOrWhiteSpace($runId)) { $runId = 'NONE' }
+
+    $map = [ordered]@{}
+    $map['COMMAND'] = 'PUBLISH_NUGET'
+    $map['VERSION'] = $Facts.Version
+    $map['RELEASE_COMMIT_SHA'] = $Facts.ReleaseCommitSha
+    $map['MUTATION_RESULT'] = $result
+    $map['MUTATION_ATTEMPTED'] = $attempted
+    $map['MUTATION_PERFORMED'] = $performed
+    $map['HUMAN_AUTHORIZATION_REQUIRED'] = 'TRUE'
+    $map['GUARD_GHCR'] = $guardGhcr
+    $map['GUARD_GIT_TAG'] = $guardTag
+    $map['GUARD_NUGET'] = $guardNuget
+    $map['GUARD_NUGET_PUBLISH_RUN'] = $guardRun
+    $map['NUGET_PUBLISH_RUN_ID'] = $runId
+    return $map
+}
+
+function Invoke-ReleasePublishNuget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseCommitSha,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        $Observers,
+        $Executor,
+        [switch]$Execute,
+        [switch]$Quiet
+    )
+
+    if (-not (Test-ReleaseVersion $Version)) {
+        throw 'Version must be X.Y.Z; the client does not infer or accept a v-prefix.'
+    }
+    if (-not (Test-ReleaseSha $ReleaseCommitSha)) {
+        throw 'ReleaseCommitSha must be a lowercase 40-hex SHA; the client does not infer source.'
+    }
+
+    $gitTag = $null
+    $ghcr = $null
+    $nuget = $null
+    $nugetRun = 'INCOMPLETE'
+    $nugetRunId = 'NONE'
+
+    if ($null -ne $Observers) {
+        if ($Observers.Contains('GitTag')) { $gitTag = & $Observers['GitTag'] $Version }
+        if ($Observers.Contains('Ghcr')) { $ghcr = & $Observers['Ghcr'] $Version $ReleaseCommitSha }
+        if ($Observers.Contains('Nuget')) { $nuget = & $Observers['Nuget'] $Version }
+        if ($Observers.Contains('NugetPublishRun')) {
+            $runObs = & $Observers['NugetPublishRun'] $ReleaseCommitSha
+            if ($null -ne $runObs) {
+                $nugetRun = [string]$runObs.State
+                $nugetRunId = [string]$runObs.Id
+            }
+        }
+    }
+    else {
+        $gitTag = Get-GitTagObservation -Version $Version
+        $ghcr = Get-GhcrVerifyObservation -Version $Version -ReleaseCommitSha $ReleaseCommitSha
+        $nuget = Get-NugetObservation -Version $Version
+        $runFetch = Get-GitHubWorkflowDispatchRuns -ReleaseCommitSha $ReleaseCommitSha
+        if ($runFetch.State -eq 'INCOMPLETE') {
+            $nugetRun = 'INCOMPLETE'
+        }
+        else {
+            $runObs = ConvertTo-WorkflowDispatchRunObservation -Runs $runFetch.Runs -WorkflowPath '.github/workflows/publish-contracts.yml' -ReleaseCommitSha $ReleaseCommitSha
+            $nugetRun = $runObs.State
+            $nugetRunId = $runObs.Id
+        }
+    }
+
+    if ($null -eq $gitTag) { $gitTag = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $ghcr) { $ghcr = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $nuget) { $nuget = New-ArtifactFact -State 'INCOMPLETE' }
+
+    $readBackNuget = $nuget
+    if ($Execute -and $null -ne $Observers -and $Observers.Contains('ReadBackNuget')) {
+        $readBackNuget = & $Observers['ReadBackNuget'] $Version
+        if ($null -eq $readBackNuget) { $readBackNuget = New-ArtifactFact -State 'INCOMPLETE' }
+    }
+
+    $facts = [pscustomobject]@{
+        Version          = $Version
+        ReleaseCommitSha = $ReleaseCommitSha
+        GitTag           = $gitTag
+        Ghcr             = $ghcr
+        Nuget            = $nuget
+        ReadBackNuget    = $readBackNuget
+        NugetPublishRun  = $nugetRun
+        NugetPublishRunId = $nugetRunId
+        Execute          = [bool]$Execute
+        Executor         = $Executor
+    }
+
+    $map = Get-ReleasePublishNugetMutationStatus -Facts $facts
+    if (-not $Quiet) {
+        Write-ReleaseStderr ('release-client: publish-nuget VERSION={0} SHA={1}' -f $Version, $ReleaseCommitSha)
+        Write-ReleaseStderr ('release-client: MUTATION_RESULT={0} MUTATION_ATTEMPTED={1} MUTATION_PERFORMED={2}' -f $map['MUTATION_RESULT'], $map['MUTATION_ATTEMPTED'], $map['MUTATION_PERFORMED'])
+        foreach ($line in (Format-ReleaseMutationLines -Map $map -Keys $script:PublishNugetMutationKeys)) {
+            [Console]::Out.WriteLine($line)
+        }
+    }
+    return $map
+}
+
+function Test-ReleaseNotesPathGuard {
+    param(
+        [string]$RepoRoot,
+        [string]$ReleaseNotesPath
+    )
+    if ([string]::IsNullOrWhiteSpace($ReleaseNotesPath)) { return 'ABSENT' }
+    $fullPath = $ReleaseNotesPath
+    if (-not [System.IO.Path]::IsPathRooted($ReleaseNotesPath)) {
+        $fullPath = Join-Path $RepoRoot $ReleaseNotesPath
+    }
+    try {
+        $resolved = (Resolve-Path -LiteralPath $fullPath -ErrorAction Stop).Path
+    }
+    catch {
+        return 'INCOMPLETE'
+    }
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        return 'INCOMPLETE'
+    }
+    return 'PRESENT'
+}
+
+function Get-ReleaseCreateGitHubReleaseMutationStatus {
+    param($Facts)
+
+    $guardGhcr = ConvertTo-GhcrPrerequisiteGuardState -GhcrFact $Facts.Ghcr -ReleaseCommitSha $Facts.ReleaseCommitSha -Version $Facts.Version
+    $guardTag = ConvertTo-GitTagMutationGuardState -TagFact $Facts.GitTag -ReleaseCommitSha $Facts.ReleaseCommitSha
+    $guardNuget = ConvertTo-NugetMutationGuardState -NugetFact $Facts.Nuget
+    $guardRelease = ConvertTo-GitHubReleaseMutationGuardState -ReleaseFact $Facts.GitHubRelease -Version $Facts.Version
+    $notesGuard = $Facts.ReleaseNotesGuard
+
+    $precheck = Resolve-ReleaseMutationPrecheck -PrerequisiteGuardStates @($guardGhcr, $guardTag, $guardNuget) -GuardStates @() -TargetGuardState $guardRelease -Execute $Facts.Execute -ReleaseNotesGuard $(if ($notesGuard -ne 'PRESENT') { $notesGuard } else { '' })
+
+    $result = 'NOT_ATTEMPTED'
+    $attempted = 'FALSE'
+    $performed = 'FALSE'
+    if ($null -ne $precheck) {
+        $result = $precheck.Result
+        $attempted = $precheck.Attempted
+        $performed = $precheck.Performed
+    }
+    elseif ($Facts.Execute) {
+        $execResult = Invoke-ReleaseMutationExecutor -Executor $Facts.Executor -ArgumentTable @{
+            Version          = $Facts.Version
+            ReleaseCommitSha = $Facts.ReleaseCommitSha
+            TagName          = ('v' + $Facts.Version)
+            ReleaseNotesPath = $Facts.ReleaseNotesPath
+        }
+        if ($execResult.State -eq 'NOT_CONFIGURED') {
+            $result = 'INCOMPLETE'
+            $attempted = 'FALSE'
+            $performed = 'FALSE'
+        }
+        else {
+            $readRelease = ConvertTo-GitHubReleaseMutationGuardState -ReleaseFact $Facts.ReadBackGitHubRelease -Version $Facts.Version
+            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readRelease -TargetGuardState 'EXACT_MATCH'
+            $result = $post.Result
+            $attempted = $post.Attempted
+            $performed = $post.Performed
+        }
+    }
+
+    $notesPathOut = $Facts.ReleaseNotesPath
+    if ([string]::IsNullOrWhiteSpace($notesPathOut)) { $notesPathOut = 'NONE' }
+
+    $map = [ordered]@{}
+    $map['COMMAND'] = 'CREATE_GITHUB_RELEASE'
+    $map['VERSION'] = $Facts.Version
+    $map['RELEASE_COMMIT_SHA'] = $Facts.ReleaseCommitSha
+    $map['MUTATION_RESULT'] = $result
+    $map['MUTATION_ATTEMPTED'] = $attempted
+    $map['MUTATION_PERFORMED'] = $performed
+    $map['HUMAN_AUTHORIZATION_REQUIRED'] = 'TRUE'
+    $map['GUARD_GHCR'] = $guardGhcr
+    $map['GUARD_GIT_TAG'] = $guardTag
+    $map['GUARD_NUGET'] = $guardNuget
+    $map['GUARD_GITHUB_RELEASE'] = $guardRelease
+    $map['RELEASE_NOTES_PATH'] = $notesPathOut
+    return $map
+}
+
+function Invoke-ReleaseCreateGitHubRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseCommitSha,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        [string]$ReleaseNotesPath = '',
+        $Observers,
+        $Executor,
+        [switch]$Execute,
+        [switch]$Quiet
+    )
+
+    if (-not (Test-ReleaseVersion $Version)) {
+        throw 'Version must be X.Y.Z; the client does not infer or accept a v-prefix.'
+    }
+    if (-not (Test-ReleaseSha $ReleaseCommitSha)) {
+        throw 'ReleaseCommitSha must be a lowercase 40-hex SHA; the client does not infer source.'
+    }
+
+    $gitTag = $null
+    $ghcr = $null
+    $nuget = $null
+    $githubRelease = $null
+    if ($null -ne $Observers) {
+        if ($Observers.Contains('GitTag')) { $gitTag = & $Observers['GitTag'] $Version }
+        if ($Observers.Contains('Ghcr')) { $ghcr = & $Observers['Ghcr'] $Version $ReleaseCommitSha }
+        if ($Observers.Contains('Nuget')) { $nuget = & $Observers['Nuget'] $Version }
+        if ($Observers.Contains('GitHubRelease')) { $githubRelease = & $Observers['GitHubRelease'] $Version }
+    }
+    else {
+        $gitTag = Get-GitTagObservation -Version $Version
+        $ghcr = Get-GhcrVerifyObservation -Version $Version -ReleaseCommitSha $ReleaseCommitSha
+        $nuget = Get-NugetObservation -Version $Version
+        $githubRelease = Get-GitHubReleaseObservation -Version $Version
+    }
+    if ($null -eq $gitTag) { $gitTag = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $ghcr) { $ghcr = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $nuget) { $nuget = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $githubRelease) { $githubRelease = New-ArtifactFact -State 'INCOMPLETE' }
+
+    $notesGuard = Test-ReleaseNotesPathGuard -RepoRoot $RepoRoot -ReleaseNotesPath $ReleaseNotesPath
+
+    $readBackRelease = $githubRelease
+    if ($Execute -and $null -ne $Observers -and $Observers.Contains('ReadBackGitHubRelease')) {
+        $readBackRelease = & $Observers['ReadBackGitHubRelease'] $Version
+        if ($null -eq $readBackRelease) { $readBackRelease = New-ArtifactFact -State 'INCOMPLETE' }
+    }
+
+    $facts = [pscustomobject]@{
+        Version               = $Version
+        ReleaseCommitSha      = $ReleaseCommitSha
+        GitTag                = $gitTag
+        Ghcr                  = $ghcr
+        Nuget                 = $nuget
+        GitHubRelease         = $githubRelease
+        ReadBackGitHubRelease = $readBackRelease
+        ReleaseNotesPath      = $ReleaseNotesPath
+        ReleaseNotesGuard     = $notesGuard
+        Execute               = [bool]$Execute
+        Executor              = $Executor
+    }
+
+    $map = Get-ReleaseCreateGitHubReleaseMutationStatus -Facts $facts
+    if (-not $Quiet) {
+        Write-ReleaseStderr ('release-client: create-github-release VERSION={0} SHA={1}' -f $Version, $ReleaseCommitSha)
+        Write-ReleaseStderr ('release-client: MUTATION_RESULT={0} MUTATION_ATTEMPTED={1} MUTATION_PERFORMED={2}' -f $map['MUTATION_RESULT'], $map['MUTATION_ATTEMPTED'], $map['MUTATION_PERFORMED'])
+        foreach ($line in (Format-ReleaseMutationLines -Map $map -Keys $script:CreateGitHubReleaseMutationKeys)) {
+            [Console]::Out.WriteLine($line)
+        }
+    }
+    return $map
+}
+
 Export-ModuleMember -Function @(
     'ConvertTo-RemotePresence',
     'ConvertTo-RemoteFailureClass',
@@ -2880,5 +3777,26 @@ Export-ModuleMember -Function @(
     'Get-GhcrVerifyObservation',
     'Get-ReleaseVerifyDerivedStatus',
     'Format-ReleaseVerifyLines',
-    'Invoke-ReleaseVerify'
+    'Invoke-ReleaseVerify',
+    'Get-MutationGuardRank',
+    'ConvertTo-IdentityGuardStates',
+    'ConvertTo-GhcrPrerequisiteGuardState',
+    'ConvertTo-GhcrPublishTargetGuardState',
+    'ConvertTo-GitTagMutationGuardState',
+    'ConvertTo-NugetMutationGuardState',
+    'ConvertTo-GitHubReleaseMutationGuardState',
+    'ConvertTo-WorkflowRunMutationGuardState',
+    'ConvertTo-PreflightMutationGuardState',
+    'Resolve-ReleaseMutationPrecheck',
+    'Resolve-ReleaseMutationPostAttempt',
+    'Format-ReleaseMutationLines',
+    'Get-ReleasePublishImageMutationStatus',
+    'Invoke-ReleasePublishImage',
+    'Get-ReleaseCreateTagMutationStatus',
+    'Invoke-ReleaseCreateTag',
+    'Get-ReleasePublishNugetMutationStatus',
+    'Invoke-ReleasePublishNuget',
+    'Test-ReleaseNotesPathGuard',
+    'Get-ReleaseCreateGitHubReleaseMutationStatus',
+    'Invoke-ReleaseCreateGitHubRelease'
 )
