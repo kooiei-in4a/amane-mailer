@@ -132,6 +132,7 @@ function New-ArtifactFact {
         [string]$TargetSha = '',
         [string]$Digest = '',
         [string]$Revision = '',
+        [string]$OciVersion = '',
         [string]$ShaTagState = '',
         [string]$ShaTagDigest = '',
         [string]$Reason = ''
@@ -141,6 +142,7 @@ function New-ArtifactFact {
         TargetSha    = $TargetSha
         Digest       = $Digest
         Revision     = $Revision
+        OciVersion   = $OciVersion
         ShaTagState  = $ShaTagState
         ShaTagDigest = $ShaTagDigest
         Reason       = $Reason
@@ -329,6 +331,46 @@ function Get-OciRevisionFromConfigText {
         $unique = @($found | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
         if ($unique.Count -eq 1) { return $unique[0] }
         return $null
+    }
+    return $null
+}
+
+function Get-OciVersionFromConfigText {
+    param([string]$ConfigText)
+    if ([string]::IsNullOrWhiteSpace($ConfigText)) { return $null }
+    $found = [regex]::Matches($ConfigText, '"org\.opencontainers\.image\.version"\s*:\s*"([^"]+)"')
+    if ($found.Count -eq 1) { return $found[0].Groups[1].Value.Trim() }
+    if ($found.Count -gt 1) {
+        $unique = @($found | ForEach-Object { $_.Groups[1].Value.Trim() } | Select-Object -Unique)
+        if ($unique.Count -eq 1) { return $unique[0] }
+        return $null
+    }
+    return $null
+}
+
+function Get-NugetRepositoryCommitFromNuspecText {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    if ($Text -match '<repository[^>]*\scommit="([0-9a-f]{40})"') {
+        return $Matches[1]
+    }
+    return $null
+}
+
+function Get-ReleaseRecordCommitShaFromText {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    if ($Text -match '(?m)^-\s*releaseCommitSha:\s*`([0-9a-f]{40})`') {
+        return $Matches[1]
+    }
+    return $null
+}
+
+function Get-ReleaseRecordDigestFromText {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    if ($Text -match '(?m)^-\s*public OCI digest:\s*\r?\n\s*`(sha256:[0-9a-f]{64})`') {
+        return $Matches[1]
     }
     return $null
 }
@@ -1010,10 +1052,11 @@ function Get-GhcrManifestFact {
             return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason $reason
         }
         $parsedRevision = Get-OciRevisionFromConfigText -ConfigText $blob.BodyText
+        $parsedVersion = Get-OciVersionFromConfigText -ConfigText $blob.BodyText
         if (-not (Test-ReleaseSha $parsedRevision)) {
             return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason 'REVISION_PARSE'
         }
-        return New-ArtifactFact -State 'PRESENT' -Digest $digest -Revision $parsedRevision
+        return New-ArtifactFact -State 'PRESENT' -Digest $digest -Revision $parsedRevision -OciVersion $parsedVersion
     }
     if ($mediaType -match 'image\.index|manifest\.list') {
         $childDigests = @([regex]::Matches($resp.BodyText, '"digest"\s*:\s*"(sha256:[0-9a-f]{64})"') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
@@ -1027,7 +1070,7 @@ function Get-GhcrManifestFact {
             if ([string]::IsNullOrWhiteSpace($reason)) { $reason = 'CHILD_MANIFEST' }
             return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason $reason
         }
-        return New-ArtifactFact -State 'PRESENT' -Digest $digest -Revision $child.Revision
+        return New-ArtifactFact -State 'PRESENT' -Digest $digest -Revision $child.Revision -OciVersion $child.OciVersion
     }
     return New-ArtifactFact -State 'INCOMPLETE' -Digest $digest -Reason 'MEDIA_TYPE'
 }
@@ -2266,6 +2309,520 @@ function Invoke-ReleasePreflight {
     return $map
 }
 
+$script:VerifyKeys = @(
+    'COMMAND',
+    'VERSION',
+    'RELEASE_COMMIT_SHA',
+    'VERIFY_RESULT',
+    'GIT_TAG',
+    'CONTRACTS_SOURCE',
+    'OPENAPI',
+    'NUGET_PACKAGE',
+    'NUGET_SOURCE_REVISION',
+    'GHCR_VERSION_TAG',
+    'GHCR_SHA_TAG',
+    'GHCR_DIGEST_BINDING',
+    'OCI_REVISION',
+    'OCI_VERSION',
+    'GITHUB_RELEASE',
+    'RELEASE_RECORD',
+    'PUBLIC_DIGEST',
+    'MUTATION_PERFORMED'
+)
+
+function Get-VerifyIdentityRank {
+    param([string]$State)
+    if ($State -eq 'EXACT_MATCH') { return 0 }
+    if ($State -eq 'INCOMPLETE') { return 1 }
+    return 2
+}
+
+function ConvertTo-GitTagVerifyState {
+    param(
+        $TagFact,
+        [string]$ReleaseCommitSha
+    )
+    if ($null -eq $TagFact) { return 'INCOMPLETE' }
+    if ($TagFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($TagFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($TagFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($TagFact.State -eq 'PRESENT') {
+        if ((Test-ReleaseSha $TagFact.TargetSha) -and $TagFact.TargetSha -eq $ReleaseCommitSha) {
+            return 'EXACT_MATCH'
+        }
+        return 'CONFLICT'
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-GitHubReleaseVerifyState {
+    param($ReleaseFact)
+    if ($null -eq $ReleaseFact) { return 'INCOMPLETE' }
+    if ($ReleaseFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($ReleaseFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($ReleaseFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($ReleaseFact.State -eq 'PRESENT') { return 'EXACT_MATCH' }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-NugetPackageVerifyState {
+    param($NugetFact)
+    if ($null -eq $NugetFact) { return 'INCOMPLETE' }
+    if ($NugetFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($NugetFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($NugetFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($NugetFact.State -eq 'PRESENT') { return 'EXACT_MATCH' }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-SourceVersionVerifyState {
+    param(
+        [string]$ObservedVersion,
+        [string]$ExpectedVersion,
+        [string]$FetchState
+    )
+    if ($FetchState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($FetchState -eq 'ABSENT') { return 'ABSENT' }
+    if ([string]::IsNullOrWhiteSpace($ObservedVersion)) { return 'INCOMPLETE' }
+    if ($ObservedVersion -eq $ExpectedVersion) { return 'EXACT_MATCH' }
+    return 'CONFLICT'
+}
+
+function ConvertTo-NugetRevisionVerifyState {
+    param(
+        [string]$PackageState,
+        [string]$ObservedCommit,
+        [string]$ExpectedCommit,
+        [string]$FetchState
+    )
+    if ($PackageState -eq 'ABSENT') { return 'ABSENT' }
+    if ($PackageState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($FetchState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($FetchState -eq 'ABSENT') { return 'ABSENT' }
+    if (-not (Test-ReleaseSha $ObservedCommit)) { return 'INCOMPLETE' }
+    if ($ObservedCommit -eq $ExpectedCommit) { return 'EXACT_MATCH' }
+    return 'CONFLICT'
+}
+
+function ConvertTo-GhcrTagVerifyState {
+    param($Fact)
+    if ($null -eq $Fact) { return 'INCOMPLETE' }
+    if ($Fact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($Fact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($Fact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($Fact.State -eq 'PRESENT') {
+        if (Test-ReleaseDigest $Fact.Digest) { return 'EXACT_MATCH' }
+        return 'INCOMPLETE'
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-GhcrShaTagVerifyState {
+    param($VersionFact, $ShaTagState, [string]$ShaTagDigest)
+    if ($null -eq $VersionFact) { return 'INCOMPLETE' }
+    if ($VersionFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($VersionFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ([string]::IsNullOrWhiteSpace($ShaTagState)) { return 'INCOMPLETE' }
+    if ($ShaTagState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($ShaTagState -eq 'ABSENT') { return 'ABSENT' }
+    if ($ShaTagState -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($ShaTagState -eq 'PRESENT') {
+        if (Test-ReleaseDigest $ShaTagDigest) { return 'EXACT_MATCH' }
+        return 'INCOMPLETE'
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-GhcrDigestBindingVerifyState {
+    param(
+        $VersionFact,
+        [string]$ShaTagState,
+        [string]$ShaTagDigest
+    )
+    if ($null -eq $VersionFact) { return 'INCOMPLETE' }
+    if ($VersionFact.State -eq 'ABSENT' -or $ShaTagState -eq 'ABSENT') { return 'ABSENT' }
+    if ($VersionFact.State -eq 'INCOMPLETE' -or $ShaTagState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($VersionFact.State -eq 'CONFLICT' -or $ShaTagState -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($VersionFact.State -eq 'PRESENT' -and $ShaTagState -eq 'PRESENT') {
+        if (-not (Test-ReleaseDigest $VersionFact.Digest) -or -not (Test-ReleaseDigest $ShaTagDigest)) {
+            return 'INCOMPLETE'
+        }
+        if ($VersionFact.Digest -eq $ShaTagDigest) { return 'EXACT_MATCH' }
+        return 'CONFLICT'
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-OciRevisionVerifyState {
+    param(
+        $VersionFact,
+        [string]$ReleaseCommitSha
+    )
+    if ($null -eq $VersionFact) { return 'INCOMPLETE' }
+    if ($VersionFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($VersionFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($VersionFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($VersionFact.State -eq 'PRESENT') {
+        if (-not (Test-ReleaseSha $VersionFact.Revision)) { return 'INCOMPLETE' }
+        if ($VersionFact.Revision -eq $ReleaseCommitSha) { return 'EXACT_MATCH' }
+        return 'CONFLICT'
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-OciVersionVerifyState {
+    param(
+        $VersionFact,
+        [string]$ExpectedVersion
+    )
+    if ($null -eq $VersionFact) { return 'INCOMPLETE' }
+    if ($VersionFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($VersionFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($VersionFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($VersionFact.State -eq 'PRESENT') {
+        if ([string]::IsNullOrWhiteSpace($VersionFact.OciVersion)) { return 'INCOMPLETE' }
+        if ($VersionFact.OciVersion -eq $ExpectedVersion) { return 'EXACT_MATCH' }
+        return 'CONFLICT'
+    }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-ReleaseRecordVerifyState {
+    param(
+        [string]$FetchState,
+        [string]$Text,
+        [string]$Version,
+        [string]$ReleaseCommitSha,
+        [string]$ObservedDigest
+    )
+    if ($FetchState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($FetchState -eq 'ABSENT') { return 'ABSENT' }
+    $recordState = Get-ReleaseRecordStateFromText -Text $Text
+    if ($recordState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($recordState -ne 'PUBLISHED') { return 'CONFLICT' }
+    $recordSha = Get-ReleaseRecordCommitShaFromText -Text $Text
+    if (-not (Test-ReleaseSha $recordSha)) { return 'INCOMPLETE' }
+    if ($recordSha -ne $ReleaseCommitSha) { return 'CONFLICT' }
+    if (Test-ReleaseDigest $ObservedDigest) {
+        $recordDigest = Get-ReleaseRecordDigestFromText -Text $Text
+        if (-not (Test-ReleaseDigest $recordDigest)) { return 'INCOMPLETE' }
+        if ($recordDigest -ne $ObservedDigest) { return 'CONFLICT' }
+    }
+    return 'EXACT_MATCH'
+}
+
+function Get-GitHubFileContentAtRef {
+    param(
+        [string]$RelativePath,
+        [string]$Ref,
+        $Request
+    )
+    $path = $RelativePath.Replace('\', '/').TrimStart('/')
+    $uri = $script:GitHubApiRoot + '/contents/' + $path + '?ref=' + $Ref
+    $headers = Get-GitHubAuthHeaders
+    $resp = if ($null -ne $Request) {
+        & $Request $uri $headers
+    }
+    else {
+        Invoke-ReleaseReadOnlyRequest -Uri $uri -Headers $headers
+    }
+    $presence = ConvertTo-RemotePresence -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure
+    if ($presence -eq 'ABSENT') {
+        return [pscustomobject]@{ State = 'ABSENT'; Text = ''; Reason = '' }
+    }
+    if ($presence -ne 'HTTP_OK') {
+        return [pscustomobject]@{
+            State  = 'INCOMPLETE'
+            Text   = ''
+            Reason = (ConvertTo-RemoteFailureClass -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure -FailureClass $resp.FailureClass)
+        }
+    }
+    try {
+        $parsed = $resp.BodyText | ConvertFrom-Json
+    }
+    catch {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'JSON' }
+    }
+    if ($null -eq $parsed -or [string]::IsNullOrWhiteSpace([string]$parsed.content)) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'CONTENT_PARSE' }
+    }
+    $encoded = ([string]$parsed.content) -replace '\s', ''
+    try {
+        $bytes = [Convert]::FromBase64String($encoded)
+        $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+        return [pscustomobject]@{ State = 'PRESENT'; Text = $text; Reason = '' }
+    }
+    catch {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'BASE64' }
+    }
+}
+
+function Get-SourceVersionAtCommitObservation {
+    param(
+        [string]$ReleaseCommitSha,
+        [string]$Version,
+        $Request
+    )
+    $contractsFetch = Get-GitHubFileContentAtRef -RelativePath 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj' -Ref $ReleaseCommitSha -Request $Request
+    $openapiFetch = Get-GitHubFileContentAtRef -RelativePath 'docs/api/openapi.yaml' -Ref $ReleaseCommitSha -Request $Request
+    return [pscustomobject]@{
+        ContractsState   = $contractsFetch.State
+        ContractsVersion = (Get-ContractsVersionFromText -Text $contractsFetch.Text)
+        OpenApiState     = $openapiFetch.State
+        OpenApiVersion   = (Get-OpenApiVersionFromText -Text $openapiFetch.Text)
+    }
+}
+
+function Get-NugetSourceRevisionObservation {
+    param(
+        [string]$Version,
+        $Request
+    )
+    $nuspecName = $script:NugetPackageId + '.nuspec'
+    $uri = 'https://api.nuget.org/v3-flatcontainer/' + $script:NugetPackageId + '/' + $Version + '/' + $nuspecName
+    $resp = if ($null -ne $Request) {
+        & $Request $uri $null
+    }
+    else {
+        Invoke-ReleaseReadOnlyRequest -Uri $uri
+    }
+    $presence = ConvertTo-RemotePresence -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure
+    if ($presence -eq 'ABSENT') {
+        return [pscustomobject]@{ State = 'ABSENT'; Commit = ''; Reason = '' }
+    }
+    if ($presence -ne 'HTTP_OK') {
+        return [pscustomobject]@{
+            State  = 'INCOMPLETE'
+            Commit = ''
+            Reason = (ConvertTo-RemoteFailureClass -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure -FailureClass $resp.FailureClass)
+        }
+    }
+    $commit = Get-NugetRepositoryCommitFromNuspecText -Text $resp.BodyText
+    if (-not (Test-ReleaseSha $commit)) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Commit = ''; Reason = 'NUSPEC_PARSE' }
+    }
+    return [pscustomobject]@{ State = 'PRESENT'; Commit = $commit; Reason = '' }
+}
+
+function Get-ReleaseRecordContentForVerify {
+    param(
+        [string]$Version,
+        [string]$ReleaseCommitSha,
+        $Request,
+        [string]$MainRef = ''
+    )
+    $relativePath = 'docs/releases/v' + $Version + '.md'
+    $refs = @()
+    if (-not [string]::IsNullOrWhiteSpace($MainRef)) {
+        $refs += $MainRef
+    }
+    else {
+        $main = Get-GitHubMainObservation
+        if ($main.State -eq 'PRESENT' -and (Test-ReleaseSha $main.Sha)) {
+            $refs += $main.Sha
+        }
+    }
+    $refs += $ReleaseCommitSha
+    $seen = @{}
+    foreach ($ref in $refs) {
+        if ($seen.ContainsKey($ref)) { continue }
+        $seen[$ref] = $true
+        $fetch = Get-GitHubFileContentAtRef -RelativePath $relativePath -Ref $ref -Request $Request
+        if ($fetch.State -eq 'PRESENT') {
+            $recordState = Get-ReleaseRecordStateFromText -Text $fetch.Text
+            if ($recordState -eq 'PUBLISHED') {
+                return $fetch
+            }
+            if ($ref -eq $ReleaseCommitSha) {
+                return $fetch
+            }
+        }
+        if ($fetch.State -eq 'INCOMPLETE') {
+            return $fetch
+        }
+    }
+    return [pscustomobject]@{ State = 'ABSENT'; Text = ''; Reason = '' }
+}
+
+function Get-GhcrVerifyObservation {
+    param(
+        [string]$Version,
+        [string]$ReleaseCommitSha,
+        $GhcrObserver
+    )
+    if ($null -ne $GhcrObserver) {
+        return & $GhcrObserver $Version $ReleaseCommitSha
+    }
+    return Get-GhcrObservation -Version $Version -SourceSha $ReleaseCommitSha
+}
+
+function Get-ReleaseVerifyDerivedStatus {
+    param($Facts)
+
+    $rank = 0
+    foreach ($key in @(
+            'GitTag',
+            'ContractsSource',
+            'OpenApi',
+            'NugetPackage',
+            'NugetSourceRevision',
+            'GhcrVersionTag',
+            'GhcrShaTag',
+            'GhcrDigestBinding',
+            'OciRevision',
+            'OciVersion',
+            'GitHubRelease',
+            'ReleaseRecord'
+        )) {
+        $rank = [Math]::Max($rank, (Get-VerifyIdentityRank -State $Facts.$key))
+    }
+
+    $result = 'PASS'
+    if ($rank -eq 2) { $result = 'FAIL' }
+    elseif ($rank -eq 1) { $result = 'INCOMPLETE' }
+
+    $digest = 'NONE'
+    if ($null -ne $Facts.PublicDigest -and (Test-ReleaseDigest $Facts.PublicDigest)) {
+        $digest = $Facts.PublicDigest
+    }
+
+    $map = [ordered]@{}
+    $map['COMMAND'] = 'VERIFY'
+    $map['VERSION'] = $Facts.Version
+    $map['RELEASE_COMMIT_SHA'] = $Facts.ReleaseCommitSha
+    $map['VERIFY_RESULT'] = $result
+    $map['GIT_TAG'] = $Facts.GitTag
+    $map['CONTRACTS_SOURCE'] = $Facts.ContractsSource
+    $map['OPENAPI'] = $Facts.OpenApi
+    $map['NUGET_PACKAGE'] = $Facts.NugetPackage
+    $map['NUGET_SOURCE_REVISION'] = $Facts.NugetSourceRevision
+    $map['GHCR_VERSION_TAG'] = $Facts.GhcrVersionTag
+    $map['GHCR_SHA_TAG'] = $Facts.GhcrShaTag
+    $map['GHCR_DIGEST_BINDING'] = $Facts.GhcrDigestBinding
+    $map['OCI_REVISION'] = $Facts.OciRevision
+    $map['OCI_VERSION'] = $Facts.OciVersion
+    $map['GITHUB_RELEASE'] = $Facts.GitHubRelease
+    $map['RELEASE_RECORD'] = $Facts.ReleaseRecord
+    $map['PUBLIC_DIGEST'] = $digest
+    $map['MUTATION_PERFORMED'] = 'FALSE'
+    return $map
+}
+
+function Format-ReleaseVerifyLines {
+    param($Map)
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($key in $script:VerifyKeys) {
+        $value = [string]$Map[$key]
+        $value = $value -replace '[\r\n]+', ' '
+        [void]$lines.Add(('{0}={1}' -f $key, $value))
+    }
+    return $lines
+}
+
+function Write-ReleaseVerifyDiagnostics {
+    param($Facts, $Map)
+    Write-ReleaseStderr ('release-client: verify VERSION={0} RELEASE_COMMIT_SHA={1} (read-only)' -f $Facts.Version, $Facts.ReleaseCommitSha)
+    Write-ReleaseStderr ('release-client: VERIFY_RESULT={0} PUBLIC_DIGEST={1}' -f $Map['VERIFY_RESULT'], $Map['PUBLIC_DIGEST'])
+}
+
+function Invoke-ReleaseVerify {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseCommitSha,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        $Observers,
+        [switch]$Quiet
+    )
+
+    if (-not (Test-ReleaseVersion $Version)) {
+        throw 'Version must be X.Y.Z; the client does not infer or accept a v-prefix.'
+    }
+    if (-not (Test-ReleaseSha $ReleaseCommitSha)) {
+        throw 'ReleaseCommitSha must be a 40-character lowercase hex git commit.'
+    }
+
+    $gitTag = $null
+    $githubRelease = $null
+    $nuget = $null
+    $sourceVersions = $null
+    $nugetRevision = $null
+    $recordFetch = $null
+    $ghcr = $null
+
+    if ($null -ne $Observers) {
+        if ($Observers.Contains('GitTag')) { $gitTag = & $Observers['GitTag'] $Version }
+        if ($Observers.Contains('GitHubRelease')) { $githubRelease = & $Observers['GitHubRelease'] $Version }
+        if ($Observers.Contains('Nuget')) { $nuget = & $Observers['Nuget'] $Version }
+        if ($Observers.Contains('SourceVersions')) { $sourceVersions = & $Observers['SourceVersions'] $ReleaseCommitSha $Version }
+        if ($Observers.Contains('NugetRevision')) { $nugetRevision = & $Observers['NugetRevision'] $Version }
+        if ($Observers.Contains('ReleaseRecord')) { $recordFetch = & $Observers['ReleaseRecord'] $Version $ReleaseCommitSha }
+        if ($Observers.Contains('Ghcr')) { $ghcr = & $Observers['Ghcr'] $Version $ReleaseCommitSha }
+    }
+    else {
+        $gitTag = Get-GitTagObservation -Version $Version
+        $githubRelease = Get-GitHubReleaseObservation -Version $Version
+        $nuget = Get-NugetObservation -Version $Version
+        $sourceVersions = Get-SourceVersionAtCommitObservation -ReleaseCommitSha $ReleaseCommitSha -Version $Version
+        $nugetRevision = Get-NugetSourceRevisionObservation -Version $Version
+        $recordFetch = Get-ReleaseRecordContentForVerify -Version $Version -ReleaseCommitSha $ReleaseCommitSha
+        $ghcr = Get-GhcrVerifyObservation -Version $Version -ReleaseCommitSha $ReleaseCommitSha
+    }
+
+    if ($null -eq $gitTag) { $gitTag = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $githubRelease) { $githubRelease = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $nuget) { $nuget = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $sourceVersions) {
+        $sourceVersions = [pscustomobject]@{
+            ContractsState   = 'INCOMPLETE'
+            ContractsVersion = ''
+            OpenApiState     = 'INCOMPLETE'
+            OpenApiVersion   = ''
+        }
+    }
+    if ($null -eq $nugetRevision) {
+        $nugetRevision = [pscustomobject]@{ State = 'INCOMPLETE'; Commit = ''; Reason = 'OBSERVER' }
+    }
+    if ($null -eq $recordFetch) {
+        $recordFetch = [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'OBSERVER' }
+    }
+    if ($null -eq $ghcr) { $ghcr = New-ArtifactFact -State 'INCOMPLETE' }
+
+    $publicDigest = ''
+    if ($ghcr.State -eq 'PRESENT' -and (Test-ReleaseDigest $ghcr.Digest)) {
+        $publicDigest = $ghcr.Digest
+    }
+
+    $facts = [pscustomobject]@{
+        Version              = $Version
+        ReleaseCommitSha     = $ReleaseCommitSha
+        GitTag               = (ConvertTo-GitTagVerifyState -TagFact $gitTag -ReleaseCommitSha $ReleaseCommitSha)
+        ContractsSource      = (ConvertTo-SourceVersionVerifyState -ObservedVersion $sourceVersions.ContractsVersion -ExpectedVersion $Version -FetchState $sourceVersions.ContractsState)
+        OpenApi              = (ConvertTo-SourceVersionVerifyState -ObservedVersion $sourceVersions.OpenApiVersion -ExpectedVersion $Version -FetchState $sourceVersions.OpenApiState)
+        NugetPackage         = (ConvertTo-NugetPackageVerifyState -NugetFact $nuget)
+        NugetSourceRevision  = (ConvertTo-NugetRevisionVerifyState -PackageState $nuget.State -ObservedCommit $nugetRevision.Commit -ExpectedCommit $ReleaseCommitSha -FetchState $nugetRevision.State)
+        GhcrVersionTag       = (ConvertTo-GhcrTagVerifyState -Fact $ghcr)
+        GhcrShaTag           = (ConvertTo-GhcrShaTagVerifyState -VersionFact $ghcr -ShaTagState $ghcr.ShaTagState -ShaTagDigest $ghcr.ShaTagDigest)
+        GhcrDigestBinding    = (ConvertTo-GhcrDigestBindingVerifyState -VersionFact $ghcr -ShaTagState $ghcr.ShaTagState -ShaTagDigest $ghcr.ShaTagDigest)
+        OciRevision          = (ConvertTo-OciRevisionVerifyState -VersionFact $ghcr -ReleaseCommitSha $ReleaseCommitSha)
+        OciVersion           = (ConvertTo-OciVersionVerifyState -VersionFact $ghcr -ExpectedVersion $Version)
+        GitHubRelease        = (ConvertTo-GitHubReleaseVerifyState -ReleaseFact $githubRelease)
+        ReleaseRecord        = (ConvertTo-ReleaseRecordVerifyState -FetchState $recordFetch.State -Text $recordFetch.Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -ObservedDigest $publicDigest)
+        PublicDigest         = $publicDigest
+    }
+
+    $map = Get-ReleaseVerifyDerivedStatus -Facts $facts
+    if (-not $Quiet) {
+        Write-ReleaseVerifyDiagnostics -Facts $facts -Map $map
+        foreach ($line in (Format-ReleaseVerifyLines -Map $map)) {
+            [Console]::Out.WriteLine($line)
+        }
+    }
+    return $map
+}
+
 Export-ModuleMember -Function @(
     'ConvertTo-RemotePresence',
     'ConvertTo-RemoteFailureClass',
@@ -2299,5 +2856,29 @@ Export-ModuleMember -Function @(
     'Convert-GitHubWorkflowRunsJson',
     'Get-ReleasePreflightDerivedStatus',
     'Format-ReleasePreflightLines',
-    'Invoke-ReleasePreflight'
+    'Invoke-ReleasePreflight',
+    'Get-OciVersionFromConfigText',
+    'Get-NugetRepositoryCommitFromNuspecText',
+    'Get-ReleaseRecordCommitShaFromText',
+    'Get-ReleaseRecordDigestFromText',
+    'Get-VerifyIdentityRank',
+    'ConvertTo-GitTagVerifyState',
+    'ConvertTo-GitHubReleaseVerifyState',
+    'ConvertTo-NugetPackageVerifyState',
+    'ConvertTo-SourceVersionVerifyState',
+    'ConvertTo-NugetRevisionVerifyState',
+    'ConvertTo-GhcrTagVerifyState',
+    'ConvertTo-GhcrShaTagVerifyState',
+    'ConvertTo-GhcrDigestBindingVerifyState',
+    'ConvertTo-OciRevisionVerifyState',
+    'ConvertTo-OciVersionVerifyState',
+    'ConvertTo-ReleaseRecordVerifyState',
+    'Get-GitHubFileContentAtRef',
+    'Get-SourceVersionAtCommitObservation',
+    'Get-NugetSourceRevisionObservation',
+    'Get-ReleaseRecordContentForVerify',
+    'Get-GhcrVerifyObservation',
+    'Get-ReleaseVerifyDerivedStatus',
+    'Format-ReleaseVerifyLines',
+    'Invoke-ReleaseVerify'
 )

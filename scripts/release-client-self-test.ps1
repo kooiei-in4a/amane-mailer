@@ -393,9 +393,16 @@ Assert-Equal 'CLI status without Version exit 2' $missingVersion.ExitCode 2
 Assert-True 'CLI status without Version mentions Version' ($missingVersion.Output -match 'Version') 'missing -Version usage text'
 
 $unknown = Invoke-Cli -CliArgs @('verify', '-Version', '1.3.4')
-Assert-Equal 'CLI unknown command exit 2' $unknown.ExitCode 2
-Assert-True 'CLI unknown command is RO-2 only' ($unknown.Output -match 'RO-2') 'unknown command should name RO-2'
-Assert-True 'CLI unknown command does not claim mutation' ($unknown.Output -notmatch 'MUTATION_PERFORMED=TRUE') 'unknown command must not claim a mutation'
+Assert-Equal 'CLI verify without SHA exit 2' $unknown.ExitCode 2
+Assert-True 'CLI verify without SHA mentions ReleaseCommitSha' ($unknown.Output -match 'ReleaseCommitSha') 'missing -ReleaseCommitSha usage text'
+
+$verifyBadSha = Invoke-Cli -CliArgs @('verify', '-Version', '1.3.4', '-ReleaseCommitSha', 'not-a-sha')
+Assert-Equal 'CLI verify bad SHA exit 1' $verifyBadSha.ExitCode 1
+Assert-True 'CLI verify bad SHA mentions hex' ($verifyBadSha.Output -match '40') 'bad SHA should be rejected'
+
+$notImplemented = Invoke-Cli -CliArgs @('freeze', '-Version', '1.3.4')
+Assert-Equal 'CLI not implemented command exit 2' $notImplemented.ExitCode 2
+Assert-True 'CLI not implemented names RO-3' ($notImplemented.Output -match 'RO-3') 'unknown command should name RO-3'
 
 $preflightNoVersion = Invoke-Cli -CliArgs @('preflight', '-ReleaseCommitSha', $MainSha)
 Assert-Equal 'CLI preflight without Version exit 2' $preflightNoVersion.ExitCode 2
@@ -1023,6 +1030,264 @@ Assert-Equal 'parsed nuget run id' $parsedRuns[1].Id '32728423486'
 
 Assert-Equal 'version prep PASS' (Get-VersionPrepState -Alignment 'PASS' -ChangelogHasEntry 'PASS' -ReleaseRecord 'PENDING') 'PASS'
 Assert-Equal 'version prep FAIL over INCOMPLETE' (Get-VersionPrepState -Alignment 'FAIL' -ChangelogHasEntry 'INCOMPLETE' -ReleaseRecord 'PENDING') 'FAIL'
+
+# --- RO-3 verify ---
+function New-PublishedGhcrFact {
+    param(
+        [string]$Revision = $RelSha,
+        [string]$Digest = $DigestA,
+        [string]$OciVersion = '1.3.4',
+        [string]$ShaTagState = 'PRESENT',
+        [string]$ShaTagDigest = $DigestA
+    )
+    return New-ArtifactFact -State 'PRESENT' -Digest $Digest -Revision $Revision -OciVersion $OciVersion -ShaTagState $ShaTagState -ShaTagDigest $ShaTagDigest
+}
+
+function New-PublishedRecordText {
+    param(
+        [string]$Sha = $RelSha,
+        [string]$Digest = $DigestA
+    )
+    return @"
+> Status: **PUBLISHED**
+
+## Release identity
+
+- releaseCommitSha: ``$Sha``
+
+## GHCR
+
+- public OCI digest:
+  ``$Digest``
+"@
+}
+
+function New-ReadyVerifyObservers {
+    param(
+        [string]$Sha = $RelSha,
+        [string]$Version = '1.3.4',
+        [string]$Digest = $DigestA
+    )
+    $recordText = New-PublishedRecordText -Sha $Sha -Digest $Digest
+    return @{
+        GitTag          = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $Sha }.GetNewClosure()
+        GitHubRelease   = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+        Nuget           = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+        SourceVersions  = {
+            param($shaArg, $verArg)
+            [pscustomobject]@{
+                ContractsState   = 'PRESENT'
+                ContractsVersion = $verArg
+                OpenApiState     = 'PRESENT'
+                OpenApiVersion   = $verArg
+            }
+        }.GetNewClosure()
+        NugetRevision   = { param($ver) [pscustomobject]@{ State = 'PRESENT'; Commit = $Sha; Reason = '' } }.GetNewClosure()
+        ReleaseRecord   = { param($ver, $shaArg) [pscustomobject]@{ State = 'PRESENT'; Text = $recordText; Reason = '' } }.GetNewClosure()
+        Ghcr            = { param($ver, $shaArg) New-PublishedGhcrFact -Revision $Sha -Digest $Digest -OciVersion $ver }.GetNewClosure()
+    }
+}
+
+function Invoke-VerifyFixture {
+    param($Observers)
+    return Invoke-ReleaseVerify -Version '1.3.4' -ReleaseCommitSha $RelSha -RepoRoot $RepoRoot -Observers $Observers -Quiet
+}
+
+$script:VerifyMaps = New-Object System.Collections.Generic.List[object]
+$readyVerifyObs = New-ReadyVerifyObservers
+$readyVerifyMap = Invoke-VerifyFixture -Observers $readyVerifyObs
+[void]$script:VerifyMaps.Add($readyVerifyMap)
+Assert-Equal 'verify published PASS' $readyVerifyMap['VERIFY_RESULT'] 'PASS'
+Assert-Equal 'verify published git tag' $readyVerifyMap['GIT_TAG'] 'EXACT_MATCH'
+Assert-Equal 'verify published contracts' $readyVerifyMap['CONTRACTS_SOURCE'] 'EXACT_MATCH'
+Assert-Equal 'verify published openapi' $readyVerifyMap['OPENAPI'] 'EXACT_MATCH'
+Assert-Equal 'verify published nuget package' $readyVerifyMap['NUGET_PACKAGE'] 'EXACT_MATCH'
+Assert-Equal 'verify published nuget revision' $readyVerifyMap['NUGET_SOURCE_REVISION'] 'EXACT_MATCH'
+Assert-Equal 'verify published ghcr version tag' $readyVerifyMap['GHCR_VERSION_TAG'] 'EXACT_MATCH'
+Assert-Equal 'verify published ghcr sha tag' $readyVerifyMap['GHCR_SHA_TAG'] 'EXACT_MATCH'
+Assert-Equal 'verify published digest binding' $readyVerifyMap['GHCR_DIGEST_BINDING'] 'EXACT_MATCH'
+Assert-Equal 'verify published oci revision' $readyVerifyMap['OCI_REVISION'] 'EXACT_MATCH'
+Assert-Equal 'verify published oci version' $readyVerifyMap['OCI_VERSION'] 'EXACT_MATCH'
+Assert-Equal 'verify published github release' $readyVerifyMap['GITHUB_RELEASE'] 'EXACT_MATCH'
+Assert-Equal 'verify published release record' $readyVerifyMap['RELEASE_RECORD'] 'EXACT_MATCH'
+Assert-Equal 'verify published public digest' $readyVerifyMap['PUBLIC_DIGEST'] $DigestA
+Assert-Equal 'verify published mutation' $readyVerifyMap['MUTATION_PERFORMED'] 'FALSE'
+Assert-Equal 'verify published command' $readyVerifyMap['COMMAND'] 'VERIFY'
+
+$tagMismatchObs = New-ReadyVerifyObservers
+$tagMismatchObs['GitTag'] = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $WrongSha }
+$tagMismatchMap = Invoke-VerifyFixture -Observers $tagMismatchObs
+[void]$script:VerifyMaps.Add($tagMismatchMap)
+Assert-Equal 'verify tag target mismatch FAIL' $tagMismatchMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify tag target mismatch state' $tagMismatchMap['GIT_TAG'] 'CONFLICT'
+
+$contractsMismatchObs = New-ReadyVerifyObservers
+$contractsMismatchObs['SourceVersions'] = {
+    param($shaArg, $verArg)
+    [pscustomobject]@{
+        ContractsState   = 'PRESENT'
+        ContractsVersion = '1.3.5'
+        OpenApiState     = 'PRESENT'
+        OpenApiVersion   = $verArg
+    }
+}
+$contractsMismatchMap = Invoke-VerifyFixture -Observers $contractsMismatchObs
+[void]$script:VerifyMaps.Add($contractsMismatchMap)
+Assert-Equal 'verify contracts mismatch FAIL' $contractsMismatchMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify contracts mismatch state' $contractsMismatchMap['CONTRACTS_SOURCE'] 'CONFLICT'
+
+$openapiMismatchObs = New-ReadyVerifyObservers
+$openapiMismatchObs['SourceVersions'] = {
+    param($shaArg, $verArg)
+    [pscustomobject]@{
+        ContractsState   = 'PRESENT'
+        ContractsVersion = $verArg
+        OpenApiState     = 'PRESENT'
+        OpenApiVersion   = '9.9.9'
+    }
+}
+$openapiMismatchMap = Invoke-VerifyFixture -Observers $openapiMismatchObs
+[void]$script:VerifyMaps.Add($openapiMismatchMap)
+Assert-Equal 'verify openapi mismatch FAIL' $openapiMismatchMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify openapi mismatch state' $openapiMismatchMap['OPENAPI'] 'CONFLICT'
+
+$digestMismatchObs = New-ReadyVerifyObservers
+$digestMismatchObs['Ghcr'] = { param($ver, $shaArg) New-PublishedGhcrFact -Revision $RelSha -Digest $DigestA -ShaTagDigest $DigestB }
+$digestMismatchMap = Invoke-VerifyFixture -Observers $digestMismatchObs
+[void]$script:VerifyMaps.Add($digestMismatchMap)
+Assert-Equal 'verify digest mismatch FAIL' $digestMismatchMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify digest mismatch binding' $digestMismatchMap['GHCR_DIGEST_BINDING'] 'CONFLICT'
+
+$ociRevisionMismatchObs = New-ReadyVerifyObservers
+$ociRevisionMismatchObs['Ghcr'] = { param($ver, $shaArg) New-PublishedGhcrFact -Revision $WrongSha -Digest $DigestA -OciVersion $ver }
+$ociRevisionMismatchMap = Invoke-VerifyFixture -Observers $ociRevisionMismatchObs
+[void]$script:VerifyMaps.Add($ociRevisionMismatchMap)
+Assert-Equal 'verify oci revision mismatch FAIL' $ociRevisionMismatchMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify oci revision mismatch state' $ociRevisionMismatchMap['OCI_REVISION'] 'CONFLICT'
+
+$ociVersionMismatchObs = New-ReadyVerifyObservers
+$ociVersionMismatchObs['Ghcr'] = { param($ver, $shaArg) New-PublishedGhcrFact -Revision $RelSha -Digest $DigestA -OciVersion '9.9.9' }
+$ociVersionMismatchMap = Invoke-VerifyFixture -Observers $ociVersionMismatchObs
+[void]$script:VerifyMaps.Add($ociVersionMismatchMap)
+Assert-Equal 'verify oci version mismatch FAIL' $ociVersionMismatchMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify oci version mismatch state' $ociVersionMismatchMap['OCI_VERSION'] 'CONFLICT'
+
+$nugetRevisionMismatchObs = New-ReadyVerifyObservers
+$nugetRevisionMismatchObs['NugetRevision'] = { param($ver) [pscustomobject]@{ State = 'PRESENT'; Commit = $WrongSha; Reason = '' } }
+$nugetRevisionMismatchMap = Invoke-VerifyFixture -Observers $nugetRevisionMismatchObs
+[void]$script:VerifyMaps.Add($nugetRevisionMismatchMap)
+Assert-Equal 'verify nuget revision mismatch FAIL' $nugetRevisionMismatchMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify nuget revision mismatch state' $nugetRevisionMismatchMap['NUGET_SOURCE_REVISION'] 'CONFLICT'
+
+$githubReleaseMismatchObs = New-ReadyVerifyObservers
+$githubReleaseMismatchObs['GitHubRelease'] = { param($ver) New-ArtifactFact -State 'CONFLICT' -Reason 'TAG_NAME' }
+$githubReleaseMismatchMap = Invoke-VerifyFixture -Observers $githubReleaseMismatchObs
+[void]$script:VerifyMaps.Add($githubReleaseMismatchMap)
+Assert-Equal 'verify github release mismatch FAIL' $githubReleaseMismatchMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify github release mismatch state' $githubReleaseMismatchMap['GITHUB_RELEASE'] 'CONFLICT'
+
+$recordDigestMismatchObs = New-ReadyVerifyObservers
+$recordDigestMismatchObs['ReleaseRecord'] = {
+    param($ver, $shaArg)
+    [pscustomobject]@{
+        State  = 'PRESENT'
+        Text   = (New-PublishedRecordText -Sha $RelSha -Digest $DigestB)
+        Reason = ''
+    }
+}
+$recordDigestMismatchMap = Invoke-VerifyFixture -Observers $recordDigestMismatchObs
+[void]$script:VerifyMaps.Add($recordDigestMismatchMap)
+Assert-Equal 'verify release record digest mismatch FAIL' $recordDigestMismatchMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify release record digest mismatch state' $recordDigestMismatchMap['RELEASE_RECORD'] 'CONFLICT'
+
+$ghcrAbsentObs = New-ReadyVerifyObservers
+$ghcrAbsentObs['Ghcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'ABSENT' }
+$ghcrAbsentMap = Invoke-VerifyFixture -Observers $ghcrAbsentObs
+[void]$script:VerifyMaps.Add($ghcrAbsentMap)
+Assert-Equal 'verify ghcr absent FAIL' $ghcrAbsentMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify ghcr absent version tag' $ghcrAbsentMap['GHCR_VERSION_TAG'] 'ABSENT'
+
+$nugetAbsentObs = New-ReadyVerifyObservers
+$nugetAbsentObs['Nuget'] = { param($ver) New-ArtifactFact -State 'ABSENT' }
+$nugetAbsentMap = Invoke-VerifyFixture -Observers $nugetAbsentObs
+[void]$script:VerifyMaps.Add($nugetAbsentMap)
+Assert-Equal 'verify nuget absent FAIL' $nugetAbsentMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify nuget absent package' $nugetAbsentMap['NUGET_PACKAGE'] 'ABSENT'
+Assert-Equal 'verify nuget absent revision' $nugetAbsentMap['NUGET_SOURCE_REVISION'] 'ABSENT'
+
+$gitTagAbsentObs = New-ReadyVerifyObservers
+$gitTagAbsentObs['GitTag'] = { param($ver) New-ArtifactFact -State 'ABSENT' }
+$gitTagAbsentMap = Invoke-VerifyFixture -Observers $gitTagAbsentObs
+[void]$script:VerifyMaps.Add($gitTagAbsentMap)
+Assert-Equal 'verify git tag absent FAIL' $gitTagAbsentMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify git tag absent state' $gitTagAbsentMap['GIT_TAG'] 'ABSENT'
+
+$transportObs = New-ReadyVerifyObservers
+$transportObs['Nuget'] = { param($ver) New-ArtifactFact -State 'INCOMPLETE' -Reason 'NETWORK' }
+$transportMap = Invoke-VerifyFixture -Observers $transportObs
+[void]$script:VerifyMaps.Add($transportMap)
+Assert-Equal 'verify transport INCOMPLETE' $transportMap['VERIFY_RESULT'] 'INCOMPLETE'
+Assert-Equal 'verify transport nuget state' $transportMap['NUGET_PACKAGE'] 'INCOMPLETE'
+
+$authObs = New-ReadyVerifyObservers
+$authObs['GitTag'] = { param($ver) New-ArtifactFact -State 'INCOMPLETE' -Reason 'AUTH' }
+$authMap = Invoke-VerifyFixture -Observers $authObs
+[void]$script:VerifyMaps.Add($authMap)
+Assert-Equal 'verify auth INCOMPLETE' $authMap['VERIFY_RESULT'] 'INCOMPLETE'
+Assert-Equal 'verify auth git tag state' $authMap['GIT_TAG'] 'INCOMPLETE'
+
+$rateObs = New-ReadyVerifyObservers
+$rateObs['Ghcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'INCOMPLETE' -Reason 'RATE_LIMIT' }
+$rateMap = Invoke-VerifyFixture -Observers $rateObs
+[void]$script:VerifyMaps.Add($rateMap)
+Assert-Equal 'verify rate limit INCOMPLETE' $rateMap['VERIFY_RESULT'] 'INCOMPLETE'
+Assert-Equal 'verify rate limit ghcr state' $rateMap['GHCR_VERSION_TAG'] 'INCOMPLETE'
+
+$fivexxObs = New-ReadyVerifyObservers
+$fivexxObs['ReleaseRecord'] = { param($ver, $shaArg) [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'HTTP_5XX' } }
+$fivexxMap = Invoke-VerifyFixture -Observers $fivexxObs
+[void]$script:VerifyMaps.Add($fivexxMap)
+Assert-Equal 'verify 5xx INCOMPLETE' $fivexxMap['VERIFY_RESULT'] 'INCOMPLETE'
+Assert-Equal 'verify 5xx release record state' $fivexxMap['RELEASE_RECORD'] 'INCOMPLETE'
+
+$parseObs = New-ReadyVerifyObservers
+$parseObs['NugetRevision'] = { param($ver) [pscustomobject]@{ State = 'PRESENT'; Commit = ''; Reason = 'NUSPEC_PARSE' } }
+$parseMap = Invoke-VerifyFixture -Observers $parseObs
+[void]$script:VerifyMaps.Add($parseMap)
+Assert-Equal 'verify parse failure INCOMPLETE' $parseMap['VERIFY_RESULT'] 'INCOMPLETE'
+Assert-Equal 'verify parse failure nuget revision' $parseMap['NUGET_SOURCE_REVISION'] 'INCOMPLETE'
+
+$mixedSourceObs = New-ReadyVerifyObservers
+$mixedSourceObs['GitTag'] = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $RelSha }
+$mixedSourceObs['Ghcr'] = { param($ver, $shaArg) New-PublishedGhcrFact -Revision $WrongSha -Digest $DigestA -OciVersion $ver }
+$mixedSourceMap = Invoke-VerifyFixture -Observers $mixedSourceObs
+[void]$script:VerifyMaps.Add($mixedSourceMap)
+Assert-Equal 'verify mixed source identities FAIL' $mixedSourceMap['VERIFY_RESULT'] 'FAIL'
+Assert-Equal 'verify mixed source git tag' $mixedSourceMap['GIT_TAG'] 'EXACT_MATCH'
+Assert-Equal 'verify mixed source oci revision' $mixedSourceMap['OCI_REVISION'] 'CONFLICT'
+
+Assert-Equal 'nuspec commit parse' (Get-NugetRepositoryCommitFromNuspecText -Text '<repository type="git" commit="0123456789012345678901234567890123456789" />') '0123456789012345678901234567890123456789'
+Assert-Equal 'record sha parse' (Get-ReleaseRecordCommitShaFromText -Text (New-PublishedRecordText -Sha $RelSha -Digest $DigestA)) $RelSha
+Assert-Equal 'record digest parse' (Get-ReleaseRecordDigestFromText -Text (New-PublishedRecordText -Sha $RelSha -Digest $DigestA)) $DigestA
+$configVersion = '{"config":{"Labels":{"org.opencontainers.image.version":"1.3.4","org.opencontainers.image.revision":"' + $RelSha + '"}}}'
+Assert-Equal 'oci version parse' (Get-OciVersionFromConfigText -ConfigText $configVersion) '1.3.4'
+Assert-Equal 'git tag verify EXACT_MATCH' (ConvertTo-GitTagVerifyState -TagFact (New-ArtifactFact -State 'PRESENT' -TargetSha $RelSha) -ReleaseCommitSha $RelSha) 'EXACT_MATCH'
+Assert-Equal 'git tag verify CONFLICT' (ConvertTo-GitTagVerifyState -TagFact (New-ArtifactFact -State 'PRESENT' -TargetSha $WrongSha) -ReleaseCommitSha $RelSha) 'CONFLICT'
+Assert-Equal 'digest binding EXACT_MATCH' (ConvertTo-GhcrDigestBindingVerifyState -VersionFact (New-PublishedGhcrFact) -ShaTagState 'PRESENT' -ShaTagDigest $DigestA) 'EXACT_MATCH'
+Assert-Equal 'digest binding CONFLICT' (ConvertTo-GhcrDigestBindingVerifyState -VersionFact (New-PublishedGhcrFact -Digest $DigestA) -ShaTagState 'PRESENT' -ShaTagDigest $DigestB) 'CONFLICT'
+Assert-Equal 'release record verify EXACT_MATCH' (ConvertTo-ReleaseRecordVerifyState -FetchState 'PRESENT' -Text (New-PublishedRecordText -Sha $RelSha -Digest $DigestA) -Version '1.3.4' -ReleaseCommitSha $RelSha -ObservedDigest $DigestA) 'EXACT_MATCH'
+Assert-Equal 'release record pending CONFLICT' (ConvertTo-ReleaseRecordVerifyState -FetchState 'PRESENT' -Text '> Status: **PENDING**' -Version '1.3.4' -ReleaseCommitSha $RelSha -ObservedDigest $DigestA) 'CONFLICT'
+
+$verifyMutationOk = $true
+foreach ($item in $script:VerifyMaps) {
+    if ($item['MUTATION_PERFORMED'] -ne 'FALSE') { $verifyMutationOk = $false }
+}
+Assert-True 'every verify path MUTATION_PERFORMED=FALSE' $verifyMutationOk 'a verify map set MUTATION_PERFORMED'
+
+$verifyLines = Format-ReleaseVerifyLines -Map $readyVerifyMap
+Assert-Equal 'verify format starts COMMAND' $verifyLines[0] 'COMMAND=VERIFY'
+Assert-Equal 'verify format ends mutation' $verifyLines[$verifyLines.Count - 1] 'MUTATION_PERFORMED=FALSE'
+Assert-Equal 'verify format key count' $verifyLines.Count 18
 
 # --- self-test source stays ASCII ---
 $sourceBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)
