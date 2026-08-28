@@ -1949,6 +1949,18 @@ try {
     finally {
         Remove-Item -LiteralPath $syncRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+
+    $aheadRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-ahead-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $aheadRoot -Force | Out-Null
+    try {
+        Initialize-PostSyncFixtureRepo -Root $aheadRoot -SynchronizedTo135
+        $ahead = Invoke-ReleasePreparePostSync -Version '1.3.4' -ReleaseCommitSha $PostSyncSha134 -RepoRoot $aheadRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+        Assert-Equal 'post-sync authority ahead CONFLICT' $ahead.Plan.MutationResult 'CONFLICT'
+        Assert-Equal 'post-sync authority ahead zero writes' $ahead.Plan.MutationAttempted 'FALSE'
+    }
+    finally {
+        Remove-Item -LiteralPath $aheadRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 finally {
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -550,6 +550,24 @@ function Get-ReleasePreparePostSyncPlan {
     }
 
     $authority = $authorityObs.Authority
+
+    try {
+        $authVersion = [version]$authority.Version
+        $targetVersionObj = [version]$TargetVersion
+    }
+    catch {
+        $plan.Reason = 'VERSION_COMPARE'
+        $plan.MutationResult = 'INCOMPLETE'
+        return $plan
+    }
+
+    if ($authVersion -gt $targetVersionObj) {
+        $plan.AuthorityState = 'AHEAD'
+        $plan.Reason = 'AUTHORITY_AHEAD'
+        $plan.MutationResult = 'CONFLICT'
+        return $plan
+    }
+
     $publicVerify = Test-ReleasePostSyncPublicVerify -VerifyMap $VerifyMap
     if ($publicVerify -ne 'PASS') {
         $plan.Reason = 'PUBLIC_VERIFY_' + $publicVerify
