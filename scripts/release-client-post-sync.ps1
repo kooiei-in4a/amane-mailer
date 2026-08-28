@@ -1,4 +1,22 @@
 $script:CurrentPublicAuthorityRelativePath = 'release/current-public.json'
+$script:PostSyncUtf8 = New-Object System.Text.UTF8Encoding $false
+
+function Read-PostSyncTextFile {
+    param([string]$Path)
+    return [System.IO.File]::ReadAllText($Path, $script:PostSyncUtf8)
+}
+
+function Write-PostSyncTextFile {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+    $parent = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    [System.IO.File]::WriteAllText($Path, $Content, $script:PostSyncUtf8)
+}
 
 $script:PreparePostSyncKeys = @(
     'COMMAND',
@@ -267,7 +285,7 @@ function Get-CurrentPublicAuthorityObservation {
     }
 
     try {
-        $text = [System.IO.File]::ReadAllText($path)
+        $text = Read-PostSyncTextFile -Path $path
     }
     catch {
         return [pscustomobject]@{ State = 'INCOMPLETE'; Authority = $null; Reason = 'READ' }
@@ -574,7 +592,7 @@ function Get-ReleasePreparePostSyncPlan {
             }
         }
         elseif ($relativePath -eq $targetRecord) {
-            $recordText = [System.IO.File]::ReadAllText($targetRecordPath)
+            $recordText = Read-PostSyncTextFile -Path $targetRecordPath
             $recordState = Get-ReleaseRecordStateFromText -Text $recordText
             if ($recordState -eq 'PUBLISHED') {
                 $state = 'TARGET'
@@ -592,7 +610,7 @@ function Get-ReleasePreparePostSyncPlan {
                 $state = 'CONFLICT'
             }
             else {
-                $content = [System.IO.File]::ReadAllText($fullPath)
+                $content = Read-PostSyncTextFile -Path $fullPath
                 $pathRules = Get-PostSyncRulesForPath -RelativePath $relativePath -AllRules $rules
                 if ($pathRules.Count -eq 0) {
                     $state = 'CONFLICT'
@@ -654,7 +672,7 @@ function Get-ReleasePreparePostSyncPlan {
         if ($relativePath -eq 'release/current-public.json') { continue }
         if ($relativePath -eq $targetRecord) {
             [void]$planned.Add($targetRecord)
-            $recordText = [System.IO.File]::ReadAllText($targetRecordPath)
+            $recordText = Read-PostSyncTextFile -Path $targetRecordPath
             $recordBuild = Build-PublishedReleaseRecordForPostSync -Text $recordText -Version $TargetVersion -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $publicDigest -Platforms $authority.Platforms
             if ($recordBuild.State -eq 'ALREADY') { continue }
             if ($recordBuild.State -ne 'APPLIED') {
@@ -669,7 +687,7 @@ function Get-ReleasePreparePostSyncPlan {
 
         [void]$planned.Add($relativePath)
         $fullPath = Join-Path $RepoRoot $relativePath
-        $content = [System.IO.File]::ReadAllText($fullPath)
+        $content = Read-PostSyncTextFile -Path $fullPath
         $pathRules = Get-PostSyncRulesForPath -RelativePath $relativePath -AllRules $applyRules
         $updated = Apply-PostSyncReplacementRules -Content $content -Rules $pathRules
         if ($updated -ne $content) {
@@ -688,11 +706,7 @@ function Get-ReleasePreparePostSyncPlan {
     $changed = New-Object System.Collections.Generic.List[string]
     foreach ($write in $writes) {
         $fullPath = Join-Path $RepoRoot $write.Path
-        $parent = Split-Path -Parent $fullPath
-        if (-not (Test-Path -LiteralPath $parent)) {
-            New-Item -ItemType Directory -Path $parent -Force | Out-Null
-        }
-        [System.IO.File]::WriteAllText($fullPath, $write.Content)
+        Write-PostSyncTextFile -Path $fullPath -Content $write.Content
         [void]$changed.Add($write.Path)
     }
 

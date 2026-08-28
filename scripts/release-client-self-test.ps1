@@ -1834,15 +1834,22 @@ function Initialize-PostSyncFixtureRepo {
     $authorityJson = New-CurrentPublicAuthorityJson -Version $authorityVer
     [System.IO.File]::WriteAllText((Join-Path $Root 'release/current-public.json'), $authorityJson)
 
-    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'README.md') -Destination (Join-Path $Root 'README.md') -Force
-    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'README.en.md') -Destination (Join-Path $Root 'README.en.md') -Force
-    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'SECURITY.md') -Destination (Join-Path $Root 'SECURITY.md') -Force
-    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'release-image-smoke.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.md') -Force
-    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'release-image-smoke.en.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.en.md') -Force
-    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'release-smoke.sh') -Destination (Join-Path $Root 'scripts/release-smoke.sh') -Force
-    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'release-smoke.ps1') -Destination (Join-Path $Root 'scripts/release-smoke.ps1') -Force
-    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'docker-compose.release-smoke.yml') -Destination (Join-Path $Root 'infra/docker/docker-compose.release-smoke.yml') -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs/releases/v1.3.4.md') -Destination (Join-Path $Root 'docs/releases/v1.3.4.md') -Force
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    function Copy-FixtureFile {
+        param([string]$Source, [string]$Destination)
+        $content = [System.IO.File]::ReadAllText($Source, $utf8NoBom)
+        [System.IO.File]::WriteAllText($Destination, $content, $utf8NoBom)
+    }
+
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'README.md') -Destination (Join-Path $Root 'README.md')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'README.en.md') -Destination (Join-Path $Root 'README.en.md')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'SECURITY.md') -Destination (Join-Path $Root 'SECURITY.md')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'release-image-smoke.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.md')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'release-image-smoke.en.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.en.md')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'release-smoke.sh') -Destination (Join-Path $Root 'scripts/release-smoke.sh')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'release-smoke.ps1') -Destination (Join-Path $Root 'scripts/release-smoke.ps1')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'docker-compose.release-smoke.yml') -Destination (Join-Path $Root 'infra/docker/docker-compose.release-smoke.yml')
+    Copy-FixtureFile -Source (Join-Path $RepoRoot 'docs/releases/v1.3.4.md') -Destination (Join-Path $Root 'docs/releases/v1.3.4.md')
 
     $pending135 = @"
 # Release evidence - v1.3.5
