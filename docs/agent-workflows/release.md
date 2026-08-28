@@ -95,7 +95,7 @@ Self-test (fixture-backed; does not use live GitHub / GHCR / NuGet as pass/fail)
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-client-self-test.ps1
 ```
 
-RO-3 implements read-only `status`, `preflight`, and `verify`. Mutation commands are later slices.
+RO-3 implements read-only `status`, `preflight`, and `verify`. M-1 adds guarded mutation commands that require explicit `-Execute`.
 
 ### Canonical read-only preflight (RO-2)
 
@@ -155,6 +155,72 @@ network/auth/rate-limit/5xx/parse/tool    -> INCOMPLETE
 ```
 
 Aggregation is `FAIL` over `INCOMPLETE` over `PASS`. Transport/auth failure is never treated as ABSENT. `VERIFY_RESULT=PASS` means all required identities verified; it is not Human authorization to mutate.
+
+### Guarded mutation commands (M-1)
+
+M-1 adds four mutation boundaries aligned with the release runbook. Every mutation command requires explicit maintainer authorization in the current session **and** the client `-Execute` switch. Without `-Execute`, the command observes guards only: `MUTATION_ATTEMPTED=FALSE` and no executor calls occur.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 publish-image `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <40-lowercase-hex> `
+  -Execute
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 create-tag `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <40-lowercase-hex> `
+  -Execute
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 publish-nuget `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <40-lowercase-hex> `
+  -Execute
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 create-github-release `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <40-lowercase-hex> `
+  -ReleaseNotesPath docs/releases/vX.Y.Z.md `
+  -Execute
+```
+
+Guard states (Fresh observation immediately before any write):
+
+```text
+ABSENT        -> eligible for the one intended mutation
+EXACT_MATCH   -> ALREADY_APPLIED; do not repeat
+CONFLICT      -> STOP; no mutation
+INCOMPLETE    -> STOP; no mutation
+```
+
+Mutation results:
+
+```text
+NOT_ATTEMPTED
+APPLIED
+ALREADY_APPLIED
+CONFLICT
+INCOMPLETE
+AMBIGUOUS_AFTER_ATTEMPT
+```
+
+Every mutation path reports `MUTATION_ATTEMPTED` and `MUTATION_PERFORMED` as `TRUE`, `FALSE`, or `UNKNOWN`. Never claim `FALSE` when the outcome is actually unknown.
+
+Command-specific guards:
+
+| Command | Prerequisites | Target must be ABSENT | Additional guards |
+|---|---|---|---|
+| `publish-image` | RO-2-equivalent preflight PASS | GHCR | no matching source-bound image publish workflow run |
+| `create-tag` | GHCR exact at `ReleaseCommitSha` | Git tag `vX.Y.Z` | read-back `vX.Y.Z^{commit} == ReleaseCommitSha` after attempt |
+| `publish-nuget` | GHCR + Git tag exact | NuGet package | no matching source-bound NuGet publish workflow run; dispatch from ref `vX.Y.Z` |
+| `create-github-release` | GHCR + Git tag + NuGet exact | GitHub Release | explicit `-ReleaseNotesPath` file; read-back non-draft/non-prerelease release **and** Git tag `vX.Y.Z^{commit} == ReleaseCommitSha` |
+
+GitHub Release creation requires an existing verified release tag. The client uses `gh release create --verify-tag`. The client must never allow GitHub CLI to synthesize a missing release tag.
+
+Matching workflow runs are not permission to redispatch. If a source/version-bound publish run already exists, return `ALREADY_APPLIED` and inspect instead of blind retry.
+
+Self-test uses injectable fake executors and fake command runners only. It must never dispatch workflows, create refs/releases, or publish packages/images.
+
+Production executors are wired automatically when `-Execute` is supplied on the CLI path. They invoke `gh` / `git` through an injectable argv-based command runner; self-test substitutes a fake runner to assert exact command composition without live mutation.
 
 ### Exploration Gate
 
