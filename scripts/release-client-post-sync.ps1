@@ -404,6 +404,173 @@ function Apply-PostSyncReplacementRules {
     return $updated
 }
 
+function Get-ReleaseRecordPlatformsFromText {
+    param([string]$Text)
+    $platforms = New-Object System.Collections.Generic.List[string]
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return @()
+    }
+    foreach ($line in ($Text -split '\r?\n')) {
+        if ($line -notmatch '(?i)support(ed)? platform|required platforms') {
+            continue
+        }
+        if ($line -match 'PENDING|NOT YET PUBLISHED') {
+            continue
+        }
+        $matches = [regex]::Matches($line, '`{1,2}(linux/[a-z0-9_-]+)`{1,2}')
+        foreach ($match in $matches) {
+            $value = $match.Groups[1].Value
+            if ($platforms -notcontains $value) {
+                [void]$platforms.Add($value)
+            }
+        }
+    }
+    return @($platforms)
+}
+
+function Resolve-PostSyncPlatforms {
+    param(
+        [string]$RecordText,
+        [string[]]$AuthorityPlatforms
+    )
+
+    $recordPlatforms = @(Get-ReleaseRecordPlatformsFromText -Text $RecordText)
+    if ($recordPlatforms.Count -gt 0) {
+        return [pscustomobject]@{ State = 'RESOLVED'; Platforms = $recordPlatforms; Reason = '' }
+    }
+
+    $authorityPlatforms = @($AuthorityPlatforms)
+    if ($authorityPlatforms.Count -eq 0) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Platforms = @(); Reason = 'EMPTY_AUTHORITY_PLATFORMS' }
+    }
+
+    foreach ($platform in $authorityPlatforms) {
+        if ($RecordText -notmatch [regex]::Escape($platform)) {
+            return [pscustomobject]@{ State = 'INCOMPLETE'; Platforms = @(); Reason = 'PLATFORM_NOT_CONFIRMED' }
+        }
+    }
+
+    return [pscustomobject]@{ State = 'RESOLVED'; Platforms = $authorityPlatforms; Reason = '' }
+}
+
+function Test-ReleaseRecordLineHasPendingValue {
+    param([string]$Line)
+    return ($Line -match '\*\*PENDING(?:[^*]*)\*\*|`PENDING`|PENDING|NOT YET PUBLISHED|TO BE RECORDED AFTER PROMOTION')
+}
+
+function Update-ReleaseRecordObservableFields {
+    param(
+        [string]$Text,
+        [string]$Version,
+        [string]$ReleaseCommitSha,
+        [string]$PublicDigest,
+        [string[]]$Platforms
+    )
+
+    $tag = 'v' + $Version
+    $shaTag = 'sha-' + $ReleaseCommitSha
+    $ghcrVersionTag = 'ghcr.io/kooiei-in4a/amane-mailer:' + $tag
+    $ghcrShaTag = 'ghcr.io/kooiei-in4a/amane-mailer:' + $shaTag
+    $nugetPackage = 'Amane.Mailer.Contracts ' + $Version
+    $releaseUrl = 'https://github.com/kooiei-in4a/amane-mailer/releases/tag/' + $tag
+
+    $updatedLines = New-Object System.Collections.Generic.List[string]
+    $skipNext = $false
+    $lines = $Text -split '\r?\n', 0
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($skipNext) {
+            $skipNext = $false
+            continue
+        }
+
+        $line = $lines[$i]
+
+        if ($line -match '(?m)^>\s*Status:\s*\*\*') {
+            [void]$updatedLines.Add('> Status: **PUBLISHED**')
+            continue
+        }
+
+        if ($line -match '^-\s+releaseCommitSha:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- releaseCommitSha: ``' + $ReleaseCommitSha + '``')
+            continue
+        }
+        if ($line -match 'Exact release source commit \(`releaseCommitSha`\):' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- Exact release source commit (``releaseCommitSha``): ``' + $ReleaseCommitSha + '``')
+            continue
+        }
+        if ($line -match '^-\s+Git tag:' -and $line -notmatch 'target|overwrite|move|publication' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- Git tag: ``' + $tag + '``')
+            continue
+        }
+        if ($line -match '^-\s+Git tag target:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- Git tag target: ``' + $ReleaseCommitSha + '``')
+            continue
+        }
+        if ($line -match '^-\s+Contracts version:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- Contracts version: ``' + $Version + '``')
+            continue
+        }
+        if ($line -match '^-\s+OpenAPI version:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- OpenAPI version: ``' + $Version + '``')
+            continue
+        }
+        if ($line -match '^-\s+version tag:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- version tag: ``' + $ghcrVersionTag + '``')
+            continue
+        }
+        if ($line -match '^-\s+immutable tag:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ($i + 1 -lt $lines.Count -and $lines[$i + 1] -match '^\s+``') {
+                [void]$updatedLines.Add('- immutable tag:')
+                [void]$updatedLines.Add('  ``' + $ghcrShaTag + '``')
+                $skipNext = $true
+            }
+            else {
+                [void]$updatedLines.Add('- immutable tag: ``' + $ghcrShaTag + '``')
+            }
+            continue
+        }
+        if ($line -match '^-\s+public OCI digest:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ($i + 1 -lt $lines.Count -and $lines[$i + 1] -match '^\s+``') {
+                [void]$updatedLines.Add('- public OCI digest:')
+                [void]$updatedLines.Add('  ``' + $PublicDigest + '``')
+                $skipNext = $true
+            }
+            else {
+                [void]$updatedLines.Add('- public OCI digest: ``' + $PublicDigest + '``')
+            }
+            continue
+        }
+        if ($line -match '^-\s+package:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- package: ``' + $nugetPackage + '``')
+            continue
+        }
+        if ($line -match '^-\s+revision / nuspec repository commit:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ($i + 1 -lt $lines.Count -and $lines[$i + 1] -match '^\s+``') {
+                [void]$updatedLines.Add('- revision / nuspec repository commit:')
+                [void]$updatedLines.Add('  ``' + $ReleaseCommitSha + '``')
+                $skipNext = $true
+            }
+            else {
+                [void]$updatedLines.Add('- revision / nuspec repository commit: ``' + $ReleaseCommitSha + '``')
+            }
+            continue
+        }
+        if ($line -match '^-\s+release:\s' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- release: ``' + $tag + '``')
+            continue
+        }
+        if ($line -match '^-\s+URL:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- URL: ``' + $releaseUrl + '``')
+            continue
+        }
+
+        [void]$updatedLines.Add($line)
+    }
+
+    return [string]::Join("`n", $updatedLines)
+}
+
 function Build-PublishedReleaseRecordForPostSync {
     param(
         [string]$Text,
@@ -427,65 +594,12 @@ function Build-PublishedReleaseRecordForPostSync {
         return [pscustomobject]@{ State = 'INCOMPLETE'; Text = '' }
     }
 
-    $tag = 'v' + $Version
-    $shaTag = 'sha-' + $ReleaseCommitSha
-    $platformText = ($Platforms -join ', ')
-    if ([string]::IsNullOrWhiteSpace($platformText)) {
-        $platformText = 'linux/amd64'
+    $published = Update-ReleaseRecordObservableFields -Text $Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest -Platforms $Platforms
+    if (-not $published.EndsWith("`n")) {
+        $published += "`n"
     }
 
-    $published = @"
-# Release evidence - $tag
-
-> Status: **PUBLISHED**
->
-> Version: ``$Version``
-
-## Release identity
-
-- release version: ``$Version``
-- releaseCommitSha: ``$ReleaseCommitSha``
-- Git tag: ``$tag``
-- Git tag target: ``$ReleaseCommitSha``
-- Contracts version: ``$Version``
-- OpenAPI version: ``$Version``
-
-The post-release documentation commit is not release source. The immutable
-``$tag`` tag remains bound to the releaseCommitSha above.
-
-## GHCR
-
-- version tag: ``ghcr.io/kooiei-in4a/amane-mailer:$tag``
-- immutable tag:
-  ``ghcr.io/kooiei-in4a/amane-mailer:$shaTag``
-- public OCI digest:
-  ``$PublicDigest``
-- supported platform: ``$platformText``
-
-## NuGet
-
-- package: ``Amane.Mailer.Contracts $Version``
-- revision / nuspec repository commit:
-  ``$ReleaseCommitSha``
-
-## GitHub Release
-
-- release: ``$tag``
-- URL: ``https://github.com/kooiei-in4a/amane-mailer/releases/tag/$tag``
-
-## Publication invariants
-
-- same-version GHCR republish: none
-- same-version NuGet workflow redispatch: none
-- Git tag overwrite / move: none
-- ``latest`` tag publication: none
-- source rebind after first public artifact: none
-
-$tag remains permanently bound to
-``$ReleaseCommitSha``.
-"@
-
-    return [pscustomobject]@{ State = 'APPLIED'; Text = $published.TrimEnd() + "`n" }
+    return [pscustomobject]@{ State = 'APPLIED'; Text = $published }
 }
 
 function Get-PostSyncRulesForPath {
@@ -697,19 +811,28 @@ function Get-ReleasePreparePostSyncPlan {
 
     $applyRules = Get-PostSyncFollowerReplacementRules -PrevVersion $authority.Version -TargetVersion $TargetVersion
 
+    $targetRecordText = Read-PostSyncTextFile -Path $targetRecordPath
+    $platformResolution = Resolve-PostSyncPlatforms -RecordText $targetRecordText -AuthorityPlatforms $authority.Platforms
+    if ($platformResolution.State -ne 'RESOLVED') {
+        $plan.FollowerState = 'INCOMPLETE'
+        $plan.MutationResult = 'INCOMPLETE'
+        $plan.Reason = 'PLATFORMS_' + $platformResolution.Reason
+        return $plan
+    }
+    $resolvedPlatforms = $platformResolution.Platforms
+
     $planned = New-Object System.Collections.Generic.List[string]
     $writes = New-Object System.Collections.Generic.List[hashtable]
 
     [void]$planned.Add('release/current-public.json')
-    $newAuthority = New-CurrentPublicAuthorityJson -Version $TargetVersion -Platforms $authority.Platforms
+    $newAuthority = New-CurrentPublicAuthorityJson -Version $TargetVersion -Platforms $resolvedPlatforms
     [void]$writes.Add(@{ Path = 'release/current-public.json'; Content = $newAuthority })
 
     foreach ($relativePath in $followerPaths) {
         if ($relativePath -eq 'release/current-public.json') { continue }
         if ($relativePath -eq $targetRecord) {
             [void]$planned.Add($targetRecord)
-            $recordText = Read-PostSyncTextFile -Path $targetRecordPath
-            $recordBuild = Build-PublishedReleaseRecordForPostSync -Text $recordText -Version $TargetVersion -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $publicDigest -Platforms $authority.Platforms
+            $recordBuild = Build-PublishedReleaseRecordForPostSync -Text $targetRecordText -Version $TargetVersion -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $publicDigest -Platforms $resolvedPlatforms
             if ($recordBuild.State -eq 'ALREADY') { continue }
             if ($recordBuild.State -ne 'APPLIED') {
                 $plan.FollowerState = 'CONFLICT'

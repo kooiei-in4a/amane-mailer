@@ -4198,6 +4198,8 @@ Export-ModuleMember -Function @(
     'Get-PostSyncRulesForPath',
     'Apply-PostSyncReplacementRules',
     'Get-PostSyncFollowerFileState',
+    'Get-ReleaseRecordPlatformsFromText',
+    'Resolve-PostSyncPlatforms',
     'Build-PublishedReleaseRecordForPostSync',
     'Get-ReleasePreparePostSyncPlan',
     'Format-ReleasePreparePostSyncLines',

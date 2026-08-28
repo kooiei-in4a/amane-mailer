@@ -1850,20 +1850,7 @@ function Initialize-PostSyncFixtureRepo {
     Copy-FixtureFile -Source (Join-Path $fixturesRoot 'release-smoke.ps1') -Destination (Join-Path $Root 'scripts/release-smoke.ps1')
     Copy-FixtureFile -Source (Join-Path $fixturesRoot 'docker-compose.release-smoke.yml') -Destination (Join-Path $Root 'infra/docker/docker-compose.release-smoke.yml')
     Copy-FixtureFile -Source (Join-Path $RepoRoot 'docs/releases/v1.3.4.md') -Destination (Join-Path $Root 'docs/releases/v1.3.4.md')
-
-    $pending135 = @"
-# Release evidence - v1.3.5
-
-> Status: **RELEASE PREPARATION - NOT YET PUBLISHED**
->
-> Version: ``1.3.5``
-
-## Release identity
-
-- release version: ``1.3.5``
-- releaseCommitSha: **PENDING**
-"@
-    [System.IO.File]::WriteAllText((Join-Path $Root 'docs/releases/v1.3.5.md'), $pending135, $utf8NoBom)
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'v1.3.5-pending.md') -Destination (Join-Path $Root 'docs/releases/v1.3.5.md')
 
     if ($SynchronizedTo135) {
         $applyRules = Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5'
@@ -1874,6 +1861,7 @@ function Initialize-PostSyncFixtureRepo {
             $updated = Apply-PostSyncReplacementRules -Content $content -Rules $pathRules
             [System.IO.File]::WriteAllText($full, $updated, $utf8NoBom)
         }
+        $pending135 = [System.IO.File]::ReadAllText((Join-Path $Root 'docs/releases/v1.3.5.md'), $utf8NoBom)
         $published = Build-PublishedReleaseRecordForPostSync -Text $pending135 -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -PublicDigest $PostSyncDigest135 -Platforms @('linux/amd64')
         [System.IO.File]::WriteAllText((Join-Path $Root 'docs/releases/v1.3.5.md'), $published.Text, $utf8NoBom)
     }
@@ -1894,6 +1882,28 @@ Assert-Equal 'unsupported schema fail closed' $authorityBadSchema.Reason 'UNSUPP
 $authorityTagMismatch = ConvertFrom-CurrentPublicAuthorityText -Text '{"schemaVersion":1,"version":"1.3.4","tag":"v1.3.5","platforms":["linux/amd64"],"releaseRecord":"docs/releases/v1.3.4.md"}' -RepoRoot $RepoRoot
 Assert-Equal 'version tag mismatch fail closed' $authorityTagMismatch.Reason 'VERSION_TAG_MISMATCH'
 
+$pendingFixturePath = Join-Path $PSScriptRoot 'fixtures/post-sync/v1.3.5-pending.md'
+$pendingFixtureText = Get-Content -LiteralPath $pendingFixturePath -Raw
+Assert-Equal 'pending fixture state' (Get-ReleaseRecordStateFromText -Text $pendingFixtureText) 'PENDING'
+Assert-Equal 'pending fixture platform parse' (@(Get-ReleaseRecordPlatformsFromText -Text $pendingFixtureText)[0]) 'linux/amd64'
+$platformResolved = Resolve-PostSyncPlatforms -RecordText $pendingFixtureText -AuthorityPlatforms @('linux/amd64')
+Assert-Equal 'pending fixture platform resolve' $platformResolved.State 'RESOLVED'
+Assert-Equal 'pending fixture platform value' (@($platformResolved.Platforms)[0]) 'linux/amd64'
+$platformMismatchText = $pendingFixtureText -replace 'supported platform: ``linux/amd64``', 'supported platform: **PENDING**'
+$platformMismatch = Resolve-PostSyncPlatforms -RecordText $platformMismatchText -AuthorityPlatforms @('linux/arm64')
+Assert-Equal 'platform mismatch incomplete' $platformMismatch.State 'INCOMPLETE'
+$finalizedFixture = Build-PublishedReleaseRecordForPostSync -Text $pendingFixtureText -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -PublicDigest $PostSyncDigest135 -Platforms @('linux/amd64')
+Assert-Equal 'finalize pending fixture applied' $finalizedFixture.State 'APPLIED'
+Assert-Equal 'finalize pending fixture published' (Get-ReleaseRecordStateFromText -Text $finalizedFixture.Text) 'PUBLISHED'
+Assert-True 'finalize preserves release scope section' ($finalizedFixture.Text -match '## Release scope') 'release scope section missing'
+Assert-True 'finalize preserves operational notes' ($finalizedFixture.Text -match '## Operational notes') 'operational notes missing'
+Assert-True 'finalize preserves limitations' ($finalizedFixture.Text -match '## Limitations') 'limitations missing'
+Assert-True 'finalize updates releaseCommitSha' ($finalizedFixture.Text -match ('releaseCommitSha: ``' + [regex]::Escape($PostSyncSha135) + '``')) 'releaseCommitSha not updated'
+Assert-True 'finalize updates public digest' ($finalizedFixture.Text -match ([regex]::Escape($PostSyncDigest135))) 'digest not updated'
+Assert-True 'finalize leaves workflow run pending' ($finalizedFixture.Text -match 'publish workflow run: \*\*PENDING\*\*') 'workflow run should remain pending'
+Assert-True 'finalize leaves artifact id pending' ($finalizedFixture.Text -match 'publication artifact ID: \*\*PENDING\*\*') 'artifact id should remain pending'
+Assert-True 'finalize does not invent publication invariants' (-not ($finalizedFixture.Text -match 'same-version GHCR republish: none')) 'publication invariants should not be invented'
+
 $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-' + [Guid]::NewGuid().ToString('n'))
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 try {
@@ -1912,6 +1922,12 @@ try {
     Assert-Equal 'post-sync execute MUTATION_PERFORMED' $exec.Plan.MutationPerformed 'TRUE'
     Assert-True 'post-sync execute changed README' ($beforeExecute -ne (Get-Content -LiteralPath (Join-Path $fixtureRoot 'README.md') -Raw)) 'README should change'
     Assert-True 'post-sync execute updates authority' ((Get-Content -LiteralPath (Join-Path $fixtureRoot 'release/current-public.json') -Raw) -match '"version": "1.3.5"') 'authority should advance'
+
+    $publishedRecord = Get-Content -LiteralPath (Join-Path $fixtureRoot 'docs/releases/v1.3.5.md') -Raw
+    Assert-Equal 'post-sync execute record published' (Get-ReleaseRecordStateFromText -Text $publishedRecord) 'PUBLISHED'
+    Assert-True 'post-sync execute preserves release scope' ($publishedRecord -match 'planned release scope and must survive post-sync finalize') 'release scope text missing'
+    Assert-True 'post-sync execute leaves workflow run pending' ($publishedRecord -match 'publish workflow run: \*\*PENDING\*\*') 'workflow run should remain pending'
+    Assert-True 'post-sync execute updates digest' ($publishedRecord -match ([regex]::Escape($PostSyncDigest135))) 'digest not updated in execute path'
 
     $already = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
     Assert-Equal 'post-sync already synchronized' $already.Plan.MutationResult 'ALREADY_APPLIED'
@@ -1938,6 +1954,22 @@ try {
     $incomplete = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $incompleteObs -LocalRepoOverride $localPass -Execute -Quiet
     Assert-Equal 'post-sync verify incomplete' $incomplete.Plan.MutationResult 'INCOMPLETE'
     Assert-Equal 'post-sync verify incomplete zero writes' $incomplete.Plan.MutationAttempted 'FALSE'
+
+    $platformRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-platform-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $platformRoot -Force | Out-Null
+    try {
+        Initialize-PostSyncFixtureRepo -Root $platformRoot -AuthorityVersion '1.3.4'
+        $platformRecordPath = Join-Path $platformRoot 'docs/releases/v1.3.5.md'
+        $platformRecord = Get-Content -LiteralPath $platformRecordPath -Raw
+        $platformRecord = $platformRecord -replace 'supported platform: ``linux/amd64``', 'supported platform: **PENDING**'
+        [System.IO.File]::WriteAllText($platformRecordPath, $platformRecord, (New-Object System.Text.UTF8Encoding $false))
+        $platformIncomplete = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $platformRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+        Assert-Equal 'post-sync platform unknown INCOMPLETE' $platformIncomplete.Plan.MutationResult 'INCOMPLETE'
+        Assert-Equal 'post-sync platform unknown zero writes' $platformIncomplete.Plan.MutationAttempted 'FALSE'
+    }
+    finally {
+        Remove-Item -LiteralPath $platformRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
     $syncRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-sync-' + [Guid]::NewGuid().ToString('n'))
     New-Item -ItemType Directory -Path $syncRoot -Force | Out-Null
