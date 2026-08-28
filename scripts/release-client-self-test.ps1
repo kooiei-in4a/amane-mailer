@@ -1571,6 +1571,150 @@ $mutationCliReleaseNoNotes = Invoke-Cli -CliArgs @('create-github-release', '-Ve
 Assert-Equal 'CLI create-github-release without notes exit 2' $mutationCliReleaseNoNotes.ExitCode 2
 Assert-True 'CLI create-github-release mentions ReleaseNotesPath' ($mutationCliReleaseNoNotes.Output -match 'ReleaseNotesPath') 'missing notes usage text'
 
+# --- M-1 production executor composition (fake command runner only) ---
+$script:CommandRunnerCalls = New-Object System.Collections.Generic.List[object]
+function New-FakeCommandRunner {
+    param([int]$ExitCode = 0, [string]$Stdout = '')
+    $calls = $script:CommandRunnerCalls
+    return {
+        param(
+            [string]$Program,
+            [string[]]$ArgumentList,
+            [string]$WorkingDirectory = ''
+        )
+        $calls.Add([pscustomobject]@{
+            Program          = $Program
+            ArgumentList     = @($ArgumentList)
+            WorkingDirectory = $WorkingDirectory
+        })
+        return [pscustomobject]@{
+            ExitCode = $ExitCode
+            Stdout   = $Stdout
+            Stderr   = ''
+        }
+    }.GetNewClosure()
+}
+
+function Assert-RunnerCall {
+    param(
+        [string]$Name,
+        [int]$Index,
+        [string]$Program,
+        [string[]]$ExpectedArgs,
+        [string]$ExpectedCwd = ''
+    )
+    if ($script:CommandRunnerCalls.Count -le $Index) {
+        Write-TestFail -Name $Name -Detail ("expected runner call index {0}, got {1} calls" -f $Index, $script:CommandRunnerCalls.Count)
+        return
+    }
+    $call = $script:CommandRunnerCalls[$Index]
+    Assert-Equal ($Name + ' program') $call.Program $Program
+    Assert-Equal ($Name + ' argv count') $call.ArgumentList.Count $ExpectedArgs.Count
+    for ($i = 0; $i -lt $ExpectedArgs.Count; $i++) {
+        Assert-Equal ($Name + ' argv[' + $i + ']') $call.ArgumentList[$i] $ExpectedArgs[$i]
+    }
+    Assert-Equal ($Name + ' cwd') $call.WorkingDirectory $ExpectedCwd
+}
+
+$script:CommandRunnerCalls.Clear()
+$fakeRunner = New-FakeCommandRunner
+$publishProdExec = New-ReleaseProductionPublishImageExecutor -CommandRunner $fakeRunner
+$null = & $publishProdExec @{ Version = '1.3.5'; ReleaseCommitSha = $MainSha }
+Assert-Equal 'publish-image prod executor one call' $script:CommandRunnerCalls.Count 1
+Assert-RunnerCall -Name 'publish-image prod gh' -Index 0 -Program 'gh' -ExpectedArgs @(
+    'workflow', 'run', 'publish-release-image.yml',
+    '--ref', 'main',
+    '-f', ('source_sha=' + $MainSha),
+    '-f', 'release_version=1.3.5'
+)
+
+$script:CommandRunnerCalls.Clear()
+$tagProdExec = New-ReleaseProductionCreateTagExecutor -RepoRoot $RepoRoot -CommandRunner $fakeRunner
+$null = & $tagProdExec @{ Version = '1.3.5'; ReleaseCommitSha = $MainSha; TagName = 'v1.3.5' }
+Assert-Equal 'create-tag prod executor call count' $script:CommandRunnerCalls.Count 4
+Assert-RunnerCall -Name 'create-tag ls-remote' -Index 0 -Program 'git' -ExpectedArgs @('ls-remote', '--exit-code', 'origin', 'refs/tags/v1.3.5') -ExpectedCwd $RepoRoot
+Assert-RunnerCall -Name 'create-tag local list' -Index 1 -Program 'git' -ExpectedArgs @('tag', '-l', 'v1.3.5') -ExpectedCwd $RepoRoot
+Assert-RunnerCall -Name 'create-tag annotate' -Index 2 -Program 'git' -ExpectedArgs @('tag', '-a', 'v1.3.5', $MainSha, '-m', 'Amane Mailer v1.3.5') -ExpectedCwd $RepoRoot
+Assert-RunnerCall -Name 'create-tag push' -Index 3 -Program 'git' -ExpectedArgs @('push', 'origin', 'refs/tags/v1.3.5') -ExpectedCwd $RepoRoot
+Assert-True 'create-tag push no force' (-not ($script:CommandRunnerCalls[3].ArgumentList -contains '--force')) 'tag push must not use --force'
+Assert-True 'create-tag no delete' (-not ($script:CommandRunnerCalls[3].ArgumentList -contains '--delete')) 'tag push must not delete'
+
+$script:CommandRunnerCalls.Clear()
+$nugetProdExec = New-ReleaseProductionPublishNugetExecutor -CommandRunner $fakeRunner
+$null = & $nugetProdExec @{ Version = '1.3.5'; ReleaseCommitSha = $MainSha; Ref = 'v1.3.5' }
+Assert-Equal 'publish-nuget prod executor one call' $script:CommandRunnerCalls.Count 1
+Assert-RunnerCall -Name 'publish-nuget prod gh' -Index 0 -Program 'gh' -ExpectedArgs @(
+    'workflow', 'run', 'publish-contracts.yml',
+    '--ref', 'v1.3.5'
+)
+
+$releaseNotesFixture = Join-Path $RepoRoot 'docs/releases/v1.3.4.md'
+$script:CommandRunnerCalls.Clear()
+$releaseProdExec = New-ReleaseProductionCreateGitHubReleaseExecutor -RepoRoot $RepoRoot -CommandRunner $fakeRunner
+$null = & $releaseProdExec @{
+    Version          = '1.3.5'
+    ReleaseCommitSha = $MainSha
+    TagName          = 'v1.3.5'
+    ReleaseNotesPath = 'docs/releases/v1.3.4.md'
+}
+Assert-Equal 'create-github-release prod executor one call' $script:CommandRunnerCalls.Count 1
+$resolvedNotes = (Resolve-Path -LiteralPath $releaseNotesFixture).Path
+Assert-RunnerCall -Name 'create-github-release prod gh' -Index 0 -Program 'gh' -ExpectedArgs @(
+    'release', 'create', 'v1.3.5',
+    '--repo', 'kooiei-in4a/amane-mailer',
+    '--title', 'Amane Mailer v1.3.5',
+    '--notes-file', $resolvedNotes
+)
+Assert-True 'create-github-release no draft flag' (-not ($script:CommandRunnerCalls[0].ArgumentList -contains '--draft')) 'must not create draft'
+Assert-True 'create-github-release no prerelease flag' (-not ($script:CommandRunnerCalls[0].ArgumentList -contains '--prerelease')) 'must not create prerelease'
+
+$resolvedPublish = Resolve-ReleaseMutationExecutor -Executor $null -Execute -CommandName 'publish-image' -RepoRoot $RepoRoot -CommandRunner $fakeRunner
+Assert-True 'resolve publish-image production executor' ($null -ne $resolvedPublish) 'Execute path should resolve production executor'
+$resolvedDry = Resolve-ReleaseMutationExecutor -Executor $null -CommandName 'publish-image' -RepoRoot $RepoRoot -CommandRunner $fakeRunner
+Assert-True 'resolve without Execute is null' ($null -eq $resolvedDry) 'dry path must not resolve production executor'
+
+$script:CommandRunnerCalls.Clear()
+$publishGuardConflict = Invoke-PublishImageFixture -Observers $publishConflictObs -Execute
+Assert-Equal 'publish-image CONFLICT no runner calls' $script:CommandRunnerCalls.Count 0
+Assert-Equal 'publish-image CONFLICT result' $publishGuardConflict['MUTATION_RESULT'] 'CONFLICT'
+
+$script:CommandRunnerCalls.Clear()
+$publishGuardIncomplete = Invoke-PublishImageFixture -Observers $publishIncompleteObs -Execute
+Assert-Equal 'publish-image INCOMPLETE no runner calls' $script:CommandRunnerCalls.Count 0
+
+$script:CommandRunnerCalls.Clear()
+$publishAlreadyRunner = New-FakeCommandRunner
+$publishAlreadyWithRunner = Invoke-PublishImageFixture -Observers $publishAlreadyObs -Execute
+Assert-Equal 'publish-image EXACT_MATCH no runner calls' $script:CommandRunnerCalls.Count 0
+
+$script:CommandRunnerCalls.Clear()
+$publishDryRunner = New-FakeCommandRunner
+$null = Invoke-PublishImageFixture -Observers $publishReadyObs
+Assert-Equal 'publish-image without Execute no runner calls' $script:CommandRunnerCalls.Count 0
+
+$script:CommandRunnerCalls.Clear()
+$publishProdFixtureRunner = New-FakeCommandRunner
+$publishProdObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishProdObs['ReadBackGhcr'] = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }.GetNewClosure()
+$publishProdApplied = Invoke-ReleasePublishImage -Version '1.3.5' -ReleaseCommitSha $MainSha -RepoRoot $RepoRoot -Observers $publishProdObs -Execute -Quiet -CommandRunner $publishProdFixtureRunner
+Assert-Equal 'publish-image production path APPLIED' $publishProdApplied['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'publish-image production path runner calls' $script:CommandRunnerCalls.Count 1
+
+$script:CommandRunnerCalls.Clear()
+$publishReadbackRunner = New-FakeCommandRunner
+$publishReadbackObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishReadbackObs['ReadBackGhcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'ABSENT' }.GetNewClosure()
+$publishReadbackProd = Invoke-ReleasePublishImage -Version '1.3.5' -ReleaseCommitSha $MainSha -RepoRoot $RepoRoot -Observers $publishReadbackObs -Execute -Quiet -CommandRunner $publishReadbackRunner
+Assert-Equal 'publish-image prod readback mismatch CONFLICT' $publishReadbackProd['MUTATION_RESULT'] 'CONFLICT'
+Assert-Equal 'publish-image prod readback one runner call' $script:CommandRunnerCalls.Count 1
+
+$script:CommandRunnerCalls.Clear()
+$publishAmbigRunner = New-FakeCommandRunner -ExitCode 1
+$publishAmbigProdObs = New-ReadyPublishImageObservers -Sha $MainSha
+$publishAmbigProd = Invoke-ReleasePublishImage -Version '1.3.5' -ReleaseCommitSha $MainSha -RepoRoot $RepoRoot -Observers $publishAmbigProdObs -Execute -Quiet -CommandRunner $publishAmbigRunner
+Assert-Equal 'publish-image prod failed executor INCOMPLETE' $publishAmbigProd['MUTATION_RESULT'] 'INCOMPLETE'
+Assert-Equal 'publish-image prod failed one runner call no retry' $script:CommandRunnerCalls.Count 1
+
 # --- self-test source stays ASCII ---
 $sourceBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)
 $nonAscii = 0

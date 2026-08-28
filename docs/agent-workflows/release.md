@@ -216,7 +216,9 @@ Command-specific guards:
 
 Matching workflow runs are not permission to redispatch. If a source/version-bound publish run already exists, return `ALREADY_APPLIED` and inspect instead of blind retry.
 
-Self-test uses injectable fake executors only and must never dispatch workflows, create refs/releases, or publish packages/images.
+Self-test uses injectable fake executors and fake command runners only. It must never dispatch workflows, create refs/releases, or publish packages/images.
+
+Production executors are wired automatically when `-Execute` is supplied on the CLI path. They invoke `gh` / `git` through an injectable argv-based command runner; self-test substitutes a fake runner to assert exact command composition without live mutation.
 
 ### Exploration Gate
 
