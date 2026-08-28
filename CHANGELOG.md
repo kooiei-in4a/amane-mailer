@@ -15,6 +15,35 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [1.3.5] - 2026-08-29
+
+Patch release focused on Release Engineering closeout improvements after the
+synchronized v1.3.4 full service release. There is no product feature, runtime
+semantic, database migration, or public HTTP contract shape change relative to
+v1.3.4.
+
+### Changed
+
+- Add the canonical `scripts/release.ps1` / `scripts/release-client.psm1`
+  release client covering read-only `status` / `verify`, guarded `preflight`,
+  publish mutations (`publish-image`, `create-tag`, `publish-nuget`,
+  `create-github-release`), and deterministic `prepare-post-sync`.
+- Introduce `release/current-public.json` as the current-public authority and
+  wire release-smoke drift checking plus post-sync follower updates to it.
+- Harden publication mutation read-back, workflow dispatch binding, GitHub
+  Release `--verify-tag` / post-release tag read-back, and fail-closed
+  preflight / status observation semantics.
+- Expand Windows-oriented release-client self-tests and post-sync fixtures used
+  by CI.
+
+### Compatibility
+
+- No product feature, runtime semantic, database migration, or public HTTP
+  contract shape change relative to v1.3.4.
+- The migration inventory remains `001` through `018`.
+- `Amane.Mailer.Contracts` advances to `1.3.5` for release identity alignment;
+  its public DTO / constant / payload-hash behavior is unchanged by this patch.
+
 ## [1.3.4] - 2026-08-24
 
 Patch release that restores one synchronized **full service release** identity
