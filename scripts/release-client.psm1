@@ -3452,13 +3452,17 @@ function Get-ReleasePublishImageMutationStatus {
             $performed = 'FALSE'
         }
         else {
-            $readBackFact = $Facts.ReadBackGhcr
+            $readBackGuard = 'INCOMPLETE'
             if ($execResult.State -eq 'SUCCESS' -and $null -ne $Facts.ReadBackFetcher) {
-                $readBackFact = & $Facts.ReadBackFetcher
-                if ($null -eq $readBackFact) { $readBackFact = New-ArtifactFact -State 'INCOMPLETE' }
+                $readBackRunState = [string](& $Facts.ReadBackFetcher)
+                if (-not [string]::IsNullOrWhiteSpace($readBackRunState)) {
+                    $readBackGuard = ConvertTo-WorkflowRunMutationGuardState -RunState $readBackRunState
+                }
             }
-            $readGhcr = ConvertTo-GhcrPublishTargetGuardState -GhcrFact $readBackFact -ReleaseCommitSha $Facts.ReleaseCommitSha -Version $Facts.Version
-            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readGhcr -TargetGuardState 'EXACT_MATCH'
+            elseif ($execResult.State -eq 'SUCCESS') {
+                $readBackGuard = ConvertTo-WorkflowRunMutationGuardState -RunState $Facts.ReadBackImagePublishRun
+            }
+            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readBackGuard -TargetGuardState 'EXACT_MATCH'
             $result = $post.Result
             $attempted = $post.Attempted
             $performed = $post.Performed
@@ -3533,15 +3537,19 @@ function Invoke-ReleasePublishImage {
 
     $readBackFetcher = $null
     if ($Execute) {
-        if ($null -ne $Observers -and $Observers.Contains('ReadBackGhcr')) {
+        if ($null -ne $Observers -and $Observers.Contains('ReadBackImagePublishRun')) {
             $readBackFetcher = {
-                $fact = & $Observers['ReadBackGhcr'] $Version $ReleaseCommitSha
-                return $fact
+                $obs = & $Observers['ReadBackImagePublishRun'] $ReleaseCommitSha
+                if ($null -eq $obs) { return 'INCOMPLETE' }
+                return [string]$obs.State
             }.GetNewClosure()
         }
         else {
             $readBackFetcher = {
-                return Get-GhcrVerifyObservation -Version $Version -ReleaseCommitSha $ReleaseCommitSha
+                $runFetch = Get-GitHubWorkflowDispatchRuns -ReleaseCommitSha $ReleaseCommitSha
+                if ($runFetch.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+                $runObs = ConvertTo-WorkflowDispatchRunObservation -Runs $runFetch.Runs -WorkflowPath '.github/workflows/publish-release-image.yml' -ReleaseCommitSha $ReleaseCommitSha
+                return [string]$runObs.State
             }.GetNewClosure()
         }
     }
@@ -3732,13 +3740,17 @@ function Get-ReleasePublishNugetMutationStatus {
             $performed = 'FALSE'
         }
         else {
-            $readBackFact = $Facts.ReadBackNuget
+            $readBackGuard = 'INCOMPLETE'
             if ($execResult.State -eq 'SUCCESS' -and $null -ne $Facts.ReadBackFetcher) {
-                $readBackFact = & $Facts.ReadBackFetcher
-                if ($null -eq $readBackFact) { $readBackFact = New-ArtifactFact -State 'INCOMPLETE' }
+                $readBackRunState = [string](& $Facts.ReadBackFetcher)
+                if (-not [string]::IsNullOrWhiteSpace($readBackRunState)) {
+                    $readBackGuard = ConvertTo-WorkflowRunMutationGuardState -RunState $readBackRunState
+                }
             }
-            $readNuget = ConvertTo-NugetMutationGuardState -NugetFact $readBackFact
-            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readNuget -TargetGuardState 'EXACT_MATCH'
+            elseif ($execResult.State -eq 'SUCCESS') {
+                $readBackGuard = ConvertTo-WorkflowRunMutationGuardState -RunState $Facts.ReadBackNugetPublishRun
+            }
+            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readBackGuard -TargetGuardState 'EXACT_MATCH'
             $result = $post.Result
             $attempted = $post.Attempted
             $performed = $post.Performed
@@ -3825,15 +3837,19 @@ function Invoke-ReleasePublishNuget {
 
     $readBackFetcher = $null
     if ($Execute) {
-        if ($null -ne $Observers -and $Observers.Contains('ReadBackNuget')) {
+        if ($null -ne $Observers -and $Observers.Contains('ReadBackNugetPublishRun')) {
             $readBackFetcher = {
-                $fact = & $Observers['ReadBackNuget'] $Version
-                return $fact
+                $obs = & $Observers['ReadBackNugetPublishRun'] $ReleaseCommitSha
+                if ($null -eq $obs) { return 'INCOMPLETE' }
+                return [string]$obs.State
             }.GetNewClosure()
         }
         else {
             $readBackFetcher = {
-                return Get-NugetObservation -Version $Version
+                $runFetch = Get-GitHubWorkflowDispatchRuns -ReleaseCommitSha $ReleaseCommitSha
+                if ($runFetch.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+                $runObs = ConvertTo-WorkflowDispatchRunObservation -Runs $runFetch.Runs -WorkflowPath '.github/workflows/publish-contracts.yml' -ReleaseCommitSha $ReleaseCommitSha
+                return [string]$runObs.State
             }.GetNewClosure()
         }
     }

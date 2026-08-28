@@ -1345,7 +1345,7 @@ Assert-Equal 'publish-image dry GUARD_IMAGE_PUBLISH_RUN' $publishDry['GUARD_IMAG
 Assert-Equal 'publish-image dry COMMAND' $publishDry['COMMAND'] 'PUBLISH_IMAGE'
 
 $publishExec = New-FakeMutationExecutor -Outcome 'SUCCESS'
-$publishReadyObs['ReadBackGhcr'] = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }.GetNewClosure()
+$publishReadyObs['ReadBackImagePublishRun'] = { param($shaArg) [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = '9003' } }.GetNewClosure()
 $publishApplied = Invoke-PublishImageFixture -Observers $publishReadyObs -Executor $publishExec -Execute
 Assert-Equal 'publish-image execute APPLIED' $publishApplied['MUTATION_RESULT'] 'APPLIED'
 Assert-Equal 'publish-image execute MUTATION_ATTEMPTED' $publishApplied['MUTATION_ATTEMPTED'] 'TRUE'
@@ -1394,7 +1394,7 @@ Assert-Equal 'publish-image ambiguous executor' $publishAmbigAfter['MUTATION_RES
 Assert-Equal 'publish-image ambiguous performed unknown' $publishAmbigAfter['MUTATION_PERFORMED'] 'UNKNOWN'
 
 $publishReadbackFailObs = New-ReadyPublishImageObservers -Sha $MainSha
-$publishReadbackFailObs['ReadBackGhcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'ABSENT' }.GetNewClosure()
+$publishReadbackFailObs['ReadBackImagePublishRun'] = { param($shaArg) [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE' } }.GetNewClosure()
 $publishReadbackFail = Invoke-PublishImageFixture -Observers $publishReadbackFailObs -Executor (New-FakeMutationExecutor) -Execute
 Assert-Equal 'publish-image readback mismatch' $publishReadbackFail['MUTATION_RESULT'] 'CONFLICT'
 Assert-Equal 'publish-image readback performed unknown' $publishReadbackFail['MUTATION_PERFORMED'] 'UNKNOWN'
@@ -1468,7 +1468,7 @@ Assert-Equal 'publish-nuget dry NOT_ATTEMPTED' $nugetDry['MUTATION_RESULT'] 'NOT
 Assert-Equal 'publish-nuget dry GUARD_NUGET absent' $nugetDry['GUARD_NUGET'] 'ABSENT'
 
 $nugetExec = New-FakeMutationExecutor
-$nugetObs['ReadBackNuget'] = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+$nugetObs['ReadBackNugetPublishRun'] = { param($shaArg) [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = '8002' } }.GetNewClosure()
 $nugetApplied = Invoke-PublishNugetFixture -Observers $nugetObs -Executor $nugetExec -Execute
 Assert-Equal 'publish-nuget execute APPLIED' $nugetApplied['MUTATION_RESULT'] 'APPLIED'
 
@@ -1695,7 +1695,7 @@ Assert-Equal 'publish-image without Execute no runner calls' $script:CommandRunn
 $script:CommandRunnerCalls.Clear()
 $publishProdFixtureRunner = New-FakeCommandRunner
 $publishProdObs = New-ReadyPublishImageObservers -Sha $MainSha
-$publishProdObs['ReadBackGhcr'] = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }.GetNewClosure()
+$publishProdObs['ReadBackImagePublishRun'] = { param($shaArg) [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = '9010' } }.GetNewClosure()
 $publishProdApplied = Invoke-ReleasePublishImage -Version '1.3.5' -ReleaseCommitSha $MainSha -RepoRoot $RepoRoot -Observers $publishProdObs -Execute -Quiet -CommandRunner $publishProdFixtureRunner
 Assert-Equal 'publish-image production path APPLIED' $publishProdApplied['MUTATION_RESULT'] 'APPLIED'
 Assert-Equal 'publish-image production path runner calls' $script:CommandRunnerCalls.Count 1
@@ -1703,7 +1703,7 @@ Assert-Equal 'publish-image production path runner calls' $script:CommandRunnerC
 $script:CommandRunnerCalls.Clear()
 $publishReadbackRunner = New-FakeCommandRunner
 $publishReadbackObs = New-ReadyPublishImageObservers -Sha $MainSha
-$publishReadbackObs['ReadBackGhcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'ABSENT' }.GetNewClosure()
+$publishReadbackObs['ReadBackImagePublishRun'] = { param($shaArg) [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE' } }.GetNewClosure()
 $publishReadbackProd = Invoke-ReleasePublishImage -Version '1.3.5' -ReleaseCommitSha $MainSha -RepoRoot $RepoRoot -Observers $publishReadbackObs -Execute -Quiet -CommandRunner $publishReadbackRunner
 Assert-Equal 'publish-image prod readback mismatch CONFLICT' $publishReadbackProd['MUTATION_RESULT'] 'CONFLICT'
 Assert-Equal 'publish-image prod readback one runner call' $script:CommandRunnerCalls.Count 1
