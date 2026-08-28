@@ -1396,7 +1396,7 @@ Assert-Equal 'publish-image ambiguous performed unknown' $publishAmbigAfter['MUT
 $publishReadbackFailObs = New-ReadyPublishImageObservers -Sha $MainSha
 $publishReadbackFailObs['ReadBackImagePublishRun'] = { param($shaArg) [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE' } }.GetNewClosure()
 $publishReadbackFail = Invoke-PublishImageFixture -Observers $publishReadbackFailObs -Executor (New-FakeMutationExecutor) -Execute
-Assert-Equal 'publish-image readback mismatch' $publishReadbackFail['MUTATION_RESULT'] 'CONFLICT'
+Assert-Equal 'publish-image readback absent INCOMPLETE' $publishReadbackFail['MUTATION_RESULT'] 'INCOMPLETE'
 Assert-Equal 'publish-image readback performed unknown' $publishReadbackFail['MUTATION_PERFORMED'] 'UNKNOWN'
 
 function Invoke-CreateTagFixture {
@@ -1618,15 +1618,16 @@ function Assert-RunnerCall {
 
 $script:CommandRunnerCalls.Clear()
 $fakeRunner = New-FakeCommandRunner
-$publishProdExec = New-ReleaseProductionPublishImageExecutor -CommandRunner $fakeRunner
+$publishProdExec = New-ReleaseProductionPublishImageExecutor -CommandRunner $fakeRunner -RepoRoot $RepoRoot
 $null = & $publishProdExec @{ Version = '1.3.5'; ReleaseCommitSha = $MainSha }
 Assert-Equal 'publish-image prod executor one call' $script:CommandRunnerCalls.Count 1
 Assert-RunnerCall -Name 'publish-image prod gh' -Index 0 -Program 'gh' -ExpectedArgs @(
     'workflow', 'run', 'publish-release-image.yml',
+    '--repo', 'kooiei-in4a/amane-mailer',
     '--ref', 'main',
     '-f', ('source_sha=' + $MainSha),
     '-f', 'release_version=1.3.5'
-)
+) -ExpectedCwd $RepoRoot
 
 $script:CommandRunnerCalls.Clear()
 $tagProdExec = New-ReleaseProductionCreateTagExecutor -RepoRoot $RepoRoot -CommandRunner $fakeRunner
@@ -1640,13 +1641,14 @@ Assert-True 'create-tag push no force' (-not ($script:CommandRunnerCalls[3].Argu
 Assert-True 'create-tag no delete' (-not ($script:CommandRunnerCalls[3].ArgumentList -contains '--delete')) 'tag push must not delete'
 
 $script:CommandRunnerCalls.Clear()
-$nugetProdExec = New-ReleaseProductionPublishNugetExecutor -CommandRunner $fakeRunner
+$nugetProdExec = New-ReleaseProductionPublishNugetExecutor -CommandRunner $fakeRunner -RepoRoot $RepoRoot
 $null = & $nugetProdExec @{ Version = '1.3.5'; ReleaseCommitSha = $MainSha; Ref = 'v1.3.5' }
 Assert-Equal 'publish-nuget prod executor one call' $script:CommandRunnerCalls.Count 1
 Assert-RunnerCall -Name 'publish-nuget prod gh' -Index 0 -Program 'gh' -ExpectedArgs @(
     'workflow', 'run', 'publish-contracts.yml',
+    '--repo', 'kooiei-in4a/amane-mailer',
     '--ref', 'v1.3.5'
-)
+) -ExpectedCwd $RepoRoot
 
 $releaseNotesFixture = Join-Path $RepoRoot 'docs/releases/v1.3.4.md'
 $script:CommandRunnerCalls.Clear()
@@ -1705,7 +1707,7 @@ $publishReadbackRunner = New-FakeCommandRunner
 $publishReadbackObs = New-ReadyPublishImageObservers -Sha $MainSha
 $publishReadbackObs['ReadBackImagePublishRun'] = { param($shaArg) [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE' } }.GetNewClosure()
 $publishReadbackProd = Invoke-ReleasePublishImage -Version '1.3.5' -ReleaseCommitSha $MainSha -RepoRoot $RepoRoot -Observers $publishReadbackObs -Execute -Quiet -CommandRunner $publishReadbackRunner
-Assert-Equal 'publish-image prod readback mismatch CONFLICT' $publishReadbackProd['MUTATION_RESULT'] 'CONFLICT'
+Assert-Equal 'publish-image prod readback absent INCOMPLETE' $publishReadbackProd['MUTATION_RESULT'] 'INCOMPLETE'
 Assert-Equal 'publish-image prod readback one runner call' $script:CommandRunnerCalls.Count 1
 
 $script:CommandRunnerCalls.Clear()

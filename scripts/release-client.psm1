@@ -3139,7 +3139,7 @@ function Resolve-ReleaseMutationPostAttempt {
             Performed = 'TRUE'
         }
     }
-    if ($ReadBackGuardState -eq 'INCOMPLETE') {
+    if ($ReadBackGuardState -eq 'INCOMPLETE' -or $ReadBackGuardState -eq 'ABSENT') {
         return [pscustomobject]@{
             Result    = 'INCOMPLETE'
             Attempted = 'TRUE'
@@ -3204,9 +3204,13 @@ function Resolve-ReleaseCommandRunner {
 }
 
 function New-ReleaseProductionPublishImageExecutor {
-    param($CommandRunner)
+    param(
+        $CommandRunner,
+        [string]$RepoRoot = ''
+    )
 
     $runner = Resolve-ReleaseCommandRunner -CommandRunner $CommandRunner
+    $ownerRepo = $script:CanonicalOwnerRepo
     return {
         param($ArgumentTable)
         $version = [string]$ArgumentTable.Version
@@ -3216,10 +3220,11 @@ function New-ReleaseProductionPublishImageExecutor {
         }
         $result = & $runner 'gh' @(
             'workflow', 'run', 'publish-release-image.yml',
+            '--repo', $ownerRepo,
             '--ref', 'main',
             '-f', ('source_sha=' + $sha),
             '-f', ('release_version=' + $version)
-        ) ''
+        ) $RepoRoot
         if ($result.ExitCode -ne 0) {
             return [pscustomobject]@{ State = 'FAILED_BEFORE_MUTATION' }
         }
@@ -3281,9 +3286,13 @@ function New-ReleaseProductionCreateTagExecutor {
 }
 
 function New-ReleaseProductionPublishNugetExecutor {
-    param($CommandRunner)
+    param(
+        $CommandRunner,
+        [string]$RepoRoot = ''
+    )
 
     $runner = Resolve-ReleaseCommandRunner -CommandRunner $CommandRunner
+    $ownerRepo = $script:CanonicalOwnerRepo
     return {
         param($ArgumentTable)
         $version = [string]$ArgumentTable.Version
@@ -3296,8 +3305,9 @@ function New-ReleaseProductionPublishNugetExecutor {
         }
         $result = & $runner 'gh' @(
             'workflow', 'run', 'publish-contracts.yml',
+            '--repo', $ownerRepo,
             '--ref', $ref
-        ) ''
+        ) $RepoRoot
         if ($result.ExitCode -ne 0) {
             return [pscustomobject]@{ State = 'FAILED_BEFORE_MUTATION' }
         }
@@ -3368,13 +3378,13 @@ function New-ReleaseProductionMutationExecutor {
 
     switch ($CommandName) {
         'publish-image' {
-            return New-ReleaseProductionPublishImageExecutor -CommandRunner $CommandRunner
+            return New-ReleaseProductionPublishImageExecutor -CommandRunner $CommandRunner -RepoRoot $RepoRoot
         }
         'create-tag' {
             return New-ReleaseProductionCreateTagExecutor -RepoRoot $RepoRoot -CommandRunner $CommandRunner
         }
         'publish-nuget' {
-            return New-ReleaseProductionPublishNugetExecutor -CommandRunner $CommandRunner
+            return New-ReleaseProductionPublishNugetExecutor -CommandRunner $CommandRunner -RepoRoot $RepoRoot
         }
         'create-github-release' {
             return New-ReleaseProductionCreateGitHubReleaseExecutor -RepoRoot $RepoRoot -CommandRunner $CommandRunner
