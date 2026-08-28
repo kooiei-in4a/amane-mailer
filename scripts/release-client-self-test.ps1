@@ -1524,8 +1524,10 @@ Assert-Equal 'create-github-release dry GUARD_GITHUB_RELEASE absent' $releaseDry
 
 $releaseExec = New-FakeMutationExecutor
 $releaseObs['ReadBackGitHubRelease'] = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+$releaseObs['ReadBackGitTag'] = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }.GetNewClosure()
 $releaseApplied = Invoke-CreateReleaseFixture -Observers $releaseObs -Executor $releaseExec -Execute
 Assert-Equal 'create-github-release execute APPLIED' $releaseApplied['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'create-github-release execute MUTATION_PERFORMED' $releaseApplied['MUTATION_PERFORMED'] 'TRUE'
 
 $releaseAlreadyObs = @{
     Ghcr          = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
@@ -1665,10 +1667,62 @@ Assert-RunnerCall -Name 'create-github-release prod gh' -Index 0 -Program 'gh' -
     'release', 'create', 'v1.3.5',
     '--repo', 'kooiei-in4a/amane-mailer',
     '--title', 'Amane Mailer v1.3.5',
-    '--notes-file', $resolvedNotes
+    '--notes-file', $resolvedNotes,
+    '--verify-tag'
 )
 Assert-True 'create-github-release no draft flag' (-not ($script:CommandRunnerCalls[0].ArgumentList -contains '--draft')) 'must not create draft'
 Assert-True 'create-github-release no prerelease flag' (-not ($script:CommandRunnerCalls[0].ArgumentList -contains '--prerelease')) 'must not create prerelease'
+Assert-True 'create-github-release no target flag' (-not ($script:CommandRunnerCalls[0].ArgumentList -contains '--target')) 'must not set --target'
+
+# --- M-02 create-github-release tag rebind guard ---
+$releaseTagExactObs = @{
+    Ghcr                  = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag                = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget                 = { param($ver) New-ArtifactFact -State 'PRESENT' }
+    GitHubRelease         = { param($ver) New-ArtifactFact -State 'ABSENT' }
+    ReadBackGitHubRelease = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+    ReadBackGitTag        = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }.GetNewClosure()
+}
+$releaseTagExact = Invoke-CreateReleaseFixture -Observers $releaseTagExactObs -Executor $releaseExec -Execute
+Assert-Equal 'M-02 post release exact tag exact APPLIED' $releaseTagExact['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'M-02 post release exact tag exact MUTATION_PERFORMED' $releaseTagExact['MUTATION_PERFORMED'] 'TRUE'
+
+$releaseTagAbsentObs = @{
+    Ghcr                  = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag                = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget                 = { param($ver) New-ArtifactFact -State 'PRESENT' }
+    GitHubRelease         = { param($ver) New-ArtifactFact -State 'ABSENT' }
+    ReadBackGitHubRelease = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+    ReadBackGitTag        = { param($ver) New-ArtifactFact -State 'ABSENT' }.GetNewClosure()
+}
+$releaseTagAbsent = Invoke-CreateReleaseFixture -Observers $releaseTagAbsentObs -Executor $releaseExec -Execute
+Assert-Equal 'M-02 post release exact tag absent INCOMPLETE' $releaseTagAbsent['MUTATION_RESULT'] 'INCOMPLETE'
+Assert-Equal 'M-02 post release exact tag absent MUTATION_ATTEMPTED' $releaseTagAbsent['MUTATION_ATTEMPTED'] 'TRUE'
+Assert-Equal 'M-02 post release exact tag absent MUTATION_PERFORMED' $releaseTagAbsent['MUTATION_PERFORMED'] 'UNKNOWN'
+
+$releaseTagIncompleteObs = @{
+    Ghcr                  = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag                = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget                 = { param($ver) New-ArtifactFact -State 'PRESENT' }
+    GitHubRelease         = { param($ver) New-ArtifactFact -State 'ABSENT' }
+    ReadBackGitHubRelease = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+    ReadBackGitTag        = { param($ver) New-ArtifactFact -State 'INCOMPLETE' }.GetNewClosure()
+}
+$releaseTagIncomplete = Invoke-CreateReleaseFixture -Observers $releaseTagIncompleteObs -Executor $releaseExec -Execute
+Assert-Equal 'M-02 post release exact tag incomplete INCOMPLETE' $releaseTagIncomplete['MUTATION_RESULT'] 'INCOMPLETE'
+Assert-Equal 'M-02 post release exact tag incomplete MUTATION_PERFORMED' $releaseTagIncomplete['MUTATION_PERFORMED'] 'UNKNOWN'
+
+$releaseTagMismatchObs = @{
+    Ghcr                  = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' }
+    GitTag                = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }
+    Nuget                 = { param($ver) New-ArtifactFact -State 'PRESENT' }
+    GitHubRelease         = { param($ver) New-ArtifactFact -State 'ABSENT' }
+    ReadBackGitHubRelease = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+    ReadBackGitTag        = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha '0000000000000000000000000000000000000001' }.GetNewClosure()
+}
+$releaseTagMismatch = Invoke-CreateReleaseFixture -Observers $releaseTagMismatchObs -Executor $releaseExec -Execute
+Assert-Equal 'M-02 post release exact tag mismatch CONFLICT' $releaseTagMismatch['MUTATION_RESULT'] 'CONFLICT'
+Assert-Equal 'M-02 post release exact tag mismatch MUTATION_PERFORMED' $releaseTagMismatch['MUTATION_PERFORMED'] 'UNKNOWN'
 
 $resolvedPublish = Resolve-ReleaseMutationExecutor -Executor $null -Execute -CommandName 'publish-image' -RepoRoot $RepoRoot -CommandRunner $fakeRunner
 Assert-True 'resolve publish-image production executor' ($null -ne $resolvedPublish) 'Execute path should resolve production executor'

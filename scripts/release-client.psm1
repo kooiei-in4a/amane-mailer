@@ -3112,6 +3112,18 @@ function Resolve-ReleaseMutationPrecheck {
     }
 }
 
+function Resolve-ReleaseCreateGitHubReleasePostReadBackGuard {
+    param(
+        [string]$ReleaseGuard,
+        [string]$TagGuard
+    )
+    if ($ReleaseGuard -eq 'INCOMPLETE' -or $TagGuard -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($ReleaseGuard -eq 'ABSENT' -or $TagGuard -eq 'ABSENT') { return 'INCOMPLETE' }
+    if ($ReleaseGuard -eq 'CONFLICT' -or $TagGuard -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($ReleaseGuard -eq 'EXACT_MATCH' -and $TagGuard -eq 'EXACT_MATCH') { return 'EXACT_MATCH' }
+    return 'INCOMPLETE'
+}
+
 function Resolve-ReleaseMutationPostAttempt {
     param(
         [string]$ExecutorState,
@@ -3358,7 +3370,8 @@ function New-ReleaseProductionCreateGitHubReleaseExecutor {
             'release', 'create', $tagName,
             '--repo', $ownerRepo,
             '--title', $title,
-            '--notes-file', $notesPath
+            '--notes-file', $notesPath,
+            '--verify-tag'
         ) ''
         if ($result.ExitCode -ne 0) {
             return [pscustomobject]@{ State = 'FAILED_BEFORE_MUTATION' }
@@ -3945,13 +3958,20 @@ function Get-ReleaseCreateGitHubReleaseMutationStatus {
             $performed = 'FALSE'
         }
         else {
-            $readBackFact = $Facts.ReadBackGitHubRelease
+            $readBackReleaseFact = $Facts.ReadBackGitHubRelease
             if ($execResult.State -eq 'SUCCESS' -and $null -ne $Facts.ReadBackFetcher) {
-                $readBackFact = & $Facts.ReadBackFetcher
-                if ($null -eq $readBackFact) { $readBackFact = New-ArtifactFact -State 'INCOMPLETE' }
+                $readBackReleaseFact = & $Facts.ReadBackFetcher
+                if ($null -eq $readBackReleaseFact) { $readBackReleaseFact = New-ArtifactFact -State 'INCOMPLETE' }
             }
-            $readRelease = ConvertTo-GitHubReleaseMutationGuardState -ReleaseFact $readBackFact -Version $Facts.Version
-            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readRelease -TargetGuardState 'EXACT_MATCH'
+            $readBackTagFact = $Facts.ReadBackGitTag
+            if ($execResult.State -eq 'SUCCESS' -and $null -ne $Facts.ReadBackTagFetcher) {
+                $readBackTagFact = & $Facts.ReadBackTagFetcher
+                if ($null -eq $readBackTagFact) { $readBackTagFact = New-ArtifactFact -State 'INCOMPLETE' }
+            }
+            $readRelease = ConvertTo-GitHubReleaseMutationGuardState -ReleaseFact $readBackReleaseFact -Version $Facts.Version
+            $readTag = ConvertTo-GitTagMutationGuardState -TagFact $readBackTagFact -ReleaseCommitSha $Facts.ReleaseCommitSha
+            $combinedReadBack = Resolve-ReleaseCreateGitHubReleasePostReadBackGuard -ReleaseGuard $readRelease -TagGuard $readTag
+            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $combinedReadBack -TargetGuardState 'EXACT_MATCH'
             $result = $post.Result
             $attempted = $post.Attempted
             $performed = $post.Performed
@@ -4024,6 +4044,7 @@ function Invoke-ReleaseCreateGitHubRelease {
     $notesGuard = Test-ReleaseNotesPathGuard -RepoRoot $RepoRoot -ReleaseNotesPath $ReleaseNotesPath
 
     $readBackFetcher = $null
+    $readBackTagFetcher = $null
     if ($Execute) {
         if ($null -ne $Observers -and $Observers.Contains('ReadBackGitHubRelease')) {
             $readBackFetcher = {
@@ -4034,6 +4055,17 @@ function Invoke-ReleaseCreateGitHubRelease {
         else {
             $readBackFetcher = {
                 return Get-GitHubReleaseObservation -Version $Version
+            }.GetNewClosure()
+        }
+        if ($null -ne $Observers -and $Observers.Contains('ReadBackGitTag')) {
+            $readBackTagFetcher = {
+                $fact = & $Observers['ReadBackGitTag'] $Version
+                return $fact
+            }.GetNewClosure()
+        }
+        else {
+            $readBackTagFetcher = {
+                return Get-GitTagObservation -Version $Version
             }.GetNewClosure()
         }
     }
@@ -4048,7 +4080,9 @@ function Invoke-ReleaseCreateGitHubRelease {
         Nuget                 = $nuget
         GitHubRelease         = $githubRelease
         ReadBackGitHubRelease = $githubRelease
+        ReadBackGitTag        = $gitTag
         ReadBackFetcher       = $readBackFetcher
+        ReadBackTagFetcher    = $readBackTagFetcher
         ReleaseNotesPath      = $ReleaseNotesPath
         ReleaseNotesGuard     = $notesGuard
         Execute               = [bool]$Execute
@@ -4134,6 +4168,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-WorkflowRunMutationGuardState',
     'ConvertTo-PreflightMutationGuardState',
     'Resolve-ReleaseMutationPrecheck',
+    'Resolve-ReleaseCreateGitHubReleasePostReadBackGuard',
     'Resolve-ReleaseMutationPostAttempt',
     'Format-ReleaseMutationLines',
     'Invoke-ReleaseCommandRunner',

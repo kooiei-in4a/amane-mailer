@@ -212,7 +212,9 @@ Command-specific guards:
 | `publish-image` | RO-2-equivalent preflight PASS | GHCR | no matching source-bound image publish workflow run |
 | `create-tag` | GHCR exact at `ReleaseCommitSha` | Git tag `vX.Y.Z` | read-back `vX.Y.Z^{commit} == ReleaseCommitSha` after attempt |
 | `publish-nuget` | GHCR + Git tag exact | NuGet package | no matching source-bound NuGet publish workflow run; dispatch from ref `vX.Y.Z` |
-| `create-github-release` | GHCR + Git tag + NuGet exact | GitHub Release | explicit `-ReleaseNotesPath` file; read-back non-draft/non-prerelease |
+| `create-github-release` | GHCR + Git tag + NuGet exact | GitHub Release | explicit `-ReleaseNotesPath` file; read-back non-draft/non-prerelease release **and** Git tag `vX.Y.Z^{commit} == ReleaseCommitSha` |
+
+GitHub Release creation requires an existing verified release tag. The client uses `gh release create --verify-tag`. The client must never allow GitHub CLI to synthesize a missing release tag.
 
 Matching workflow runs are not permission to redispatch. If a source/version-bound publish run already exists, return `ALREADY_APPLIED` and inspect instead of blind retry.
 
