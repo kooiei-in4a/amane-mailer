@@ -1771,6 +1771,187 @@ $publishAmbigProd = Invoke-ReleasePublishImage -Version '1.3.5' -ReleaseCommitSh
 Assert-Equal 'publish-image prod failed executor INCOMPLETE' $publishAmbigProd['MUTATION_RESULT'] 'INCOMPLETE'
 Assert-Equal 'publish-image prod failed one runner call no retry' $script:CommandRunnerCalls.Count 1
 
+# --- A-1 current-public authority + prepare-post-sync (fixture repos only) ---
+$PostSyncSha134 = Get-FixtureSha '4'
+$PostSyncSha135 = Get-FixtureSha '5'
+$PostSyncDigest135 = Get-FixtureDigest '5'
+
+function New-PostSyncVerifyObservers {
+    param(
+        [string]$Version = '1.3.5',
+        [string]$Sha = $PostSyncSha135,
+        [string]$Digest = $PostSyncDigest135
+    )
+    return @{
+        GitTag         = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $Sha }.GetNewClosure()
+        GitHubRelease  = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+        Nuget          = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+        SourceVersions = { param($shaArg, $ver) [pscustomobject]@{ ContractsState = 'PRESENT'; ContractsVersion = $Version; OpenApiState = 'PRESENT'; OpenApiVersion = $Version } }.GetNewClosure()
+        NugetRevision  = { param($ver) [pscustomobject]@{ State = 'PRESENT'; Commit = $Sha; Reason = '' } }.GetNewClosure()
+        ReleaseRecord = { param($ver, $shaArg) [pscustomobject]@{ State = 'PRESENT'; Text = "> Status: **RELEASE PREPARATION - NOT YET PUBLISHED**`n"; Reason = '' } }.GetNewClosure()
+        Ghcr           = { param($ver, $shaArg) New-ArtifactFact -State 'PRESENT' -Digest $Digest -Revision $Sha -OciVersion $Version -ShaTagState 'PRESENT' -ShaTagDigest $Digest }.GetNewClosure()
+    }
+}
+
+function New-PostSyncFixtureLocalRepo {
+    param([string]$Sha = $MainSha)
+    return [pscustomobject]@{
+        State          = 'PASS'
+        Branch         = 'main'
+        Head           = $Sha
+        Worktree       = 'CLEAN'
+        OriginIdentity = 'kooiei-in4a/amane-mailer'
+        LocalMain      = $Sha
+        OriginMain     = $Sha
+        Reason         = ''
+    }
+}
+
+function Initialize-PostSyncFixtureRepo {
+    param(
+        [string]$Root,
+        [string]$AuthorityVersion = '1.3.4',
+        [switch]$SynchronizedTo135
+    )
+
+    $paths = @(
+        'release'
+        'docs/releases'
+        'docs/ops'
+        'scripts'
+        'infra/docker'
+    )
+    foreach ($rel in $paths) {
+        $full = Join-Path $Root $rel
+        if (-not (Test-Path -LiteralPath $full)) {
+            New-Item -ItemType Directory -Path $full -Force | Out-Null
+        }
+    }
+
+    $authorityVer = if ($SynchronizedTo135) { '1.3.5' } else { $AuthorityVersion }
+    $authorityJson = New-CurrentPublicAuthorityJson -Version $authorityVer
+    if ($SynchronizedTo135) {
+        $authorityJson = $authorityJson.Replace('docs/releases/v1.3.5.md', 'docs/releases/v1.3.5.md')
+    }
+    [System.IO.File]::WriteAllText((Join-Path $Root 'release/current-public.json'), $authorityJson)
+
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'README.md') -Destination (Join-Path $Root 'README.md') -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'README.en.md') -Destination (Join-Path $Root 'README.en.md') -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'SECURITY.md') -Destination (Join-Path $Root 'SECURITY.md') -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs/ops/release-image-smoke.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.md') -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs/ops/release-image-smoke.en.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.en.md') -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts/release-smoke.sh') -Destination (Join-Path $Root 'scripts/release-smoke.sh') -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts/release-smoke.ps1') -Destination (Join-Path $Root 'scripts/release-smoke.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'infra/docker/docker-compose.release-smoke.yml') -Destination (Join-Path $Root 'infra/docker/docker-compose.release-smoke.yml') -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs/releases/v1.3.4.md') -Destination (Join-Path $Root 'docs/releases/v1.3.4.md') -Force
+
+    $pending135 = @"
+# Release evidence - v1.3.5
+
+> Status: **RELEASE PREPARATION - NOT YET PUBLISHED**
+>
+> Version: ``1.3.5``
+
+## Release identity
+
+- release version: ``1.3.5``
+- releaseCommitSha: **PENDING**
+"@
+    [System.IO.File]::WriteAllText((Join-Path $Root 'docs/releases/v1.3.5.md'), $pending135)
+
+    if ($SynchronizedTo135) {
+        $applyRules = Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5'
+        foreach ($path in @('README.md', 'README.en.md', 'SECURITY.md', 'docs/ops/release-image-smoke.md', 'docs/ops/release-image-smoke.en.md', 'scripts/release-smoke.sh', 'scripts/release-smoke.ps1', 'infra/docker/docker-compose.release-smoke.yml')) {
+            $full = Join-Path $Root $path
+            $content = [System.IO.File]::ReadAllText($full)
+            $pathRules = Get-PostSyncRulesForPath -RelativePath $path -AllRules $applyRules
+            $updated = Apply-PostSyncReplacementRules -Content $content -Rules $pathRules
+            [System.IO.File]::WriteAllText($full, $updated)
+        }
+        $published = Build-PublishedReleaseRecordForPostSync -Text $pending135 -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -PublicDigest $PostSyncDigest135 -Platforms @('linux/amd64')
+        [System.IO.File]::WriteAllText((Join-Path $Root 'docs/releases/v1.3.5.md'), $published.Text)
+    }
+}
+
+$authorityGood = ConvertFrom-CurrentPublicAuthorityText -Text (Get-Content -LiteralPath (Join-Path $RepoRoot 'release/current-public.json') -Raw) -RepoRoot $RepoRoot
+Assert-Equal 'authority v1.3.4 parse state' $authorityGood.State 'VALID'
+Assert-Equal 'authority v1.3.4 version' $authorityGood.Version '1.3.4'
+Assert-Equal 'authority v1.3.4 tag' $authorityGood.Tag 'v1.3.4'
+
+$authorityMalformed = ConvertFrom-CurrentPublicAuthorityText -Text '{not-json' -RepoRoot $RepoRoot
+Assert-Equal 'malformed authority fail closed' $authorityMalformed.State 'INCOMPLETE'
+Assert-Equal 'malformed authority reason' $authorityMalformed.Reason 'MALFORMED_JSON'
+
+$authorityBadSchema = ConvertFrom-CurrentPublicAuthorityText -Text '{"schemaVersion":2,"version":"1.3.4","tag":"v1.3.4","platforms":["linux/amd64"],"releaseRecord":"docs/releases/v1.3.4.md"}' -RepoRoot $RepoRoot
+Assert-Equal 'unsupported schema fail closed' $authorityBadSchema.Reason 'UNSUPPORTED_SCHEMA'
+
+$authorityTagMismatch = ConvertFrom-CurrentPublicAuthorityText -Text '{"schemaVersion":1,"version":"1.3.4","tag":"v1.3.5","platforms":["linux/amd64"],"releaseRecord":"docs/releases/v1.3.4.md"}' -RepoRoot $RepoRoot
+Assert-Equal 'version tag mismatch fail closed' $authorityTagMismatch.Reason 'VERSION_TAG_MISMATCH'
+
+$fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-' + [Guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+try {
+    Initialize-PostSyncFixtureRepo -Root $fixtureRoot -AuthorityVersion '1.3.4'
+    $localPass = New-PostSyncFixtureLocalRepo
+    $verifyObs = New-PostSyncVerifyObservers
+
+    $dry = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $verifyObs -LocalRepoOverride $localPass -Quiet
+    Assert-Equal 'post-sync dry MUTATION_RESULT' $dry.Plan.MutationResult 'NOT_ATTEMPTED'
+    Assert-Equal 'post-sync dry MUTATION_ATTEMPTED' $dry.Plan.MutationAttempted 'FALSE'
+    Assert-Equal 'post-sync dry MUTATION_PERFORMED' $dry.Plan.MutationPerformed 'FALSE'
+
+    $beforeExecute = Get-Content -LiteralPath (Join-Path $fixtureRoot 'README.md') -Raw
+    $exec = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+    Assert-Equal 'post-sync execute APPLIED' $exec.Plan.MutationResult 'APPLIED'
+    Assert-Equal 'post-sync execute MUTATION_PERFORMED' $exec.Plan.MutationPerformed 'TRUE'
+    Assert-True 'post-sync execute changed README' ($beforeExecute -ne (Get-Content -LiteralPath (Join-Path $fixtureRoot 'README.md') -Raw)) 'README should change'
+    Assert-True 'post-sync execute updates authority' ((Get-Content -LiteralPath (Join-Path $fixtureRoot 'release/current-public.json') -Raw) -match '"version": "1.3.5"') 'authority should advance'
+
+    $already = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+    Assert-Equal 'post-sync already synchronized' $already.Plan.MutationResult 'ALREADY_APPLIED'
+    Assert-Equal 'post-sync already zero writes' $already.Plan.MutationAttempted 'FALSE'
+
+    $mixedRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-mixed-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $mixedRoot -Force | Out-Null
+    try {
+        Initialize-PostSyncFixtureRepo -Root $mixedRoot -AuthorityVersion '1.3.4'
+        $mixedSecurityPath = Join-Path $mixedRoot 'SECURITY.md'
+        $mixedSecurity = Get-Content -LiteralPath $mixedSecurityPath -Raw
+        [System.IO.File]::WriteAllText($mixedSecurityPath, ($mixedSecurity -replace '\| 1\.3\.4   \| Yes \(latest release\) \|', '| 1.3.5   | Yes (latest release) |'))
+        Assert-True 'post-sync mixed fixture corrupts SECURITY' ((Get-Content -LiteralPath $mixedSecurityPath -Raw) -match '\| 1\.3\.5   \| Yes \(latest release\) \|') 'SECURITY corruption missing'
+        $conflict = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $mixedRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+        Assert-Equal 'post-sync mixed follower CONFLICT' $conflict.Plan.MutationResult 'CONFLICT'
+        Assert-Equal 'post-sync mixed zero writes' $conflict.Plan.MutationAttempted 'FALSE'
+    }
+    finally {
+        Remove-Item -LiteralPath $mixedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $incompleteObs = New-PostSyncVerifyObservers
+    $incompleteObs['Ghcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'INCOMPLETE' -Reason 'AUTH' }
+    $incomplete = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $incompleteObs -LocalRepoOverride $localPass -Execute -Quiet
+    Assert-Equal 'post-sync verify incomplete' $incomplete.Plan.MutationResult 'INCOMPLETE'
+    Assert-Equal 'post-sync verify incomplete zero writes' $incomplete.Plan.MutationAttempted 'FALSE'
+
+    $syncRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-sync-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $syncRoot -Force | Out-Null
+    try {
+        Initialize-PostSyncFixtureRepo -Root $syncRoot -SynchronizedTo135
+        $candidate = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $syncRoot -Observers $verifyObs -LocalRepoOverride $localPass -Quiet
+        Assert-Equal 'version-prep fixture authority remains target' $candidate.Plan.MutationResult 'ALREADY_APPLIED'
+    }
+    finally {
+        Remove-Item -LiteralPath $syncRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+finally {
+    Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$authorityObsLive = Get-CurrentPublicAuthorityObservation -RepoRoot $RepoRoot
+Assert-Equal 'live authority observation present' $authorityObsLive.State 'PRESENT'
+Assert-Equal 'live authority version' $authorityObsLive.Authority.Version '1.3.4'
+
 # --- self-test source stays ASCII ---
 $sourceBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)
 $nonAscii = 0

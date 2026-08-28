@@ -54,6 +54,8 @@ mono_crash.*
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
+!release/
+!release/current-public.json
 !docs/releases/
 !docs/releases/**
 
