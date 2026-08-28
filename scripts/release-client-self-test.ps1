@@ -1814,6 +1814,8 @@ function Initialize-PostSyncFixtureRepo {
         [switch]$SynchronizedTo135
     )
 
+    $fixturesRoot = Join-Path $PSScriptRoot 'fixtures/post-sync'
+
     $paths = @(
         'release'
         'docs/releases'
@@ -1830,19 +1832,16 @@ function Initialize-PostSyncFixtureRepo {
 
     $authorityVer = if ($SynchronizedTo135) { '1.3.5' } else { $AuthorityVersion }
     $authorityJson = New-CurrentPublicAuthorityJson -Version $authorityVer
-    if ($SynchronizedTo135) {
-        $authorityJson = $authorityJson.Replace('docs/releases/v1.3.5.md', 'docs/releases/v1.3.5.md')
-    }
     [System.IO.File]::WriteAllText((Join-Path $Root 'release/current-public.json'), $authorityJson)
 
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'README.md') -Destination (Join-Path $Root 'README.md') -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'README.en.md') -Destination (Join-Path $Root 'README.en.md') -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'SECURITY.md') -Destination (Join-Path $Root 'SECURITY.md') -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs/ops/release-image-smoke.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.md') -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs/ops/release-image-smoke.en.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.en.md') -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts/release-smoke.sh') -Destination (Join-Path $Root 'scripts/release-smoke.sh') -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts/release-smoke.ps1') -Destination (Join-Path $Root 'scripts/release-smoke.ps1') -Force
-    Copy-Item -LiteralPath (Join-Path $RepoRoot 'infra/docker/docker-compose.release-smoke.yml') -Destination (Join-Path $Root 'infra/docker/docker-compose.release-smoke.yml') -Force
+    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'README.md') -Destination (Join-Path $Root 'README.md') -Force
+    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'README.en.md') -Destination (Join-Path $Root 'README.en.md') -Force
+    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'SECURITY.md') -Destination (Join-Path $Root 'SECURITY.md') -Force
+    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'release-image-smoke.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.md') -Force
+    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'release-image-smoke.en.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.en.md') -Force
+    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'release-smoke.sh') -Destination (Join-Path $Root 'scripts/release-smoke.sh') -Force
+    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'release-smoke.ps1') -Destination (Join-Path $Root 'scripts/release-smoke.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path $fixturesRoot 'docker-compose.release-smoke.yml') -Destination (Join-Path $Root 'infra/docker/docker-compose.release-smoke.yml') -Force
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'docs/releases/v1.3.4.md') -Destination (Join-Path $Root 'docs/releases/v1.3.4.md') -Force
 
     $pending135 = @"
