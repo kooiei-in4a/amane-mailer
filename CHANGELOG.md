@@ -15,6 +15,31 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [1.3.6] - 2026-08-29
+
+Patch release focused on Release Engineering maintainability after the completed
+v1.3.5 full service release. There is no product feature, runtime semantic,
+database migration, or public HTTP contract shape change relative to v1.3.5.
+
+### Changed
+
+- Integrate guarded Version Preparation into the canonical
+  `scripts/release.ps1 prepare-version` command (Contracts / OpenAPI / PENDING
+  release-record scaffold; current-public and followers preserved).
+- Record truthful NuGet public observation time and repository revision in
+  release evidence, without fabricating symbol state or NuGet indexing
+  timestamps.
+- Tighten release-preparation fail-close for predecessor / mixed local state,
+  and keep release-client examples version-generic (`X.Y.Z`).
+
+### Compatibility
+
+- No product feature, runtime semantic, database migration, or public HTTP
+  contract shape change relative to v1.3.5.
+- The migration inventory remains `001` through `018`.
+- `Amane.Mailer.Contracts` advances to `1.3.6` for release identity alignment;
+  its public DTO / constant / payload-hash behavior is unchanged by this patch.
+
 ## [1.3.5] - 2026-08-29
 
 Patch release focused on Release Engineering closeout improvements after the
