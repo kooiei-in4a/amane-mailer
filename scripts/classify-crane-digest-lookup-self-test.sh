@@ -41,6 +41,28 @@ exit 1
 EOF
 chmod +x "${WORK}/crane-absent"
 
+cat >"${WORK}/crane-malformed" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+case "${cmd}" in
+  digest)
+    echo "malformed-value"
+    exit 0
+    ;;
+  copy)
+    echo "COPY_EXECUTED" >&2
+    exit 0
+    ;;
+  *)
+    echo "unexpected crane cmd: ${cmd}" >&2
+    exit 99
+    ;;
+esac
+EOF
+chmod +x "${WORK}/crane-malformed"
+
 initial="$(classify_crane_digest_lookup "${WORK}/crane-auth" 'ghcr.io/example/amane-mailer:latest')"
 initial_class="${initial%%|*}"
 if [[ "${initial_class}" != "UNKNOWN" ]]; then
@@ -77,3 +99,32 @@ if [[ "${absent_class}" != "ABSENT" ]]; then
   exit 1
 fi
 echo "CLASSIFY_ABSENT_CONTROL=PASS"
+
+malformed="$(classify_crane_digest_lookup "${WORK}/crane-malformed" 'ghcr.io/example/amane-mailer:latest')"
+malformed_class="${malformed%%|*}"
+if [[ "${malformed_class}" != "UNKNOWN" ]]; then
+  echo "CLASSIFY_MALFORMED_SUCCESS=FAIL class=${malformed_class}" >&2
+  exit 1
+fi
+echo "CLASSIFY_MALFORMED_SUCCESS=PASS"
+
+malformed_copy_executed=0
+malformed_pre="$(classify_crane_digest_lookup "${WORK}/crane-malformed" 'ghcr.io/example/amane-mailer:latest')"
+malformed_pre_class="${malformed_pre%%|*}"
+case "${malformed_pre_class}" in
+  PRESENT|ABSENT)
+    "${WORK}/crane-malformed" copy 'ghcr.io/example/amane-mailer@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' 'ghcr.io/example/amane-mailer:latest' && malformed_copy_executed=1
+    ;;
+  UNKNOWN)
+    echo 'STOP_NO_COPY'
+    ;;
+  *)
+    echo "unexpected malformed_pre_class=${malformed_pre_class}" >&2
+    exit 1
+    ;;
+esac
+if [[ "${malformed_pre_class}" != "UNKNOWN" || "${malformed_copy_executed}" -ne 0 ]]; then
+  echo "WORKFLOW_LATEST_MALFORMED_PRECOPY=FAIL class=${malformed_pre_class} copy=${malformed_copy_executed}" >&2
+  exit 1
+fi
+echo "WORKFLOW_LATEST_MALFORMED_PRECOPY=PASS"

@@ -5,8 +5,9 @@
 #
 # classify_crane_digest_lookup <crane_bin> <ref>
 #   prints: PRESENT|<digest> | ABSENT| | UNKNOWN|
+#   PRESENT only when exit 0 and stdout is exactly one line matching ^sha256:[0-9a-f]{64}$.
 #   ABSENT only when registry clearly reports missing manifest/name.
-#   Auth / network / TLS / timeout / 5xx / rate-limit / parse / tool errors -> UNKNOWN.
+#   Auth / network / TLS / timeout / 5xx / rate-limit / parse / tool / malformed success -> UNKNOWN.
 # stderr from crane is redacted before classification (no credential echo).
 
 redact_registry_err() {
@@ -32,12 +33,13 @@ classify_crane_digest_lookup() {
   set -e
   if [[ "${rc}" -eq 0 ]]; then
     rm -f "${errf}"
-    out="$(printf '%s' "${out}" | tr -d '\r' | head -n 1)"
-    if [[ -z "${out}" ]]; then
-      printf '%s\n' 'UNKNOWN|'
+    # Fail-close: do not take head -n 1. Multiline / garbage / short / non-sha256 => UNKNOWN.
+    out="$(printf '%s' "${out}" | tr -d '\r')"
+    if [[ "${out}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      printf 'PRESENT|%s\n' "${out}"
       return 0
     fi
-    printf 'PRESENT|%s\n' "${out}"
+    printf '%s\n' 'UNKNOWN|'
     return 0
   fi
   err="$(redact_registry_err < "${errf}" || true)"

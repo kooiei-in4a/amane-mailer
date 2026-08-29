@@ -2461,8 +2461,12 @@ Assert-equal 'classify self-test exit 0' $classifyExit 0
 Assert-True 'WORKFLOW_LATEST_UNKNOWN_INITIAL class' ($classifyText -match 'WORKFLOW_LATEST_UNKNOWN_INITIAL=PASS') 'auth failure must classify UNKNOWN'
 Assert-True 'WORKFLOW_LATEST_UNKNOWN_PRECOPY class' ($classifyText -match 'WORKFLOW_LATEST_UNKNOWN_PRECOPY=PASS') 'pre-copy auth failure must STOP without copy'
 Assert-True 'classify ABSENT for MANIFEST_UNKNOWN' ($classifyText -match 'CLASSIFY_ABSENT_CONTROL=PASS') 'manifest unknown must be ABSENT'
+Assert-True 'CLASSIFY_MALFORMED_SUCCESS class' ($classifyText -match 'CLASSIFY_MALFORMED_SUCCESS=PASS') 'exit-0 malformed digest stdout must classify UNKNOWN'
+Assert-True 'WORKFLOW_LATEST_MALFORMED_PRECOPY class' ($classifyText -match 'WORKFLOW_LATEST_MALFORMED_PRECOPY=PASS') 'pre-copy malformed success must STOP without copy'
 Assert-equal 'WORKFLOW_LATEST_UNKNOWN_INITIAL' 'PASS' 'PASS'
 Assert-Equal 'WORKFLOW_LATEST_UNKNOWN_PRECOPY' 'PASS' 'PASS'
+Assert-Equal 'CLASSIFY_MALFORMED_SUCCESS' 'PASS' 'PASS'
+Assert-Equal 'WORKFLOW_LATEST_MALFORMED_PRECOPY' 'PASS' 'PASS'
 
 # Forbidden swallow pattern must remain absent from workflow text.
 Assert-True 'workflow has no latest 2>/dev/null swallow' ($promoteLatestText -notmatch 'digest "\$\{IMAGE_REPOSITORY\}:latest" 2>/dev/null') 'fail-close forbids 2>/dev/null latest digest'
