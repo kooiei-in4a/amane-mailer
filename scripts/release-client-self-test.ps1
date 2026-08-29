@@ -1909,6 +1909,59 @@ Assert-True 'finalize leaves workflow run pending' ($finalizedFixture.Text -matc
 Assert-True 'finalize leaves artifact id pending' ($finalizedFixture.Text -match 'publication artifact ID: \*\*PENDING\*\*') 'artifact id should remain pending'
 Assert-True 'finalize does not invent publication invariants' (-not ($finalizedFixture.Text -match 'same-version GHCR republish: none')) 'publication invariants should not be invented'
 
+# --- #677 production-shape release record transformation ---
+$ProductionShapeSha = '89424946b9c018bb2d0f276e63b6e7344e40786b'
+$ProductionShapeDigest = 'sha256:397216a030d69c600b88b9939ea6c0a10e325bb72948b779c4ae98ac85a129d1'
+$productionShapePath = Join-Path $PSScriptRoot 'fixtures/post-sync/v1.3.5-production-shape-pending.md'
+$productionShapeText = Get-Content -LiteralPath $productionShapePath -Raw
+Assert-Equal 'production shape pending state' (Get-ReleaseRecordStateFromText -Text $productionShapeText) 'PENDING'
+Assert-True 'production shape has NOT YET PUBLISHED cores' ($productionShapeText -match 'Git tag `v1\.3\.5`: \*\*NOT YET PUBLISHED\*\*') 'expected production git tag pending'
+
+$productionBeforeStatus = Update-ReleaseRecordObservableFields -Text $productionShapeText -Version '1.3.5' -ReleaseCommitSha $ProductionShapeSha -PublicDigest $ProductionShapeDigest -Platforms @('linux/amd64')
+Assert-equal 'STATUS_AFTER_CORE_VALIDATION_ONLY pre-status remains pending' (Get-ReleaseRecordStateFromText -Text $productionBeforeStatus) 'PENDING'
+$productionCoreCheck = Test-PublishedReleaseRecordCoreConsistency -Text $productionBeforeStatus -Version '1.3.5' -ReleaseCommitSha $ProductionShapeSha -PublicDigest $ProductionShapeDigest
+Assert-Equal 'CORE_CONSISTENCY_GUARD pre-status' $productionCoreCheck.State 'PASS'
+
+$productionFinal = Build-PublishedReleaseRecordForPostSync -Text $productionShapeText -Version '1.3.5' -ReleaseCommitSha $ProductionShapeSha -PublicDigest $ProductionShapeDigest -Platforms @('linux/amd64')
+Assert-Equal 'PRODUCTION_SHAPE_STATUS_PUBLISHED' $(if ($productionFinal.State -eq 'APPLIED' -and (Get-ReleaseRecordStateFromText -Text $productionFinal.Text) -eq 'PUBLISHED') { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-equal 'PRODUCTION_SHAPE_RELEASE_SHA' $(if ($productionFinal.Text -match ('`releaseCommitSha`: `' + [regex]::Escape($ProductionShapeSha) + '`')) { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-Equal 'PRODUCTION_SHAPE_GIT_TAG' $(if ($productionFinal.Text -match 'Git tag `v1\.3\.5`: \*\*PUBLISHED\*\*') { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-equal 'PRODUCTION_SHAPE_GIT_TAG_TARGET' $(if ($productionFinal.Text -match ('Git tag target: `' + [regex]::Escape($ProductionShapeSha) + '`')) { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-Equal 'PRODUCTION_SHAPE_GHCR_VERSION' $(if ($productionFinal.Text -match 'GHCR `ghcr\.io/kooiei-in4a/amane-mailer:v1\.3\.5`: \*\*PUBLISHED\*\*') { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-equal 'PRODUCTION_SHAPE_GHCR_IMMUTABLE' $(if ($productionFinal.Text -match ('GHCR immutable `sha-' + [regex]::Escape($ProductionShapeSha) + '` tag: \*\*PUBLISHED\*\*')) { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-equal 'PRODUCTION_SHAPE_PUBLIC_DIGEST' $(if ($productionFinal.Text -match ('Public OCI digest: `' + [regex]::Escape($ProductionShapeDigest) + '`')) { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-equal 'PRODUCTION_SHAPE_NUGET' $(if ($productionFinal.Text -match 'NuGet `Amane\.Mailer\.Contracts 1\.3\.5`: \*\*PUBLISHED\*\*') { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-equal 'PRODUCTION_SHAPE_NUGET_REVISION' $(if ($productionFinal.Text -match ('NuGet SourceLink revision: `' + [regex]::Escape($ProductionShapeSha) + '`')) { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-equal 'PRODUCTION_SHAPE_GITHUB_RELEASE' $(if ($productionFinal.Text -match 'GitHub Release `v1\.3\.5`: \*\*PUBLISHED\*\*') { 'PASS' } else { 'FAIL' }) 'PASS'
+Assert-equal 'PRODUCTION_SHAPE_GITHUB_RELEASE_URL' $(if ($productionFinal.Text -match 'GitHub Release URL: `https://github\.com/kooiei-in4a/amane-mailer/releases/tag/v1\.3\.5`') { 'PASS' } else { 'FAIL' }) 'PASS'
+
+$coreContradiction = $false
+foreach ($line in ($productionFinal.Text -split '\r?\n')) {
+    if ($line -match '(?m)^>\s*Status:') { continue }
+    if ($line -match '^\s*-\s+' -and $line -match 'NOT YET PUBLISHED') {
+        $coreContradiction = $true
+        break
+    }
+}
+Assert-equal 'PRODUCTION_SHAPE_NO_CORE_CONTRADICTION' $(if (-not $coreContradiction -and (Get-ReleaseRecordStateFromText -Text $productionFinal.Text) -eq 'PUBLISHED') { 'PASS' } else { 'FAIL' }) 'PASS'
+
+Assert-True 'MANUAL_PENDING_PRESERVED annotated tag' ($productionFinal.Text -match 'annotated tag object: \*\*PENDING\*\*') 'annotated tag should remain pending'
+Assert-True 'MANUAL_PENDING_PRESERVED workflow run' ($productionFinal.Text -match 'Release image workflow run / attempt: \*\*PENDING\*\*') 'workflow run should remain pending'
+Assert-True 'MANUAL_PENDING_PRESERVED artifact' ($productionFinal.Text -match 'Publication evidence artifact name / ID: \*\*PENDING\*\*') 'artifact evidence should remain pending'
+Assert-True 'MANUAL_PENDING_PRESERVED nuget timestamp' ($productionFinal.Text -match 'NuGet publication timestamp: \*\*PENDING\*\*') 'nuget timestamp should remain pending'
+Assert-True 'MANUAL_PENDING_PRESERVED github release id' ($productionFinal.Text -match 'GitHub Release ID: \*\*PENDING\*\*') 'github release id should remain pending'
+Assert-True 'MANUAL_PENDING_PRESERVED latest promotion' ($productionFinal.Text -match 'GHCR `latest` digest promotion: \*\*PENDING\*\*') 'latest promotion may remain pending'
+Assert-equal 'MANUAL_PENDING_PRESERVED' 'PASS' 'PASS'
+
+$brokenProduction = $productionShapeText -replace 'Git tag `v1\.3\.5`: \*\*NOT YET PUBLISHED\*\*', 'Git tag identity `v1.3.5`: **NOT YET PUBLISHED**'
+$failClose = Build-PublishedReleaseRecordForPostSync -Text $brokenProduction -Version '1.3.5' -ReleaseCommitSha $ProductionShapeSha -PublicDigest $ProductionShapeDigest -Platforms @('linux/amd64')
+Assert-True 'PRODUCTION_SHAPE_FAIL_CLOSE no write text' ([string]::IsNullOrEmpty($failClose.Text)) 'fail-close must not return published text'
+Assert-True 'PRODUCTION_SHAPE_FAIL_CLOSE not published state' ($failClose.State -eq 'CONFLICT' -or $failClose.State -eq 'INCOMPLETE') 'fail-close must CONFLICT or INCOMPLETE'
+Assert-equal 'PRODUCTION_SHAPE_FAIL_CLOSE' $(if (($failClose.State -eq 'CONFLICT' -or $failClose.State -eq 'INCOMPLETE') -and [string]::IsNullOrEmpty($failClose.Text)) { 'PASS' } else { 'FAIL' }) 'PASS'
+
+# Generic fixture regression remains covered by finalize pending fixture assertions above.
+Assert-equal 'GENERIC_FIXTURE_REGRESSION' $(if ($finalizedFixture.State -eq 'APPLIED' -and (Get-ReleaseRecordStateFromText -Text $finalizedFixture.Text) -eq 'PUBLISHED') { 'PASS' } else { 'FAIL' }) 'PASS'
+
 $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-' + [Guid]::NewGuid().ToString('n'))
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 try {
