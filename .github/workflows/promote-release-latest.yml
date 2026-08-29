@@ -116,17 +116,33 @@ jobs:
           [[ "${oci_revision}" == "${RELEASE_COMMIT_SHA}" ]] \
             || { echo '::error::OCI revision label does not match release_commit_sha'; exit 1; }
 
-          latest_state=ABSENT
-          if latest_digest="$("${CRANE_BIN}" digest "${IMAGE_REPOSITORY}:latest" 2>/dev/null)"; then
-            if [[ "${latest_digest}" == "${EXPECTED_DIGEST}" ]]; then
-              latest_state=EXACT_MATCH
-            else
-              latest_state=STALE
-            fi
-          else
-            latest_digest=NONE
-            latest_state=ABSENT
-          fi
+          # Fail-close latest lookup: PRESENT / ABSENT / UNKNOWN (never treat auth/network as ABSENT).
+          # shellcheck source=scripts/classify-crane-digest-lookup.sh
+          source "${GITHUB_WORKSPACE}/scripts/classify-crane-digest-lookup.sh"
+          latest_lookup="$(classify_crane_digest_lookup "${CRANE_BIN}" "${IMAGE_REPOSITORY}:latest")"
+          latest_class="${latest_lookup%%|*}"
+          latest_digest="${latest_lookup#*|}"
+          case "${latest_class}" in
+            PRESENT)
+              if [[ "${latest_digest}" == "${EXPECTED_DIGEST}" ]]; then
+                latest_state=EXACT_MATCH
+              else
+                latest_state=STALE
+              fi
+              ;;
+            ABSENT)
+              latest_digest=NONE
+              latest_state=ABSENT
+              ;;
+            UNKNOWN)
+              echo '::error::latest tag lookup state unknown; refusing login/copy (fail-close)'
+              exit 1
+              ;;
+            *)
+              echo '::error::unexpected latest lookup class'
+              exit 1
+              ;;
+          esac
           echo "latest_state=${latest_state}" >> "$GITHUB_OUTPUT"
           echo "latest_digest_before=${latest_digest}" >> "$GITHUB_OUTPUT"
           echo "version_digest=${version_digest}" >> "$GITHUB_OUTPUT"
@@ -145,7 +161,7 @@ jobs:
           echo 'latest already resolves to expected digest; no mutation'
 
       - name: Login to GHCR
-        if: steps.source.outputs.latest_state != 'EXACT_MATCH'
+        if: steps.source.outputs.latest_state == 'ABSENT' || steps.source.outputs.latest_state == 'STALE'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
         with:
           registry: ghcr.io
@@ -154,7 +170,7 @@ jobs:
 
       - name: Promote latest by digest-preserving copy
         id: promote
-        if: steps.source.outputs.latest_state != 'EXACT_MATCH'
+        if: steps.source.outputs.latest_state == 'ABSENT' || steps.source.outputs.latest_state == 'STALE'
         shell: bash
         env:
           CRANE_BIN: ${{ steps.crane.outputs.bin }}
@@ -168,13 +184,32 @@ jobs:
             || { echo '::error::pre-copy version digest mismatch'; exit 1; }
           [[ "${sha_digest}" == "${EXPECTED_DIGEST}" ]] \
             || { echo '::error::pre-copy sha digest mismatch'; exit 1; }
-          if current_latest="$("${CRANE_BIN}" digest "${IMAGE_REPOSITORY}:latest" 2>/dev/null)"; then
-            if [[ "${current_latest}" == "${EXPECTED_DIGEST}" ]]; then
-              echo 'latest became exact before copy; treating as no-op success'
-              echo "mutated=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
+
+          # Fail-close pre-copy latest re-check (same PRESENT/ABSENT/UNKNOWN contract).
+          # shellcheck source=scripts/classify-crane-digest-lookup.sh
+          source "${GITHUB_WORKSPACE}/scripts/classify-crane-digest-lookup.sh"
+          pre_lookup="$(classify_crane_digest_lookup "${CRANE_BIN}" "${IMAGE_REPOSITORY}:latest")"
+          pre_class="${pre_lookup%%|*}"
+          pre_digest="${pre_lookup#*|}"
+          case "${pre_class}" in
+            PRESENT)
+              if [[ "${pre_digest}" == "${EXPECTED_DIGEST}" ]]; then
+                echo 'latest became exact before copy; treating as no-op success'
+                echo "mutated=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              ;;
+            ABSENT)
+              ;;
+            UNKNOWN)
+              echo '::error::pre-copy latest lookup state unknown; refusing crane copy (fail-close)'
+              exit 1
+              ;;
+            *)
+              echo '::error::unexpected pre-copy latest lookup class'
+              exit 1
+              ;;
+          esac
           "${CRANE_BIN}" copy "${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}" "${IMAGE_REPOSITORY}:latest"
           echo "mutated=true" >> "$GITHUB_OUTPUT"
 

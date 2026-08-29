@@ -2227,7 +2227,10 @@ Assert-Equal 'promote-latest EXACT LATEST_STATE' $promoteExact['LATEST_STATE'] '
 Assert-Equal 'promote-latest EXACT zero executor calls' $script:MutationExecutorCalls.Count 0
 
 $promoteAbsentObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
-$promoteAbsentObs['ReadBackLatest'] = { New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $MainSha -OciVersion '1.3.5' }.GetNewClosure()
+$promoteAbsentObs['ReadBackPromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = '7201'; Status = 'waiting'; Conclusion = '' }
+}.GetNewClosure()
 $promoteAbsentExec = New-FakeMutationExecutor -Outcome 'SUCCESS'
 $promoteAbsent = Invoke-PromoteLatestFixture -Observers $promoteAbsentObs -Executor $promoteAbsentExec -Execute
 Assert-Equal 'promote-latest ABSENT eligible APPLIED' $promoteAbsent['MUTATION_RESULT'] 'APPLIED'
@@ -2235,7 +2238,10 @@ Assert-Equal 'promote-latest ABSENT one executor call' $script:MutationExecutorC
 Assert-Equal 'promote-latest ABSENT LATEST_STATE' $promoteAbsent['LATEST_STATE'] 'ABSENT'
 
 $promoteStaleObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'STALE'
-$promoteStaleObs['ReadBackLatest'] = { New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $MainSha -OciVersion '1.3.5' }.GetNewClosure()
+$promoteStaleObs['ReadBackPromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = '7202'; Status = 'queued'; Conclusion = '' }
+}.GetNewClosure()
 $promoteStaleExec = New-FakeMutationExecutor -Outcome 'SUCCESS'
 $promoteStale = Invoke-PromoteLatestFixture -Observers $promoteStaleObs -Executor $promoteStaleExec -Execute
 Assert-Equal 'promote-latest STALE eligible APPLIED' $promoteStale['MUTATION_RESULT'] 'APPLIED'
@@ -2321,7 +2327,10 @@ $promoteRunAmbig = Invoke-PromoteLatestFixture -Observers $promoteRunAmbigObs -E
 Assert-Equal 'promote-latest multiple matching runs CONFLICT' $promoteRunAmbig['MUTATION_RESULT'] 'CONFLICT'
 
 $promotePostMismatchObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
-$promotePostMismatchObs['ReadBackLatest'] = { New-ArtifactFact -State 'PRESENT' -Digest $DigestB }.GetNewClosure()
+$promotePostMismatchObs['ReadBackPromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'AMBIGUOUS'; Id = 'NONE' }
+}.GetNewClosure()
 $promotePostMismatch = Invoke-PromoteLatestFixture -Observers $promotePostMismatchObs -Executor (New-FakeMutationExecutor -Outcome 'SUCCESS') -Execute
 Assert-Equal 'promote-latest post-readback digest mismatch CONFLICT' $promotePostMismatch['MUTATION_RESULT'] 'CONFLICT'
 
@@ -2330,6 +2339,11 @@ $promoteRunObsSingle = ConvertTo-PromoteLatestRunObservation -Runs @(
     (New-DispatchRun -Id '7100' -Path '.github/workflows/promote-release-latest.yml' -HeadSha $MainSha -Name $runIdentityMatch -Status 'in_progress' -Conclusion '')
 ) -WorkflowPath '.github/workflows/promote-release-latest.yml' -RunIdentity $runIdentityMatch
 Assert-Equal 'promote-latest run obs in_progress candidate' $promoteRunObsSingle.State 'CANDIDATE_PRESENT'
+
+$promoteRunObsSuccess = ConvertTo-PromoteLatestRunObservation -Runs @(
+    (New-DispatchRun -Id '7103' -Path '.github/workflows/promote-release-latest.yml' -HeadSha $MainSha -Name $runIdentityMatch -Status 'completed' -Conclusion 'success')
+) -WorkflowPath '.github/workflows/promote-release-latest.yml' -RunIdentity $runIdentityMatch
+Assert-Equal 'promote-latest run obs completed success SUCCESS_MATCH' $promoteRunObsSuccess.State 'SUCCESS_MATCH'
 
 $promoteRunObsMulti = ConvertTo-PromoteLatestRunObservation -Runs @(
     (New-DispatchRun -Id '7101' -Path '.github/workflows/promote-release-latest.yml' -HeadSha $MainSha -Name $runIdentityMatch),
@@ -2358,15 +2372,51 @@ Assert-RunnerCall -Name 'promote-latest prod gh' -Index 0 -Program 'gh' -Expecte
 
 $script:CommandRunnerCalls.Clear()
 $promoteProdObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
-$promoteProdObs['ReadBackLatest'] = { New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $MainSha -OciVersion '1.3.5' }.GetNewClosure()
+$promoteProdObs['ReadBackPromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = '7301'; Status = 'waiting'; Conclusion = '' }
+}.GetNewClosure()
 $promoteProdApplied = Invoke-PromoteLatestFixture -Observers $promoteProdObs -Execute -CommandRunner (New-FakeCommandRunner)
 Assert-Equal 'promote-latest production path APPLIED' $promoteProdApplied['MUTATION_RESULT'] 'APPLIED'
 Assert-Equal 'promote-latest production path runner calls' $script:CommandRunnerCalls.Count 1
+Assert-Equal 'WAITING_RUN_DISPATCH_APPLIED_TEST' $promoteProdApplied['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'WAITING_RUN_DISPATCH_APPLIED attempted' $promoteProdApplied['MUTATION_ATTEMPTED'] 'TRUE'
+Assert-Equal 'WAITING_RUN_DISPATCH_APPLIED latest still ABSENT' $promoteProdApplied['LATEST_STATE'] 'ABSENT'
 
-$promoteLatestReadBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ Digest = $DigestA; Sha = $MainSha } -ScriptBlock {
+# Finding 3: historical completed success + current latest STALE must STOP (not ALREADY_APPLIED).
+$promoteSuccessStaleObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'STALE'
+$promoteSuccessStaleObs['PromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'SUCCESS_MATCH'; Id = '7401'; Status = 'completed'; Conclusion = 'success' }
+}.GetNewClosure()
+$promoteSuccessStale = Invoke-PromoteLatestFixture -Observers $promoteSuccessStaleObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'SUCCESS_RUN_STALE_LATEST_STOP' $promoteSuccessStale['MUTATION_RESULT'] 'CONFLICT'
+Assert-True 'SUCCESS_RUN_STALE_LATEST not ALREADY_APPLIED' ($promoteSuccessStale['MUTATION_RESULT'] -ne 'ALREADY_APPLIED') 'must not return ALREADY_APPLIED'
+Assert-Equal 'SUCCESS_RUN_STALE_LATEST zero executor' $script:MutationExecutorCalls.Count 0
+
+$promoteSuccessExactObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'EXACT_MATCH'
+$promoteSuccessExactObs['PromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'SUCCESS_MATCH'; Id = '7402'; Status = 'completed'; Conclusion = 'success' }
+}.GetNewClosure()
+$promoteSuccessExact = Invoke-PromoteLatestFixture -Observers $promoteSuccessExactObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest success run + exact latest ALREADY_APPLIED' $promoteSuccessExact['MUTATION_RESULT'] 'ALREADY_APPLIED'
+Assert-Equal 'promote-latest success+exact zero executor' $script:MutationExecutorCalls.Count 0
+
+$promoteSuccessAbsentObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
+$promoteSuccessAbsentObs['PromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'SUCCESS_MATCH'; Id = '7403'; Status = 'completed'; Conclusion = 'success' }
+}.GetNewClosure()
+$promoteSuccessAbsent = Invoke-PromoteLatestFixture -Observers $promoteSuccessAbsentObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-equal 'promote-latest success run + absent latest CONFLICT' $promoteSuccessAbsent['MUTATION_RESULT'] 'CONFLICT'
+Assert-equal 'promote-latest success+absent zero executor' $script:MutationExecutorCalls.Count 0
+
+$promoteLatestReadBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ RunIdentity = $promoteIdentity } -ScriptBlock {
     param($c)
-    $null = Get-Command -Name Get-GhcrLatestObservation -CommandType Function -ErrorAction Stop
-    return New-ArtifactFact -State 'PRESENT' -Digest $c.Digest -Revision $c.Sha -OciVersion '1.3.5'
+    $null = Get-Command -Name Get-GitHubPromoteLatestWorkflowRuns -CommandType Function -ErrorAction Stop
+    $null = Get-Command -Name ConvertTo-PromoteLatestRunObservation -CommandType Function -ErrorAction Stop
+    return 'CANDIDATE_PRESENT'
 }
 $promoteLatestFacts = [pscustomobject]@{
     Version                  = '1.3.5'
@@ -2392,10 +2442,102 @@ $promoteLatestFacts = [pscustomobject]@{
 }
 $promoteLatestProdReadbackMap = Get-ReleasePromoteLatestMutationStatus -Facts $promoteLatestFacts
 Assert-Equal 'promote-latest production readback APPLIED' $promoteLatestProdReadbackMap['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'POST_MUTATION_READBACK_FIX' $promoteLatestProdReadbackMap['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'POST_DISPATCH_RUN_READBACK' (ConvertTo-PromoteLatestPostDispatchRunGuardState -RunState 'CANDIDATE_PRESENT') 'EXACT_MATCH'
 
 $promoteCliNoDigest = Invoke-Cli -CliArgs @('promote-latest', '-Version', '1.3.5', '-ReleaseCommitSha', $MainSha)
 Assert-Equal 'CLI promote-latest without ExpectedDigest exit 2' $promoteCliNoDigest.ExitCode 2
 Assert-True 'CLI promote-latest mentions ExpectedDigest' ($promoteCliNoDigest.Output -match 'ExpectedDigest') 'missing ExpectedDigest usage text'
+
+# --- Finding 1: fail-close latest lookup (auth/network/tool must be UNKNOWN, never ABSENT, never copy) ---
+$classifyHelper = Join-Path $RepoRoot 'scripts/classify-crane-digest-lookup.sh'
+Assert-True 'classify helper exists' (Test-Path -LiteralPath $classifyHelper) 'scripts/classify-crane-digest-lookup.sh must exist'
+$mockCraneDir = Join-Path ([System.IO.Path]::GetTempPath()) ("amane-crane-mock-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $mockCraneDir -Force | Out-Null
+try {
+    $mockCrane = Join-Path $mockCraneDir 'crane'
+    @'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+case "${cmd}" in
+  digest)
+    echo "unauthorized: authentication required" >&2
+    exit 1
+    ;;
+  copy)
+    echo "COPY_EXECUTED" >&2
+    exit 0
+    ;;
+  *)
+    echo "unexpected crane cmd: ${cmd}" >&2
+    exit 99
+    ;;
+esac
+'@ | Set-Content -LiteralPath $mockCrane -Encoding ascii
+    & chmod +x $mockCrane
+
+    $initialProbe = & bash -lc @"
+set -Eeuo pipefail
+source '$classifyHelper'
+class_line=`$(classify_crane_digest_lookup '$mockCrane' 'ghcr.io/example/amane-mailer:latest')
+class=`${class_line%%|*}
+printf 'CLASS=%s\n' "`$class"
+"@
+    $initialText = [string]::Join("`n", @($initialProbe))
+    Assert-True 'WORKFLOW_LATEST_UNKNOWN_INITIAL class' ($initialText -match 'CLASS=UNKNOWN') 'auth failure must classify UNKNOWN'
+    Assert-True 'WORKFLOW_LATEST_UNKNOWN_INITIAL not ABSENT' ($initialText -notmatch 'CLASS=ABSENT') 'auth failure must not be ABSENT'
+
+    $precopyProbe = & bash -lc @"
+set -Eeuo pipefail
+source '$classifyHelper'
+CRANE_BIN='$mockCrane'
+IMAGE_REPOSITORY='ghcr.io/example/amane-mailer'
+EXPECTED_DIGEST='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+copy_executed=0
+pre_lookup=`$(classify_crane_digest_lookup "`${CRANE_BIN}" "`${IMAGE_REPOSITORY}:latest")
+pre_class=`${pre_lookup%%|*}
+case "`${pre_class}" in
+  PRESENT|ABSENT)
+    "`${CRANE_BIN}" copy "`${IMAGE_REPOSITORY}@`${EXPECTED_DIGEST}" "`${IMAGE_REPOSITORY}:latest" && copy_executed=1
+    ;;
+  UNKNOWN)
+    echo 'STOP_NO_COPY'
+    ;;
+  *)
+    echo "unexpected `${pre_class}" >&2
+    exit 1
+    ;;
+esac
+printf 'CLASS=%s COPY=%s\n' "`${pre_class}" "`${copy_executed}"
+"@
+    $precopyText = [string]::Join("`n", @($precopyProbe))
+    Assert-True 'WORKFLOW_LATEST_UNKNOWN_PRECOPY class' ($precopyText -match 'CLASS=UNKNOWN') 'pre-copy auth failure must be UNKNOWN'
+    Assert-True 'WORKFLOW_LATEST_UNKNOWN_PRECOPY no copy' ($precopyText -match 'COPY=0' -and $precopyText -match 'STOP_NO_COPY') 'UNKNOWN must not run crane copy'
+    Assert-equal 'WORKFLOW_LATEST_UNKNOWN_INITIAL' 'PASS' 'PASS'
+    Assert-Equal 'WORKFLOW_LATEST_UNKNOWN_PRECOPY' 'PASS' 'PASS'
+
+    # Manifest-unknown remains ABSENT (positive control for classifier).
+    $mockAbsent = Join-Path $mockCraneDir 'crane-absent'
+    @'
+#!/usr/bin/env bash
+echo "MANIFEST_UNKNOWN: manifest unknown" >&2
+exit 1
+'@ | Set-Content -LiteralPath $mockAbsent -Encoding ascii
+    & chmod +x $mockAbsent
+    $absentProbe = & bash -lc "source '$classifyHelper'; classify_crane_digest_lookup '$mockAbsent' 'ghcr.io/example/amane-mailer:latest'"
+    Assert-True 'classify ABSENT for MANIFEST_UNKNOWN' ([string]$absentProbe -match '^ABSENT\|') 'manifest unknown must be ABSENT'
+}
+finally {
+    Remove-Item -LiteralPath $mockCraneDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Forbidden swallow pattern must remain absent from workflow text.
+Assert-True 'workflow has no latest 2>/dev/null swallow' ($promoteLatestText -notmatch 'digest "\$\{IMAGE_REPOSITORY\}:latest" 2>/dev/null') 'fail-close forbids 2>/dev/null latest digest'
+Assert-True 'workflow sources classify helper' ($promoteLatestText -match 'classify-crane-digest-lookup\.sh') 'workflow must source classify helper'
+Assert-True 'INITIAL_UNKNOWN_STOPS' ($promoteLatestText -match 'latest tag lookup state unknown') 'initial UNKNOWN must STOP'
+Assert-True 'PRECOPY_UNKNOWN_STOPS' ($promoteLatestText -match 'pre-copy latest lookup state unknown') 'pre-copy UNKNOWN must STOP'
 
 # --- self-test source stays ASCII ---
 $sourceBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)

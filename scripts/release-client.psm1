@@ -4311,11 +4311,13 @@ function ConvertTo-PromoteLatestRunObservation {
     if ([string]::IsNullOrWhiteSpace($conclusion)) { $conclusion = 'NONE' }
     $statusLower = $status.ToLowerInvariant()
     $conclusionLower = $conclusion.ToLowerInvariant()
+    # Active / approval-waiting runs: no redispatch; latest digest need not have changed yet.
     if ($statusLower -in @('queued', 'in_progress', 'waiting', 'requested', 'pending')) {
         return [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = $id; Status = $status; Conclusion = $conclusion; Reason = '' }
     }
+    # Historical success must be reconciled with current latest (Finding 3).
     if ($statusLower -eq 'completed' -and $conclusionLower -eq 'success') {
-        return [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = $id; Status = $status; Conclusion = $conclusion; Reason = '' }
+        return [pscustomobject]@{ State = 'SUCCESS_MATCH'; Id = $id; Status = $status; Conclusion = $conclusion; Reason = '' }
     }
     if ($statusLower -eq 'completed') {
         return [pscustomobject]@{ State = 'FAILED_MATCH'; Id = $id; Status = $status; Conclusion = $conclusion; Reason = 'FAILED_RUN' }
@@ -4326,9 +4328,23 @@ function ConvertTo-PromoteLatestRunObservation {
 function ConvertTo-PromoteLatestRunMutationGuardState {
     param([string]$RunState)
     if ($RunState -eq 'ABSENT') { return 'ABSENT' }
-    if ($RunState -eq 'CANDIDATE_PRESENT') { return 'EXACT_MATCH' }
+    if ($RunState -eq 'CANDIDATE_PRESENT') { return 'ACTIVE' }
+    if ($RunState -eq 'SUCCESS_MATCH') { return 'SUCCESS_MATCH' }
     if ($RunState -eq 'AMBIGUOUS') { return 'CONFLICT' }
     if ($RunState -eq 'FAILED_MATCH') { return 'CONFLICT' }
+    if ($RunState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-PromoteLatestPostDispatchRunGuardState {
+    param([string]$RunState)
+    # Dispatch applied when a deterministic matching run is active or already successful.
+    # Latest digest equality is enforced by the workflow itself after environment approval.
+    if ($RunState -eq 'CANDIDATE_PRESENT') { return 'EXACT_MATCH' }
+    if ($RunState -eq 'SUCCESS_MATCH') { return 'EXACT_MATCH' }
+    if ($RunState -eq 'AMBIGUOUS') { return 'CONFLICT' }
+    if ($RunState -eq 'FAILED_MATCH') { return 'CONFLICT' }
+    if ($RunState -eq 'ABSENT') { return 'INCOMPLETE' }
     if ($RunState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
     return 'INCOMPLETE'
 }
@@ -4385,9 +4401,10 @@ function Resolve-ReleasePromoteLatestPrecheck {
         }
     }
 
-    if ($RunGuardState -eq 'EXACT_MATCH') {
+    # Multiple matching / failed matching runs: never redispatch.
+    if ($RunGuardState -eq 'CONFLICT') {
         return [pscustomobject]@{
-            Result    = 'ALREADY_APPLIED'
+            Result    = 'CONFLICT'
             Attempted = 'FALSE'
             Performed = 'FALSE'
         }
@@ -4399,7 +4416,33 @@ function Resolve-ReleasePromoteLatestPrecheck {
             Performed = 'FALSE'
         }
     }
-    if ($RunGuardState -eq 'CONFLICT') {
+
+    # Active matching run (queued/waiting/in_progress/...): no redispatch.
+    if ($RunGuardState -eq 'ACTIVE') {
+        return [pscustomobject]@{
+            Result    = 'ALREADY_APPLIED'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    # Historical successful matching run must agree with current latest alias.
+    if ($RunGuardState -eq 'SUCCESS_MATCH') {
+        if ($LatestGuardState -eq 'EXACT_MATCH') {
+            return [pscustomobject]@{
+                Result    = 'ALREADY_APPLIED'
+                Attempted = 'FALSE'
+                Performed = 'FALSE'
+            }
+        }
+        if ($LatestGuardState -eq 'INCOMPLETE') {
+            return [pscustomobject]@{
+                Result    = 'INCOMPLETE'
+                Attempted = 'FALSE'
+                Performed = 'FALSE'
+            }
+        }
+        # STALE / ABSENT contradict historical success -> STOP (not ALREADY_APPLIED).
         return [pscustomobject]@{
             Result    = 'CONFLICT'
             Attempted = 'FALSE'
@@ -4407,6 +4450,7 @@ function Resolve-ReleasePromoteLatestPrecheck {
         }
     }
 
+    # No matching run: current latest exact is already applied.
     if ($LatestGuardState -eq 'EXACT_MATCH') {
         return [pscustomobject]@{
             Result    = 'ALREADY_APPLIED'
@@ -4505,9 +4549,10 @@ function Get-ReleasePromoteLatestMutationStatus {
         else {
             $readBackGuard = 'INCOMPLETE'
             if ($execResult.State -eq 'SUCCESS' -and $null -ne $Facts.ReadBackFetcher) {
-                $readBackLatest = & $Facts.ReadBackFetcher
-                if ($null -eq $readBackLatest) { $readBackLatest = New-ArtifactFact -State 'INCOMPLETE' }
-                $readBackGuard = ConvertTo-LatestPostReadBackGuardState -LatestFact $readBackLatest -ExpectedDigest $Facts.ExpectedDigest
+                $readBackRunState = [string](& $Facts.ReadBackFetcher)
+                if (-not [string]::IsNullOrWhiteSpace($readBackRunState)) {
+                    $readBackGuard = ConvertTo-PromoteLatestPostDispatchRunGuardState -RunState $readBackRunState
+                }
             }
             $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readBackGuard -TargetGuardState 'EXACT_MATCH'
             $result = $post.Result
@@ -4650,18 +4695,30 @@ function Invoke-ReleasePromoteLatest {
 
     $readBackFetcher = $null
     if ($Execute) {
-        if ($null -ne $Observers -and $Observers.Contains('ReadBackLatest')) {
+        # Post-dispatch read-back is the matching promote-release-latest workflow run
+        # (environment: release may leave latest unchanged until human approval).
+        if ($null -ne $Observers -and $Observers.Contains('ReadBackPromoteLatestRun')) {
             $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
-                Observers = $Observers
+                Observers   = $Observers
+                RunIdentity = $runIdentity
             } -ScriptBlock {
                 param($c)
-                return & $c.Observers['ReadBackLatest']
+                $obs = & $c.Observers['ReadBackPromoteLatestRun'] $c.RunIdentity
+                if ($null -eq $obs) { return 'INCOMPLETE' }
+                return [string]$obs.State
             }
         }
         else {
-            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{} -ScriptBlock {
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                RunIdentity = $runIdentity
+            } -ScriptBlock {
                 param($c)
-                return Get-GhcrLatestObservation
+                $null = Get-Command -Name Get-GitHubPromoteLatestWorkflowRuns -CommandType Function -ErrorAction Stop
+                $null = Get-Command -Name ConvertTo-PromoteLatestRunObservation -CommandType Function -ErrorAction Stop
+                $runFetch = Get-GitHubPromoteLatestWorkflowRuns
+                if ($runFetch.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+                $runObs = ConvertTo-PromoteLatestRunObservation -Runs $runFetch.Runs -WorkflowPath $script:PromoteLatestWorkflowPath -RunIdentity $c.RunIdentity
+                return [string]$runObs.State
             }
         }
     }
@@ -4720,9 +4777,15 @@ function Test-PromoteReleaseLatestWorkflowContract {
     if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'promote-latest' -Needles @('GITHUB_REF', '==', 'refs/heads/main'))) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'promote-release-latest.yml@refs/heads/main')) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'install-pinned-crane.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'classify-crane-digest-lookup.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'classify_crane_digest_lookup')) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'copy "${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}"')) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'promote-latest' -Needles @('@${EXPECTED_DIGEST}', ':latest'))) { return 'FAIL' }
     if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'promote-latest' -Needles @('latest_digest', '==', 'EXPECTED_DIGEST'))) { return 'FAIL' }
+    # Fail-close: never swallow latest digest errors as ABSENT via 2>/dev/null.
+    if (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'digest "${IMAGE_REPOSITORY}:latest" 2>/dev/null') { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'latest tag lookup state unknown')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'pre-copy latest lookup state unknown')) { return 'FAIL' }
     $forbidden = @(
         'docker build',
         'docker buildx',
@@ -4801,6 +4864,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-LatestAliasState',
     'ConvertTo-LatestAliasMutationGuardState',
     'ConvertTo-PromoteLatestRunMutationGuardState',
+    'ConvertTo-PromoteLatestPostDispatchRunGuardState',
     'ConvertTo-LatestPostReadBackGuardState',
     'Get-PromoteLatestRunIdentity',
     'Get-GitHubFileContentAtRef',
