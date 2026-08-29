@@ -190,11 +190,13 @@ assertContains(
 if (!existsSync(path.join(root, releaseRecordPath))) {
   fail(`Missing release record for ${expectedImageTag}: ${releaseRecordPath}.`);
 } else {
+  // Require synchronized Markdown label + href (not href-only / label-stale drift).
+  const expectedSmokeReleaseLink = `[${releaseRecordPath}](../releases/${expectedImageTag}.md)`;
   for (const [label, source] of [
     ['docs/ops/release-image-smoke.md recorded smoke results link', releaseSmokeDocJa],
     ['docs/ops/release-image-smoke.en.md recorded smoke results link', releaseSmokeDocEn],
   ]) {
-    assertContains(source, releaseRecordPath, label);
+    assertContains(source, expectedSmokeReleaseLink, label);
   }
 }
 

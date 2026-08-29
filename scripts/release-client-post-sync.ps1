@@ -138,6 +138,8 @@ function Get-PostSyncFollowerReplacementRules {
         ('- v{prevVersion} release ' + $ja.No + $ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{prevTag}`')
         '| `MAILER_IMAGE_TAG` | `{prevTag}` |'
         ('`{prevTag}` ' + $ja.No + ' value-free smoke ' + $ja.Kekkka)
+        # Label and href are separate deterministic rules so href-only rewrite cannot leave a stale label.
+        '[docs/releases/v{prevVersion}.md]'
         '../releases/v{prevVersion}.md'
     ) @(
         'v{targetVersion} publish'
@@ -145,8 +147,9 @@ function Get-PostSyncFollowerReplacementRules {
         ('- v{targetVersion} release ' + $ja.No + $ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{targetTag}`')
         '| `MAILER_IMAGE_TAG` | `{targetTag}` |'
         ('`{targetTag}` ' + $ja.No + ' value-free smoke ' + $ja.Kekkka)
+        '[docs/releases/v{targetVersion}.md]'
         '../releases/v{targetVersion}.md'
-    ) @(1, 1, 1, 1, 1, 1)
+    ) @(1, 1, 1, 1, 1, 1, 1)
 
     Add-Rules 'docs/ops/release-image-smoke.en.md' @(
         'After v{prevVersion} is published'
@@ -154,6 +157,8 @@ function Get-PostSyncFollowerReplacementRules {
         'For v{prevVersion}, the default smoke tag is `{prevTag}`'
         '| `MAILER_IMAGE_TAG` | `{prevTag}` |'
         'Value-free smoke results for `v{prevVersion}`'
+        # Label and href are separate deterministic rules so href-only rewrite cannot leave a stale label.
+        '[docs/releases/v{prevVersion}.md]'
         '../releases/v{prevVersion}.md'
     ) @(
         'After v{targetVersion} is published'
@@ -161,8 +166,9 @@ function Get-PostSyncFollowerReplacementRules {
         'For v{targetVersion}, the default smoke tag is `{targetTag}`'
         '| `MAILER_IMAGE_TAG` | `{targetTag}` |'
         'Value-free smoke results for `v{targetVersion}`'
+        '[docs/releases/v{targetVersion}.md]'
         '../releases/v{targetVersion}.md'
-    ) @(1, 1, 1, 1, 1, 1)
+    ) @(1, 1, 1, 1, 1, 1, 1)
 
     Add-Rules 'scripts/release-smoke.sh' @(
         'ghcr.io/kooiei-in4a/amane-mailer:{prevTag}'
