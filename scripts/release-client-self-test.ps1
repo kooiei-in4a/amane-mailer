@@ -2451,87 +2451,18 @@ Assert-True 'CLI promote-latest mentions ExpectedDigest' ($promoteCliNoDigest.Ou
 
 # --- Finding 1: fail-close latest lookup (auth/network/tool must be UNKNOWN, never ABSENT, never copy) ---
 $classifyHelper = Join-Path $RepoRoot 'scripts/classify-crane-digest-lookup.sh'
+$classifySelfTest = Join-Path $RepoRoot 'scripts/classify-crane-digest-lookup-self-test.sh'
 Assert-True 'classify helper exists' (Test-Path -LiteralPath $classifyHelper) 'scripts/classify-crane-digest-lookup.sh must exist'
-$mockCraneDir = Join-Path ([System.IO.Path]::GetTempPath()) ("amane-crane-mock-" + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $mockCraneDir -Force | Out-Null
-try {
-    $mockCrane = Join-Path $mockCraneDir 'crane'
-    @'
-#!/usr/bin/env bash
-set -euo pipefail
-cmd="${1:-}"
-shift || true
-case "${cmd}" in
-  digest)
-    echo "unauthorized: authentication required" >&2
-    exit 1
-    ;;
-  copy)
-    echo "COPY_EXECUTED" >&2
-    exit 0
-    ;;
-  *)
-    echo "unexpected crane cmd: ${cmd}" >&2
-    exit 99
-    ;;
-esac
-'@ | Set-Content -LiteralPath $mockCrane -Encoding ascii
-    & chmod +x $mockCrane
-
-    $initialProbe = & bash -lc @"
-set -Eeuo pipefail
-source '$classifyHelper'
-class_line=`$(classify_crane_digest_lookup '$mockCrane' 'ghcr.io/example/amane-mailer:latest')
-class=`${class_line%%|*}
-printf 'CLASS=%s\n' "`$class"
-"@
-    $initialText = [string]::Join("`n", @($initialProbe))
-    Assert-True 'WORKFLOW_LATEST_UNKNOWN_INITIAL class' ($initialText -match 'CLASS=UNKNOWN') 'auth failure must classify UNKNOWN'
-    Assert-True 'WORKFLOW_LATEST_UNKNOWN_INITIAL not ABSENT' ($initialText -notmatch 'CLASS=ABSENT') 'auth failure must not be ABSENT'
-
-    $precopyProbe = & bash -lc @"
-set -Eeuo pipefail
-source '$classifyHelper'
-CRANE_BIN='$mockCrane'
-IMAGE_REPOSITORY='ghcr.io/example/amane-mailer'
-EXPECTED_DIGEST='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-copy_executed=0
-pre_lookup=`$(classify_crane_digest_lookup "`${CRANE_BIN}" "`${IMAGE_REPOSITORY}:latest")
-pre_class=`${pre_lookup%%|*}
-case "`${pre_class}" in
-  PRESENT|ABSENT)
-    "`${CRANE_BIN}" copy "`${IMAGE_REPOSITORY}@`${EXPECTED_DIGEST}" "`${IMAGE_REPOSITORY}:latest" && copy_executed=1
-    ;;
-  UNKNOWN)
-    echo 'STOP_NO_COPY'
-    ;;
-  *)
-    echo "unexpected `${pre_class}" >&2
-    exit 1
-    ;;
-esac
-printf 'CLASS=%s COPY=%s\n' "`${pre_class}" "`${copy_executed}"
-"@
-    $precopyText = [string]::Join("`n", @($precopyProbe))
-    Assert-True 'WORKFLOW_LATEST_UNKNOWN_PRECOPY class' ($precopyText -match 'CLASS=UNKNOWN') 'pre-copy auth failure must be UNKNOWN'
-    Assert-True 'WORKFLOW_LATEST_UNKNOWN_PRECOPY no copy' ($precopyText -match 'COPY=0' -and $precopyText -match 'STOP_NO_COPY') 'UNKNOWN must not run crane copy'
-    Assert-equal 'WORKFLOW_LATEST_UNKNOWN_INITIAL' 'PASS' 'PASS'
-    Assert-Equal 'WORKFLOW_LATEST_UNKNOWN_PRECOPY' 'PASS' 'PASS'
-
-    # Manifest-unknown remains ABSENT (positive control for classifier).
-    $mockAbsent = Join-Path $mockCraneDir 'crane-absent'
-    @'
-#!/usr/bin/env bash
-echo "MANIFEST_UNKNOWN: manifest unknown" >&2
-exit 1
-'@ | Set-Content -LiteralPath $mockAbsent -Encoding ascii
-    & chmod +x $mockAbsent
-    $absentProbe = & bash -lc "source '$classifyHelper'; classify_crane_digest_lookup '$mockAbsent' 'ghcr.io/example/amane-mailer:latest'"
-    Assert-True 'classify ABSENT for MANIFEST_UNKNOWN' ([string]$absentProbe -match '^ABSENT\|') 'manifest unknown must be ABSENT'
-}
-finally {
-    Remove-Item -LiteralPath $mockCraneDir -Recurse -Force -ErrorAction SilentlyContinue
-}
+Assert-True 'classify self-test exists' (Test-Path -LiteralPath $classifySelfTest) 'scripts/classify-crane-digest-lookup-self-test.sh must exist'
+$classifyProbe = & bash $classifySelfTest 2>&1
+$classifyText = [string]::Join("`n", @($classifyProbe))
+$classifyExit = [int]$LASTEXITCODE
+Assert-equal 'classify self-test exit 0' $classifyExit 0
+Assert-True 'WORKFLOW_LATEST_UNKNOWN_INITIAL class' ($classifyText -match 'WORKFLOW_LATEST_UNKNOWN_INITIAL=PASS') 'auth failure must classify UNKNOWN'
+Assert-True 'WORKFLOW_LATEST_UNKNOWN_PRECOPY class' ($classifyText -match 'WORKFLOW_LATEST_UNKNOWN_PRECOPY=PASS') 'pre-copy auth failure must STOP without copy'
+Assert-True 'classify ABSENT for MANIFEST_UNKNOWN' ($classifyText -match 'CLASSIFY_ABSENT_CONTROL=PASS') 'manifest unknown must be ABSENT'
+Assert-equal 'WORKFLOW_LATEST_UNKNOWN_INITIAL' 'PASS' 'PASS'
+Assert-Equal 'WORKFLOW_LATEST_UNKNOWN_PRECOPY' 'PASS' 'PASS'
 
 # Forbidden swallow pattern must remain absent from workflow text.
 Assert-True 'workflow has no latest 2>/dev/null swallow' ($promoteLatestText -notmatch 'digest "\$\{IMAGE_REPOSITORY\}:latest" 2>/dev/null') 'fail-close forbids 2>/dev/null latest digest'
