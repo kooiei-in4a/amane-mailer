@@ -458,6 +458,121 @@ function Test-ReleaseRecordLineHasPendingValue {
     return ($Line -match '\*\*PENDING(?:[^*]*)\*\*|`PENDING`|PENDING|NOT YET PUBLISHED|TO BE RECORDED AFTER PROMOTION')
 }
 
+function Set-ReleaseRecordStatusPublished {
+    param([string]$Text)
+
+    $updatedLines = New-Object System.Collections.Generic.List[string]
+    foreach ($line in ($Text -split '\r?\n', 0)) {
+        if ($line -match '(?m)^>\s*Status:\s*\*\*') {
+            [void]$updatedLines.Add('> Status: **PUBLISHED**')
+        }
+        else {
+            [void]$updatedLines.Add($line)
+        }
+    }
+
+    return [string]::Join("`n", $updatedLines)
+}
+
+function Test-PublishedReleaseRecordCoreConsistency {
+    param(
+        [string]$Text,
+        [string]$Version,
+        [string]$ReleaseCommitSha,
+        [string]$PublicDigest
+    )
+
+    $tag = 'v' + $Version
+    $shaTag = 'sha-' + $ReleaseCommitSha
+    $ghcrVersionTag = 'ghcr.io/kooiei-in4a/amane-mailer:' + $tag
+    $ghcrShaTag = 'ghcr.io/kooiei-in4a/amane-mailer:' + $shaTag
+    $nugetPackage = 'Amane.Mailer.Contracts ' + $Version
+    $releaseUrl = 'https://github.com/kooiei-in4a/amane-mailer/releases/tag/' + $tag
+    $failures = New-Object System.Collections.Generic.List[string]
+    $escSha = [regex]::Escape($ReleaseCommitSha)
+    $escDigest = [regex]::Escape($PublicDigest)
+    $escTag = [regex]::Escape($tag)
+    $escShaTag = [regex]::Escape($shaTag)
+    $escGhcrVersion = [regex]::Escape($ghcrVersionTag)
+    $escGhcrSha = [regex]::Escape($ghcrShaTag)
+    $escNuget = [regex]::Escape($nugetPackage)
+    $escUrl = [regex]::Escape($releaseUrl)
+
+    foreach ($line in ($Text -split '\r?\n')) {
+        if ($line -match '(?m)^>\s*Status:') { continue }
+        if ($line -match '^\s*-\s+' -and $line -match 'NOT YET PUBLISHED') {
+            [void]$failures.Add('CORE_NOT_YET_PUBLISHED')
+            break
+        }
+    }
+
+    $shaFieldOk = ($Text -match ('(?m)^-\s+`?releaseCommitSha`?:\s+`{1,2}' + $escSha + '`{1,2}\s*$')) -or
+        ($Text -match ('Exact release source commit \(``?releaseCommitSha``?\):\s+``' + $escSha + '``'))
+    if (-not $shaFieldOk) {
+        [void]$failures.Add('RELEASE_COMMIT_SHA')
+    }
+
+    $gitTagOk = ($Text -match ('(?m)^-\s+Git tag `' + $escTag + '`:\s+\*\*PUBLISHED\*\*')) -or
+        ($Text -match ('(?m)^-\s+Git tag:\s+``' + $escTag + '``\s*$'))
+    if (-not $gitTagOk) {
+        [void]$failures.Add('GIT_TAG')
+    }
+
+    $gitTagTargetOk = ($Text -match ('(?m)^-\s+Git tag target:\s+`{1,2}' + $escSha + '`{1,2}\s*$'))
+    if (-not $gitTagTargetOk) {
+        [void]$failures.Add('GIT_TAG_TARGET')
+    }
+
+    $ghcrVersionOk = ($Text -match ('(?m)^-\s+GHCR `' + $escGhcrVersion + '`:\s+\*\*PUBLISHED\*\*')) -or
+        ($Text -match ('(?m)^-\s+version tag:\s+``' + $escGhcrVersion + '``\s*$'))
+    if (-not $ghcrVersionOk) {
+        [void]$failures.Add('GHCR_VERSION')
+    }
+
+    $ghcrImmutableOk = ($Text -match ('(?m)^-\s+GHCR immutable `' + $escShaTag + '` tag:\s+\*\*PUBLISHED\*\*')) -or
+        ($Text -match ('immutable tag:[\s`]*' + $escGhcrSha))
+    if (-not $ghcrImmutableOk) {
+        [void]$failures.Add('GHCR_IMMUTABLE')
+    }
+
+    $digestOk = ($Text -match ('(?im)^-\s+public OCI digest:\s+`{1,2}' + $escDigest + '`{1,2}\s*$')) -or
+        ($Text -match ('(?is)public OCI digest:\s*(?:\r?\n\s*)?`{1,2}' + $escDigest + '`{1,2}'))
+    if (-not $digestOk) {
+        [void]$failures.Add('PUBLIC_DIGEST')
+    }
+
+    $nugetOk = ($Text -match ('(?m)^-\s+NuGet `' + $escNuget + '`:\s+\*\*PUBLISHED\*\*')) -or
+        ($Text -match ('(?m)^-\s+package:\s+``' + $escNuget + '``\s*$'))
+    if (-not $nugetOk) {
+        [void]$failures.Add('NUGET')
+    }
+
+    $nugetRevOk = ($Text -match ('(?m)^-\s+NuGet SourceLink revision:\s+`{1,2}' + $escSha + '`{1,2}\s*$')) -or
+        ($Text -match ('(?is)revision / nuspec repository commit:\s*(?:\r?\n\s*)?`{1,2}' + $escSha + '`{1,2}'))
+    if (-not $nugetRevOk) {
+        [void]$failures.Add('NUGET_REVISION')
+    }
+
+    $githubReleaseOk = ($Text -match ('(?m)^-\s+GitHub Release `' + $escTag + '`:\s+\*\*PUBLISHED\*\*')) -or
+        ($Text -match ('(?m)^-\s+release:\s+``' + $escTag + '``\s*$'))
+    if (-not $githubReleaseOk) {
+        [void]$failures.Add('GITHUB_RELEASE')
+    }
+
+    $githubUrlOk = ($Text -match ('(?m)^-\s+GitHub Release URL:\s+`{1,2}' + $escUrl + '`{1,2}\s*$')) -or
+        ($Text -match ('(?m)^-\s+URL:\s+``' + $escUrl + '``\s*$'))
+    if (-not $githubUrlOk) {
+        [void]$failures.Add('GITHUB_RELEASE_URL')
+    }
+
+    if ($failures.Count -eq 0) {
+        return [pscustomobject]@{ State = 'PASS'; Reason = '' }
+    }
+
+    $unique = @($failures | Select-Object -Unique)
+    return [pscustomobject]@{ State = 'CONFLICT'; Reason = ($unique -join ',') }
+}
+
 function Update-ReleaseRecordObservableFields {
     param(
         [string]$Text,
@@ -473,6 +588,9 @@ function Update-ReleaseRecordObservableFields {
     $ghcrShaTag = 'ghcr.io/kooiei-in4a/amane-mailer:' + $shaTag
     $nugetPackage = 'Amane.Mailer.Contracts ' + $Version
     $releaseUrl = 'https://github.com/kooiei-in4a/amane-mailer/releases/tag/' + $tag
+    $escTag = [regex]::Escape($tag)
+    $escGhcrVersion = [regex]::Escape($ghcrVersionTag)
+    $escNuget = [regex]::Escape($nugetPackage)
 
     $updatedLines = New-Object System.Collections.Generic.List[string]
     $skipNext = $false
@@ -486,11 +604,14 @@ function Update-ReleaseRecordObservableFields {
 
         $line = $lines[$i]
 
-        if ($line -match '(?m)^>\s*Status:\s*\*\*') {
-            [void]$updatedLines.Add('> Status: **PUBLISHED**')
+        # Do not promote Status here. Callers must validate core fields first,
+        # then apply Set-ReleaseRecordStatusPublished.
+
+        # Production shape: - `releaseCommitSha`: **PENDING...
+        if ($line -match '^-\s+`releaseCommitSha`:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- `releaseCommitSha`: `' + $ReleaseCommitSha + '`')
             continue
         }
-
         if ($line -match '^-\s+releaseCommitSha:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
             [void]$updatedLines.Add('- releaseCommitSha: ``' + $ReleaseCommitSha + '``')
             continue
@@ -499,12 +620,32 @@ function Update-ReleaseRecordObservableFields {
             [void]$updatedLines.Add('- Exact release source commit (``releaseCommitSha``): ``' + $ReleaseCommitSha + '``')
             continue
         }
+
+        # Production shape: - Git tag `vX.Y.Z`: **NOT YET PUBLISHED**
+        if ($line -match ('^-\s+Git tag `' + $escTag + '`:') -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- Git tag `' + $tag + '`: **PUBLISHED**')
+            continue
+        }
         if ($line -match '^-\s+Git tag:' -and $line -notmatch 'target|overwrite|move|publication' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
             [void]$updatedLines.Add('- Git tag: ``' + $tag + '``')
             continue
         }
         if ($line -match '^-\s+Git tag target:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
-            [void]$updatedLines.Add('- Git tag target: ``' + $ReleaseCommitSha + '``')
+            # Generic fixture historically uses double backticks; production uses single.
+            if ($line -match '``' -or $line -match '\*\*PENDING\*\*\s*$') {
+                # Ambiguous: both shapes use bold PENDING. Prefer double when the
+                # surrounding record already uses double-backtick identities.
+                $preferDouble = ($Text -match '(?m)^-\s+release version:\s+``') -or ($line -match '``')
+                if ($preferDouble) {
+                    [void]$updatedLines.Add('- Git tag target: ``' + $ReleaseCommitSha + '``')
+                }
+                else {
+                    [void]$updatedLines.Add('- Git tag target: `' + $ReleaseCommitSha + '`')
+                }
+            }
+            else {
+                [void]$updatedLines.Add('- Git tag target: `' + $ReleaseCommitSha + '`')
+            }
             continue
         }
         if ($line -match '^-\s+Contracts version:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
@@ -515,8 +656,20 @@ function Update-ReleaseRecordObservableFields {
             [void]$updatedLines.Add('- OpenAPI version: ``' + $Version + '``')
             continue
         }
+
+        # Production shape: - GHCR `ghcr.io/...:vX.Y.Z`: **NOT YET PUBLISHED**
+        if ($line -match ('^-\s+GHCR `' + $escGhcrVersion + '`:') -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- GHCR `' + $ghcrVersionTag + '`: **PUBLISHED**')
+            continue
+        }
         if ($line -match '^-\s+version tag:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
             [void]$updatedLines.Add('- version tag: ``' + $ghcrVersionTag + '``')
+            continue
+        }
+
+        # Production shape: - GHCR immutable `sha-<releaseCommitSha>` tag: **PENDING**
+        if ($line -match '^-\s+GHCR immutable `sha-(?:<releaseCommitSha>|[0-9a-f]{40})` tag:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- GHCR immutable `' + $shaTag + '` tag: **PUBLISHED**')
             continue
         }
         if ($line -match '^-\s+immutable tag:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
@@ -530,19 +683,52 @@ function Update-ReleaseRecordObservableFields {
             }
             continue
         }
-        if ($line -match '^-\s+public OCI digest:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
-            if ($i + 1 -lt $lines.Count -and $lines[$i + 1] -match '^\s+``') {
-                [void]$updatedLines.Add('- public OCI digest:')
-                [void]$updatedLines.Add('  ``' + $PublicDigest + '``')
+
+        # Production / generic OCI digest (preserve Public vs public label casing)
+        if ($line -match '^(-\s+)([Pp]ublic OCI digest:)(\s*)' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            $digestLabel = $Matches[1] + $Matches[2]
+            # Generic fixture uses lowercase + double backticks; production uses Public + single.
+            $useDouble = $Matches[2].StartsWith('p') -or ($line -match '``')
+            if ($i + 1 -lt $lines.Count -and $lines[$i + 1] -match '^\s+`') {
+                [void]$updatedLines.Add($digestLabel)
+                if ($useDouble -or $lines[$i + 1] -match '``') {
+                    [void]$updatedLines.Add('  ``' + $PublicDigest + '``')
+                }
+                else {
+                    [void]$updatedLines.Add('  `' + $PublicDigest + '`')
+                }
                 $skipNext = $true
             }
             else {
-                [void]$updatedLines.Add('- public OCI digest: ``' + $PublicDigest + '``')
+                if ($useDouble) {
+                    [void]$updatedLines.Add($digestLabel + ' ``' + $PublicDigest + '``')
+                }
+                else {
+                    [void]$updatedLines.Add($digestLabel + ' `' + $PublicDigest + '`')
+                }
             }
+            continue
+        }
+
+        # Production shape: - NuGet `Amane.Mailer.Contracts X.Y.Z`: **NOT YET PUBLISHED**
+        if ($line -match ('^-\s+NuGet `' + $escNuget + '`:') -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- NuGet `' + $nugetPackage + '`: **PUBLISHED**')
             continue
         }
         if ($line -match '^-\s+package:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
             [void]$updatedLines.Add('- package: ``' + $nugetPackage + '``')
+            continue
+        }
+
+        # Production shape: - NuGet SourceLink revision: **PENDING**
+        if ($line -match '^-\s+NuGet SourceLink revision:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            $useDouble = ($line -match '``')
+            if ($useDouble) {
+                [void]$updatedLines.Add('- NuGet SourceLink revision: ``' + $ReleaseCommitSha + '``')
+            }
+            else {
+                [void]$updatedLines.Add('- NuGet SourceLink revision: `' + $ReleaseCommitSha + '`')
+            }
             continue
         }
         if ($line -match '^-\s+revision / nuspec repository commit:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
@@ -556,8 +742,26 @@ function Update-ReleaseRecordObservableFields {
             }
             continue
         }
+
+        # Production shape: - GitHub Release `vX.Y.Z`: **NOT YET PUBLISHED**
+        if ($line -match ('^-\s+GitHub Release `' + $escTag + '`:') -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            [void]$updatedLines.Add('- GitHub Release `' + $tag + '`: **PUBLISHED**')
+            continue
+        }
         if ($line -match '^-\s+release:\s' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
             [void]$updatedLines.Add('- release: ``' + $tag + '``')
+            continue
+        }
+
+        # Production shape: - GitHub Release URL: **PENDING**
+        if ($line -match '^-\s+GitHub Release URL:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            $useDouble = ($line -match '``')
+            if ($useDouble) {
+                [void]$updatedLines.Add('- GitHub Release URL: ``' + $releaseUrl + '``')
+            }
+            else {
+                [void]$updatedLines.Add('- GitHub Release URL: `' + $releaseUrl + '`')
+            }
             continue
         }
         if ($line -match '^-\s+URL:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
@@ -582,24 +786,30 @@ function Build-PublishedReleaseRecordForPostSync {
 
     $recordState = Get-ReleaseRecordStateFromText -Text $Text
     if ($recordState -eq 'PUBLISHED') {
-        return [pscustomobject]@{ State = 'ALREADY'; Text = $Text }
+        return [pscustomobject]@{ State = 'ALREADY'; Text = $Text; Reason = '' }
     }
     if ($recordState -ne 'PENDING') {
-        return [pscustomobject]@{ State = 'CONFLICT'; Text = '' }
+        return [pscustomobject]@{ State = 'CONFLICT'; Text = ''; Reason = 'RECORD_STATE' }
     }
     if (-not (Test-ReleaseSha $ReleaseCommitSha)) {
-        return [pscustomobject]@{ State = 'INCOMPLETE'; Text = '' }
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'INVALID_SHA' }
     }
     if (-not (Test-ReleaseDigest $PublicDigest)) {
-        return [pscustomobject]@{ State = 'INCOMPLETE'; Text = '' }
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'INVALID_DIGEST' }
     }
 
-    $published = Update-ReleaseRecordObservableFields -Text $Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest -Platforms $Platforms
+    $transformed = Update-ReleaseRecordObservableFields -Text $Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest -Platforms $Platforms
+    $consistency = Test-PublishedReleaseRecordCoreConsistency -Text $transformed -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest
+    if ($consistency.State -ne 'PASS') {
+        return [pscustomobject]@{ State = 'CONFLICT'; Text = ''; Reason = $consistency.Reason }
+    }
+
+    $published = Set-ReleaseRecordStatusPublished -Text $transformed
     if (-not $published.EndsWith("`n")) {
         $published += "`n"
     }
 
-    return [pscustomobject]@{ State = 'APPLIED'; Text = $published }
+    return [pscustomobject]@{ State = 'APPLIED'; Text = $published; Reason = '' }
 }
 
 function Get-PostSyncRulesForPath {

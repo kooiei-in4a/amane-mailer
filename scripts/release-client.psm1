@@ -4919,7 +4919,9 @@ Export-ModuleMember -Function @(
     'Get-PostSyncFollowerFileState',
     'Get-ReleaseRecordPlatformsFromText',
     'Resolve-PostSyncPlatforms',
+    'Update-ReleaseRecordObservableFields',
     'Build-PublishedReleaseRecordForPostSync',
+    'Test-PublishedReleaseRecordCoreConsistency',
     'Get-ReleasePreparePostSyncPlan',
     'Format-ReleasePreparePostSyncLines',
     'Invoke-ReleasePreparePostSync'
