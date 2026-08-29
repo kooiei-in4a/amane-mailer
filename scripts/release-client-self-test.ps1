@@ -2619,6 +2619,18 @@ Assert-True 'PRECOPY_UNKNOWN_STOPS' ($promoteLatestText -match 'pre-copy latest 
 $PreparePrevVersion = '9.8.0'
 $PrepareTargetVersion = '9.9.0'
 $PrepareObservedAt = '2026-01-02T03:04:05Z'
+$PreparePreservedRels = @(
+    'release/current-public.json'
+    'README.md'
+    'README.en.md'
+    'SECURITY.md'
+    'docs/ops/release-image-smoke.md'
+    'docs/ops/release-image-smoke.en.md'
+    'scripts/release-smoke.sh'
+    'scripts/release-smoke.ps1'
+    'infra/docker/docker-compose.release-smoke.yml'
+    'CHANGELOG.md'
+)
 
 function Initialize-PrepareVersionFixtureRepo {
     param(
@@ -2672,7 +2684,6 @@ paths: {}
     elseif (-not $OmitAuthority) {
         $authorityJson = New-CurrentPublicAuthorityJson -Version $AuthorityVersion
         [System.IO.File]::WriteAllText((Join-Path $Root 'release/current-public.json'), $authorityJson, $utf8NoBom)
-        # Canonical authority parser requires the referenced predecessor release record to exist.
         $authorityRecordPath = Join-Path $Root ('docs/releases/v{0}.md' -f $AuthorityVersion)
         if (-not (Test-Path -LiteralPath $authorityRecordPath)) {
             $authorityRecord = @(
@@ -2689,15 +2700,15 @@ paths: {}
 
     $followerAuthority = if ($OmitAuthority -or $MalformedAuthority) { $PreparePrevVersion } else { $AuthorityVersion }
     $followerBodies = @{
-        'README.md'                                      = "follower marker v$followerAuthority`n"
-        'README.en.md'                                   = "follower marker v$followerAuthority`n"
-        'SECURITY.md'                                    = "| $followerAuthority   | Yes (latest release) |`n"
-        'docs/ops/release-image-smoke.md'                = "smoke docs v$followerAuthority`n"
-        'docs/ops/release-image-smoke.en.md'             = "smoke docs en v$followerAuthority`n"
-        'scripts/release-smoke.sh'                       = "MAILER_IMAGE_TAG:-v$followerAuthority`n"
-        'scripts/release-smoke.ps1'                      = "Get-EnvOrDefault 'MAILER_IMAGE_TAG' 'v$followerAuthority'`n"
-        'infra/docker/docker-compose.release-smoke.yml'  = "MAILER_IMAGE_TAG:-v$followerAuthority`nMAILER_IMAGE_TAG:-v$followerAuthority`n"
-        'CHANGELOG.md'                                   = "# Changelog`n`n## [$followerAuthority] - 2026-01-01`n`n- historical entry only`n"
+        'README.md'                                     = "follower marker v$followerAuthority`n"
+        'README.en.md'                                  = "follower marker v$followerAuthority`n"
+        'SECURITY.md'                                   = "| $followerAuthority   | Yes (latest release) |`n"
+        'docs/ops/release-image-smoke.md'               = "smoke docs v$followerAuthority`n"
+        'docs/ops/release-image-smoke.en.md'            = "smoke docs en v$followerAuthority`n"
+        'scripts/release-smoke.sh'                      = "MAILER_IMAGE_TAG:-v$followerAuthority`n"
+        'scripts/release-smoke.ps1'                     = "Get-EnvOrDefault 'MAILER_IMAGE_TAG' 'v$followerAuthority'`n"
+        'infra/docker/docker-compose.release-smoke.yml' = "MAILER_IMAGE_TAG:-v$followerAuthority`nMAILER_IMAGE_TAG:-v$followerAuthority`n"
+        'CHANGELOG.md'                                  = "# Changelog`n`n## [$followerAuthority] - 2026-01-01`n`n- historical entry only`n"
     }
     foreach ($path in $followerBodies.Keys) {
         [System.IO.File]::WriteAllText((Join-Path $Root $path), $followerBodies[$path], $utf8NoBom)
@@ -2705,8 +2716,7 @@ paths: {}
 
     $recordPath = Join-Path $Root ('docs/releases/v{0}.md' -f $PrepareTargetVersion)
     if ($WithExactTargetRecord) {
-        $exact = New-PrepareVersionPendingReleaseRecordText -Version $PrepareTargetVersion
-        [System.IO.File]::WriteAllText($recordPath, $exact, $utf8NoBom)
+        [System.IO.File]::WriteAllText($recordPath, (New-PrepareVersionPendingReleaseRecordText -Version $PrepareTargetVersion), $utf8NoBom)
     }
     elseif ($WithConflictRecord) {
         $conflict = @(
@@ -2724,257 +2734,190 @@ paths: {}
     }
 }
 
-function Get-PrepareVersionFingerprintSnapshot {
+function Get-PrepareVersionPreservedSnapshot {
     param([string]$Root)
-    $paths = @(
-        'release/current-public.json'
-        'README.md'
-        'README.en.md'
-        'SECURITY.md'
-        'docs/ops/release-image-smoke.md'
-        'docs/ops/release-image-smoke.en.md'
-        'scripts/release-smoke.sh'
-        'scripts/release-smoke.ps1'
-        'infra/docker/docker-compose.release-smoke.yml'
-        'CHANGELOG.md'
-    )
     $map = [ordered]@{}
-    foreach ($rel in $paths) {
+    foreach ($rel in $PreparePreservedRels) {
         $full = Join-Path $Root $rel
-        $bytes = [System.IO.File]::ReadAllBytes($full)
-        $sha = [System.Security.Cryptography.SHA256]::Create()
-        try {
-            $hash = $sha.ComputeHash($bytes)
-            $map[$rel] = ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+        if (-not (Test-Path -LiteralPath $full)) {
+            $map[$rel] = 'ABSENT'
+            continue
         }
-        finally {
-            $sha.Dispose()
-        }
+        $map[$rel] = [System.IO.File]::ReadAllText($full)
     }
     return $map
 }
 
-$prepareRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-version-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $prepareRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $prepareRoot
-    $beforeDry = Get-PrepareVersionFingerprintSnapshot -Root $prepareRoot
-    $script:CommandRunnerCalls.Clear()
-    $script:MutationExecutorCalls.Count = 0
-
-    $dry = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $prepareRoot -Quiet
-    Assert-Equal 'prepare-version dry-run result' $dry.Plan.MutationResult 'NOT_ATTEMPTED'
-    Assert-Equal 'prepare-version dry-run attempted' $dry.Plan.MutationAttempted 'FALSE'
-    Assert-Equal 'prepare-version dry-run performed' $dry.Plan.MutationPerformed 'FALSE'
-    Assert-Equal 'prepare-version dry-run prep state' $dry.Plan.PrepState 'ELIGIBLE'
-    Assert-Equal 'prepare-version dry-run changelog boundary' $dry.Plan.ChangelogBoundary 'REVIEWED_ENTRY_REQUIRED'
-    Assert-Equal 'prepare-version dry-run external mutation' $dry.Plan.ExternalMutation 'FALSE'
-    Assert-Equal 'PREPARE_VERSION_DRY_RUN' $dry.Plan.MutationResult 'NOT_ATTEMPTED'
-    $afterDry = Get-PrepareVersionFingerprintSnapshot -Root $prepareRoot
-    $dryPreserved = $true
-    foreach ($k in @($beforeDry.Keys)) {
-        if ($beforeDry[$k] -ne $afterDry[$k]) { $dryPreserved = $false }
+function Assert-PrepareVersionPreserved {
+    param(
+        [string]$Label,
+        $Before,
+        $After
+    )
+    foreach ($rel in @($Before.Keys)) {
+        Assert-Equal ("$Label preserved $rel") $After[$rel] $Before[$rel]
     }
-    Assert-True 'DRY_RUN_FILE_WRITE_ZERO preserved followers' $dryPreserved 'dry-run must not mutate preserved files'
-    Assert-True 'prepare-version dry-run no contracts bump' ((Get-ContractsVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $prepareRoot 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj')))) -eq $PreparePrevVersion) 'contracts unchanged on dry-run'
-    Assert-True 'prepare-version dry-run no openapi bump' ((Get-OpenApiVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $prepareRoot 'docs/api/openapi.yaml')))) -eq $PreparePrevVersion) 'openapi unchanged on dry-run'
-    Assert-True 'prepare-version dry-run record absent' (-not (Test-Path -LiteralPath (Join-Path $prepareRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) 'record must stay absent on dry-run'
-    Assert-Equal 'prepare-version dry-run zero executor calls' $script:MutationExecutorCalls.Count 0
-    Assert-Equal 'prepare-version dry-run zero runner calls' $script:CommandRunnerCalls.Count 0
+}
 
-    $beforeExec = Get-PrepareVersionFingerprintSnapshot -Root $prepareRoot
-    $exec = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $prepareRoot -Execute -Quiet
+function Invoke-PrepareVersionFixtureCase {
+    param(
+        [string]$Name,
+        [hashtable]$Fixture = @{},
+        [switch]$Execute,
+        [string]$ExpectedMutationResult,
+        [string]$ExpectedPrepState = '',
+        [string]$ExpectedReason = '',
+        [string]$ExpectedContractsState = '',
+        [string]$ExpectedOpenApiState = '',
+        [switch]$ExpectZeroRecordWrite,
+        [switch]$ExpectPreserved
+    )
+
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-' + $Name.ToLowerInvariant() + '-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    try {
+        $init = @{ Root = $root }
+        foreach ($key in @($Fixture.Keys)) { $init[$key] = $Fixture[$key] }
+        Initialize-PrepareVersionFixtureRepo @init
+        $before = Get-PrepareVersionPreservedSnapshot -Root $root
+        $script:CommandRunnerCalls.Clear()
+        $script:MutationExecutorCalls.Count = 0
+
+        $result = if ($Execute) {
+            Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $root -Execute -Quiet
+        }
+        else {
+            Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $root -Quiet
+        }
+
+        Assert-Equal $Name $result.Plan.MutationResult $ExpectedMutationResult
+        if ($ExpectedPrepState -ne '') {
+            Assert-Equal ("$Name prep") $result.Plan.PrepState $ExpectedPrepState
+        }
+        if ($ExpectedReason -ne '') {
+            Assert-Equal ("$Name reason") $result.Plan.Reason $ExpectedReason
+        }
+        if ($ExpectedContractsState -ne '') {
+            Assert-Equal ("$Name contracts") $result.Plan.ContractsState $ExpectedContractsState
+        }
+        if ($ExpectedOpenApiState -ne '') {
+            Assert-Equal ("$Name openapi") $result.Plan.OpenApiState $ExpectedOpenApiState
+        }
+        Assert-Equal ("$Name external") $result.Plan.ExternalMutation 'FALSE'
+        Assert-Equal ("$Name executor calls") $script:MutationExecutorCalls.Count 0
+        Assert-Equal ("$Name runner calls") $script:CommandRunnerCalls.Count 0
+
+        if ($ExpectZeroRecordWrite) {
+            Assert-True ("$Name zero record write") (-not (Test-Path -LiteralPath (Join-Path $root ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) 'must not write target record'
+        }
+        if ($ExpectPreserved) {
+            Assert-PrepareVersionPreserved -Label $Name -Before $before -After (Get-PrepareVersionPreservedSnapshot -Root $root)
+        }
+        return [pscustomobject]@{ Root = $root; Result = $result; Before = $before }
+    }
+    catch {
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Remove-PrepareVersionFixtureRoot {
+    param([string]$Root)
+    Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# Happy path: dry-run -> execute -> already-applied -> idempotent execute
+$happy = $null
+try {
+    $happy = Invoke-PrepareVersionFixtureCase -Name 'NORMAL_PREDECESSOR' -ExpectedMutationResult 'NOT_ATTEMPTED' -ExpectedPrepState 'ELIGIBLE' -ExpectedContractsState 'PREDECESSOR' -ExpectedOpenApiState 'PREDECESSOR' -ExpectPreserved
+    Assert-Equal 'NORMAL_PREDECESSOR canonical' $happy.Result.Plan.CanonicalPredecessor $PreparePrevVersion
+    Assert-Equal 'PREPARE_VERSION_DRY_RUN' $happy.Result.Plan.MutationResult 'NOT_ATTEMPTED'
+    Assert-Equal 'prepare-version dry-run attempted' $happy.Result.Plan.MutationAttempted 'FALSE'
+    Assert-Equal 'prepare-version dry-run performed' $happy.Result.Plan.MutationPerformed 'FALSE'
+    Assert-Equal 'prepare-version dry-run changelog boundary' $happy.Result.Plan.ChangelogBoundary 'REVIEWED_ENTRY_REQUIRED'
+    Assert-True 'prepare-version dry-run no contracts bump' ((Get-ContractsVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $happy.Root 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj')))) -eq $PreparePrevVersion) 'contracts unchanged on dry-run'
+    Assert-True 'prepare-version dry-run no openapi bump' ((Get-OpenApiVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $happy.Root 'docs/api/openapi.yaml')))) -eq $PreparePrevVersion) 'openapi unchanged on dry-run'
+    Assert-True 'prepare-version dry-run record absent' (-not (Test-Path -LiteralPath (Join-Path $happy.Root ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) 'record must stay absent on dry-run'
+
+    $beforeExec = Get-PrepareVersionPreservedSnapshot -Root $happy.Root
+    $exec = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $happy.Root -Execute -Quiet
     Assert-Equal 'PREPARE_VERSION_EXECUTE_FIXTURE' $exec.Plan.MutationResult 'APPLIED'
     Assert-Equal 'prepare-version execute attempted' $exec.Plan.MutationAttempted 'TRUE'
     Assert-Equal 'prepare-version execute performed' $exec.Plan.MutationPerformed 'TRUE'
-    Assert-Equal 'prepare-version execute contracts state after' (Get-ContractsVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $prepareRoot 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj')))) $PrepareTargetVersion
-    Assert-Equal 'prepare-version execute openapi state after' (Get-OpenApiVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $prepareRoot 'docs/api/openapi.yaml')))) $PrepareTargetVersion
-    $recordText = [System.IO.File]::ReadAllText((Join-Path $prepareRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))
+    Assert-Equal 'prepare-version execute contracts' (Get-ContractsVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $happy.Root 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj')))) $PrepareTargetVersion
+    Assert-Equal 'prepare-version execute openapi' (Get-OpenApiVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $happy.Root 'docs/api/openapi.yaml')))) $PrepareTargetVersion
+    $recordText = [System.IO.File]::ReadAllText((Join-Path $happy.Root ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))
     Assert-Equal 'RELEASE_RECORD_PENDING_SCAFFOLD' (Get-ReleaseRecordStateFromText -Text $recordText) 'PENDING'
-    Assert-True 'prepare-version scaffold has NOT YET PUBLISHED' ($recordText -match 'NOT YET PUBLISHED') 'expected pending scaffold'
+    Assert-True 'prepare-version scaffold NOT YET PUBLISHED' ($recordText -match 'NOT YET PUBLISHED') 'expected pending scaffold'
     Assert-True 'FABRICATED_PUBLIC_EVIDENCE absent sha' (-not ($recordText -match '[0-9a-f]{40}')) 'scaffold must not fabricate releaseCommitSha'
     Assert-True 'FABRICATED_PUBLIC_EVIDENCE absent digest' (-not ($recordText -match 'sha256:[0-9a-f]{64}')) 'scaffold must not fabricate digest'
-    Assert-True 'CHANGELOG_AUTO_WRITE false' (-not (([System.IO.File]::ReadAllText((Join-Path $prepareRoot 'CHANGELOG.md'))) -match ('## \[' + [regex]::Escape($PrepareTargetVersion) + '\]'))) 'CHANGELOG must not be auto-written'
-    $afterExec = Get-PrepareVersionFingerprintSnapshot -Root $prepareRoot
-    $followersPreserved = $true
-    foreach ($k in @($beforeExec.Keys)) {
-        if ($beforeExec[$k] -ne $afterExec[$k]) { $followersPreserved = $false }
-    }
-    Assert-True 'CURRENT_PUBLIC_UNCHANGED' ($beforeExec['release/current-public.json'] -eq $afterExec['release/current-public.json']) 'current-public must stay unchanged'
-    Assert-True 'FOLLOWERS_UNCHANGED' $followersPreserved 'governed followers must stay unchanged'
-    Assert-Equal 'prepare-version execute current-public preserved flag' $exec.Plan.CurrentPublicPreserved 'TRUE'
-    Assert-Equal 'prepare-version execute followers preserved flag' $exec.Plan.FollowersPreserved 'TRUE'
+    Assert-True 'CHANGELOG_AUTO_WRITE false' (-not (([System.IO.File]::ReadAllText((Join-Path $happy.Root 'CHANGELOG.md'))) -match ('## \[' + [regex]::Escape($PrepareTargetVersion) + '\]'))) 'CHANGELOG must not be auto-written'
+    Assert-PrepareVersionPreserved -Label 'EXECUTE' -Before $beforeExec -After (Get-PrepareVersionPreservedSnapshot -Root $happy.Root)
+    Assert-Equal 'CURRENT_PUBLIC_UNCHANGED flag' $exec.Plan.CurrentPublicPreserved 'TRUE'
+    Assert-Equal 'FOLLOWERS_UNCHANGED flag' $exec.Plan.FollowersPreserved 'TRUE'
     Assert-Equal 'EXTERNAL_MUTATION' $exec.Plan.ExternalMutation 'FALSE'
-    Assert-Equal 'prepare-version execute zero executor calls' $script:MutationExecutorCalls.Count 0
 
-    $already = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $prepareRoot -Quiet
+    $already = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $happy.Root -Quiet
     Assert-Equal 'PREPARE_VERSION_ALREADY_APPLIED' $already.Plan.MutationResult 'ALREADY_APPLIED'
     Assert-Equal 'prepare-version already-applied attempted' $already.Plan.MutationAttempted 'FALSE'
 
-    $beforeSecond = Get-PrepareVersionFingerprintSnapshot -Root $prepareRoot
-    $contractsBeforeSecond = [System.IO.File]::ReadAllText((Join-Path $prepareRoot 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj'))
-    $openapiBeforeSecond = [System.IO.File]::ReadAllText((Join-Path $prepareRoot 'docs/api/openapi.yaml'))
-    $recordBeforeSecond = [System.IO.File]::ReadAllText((Join-Path $prepareRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))
-    $second = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $prepareRoot -Execute -Quiet
+    $beforeSecond = Get-PrepareVersionPreservedSnapshot -Root $happy.Root
+    $contractsBeforeSecond = [System.IO.File]::ReadAllText((Join-Path $happy.Root 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj'))
+    $openapiBeforeSecond = [System.IO.File]::ReadAllText((Join-Path $happy.Root 'docs/api/openapi.yaml'))
+    $recordBeforeSecond = [System.IO.File]::ReadAllText((Join-Path $happy.Root ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))
+    $second = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $happy.Root -Execute -Quiet
     Assert-Equal 'PREPARE_VERSION_IDEMPOTENT' $second.Plan.MutationResult 'ALREADY_APPLIED'
     Assert-Equal 'prepare-version second execute attempted' $second.Plan.MutationAttempted 'FALSE'
     Assert-Equal 'prepare-version second execute performed' $second.Plan.MutationPerformed 'FALSE'
-    Assert-Equal 'prepare-version second contracts unchanged' ([System.IO.File]::ReadAllText((Join-Path $prepareRoot 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj'))) $contractsBeforeSecond
-    Assert-Equal 'prepare-version second openapi unchanged' ([System.IO.File]::ReadAllText((Join-Path $prepareRoot 'docs/api/openapi.yaml'))) $openapiBeforeSecond
-    Assert-Equal 'prepare-version second record unchanged' ([System.IO.File]::ReadAllText((Join-Path $prepareRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) $recordBeforeSecond
-    $afterSecond = Get-PrepareVersionFingerprintSnapshot -Root $prepareRoot
-    $secondPreserved = $true
-    foreach ($k in @($beforeSecond.Keys)) {
-        if ($beforeSecond[$k] -ne $afterSecond[$k]) { $secondPreserved = $false }
+    Assert-Equal 'prepare-version second contracts unchanged' ([System.IO.File]::ReadAllText((Join-Path $happy.Root 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj'))) $contractsBeforeSecond
+    Assert-Equal 'prepare-version second openapi unchanged' ([System.IO.File]::ReadAllText((Join-Path $happy.Root 'docs/api/openapi.yaml'))) $openapiBeforeSecond
+    Assert-Equal 'prepare-version second record unchanged' ([System.IO.File]::ReadAllText((Join-Path $happy.Root ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) $recordBeforeSecond
+    Assert-PrepareVersionPreserved -Label 'IDEMPOTENT' -Before $beforeSecond -After (Get-PrepareVersionPreservedSnapshot -Root $happy.Root)
+}
+finally {
+    if ($null -ne $happy) { Remove-PrepareVersionFixtureRoot -Root $happy.Root }
+}
+
+# Fail-closed table: contradictory / authority / mixed states (zero write)
+$failCloseCases = @(
+    @{ Name = 'MISMATCHED_PREDECESSOR'; Fixture = @{ ContractsVersion = $PreparePrevVersion; OpenApiVersion = '9.7.0' }; Mutation = 'CONFLICT'; Prep = 'CONFLICT'; OpenApi = 'CONFLICT'; ZeroRecord = $true }
+    @{ Name = 'UNRELATED_PREDECESSOR'; Fixture = @{ ContractsVersion = '9.7.0'; OpenApiVersion = '9.7.0' }; Mutation = 'CONFLICT'; Prep = 'CONFLICT'; Contracts = 'CONFLICT'; OpenApi = 'CONFLICT'; ZeroRecord = $true }
+    @{ Name = 'TARGET_PREDECESSOR_MIX'; Fixture = @{ ContractsVersion = $PrepareTargetVersion; OpenApiVersion = $PreparePrevVersion }; Mutation = 'CONFLICT'; Prep = 'MIXED'; ZeroRecord = $true }
+    @{ Name = 'MALFORMED_AUTHORITY'; Fixture = @{ MalformedAuthority = $true }; Mutation = 'CONFLICT'; Reason = 'AUTHORITY_UNREADABLE_OR_INVALID'; ZeroRecord = $true }
+    @{ Name = 'ABSENT_AUTHORITY'; Fixture = @{ OmitAuthority = $true }; Mutation = 'CONFLICT'; Reason = 'AUTHORITY_UNREADABLE_OR_INVALID'; ZeroRecord = $true }
+    @{ Name = 'TARGET_EQUALS_PREDECESSOR'; Fixture = @{ AuthorityVersion = $PrepareTargetVersion; ContractsVersion = $PreparePrevVersion; OpenApiVersion = $PreparePrevVersion }; Mutation = 'CONFLICT'; Reason = 'TARGET_EQUALS_PREDECESSOR' }
+    @{ Name = 'CONFLICTING_RECORD'; Fixture = @{ WithConflictRecord = $true }; Mutation = 'CONFLICT' }
+)
+
+foreach ($case in $failCloseCases) {
+    $caseRoot = $null
+    try {
+        $caseArgs = @{
+            Name                   = $case.Name
+            Fixture                = $case.Fixture
+            Execute                = $true
+            ExpectedMutationResult = $case.Mutation
+            ExpectPreserved        = $true
+        }
+        if ($case.ContainsKey('Prep') -and $null -ne $case.Prep) { $caseArgs['ExpectedPrepState'] = $case.Prep }
+        if ($case.ContainsKey('Reason') -and $null -ne $case.Reason) { $caseArgs['ExpectedReason'] = $case.Reason }
+        if ($case.ContainsKey('Contracts') -and $null -ne $case.Contracts) { $caseArgs['ExpectedContractsState'] = $case.Contracts }
+        if ($case.ContainsKey('OpenApi') -and $null -ne $case.OpenApi) { $caseArgs['ExpectedOpenApiState'] = $case.OpenApi }
+        if ($case.ContainsKey('ZeroRecord') -and $case.ZeroRecord) { $caseArgs['ExpectZeroRecordWrite'] = $true }
+        $caseRoot = Invoke-PrepareVersionFixtureCase @caseArgs
+        Assert-Equal ("$($case.Name) attempted") $caseRoot.Result.Plan.MutationAttempted 'FALSE'
+        Assert-Equal ("$($case.Name) performed") $caseRoot.Result.Plan.MutationPerformed 'FALSE'
+        if ($case.Name -eq 'CONFLICTING_RECORD') {
+            $conflictText = [System.IO.File]::ReadAllText((Join-Path $caseRoot.Root ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))
+            Assert-True 'prepare-version does not rewrite conflicting record' ($conflictText -match 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') 'conflict record must remain untouched'
+        }
+        if ($case.Name -eq 'TARGET_PREDECESSOR_MIX') {
+            Assert-Equal 'MIXED_STATE_FAIL_CLOSED' $caseRoot.Result.Plan.MutationResult 'CONFLICT'
+        }
     }
-    Assert-True 'prepare-version second execute preserves followers' $secondPreserved 'idempotent execute must not rewrite followers'
-}
-finally {
-    Remove-Item -LiteralPath $prepareRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$mixedRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-mixed-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $mixedRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $mixedRoot -ContractsVersion $PrepareTargetVersion -OpenApiVersion $PreparePrevVersion
-    $beforeMixed = Get-PrepareVersionFingerprintSnapshot -Root $mixedRoot
-    $mixed = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $mixedRoot -Execute -Quiet
-    Assert-Equal 'MIXED_STATE_FAIL_CLOSED' $mixed.Plan.MutationResult 'CONFLICT'
-    Assert-Equal 'prepare-version mixed attempted' $mixed.Plan.MutationAttempted 'FALSE'
-    Assert-Equal 'prepare-version mixed performed' $mixed.Plan.MutationPerformed 'FALSE'
-    Assert-True 'prepare-version mixed no record write' (-not (Test-Path -LiteralPath (Join-Path $mixedRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) 'mixed state must not create record'
-    Assert-Equal 'prepare-version mixed openapi stays predecessor' (Get-OpenApiVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $mixedRoot 'docs/api/openapi.yaml')))) $PreparePrevVersion
-    $afterMixed = Get-PrepareVersionFingerprintSnapshot -Root $mixedRoot
-    $mixedPreserved = $true
-    foreach ($k in @($beforeMixed.Keys)) {
-        if ($beforeMixed[$k] -ne $afterMixed[$k]) { $mixedPreserved = $false }
+    finally {
+        if ($null -ne $caseRoot) { Remove-PrepareVersionFixtureRoot -Root $caseRoot.Root }
     }
-    Assert-True 'prepare-version mixed preserves followers' $mixedPreserved 'mixed fail-close must not rewrite followers'
-}
-finally {
-    Remove-Item -LiteralPath $mixedRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$conflictRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-conflict-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $conflictRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $conflictRoot -WithConflictRecord
-    $conflict = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $conflictRoot -Execute -Quiet
-    Assert-Equal 'prepare-version conflicting record fail-closed' $conflict.Plan.MutationResult 'CONFLICT'
-    Assert-Equal 'prepare-version conflicting record attempted' $conflict.Plan.MutationAttempted 'FALSE'
-    $conflictText = [System.IO.File]::ReadAllText((Join-Path $conflictRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))
-    Assert-True 'prepare-version does not rewrite conflicting record' ($conflictText -match 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') 'conflict record must remain untouched'
-}
-finally {
-    Remove-Item -LiteralPath $conflictRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-
-# Canonical predecessor binding (#686 rework): only release/current-public.json.version is predecessor.
-$normalPredRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-normal-pred-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $normalPredRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $normalPredRoot -AuthorityVersion $PreparePrevVersion -ContractsVersion $PreparePrevVersion -OpenApiVersion $PreparePrevVersion
-    $normalPred = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $normalPredRoot -Quiet
-    Assert-Equal 'NORMAL_PREDECESSOR' $normalPred.Plan.PrepState 'ELIGIBLE'
-    Assert-equal 'NORMAL_PREDECESSOR canonical' $normalPred.Plan.CanonicalPredecessor $PreparePrevVersion
-    Assert-equal 'NORMAL_PREDECESSOR contracts' $normalPred.Plan.ContractsState 'PREDECESSOR'
-    Assert-equal 'NORMAL_PREDECESSOR openapi' $normalPred.Plan.OpenApiState 'PREDECESSOR'
-}
-finally {
-    Remove-Item -LiteralPath $normalPredRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$mismatchPredRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-mismatch-pred-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $mismatchPredRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $mismatchPredRoot -AuthorityVersion $PreparePrevVersion -ContractsVersion $PreparePrevVersion -OpenApiVersion '9.7.0'
-    $beforeMismatch = Get-PrepareVersionFingerprintSnapshot -Root $mismatchPredRoot
-    $mismatchPred = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $mismatchPredRoot -Execute -Quiet
-    Assert-equal 'MISMATCHED_PREDECESSOR' $mismatchPred.Plan.MutationResult 'CONFLICT'
-    Assert-equal 'MISMATCHED_PREDECESSOR prep' $mismatchPred.Plan.PrepState 'CONFLICT'
-    Assert-equal 'MISMATCHED_PREDECESSOR openapi state' $mismatchPred.Plan.OpenApiState 'CONFLICT'
-    Assert-equal 'MISMATCHED_PREDECESSOR attempted' $mismatchPred.Plan.MutationAttempted 'FALSE'
-    Assert-equal 'MISMATCHED_PREDECESSOR performed' $mismatchPred.Plan.MutationPerformed 'FALSE'
-    Assert-True 'MISMATCHED_PREDECESSOR zero record write' (-not (Test-Path -LiteralPath (Join-Path $mismatchPredRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) 'mismatched predecessor must not write target record'
-    $afterMismatch = Get-PrepareVersionFingerprintSnapshot -Root $mismatchPredRoot
-    Assert-True 'MISMATCHED_PREDECESSOR current-public unchanged' ($beforeMismatch['release/current-public.json'] -eq $afterMismatch['release/current-public.json']) 'authority must stay untouched'
-}
-finally {
-    Remove-Item -LiteralPath $mismatchPredRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$unrelatedPredRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-unrelated-pred-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $unrelatedPredRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $unrelatedPredRoot -AuthorityVersion $PreparePrevVersion -ContractsVersion '9.7.0' -OpenApiVersion '9.7.0'
-    $unrelatedPred = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $unrelatedPredRoot -Execute -Quiet
-    Assert-equal 'UNRELATED_PREDECESSOR' $unrelatedPred.Plan.MutationResult 'CONFLICT'
-    Assert-equal 'UNRELATED_PREDECESSOR contracts' $unrelatedPred.Plan.ContractsState 'CONFLICT'
-    Assert-equal 'UNRELATED_PREDECESSOR openapi' $unrelatedPred.Plan.OpenApiState 'CONFLICT'
-    Assert-equal 'UNRELATED_PREDECESSOR attempted' $unrelatedPred.Plan.MutationAttempted 'FALSE'
-    Assert-equal 'UNRELATED_PREDECESSOR performed' $unrelatedPred.Plan.MutationPerformed 'FALSE'
-    Assert-True 'UNRELATED_PREDECESSOR zero record write' (-not (Test-Path -LiteralPath (Join-Path $unrelatedPredRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) 'same unrelated versions must fail-close'
-}
-finally {
-    Remove-Item -LiteralPath $unrelatedPredRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$targetPredMixRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-target-pred-mix-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $targetPredMixRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $targetPredMixRoot -AuthorityVersion $PreparePrevVersion -ContractsVersion $PrepareTargetVersion -OpenApiVersion $PreparePrevVersion
-    $targetPredMix = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $targetPredMixRoot -Execute -Quiet
-    Assert-equal 'TARGET_PREDECESSOR_MIX' $targetPredMix.Plan.MutationResult 'CONFLICT'
-    Assert-equal 'TARGET_PREDECESSOR_MIX prep' $targetPredMix.Plan.PrepState 'MIXED'
-    Assert-equal 'TARGET_PREDECESSOR_MIX attempted' $targetPredMix.Plan.MutationAttempted 'FALSE'
-    Assert-equal 'TARGET_PREDECESSOR_MIX performed' $targetPredMix.Plan.MutationPerformed 'FALSE'
-}
-finally {
-    Remove-Item -LiteralPath $targetPredMixRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$malformedAuthRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-malformed-auth-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $malformedAuthRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $malformedAuthRoot -MalformedAuthority
-    $malformedAuth = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $malformedAuthRoot -Execute -Quiet
-    Assert-equal 'MALFORMED_AUTHORITY' $malformedAuth.Plan.MutationResult 'CONFLICT'
-    Assert-equal 'MALFORMED_AUTHORITY reason' $malformedAuth.Plan.Reason 'AUTHORITY_UNREADABLE_OR_INVALID'
-    Assert-equal 'MALFORMED_AUTHORITY attempted' $malformedAuth.Plan.MutationAttempted 'FALSE'
-    Assert-equal 'MALFORMED_AUTHORITY performed' $malformedAuth.Plan.MutationPerformed 'FALSE'
-    Assert-True 'MALFORMED_AUTHORITY zero record write' (-not (Test-Path -LiteralPath (Join-Path $malformedAuthRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) 'malformed authority must not write'
-}
-finally {
-    Remove-Item -LiteralPath $malformedAuthRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$absentAuthRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-absent-auth-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $absentAuthRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $absentAuthRoot -OmitAuthority
-    $absentAuth = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $absentAuthRoot -Execute -Quiet
-    Assert-equal 'ABSENT_AUTHORITY' $absentAuth.Plan.MutationResult 'CONFLICT'
-    Assert-equal 'ABSENT_AUTHORITY reason' $absentAuth.Plan.Reason 'AUTHORITY_UNREADABLE_OR_INVALID'
-    Assert-equal 'ABSENT_AUTHORITY attempted' $absentAuth.Plan.MutationAttempted 'FALSE'
-    Assert-equal 'ABSENT_AUTHORITY performed' $absentAuth.Plan.MutationPerformed 'FALSE'
-}
-finally {
-    Remove-Item -LiteralPath $absentAuthRoot -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$authTargetRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-prepare-auth-target-' + [Guid]::NewGuid().ToString('n'))
-New-Item -ItemType Directory -Path $authTargetRoot -Force | Out-Null
-try {
-    Initialize-PrepareVersionFixtureRepo -Root $authTargetRoot -AuthorityVersion $PrepareTargetVersion -ContractsVersion $PreparePrevVersion -OpenApiVersion $PreparePrevVersion
-    $authTarget = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $authTargetRoot -Execute -Quiet
-    Assert-equal 'TARGET_EQUALS_PREDECESSOR' $authTarget.Plan.MutationResult 'CONFLICT'
-    Assert-equal 'TARGET_EQUALS_PREDECESSOR reason' $authTarget.Plan.Reason 'TARGET_EQUALS_PREDECESSOR'
-    Assert-equal 'TARGET_EQUALS_PREDECESSOR attempted' $authTarget.Plan.MutationAttempted 'FALSE'
-    Assert-equal 'TARGET_EQUALS_PREDECESSOR performed' $authTarget.Plan.MutationPerformed 'FALSE'
-}
-finally {
-    Remove-Item -LiteralPath $authTargetRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # Partial local write failure: later owned write throws; must not report APPLIED; next call fail-closes.
@@ -2982,7 +2925,7 @@ $partialWriteRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-p
 New-Item -ItemType Directory -Path $partialWriteRoot -Force | Out-Null
 try {
     Initialize-PrepareVersionFixtureRepo -Root $partialWriteRoot
-    $beforePartial = Get-PrepareVersionFingerprintSnapshot -Root $partialWriteRoot
+    $beforePartial = Get-PrepareVersionPreservedSnapshot -Root $partialWriteRoot
     Set-PrepareVersionFileWriterFailAfter -FailAfter 1
     try {
         $partial = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $partialWriteRoot -Execute -Quiet
@@ -2990,22 +2933,20 @@ try {
     finally {
         Set-PrepareVersionFileWriterFailAfter -FailAfter $null
     }
-    Assert-equal 'PARTIAL_WRITE_FAILURE_TEST result' $partial.Plan.MutationResult 'INCOMPLETE'
+    Assert-Equal 'PARTIAL_WRITE_FAILURE_TEST result' $partial.Plan.MutationResult 'INCOMPLETE'
     Assert-True 'PARTIAL_WRITE_FAILURE_TEST not APPLIED' ($partial.Plan.MutationResult -ne 'APPLIED') 'partial write must not report APPLIED'
-    Assert-equal 'PARTIAL_WRITE_FAILURE_TEST attempted' $partial.Plan.MutationAttempted 'TRUE'
-    Assert-equal 'PARTIAL_WRITE_FAILURE_TEST performed' $partial.Plan.MutationPerformed 'FALSE'
-    Assert-equal 'PARTIAL_WRITE_FAILURE_TEST contracts bumped' (Get-ContractsVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $partialWriteRoot 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj')))) $PrepareTargetVersion
-    Assert-equal 'PARTIAL_WRITE_FAILURE_TEST openapi unchanged' (Get-OpenApiVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $partialWriteRoot 'docs/api/openapi.yaml')))) $PreparePrevVersion
+    Assert-Equal 'PARTIAL_WRITE_FAILURE_TEST attempted' $partial.Plan.MutationAttempted 'TRUE'
+    Assert-Equal 'PARTIAL_WRITE_FAILURE_TEST performed' $partial.Plan.MutationPerformed 'FALSE'
+    Assert-Equal 'PARTIAL_WRITE_FAILURE_TEST contracts bumped' (Get-ContractsVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $partialWriteRoot 'src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj')))) $PrepareTargetVersion
+    Assert-Equal 'PARTIAL_WRITE_FAILURE_TEST openapi unchanged' (Get-OpenApiVersionFromText -Text ([System.IO.File]::ReadAllText((Join-Path $partialWriteRoot 'docs/api/openapi.yaml')))) $PreparePrevVersion
     Assert-True 'PARTIAL_WRITE_FAILURE_TEST no target record' (-not (Test-Path -LiteralPath (Join-Path $partialWriteRoot ('docs/releases/v{0}.md' -f $PrepareTargetVersion)))) 'failed write must not create later owned files'
-    $afterPartial = Get-PrepareVersionFingerprintSnapshot -Root $partialWriteRoot
-    Assert-True 'PARTIAL_WRITE_FAILURE_TEST current-public unchanged' ($beforePartial['release/current-public.json'] -eq $afterPartial['release/current-public.json']) 'partial write must not touch authority'
-    Assert-True 'PARTIAL_WRITE_FAILURE_TEST followers unchanged' ($beforePartial['README.md'] -eq $afterPartial['README.md']) 'partial write must not touch followers'
+    Assert-PrepareVersionPreserved -Label 'PARTIAL_WRITE' -Before $beforePartial -After (Get-PrepareVersionPreservedSnapshot -Root $partialWriteRoot)
 
     $recover = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $partialWriteRoot -Execute -Quiet
-    Assert-equal 'PARTIAL_WRITE_RECOVERY fail-closed' $recover.Plan.MutationResult 'CONFLICT'
-    Assert-equal 'PARTIAL_WRITE_RECOVERY prep' $recover.Plan.PrepState 'MIXED'
-    Assert-equal 'PARTIAL_WRITE_RECOVERY attempted' $recover.Plan.MutationAttempted 'FALSE'
-    Assert-equal 'PARTIAL_WRITE_RECOVERY performed' $recover.Plan.MutationPerformed 'FALSE'
+    Assert-Equal 'PARTIAL_WRITE_RECOVERY fail-closed' $recover.Plan.MutationResult 'CONFLICT'
+    Assert-Equal 'PARTIAL_WRITE_RECOVERY prep' $recover.Plan.PrepState 'MIXED'
+    Assert-Equal 'PARTIAL_WRITE_RECOVERY attempted' $recover.Plan.MutationAttempted 'FALSE'
+    Assert-Equal 'PARTIAL_WRITE_RECOVERY performed' $recover.Plan.MutationPerformed 'FALSE'
 }
 finally {
     Set-PrepareVersionFileWriterFailAfter -FailAfter $null
@@ -3023,7 +2964,7 @@ Assert-True 'prepare-version missing version message' ($cliMissingVersion.Output
 $cliInvalidVersion = Invoke-Cli -CliArgs @('prepare-version', '-Version', 'v9.9.0')
 Assert-Equal 'prepare-version invalid version CLI exit 1' $cliInvalidVersion.ExitCode 1
 
-# NuGet observable evidence (clock-injected; no wall-clock / sleep)
+# NuGet observable evidence (clock-injected; no wall-clock / sleep). Symbols stay UNOBSERVED without network probe.
 Set-ReleaseUtcClockOverride -Clock { [datetime]::Parse('2026-01-02T03:04:05Z').ToUniversalTime() }
 try {
     $nugetPresentFact = Get-NugetObservation -Version '9.9.0' -Request {
@@ -3036,7 +2977,7 @@ try {
         }
     }
     Assert-Equal 'NUGET_PUBLIC_OBSERVED_AT_UTC' $nugetPresentFact.ObservedAtUtc $PrepareObservedAt
-    Assert-equal 'nuget present state' $nugetPresentFact.State 'PRESENT'
+    Assert-Equal 'nuget present state' $nugetPresentFact.State 'PRESENT'
 
     $nugetAbsentFact = Get-NugetObservation -Version '9.9.1' -Request {
         param($uri, $headers)
@@ -3050,43 +2991,7 @@ try {
     Assert-Equal 'unobserved timestamp not fabricated state' $nugetAbsentFact.State 'ABSENT'
     Assert-True 'unobserved timestamp not fabricated value' ([string]::IsNullOrWhiteSpace([string]$nugetAbsentFact.ObservedAtUtc)) 'absent package must not invent observed-at'
 
-    $script:LastSymbolsProbeUri = ''
-    $symbolsObserved = Get-NugetSymbolsObservation -Version '9.9.0' -Request {
-        param($uri, $headers)
-        $script:LastSymbolsProbeUri = [string]$uri
-        return [pscustomobject]@{
-            StatusCode       = 200
-            BodyText         = 'snupkg-bytes'
-            TransportFailure = $false
-            FailureClass     = ''
-        }
-    }
-    Assert-equal 'nuget symbols observed' $symbolsObserved.State 'OBSERVED'
-    Assert-True 'SUPPORTED_SYMBOL_GALLERY_ENDPOINT' ($script:LastSymbolsProbeUri -match '^https://www\.nuget\.org/api/v2/symbolpackage/Amane\.Mailer\.Contracts/9\.9\.0$') 'must use Gallery symbolpackage endpoint'
-    Assert-True 'UNSUPPORTED_FLATCONTAINER_SNUPKG_PROBE=ABSENT' ($script:LastSymbolsProbeUri -notmatch 'v3-flatcontainer') 'flat-container snupkg probe must be absent'
-    Assert-True 'UNSUPPORTED_SNUPKG_PROBE_REMOVED source' ((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'release-client.psm1') -Raw) -notmatch 'v3-flatcontainer/.+\.snupkg') 'source must not probe flat-container snupkg'
-
-    $symbolsAbsent = Get-NugetSymbolsObservation -Version '9.9.1' -Request {
-        param($uri, $headers)
-        return [pscustomobject]@{
-            StatusCode       = 404
-            BodyText         = ''
-            TransportFailure = $false
-            FailureClass     = ''
-        }
-    }
-    Assert-equal 'NUGET_SYMBOLS_TRUTHFUL absent' $symbolsAbsent.State 'ABSENT'
-
-    $symbolsTransport = Get-NugetSymbolsObservation -Version '9.9.2' -Request {
-        param($uri, $headers)
-        return [pscustomobject]@{
-            StatusCode       = 0
-            BodyText         = ''
-            TransportFailure = $true
-            FailureClass     = 'NETWORK'
-        }
-    }
-    Assert-equal 'TRANSPORT_FAILURE_FAIL_CLOSED symbols' $symbolsTransport.State 'INCOMPLETE'
+    Assert-True 'NUGET_SYMBOL_NETWORK_OBSERVER_ABSENT' ((Get-Content -LiteralPath (Join-Path $PSScriptRoot 'release-client.psm1') -Raw) -notmatch 'Get-NugetSymbolsObservation|api/v2/symbolpackage') 'must not ship symbolpackage network observer'
 
     $verifyObs = @{
         GitTag         = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha }.GetNewClosure()
@@ -3094,7 +2999,6 @@ try {
         Nuget          = { param($ver) New-ArtifactFact -State 'PRESENT' -ObservedAtUtc $PrepareObservedAt }.GetNewClosure()
         SourceVersions = { param($shaArg, $ver) [pscustomobject]@{ ContractsState = 'PRESENT'; ContractsVersion = '9.9.0'; OpenApiState = 'PRESENT'; OpenApiVersion = '9.9.0' } }.GetNewClosure()
         NugetRevision  = { param($ver) [pscustomobject]@{ State = 'PRESENT'; Commit = $MainSha; Reason = '' } }.GetNewClosure()
-        NugetSymbols   = { param($ver) [pscustomobject]@{ State = 'OBSERVED'; Reason = '' } }.GetNewClosure()
         ReleaseRecord  = { param($ver, $shaArg) [pscustomobject]@{ State = 'PRESENT'; Text = "> Status: **PUBLISHED**`n"; Reason = '' } }.GetNewClosure()
         Ghcr           = { param($ver, $shaArg) New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $MainSha -OciVersion '9.9.0' -ShaTagState 'PRESENT' -ShaTagDigest $DigestA }.GetNewClosure()
     }
@@ -3102,7 +3006,7 @@ try {
     Assert-Equal 'NUGET_OBSERVATION_SEMANTICS public' $nugetVerifyMap['NUGET_PUBLIC'] 'TRUE'
     Assert-Equal 'NUGET_OBSERVATION_SEMANTICS version' $nugetVerifyMap['NUGET_VERSION'] '9.9.0'
     Assert-Equal 'NUGET_OBSERVED_REVISION' $nugetVerifyMap['NUGET_REPOSITORY_REVISION'] $MainSha
-    Assert-Equal 'NUGET_OBSERVATION_SEMANTICS symbols' $nugetVerifyMap['NUGET_SYMBOLS'] 'OBSERVED'
+    Assert-Equal 'NUGET_SYMBOLS_UNOBSERVED' $nugetVerifyMap['NUGET_SYMBOLS'] 'UNOBSERVED'
     Assert-Equal 'NUGET_OBSERVATION_SEMANTICS observed-at' $nugetVerifyMap['NUGET_PUBLIC_OBSERVED_AT_UTC'] $PrepareObservedAt
 
     $absentVerifyObs = @{
@@ -3111,27 +3015,22 @@ try {
         Nuget          = { param($ver) New-ArtifactFact -State 'ABSENT' }.GetNewClosure()
         SourceVersions = { param($shaArg, $ver) [pscustomobject]@{ ContractsState = 'PRESENT'; ContractsVersion = '9.9.1'; OpenApiState = 'PRESENT'; OpenApiVersion = '9.9.1' } }.GetNewClosure()
         NugetRevision  = { param($ver) [pscustomobject]@{ State = 'ABSENT'; Commit = ''; Reason = '' } }.GetNewClosure()
-        NugetSymbols   = { param($ver) [pscustomobject]@{ State = 'ABSENT'; Reason = '' } }.GetNewClosure()
         ReleaseRecord  = { param($ver, $shaArg) [pscustomobject]@{ State = 'ABSENT'; Text = ''; Reason = '' } }.GetNewClosure()
         Ghcr           = { param($ver, $shaArg) New-ArtifactFact -State 'ABSENT' }.GetNewClosure()
     }
     $absentVerifyMap = Invoke-ReleaseVerify -Version '9.9.1' -ReleaseCommitSha $MainSha -RepoRoot $RepoRoot -Observers $absentVerifyObs -Quiet
     Assert-Equal 'unobserved verify public false' $absentVerifyMap['NUGET_PUBLIC'] 'FALSE'
-    Assert-Equal 'unobserved verify observed-at NONE' $absentVerifyMap['NUGET_PUBLIC_OBSERVED_AT_UTC'] 'NONE'
-    Assert-equal 'UNOBSERVED_SYMBOLS_NOT_FABRICATED' $absentVerifyMap['NUGET_SYMBOLS'] 'NONE'
+    Assert-equal 'unobserved verify observed-at NONE' $absentVerifyMap['NUGET_PUBLIC_OBSERVED_AT_UTC'] 'NONE'
+    Assert-Equal 'UNOBSERVED_SYMBOLS_NOT_FABRICATED' $absentVerifyMap['NUGET_SYMBOLS'] 'NONE'
 }
 finally {
     Set-ReleaseUtcClockOverride -Clock $null
 }
 
-$observedRecord = Update-ReleaseRecordObservableFields -Text (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fixtures/post-sync/v1.3.5-production-shape-pending.md') -Raw) -Version '1.3.5' -ReleaseCommitSha $ProductionShapeSha -PublicDigest $ProductionShapeDigest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc $PrepareObservedAt -NugetSymbolsStatus 'OBSERVED'
+$observedRecord = Update-ReleaseRecordObservableFields -Text (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fixtures/post-sync/v1.3.5-production-shape-pending.md') -Raw) -Version '1.3.5' -ReleaseCommitSha $ProductionShapeSha -PublicDigest $ProductionShapeDigest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc $PrepareObservedAt -NugetSymbolsStatus 'UNOBSERVED'
 Assert-True 'post-sync carries nuget observed-at' ($observedRecord -match ('NuGet public observed-at \(UTC\): `' + [regex]::Escape($PrepareObservedAt) + '`')) 'observed-at should propagate'
 Assert-True 'post-sync does not invent indexing timestamp' ($observedRecord -match 'NuGet publication timestamp: \*\*PENDING\*\*') 'indexing timestamp must remain pending'
-Assert-True 'post-sync symbols observed' ($observedRecord -match 'NuGet symbol package status: \*\*OBSERVED\*\*') 'symbols observation should propagate'
-
-
-$pendingSymbolsRecord = Update-ReleaseRecordObservableFields -Text (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fixtures/post-sync/v1.3.5-production-shape-pending.md') -Raw) -Version '1.3.5' -ReleaseCommitSha $ProductionShapeSha -PublicDigest $ProductionShapeDigest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc $PrepareObservedAt -NugetSymbolsStatus 'ABSENT'
-Assert-True 'post-sync leaves unobserved symbols PENDING' ($pendingSymbolsRecord -match 'NuGet symbol package status: \*\*PENDING\*\*') 'absent symbols must not fabricate OBSERVED in release record'
+Assert-True 'post-sync leaves unobserved symbols PENDING' ($observedRecord -match 'NuGet symbol package status: \*\*PENDING\*\*') 'UNOBSERVED must not fabricate OBSERVED in release record'
 
 $helpText = Get-Content -LiteralPath $CliPath -Raw
 Assert-True 'GENERIC_EXAMPLES prepare-version X.Y.Z' ($helpText -match 'prepare-version -Version X\.Y\.Z') 'help should show generic prepare-version'
