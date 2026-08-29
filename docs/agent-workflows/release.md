@@ -42,6 +42,7 @@ The Git tag target, GHCR OCI revision/source, NuGet SourceLink revision, and ver
 - Never blind-retry an ambiguous publish command or workflow dispatch. Determine whether the first mutation happened before taking any next action.
 - Preserve the `release` environment Human approval boundary. AI agents must not bypass required reviewers.
 - Side-effecting release operations require explicit maintainer instruction in the current session.
+- `prepare-post-sync -Execute` is a mutation boundary. If it has already changed files and later local validation fails, preserve and recover that exact candidate; do **not** rerun `-Execute` merely to regenerate it.
 - `verify-public-release-image.yml` is recovery for an already-published image whose post-publish verification did not complete. It is not the normal publication path and must not build, log in, push, or mutate tags.
 
 ## Why GHCR Publication Comes Before Git Tag / NuGet
@@ -96,6 +97,8 @@ Self-test (fixture-backed; does not use live GitHub / GHCR / NuGet as pass/fail)
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-client-self-test.ps1
 ```
+
+The self-test must also be independent of the caller repository's live `release/current-public.json` value. Tests of current-public observation must use controlled fixtures for predecessor and target authority states. Advancing a legitimate post-sync working tree from the predecessor version to `X.Y.Z` must not make the self-test fail merely because the live authority value changed.
 
 RO-3 implements read-only `status`, `preflight`, and `verify`. M-1 adds guarded mutation commands that require explicit `-Execute`.
 
@@ -157,6 +160,8 @@ network/auth/rate-limit/5xx/parse/tool    -> INCOMPLETE
 ```
 
 Aggregation is `FAIL` over `INCOMPLETE` over `PASS`. Transport/auth failure is never treated as ABSENT. `VERIFY_RESULT=PASS` means all required identities verified; it is not Human authorization to mutate.
+
+Before post-sync, the release record may intentionally still be `PENDING / NOT YET PUBLISHED`. In that state, a read-only `verify` can be used diagnostically, but it is **not** the final completion gate: if every public artifact is exact and the only failure is `RELEASE_RECORD` because the GitHub-visible record is still PENDING, preserve that as a sequencing condition, complete consumer verification / `latest` promotion, and continue to post-sync. Do not weaken `verify`, fabricate a PUBLISHED record early, or treat any other failure as acceptable. The final canonical `VERIFY_RESULT=PASS` must occur after the post-sync PUBLISHED record is merged and visible on GitHub.
 
 ### Guarded mutation commands (M-1)
 
@@ -235,11 +240,15 @@ publish-image
 create-tag
 publish-nuget
 create-github-release
-verify
+public identity diagnostic / consumer verification
+promote-latest
 prepare-post-sync
+merge post-sync authority
+final verify
+develop fast-forward sync
 ```
 
-Each command requires explicit `-Version X.Y.Z`. Mutation and post-sync write commands additionally require `-ReleaseCommitSha` and `-Execute` for any file or external mutation.
+Each command requires explicit `-Version X.Y.Z`. Mutation and post-sync write commands additionally require `-ReleaseCommitSha` and `-Execute` for any file or external mutation. `promote-latest` also requires the already verified digest. Final `verify` is read-only and must run against GitHub-visible post-sync authority.
 
 ### Current public release authority (A-1)
 
@@ -253,7 +262,7 @@ It drives release smoke drift checking and the deterministic post-sync follower 
 
 ### Deterministic post-release sync (`prepare-post-sync`)
 
-After `verify` reports public artifact identity PASS, synchronize current-public followers locally:
+After public artifacts and required consumer verification are exact, and `latest` has been promoted when required, synchronize current-public followers locally:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `
@@ -272,7 +281,9 @@ Preconditions (Fresh, fail-closed):
 
 - explicit `Version` and `ReleaseCommitSha`
 - canonical repository identity and clean worktree
-- public cross-artifact identity equivalent to `verify` PASS (release record may still be PENDING locally)
+- public cross-artifact identity is exact; a pre-post-sync canonical `verify` may differ only because the release record is still intentionally PENDING
+- required consumer verification is PASS
+- `latest` equals the verified versioned digest when `latest` promotion is part of the release
 - target release record exists
 - current-public authority is either the preceding public release or already exact to the requested target
 - no mixed/ambiguous follower state
@@ -285,7 +296,24 @@ node scripts/check-release-smoke-tag-drift.mjs
 git diff --check
 ```
 
+The self-test must remain fixture-backed and must not compare the caller repository's live current-public version against a hard-coded predecessor value.
+
 Post-sync mutation results mirror M-1: `NOT_ATTEMPTED`, `APPLIED`, `ALREADY_APPLIED`, `CONFLICT`, `INCOMPLETE`.
+
+### Exactly-once post-sync recovery
+
+Treat an `APPLIED` `prepare-post-sync -Execute` result as an exactly-once mutation candidate for that recovery attempt. If file mutation has occurred but a later local validation gate fails:
+
+1. **Stop before commit, push, or PR.** Do not rerun `prepare-post-sync -Execute` to try to obtain a cleaner result.
+2. Preserve the dirty post-sync working tree as read-only evidence.
+3. Before any cleanup, reset, rebase, or reconstruction, export an exact patch and a cryptographic checksum. Record the changed-file inventory and the original post-sync base SHA.
+4. Diagnose the failing gate. If the defect is in release tooling or validation, fix that defect in a separate clean branch / PR. Do not include the dirty post-sync candidate in the tooling-fix PR.
+5. After the tooling fix is reviewed and merged, create a fresh isolated clone from the corrected `main` and reconstruct the already-generated post-sync candidate from the preserved patch. Use normal `git apply` when exact; a bounded three-way application is acceptable only when the semantic candidate remains the same and conflicts are reviewed.
+6. Apply only explicitly reviewed bounded corrections required by the tooling defect. Do not add unrelated "while here" edits.
+7. Re-run the local self-test, drift check, and `git diff --check`. Require the expected changed-file set and no unexpected files before commit/push/PR.
+8. Record `POST_SYNC_EXECUTE_COUNT=1` and `POST_SYNC_REEXECUTE=FALSE` (or the equivalent actual count/state) in recovery evidence.
+
+The preserved patch is recovery evidence, not new release authority. The frozen `releaseCommitSha` remains unchanged, and no public artifact should be republished to recover a repository-only post-sync validation failure.
 
 ### Retry / recovery matrix
 
@@ -298,7 +326,9 @@ Post-sync mutation results mirror M-1: `NOT_ATTEMPTED`, `APPLIED`, `ALREADY_APPL
 | `publish-nuget` dispatch | No blind retry; inspect matching workflow run first |
 | `create-tag` | Fresh remote tag read-back before any retry decision |
 | `create-github-release` | Fresh release + tag read-back before any retry decision |
-| `prepare-post-sync` | Local and idempotent; mixed/unknown follower state = STOP |
+| `promote-latest` | No blind redispatch; read back `latest` digest and matching run first |
+| `prepare-post-sync` before mutation | Dry-run/read-only checks are repeatable |
+| `prepare-post-sync -Execute` after files changed | Preserve the exact candidate; if validation fails, recover from checksummed patch after tooling repair instead of rerunning `-Execute` |
 
 ### Exploration Gate
 
@@ -563,14 +593,16 @@ consumer verification PASS
   -> promote-latest
   -> latest consumer verification
   -> prepare-post-sync
+  -> merge post-sync authority
   -> final verify
+  -> develop fast-forward sync
 ```
 
 The workflow copies `ghcr.io/kooiei-in4a/amane-mailer@ExpectedDigest` to `:latest` with pinned crane (digest-preserving alias). Tooling workflow commit and frozen release source SHA must not be conflated.
 
 ## Phase 8 — Post-Release Documentation Sync
 
-After public artifacts exist, `latest` (when required) matches the verified digest, and `verify` PASS, run deterministic local sync:
+After public artifacts exist, `latest` (when required) matches the verified digest, and required consumer verification is PASS, run deterministic local sync:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `
@@ -589,9 +621,11 @@ The command updates at minimum:
 
 At minimum (manual checklist after sync):
 
-- Record exact tag target, GHCR digest/tags, workflow run IDs, evidence artifact IDs, NuGet package/status, GitHub Release URL, platform, smoke/verification result, and known limitations where not already filled by `prepare-post-sync`.
+- Record exact tag target, GHCR digest/tags, workflow run IDs, evidence artifact IDs, NuGet package/status, GitHub Release URL/ID, platform, smoke/verification result, `latest` promotion result, and known limitations where not already filled by `prepare-post-sync`.
 - Confirm CHANGELOG wording still matches what was actually released.
 - Keep historical OCI-only or failed release attempts accurate; do not rewrite history to look cleaner.
+
+If local validation fails **after** `prepare-post-sync -Execute` changed files, follow the exactly-once recovery procedure above. Do not rerun `-Execute` simply because the candidate has not yet been committed.
 
 This post-release documentation commit is **not** the release source and must not move the already-published Git tag.
 
@@ -599,7 +633,7 @@ Use a normal PR for post-release documentation unless the maintainer explicitly 
 
 ## Phase 9 — Final Cross-Artifact Verification
 
-Before declaring the release complete, verify all applicable identities:
+After the post-sync PR is reviewed and merged, Fresh-check GitHub-visible `main` and run canonical `verify` against that merged authority. Before declaring the release complete, verify all applicable identities:
 
 | Artifact | Required identity |
 |---|---|
@@ -609,11 +643,28 @@ Before declaring the release complete, verify all applicable identities:
 | NuGet | `Amane.Mailer.Contracts X.Y.Z`, SourceLink revision == `releaseCommitSha` |
 | GHCR version tag | `vX.Y.Z -> publicDigest` |
 | GHCR immutable tag | `sha-<releaseCommitSha> -> publicDigest` |
+| GHCR `latest` | same `publicDigest` when latest promotion is in scope |
 | OCI labels | version `X.Y.Z`, revision/source bound to `releaseCommitSha` |
 | GitHub Release | tag `vX.Y.Z`, notes match public facts |
+| Current-public authority | `release/current-public.json` == `X.Y.Z` / `vX.Y.Z` / `docs/releases/vX.Y.Z.md` |
 | Release record | PUBLISHED evidence matches public facts |
 
-Any mismatch is a release incident, not a documentation typo to hand-wave away. Stop, preserve evidence, and let the maintainer choose the next version/recovery path.
+Require `VERIFY_RESULT=PASS` and `MUTATION_PERFORMED=FALSE`. Any mismatch is a release incident, not a documentation typo to hand-wave away. Stop, preserve evidence, and let the maintainer choose the next version/recovery path.
+
+### Final `main` / `develop` branch closeout
+
+Only after final canonical `verify` PASS:
+
+1. Fresh-read both remote branch SHAs.
+2. Require final `main` CI PASS for the exact post-sync merge SHA.
+3. Test whether current `develop` is an ancestor of final `main` (`git merge-base --is-ancestor <develop> <main>` or equivalent) and confirm the merge-base equals `develop`.
+4. If `develop` contains commits not present on final `main`, set `DEVELOP_DIVERGED=TRUE` and STOP. Do not reset, rebase, force-push, or synthesize a merge merely to close the release.
+5. If fast-forward is possible, synchronize `develop` to final `main` with a **non-force fast-forward only** using the repository's permitted branch-update path.
+6. Fresh-read both branches and require `develop == main`.
+7. Require the `develop` CI run for that exact SHA to complete successfully. Do not blind-rerun/redispatch to manufacture a green closeout.
+8. Record final `main` SHA, final `develop` SHA, both CI run IDs/conclusions, frozen `releaseCommitSha`, public digest, canonical verify PASS, current-public version, and safety invariants in the release issue before closing it.
+
+The final repository SHA is tooling/documentation closeout authority; it does not replace or rebind the frozen public `releaseCommitSha`.
 
 ## Timing Record
 
@@ -655,12 +706,15 @@ FULL_RELEASE:
   RESULT: SUCCESS | STOP | FAILED | PARTIAL
   VERSION: X.Y.Z
   RELEASE_COMMIT_SHA:
+  FINAL_MAIN_SHA:
+  FINAL_DEVELOP_SHA:
 
   OCI:
     WORKFLOW_RUN_ID:
     DIGEST:
     VERSION_TAG:
     SHA_TAG:
+    LATEST_DIGEST:
     PUBLIC_VERIFY: PASS | FAIL | NOT_RUN
     PUBLICATION_ARTIFACT_ID:
     EVIDENCE_ARTIFACT_ID:
@@ -675,19 +729,36 @@ FULL_RELEASE:
     WORKFLOW_RUN_ID:
     PACKAGE_AVAILABLE:
     SYMBOL_PACKAGE_STATUS:
+    REPOSITORY_REVISION:
 
   GITHUB_RELEASE:
+    ID:
     URL:
 
   DOCS:
+    CURRENT_PUBLIC:
     RELEASE_RECORD: docs/releases/vX.Y.Z.md
     STATUS: PUBLISHED | PENDING
 
+  VERIFY:
+    CANONICAL_VERIFY: PASS | FAIL | INCOMPLETE
+    MUTATION_PERFORMED: false
+
+  BRANCH_CLOSEOUT:
+    MAIN_CI_RUN:
+    MAIN_CI: PASS | FAIL
+    DEVELOP_SYNC: FAST_FORWARD | STOP
+    DEVELOP_CI_RUN:
+    DEVELOP_CI: PASS | FAIL
+
   SAFETY:
-    SECOND_DISPATCH: false
     SAME_VERSION_REPUBLISH: false
     TAG_OVERWRITE: false
-    LATEST_CREATED: false
+    SOURCE_REBIND: false
+    LATEST_REBUILD: false
+    LATEST_REPROMOTION: false
+    POST_SYNC_REEXECUTE: false
+    WORKFLOW_REDISPATCH: false
 
   TIMING:
     FROZEN_TO_PUBLIC_COMPLETE:
@@ -706,10 +777,15 @@ A full service release is complete only when:
 - Git tag targets that SHA.
 - Contracts and OpenAPI versions match the release.
 - NuGet package and symbols are published/verified as required from that tag/SHA.
-- Public image verification and evidence exist.
+- Public image verification and consumer verification exist.
 - GitHub Release exists with truthful notes.
-- `docs/releases/vX.Y.Z.md` contains published evidence.
-- No same-version republish, tag overwrite, unapproved `latest`, or approval bypass occurred.
+- `latest` equals the verified versioned digest when latest promotion is in scope; no rebuild was used.
+- `release/current-public.json` and governed followers are synchronized to `X.Y.Z`.
+- `docs/releases/vX.Y.Z.md` contains PUBLISHED evidence without fabricated facts.
+- Final canonical `verify` passes against GitHub-visible post-sync authority with no mutation.
+- Final `main` CI passes on the post-sync merge SHA.
+- `develop` is safely fast-forwarded to final `main`, the two remote SHAs are equal, and exact-SHA `develop` CI passes.
+- No same-version republish, tag overwrite, source rebind, unapproved `latest`, post-sync re-execution, blind workflow redispatch, or approval bypass occurred.
 - Timing and any deviations are recorded in the release issue.
 
 If any of these is intentionally out of scope, the release issue and final result must say **PARTIAL / explicitly scoped**, not imply a full service release.
