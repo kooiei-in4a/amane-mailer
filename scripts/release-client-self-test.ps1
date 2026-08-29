@@ -403,6 +403,7 @@ Assert-True 'CLI verify bad SHA mentions hex' ($verifyBadSha.Output -match '40')
 $notImplemented = Invoke-Cli -CliArgs @('freeze', '-Version', '1.3.4')
 Assert-Equal 'CLI not implemented command exit 2' $notImplemented.ExitCode 2
 Assert-True 'CLI not implemented names mutations' ($notImplemented.Output -match 'publish-image') 'unknown command should list mutations'
+Assert-True 'CLI not implemented names promote-latest' ($notImplemented.Output -match 'promote-latest') 'unknown command should list promote-latest'
 
 $preflightNoVersion = Invoke-Cli -CliArgs @('preflight', '-ReleaseCommitSha', $MainSha)
 Assert-Equal 'CLI preflight without Version exit 2' $preflightNoVersion.ExitCode 2
@@ -572,16 +573,20 @@ function New-DispatchRun {
         [string]$HeadSha,
         [string]$EventName = '',
         [string]$Status = 'completed',
-        [string]$Conclusion = 'success'
+        [string]$Conclusion = 'success',
+        [string]$Name = '',
+        [string]$DisplayTitle = ''
     )
     if ([string]::IsNullOrWhiteSpace($EventName)) { $EventName = ('workflow' + '_dispatch') }
     return [pscustomobject]@{
-        Id         = $Id
-        Path       = $Path
-        Event      = $EventName
-        HeadSha    = $HeadSha
-        Status     = $Status
-        Conclusion = $Conclusion
+        Id           = $Id
+        Path         = $Path
+        Event        = $EventName
+        HeadSha      = $HeadSha
+        Status       = $Status
+        Conclusion   = $Conclusion
+        Name         = $Name
+        DisplayTitle = $DisplayTitle
     }
 }
 
@@ -2001,6 +2006,396 @@ finally {
 $authorityObsLive = Get-CurrentPublicAuthorityObservation -RepoRoot $RepoRoot
 Assert-Equal 'live authority observation present' $authorityObsLive.State 'PRESENT'
 Assert-Equal 'live authority version' $authorityObsLive.Authority.Version '1.3.4'
+
+# --- #675 post-mutation readback visibility fix + promote-latest ---
+# Reproduce the Phase 3 defect: GetNewClosure created inside the module loses private command lookup.
+$releaseClientModule = Get-Module release-client
+$brokenClosure = & $releaseClientModule { { Get-CollisionRank -State 'PRESENT' }.GetNewClosure() }
+$brokenThrew = $false
+try {
+    $null = & $brokenClosure
+}
+catch {
+    $brokenThrew = [bool]($_.Exception.Message -match 'not recognized')
+}
+Assert-True 'raw GetNewClosure cannot resolve private Get-CollisionRank' $brokenThrew 'documents Phase 3 readback defect root cause'
+
+$boundFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ State = 'PRESENT' } -ScriptBlock {
+    param($c)
+    return Get-CollisionRank -State $c.State
+}
+Assert-Equal 'module-bound fetcher resolves private Get-CollisionRank' (& $boundFetcher) 2
+
+$publishStyleFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+    ReleaseCommitSha = $MainSha
+} -ScriptBlock {
+    param($c)
+    $json = '{"total_count":1,"workflow_runs":[{"id":9101,"path":".github/workflows/publish-release-image.yml","event":"workflow' + '_dispatch","head_sha":"' + $c.ReleaseCommitSha + '","status":"completed","conclusion":"success","name":"x","display_title":"x"}]}'
+    $runs = Convert-GitHubWorkflowRunsJson -Json $json
+    $runObs = ConvertTo-WorkflowDispatchRunObservation -Runs $runs -WorkflowPath '.github/workflows/publish-release-image.yml' -ReleaseCommitSha $c.ReleaseCommitSha
+    return [string]$runObs.State
+}
+Assert-Equal 'publish-image production-style readback fetcher' (& $publishStyleFetcher) 'CANDIDATE_PRESENT'
+
+$tagStyleFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ Version = '1.3.5' } -ScriptBlock {
+    param($c)
+    $cmd = Get-Command -Name Get-GitTagObservation -CommandType Function -ErrorAction Stop
+    return [pscustomobject]@{ Name = $cmd.Name; Version = $c.Version }
+}
+$tagStyleResult = & $tagStyleFetcher
+Assert-Equal 'create-tag production-style private observer name' $tagStyleResult.Name 'Get-GitTagObservation'
+
+$releaseStyleFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ Version = '1.3.5' } -ScriptBlock {
+    param($c)
+    $cmd = Get-Command -Name Get-GitHubReleaseObservation -CommandType Function -ErrorAction Stop
+    return [pscustomobject]@{ Name = $cmd.Name; Version = $c.Version }
+}
+$releaseStyleResult = & $releaseStyleFetcher
+Assert-Equal 'create-github-release production-style private observer name' $releaseStyleResult.Name 'Get-GitHubReleaseObservation'
+
+$nugetStyleFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ ReleaseCommitSha = $MainSha } -ScriptBlock {
+    param($c)
+    $cmd = Get-Command -Name Get-GitHubWorkflowDispatchRuns -CommandType Function -ErrorAction Stop
+    return [pscustomobject]@{ Name = $cmd.Name; Sha = $c.ReleaseCommitSha }
+}
+$nugetStyleResult = & $nugetStyleFetcher
+Assert-Equal 'publish-nuget production-style private observer name' $nugetStyleResult.Name 'Get-GitHubWorkflowDispatchRuns'
+
+$createTagReadBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ Version = '1.3.5'; Sha = $MainSha } -ScriptBlock {
+    param($c)
+    $null = Get-Command -Name Get-GitTagObservation -CommandType Function -ErrorAction Stop
+    return New-ArtifactFact -State 'PRESENT' -TargetSha $c.Sha
+}
+$createTagFacts = [pscustomobject]@{
+    Version          = '1.3.5'
+    ReleaseCommitSha = $MainSha
+    GitTag           = New-ArtifactFact -State 'ABSENT'
+    ReadBackGitTag   = New-ArtifactFact -State 'ABSENT'
+    ReadBackFetcher  = $createTagReadBackFetcher
+    Ghcr             = New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' -Digest $DigestA
+    Execute          = $true
+    Executor         = (New-FakeMutationExecutor -Outcome 'SUCCESS')
+}
+$createTagProdReadbackMap = Get-ReleaseCreateTagMutationStatus -Facts $createTagFacts
+Assert-Equal 'create-tag production readback APPLIED' $createTagProdReadbackMap['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'create-tag production readback performed' $createTagProdReadbackMap['MUTATION_PERFORMED'] 'TRUE'
+
+$publishImageReadBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ ReleaseCommitSha = $MainSha } -ScriptBlock {
+    param($c)
+    $null = Get-Command -Name Get-GitHubWorkflowDispatchRuns -CommandType Function -ErrorAction Stop
+    return 'CANDIDATE_PRESENT'
+}
+$publishImageFacts = [pscustomobject]@{
+    Version           = '1.3.5'
+    ReleaseCommitSha  = $MainSha
+    PreflightMap      = ([ordered]@{ PREFLIGHT_RESULT = 'PASS'; TECHNICAL_READINESS = 'READY'; SOURCE_BINDING = 'PASS'; VERSION_PREP = 'PASS'; IMAGE_PUBLISH_RUN = 'ABSENT'; IMAGE_PUBLISH_RUN_ID = 'NONE' })
+    SourceBinding     = 'PASS'
+    VersionPrep       = 'PASS'
+    Ghcr              = New-ArtifactFact -State 'ABSENT'
+    ReadBackGhcr      = New-ArtifactFact -State 'ABSENT'
+    ReadBackFetcher   = $publishImageReadBackFetcher
+    ImagePublishRun   = 'ABSENT'
+    ImagePublishRunId = 'NONE'
+    Execute           = $true
+    Executor          = (New-FakeMutationExecutor -Outcome 'SUCCESS')
+}
+$publishImageProdReadbackMap = Get-ReleasePublishImageMutationStatus -Facts $publishImageFacts
+Assert-Equal 'publish-image production readback APPLIED' $publishImageProdReadbackMap['MUTATION_RESULT'] 'APPLIED'
+
+$nugetReadBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ ReleaseCommitSha = $MainSha } -ScriptBlock {
+    param($c)
+    $null = Get-Command -Name Get-GitHubWorkflowDispatchRuns -CommandType Function -ErrorAction Stop
+    return 'CANDIDATE_PRESENT'
+}
+$nugetFacts = [pscustomobject]@{
+    Version           = '1.3.5'
+    ReleaseCommitSha  = $MainSha
+    GitTag            = New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha
+    Ghcr              = New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' -Digest $DigestA
+    Nuget             = New-ArtifactFact -State 'ABSENT'
+    ReadBackNuget     = New-ArtifactFact -State 'ABSENT'
+    ReadBackFetcher   = $nugetReadBackFetcher
+    NugetPublishRun   = 'ABSENT'
+    NugetPublishRunId = 'NONE'
+    Execute           = $true
+    Executor          = (New-FakeMutationExecutor -Outcome 'SUCCESS')
+}
+$nugetProdReadbackMap = Get-ReleasePublishNugetMutationStatus -Facts $nugetFacts
+Assert-Equal 'publish-nuget production readback APPLIED' $nugetProdReadbackMap['MUTATION_RESULT'] 'APPLIED'
+
+$ghReleaseReadBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ Version = '1.3.5' } -ScriptBlock {
+    param($c)
+    $null = Get-Command -Name Get-GitHubReleaseObservation -CommandType Function -ErrorAction Stop
+    return New-ArtifactFact -State 'PRESENT'
+}
+$ghReleaseTagFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ Version = '1.3.5'; Sha = $MainSha } -ScriptBlock {
+    param($c)
+    $null = Get-Command -Name Get-GitTagObservation -CommandType Function -ErrorAction Stop
+    return New-ArtifactFact -State 'PRESENT' -TargetSha $c.Sha
+}
+$ghReleaseFacts = [pscustomobject]@{
+    Version               = '1.3.5'
+    ReleaseCommitSha      = $MainSha
+    GitTag                = New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha
+    Ghcr                  = New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' -Digest $DigestA
+    Nuget                 = New-ArtifactFact -State 'PRESENT'
+    GitHubRelease         = New-ArtifactFact -State 'ABSENT'
+    ReadBackGitHubRelease = New-ArtifactFact -State 'ABSENT'
+    ReadBackGitTag        = New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha
+    ReadBackFetcher       = $ghReleaseReadBackFetcher
+    ReadBackTagFetcher    = $ghReleaseTagFetcher
+    ReleaseNotesPath      = 'notes.md'
+    ReleaseNotesGuard     = 'PRESENT'
+    Execute               = $true
+    Executor              = (New-FakeMutationExecutor -Outcome 'SUCCESS')
+}
+$ghReleaseProdReadbackMap = Get-ReleaseCreateGitHubReleaseMutationStatus -Facts $ghReleaseFacts
+Assert-Equal 'create-github-release production readback APPLIED' $ghReleaseProdReadbackMap['MUTATION_RESULT'] 'APPLIED'
+
+$promoteLatestText = [System.IO.File]::ReadAllText((Join-Path $RepoRoot '.github\workflows\promote-release-latest.yml'))
+Assert-Equal 'canonical promote-release-latest contract' (Test-PromoteReleaseLatestWorkflowContract -Text $promoteLatestText) 'PASS'
+$promoteNoEnv = $promoteLatestText.Replace('environment: release', 'environment: staging')
+Assert-Equal 'promote-latest environment release missing FAIL' (Test-PromoteReleaseLatestWorkflowContract -Text $promoteNoEnv) 'FAIL'
+$promoteWithBuild = $promoteLatestText + "`n          docker build .`n"
+Assert-Equal 'promote-latest docker build forbidden FAIL' (Test-PromoteReleaseLatestWorkflowContract -Text $promoteWithBuild) 'FAIL'
+$promoteNoCraneCopy = $promoteLatestText.Replace('copy "${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}"', 'digest "${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}"')
+Assert-Equal 'promote-latest crane copy missing FAIL' (Test-PromoteReleaseLatestWorkflowContract -Text $promoteNoCraneCopy) 'FAIL'
+
+function New-ReadyPromoteLatestObservers {
+    param(
+        [string]$Sha = $MainSha,
+        [string]$Digest = $DigestA,
+        [string]$LatestState = 'ABSENT',
+        [string]$LatestDigest = ''
+    )
+    $latestFact = if ($LatestState -eq 'ABSENT') {
+        New-ArtifactFact -State 'ABSENT'
+    }
+    elseif ($LatestState -eq 'INCOMPLETE') {
+        New-ArtifactFact -State 'INCOMPLETE' -Reason 'AUTH'
+    }
+    elseif ($LatestState -eq 'EXACT_MATCH') {
+        New-ArtifactFact -State 'PRESENT' -Digest $Digest -Revision $Sha -OciVersion '1.3.5'
+    }
+    else {
+        $staleDigest = $LatestDigest
+        if ([string]::IsNullOrWhiteSpace($staleDigest)) { $staleDigest = $DigestB }
+        New-ArtifactFact -State 'PRESENT' -Digest $staleDigest -Revision $WrongSha -OciVersion '1.3.4'
+    }
+    return @{
+        GitTag           = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $Sha }.GetNewClosure()
+        Ghcr             = { param($ver, $shaArg) New-ExactGhcrFact -Sha $Sha -VersionValue '1.3.5' -Digest $Digest }.GetNewClosure()
+        Nuget            = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+        GitHubRelease    = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+        Latest           = { $latestFact }.GetNewClosure()
+        SourceVersions   = { param($shaArg, $ver) [pscustomobject]@{ ContractsState = 'PRESENT'; ContractsVersion = '1.3.5'; OpenApiState = 'PRESENT'; OpenApiVersion = '1.3.5' } }.GetNewClosure()
+        NugetRevision    = { param($ver) [pscustomobject]@{ State = 'PRESENT'; Commit = $Sha; Reason = '' } }.GetNewClosure()
+        PromoteLatestRun = { param($identity) [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE' } }.GetNewClosure()
+    }
+}
+
+function Invoke-PromoteLatestFixture {
+    param(
+        $Observers,
+        $Executor = $null,
+        $CommandRunner = $null,
+        [switch]$Execute,
+        [string]$Version = '1.3.5',
+        [string]$Sha = $MainSha,
+        [string]$Digest = $DigestA
+    )
+    return Invoke-ReleasePromoteLatest -Version $Version -ReleaseCommitSha $Sha -ExpectedDigest $Digest -RepoRoot $RepoRoot -Observers $Observers -Executor $Executor -CommandRunner $CommandRunner -Execute:$Execute -Quiet
+}
+
+$promoteIdentity = Get-PromoteLatestRunIdentity -Version '1.3.5' -ReleaseCommitSha $MainSha -ExpectedDigest $DigestA
+Assert-True 'promote-latest run identity contains version' ($promoteIdentity -match '1\.3\.5') 'identity should include version'
+Assert-True 'promote-latest run identity contains sha' ($promoteIdentity.Contains($MainSha)) 'identity should include sha'
+Assert-True 'promote-latest run identity contains digest' ($promoteIdentity.Contains($DigestA)) 'identity should include digest'
+
+$promoteDryObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
+$script:MutationExecutorCalls = @{ Count = 0 }
+$promoteDry = Invoke-PromoteLatestFixture -Observers $promoteDryObs -Executor (New-FakeMutationExecutor)
+Assert-Equal 'promote-latest dry NOT_ATTEMPTED' $promoteDry['MUTATION_RESULT'] 'NOT_ATTEMPTED'
+Assert-Equal 'promote-latest dry MUTATION_ATTEMPTED' $promoteDry['MUTATION_ATTEMPTED'] 'FALSE'
+Assert-Equal 'promote-latest dry LATEST_STATE ABSENT' $promoteDry['LATEST_STATE'] 'ABSENT'
+Assert-Equal 'promote-latest dry zero executor calls' $script:MutationExecutorCalls.Count 0
+
+$promoteExactObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'EXACT_MATCH'
+$promoteExact = Invoke-PromoteLatestFixture -Observers $promoteExactObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest EXACT ALREADY_APPLIED' $promoteExact['MUTATION_RESULT'] 'ALREADY_APPLIED'
+Assert-Equal 'promote-latest EXACT LATEST_STATE' $promoteExact['LATEST_STATE'] 'EXACT_MATCH'
+Assert-Equal 'promote-latest EXACT zero executor calls' $script:MutationExecutorCalls.Count 0
+
+$promoteAbsentObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
+$promoteAbsentObs['ReadBackLatest'] = { New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $MainSha -OciVersion '1.3.5' }.GetNewClosure()
+$promoteAbsentExec = New-FakeMutationExecutor -Outcome 'SUCCESS'
+$promoteAbsent = Invoke-PromoteLatestFixture -Observers $promoteAbsentObs -Executor $promoteAbsentExec -Execute
+Assert-Equal 'promote-latest ABSENT eligible APPLIED' $promoteAbsent['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'promote-latest ABSENT one executor call' $script:MutationExecutorCalls.Count 1
+Assert-Equal 'promote-latest ABSENT LATEST_STATE' $promoteAbsent['LATEST_STATE'] 'ABSENT'
+
+$promoteStaleObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'STALE'
+$promoteStaleObs['ReadBackLatest'] = { New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $MainSha -OciVersion '1.3.5' }.GetNewClosure()
+$promoteStaleExec = New-FakeMutationExecutor -Outcome 'SUCCESS'
+$promoteStale = Invoke-PromoteLatestFixture -Observers $promoteStaleObs -Executor $promoteStaleExec -Execute
+Assert-Equal 'promote-latest STALE eligible APPLIED' $promoteStale['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'promote-latest STALE LATEST_STATE' $promoteStale['LATEST_STATE'] 'STALE'
+Assert-Equal 'promote-latest STALE one executor call' $script:MutationExecutorCalls.Count 1
+
+$promoteIncompleteObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'INCOMPLETE'
+$promoteIncomplete = Invoke-PromoteLatestFixture -Observers $promoteIncompleteObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest INCOMPLETE STOP' $promoteIncomplete['MUTATION_RESULT'] 'INCOMPLETE'
+Assert-Equal 'promote-latest INCOMPLETE zero executor' $script:MutationExecutorCalls.Count 0
+
+$promoteDigestMismatchObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA
+$promoteDigestMismatchObs['Ghcr'] = { param($ver, $shaArg) New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' -Digest $DigestB }.GetNewClosure()
+$promoteDigestMismatch = Invoke-PromoteLatestFixture -Observers $promoteDigestMismatchObs -Executor (New-FakeMutationExecutor) -Execute -Digest $DigestA
+Assert-Equal 'promote-latest version digest mismatch CONFLICT' $promoteDigestMismatch['MUTATION_RESULT'] 'CONFLICT'
+Assert-Equal 'promote-latest version digest guard' $promoteDigestMismatch['GUARD_EXPECTED_DIGEST'] 'CONFLICT'
+
+$promoteShaDigestMismatchObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA
+$promoteShaDigestMismatchObs['Ghcr'] = {
+    param($ver, $shaArg)
+    New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $MainSha -OciVersion '1.3.5' -ShaTagState 'PRESENT' -ShaTagDigest $DigestB
+}.GetNewClosure()
+$promoteShaDigestMismatch = Invoke-PromoteLatestFixture -Observers $promoteShaDigestMismatchObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest sha digest mismatch CONFLICT' $promoteShaDigestMismatch['MUTATION_RESULT'] 'CONFLICT'
+
+$promoteOciRevObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA
+$promoteOciRevObs['Ghcr'] = {
+    param($ver, $shaArg)
+    New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $WrongSha -OciVersion '1.3.5' -ShaTagState 'PRESENT' -ShaTagDigest $DigestA
+}.GetNewClosure()
+$promoteOciRev = Invoke-PromoteLatestFixture -Observers $promoteOciRevObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest OCI revision mismatch CONFLICT' $promoteOciRev['MUTATION_RESULT'] 'CONFLICT'
+Assert-Equal 'promote-latest OCI revision guard GHCR' $promoteOciRev['GUARD_GHCR'] 'CONFLICT'
+
+$promoteOciVerObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA
+$promoteOciVerObs['Ghcr'] = {
+    param($ver, $shaArg)
+    New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $MainSha -OciVersion '1.3.4' -ShaTagState 'PRESENT' -ShaTagDigest $DigestA
+}.GetNewClosure()
+$promoteOciVer = Invoke-PromoteLatestFixture -Observers $promoteOciVerObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest OCI version mismatch CONFLICT' $promoteOciVer['MUTATION_RESULT'] 'CONFLICT'
+
+$promoteTagMismatchObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA
+$promoteTagMismatchObs['GitTag'] = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $WrongSha }.GetNewClosure()
+$promoteTagMismatch = Invoke-PromoteLatestFixture -Observers $promoteTagMismatchObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest git tag mismatch CONFLICT' $promoteTagMismatch['MUTATION_RESULT'] 'CONFLICT'
+
+$promoteNugetRevObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA
+$promoteNugetRevObs['NugetRevision'] = { param($ver) [pscustomobject]@{ State = 'PRESENT'; Commit = $WrongSha; Reason = '' } }.GetNewClosure()
+$promoteNugetRev = Invoke-PromoteLatestFixture -Observers $promoteNugetRevObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest nuget revision mismatch CONFLICT' $promoteNugetRev['MUTATION_RESULT'] 'CONFLICT'
+Assert-equal 'promote-latest nuget revision guard' $promoteNugetRev['GUARD_NUGET_REVISION'] 'CONFLICT'
+
+$promoteReleaseMismatchObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA
+$promoteReleaseMismatchObs['GitHubRelease'] = { param($ver) New-ArtifactFact -State 'PRESENT' -Reason 'DRAFT' }.GetNewClosure()
+$promoteReleaseMismatch = Invoke-PromoteLatestFixture -Observers $promoteReleaseMismatchObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest github release mismatch CONFLICT' $promoteReleaseMismatch['MUTATION_RESULT'] 'CONFLICT'
+
+$promoteRunWaitingObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
+$promoteRunWaitingObs['PromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = '7001'; Status = 'waiting'; Conclusion = '' }
+}.GetNewClosure()
+$promoteRunWaiting = Invoke-PromoteLatestFixture -Observers $promoteRunWaitingObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest matching waiting run no redispatch' $promoteRunWaiting['MUTATION_RESULT'] 'ALREADY_APPLIED'
+Assert-Equal 'promote-latest matching waiting zero executor' $script:MutationExecutorCalls.Count 0
+
+$promoteRunFailedObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
+$promoteRunFailedObs['PromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'FAILED_MATCH'; Id = '7002'; Status = 'completed'; Conclusion = 'failure' }
+}.GetNewClosure()
+$promoteRunFailed = Invoke-PromoteLatestFixture -Observers $promoteRunFailedObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest matching failed run no retry' $promoteRunFailed['MUTATION_RESULT'] 'CONFLICT'
+Assert-Equal 'promote-latest matching failed zero executor' $script:MutationExecutorCalls.Count 0
+
+$promoteRunAmbigObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
+$promoteRunAmbigObs['PromoteLatestRun'] = {
+    param($identity)
+    [pscustomobject]@{ State = 'AMBIGUOUS'; Id = 'NONE' }
+}.GetNewClosure()
+$promoteRunAmbig = Invoke-PromoteLatestFixture -Observers $promoteRunAmbigObs -Executor (New-FakeMutationExecutor) -Execute
+Assert-Equal 'promote-latest multiple matching runs CONFLICT' $promoteRunAmbig['MUTATION_RESULT'] 'CONFLICT'
+
+$promotePostMismatchObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
+$promotePostMismatchObs['ReadBackLatest'] = { New-ArtifactFact -State 'PRESENT' -Digest $DigestB }.GetNewClosure()
+$promotePostMismatch = Invoke-PromoteLatestFixture -Observers $promotePostMismatchObs -Executor (New-FakeMutationExecutor -Outcome 'SUCCESS') -Execute
+Assert-Equal 'promote-latest post-readback digest mismatch CONFLICT' $promotePostMismatch['MUTATION_RESULT'] 'CONFLICT'
+
+$runIdentityMatch = Get-PromoteLatestRunIdentity -Version '1.3.5' -ReleaseCommitSha $MainSha -ExpectedDigest $DigestA
+$promoteRunObsSingle = ConvertTo-PromoteLatestRunObservation -Runs @(
+    (New-DispatchRun -Id '7100' -Path '.github/workflows/promote-release-latest.yml' -HeadSha $MainSha -Name $runIdentityMatch -Status 'in_progress' -Conclusion '')
+) -WorkflowPath '.github/workflows/promote-release-latest.yml' -RunIdentity $runIdentityMatch
+Assert-Equal 'promote-latest run obs in_progress candidate' $promoteRunObsSingle.State 'CANDIDATE_PRESENT'
+
+$promoteRunObsMulti = ConvertTo-PromoteLatestRunObservation -Runs @(
+    (New-DispatchRun -Id '7101' -Path '.github/workflows/promote-release-latest.yml' -HeadSha $MainSha -Name $runIdentityMatch),
+    (New-DispatchRun -Id '7102' -Path '.github/workflows/promote-release-latest.yml' -HeadSha $MainSha -DisplayTitle $runIdentityMatch)
+) -WorkflowPath '.github/workflows/promote-release-latest.yml' -RunIdentity $runIdentityMatch
+Assert-Equal 'promote-latest run obs multiple AMBIGUOUS' $promoteRunObsMulti.State 'AMBIGUOUS'
+
+$script:CommandRunnerCalls.Clear()
+$promoteProdRunner = New-FakeCommandRunner
+$promoteProdExec = New-ReleaseProductionPromoteLatestExecutor -CommandRunner $promoteProdRunner -RepoRoot $RepoRoot
+$promoteProdExecResult = & $promoteProdExec @{
+    Version          = '1.3.5'
+    ReleaseCommitSha = $MainSha
+    ExpectedDigest   = $DigestA
+}
+Assert-Equal 'promote-latest prod executor SUCCESS' $promoteProdExecResult.State 'SUCCESS'
+Assert-Equal 'promote-latest prod executor one call' $script:CommandRunnerCalls.Count 1
+Assert-RunnerCall -Name 'promote-latest prod gh' -Index 0 -Program 'gh' -ExpectedArgs @(
+    'workflow', 'run', 'promote-release-latest.yml',
+    '--repo', 'kooiei-in4a/amane-mailer',
+    '--ref', 'main',
+    '-f', ('release_version=1.3.5'),
+    '-f', ('release_commit_sha=' + $MainSha),
+    '-f', ('expected_digest=' + $DigestA)
+) -ExpectedCwd $RepoRoot
+
+$script:CommandRunnerCalls.Clear()
+$promoteProdObs = New-ReadyPromoteLatestObservers -Sha $MainSha -Digest $DigestA -LatestState 'ABSENT'
+$promoteProdObs['ReadBackLatest'] = { New-ArtifactFact -State 'PRESENT' -Digest $DigestA -Revision $MainSha -OciVersion '1.3.5' }.GetNewClosure()
+$promoteProdApplied = Invoke-PromoteLatestFixture -Observers $promoteProdObs -Execute -CommandRunner (New-FakeCommandRunner)
+Assert-Equal 'promote-latest production path APPLIED' $promoteProdApplied['MUTATION_RESULT'] 'APPLIED'
+Assert-Equal 'promote-latest production path runner calls' $script:CommandRunnerCalls.Count 1
+
+$promoteLatestReadBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{ Digest = $DigestA; Sha = $MainSha } -ScriptBlock {
+    param($c)
+    $null = Get-Command -Name Get-GhcrLatestObservation -CommandType Function -ErrorAction Stop
+    return New-ArtifactFact -State 'PRESENT' -Digest $c.Digest -Revision $c.Sha -OciVersion '1.3.5'
+}
+$promoteLatestFacts = [pscustomobject]@{
+    Version                  = '1.3.5'
+    ReleaseCommitSha         = $MainSha
+    ExpectedDigest           = $DigestA
+    GitTag                   = New-ArtifactFact -State 'PRESENT' -TargetSha $MainSha
+    Ghcr                     = New-ExactGhcrFact -Sha $MainSha -VersionValue '1.3.5' -Digest $DigestA
+    Nuget                    = New-ArtifactFact -State 'PRESENT'
+    GitHubRelease            = New-ArtifactFact -State 'PRESENT'
+    Latest                   = New-ArtifactFact -State 'ABSENT'
+    ContractsFetchState      = 'PRESENT'
+    ContractsVersion         = '1.3.5'
+    OpenApiFetchState        = 'PRESENT'
+    OpenApiVersion           = '1.3.5'
+    NugetRevisionFetchState  = 'PRESENT'
+    NugetRevisionCommit      = $MainSha
+    PromoteLatestRun         = 'ABSENT'
+    PromoteLatestRunId       = 'NONE'
+    PromoteLatestRunIdentity = $promoteIdentity
+    ReadBackFetcher          = $promoteLatestReadBackFetcher
+    Execute                  = $true
+    Executor                 = (New-FakeMutationExecutor -Outcome 'SUCCESS')
+}
+$promoteLatestProdReadbackMap = Get-ReleasePromoteLatestMutationStatus -Facts $promoteLatestFacts
+Assert-Equal 'promote-latest production readback APPLIED' $promoteLatestProdReadbackMap['MUTATION_RESULT'] 'APPLIED'
+
+$promoteCliNoDigest = Invoke-Cli -CliArgs @('promote-latest', '-Version', '1.3.5', '-ReleaseCommitSha', $MainSha)
+Assert-Equal 'CLI promote-latest without ExpectedDigest exit 2' $promoteCliNoDigest.ExitCode 2
+Assert-True 'CLI promote-latest mentions ExpectedDigest' ($promoteCliNoDigest.Output -match 'ExpectedDigest') 'missing ExpectedDigest usage text'
 
 # --- self-test source stays ASCII ---
 $sourceBytes = [System.IO.File]::ReadAllBytes($PSCommandPath)

@@ -1,0 +1,237 @@
+name: Promote Release Latest
+
+# Digest-preserving promotion of GHCR :latest as a mutable closeout alias.
+# Does NOT rebuild images. Does NOT change version/SHA tags.
+# Tooling workflow commit (GITHUB_SHA) is not the release source.
+# Release identity is explicit: release_version + release_commit_sha + expected_digest.
+
+run-name: "promote-latest ${{ inputs.release_version }} ${{ inputs.release_commit_sha }} ${{ inputs.expected_digest }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Release version major.minor.patch (e.g. 1.3.5, no leading v)
+        required: true
+        type: string
+      release_commit_sha:
+        description: Frozen 40-hex releaseCommitSha (not the tooling workflow commit)
+        required: true
+        type: string
+      expected_digest:
+        description: Already-verified OCI digest (sha256:<64 lowercase hex>)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-release-latest-${{ inputs.release_version }}-${{ inputs.release_commit_sha }}-${{ inputs.expected_digest }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/amane-mailer
+
+jobs:
+  promote-latest:
+    name: Promote latest alias without rebuild
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Require canonical main workflow
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "${GITHUB_REF}" == "refs/heads/main" ]] \
+            || { echo '::error::latest promotion must be dispatched from refs/heads/main'; exit 1; }
+          expected_ref="${GITHUB_REPOSITORY}/.github/workflows/promote-release-latest.yml@refs/heads/main"
+          [[ "${GITHUB_WORKFLOW_REF}" == "${expected_ref}" ]] \
+            || { echo '::error::workflow identity mismatch'; exit 1; }
+
+      - name: Validate explicit release identity inputs
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${RELEASE_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || { echo '::error::release_version must be major.minor.patch'; exit 1; }
+          [[ "${RELEASE_COMMIT_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo '::error::release_commit_sha must be 40 lowercase hex'; exit 1; }
+          [[ "${EXPECTED_DIGEST}" =~ ^sha256:[a-f0-9]{64}$ ]] \
+            || { echo '::error::expected_digest must be sha256:<64 lowercase hex>'; exit 1; }
+          # Tooling commit must not be treated as the release source.
+          if [[ "${RELEASE_COMMIT_SHA}" == "${GITHUB_SHA}" ]]; then
+            echo '::notice::release_commit_sha equals tooling GITHUB_SHA for this dispatch; that is allowed only when they happen to match.'
+          fi
+
+      - name: Checkout tooling workflow commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned crane
+        id: crane
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pin_dir="${RUNNER_TEMP}/pinned-crane"
+          bash scripts/install-pinned-crane.sh "${pin_dir}"
+          echo "bin=${pin_dir}/crane" >> "$GITHUB_OUTPUT"
+          "${pin_dir}/crane" version
+
+      - name: Revalidate version and SHA tags against expected digest
+        id: source
+        shell: bash
+        env:
+          CRANE_BIN: ${{ steps.crane.outputs.bin }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+        run: |
+          set -Eeuo pipefail
+          version_ref="${IMAGE_REPOSITORY}:v${RELEASE_VERSION}"
+          sha_ref="${IMAGE_REPOSITORY}:sha-${RELEASE_COMMIT_SHA}"
+          version_digest="$("${CRANE_BIN}" digest "${version_ref}")"
+          sha_digest="$("${CRANE_BIN}" digest "${sha_ref}")"
+          [[ "${version_digest}" == "${EXPECTED_DIGEST}" ]] \
+            || { echo '::error::version tag digest does not match expected_digest'; exit 1; }
+          [[ "${sha_digest}" == "${EXPECTED_DIGEST}" ]] \
+            || { echo '::error::sha tag digest does not match expected_digest'; exit 1; }
+
+          config_json="$("${CRANE_BIN}" config "${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}")"
+          oci_version="$(printf '%s' "${config_json}" | python3 -c 'import json,sys; c=json.load(sys.stdin); print((c.get("config") or {}).get("Labels", {}).get("org.opencontainers.image.version",""))')"
+          oci_revision="$(printf '%s' "${config_json}" | python3 -c 'import json,sys; c=json.load(sys.stdin); print((c.get("config") or {}).get("Labels", {}).get("org.opencontainers.image.revision",""))')"
+          [[ "${oci_version}" == "${RELEASE_VERSION}" ]] \
+            || { echo '::error::OCI version label does not match release_version'; exit 1; }
+          [[ "${oci_revision}" == "${RELEASE_COMMIT_SHA}" ]] \
+            || { echo '::error::OCI revision label does not match release_commit_sha'; exit 1; }
+
+          latest_state=ABSENT
+          if latest_digest="$("${CRANE_BIN}" digest "${IMAGE_REPOSITORY}:latest" 2>/dev/null)"; then
+            if [[ "${latest_digest}" == "${EXPECTED_DIGEST}" ]]; then
+              latest_state=EXACT_MATCH
+            else
+              latest_state=STALE
+            fi
+          else
+            latest_digest=NONE
+            latest_state=ABSENT
+          fi
+          echo "latest_state=${latest_state}" >> "$GITHUB_OUTPUT"
+          echo "latest_digest_before=${latest_digest}" >> "$GITHUB_OUTPUT"
+          echo "version_digest=${version_digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip when latest already exact
+        id: skip
+        if: steps.source.outputs.latest_state == 'EXACT_MATCH'
+        shell: bash
+        env:
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+          LATEST_DIGEST: ${{ steps.source.outputs.latest_digest_before }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${LATEST_DIGEST}" == "${EXPECTED_DIGEST}" ]] \
+            || { echo '::error::skip path requires latest digest equality'; exit 1; }
+          echo 'latest already resolves to expected digest; no mutation'
+
+      - name: Login to GHCR
+        if: steps.source.outputs.latest_state != 'EXACT_MATCH'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote latest by digest-preserving copy
+        id: promote
+        if: steps.source.outputs.latest_state != 'EXACT_MATCH'
+        shell: bash
+        env:
+          CRANE_BIN: ${{ steps.crane.outputs.bin }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+        run: |
+          set -Eeuo pipefail
+          # Re-check immediately before mutation (race-safe).
+          version_digest="$("${CRANE_BIN}" digest "${IMAGE_REPOSITORY}:v${{ inputs.release_version }}")"
+          sha_digest="$("${CRANE_BIN}" digest "${IMAGE_REPOSITORY}:sha-${{ inputs.release_commit_sha }}")"
+          [[ "${version_digest}" == "${EXPECTED_DIGEST}" ]] \
+            || { echo '::error::pre-copy version digest mismatch'; exit 1; }
+          [[ "${sha_digest}" == "${EXPECTED_DIGEST}" ]] \
+            || { echo '::error::pre-copy sha digest mismatch'; exit 1; }
+          if current_latest="$("${CRANE_BIN}" digest "${IMAGE_REPOSITORY}:latest" 2>/dev/null)"; then
+            if [[ "${current_latest}" == "${EXPECTED_DIGEST}" ]]; then
+              echo 'latest became exact before copy; treating as no-op success'
+              echo "mutated=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          "${CRANE_BIN}" copy "${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}" "${IMAGE_REPOSITORY}:latest"
+          echo "mutated=true" >> "$GITHUB_OUTPUT"
+
+      - name: Read back latest digest and OCI labels
+        shell: bash
+        env:
+          CRANE_BIN: ${{ steps.crane.outputs.bin }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+          EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+          LATEST_STATE_BEFORE: ${{ steps.source.outputs.latest_state }}
+          MUTATED: ${{ steps.promote.outputs.mutated || 'false' }}
+        run: |
+          set -Eeuo pipefail
+          latest_digest="$("${CRANE_BIN}" digest "${IMAGE_REPOSITORY}:latest")"
+          [[ "${latest_digest}" == "${EXPECTED_DIGEST}" ]] \
+            || { echo '::error::post-promotion latest digest mismatch'; exit 1; }
+
+          config_json="$("${CRANE_BIN}" config "${IMAGE_REPOSITORY}:latest")"
+          oci_version="$(printf '%s' "${config_json}" | python3 -c 'import json,sys; c=json.load(sys.stdin); print((c.get("config") or {}).get("Labels", {}).get("org.opencontainers.image.version",""))')"
+          oci_revision="$(printf '%s' "${config_json}" | python3 -c 'import json,sys; c=json.load(sys.stdin); print((c.get("config") or {}).get("Labels", {}).get("org.opencontainers.image.revision",""))')"
+          [[ "${oci_version}" == "${RELEASE_VERSION}" ]] \
+            || { echo '::error::latest OCI version label mismatch'; exit 1; }
+          [[ "${oci_revision}" == "${RELEASE_COMMIT_SHA}" ]] \
+            || { echo '::error::latest OCI revision label mismatch'; exit 1; }
+
+          mkdir -p artifacts/promote-latest
+          export OCI_VERSION_OUT="${oci_version}"
+          export OCI_REVISION_OUT="${oci_revision}"
+          export LATEST_DIGEST_OUT="${latest_digest}"
+          EVIDENCE_PATH="${GITHUB_WORKSPACE}/artifacts/promote-latest/promote-latest-evidence.json" \
+          python3 - <<'PY'
+          import json, os
+          evidence = {
+              "schemaVersion": 1,
+              "operation": "promote-latest",
+              "repository": os.environ["IMAGE_REPOSITORY"],
+              "releaseVersion": os.environ["RELEASE_VERSION"],
+              "releaseCommitSha": os.environ["RELEASE_COMMIT_SHA"],
+              "expectedDigest": os.environ["EXPECTED_DIGEST"],
+              "latestDigest": os.environ["LATEST_DIGEST_OUT"],
+              "latestStateBefore": os.environ.get("LATEST_STATE_BEFORE", ""),
+              "mutated": os.environ.get("MUTATED", ""),
+              "toolingWorkflowSha": os.environ.get("GITHUB_SHA", ""),
+              "ociVersion": os.environ.get("OCI_VERSION_OUT", ""),
+              "ociRevision": os.environ.get("OCI_REVISION_OUT", ""),
+          }
+          path = os.environ["EVIDENCE_PATH"]
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(evidence, f, indent=2, sort_keys=True)
+              f.write("\n")
+          print(f"wrote {path}")
+          PY
+
+      - name: Upload promote-latest evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: promote-latest-evidence
+          path: artifacts/promote-latest/promote-latest-evidence.json
+          if-no-files-found: error
