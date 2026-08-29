@@ -2121,9 +2121,32 @@ finally {
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$authorityObsLive = Get-CurrentPublicAuthorityObservation -RepoRoot $RepoRoot
-Assert-Equal 'live authority observation present' $authorityObsLive.State 'PRESENT'
-Assert-Equal 'live authority version' $authorityObsLive.Authority.Version '1.3.4'
+# Observation API must be proven on fixtures, not caller-repo live current-public.json (#679 follow-up).
+$observationFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-authority-obs-' + [Guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $observationFixtureRoot -Force | Out-Null
+try {
+    Initialize-PostSyncFixtureRepo -Root $observationFixtureRoot -AuthorityVersion '1.3.4'
+    $predecessorObs = Get-CurrentPublicAuthorityObservation -RepoRoot $observationFixtureRoot
+    Assert-Equal 'PREDECESSOR_AUTHORITY_OBSERVATION' $predecessorObs.State 'PRESENT'
+    Assert-Equal 'PREDECESSOR_VERSION' $predecessorObs.Authority.Version '1.3.4'
+    Assert-Equal 'predecessor authority observation tag' $predecessorObs.Authority.Tag 'v1.3.4'
+
+    $observationTargetRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-authority-obs-target-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $observationTargetRoot -Force | Out-Null
+    try {
+        Initialize-PostSyncFixtureRepo -Root $observationTargetRoot -AuthorityVersion '1.3.4' -SynchronizedTo135
+        $targetObs = Get-CurrentPublicAuthorityObservation -RepoRoot $observationTargetRoot
+        Assert-Equal 'TARGET_AUTHORITY_OBSERVATION' $targetObs.State 'PRESENT'
+        Assert-Equal 'TARGET_VERSION' $targetObs.Authority.Version '1.3.5'
+        Assert-equal 'target authority observation tag' $targetObs.Authority.Tag 'v1.3.5'
+    }
+    finally {
+        Remove-Item -LiteralPath $observationTargetRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+finally {
+    Remove-Item -LiteralPath $observationFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # --- #675 post-mutation readback visibility fix + promote-latest ---
 # Reproduce the Phase 3 defect: GetNewClosure created inside the module loses private command lookup.
