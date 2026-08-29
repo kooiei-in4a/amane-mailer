@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Clean-state release smoke for the published Mailer image (issue #11).
 #
-# Pulls ghcr.io/kooiei-in4a/amane-mailer:v1.3.4, starts Mailer + Mailpit from a
+# Pulls ghcr.io/kooiei-in4a/amane-mailer:v1.3.5, starts Mailer + Mailpit from a
 # clean compose project and named volume, and exercises the public release
 # runtime path end to end:
 #
@@ -21,7 +21,7 @@
 #
 # Config via environment (all optional):
 #   MAILER_IMAGE_REPOSITORY  default ghcr.io/kooiei-in4a/amane-mailer
-#   MAILER_IMAGE_TAG         default v1.3.4
+#   MAILER_IMAGE_TAG         default v1.3.5
 #   MAILER_IMAGE_PLATFORM    default linux/amd64 (runtime image platform to smoke)
 #   MAILER_PULL_POLICY       default always   (set "missing" to reuse a local image)
 #   MAILPIT_IMAGE            default axllent/mailpit:latest
@@ -38,7 +38,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd)"
 COMPOSE_FILE="$REPO_ROOT/infra/docker/docker-compose.release-smoke.yml"
 
 export MAILER_IMAGE_REPOSITORY="${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}"
-export MAILER_IMAGE_TAG="${MAILER_IMAGE_TAG:-v1.3.4}"
+export MAILER_IMAGE_TAG="${MAILER_IMAGE_TAG:-v1.3.5}"
 export MAILER_IMAGE_PLATFORM="${MAILER_IMAGE_PLATFORM:-linux/amd64}"
 export MAILER_PULL_POLICY="${MAILER_PULL_POLICY:-always}"
 export MAILPIT_IMAGE="${MAILPIT_IMAGE:-axllent/mailpit:latest}"
