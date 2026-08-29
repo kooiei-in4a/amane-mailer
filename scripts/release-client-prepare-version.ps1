@@ -40,6 +40,34 @@ $script:PrepareVersionPreservedPaths = @(
     'CHANGELOG.md'
 )
 
+# Optional test seam for bounded local writes. Production path uses Write-PostSyncTextFile.
+# FailAfter: after N successful writes, the next write throws (null disables injection).
+$script:PrepareVersionFileWriterFailAfter = $null
+$script:PrepareVersionFileWriterCallCount = 0
+
+function Set-PrepareVersionFileWriterFailAfter {
+    param(
+        [AllowNull()]
+        $FailAfter
+    )
+    $script:PrepareVersionFileWriterFailAfter = $FailAfter
+    $script:PrepareVersionFileWriterCallCount = 0
+}
+
+function Invoke-PrepareVersionOwnedFileWrite {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+    if ($null -ne $script:PrepareVersionFileWriterFailAfter) {
+        $script:PrepareVersionFileWriterCallCount = [int]$script:PrepareVersionFileWriterCallCount + 1
+        if ([int]$script:PrepareVersionFileWriterCallCount -gt [int]$script:PrepareVersionFileWriterFailAfter) {
+            throw 'injected later owned-file write failure'
+        }
+    }
+    Write-PostSyncTextFile -Path $Path -Content $Content
+}
+
 function Get-PrepareVersionReleaseRecordRelativePath {
     param([string]$Version)
     return ('docs/releases/v{0}.md' -f $Version)
@@ -196,13 +224,18 @@ function Get-PrepareVersionOwnedFileState {
     param(
         [string]$ObservedVersion,
         [string]$TargetVersion,
+        [string]$CanonicalPredecessor,
         [bool]$FilePresent
     )
     if (-not $FilePresent) { return 'ABSENT' }
     if ([string]::IsNullOrWhiteSpace($ObservedVersion)) { return 'INCOMPLETE' }
     if (-not (Test-ReleaseVersion $ObservedVersion)) { return 'CONFLICT' }
     if ($ObservedVersion -eq $TargetVersion) { return 'TARGET' }
-    return 'PREDECESSOR'
+    if ((Test-ReleaseVersion $CanonicalPredecessor) -and ($ObservedVersion -eq $CanonicalPredecessor)) {
+        return 'PREDECESSOR'
+    }
+    # Valid SemVer that is neither target nor canonical predecessor is contradictory.
+    return 'CONFLICT'
 }
 
 function Get-PrepareVersionReleaseRecordFileState {
@@ -268,6 +301,7 @@ function Get-ReleasePrepareVersionPlan {
         ContractsState          = 'INCOMPLETE'
         OpenApiState            = 'INCOMPLETE'
         ReleaseRecordState      = 'INCOMPLETE'
+        CanonicalPredecessor    = ''
         ChangelogBoundary       = 'REVIEWED_ENTRY_REQUIRED'
         FilesPlanned            = @()
         FilesChanged            = @()
@@ -290,6 +324,36 @@ function Get-ReleasePrepareVersionPlan {
     $before = Get-PrepareVersionPreservedFingerprintMap -RepoRoot $RepoRoot
     $plan.BeforeFingerprints = $before
 
+    $authorityObs = Get-CurrentPublicAuthorityObservation -RepoRoot $RepoRoot
+    if ($authorityObs.State -ne 'PRESENT' -or $null -eq $authorityObs.Authority -or $authorityObs.Authority.State -ne 'VALID') {
+        $plan.PrepState = 'CONFLICT'
+        $plan.MutationResult = 'CONFLICT'
+        $plan.Reason = 'AUTHORITY_UNREADABLE_OR_INVALID'
+        $plan.ContractsState = 'INCOMPLETE'
+        $plan.OpenApiState = 'INCOMPLETE'
+        $plan.ReleaseRecordState = 'INCOMPLETE'
+        return $plan
+    }
+
+    $canonicalPredecessor = [string]$authorityObs.Authority.Version
+    $plan.CanonicalPredecessor = $canonicalPredecessor
+    if (-not (Test-ReleaseVersion $canonicalPredecessor)) {
+        $plan.PrepState = 'CONFLICT'
+        $plan.MutationResult = 'CONFLICT'
+        $plan.Reason = 'AUTHORITY_UNREADABLE_OR_INVALID'
+        return $plan
+    }
+
+    if ($TargetVersion -eq $canonicalPredecessor) {
+        $plan.PrepState = 'CONFLICT'
+        $plan.MutationResult = 'CONFLICT'
+        $plan.Reason = 'TARGET_EQUALS_PREDECESSOR'
+        $plan.ContractsState = 'CONFLICT'
+        $plan.OpenApiState = 'CONFLICT'
+        $plan.ReleaseRecordState = 'CONFLICT'
+        return $plan
+    }
+
     $contractsRel = $script:PrepareVersionOwnedPaths[0]
     $openapiRel = $script:PrepareVersionOwnedPaths[1]
     $contractsPath = Join-Path $RepoRoot $contractsRel
@@ -308,8 +372,8 @@ function Get-ReleasePrepareVersionPlan {
 
     $contractsVersion = Get-ContractsVersionFromText -Text $contractsText
     $openapiVersion = Get-OpenApiVersionFromText -Text $openapiText
-    $plan.ContractsState = Get-PrepareVersionOwnedFileState -ObservedVersion $contractsVersion -TargetVersion $TargetVersion -FilePresent $contractsPresent
-    $plan.OpenApiState = Get-PrepareVersionOwnedFileState -ObservedVersion $openapiVersion -TargetVersion $TargetVersion -FilePresent $openapiPresent
+    $plan.ContractsState = Get-PrepareVersionOwnedFileState -ObservedVersion $contractsVersion -TargetVersion $TargetVersion -CanonicalPredecessor $canonicalPredecessor -FilePresent $contractsPresent
+    $plan.OpenApiState = Get-PrepareVersionOwnedFileState -ObservedVersion $openapiVersion -TargetVersion $TargetVersion -CanonicalPredecessor $canonicalPredecessor -FilePresent $openapiPresent
 
     $recordObs = Get-PrepareVersionReleaseRecordFileState -RepoRoot $RepoRoot -Version $TargetVersion
     $plan.ReleaseRecordState = $recordObs.State
@@ -407,13 +471,28 @@ function Get-ReleasePrepareVersionPlan {
     }
 
     $changed = New-Object System.Collections.Generic.List[string]
-    foreach ($write in $writes) {
-        $fullPath = Join-Path $RepoRoot $write.Path
-        Write-PostSyncTextFile -Path $fullPath -Content $write.Content
-        [void]$changed.Add($write.Path)
+    $plan.MutationAttempted = 'TRUE'
+    try {
+        foreach ($write in $writes) {
+            $fullPath = Join-Path $RepoRoot $write.Path
+            Invoke-PrepareVersionOwnedFileWrite -Path $fullPath -Content $write.Content
+            [void]$changed.Add($write.Path)
+        }
+    }
+    catch {
+        # Partial local writes may remain; do not claim APPLIED. Next invocation fail-closes on MIXED.
+        $plan.MutationPerformed = 'FALSE'
+        $plan.MutationResult = 'INCOMPLETE'
+        $plan.PrepState = 'CONFLICT'
+        $plan.Reason = 'OWNED_FILE_WRITE_FAILED'
+        $plan.FilesChanged = @($changed | Sort-Object)
+        $afterFailed = Get-PrepareVersionPreservedFingerprintMap -RepoRoot $RepoRoot
+        $plan.AfterFingerprints = $afterFailed
+        $plan.CurrentPublicPreserved = if ($before['release/current-public.json'] -eq $afterFailed['release/current-public.json']) { 'TRUE' } else { 'FALSE' }
+        $plan.FollowersPreserved = if (Test-PrepareVersionFingerprintsUnchanged -Before $before -After $afterFailed) { 'TRUE' } else { 'FALSE' }
+        return $plan
     }
 
-    $plan.MutationAttempted = 'TRUE'
     $plan.MutationPerformed = 'TRUE'
     $plan.MutationResult = 'APPLIED'
     $plan.FilesChanged = @($changed | Sort-Object)

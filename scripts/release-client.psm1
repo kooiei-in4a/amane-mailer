@@ -17,6 +17,8 @@ $script:CanonicalOwnerRepo = 'kooiei-in4a/amane-mailer'
 $script:GitHubApiRoot = 'https://api.github.com/repos/kooiei-in4a/amane-mailer'
 $script:GhcrRepository = 'kooiei-in4a/amane-mailer'
 $script:NugetPackageId = 'amane.mailer.contracts'
+# Gallery / consumer-facing package id (case-preserving). Flat-container paths use NugetPackageId.
+$script:NugetPackageDisplayId = 'Amane.Mailer.Contracts'
 $script:UserAgent = 'amane-mailer-release-client-ro1'
 $script:Sha40 = '^[0-9a-f]{40}$'
 $script:Digest64 = '^sha256:[0-9a-f]{64}$'
@@ -1073,8 +1075,10 @@ function Get-NugetSymbolsObservation {
     if (-not (Test-ReleaseVersion $Version)) {
         return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'INVALID_VERSION' }
     }
-    $fileName = $script:NugetPackageId + '.' + $Version + '.snupkg'
-    $uri = 'https://api.nuget.org/v3-flatcontainer/' + $script:NugetPackageId + '/' + $Version + '/' + $fileName
+    # Canonical availability probe is the NuGet Gallery symbolpackage endpoint documented in
+    # docs/ops/release-artifact-verification.md (historical v1.x consumer verification path).
+    # Do NOT probe PackageBaseAddress / flat-container for symbol packages; that contract is for .nupkg only.
+    $uri = 'https://www.nuget.org/api/v2/symbolpackage/' + $script:NugetPackageDisplayId + '/' + $Version
     $resp = if ($null -ne $Request) {
         & $Request $uri $null
     }
@@ -5109,5 +5113,6 @@ Export-ModuleMember -Function @(
     'Set-OpenApiVersionInText',
     'Get-ReleasePrepareVersionPlan',
     'Format-ReleasePrepareVersionLines',
-    'Invoke-ReleasePrepareVersion'
+    'Invoke-ReleasePrepareVersion',
+    'Set-PrepareVersionFileWriterFailAfter'
 )
