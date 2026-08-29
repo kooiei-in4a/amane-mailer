@@ -150,6 +150,25 @@ function New-ArtifactFact {
     }
 }
 
+# GetNewClosure() creates a dynamic module that cannot resolve this module's
+# non-exported functions. Bind the body back into the release-client module so
+# production post-readback can call private observers without Export-ModuleMember.
+function New-ReleaseModuleBoundScriptBlock {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$ScriptBlock,
+        [hashtable]$Capture = @{}
+    )
+    $module = $MyInvocation.MyCommand.Module
+    $bag = @{}
+    foreach ($key in @($Capture.Keys)) {
+        $bag[$key] = $Capture[$key]
+    }
+    return {
+        & $module $ScriptBlock $bag
+    }.GetNewClosure()
+}
+
 function New-ReleaseObservations {
     param(
         [Parameter(Mandatory = $true)]
@@ -1953,19 +1972,25 @@ function Convert-GitHubWorkflowRunsJson {
         $head = ''
         $status = ''
         $conclusion = ''
+        $name = ''
+        $displayTitle = ''
         if ($run.PSObject.Properties['id']) { $id = [string]$run.id }
         if ($run.PSObject.Properties['path']) { $path = [string]$run.path }
         if ($run.PSObject.Properties['event']) { $event = [string]$run.event }
         if ($run.PSObject.Properties['head_sha']) { $head = [string]$run.head_sha }
         if ($run.PSObject.Properties['status']) { $status = [string]$run.status }
         if ($run.PSObject.Properties['conclusion']) { $conclusion = [string]$run.conclusion }
+        if ($run.PSObject.Properties['name']) { $name = [string]$run.name }
+        if ($run.PSObject.Properties['display_title']) { $displayTitle = [string]$run.display_title }
         [void]$list.Add([pscustomobject]@{
-            Id         = $id
-            Path       = $path
-            Event      = $event
-            HeadSha    = $head
-            Status     = $status
-            Conclusion = $conclusion
+            Id           = $id
+            Path         = $path
+            Event        = $event
+            HeadSha      = $head
+            Status       = $status
+            Conclusion   = $conclusion
+            Name         = $name
+            DisplayTitle = $displayTitle
         })
     }
     # PS 5.1 can throw "Argument types do not match" on @($List[object]).
@@ -3380,6 +3405,37 @@ function New-ReleaseProductionCreateGitHubReleaseExecutor {
     }.GetNewClosure()
 }
 
+function New-ReleaseProductionPromoteLatestExecutor {
+    param(
+        $CommandRunner,
+        [string]$RepoRoot = ''
+    )
+
+    $runner = Resolve-ReleaseCommandRunner -CommandRunner $CommandRunner
+    $ownerRepo = $script:CanonicalOwnerRepo
+    return {
+        param($ArgumentTable)
+        $version = [string]$ArgumentTable.Version
+        $sha = [string]$ArgumentTable.ReleaseCommitSha
+        $digest = [string]$ArgumentTable.ExpectedDigest
+        if ($version -notmatch $script:VersionXyz -or $sha -notmatch $script:Sha40 -or $digest -notmatch $script:Digest64) {
+            return [pscustomobject]@{ State = 'FAILED_BEFORE_MUTATION' }
+        }
+        $result = & $runner 'gh' @(
+            'workflow', 'run', 'promote-release-latest.yml',
+            '--repo', $ownerRepo,
+            '--ref', 'main',
+            '-f', ('release_version=' + $version),
+            '-f', ('release_commit_sha=' + $sha),
+            '-f', ('expected_digest=' + $digest)
+        ) $RepoRoot
+        if ($result.ExitCode -ne 0) {
+            return [pscustomobject]@{ State = 'FAILED_BEFORE_MUTATION' }
+        }
+        return [pscustomobject]@{ State = 'SUCCESS' }
+    }.GetNewClosure()
+}
+
 function New-ReleaseProductionMutationExecutor {
     param(
         [Parameter(Mandatory = $true)]
@@ -3401,6 +3457,9 @@ function New-ReleaseProductionMutationExecutor {
         }
         'create-github-release' {
             return New-ReleaseProductionCreateGitHubReleaseExecutor -RepoRoot $RepoRoot -CommandRunner $CommandRunner
+        }
+        'promote-latest' {
+            return New-ReleaseProductionPromoteLatestExecutor -CommandRunner $CommandRunner -RepoRoot $RepoRoot
         }
         default {
             throw ("release-client: unsupported production mutation command '{0}'." -f $CommandName)
@@ -3561,19 +3620,26 @@ function Invoke-ReleasePublishImage {
     $readBackFetcher = $null
     if ($Execute) {
         if ($null -ne $Observers -and $Observers.Contains('ReadBackImagePublishRun')) {
-            $readBackFetcher = {
-                $obs = & $Observers['ReadBackImagePublishRun'] $ReleaseCommitSha
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                Observers        = $Observers
+                ReleaseCommitSha = $ReleaseCommitSha
+            } -ScriptBlock {
+                param($c)
+                $obs = & $c.Observers['ReadBackImagePublishRun'] $c.ReleaseCommitSha
                 if ($null -eq $obs) { return 'INCOMPLETE' }
                 return [string]$obs.State
-            }.GetNewClosure()
+            }
         }
         else {
-            $readBackFetcher = {
-                $runFetch = Get-GitHubWorkflowDispatchRuns -ReleaseCommitSha $ReleaseCommitSha
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                ReleaseCommitSha = $ReleaseCommitSha
+            } -ScriptBlock {
+                param($c)
+                $runFetch = Get-GitHubWorkflowDispatchRuns -ReleaseCommitSha $c.ReleaseCommitSha
                 if ($runFetch.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
-                $runObs = ConvertTo-WorkflowDispatchRunObservation -Runs $runFetch.Runs -WorkflowPath '.github/workflows/publish-release-image.yml' -ReleaseCommitSha $ReleaseCommitSha
+                $runObs = ConvertTo-WorkflowDispatchRunObservation -Runs $runFetch.Runs -WorkflowPath '.github/workflows/publish-release-image.yml' -ReleaseCommitSha $c.ReleaseCommitSha
                 return [string]$runObs.State
-            }.GetNewClosure()
+            }
         }
     }
 
@@ -3697,15 +3763,21 @@ function Invoke-ReleaseCreateTag {
     $readBackFetcher = $null
     if ($Execute) {
         if ($null -ne $Observers -and $Observers.Contains('ReadBackGitTag')) {
-            $readBackFetcher = {
-                $fact = & $Observers['ReadBackGitTag'] $Version
-                return $fact
-            }.GetNewClosure()
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                Observers = $Observers
+                Version   = $Version
+            } -ScriptBlock {
+                param($c)
+                return & $c.Observers['ReadBackGitTag'] $c.Version
+            }
         }
         else {
-            $readBackFetcher = {
-                return Get-GitTagObservation -Version $Version
-            }.GetNewClosure()
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                Version = $Version
+            } -ScriptBlock {
+                param($c)
+                return Get-GitTagObservation -Version $c.Version
+            }
         }
     }
 
@@ -3861,19 +3933,26 @@ function Invoke-ReleasePublishNuget {
     $readBackFetcher = $null
     if ($Execute) {
         if ($null -ne $Observers -and $Observers.Contains('ReadBackNugetPublishRun')) {
-            $readBackFetcher = {
-                $obs = & $Observers['ReadBackNugetPublishRun'] $ReleaseCommitSha
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                Observers        = $Observers
+                ReleaseCommitSha = $ReleaseCommitSha
+            } -ScriptBlock {
+                param($c)
+                $obs = & $c.Observers['ReadBackNugetPublishRun'] $c.ReleaseCommitSha
                 if ($null -eq $obs) { return 'INCOMPLETE' }
                 return [string]$obs.State
-            }.GetNewClosure()
+            }
         }
         else {
-            $readBackFetcher = {
-                $runFetch = Get-GitHubWorkflowDispatchRuns -ReleaseCommitSha $ReleaseCommitSha
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                ReleaseCommitSha = $ReleaseCommitSha
+            } -ScriptBlock {
+                param($c)
+                $runFetch = Get-GitHubWorkflowDispatchRuns -ReleaseCommitSha $c.ReleaseCommitSha
                 if ($runFetch.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
-                $runObs = ConvertTo-WorkflowDispatchRunObservation -Runs $runFetch.Runs -WorkflowPath '.github/workflows/publish-contracts.yml' -ReleaseCommitSha $ReleaseCommitSha
+                $runObs = ConvertTo-WorkflowDispatchRunObservation -Runs $runFetch.Runs -WorkflowPath '.github/workflows/publish-contracts.yml' -ReleaseCommitSha $c.ReleaseCommitSha
                 return [string]$runObs.State
-            }.GetNewClosure()
+            }
         }
     }
 
@@ -4047,26 +4126,38 @@ function Invoke-ReleaseCreateGitHubRelease {
     $readBackTagFetcher = $null
     if ($Execute) {
         if ($null -ne $Observers -and $Observers.Contains('ReadBackGitHubRelease')) {
-            $readBackFetcher = {
-                $fact = & $Observers['ReadBackGitHubRelease'] $Version
-                return $fact
-            }.GetNewClosure()
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                Observers = $Observers
+                Version   = $Version
+            } -ScriptBlock {
+                param($c)
+                return & $c.Observers['ReadBackGitHubRelease'] $c.Version
+            }
         }
         else {
-            $readBackFetcher = {
-                return Get-GitHubReleaseObservation -Version $Version
-            }.GetNewClosure()
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                Version = $Version
+            } -ScriptBlock {
+                param($c)
+                return Get-GitHubReleaseObservation -Version $c.Version
+            }
         }
         if ($null -ne $Observers -and $Observers.Contains('ReadBackGitTag')) {
-            $readBackTagFetcher = {
-                $fact = & $Observers['ReadBackGitTag'] $Version
-                return $fact
-            }.GetNewClosure()
+            $readBackTagFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                Observers = $Observers
+                Version   = $Version
+            } -ScriptBlock {
+                param($c)
+                return & $c.Observers['ReadBackGitTag'] $c.Version
+            }
         }
         else {
-            $readBackTagFetcher = {
-                return Get-GitTagObservation -Version $Version
-            }.GetNewClosure()
+            $readBackTagFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                Version = $Version
+            } -ScriptBlock {
+                param($c)
+                return Get-GitTagObservation -Version $c.Version
+            }
         }
     }
 
@@ -4100,6 +4191,620 @@ function Invoke-ReleaseCreateGitHubRelease {
     return $map
 }
 
+$script:PromoteLatestWorkflowPath = '.github/workflows/promote-release-latest.yml'
+$script:PromoteLatestMutationKeys = @(
+    'COMMAND',
+    'VERSION',
+    'RELEASE_COMMIT_SHA',
+    'EXPECTED_DIGEST',
+    'MUTATION_RESULT',
+    'MUTATION_ATTEMPTED',
+    'HUMAN_AUTHORIZATION_REQUIRED',
+    'LATEST_STATE',
+    'GUARD_EXPECTED_DIGEST',
+    'GUARD_GHCR',
+    'GUARD_GIT_TAG',
+    'GUARD_CONTRACTS_SOURCE',
+    'GUARD_OPENAPI',
+    'GUARD_NUGET',
+    'GUARD_NUGET_REVISION',
+    'GUARD_GITHUB_RELEASE',
+    'GUARD_PROMOTE_LATEST_RUN',
+    'PROMOTE_LATEST_RUN_ID',
+    'PROMOTE_LATEST_RUN_IDENTITY',
+    'MUTATION_PERFORMED'
+)
+
+function Get-PromoteLatestRunIdentity {
+    param(
+        [string]$Version,
+        [string]$ReleaseCommitSha,
+        [string]$ExpectedDigest
+    )
+    return ('promote-latest {0} {1} {2}' -f $Version, $ReleaseCommitSha, $ExpectedDigest)
+}
+
+function ConvertTo-ExpectedDigestMatchGuardState {
+    param(
+        $GhcrFact,
+        [string]$ExpectedDigest
+    )
+    if (-not (Test-ReleaseDigest $ExpectedDigest)) { return 'INCOMPLETE' }
+    if ($null -eq $GhcrFact) { return 'INCOMPLETE' }
+    if ($GhcrFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($GhcrFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($GhcrFact.State -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($GhcrFact.State -ne 'PRESENT') { return 'INCOMPLETE' }
+    if (-not (Test-ReleaseDigest $GhcrFact.Digest)) { return 'INCOMPLETE' }
+    if ($GhcrFact.Digest -ne $ExpectedDigest) { return 'CONFLICT' }
+    if ([string]::IsNullOrWhiteSpace($GhcrFact.ShaTagState)) { return 'INCOMPLETE' }
+    if ($GhcrFact.ShaTagState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($GhcrFact.ShaTagState -eq 'ABSENT') { return 'ABSENT' }
+    if ($GhcrFact.ShaTagState -eq 'CONFLICT') { return 'CONFLICT' }
+    if ($GhcrFact.ShaTagState -ne 'PRESENT') { return 'INCOMPLETE' }
+    if (-not (Test-ReleaseDigest $GhcrFact.ShaTagDigest)) { return 'INCOMPLETE' }
+    if ($GhcrFact.ShaTagDigest -ne $ExpectedDigest) { return 'CONFLICT' }
+    return 'EXACT_MATCH'
+}
+
+function ConvertTo-LatestAliasState {
+    param(
+        $LatestFact,
+        [string]$ExpectedDigest
+    )
+    if ($null -eq $LatestFact) { return 'INCOMPLETE' }
+    if ($LatestFact.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($LatestFact.State -eq 'ABSENT') { return 'ABSENT' }
+    if ($LatestFact.State -eq 'CONFLICT') { return 'INCOMPLETE' }
+    if ($LatestFact.State -ne 'PRESENT') { return 'INCOMPLETE' }
+    if (-not (Test-ReleaseDigest $ExpectedDigest)) { return 'INCOMPLETE' }
+    if (-not (Test-ReleaseDigest $LatestFact.Digest)) { return 'INCOMPLETE' }
+    if ($LatestFact.Digest -eq $ExpectedDigest) { return 'EXACT_MATCH' }
+    return 'STALE'
+}
+
+function ConvertTo-LatestAliasMutationGuardState {
+    param([string]$LatestState)
+    if ($LatestState -eq 'ABSENT') { return 'ABSENT' }
+    if ($LatestState -eq 'EXACT_MATCH') { return 'EXACT_MATCH' }
+    if ($LatestState -eq 'STALE') { return 'STALE' }
+    if ($LatestState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-PromoteLatestRunObservation {
+    param(
+        $Runs,
+        [string]$WorkflowPath,
+        [string]$RunIdentity
+    )
+    if ($null -eq $Runs) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Id = 'NONE'; Status = 'NONE'; Conclusion = 'NONE'; Reason = 'RUNS_NULL' }
+    }
+    if ([string]::IsNullOrWhiteSpace($RunIdentity)) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Id = 'NONE'; Status = 'NONE'; Conclusion = 'NONE'; Reason = 'IDENTITY' }
+    }
+    $matched = New-Object System.Collections.Generic.List[object]
+    foreach ($run in @($Runs)) {
+        $event = [string]$run.Event
+        $path = [string]$run.Path
+        $name = [string]$run.Name
+        $display = [string]$run.DisplayTitle
+        if ($event -ne $script:EventWorkflowDispatch) { continue }
+        if ($path -ne $WorkflowPath) { continue }
+        $identityHit = ($name -eq $RunIdentity) -or ($display -eq $RunIdentity)
+        if (-not $identityHit) { continue }
+        [void]$matched.Add($run)
+    }
+    if ($matched.Count -eq 0) {
+        return [pscustomobject]@{ State = 'ABSENT'; Id = 'NONE'; Status = 'NONE'; Conclusion = 'NONE'; Reason = '' }
+    }
+    if ($matched.Count -gt 1) {
+        return [pscustomobject]@{ State = 'AMBIGUOUS'; Id = 'NONE'; Status = 'NONE'; Conclusion = 'NONE'; Reason = 'MULTIPLE' }
+    }
+    $one = $matched[0]
+    $id = [string]$one.Id
+    if ([string]::IsNullOrWhiteSpace($id)) { $id = 'NONE' }
+    $status = [string]$one.Status
+    if ([string]::IsNullOrWhiteSpace($status)) { $status = 'NONE' }
+    $conclusion = [string]$one.Conclusion
+    if ([string]::IsNullOrWhiteSpace($conclusion)) { $conclusion = 'NONE' }
+    $statusLower = $status.ToLowerInvariant()
+    $conclusionLower = $conclusion.ToLowerInvariant()
+    # Active / approval-waiting runs: no redispatch; latest digest need not have changed yet.
+    if ($statusLower -in @('queued', 'in_progress', 'waiting', 'requested', 'pending')) {
+        return [pscustomobject]@{ State = 'CANDIDATE_PRESENT'; Id = $id; Status = $status; Conclusion = $conclusion; Reason = '' }
+    }
+    # Historical success must be reconciled with current latest (Finding 3).
+    if ($statusLower -eq 'completed' -and $conclusionLower -eq 'success') {
+        return [pscustomobject]@{ State = 'SUCCESS_MATCH'; Id = $id; Status = $status; Conclusion = $conclusion; Reason = '' }
+    }
+    if ($statusLower -eq 'completed') {
+        return [pscustomobject]@{ State = 'FAILED_MATCH'; Id = $id; Status = $status; Conclusion = $conclusion; Reason = 'FAILED_RUN' }
+    }
+    return [pscustomobject]@{ State = 'INCOMPLETE'; Id = $id; Status = $status; Conclusion = $conclusion; Reason = 'STATUS' }
+}
+
+function ConvertTo-PromoteLatestRunMutationGuardState {
+    param([string]$RunState)
+    if ($RunState -eq 'ABSENT') { return 'ABSENT' }
+    if ($RunState -eq 'CANDIDATE_PRESENT') { return 'ACTIVE' }
+    if ($RunState -eq 'SUCCESS_MATCH') { return 'SUCCESS_MATCH' }
+    if ($RunState -eq 'AMBIGUOUS') { return 'CONFLICT' }
+    if ($RunState -eq 'FAILED_MATCH') { return 'CONFLICT' }
+    if ($RunState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    return 'INCOMPLETE'
+}
+
+function ConvertTo-PromoteLatestPostDispatchRunGuardState {
+    param([string]$RunState)
+    # Dispatch applied when a deterministic matching run is active or already successful.
+    # Latest digest equality is enforced by the workflow itself after environment approval.
+    if ($RunState -eq 'CANDIDATE_PRESENT') { return 'EXACT_MATCH' }
+    if ($RunState -eq 'SUCCESS_MATCH') { return 'EXACT_MATCH' }
+    if ($RunState -eq 'AMBIGUOUS') { return 'CONFLICT' }
+    if ($RunState -eq 'FAILED_MATCH') { return 'CONFLICT' }
+    if ($RunState -eq 'ABSENT') { return 'INCOMPLETE' }
+    if ($RunState -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    return 'INCOMPLETE'
+}
+
+function Get-GitHubPromoteLatestWorkflowRuns {
+    $headers = Get-GitHubAuthHeaders
+    $uri = $script:GitHubApiRoot + '/actions/workflows/promote-release-latest.yml/runs?event=' + $script:EventWorkflowDispatch + '&per_page=100'
+    $resp = Invoke-ReleaseReadOnlyRequest -Uri $uri -Headers $headers
+    $presence = ConvertTo-RemotePresence -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure
+    if ($presence -ne 'HTTP_OK') {
+        return [pscustomobject]@{
+            State  = 'INCOMPLETE'
+            Runs   = $null
+            Reason = ConvertTo-RemoteFailureClass -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure -FailureClass $resp.FailureClass
+        }
+    }
+    $runs = Convert-GitHubWorkflowRunsJson -Json $resp.BodyText
+    if ($null -eq $runs) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Runs = $null; Reason = 'PARSE' }
+    }
+    return [pscustomobject]@{ State = 'PRESENT'; Runs = $runs; Reason = '' }
+}
+
+function Get-GhcrLatestObservation {
+    param($Request)
+    $token = Get-GhcrPullToken
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        return New-ArtifactFact -State 'INCOMPLETE' -Reason 'GHCR_TOKEN'
+    }
+    return Get-GhcrManifestFact -Reference 'latest' -Token $token -ReadRevision -Request $Request
+}
+
+function Resolve-ReleasePromoteLatestPrecheck {
+    param(
+        [string[]]$PrerequisiteGuardStates,
+        [string]$LatestGuardState,
+        [string]$RunGuardState,
+        [bool]$Execute
+    )
+
+    foreach ($pre in @($PrerequisiteGuardStates)) {
+        if ($pre -eq 'EXACT_MATCH') { continue }
+        if ($pre -eq 'INCOMPLETE') {
+            return [pscustomobject]@{
+                Result    = 'INCOMPLETE'
+                Attempted = 'FALSE'
+                Performed = 'FALSE'
+            }
+        }
+        return [pscustomobject]@{
+            Result    = 'CONFLICT'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    # Multiple matching / failed matching runs: never redispatch.
+    if ($RunGuardState -eq 'CONFLICT') {
+        return [pscustomobject]@{
+            Result    = 'CONFLICT'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+    if ($RunGuardState -eq 'INCOMPLETE') {
+        return [pscustomobject]@{
+            Result    = 'INCOMPLETE'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    # Active matching run (queued/waiting/in_progress/...): no redispatch.
+    if ($RunGuardState -eq 'ACTIVE') {
+        return [pscustomobject]@{
+            Result    = 'ALREADY_APPLIED'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    # Historical successful matching run must agree with current latest alias.
+    if ($RunGuardState -eq 'SUCCESS_MATCH') {
+        if ($LatestGuardState -eq 'EXACT_MATCH') {
+            return [pscustomobject]@{
+                Result    = 'ALREADY_APPLIED'
+                Attempted = 'FALSE'
+                Performed = 'FALSE'
+            }
+        }
+        if ($LatestGuardState -eq 'INCOMPLETE') {
+            return [pscustomobject]@{
+                Result    = 'INCOMPLETE'
+                Attempted = 'FALSE'
+                Performed = 'FALSE'
+            }
+        }
+        # STALE / ABSENT contradict historical success -> STOP (not ALREADY_APPLIED).
+        return [pscustomobject]@{
+            Result    = 'CONFLICT'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    # No matching run: current latest exact is already applied.
+    if ($LatestGuardState -eq 'EXACT_MATCH') {
+        return [pscustomobject]@{
+            Result    = 'ALREADY_APPLIED'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+    if ($LatestGuardState -eq 'INCOMPLETE') {
+        return [pscustomobject]@{
+            Result    = 'INCOMPLETE'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+    if ($LatestGuardState -ne 'ABSENT' -and $LatestGuardState -ne 'STALE') {
+        return [pscustomobject]@{
+            Result    = 'CONFLICT'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    if (-not $Execute) {
+        return [pscustomobject]@{
+            Result    = 'NOT_ATTEMPTED'
+            Attempted = 'FALSE'
+            Performed = 'FALSE'
+        }
+    }
+
+    return $null
+}
+
+function ConvertTo-LatestPostReadBackGuardState {
+    param(
+        $LatestFact,
+        [string]$ExpectedDigest
+    )
+    $state = ConvertTo-LatestAliasState -LatestFact $LatestFact -ExpectedDigest $ExpectedDigest
+    if ($state -eq 'EXACT_MATCH') { return 'EXACT_MATCH' }
+    if ($state -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+    if ($state -eq 'ABSENT') { return 'INCOMPLETE' }
+    if ($state -eq 'STALE') { return 'CONFLICT' }
+    return 'INCOMPLETE'
+}
+
+function Get-ReleasePromoteLatestMutationStatus {
+    param($Facts)
+
+    $guardExpected = ConvertTo-ExpectedDigestMatchGuardState -GhcrFact $Facts.Ghcr -ExpectedDigest $Facts.ExpectedDigest
+    $guardGhcr = ConvertTo-GhcrPrerequisiteGuardState -GhcrFact $Facts.Ghcr -ReleaseCommitSha $Facts.ReleaseCommitSha -Version $Facts.Version
+    $guardTag = ConvertTo-GitTagMutationGuardState -TagFact $Facts.GitTag -ReleaseCommitSha $Facts.ReleaseCommitSha
+    $guardContracts = ConvertTo-SourceVersionVerifyState -ObservedVersion $Facts.ContractsVersion -ExpectedVersion $Facts.Version -FetchState $Facts.ContractsFetchState
+    $guardOpenApi = ConvertTo-SourceVersionVerifyState -ObservedVersion $Facts.OpenApiVersion -ExpectedVersion $Facts.Version -FetchState $Facts.OpenApiFetchState
+    $guardNuget = ConvertTo-NugetMutationGuardState -NugetFact $Facts.Nuget
+    $guardNugetRevision = ConvertTo-NugetRevisionVerifyState -PackageState $Facts.Nuget.State -ObservedCommit $Facts.NugetRevisionCommit -ExpectedCommit $Facts.ReleaseCommitSha -FetchState $Facts.NugetRevisionFetchState
+    $guardRelease = ConvertTo-GitHubReleaseMutationGuardState -ReleaseFact $Facts.GitHubRelease -Version $Facts.Version
+    $latestState = ConvertTo-LatestAliasState -LatestFact $Facts.Latest -ExpectedDigest $Facts.ExpectedDigest
+    $guardLatest = ConvertTo-LatestAliasMutationGuardState -LatestState $latestState
+    $guardRun = ConvertTo-PromoteLatestRunMutationGuardState -RunState $Facts.PromoteLatestRun
+
+    $precheck = Resolve-ReleasePromoteLatestPrecheck `
+        -PrerequisiteGuardStates @(
+            $guardExpected,
+            $guardGhcr,
+            $guardTag,
+            $guardContracts,
+            $guardOpenApi,
+            $guardNuget,
+            $guardNugetRevision,
+            $guardRelease
+        ) `
+        -LatestGuardState $guardLatest `
+        -RunGuardState $guardRun `
+        -Execute $Facts.Execute
+
+    $result = 'NOT_ATTEMPTED'
+    $attempted = 'FALSE'
+    $performed = 'FALSE'
+    if ($null -ne $precheck) {
+        $result = $precheck.Result
+        $attempted = $precheck.Attempted
+        $performed = $precheck.Performed
+    }
+    elseif ($Facts.Execute) {
+        $execResult = Invoke-ReleaseMutationExecutor -Executor $Facts.Executor -ArgumentTable @{
+            Version          = $Facts.Version
+            ReleaseCommitSha = $Facts.ReleaseCommitSha
+            ExpectedDigest   = $Facts.ExpectedDigest
+        }
+        if ($execResult.State -eq 'NOT_CONFIGURED') {
+            $result = 'INCOMPLETE'
+            $attempted = 'FALSE'
+            $performed = 'FALSE'
+        }
+        else {
+            $readBackGuard = 'INCOMPLETE'
+            if ($execResult.State -eq 'SUCCESS' -and $null -ne $Facts.ReadBackFetcher) {
+                $readBackRunState = [string](& $Facts.ReadBackFetcher)
+                if (-not [string]::IsNullOrWhiteSpace($readBackRunState)) {
+                    $readBackGuard = ConvertTo-PromoteLatestPostDispatchRunGuardState -RunState $readBackRunState
+                }
+            }
+            $post = Resolve-ReleaseMutationPostAttempt -ExecutorState $execResult.State -ReadBackGuardState $readBackGuard -TargetGuardState 'EXACT_MATCH'
+            $result = $post.Result
+            $attempted = $post.Attempted
+            $performed = $post.Performed
+        }
+    }
+
+    $runId = $Facts.PromoteLatestRunId
+    if ([string]::IsNullOrWhiteSpace($runId)) { $runId = 'NONE' }
+    $runIdentity = $Facts.PromoteLatestRunIdentity
+    if ([string]::IsNullOrWhiteSpace($runIdentity)) { $runIdentity = 'NONE' }
+
+    $map = [ordered]@{}
+    $map['COMMAND'] = 'PROMOTE_LATEST'
+    $map['VERSION'] = $Facts.Version
+    $map['RELEASE_COMMIT_SHA'] = $Facts.ReleaseCommitSha
+    $map['EXPECTED_DIGEST'] = $Facts.ExpectedDigest
+    $map['MUTATION_RESULT'] = $result
+    $map['MUTATION_ATTEMPTED'] = $attempted
+    $map['MUTATION_PERFORMED'] = $performed
+    $map['HUMAN_AUTHORIZATION_REQUIRED'] = 'TRUE'
+    $map['LATEST_STATE'] = $latestState
+    $map['GUARD_EXPECTED_DIGEST'] = $guardExpected
+    $map['GUARD_GHCR'] = $guardGhcr
+    $map['GUARD_GIT_TAG'] = $guardTag
+    $map['GUARD_CONTRACTS_SOURCE'] = $guardContracts
+    $map['GUARD_OPENAPI'] = $guardOpenApi
+    $map['GUARD_NUGET'] = $guardNuget
+    $map['GUARD_NUGET_REVISION'] = $guardNugetRevision
+    $map['GUARD_GITHUB_RELEASE'] = $guardRelease
+    $map['GUARD_PROMOTE_LATEST_RUN'] = $guardRun
+    $map['PROMOTE_LATEST_RUN_ID'] = $runId
+    $map['PROMOTE_LATEST_RUN_IDENTITY'] = $runIdentity
+    return $map
+}
+
+function Invoke-ReleasePromoteLatest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseCommitSha,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedDigest,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        $Observers,
+        $Executor,
+        $CommandRunner,
+        [switch]$Execute,
+        [switch]$Quiet
+    )
+
+    if (-not (Test-ReleaseVersion $Version)) {
+        throw 'Version must be X.Y.Z; the client does not infer or accept a v-prefix.'
+    }
+    if (-not (Test-ReleaseSha $ReleaseCommitSha)) {
+        throw 'ReleaseCommitSha must be a lowercase 40-hex SHA; the client does not infer source.'
+    }
+    if (-not (Test-ReleaseDigest $ExpectedDigest)) {
+        throw 'ExpectedDigest must be sha256:<64-lowercase-hex>; the client does not infer digest from a version tag.'
+    }
+
+    $gitTag = $null
+    $ghcr = $null
+    $nuget = $null
+    $githubRelease = $null
+    $latest = $null
+    $contractsFetchState = 'INCOMPLETE'
+    $contractsVersion = ''
+    $openApiFetchState = 'INCOMPLETE'
+    $openApiVersion = ''
+    $nugetRevisionFetchState = 'INCOMPLETE'
+    $nugetRevisionCommit = ''
+    $promoteRun = 'INCOMPLETE'
+    $promoteRunId = 'NONE'
+    $runIdentity = Get-PromoteLatestRunIdentity -Version $Version -ReleaseCommitSha $ReleaseCommitSha -ExpectedDigest $ExpectedDigest
+
+    if ($null -ne $Observers) {
+        if ($Observers.Contains('GitTag')) { $gitTag = & $Observers['GitTag'] $Version }
+        if ($Observers.Contains('Ghcr')) { $ghcr = & $Observers['Ghcr'] $Version $ReleaseCommitSha }
+        if ($Observers.Contains('Nuget')) { $nuget = & $Observers['Nuget'] $Version }
+        if ($Observers.Contains('GitHubRelease')) { $githubRelease = & $Observers['GitHubRelease'] $Version }
+        if ($Observers.Contains('Latest')) { $latest = & $Observers['Latest'] }
+        if ($Observers.Contains('SourceVersions')) {
+            $sv = & $Observers['SourceVersions'] $ReleaseCommitSha $Version
+            if ($null -ne $sv) {
+                $contractsFetchState = [string]$sv.ContractsState
+                $contractsVersion = [string]$sv.ContractsVersion
+                $openApiFetchState = [string]$sv.OpenApiState
+                $openApiVersion = [string]$sv.OpenApiVersion
+            }
+        }
+        if ($Observers.Contains('NugetRevision')) {
+            $nr = & $Observers['NugetRevision'] $Version
+            if ($null -ne $nr) {
+                $nugetRevisionFetchState = [string]$nr.State
+                $nugetRevisionCommit = [string]$nr.Commit
+            }
+        }
+        if ($Observers.Contains('PromoteLatestRun')) {
+            $runObs = & $Observers['PromoteLatestRun'] $runIdentity
+            if ($null -ne $runObs) {
+                $promoteRun = [string]$runObs.State
+                $promoteRunId = [string]$runObs.Id
+            }
+        }
+    }
+    else {
+        $gitTag = Get-GitTagObservation -Version $Version
+        $ghcr = Get-GhcrVerifyObservation -Version $Version -ReleaseCommitSha $ReleaseCommitSha
+        $nuget = Get-NugetObservation -Version $Version
+        $githubRelease = Get-GitHubReleaseObservation -Version $Version
+        $latest = Get-GhcrLatestObservation
+        $sourceVersions = Get-SourceVersionAtCommitObservation -ReleaseCommitSha $ReleaseCommitSha -Version $Version
+        $contractsFetchState = [string]$sourceVersions.ContractsState
+        $contractsVersion = [string]$sourceVersions.ContractsVersion
+        $openApiFetchState = [string]$sourceVersions.OpenApiState
+        $openApiVersion = [string]$sourceVersions.OpenApiVersion
+        $nugetRevision = Get-NugetSourceRevisionObservation -Version $Version
+        $nugetRevisionFetchState = [string]$nugetRevision.State
+        $nugetRevisionCommit = [string]$nugetRevision.Commit
+        $runFetch = Get-GitHubPromoteLatestWorkflowRuns
+        if ($runFetch.State -eq 'INCOMPLETE') {
+            $promoteRun = 'INCOMPLETE'
+        }
+        else {
+            $runObs = ConvertTo-PromoteLatestRunObservation -Runs $runFetch.Runs -WorkflowPath $script:PromoteLatestWorkflowPath -RunIdentity $runIdentity
+            $promoteRun = $runObs.State
+            $promoteRunId = $runObs.Id
+        }
+    }
+
+    if ($null -eq $gitTag) { $gitTag = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $ghcr) { $ghcr = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $nuget) { $nuget = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $githubRelease) { $githubRelease = New-ArtifactFact -State 'INCOMPLETE' }
+    if ($null -eq $latest) { $latest = New-ArtifactFact -State 'INCOMPLETE' }
+
+    $readBackFetcher = $null
+    if ($Execute) {
+        # Post-dispatch read-back is the matching promote-release-latest workflow run
+        # (environment: release may leave latest unchanged until human approval).
+        if ($null -ne $Observers -and $Observers.Contains('ReadBackPromoteLatestRun')) {
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                Observers   = $Observers
+                RunIdentity = $runIdentity
+            } -ScriptBlock {
+                param($c)
+                $obs = & $c.Observers['ReadBackPromoteLatestRun'] $c.RunIdentity
+                if ($null -eq $obs) { return 'INCOMPLETE' }
+                return [string]$obs.State
+            }
+        }
+        else {
+            $readBackFetcher = New-ReleaseModuleBoundScriptBlock -Capture @{
+                RunIdentity = $runIdentity
+            } -ScriptBlock {
+                param($c)
+                $null = Get-Command -Name Get-GitHubPromoteLatestWorkflowRuns -CommandType Function -ErrorAction Stop
+                $null = Get-Command -Name ConvertTo-PromoteLatestRunObservation -CommandType Function -ErrorAction Stop
+                $runFetch = Get-GitHubPromoteLatestWorkflowRuns
+                if ($runFetch.State -eq 'INCOMPLETE') { return 'INCOMPLETE' }
+                $runObs = ConvertTo-PromoteLatestRunObservation -Runs $runFetch.Runs -WorkflowPath $script:PromoteLatestWorkflowPath -RunIdentity $c.RunIdentity
+                return [string]$runObs.State
+            }
+        }
+    }
+
+    $resolvedExecutor = Resolve-ReleaseMutationExecutor -Executor $Executor -Execute:$Execute -CommandName 'promote-latest' -RepoRoot $RepoRoot -CommandRunner $CommandRunner
+
+    $facts = [pscustomobject]@{
+        Version                 = $Version
+        ReleaseCommitSha        = $ReleaseCommitSha
+        ExpectedDigest          = $ExpectedDigest
+        GitTag                  = $gitTag
+        Ghcr                    = $ghcr
+        Nuget                   = $nuget
+        GitHubRelease           = $githubRelease
+        Latest                  = $latest
+        ContractsFetchState     = $contractsFetchState
+        ContractsVersion        = $contractsVersion
+        OpenApiFetchState       = $openApiFetchState
+        OpenApiVersion          = $openApiVersion
+        NugetRevisionFetchState = $nugetRevisionFetchState
+        NugetRevisionCommit     = $nugetRevisionCommit
+        PromoteLatestRun        = $promoteRun
+        PromoteLatestRunId      = $promoteRunId
+        PromoteLatestRunIdentity = $runIdentity
+        ReadBackFetcher         = $readBackFetcher
+        Execute                 = [bool]$Execute
+        Executor                = $resolvedExecutor
+    }
+
+    $map = Get-ReleasePromoteLatestMutationStatus -Facts $facts
+    if (-not $Quiet) {
+        Write-ReleaseStderr ('release-client: promote-latest VERSION={0} SHA={1} DIGEST={2}' -f $Version, $ReleaseCommitSha, $ExpectedDigest)
+        Write-ReleaseStderr ('release-client: MUTATION_RESULT={0} MUTATION_ATTEMPTED={1} MUTATION_PERFORMED={2} LATEST_STATE={3}' -f $map['MUTATION_RESULT'], $map['MUTATION_ATTEMPTED'], $map['MUTATION_PERFORMED'], $map['LATEST_STATE'])
+        foreach ($line in (Format-ReleaseMutationLines -Map $map -Keys $script:PromoteLatestMutationKeys)) {
+            [Console]::Out.WriteLine($line)
+        }
+    }
+    return $map
+}
+
+function Test-PromoteReleaseLatestWorkflowContract {
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return 'INCOMPLETE' }
+    $lines = ConvertTo-WorkflowActiveLines -Text $Text
+    $dispatch = $script:EventWorkflowDispatch
+    if (-not (Test-WorkflowYamlPath -Lines $lines -Keys @('on', $dispatch, 'inputs', 'release_version'))) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPathValue -Lines $lines -Keys @('on', $dispatch, 'inputs', 'release_version', 'required') -Value 'true')) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPath -Lines $lines -Keys @('on', $dispatch, 'inputs', 'release_commit_sha'))) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPathValue -Lines $lines -Keys @('on', $dispatch, 'inputs', 'release_commit_sha', 'required') -Value 'true')) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPath -Lines $lines -Keys @('on', $dispatch, 'inputs', 'expected_digest'))) { return 'FAIL' }
+    if (-not (Test-WorkflowYamlPathValue -Lines $lines -Keys @('on', $dispatch, 'inputs', 'expected_digest', 'required') -Value 'true')) { return 'FAIL' }
+    if (-not (Test-WorkflowJobYamlKeyValue -Lines $lines -Job 'promote-latest' -Key 'environment' -Value 'release')) { return 'FAIL' }
+    if (-not (Test-WorkflowJobYamlKeyValue -Lines $lines -Job 'promote-latest' -Key 'packages' -Value 'write')) { return 'FAIL' }
+    $writeCount = Get-WorkflowYamlKeyValueCount -Lines $lines -Key 'packages' -Value 'write'
+    if ($writeCount -ne 1) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'promote-latest' -Needles @('GITHUB_REF', '==', 'refs/heads/main'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'promote-release-latest.yml@refs/heads/main')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'install-pinned-crane.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'classify-crane-digest-lookup.sh')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'classify_crane_digest_lookup')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'copy "${IMAGE_REPOSITORY}@${EXPECTED_DIGEST}"')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'promote-latest' -Needles @('@${EXPECTED_DIGEST}', ':latest'))) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableLineHasAll -Lines $lines -Job 'promote-latest' -Needles @('latest_digest', '==', 'EXPECTED_DIGEST'))) { return 'FAIL' }
+    # Fail-close: never swallow latest digest errors as ABSENT via 2>/dev/null.
+    if (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'digest "${IMAGE_REPOSITORY}:latest" 2>/dev/null') { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'latest tag lookup state unknown')) { return 'FAIL' }
+    if (-not (Test-WorkflowExecutableContains -Lines $lines -Job 'promote-latest' -Needle 'pre-copy latest lookup state unknown')) { return 'FAIL' }
+    $forbidden = @(
+        'docker build',
+        'docker buildx',
+        'buildx build',
+        'buildx build --push',
+        'docker/setup-buildx-action',
+        'docker/build-push-action',
+        'scripts/publish-release-image.sh',
+        'scripts/build-candidate-oci-image.sh',
+        'scripts/assemble-candidate-oci-image.sh'
+    )
+    if (Test-WorkflowActiveHasAnyNeedle -Lines $lines -Needles $forbidden) { return 'FAIL' }
+    if (-not (Test-WorkflowActiveHasAnyNeedle -Lines $lines -Needles @('promote-latest'))) { return 'FAIL' }
+    if (-not (Test-WorkflowActiveHasAnyNeedle -Lines $lines -Needles @('inputs.release_version'))) { return 'FAIL' }
+    if (-not (Test-WorkflowActiveHasAnyNeedle -Lines $lines -Needles @('inputs.release_commit_sha'))) { return 'FAIL' }
+    if (-not (Test-WorkflowActiveHasAnyNeedle -Lines $lines -Needles @('inputs.expected_digest'))) { return 'FAIL' }
+    return 'PASS'
+}
+
 . (Join-Path $PSScriptRoot 'release-client-post-sync.ps1')
 
 Export-ModuleMember -Function @(
@@ -4116,6 +4821,7 @@ Export-ModuleMember -Function @(
     'Get-GhcrConfigDigestFromManifest',
     'New-ArtifactFact',
     'New-ReleaseObservations',
+    'New-ReleaseModuleBoundScriptBlock',
     'Get-ReleaseSourceAuthority',
     'Get-ReleaseDerivedStatus',
     'Format-ReleaseStatusLines',
@@ -4129,9 +4835,11 @@ Export-ModuleMember -Function @(
     'Test-PublishImageWorkflowContract',
     'Test-PublishContractsWorkflowContract',
     'Test-VerifyPublicImageWorkflowContract',
+    'Test-PromoteReleaseLatestWorkflowContract',
     'Get-ActiveWorkflowLineText',
     'ConvertTo-WorkflowActiveLines',
     'ConvertTo-WorkflowDispatchRunObservation',
+    'ConvertTo-PromoteLatestRunObservation',
     'Convert-GitHubWorkflowRunsJson',
     'Get-ReleasePreflightDerivedStatus',
     'Format-ReleasePreflightLines',
@@ -4152,6 +4860,13 @@ Export-ModuleMember -Function @(
     'ConvertTo-OciRevisionVerifyState',
     'ConvertTo-OciVersionVerifyState',
     'ConvertTo-ReleaseRecordVerifyState',
+    'ConvertTo-ExpectedDigestMatchGuardState',
+    'ConvertTo-LatestAliasState',
+    'ConvertTo-LatestAliasMutationGuardState',
+    'ConvertTo-PromoteLatestRunMutationGuardState',
+    'ConvertTo-PromoteLatestPostDispatchRunGuardState',
+    'ConvertTo-LatestPostReadBackGuardState',
+    'Get-PromoteLatestRunIdentity',
     'Get-GitHubFileContentAtRef',
     'Get-SourceVersionAtCommitObservation',
     'Get-NugetSourceRevisionObservation',
@@ -4170,6 +4885,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-WorkflowRunMutationGuardState',
     'ConvertTo-PreflightMutationGuardState',
     'Resolve-ReleaseMutationPrecheck',
+    'Resolve-ReleasePromoteLatestPrecheck',
     'Resolve-ReleaseCreateGitHubReleasePostReadBackGuard',
     'Resolve-ReleaseMutationPostAttempt',
     'Format-ReleaseMutationLines',
@@ -4180,6 +4896,7 @@ Export-ModuleMember -Function @(
     'New-ReleaseProductionCreateTagExecutor',
     'New-ReleaseProductionPublishNugetExecutor',
     'New-ReleaseProductionCreateGitHubReleaseExecutor',
+    'New-ReleaseProductionPromoteLatestExecutor',
     'Resolve-ReleaseMutationExecutor',
     'Get-ReleasePublishImageMutationStatus',
     'Invoke-ReleasePublishImage',
@@ -4190,6 +4907,8 @@ Export-ModuleMember -Function @(
     'Test-ReleaseNotesPathGuard',
     'Get-ReleaseCreateGitHubReleaseMutationStatus',
     'Invoke-ReleaseCreateGitHubRelease',
+    'Get-ReleasePromoteLatestMutationStatus',
+    'Invoke-ReleasePromoteLatest',
     'ConvertFrom-CurrentPublicAuthorityText',
     'Get-CurrentPublicAuthorityObservation',
     'New-CurrentPublicAuthorityJson',

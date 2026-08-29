@@ -37,7 +37,8 @@ The Git tag target, GHCR OCI revision/source, NuGet SourceLink revision, and ver
 - Do not create or move an existing release tag to a different commit.
 - Do not overwrite existing GHCR version or immutable SHA tags.
 - Do not republish an existing NuGet package version.
-- Do not create `latest` unless a separate issue and current-session maintainer instruction explicitly require it.
+- Do not create or move GHCR `latest` except through the guarded `promote-latest` path after versioned publication and consumer verification PASS, and only with current-session maintainer authorization.
+- `latest` is a mutable closeout alias, not a release source. It must point at an already verified digest with **no rebuild**.
 - Never blind-retry an ambiguous publish command or workflow dispatch. Determine whether the first mutation happened before taking any next action.
 - Preserve the `release` environment Human approval boundary. AI agents must not bypass required reviewers.
 - Side-effecting release operations require explicit maintainer instruction in the current session.
@@ -68,6 +69,7 @@ Before editing or publishing, inspect and report:
   - `.github/workflows/publish-contracts.yml`.
   - `.github/workflows/publish-release-image.yml`.
   - `.github/workflows/verify-public-release-image.yml`.
+  - `.github/workflows/promote-release-latest.yml` (digest-preserving `latest` alias only).
 - Existing target version in Git tags, GitHub Releases, GHCR tags, and NuGet.
 
 For local Git operations, disable pagers and prefer non-interactive commands.
@@ -537,9 +539,38 @@ Use `docs/ops/release-notes-checklist.md` as the content checklist. At minimum i
 
 Do not claim multi-arch, attestations, assets, migrations, or verification that were not actually produced for this release.
 
+## Phase 7B — Promote `latest` (closeout alias)
+
+After versioned GHCR / Git tag / NuGet / GitHub Release publication and clean-consumer verification PASS, promote GHCR `latest` to the already verified release digest.
+
+`latest` is intentionally mutable and is **not** a release source. Do not rebuild. Do not rebind version or SHA tags. Do not use the qualified-candidate OCI pipeline as the full-release `latest` path.
+
+Canonical client:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 promote-latest `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <releaseCommitSha> `
+  -ExpectedDigest sha256:<64-hex>
+```
+
+Dry-run (no `-Execute`) performs zero mutation. Mutation requires explicit Human authorization plus `-Execute`, which dispatches `.github/workflows/promote-release-latest.yml` from canonical `main`.
+
+Closeout order:
+
+```text
+consumer verification PASS
+  -> promote-latest
+  -> latest consumer verification
+  -> prepare-post-sync
+  -> final verify
+```
+
+The workflow copies `ghcr.io/kooiei-in4a/amane-mailer@ExpectedDigest` to `:latest` with pinned crane (digest-preserving alias). Tooling workflow commit and frozen release source SHA must not be conflated.
+
 ## Phase 8 — Post-Release Documentation Sync
 
-After public artifacts exist and `verify` PASS, run deterministic local sync:
+After public artifacts exist, `latest` (when required) matches the verified digest, and `verify` PASS, run deterministic local sync:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `

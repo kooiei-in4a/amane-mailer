@@ -6,10 +6,12 @@
   RO-3 implements read-only `status`, `preflight`, and `verify`.
   M-1 adds guarded mutation commands that require explicit `-Execute`.
   A-1 adds local `prepare-post-sync` that requires explicit `-Execute` for file writes.
+  #675 adds guarded digest-preserving `promote-latest`.
 
 .PARAMETER Command
   Release command. Read-only: `status`, `preflight`, `verify`.
   Mutations (M-1): `publish-image`, `create-tag`, `publish-nuget`, `create-github-release`.
+  Latest closeout (#675): `promote-latest`.
   Post-sync (A-1): `prepare-post-sync`.
 
 .PARAMETER Version
@@ -17,6 +19,9 @@
 
 .PARAMETER ReleaseCommitSha
   Required for `preflight`, `verify`, and mutation commands.
+
+.PARAMETER ExpectedDigest
+  Required for `promote-latest`. Explicit sha256 digest; never inferred from a version tag.
 
 .PARAMETER Execute
   Opt-in for mutation commands. Without this switch, no executor calls occur and
@@ -36,6 +41,9 @@
   .\scripts\release.ps1 publish-image -Version 1.3.5 -ReleaseCommitSha 528c73498136182810841009db4878364daa9fb1 -Execute
 
 .EXAMPLE
+  .\scripts\release.ps1 promote-latest -Version 1.3.5 -ReleaseCommitSha 89424946b9c018bb2d0f276e63b6e7344e40786b -ExpectedDigest sha256:397216a030d69c600b88b9939ea6c0a10e325bb72948b779c4ae98ac85a129d1
+
+.EXAMPLE
   .\scripts\release.ps1 prepare-post-sync -Version 1.3.4 -ReleaseCommitSha ed0ac3aec5d4dc61c8a9c2978d78a04b362f01c4
 #>
 [CmdletBinding()]
@@ -48,6 +56,9 @@ param(
 
     [Parameter()]
     [string]$ReleaseCommitSha,
+
+    [Parameter()]
+    [string]$ExpectedDigest,
 
     [Parameter()]
     [switch]$Execute,
@@ -171,6 +182,22 @@ if ($Command -eq 'create-github-release') {
     }
 }
 
+if ($Command -eq 'promote-latest') {
+    Test-MutationParameters -CommandName 'promote-latest' -VersionValue $Version -ShaValue $ReleaseCommitSha
+    if ([string]::IsNullOrWhiteSpace($ExpectedDigest)) {
+        [Console]::Error.WriteLine('release.ps1 promote-latest requires -ExpectedDigest sha256:<64-lowercase-hex> (digest is never inferred from a version tag).')
+        exit 2
+    }
+    try {
+        $null = Invoke-ReleasePromoteLatest -Version $Version -ReleaseCommitSha $ReleaseCommitSha -ExpectedDigest $ExpectedDigest -RepoRoot $repoRoot -Execute:$Execute
+        exit 0
+    }
+    catch {
+        [Console]::Error.WriteLine(('release.ps1: ' + $_.Exception.Message))
+        exit 1
+    }
+}
+
 if ($Command -eq 'prepare-post-sync') {
     Test-MutationParameters -CommandName 'prepare-post-sync' -VersionValue $Version -ShaValue $ReleaseCommitSha
     try {
@@ -183,5 +210,5 @@ if ($Command -eq 'prepare-post-sync') {
     }
 }
 
-[Console]::Error.WriteLine("release.ps1: command '$Command' is not implemented (status, preflight, verify, publish-image, create-tag, publish-nuget, create-github-release, prepare-post-sync).")
+[Console]::Error.WriteLine("release.ps1: command '$Command' is not implemented (status, preflight, verify, publish-image, create-tag, publish-nuget, create-github-release, promote-latest, prepare-post-sync).")
 exit 2
