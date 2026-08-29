@@ -343,17 +343,70 @@ Stop before version preparation if:
 ## Phase 1 — Version Preparation
 
 A full service release must first create a normal reviewed version-preparation PR.
+Use the canonical release client; do not treat this phase as a public release.
 
-At minimum, inspect and update as required:
+```text
+Fresh authority
+  -> prepare-version dry-run
+  -> review plan
+  -> prepare-version -Execute
+  -> Human/Agent reviewed CHANGELOG prose
+  -> local validation
+  -> reviewed version-preparation PR
+```
 
-- `src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` -> `X.Y.Z`.
-- `docs/api/openapi.yaml` -> `X.Y.Z`.
-- `CHANGELOG.md` -> add `X.Y.Z` with the real release scope.
-- `docs/releases/vX.Y.Z.md` -> add a **PENDING / NOT YET PUBLISHED** release record.
-- `README.md`, `README.en.md`, service docs, examples, and release-smoke defaults -> update only references that are intended to follow the new release.
-- Previous partial/OCI-only release history -> record honestly when needed; never imply artifacts were published when they were not.
+### Canonical command
 
-The PENDING release record must not invent final digests, artifact IDs, workflow run IDs, NuGet availability, or GitHub Release URLs. Use explicit `PENDING`, `NOT YET PUBLISHED`, or equivalent placeholders until facts exist.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-version `
+  -Version X.Y.Z
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-version `
+  -Version X.Y.Z `
+  -Execute
+```
+
+`-Version` is mandatory and is never inferred. Without `-Execute`, the command performs
+zero file writes, zero Git/GitHub mutations, and zero public artifact mutations, and
+prints a deterministic plan/result summary.
+
+With `-Execute`, only the machine-owned Version Preparation files may change:
+
+- `src/Amane.Mailer.Contracts/Amane.Mailer.Contracts.csproj` -> `X.Y.Z`
+- `docs/api/openapi.yaml` -> `X.Y.Z`
+- `docs/releases/vX.Y.Z.md` -> deterministic **PENDING / NOT YET PUBLISHED** scaffold
+
+Hard boundaries for `prepare-version`:
+
+```text
+prepare-version != public release
+prepare-version does not advance current-public
+prepare-version does not fabricate CHANGELOG
+prepare-version does not publish anything
+```
+
+Specifically, `prepare-version` must **not**:
+
+- update `release/current-public.json`
+- update README / SECURITY / release-smoke current-public followers
+- invent CHANGELOG release-scope prose
+- commit, push, create branches/PRs, dispatch workflows, create tags
+- publish GHCR / NuGet / GitHub Release, or promote `latest`
+
+### CHANGELOG boundary
+
+`CHANGELOG.md` release-scope prose remains a Human/Agent reviewed input. The command
+reports that a reviewed `## [X.Y.Z]` entry is required before Version Preparation
+acceptance. Do not auto-generate or copy historical release prose into a new entry.
+
+### PENDING release record
+
+The PENDING release record must not invent final digests, artifact IDs, workflow run
+IDs, NuGet availability, GitHub Release URLs, or publication timestamps. Use explicit
+`PENDING`, `NOT YET PUBLISHED`, or equivalent placeholders until facts are observed.
+NuGet evidence may later record a verifier `NUGET_PUBLIC_OBSERVED_AT_UTC` observation;
+that timestamp is when the canonical verifier observed the public package, not a
+fabricated NuGet service indexing time.
 
 ### Version Alignment Gate
 
@@ -361,9 +414,12 @@ Before the version-prep PR can merge:
 
 - Contracts project version == `X.Y.Z`.
 - OpenAPI `info.version` == `X.Y.Z`.
-- CHANGELOG contains the `X.Y.Z` release entry.
-- PENDING release record exists.
-- No unrelated product change was pulled into the release PR unless the issue explicitly includes it.
+- CHANGELOG contains the reviewed `X.Y.Z` release entry.
+- PENDING release record exists and remains free of fabricated public identities.
+- `release/current-public.json` and governed followers still describe the predecessor
+  public authority.
+- No unrelated product change was pulled into the release PR unless the issue
+  explicitly includes it.
 
 Run the smallest relevant validation, then broaden:
 
@@ -375,7 +431,8 @@ node scripts/validate-openapi.mjs docs/api/openapi.yaml
 node scripts/check-implementation-status.mjs
 ```
 
-Run additional release/version checks already present in the repository when applicable. Do not weaken or skip existing CI to make version preparation pass.
+Run additional release/version checks already present in the repository when applicable.
+Do not weaken or skip existing CI to make version preparation pass.
 
 ## Phase 2 — Merge and Freeze Release Authority
 

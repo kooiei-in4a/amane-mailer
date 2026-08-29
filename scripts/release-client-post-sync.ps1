@@ -585,7 +585,9 @@ function Update-ReleaseRecordObservableFields {
         [string]$Version,
         [string]$ReleaseCommitSha,
         [string]$PublicDigest,
-        [string[]]$Platforms
+        [string[]]$Platforms,
+        [string]$NugetPublicObservedAtUtc = '',
+        [string]$NugetSymbolsStatus = ''
     )
 
     $tag = 'v' + $Version
@@ -749,6 +751,33 @@ function Update-ReleaseRecordObservableFields {
             continue
         }
 
+        # Observable verifier fact only (never invent NuGet service indexing time).
+        if ($line -match '^-\s+NuGet public observed-at \(UTC\):' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if (Test-ReleaseUtcTimestamp -Value $NugetPublicObservedAtUtc) {
+                $useDouble = ($line -match '``')
+                if ($useDouble) {
+                    [void]$updatedLines.Add('- NuGet public observed-at (UTC): ``' + $NugetPublicObservedAtUtc + '``')
+                }
+                else {
+                    [void]$updatedLines.Add('- NuGet public observed-at (UTC): `' + $NugetPublicObservedAtUtc + '`')
+                }
+            }
+            else {
+                [void]$updatedLines.Add($line)
+            }
+            continue
+        }
+
+        if ($line -match '^-\s+NuGet symbol package status:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ($NugetSymbolsStatus -eq 'OBSERVED' -or $NugetSymbolsStatus -eq 'PASS') {
+                [void]$updatedLines.Add('- NuGet symbol package status: **OBSERVED**')
+            }
+            else {
+                [void]$updatedLines.Add($line)
+            }
+            continue
+        }
+
         # Production shape: - GitHub Release `vX.Y.Z`: **NOT YET PUBLISHED**
         if ($line -match ('^-\s+GitHub Release `' + $escTag + '`:') -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
             [void]$updatedLines.Add('- GitHub Release `' + $tag + '`: **PUBLISHED**')
@@ -787,7 +816,9 @@ function Build-PublishedReleaseRecordForPostSync {
         [string]$Version,
         [string]$ReleaseCommitSha,
         [string]$PublicDigest,
-        [string[]]$Platforms
+        [string[]]$Platforms,
+        [string]$NugetPublicObservedAtUtc = '',
+        [string]$NugetSymbolsStatus = ''
     )
 
     $recordState = Get-ReleaseRecordStateFromText -Text $Text
@@ -804,7 +835,7 @@ function Build-PublishedReleaseRecordForPostSync {
         return [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'INVALID_DIGEST' }
     }
 
-    $transformed = Update-ReleaseRecordObservableFields -Text $Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest -Platforms $Platforms
+    $transformed = Update-ReleaseRecordObservableFields -Text $Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest -Platforms $Platforms -NugetPublicObservedAtUtc $NugetPublicObservedAtUtc -NugetSymbolsStatus $NugetSymbolsStatus
     $consistency = Test-PublishedReleaseRecordCoreConsistency -Text $transformed -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest
     if ($consistency.State -ne 'PASS') {
         return [pscustomobject]@{ State = 'CONFLICT'; Text = ''; Reason = $consistency.Reason }
@@ -906,6 +937,12 @@ function Get-ReleasePreparePostSyncPlan {
     }
 
     $publicDigest = [string]$VerifyMap['PUBLIC_DIGEST']
+    $nugetObservedAt = ''
+    $candidateObserved = [string]$VerifyMap['NUGET_PUBLIC_OBSERVED_AT_UTC']
+    if (Test-ReleaseUtcTimestamp -Value $candidateObserved) {
+        $nugetObservedAt = $candidateObserved
+    }
+    $nugetSymbolsStatus = [string]$VerifyMap['NUGET_SYMBOLS']
     $targetTag = 'v' + $TargetVersion
     $targetRecord = 'docs/releases/' + $targetTag + '.md'
     $targetRecordPath = Join-Path $RepoRoot $targetRecord
@@ -1048,7 +1085,7 @@ function Get-ReleasePreparePostSyncPlan {
         if ($relativePath -eq 'release/current-public.json') { continue }
         if ($relativePath -eq $targetRecord) {
             [void]$planned.Add($targetRecord)
-            $recordBuild = Build-PublishedReleaseRecordForPostSync -Text $targetRecordText -Version $TargetVersion -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $publicDigest -Platforms $resolvedPlatforms
+            $recordBuild = Build-PublishedReleaseRecordForPostSync -Text $targetRecordText -Version $TargetVersion -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $publicDigest -Platforms $resolvedPlatforms -NugetPublicObservedAtUtc $nugetObservedAt -NugetSymbolsStatus $nugetSymbolsStatus
             if ($recordBuild.State -eq 'ALREADY') { continue }
             if ($recordBuild.State -ne 'APPLIED') {
                 $plan.FollowerState = 'CONFLICT'

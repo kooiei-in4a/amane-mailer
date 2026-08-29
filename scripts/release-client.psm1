@@ -22,6 +22,31 @@ $script:Sha40 = '^[0-9a-f]{40}$'
 $script:Digest64 = '^sha256:[0-9a-f]{64}$'
 $script:VersionXyz = '^[0-9]+\.[0-9]+\.[0-9]+$'
 $script:ReleaseMutationCommandRunnerOverride = $null
+$script:ReleaseUtcClockOverride = $null
+
+function Get-ReleaseUtcNow {
+    if ($null -ne $script:ReleaseUtcClockOverride) {
+        return & $script:ReleaseUtcClockOverride
+    }
+    return [datetime]::UtcNow
+}
+
+function Format-ReleaseUtcTimestamp {
+    param([datetime]$Utc)
+    $value = $Utc.ToUniversalTime()
+    return $value.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+}
+
+function Test-ReleaseUtcTimestamp {
+    param([string]$Value)
+    if ([string]::IsNullOrWhiteSpace($Value)) { return $false }
+    return [bool]($Value -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+}
+
+function Set-ReleaseUtcClockOverride {
+    param($Clock)
+    $script:ReleaseUtcClockOverride = $Clock
+}
 
 $script:StatusKeys = @(
     'VERSION',
@@ -136,7 +161,9 @@ function New-ArtifactFact {
         [string]$OciVersion = '',
         [string]$ShaTagState = '',
         [string]$ShaTagDigest = '',
-        [string]$Reason = ''
+        [string]$Reason = '',
+        [string]$ObservedAtUtc = '',
+        [string]$SymbolsState = ''
     )
     return [pscustomobject]@{
         State        = $State
@@ -147,6 +174,8 @@ function New-ArtifactFact {
         ShaTagState  = $ShaTagState
         ShaTagDigest = $ShaTagDigest
         Reason       = $Reason
+        ObservedAtUtc = $ObservedAtUtc
+        SymbolsState = $SymbolsState
     }
 }
 
@@ -1000,9 +1029,18 @@ function Get-GitHubReleaseObservation {
 }
 
 function Get-NugetObservation {
-    param([string]$Version)
+    param(
+        [string]$Version,
+        $Request,
+        $UtcClock
+    )
     $uri = 'https://api.nuget.org/v3-flatcontainer/' + $script:NugetPackageId + '/index.json'
-    $resp = Invoke-ReleaseReadOnlyRequest -Uri $uri
+    $resp = if ($null -ne $Request) {
+        & $Request $uri $null
+    }
+    else {
+        Invoke-ReleaseReadOnlyRequest -Uri $uri
+    }
     $presence = ConvertTo-RemotePresence -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure
     if ($presence -eq 'ABSENT') {
         return New-ArtifactFact -State 'ABSENT'
@@ -1015,9 +1053,45 @@ function Get-NugetObservation {
         return New-ArtifactFact -State 'INCOMPLETE' -Reason 'PARSE'
     }
     if ($contains) {
-        return New-ArtifactFact -State 'PRESENT'
+        $observedAt = ''
+        if ($null -ne $UtcClock) {
+            $observedAt = Format-ReleaseUtcTimestamp -Utc (& $UtcClock)
+        }
+        else {
+            $observedAt = Format-ReleaseUtcTimestamp -Utc (Get-ReleaseUtcNow)
+        }
+        return New-ArtifactFact -State 'PRESENT' -ObservedAtUtc $observedAt
     }
     return New-ArtifactFact -State 'ABSENT'
+}
+
+function Get-NugetSymbolsObservation {
+    param(
+        [string]$Version,
+        $Request
+    )
+    if (-not (Test-ReleaseVersion $Version)) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'INVALID_VERSION' }
+    }
+    $fileName = $script:NugetPackageId + '.' + $Version + '.snupkg'
+    $uri = 'https://api.nuget.org/v3-flatcontainer/' + $script:NugetPackageId + '/' + $Version + '/' + $fileName
+    $resp = if ($null -ne $Request) {
+        & $Request $uri $null
+    }
+    else {
+        Invoke-ReleaseReadOnlyRequest -Uri $uri
+    }
+    $presence = ConvertTo-RemotePresence -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure
+    if ($presence -eq 'ABSENT') {
+        return [pscustomobject]@{ State = 'ABSENT'; Reason = '' }
+    }
+    if ($presence -ne 'HTTP_OK') {
+        return [pscustomobject]@{
+            State  = 'INCOMPLETE'
+            Reason = (ConvertTo-RemoteFailureClass -StatusCode $resp.StatusCode -TransportFailure $resp.TransportFailure -FailureClass $resp.FailureClass)
+        }
+    }
+    return [pscustomobject]@{ State = 'OBSERVED'; Reason = '' }
 }
 
 function Get-GhcrPullToken {
@@ -2367,6 +2441,11 @@ $script:VerifyKeys = @(
     'OPENAPI',
     'NUGET_PACKAGE',
     'NUGET_SOURCE_REVISION',
+    'NUGET_PUBLIC',
+    'NUGET_VERSION',
+    'NUGET_REPOSITORY_REVISION',
+    'NUGET_SYMBOLS',
+    'NUGET_PUBLIC_OBSERVED_AT_UTC',
     'GHCR_VERSION_TAG',
     'GHCR_SHA_TAG',
     'GHCR_DIGEST_BINDING',
@@ -2734,6 +2813,45 @@ function Get-ReleaseVerifyDerivedStatus {
         $digest = $Facts.PublicDigest
     }
 
+    $nugetPublic = 'FALSE'
+    $nugetVersion = 'NONE'
+    $nugetRepoRevision = 'NONE'
+    $nugetSymbols = 'NONE'
+    $nugetObservedAt = 'NONE'
+    if ($Facts.NugetPackage -eq 'EXACT_MATCH') {
+        $nugetPublic = 'TRUE'
+        $nugetVersion = [string]$Facts.Version
+        if ($Facts.NugetSourceRevision -eq 'EXACT_MATCH' -and (Test-ReleaseSha $Facts.NugetRepositoryRevision)) {
+            $nugetRepoRevision = [string]$Facts.NugetRepositoryRevision
+        }
+        elseif ($Facts.NugetSourceRevision -eq 'ABSENT') {
+            $nugetRepoRevision = 'NONE'
+        }
+        elseif ($Facts.NugetSourceRevision -eq 'INCOMPLETE' -or $Facts.NugetSourceRevision -eq 'CONFLICT') {
+            $nugetRepoRevision = [string]$Facts.NugetSourceRevision
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$Facts.NugetSymbols) -and [string]$Facts.NugetSymbols -ne 'NONE') {
+            $nugetSymbols = [string]$Facts.NugetSymbols
+        }
+        if (Test-ReleaseUtcTimestamp -Value ([string]$Facts.NugetPublicObservedAtUtc)) {
+            $nugetObservedAt = [string]$Facts.NugetPublicObservedAtUtc
+        }
+    }
+    elseif ($Facts.NugetPackage -eq 'ABSENT') {
+        $nugetPublic = 'FALSE'
+        $nugetVersion = 'NONE'
+        $nugetRepoRevision = 'NONE'
+        $nugetSymbols = 'NONE'
+        $nugetObservedAt = 'NONE'
+    }
+    elseif ($Facts.NugetPackage -eq 'INCOMPLETE' -or $Facts.NugetPackage -eq 'CONFLICT') {
+        $nugetPublic = 'INCOMPLETE'
+        $nugetVersion = 'NONE'
+        $nugetRepoRevision = 'NONE'
+        $nugetSymbols = 'NONE'
+        $nugetObservedAt = 'NONE'
+    }
+
     $map = [ordered]@{}
     $map['COMMAND'] = 'VERIFY'
     $map['VERSION'] = $Facts.Version
@@ -2744,6 +2862,11 @@ function Get-ReleaseVerifyDerivedStatus {
     $map['OPENAPI'] = $Facts.OpenApi
     $map['NUGET_PACKAGE'] = $Facts.NugetPackage
     $map['NUGET_SOURCE_REVISION'] = $Facts.NugetSourceRevision
+    $map['NUGET_PUBLIC'] = $nugetPublic
+    $map['NUGET_VERSION'] = $nugetVersion
+    $map['NUGET_REPOSITORY_REVISION'] = $nugetRepoRevision
+    $map['NUGET_SYMBOLS'] = $nugetSymbols
+    $map['NUGET_PUBLIC_OBSERVED_AT_UTC'] = $nugetObservedAt
     $map['GHCR_VERSION_TAG'] = $Facts.GhcrVersionTag
     $map['GHCR_SHA_TAG'] = $Facts.GhcrShaTag
     $map['GHCR_DIGEST_BINDING'] = $Facts.GhcrDigestBinding
@@ -2797,6 +2920,7 @@ function Invoke-ReleaseVerify {
     $nuget = $null
     $sourceVersions = $null
     $nugetRevision = $null
+    $nugetSymbols = $null
     $recordFetch = $null
     $ghcr = $null
 
@@ -2806,6 +2930,7 @@ function Invoke-ReleaseVerify {
         if ($Observers.Contains('Nuget')) { $nuget = & $Observers['Nuget'] $Version }
         if ($Observers.Contains('SourceVersions')) { $sourceVersions = & $Observers['SourceVersions'] $ReleaseCommitSha $Version }
         if ($Observers.Contains('NugetRevision')) { $nugetRevision = & $Observers['NugetRevision'] $Version }
+        if ($Observers.Contains('NugetSymbols')) { $nugetSymbols = & $Observers['NugetSymbols'] $Version }
         if ($Observers.Contains('ReleaseRecord')) { $recordFetch = & $Observers['ReleaseRecord'] $Version $ReleaseCommitSha }
         if ($Observers.Contains('Ghcr')) { $ghcr = & $Observers['Ghcr'] $Version $ReleaseCommitSha }
     }
@@ -2815,6 +2940,7 @@ function Invoke-ReleaseVerify {
         $nuget = Get-NugetObservation -Version $Version
         $sourceVersions = Get-SourceVersionAtCommitObservation -ReleaseCommitSha $ReleaseCommitSha -Version $Version
         $nugetRevision = Get-NugetSourceRevisionObservation -Version $Version
+        $nugetSymbols = Get-NugetSymbolsObservation -Version $Version
         $recordFetch = Get-ReleaseRecordContentForVerify -Version $Version -ReleaseCommitSha $ReleaseCommitSha
         $ghcr = Get-GhcrVerifyObservation -Version $Version -ReleaseCommitSha $ReleaseCommitSha
     }
@@ -2833,6 +2959,9 @@ function Invoke-ReleaseVerify {
     if ($null -eq $nugetRevision) {
         $nugetRevision = [pscustomobject]@{ State = 'INCOMPLETE'; Commit = ''; Reason = 'OBSERVER' }
     }
+    if ($null -eq $nugetSymbols) {
+        $nugetSymbols = [pscustomobject]@{ State = 'NONE'; Reason = 'OBSERVER' }
+    }
     if ($null -eq $recordFetch) {
         $recordFetch = [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'OBSERVER' }
     }
@@ -2843,22 +2972,43 @@ function Invoke-ReleaseVerify {
         $publicDigest = $ghcr.Digest
     }
 
+    $nugetSymbolsState = 'NONE'
+    if ($null -ne $nugetSymbols -and -not [string]::IsNullOrWhiteSpace([string]$nugetSymbols.State)) {
+        $nugetSymbolsState = [string]$nugetSymbols.State
+    }
+    elseif ($null -ne $nuget.SymbolsState -and -not [string]::IsNullOrWhiteSpace([string]$nuget.SymbolsState)) {
+        $nugetSymbolsState = [string]$nuget.SymbolsState
+    }
+
+    $nugetObservedAt = ''
+    if ($nuget.State -eq 'PRESENT' -and (Test-ReleaseUtcTimestamp -Value ([string]$nuget.ObservedAtUtc))) {
+        $nugetObservedAt = [string]$nuget.ObservedAtUtc
+    }
+
+    $nugetRepoRevision = ''
+    if ($nugetRevision.State -eq 'PRESENT' -and (Test-ReleaseSha $nugetRevision.Commit)) {
+        $nugetRepoRevision = [string]$nugetRevision.Commit
+    }
+
     $facts = [pscustomobject]@{
-        Version              = $Version
-        ReleaseCommitSha     = $ReleaseCommitSha
-        GitTag               = (ConvertTo-GitTagVerifyState -TagFact $gitTag -ReleaseCommitSha $ReleaseCommitSha)
-        ContractsSource      = (ConvertTo-SourceVersionVerifyState -ObservedVersion $sourceVersions.ContractsVersion -ExpectedVersion $Version -FetchState $sourceVersions.ContractsState)
-        OpenApi              = (ConvertTo-SourceVersionVerifyState -ObservedVersion $sourceVersions.OpenApiVersion -ExpectedVersion $Version -FetchState $sourceVersions.OpenApiState)
-        NugetPackage         = (ConvertTo-NugetPackageVerifyState -NugetFact $nuget)
-        NugetSourceRevision  = (ConvertTo-NugetRevisionVerifyState -PackageState $nuget.State -ObservedCommit $nugetRevision.Commit -ExpectedCommit $ReleaseCommitSha -FetchState $nugetRevision.State)
-        GhcrVersionTag       = (ConvertTo-GhcrTagVerifyState -Fact $ghcr)
-        GhcrShaTag           = (ConvertTo-GhcrShaTagVerifyState -VersionFact $ghcr -ShaTagState $ghcr.ShaTagState -ShaTagDigest $ghcr.ShaTagDigest)
-        GhcrDigestBinding    = (ConvertTo-GhcrDigestBindingVerifyState -VersionFact $ghcr -ShaTagState $ghcr.ShaTagState -ShaTagDigest $ghcr.ShaTagDigest)
-        OciRevision          = (ConvertTo-OciRevisionVerifyState -VersionFact $ghcr -ReleaseCommitSha $ReleaseCommitSha)
-        OciVersion           = (ConvertTo-OciVersionVerifyState -VersionFact $ghcr -ExpectedVersion $Version)
-        GitHubRelease        = (ConvertTo-GitHubReleaseVerifyState -ReleaseFact $githubRelease)
-        ReleaseRecord        = (ConvertTo-ReleaseRecordVerifyState -FetchState $recordFetch.State -Text $recordFetch.Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -ObservedDigest $publicDigest)
-        PublicDigest         = $publicDigest
+        Version                   = $Version
+        ReleaseCommitSha          = $ReleaseCommitSha
+        GitTag                    = (ConvertTo-GitTagVerifyState -TagFact $gitTag -ReleaseCommitSha $ReleaseCommitSha)
+        ContractsSource           = (ConvertTo-SourceVersionVerifyState -ObservedVersion $sourceVersions.ContractsVersion -ExpectedVersion $Version -FetchState $sourceVersions.ContractsState)
+        OpenApi                   = (ConvertTo-SourceVersionVerifyState -ObservedVersion $sourceVersions.OpenApiVersion -ExpectedVersion $Version -FetchState $sourceVersions.OpenApiState)
+        NugetPackage              = (ConvertTo-NugetPackageVerifyState -NugetFact $nuget)
+        NugetSourceRevision       = (ConvertTo-NugetRevisionVerifyState -PackageState $nuget.State -ObservedCommit $nugetRevision.Commit -ExpectedCommit $ReleaseCommitSha -FetchState $nugetRevision.State)
+        NugetRepositoryRevision   = $nugetRepoRevision
+        NugetSymbols              = $nugetSymbolsState
+        NugetPublicObservedAtUtc  = $nugetObservedAt
+        GhcrVersionTag            = (ConvertTo-GhcrTagVerifyState -Fact $ghcr)
+        GhcrShaTag                = (ConvertTo-GhcrShaTagVerifyState -VersionFact $ghcr -ShaTagState $ghcr.ShaTagState -ShaTagDigest $ghcr.ShaTagDigest)
+        GhcrDigestBinding         = (ConvertTo-GhcrDigestBindingVerifyState -VersionFact $ghcr -ShaTagState $ghcr.ShaTagState -ShaTagDigest $ghcr.ShaTagDigest)
+        OciRevision               = (ConvertTo-OciRevisionVerifyState -VersionFact $ghcr -ReleaseCommitSha $ReleaseCommitSha)
+        OciVersion                = (ConvertTo-OciVersionVerifyState -VersionFact $ghcr -ExpectedVersion $Version)
+        GitHubRelease             = (ConvertTo-GitHubReleaseVerifyState -ReleaseFact $githubRelease)
+        ReleaseRecord             = (ConvertTo-ReleaseRecordVerifyState -FetchState $recordFetch.State -Text $recordFetch.Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -ObservedDigest $publicDigest)
+        PublicDigest              = $publicDigest
     }
 
     $map = Get-ReleaseVerifyDerivedStatus -Facts $facts
@@ -4828,6 +4978,7 @@ function Test-PromoteReleaseLatestWorkflowContract {
 }
 
 . (Join-Path $PSScriptRoot 'release-client-post-sync.ps1')
+. (Join-Path $PSScriptRoot 'release-client-prepare-version.ps1')
 
 Export-ModuleMember -Function @(
     'ConvertTo-RemotePresence',
@@ -4892,6 +5043,12 @@ Export-ModuleMember -Function @(
     'Get-GitHubFileContentAtRef',
     'Get-SourceVersionAtCommitObservation',
     'Get-NugetSourceRevisionObservation',
+    'Get-NugetObservation',
+    'Get-NugetSymbolsObservation',
+    'Get-ReleaseUtcNow',
+    'Format-ReleaseUtcTimestamp',
+    'Test-ReleaseUtcTimestamp',
+    'Set-ReleaseUtcClockOverride',
     'Get-ReleaseRecordContentForVerify',
     'Get-GhcrVerifyObservation',
     'Get-ReleaseVerifyDerivedStatus',
@@ -4946,5 +5103,11 @@ Export-ModuleMember -Function @(
     'Test-PublishedReleaseRecordCoreConsistency',
     'Get-ReleasePreparePostSyncPlan',
     'Format-ReleasePreparePostSyncLines',
-    'Invoke-ReleasePreparePostSync'
+    'Invoke-ReleasePreparePostSync',
+    'New-PrepareVersionPendingReleaseRecordText',
+    'Set-ContractsVersionInText',
+    'Set-OpenApiVersionInText',
+    'Get-ReleasePrepareVersionPlan',
+    'Format-ReleasePrepareVersionLines',
+    'Invoke-ReleasePrepareVersion'
 )
