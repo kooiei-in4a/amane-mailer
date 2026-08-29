@@ -380,18 +380,40 @@ function Get-NugetRepositoryCommitFromNuspecText {
 function Get-ReleaseRecordCommitShaFromText {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
-    if ($Text -match '(?m)^-\s*releaseCommitSha:\s*`([0-9a-f]{40})`') {
-        return $Matches[1]
+
+    $values = New-Object System.Collections.Generic.List[string]
+    # Production shape: - `releaseCommitSha`: `<40hex>`
+    foreach ($match in [regex]::Matches($Text, '(?m)^-\s+`releaseCommitSha`:\s+`([0-9a-f]{40})`\s*$')) {
+        [void]$values.Add($match.Groups[1].Value)
     }
+    # Legacy: - releaseCommitSha: `<40hex>` (single or double backticks around the value)
+    foreach ($match in [regex]::Matches($Text, '(?m)^-\s+releaseCommitSha:\s+`{1,2}([0-9a-f]{40})`{1,2}\s*$')) {
+        [void]$values.Add($match.Groups[1].Value)
+    }
+
+    $unique = @($values | Select-Object -Unique)
+    if ($unique.Count -eq 1) { return $unique[0] }
+    # Zero matches or contradictory values: fail closed.
     return $null
 }
 
 function Get-ReleaseRecordDigestFromText {
     param([string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
-    if ($Text -match '(?m)^-\s*public OCI digest:\s*\r?\n\s*`(sha256:[0-9a-f]{64})`') {
-        return $Matches[1]
+
+    $values = New-Object System.Collections.Generic.List[string]
+    # Production-shape one-line: - Public/public OCI digest: `sha256:<64hex>`
+    foreach ($match in [regex]::Matches($Text, '(?im)^-\s+public OCI digest:\s+`{1,2}(sha256:[0-9a-f]{64})`{1,2}\s*$')) {
+        [void]$values.Add($match.Groups[1].Value)
     }
+    # Legacy multiline: - public OCI digest:\n  `sha256:<64hex>`
+    foreach ($match in [regex]::Matches($Text, '(?im)^-\s+public OCI digest:\s*\r?\n\s+`{1,2}(sha256:[0-9a-f]{64})`{1,2}')) {
+        [void]$values.Add($match.Groups[1].Value)
+    }
+
+    $unique = @($values | Select-Object -Unique)
+    if ($unique.Count -eq 1) { return $unique[0] }
+    # Zero matches or contradictory values: fail closed.
     return $null
 }
 

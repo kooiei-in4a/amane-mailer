@@ -1872,10 +1872,35 @@ function Initialize-PostSyncFixtureRepo {
     }
 }
 
-$authorityGood = ConvertFrom-CurrentPublicAuthorityText -Text (Get-Content -LiteralPath (Join-Path $RepoRoot 'release/current-public.json') -Raw) -RepoRoot $RepoRoot
-Assert-Equal 'authority v1.3.4 parse state' $authorityGood.State 'VALID'
-Assert-Equal 'authority v1.3.4 version' $authorityGood.Version '1.3.4'
-Assert-Equal 'authority v1.3.4 tag' $authorityGood.Tag 'v1.3.4'
+$authorityFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-authority-' + [Guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $authorityFixtureRoot -Force | Out-Null
+try {
+    Initialize-PostSyncFixtureRepo -Root $authorityFixtureRoot -AuthorityVersion '1.3.4'
+    $authorityPredecessorText = Get-Content -LiteralPath (Join-Path $authorityFixtureRoot 'release/current-public.json') -Raw
+    $authorityPredecessor = ConvertFrom-CurrentPublicAuthorityText -Text $authorityPredecessorText -RepoRoot $authorityFixtureRoot
+    Assert-Equal 'authority predecessor parse state' $authorityPredecessor.State 'VALID'
+    Assert-Equal 'authority predecessor version' $authorityPredecessor.Version '1.3.4'
+    Assert-Equal 'authority predecessor tag' $authorityPredecessor.Tag 'v1.3.4'
+    Assert-Equal 'FIXTURE_PREDECESSOR_AUTHORITY' $(if ($authorityPredecessor.State -eq 'VALID' -and $authorityPredecessor.Version -eq '1.3.4') { 'PASS' } else { 'FAIL' }) 'PASS'
+
+    $authorityTargetRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-authority-target-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $authorityTargetRoot -Force | Out-Null
+    try {
+        Initialize-PostSyncFixtureRepo -Root $authorityTargetRoot -AuthorityVersion '1.3.4' -SynchronizedTo135
+        $authorityTargetText = Get-Content -LiteralPath (Join-Path $authorityTargetRoot 'release/current-public.json') -Raw
+        $authorityTarget = ConvertFrom-CurrentPublicAuthorityText -Text $authorityTargetText -RepoRoot $authorityTargetRoot
+        Assert-Equal 'authority target parse state' $authorityTarget.State 'VALID'
+        Assert-Equal 'authority target version' $authorityTarget.Version '1.3.5'
+        Assert-Equal 'authority target tag' $authorityTarget.Tag 'v1.3.5'
+        Assert-Equal 'FIXTURE_TARGET_AUTHORITY' $(if ($authorityTarget.State -eq 'VALID' -and $authorityTarget.Version -eq '1.3.5') { 'PASS' } else { 'FAIL' }) 'PASS'
+    }
+    finally {
+        Remove-Item -LiteralPath $authorityTargetRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+finally {
+    Remove-Item -LiteralPath $authorityFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 $authorityMalformed = ConvertFrom-CurrentPublicAuthorityText -Text '{not-json' -RepoRoot $RepoRoot
 Assert-Equal 'malformed authority fail closed' $authorityMalformed.State 'INCOMPLETE'
@@ -1886,6 +1911,7 @@ Assert-Equal 'unsupported schema fail closed' $authorityBadSchema.Reason 'UNSUPP
 
 $authorityTagMismatch = ConvertFrom-CurrentPublicAuthorityText -Text '{"schemaVersion":1,"version":"1.3.4","tag":"v1.3.5","platforms":["linux/amd64"],"releaseRecord":"docs/releases/v1.3.4.md"}' -RepoRoot $RepoRoot
 Assert-Equal 'version tag mismatch fail closed' $authorityTagMismatch.Reason 'VERSION_TAG_MISMATCH'
+
 
 $pendingFixturePath = Join-Path $PSScriptRoot 'fixtures/post-sync/v1.3.5-pending.md'
 $pendingFixtureText = Get-Content -LiteralPath $pendingFixturePath -Raw
@@ -1962,6 +1988,33 @@ Assert-equal 'PRODUCTION_SHAPE_FAIL_CLOSE' $(if (($failClose.State -eq 'CONFLICT
 # Generic fixture regression remains covered by finalize pending fixture assertions above.
 Assert-equal 'GENERIC_FIXTURE_REGRESSION' $(if ($finalizedFixture.State -eq 'APPLIED' -and (Get-ReleaseRecordStateFromText -Text $finalizedFixture.Text) -eq 'PUBLISHED') { 'PASS' } else { 'FAIL' }) 'PASS'
 
+# --- #679 release-record parser: legacy + production-shape, fail-closed contradictions ---
+$legacyShaOnly = '- releaseCommitSha: `' + $ProductionShapeSha + '`'
+Assert-Equal 'RELEASE_SHA_LEGACY_PARSE' $(if ((Get-ReleaseRecordCommitShaFromText -Text $legacyShaOnly) -eq $ProductionShapeSha) { 'PASS' } else { 'FAIL' }) 'PASS'
+
+$productionShaOnly = '- `releaseCommitSha`: `' + $ProductionShapeSha + '`'
+Assert-Equal 'RELEASE_SHA_PRODUCTION_PARSE' $(if ((Get-ReleaseRecordCommitShaFromText -Text $productionShaOnly) -eq $ProductionShapeSha) { 'PASS' } else { 'FAIL' }) 'PASS'
+
+$shaContradictionOther = 'a' * 40
+$shaContradiction = $legacyShaOnly + [Environment]::NewLine + ('- `releaseCommitSha`: `' + $shaContradictionOther + '`')
+Assert-Equal 'RELEASE_SHA_CONTRADICTION_FAIL_CLOSE' $(if ($null -eq (Get-ReleaseRecordCommitShaFromText -Text $shaContradiction)) { 'PASS' } else { 'FAIL' }) 'PASS'
+
+$legacyDigestMultiline = '- public OCI digest:' + [Environment]::NewLine + '  `' + $ProductionShapeDigest + '`'
+Assert-Equal 'DIGEST_LEGACY_MULTILINE_PARSE' $(if ((Get-ReleaseRecordDigestFromText -Text $legacyDigestMultiline) -eq $ProductionShapeDigest) { 'PASS' } else { 'FAIL' }) 'PASS'
+
+$productionDigestOneline = '- Public OCI digest: `' + $ProductionShapeDigest + '`'
+Assert-Equal 'DIGEST_PRODUCTION_ONELINE_PARSE' $(if ((Get-ReleaseRecordDigestFromText -Text $productionDigestOneline) -eq $ProductionShapeDigest) { 'PASS' } else { 'FAIL' }) 'PASS'
+
+$digestOther = 'sha256:' + ('b' * 64)
+$digestContradiction = $productionDigestOneline + [Environment]::NewLine + ('- public OCI digest: `' + $digestOther + '`')
+Assert-Equal 'DIGEST_CONTRADICTION_FAIL_CLOSE' $(if ($null -eq (Get-ReleaseRecordDigestFromText -Text $digestContradiction)) { 'PASS' } else { 'FAIL' }) 'PASS'
+
+$postSyncVerifyParse = ConvertTo-ReleaseRecordVerifyState -FetchState 'PRESENT' -Text $productionFinal.Text -Version '1.3.5' -ReleaseCommitSha $ProductionShapeSha -ObservedDigest $ProductionShapeDigest
+$postSyncShaParsed = Get-ReleaseRecordCommitShaFromText -Text $productionFinal.Text
+$postSyncDigestParsed = Get-ReleaseRecordDigestFromText -Text $productionFinal.Text
+Assert-Equal 'PRODUCTION_POST_SYNC_RECORD_VERIFY_PARSE' $(if ($postSyncVerifyParse -eq 'EXACT_MATCH' -and $postSyncShaParsed -eq $ProductionShapeSha -and $postSyncDigestParsed -eq $ProductionShapeDigest) { 'PASS' } else { 'FAIL' }) 'PASS'
+
+
 $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-' + [Guid]::NewGuid().ToString('n'))
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 try {
@@ -1986,6 +2039,18 @@ try {
     Assert-True 'post-sync execute preserves release scope' ($publishedRecord -match 'planned release scope and must survive post-sync finalize') 'release scope text missing'
     Assert-True 'post-sync execute leaves workflow run pending' ($publishedRecord -match 'publish workflow run: \*\*PENDING\*\*') 'workflow run should remain pending'
     Assert-True 'post-sync execute updates digest' ($publishedRecord -match ([regex]::Escape($PostSyncDigest135))) 'digest not updated in execute path'
+    $smokeJa = Get-Content -LiteralPath (Join-Path $fixtureRoot 'docs/ops/release-image-smoke.md') -Raw
+    $smokeEn = Get-Content -LiteralPath (Join-Path $fixtureRoot 'docs/ops/release-image-smoke.en.md') -Raw
+    $expectedSmokeLink = '[docs/releases/v1.3.5.md](../releases/v1.3.5.md)'
+    Assert-True 'JA smoke link label+href sync' ($smokeJa.Contains($expectedSmokeLink)) 'JA smoke release-record link not synchronized'
+    Assert-True 'EN smoke link label+href sync' ($smokeEn.Contains($expectedSmokeLink)) 'EN smoke release-record link not synchronized'
+    Assert-True 'JA smoke link no stale label' (-not ($smokeJa -match '\[docs/releases/v1\.3\.4\.md\]\(\.\./releases/v1\.3\.5\.md\)')) 'JA stale label with new href'
+    Assert-True 'EN smoke link no stale label' (-not ($smokeEn -match '\[docs/releases/v1\.3\.4\.md\]\(\.\./releases/v1\.3\.5\.md\)')) 'EN stale label with new href'
+    Assert-Equal 'JA_SMOKE_LINK_FIX' $(if ($smokeJa.Contains($expectedSmokeLink)) { 'PASS' } else { 'FAIL' }) 'PASS'
+    Assert-Equal 'EN_SMOKE_LINK_FIX' $(if ($smokeEn.Contains($expectedSmokeLink)) { 'PASS' } else { 'FAIL' }) 'PASS'
+    Assert-Equal 'SMOKE_LINK_LABEL_SYNC' $(if (($smokeJa -match '\[docs/releases/v1\.3\.5\.md\]') -and ($smokeEn -match '\[docs/releases/v1\.3\.5\.md\]')) { 'PASS' } else { 'FAIL' }) 'PASS'
+    Assert-Equal 'SMOKE_LINK_HREF_SYNC' $(if (($smokeJa -match '\(\.\./releases/v1\.3\.5\.md\)') -and ($smokeEn -match '\(\.\./releases/v1\.3\.5\.md\)')) { 'PASS' } else { 'FAIL' }) 'PASS'
+
 
     $already = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
     Assert-Equal 'post-sync already synchronized' $already.Plan.MutationResult 'ALREADY_APPLIED'
