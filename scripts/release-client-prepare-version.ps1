@@ -153,7 +153,7 @@ function New-PrepareVersionPendingReleaseRecordText {
         '- `release/current-public.json` and README / SECURITY / release-smoke defaults:'
         '  intentionally unchanged during Version Preparation'
         ''
-        '## PENDING public identities'
+        '## Public identities and publication evidence'
         ''
         'The following fields are deliberately not guessed during version preparation:'
         ''
@@ -168,17 +168,24 @@ function New-PrepareVersionPendingReleaseRecordText {
     $lines += $platformLines
     $lines += @(
         '- Release image workflow run / attempt: **PENDING**'
-        '- Publication evidence artifact name / ID: **PENDING**'
-        '- Public-consumer verification evidence: **PENDING**'
+        '- Publication artifact: **PENDING**'
+        '- Publication evidence artifact: **PENDING**'
+        '- Public-consumer versioned-image verification: **PENDING**'
         ('- NuGet `Amane.Mailer.Contracts {0}`: **NOT YET PUBLISHED**' -f $Version)
         '- NuGet symbol package status: **PENDING**'
         '- NuGet SourceLink revision: **PENDING**'
         '- NuGet publication timestamp: **PENDING** (NuGet service indexing time is not claimed)'
-        '- NuGet public observed-at (UTC): **PENDING** (set when the canonical verifier observes the package)'
+        '- NuGet public observed-at (UTC): **PENDING**'
+        '- NuGet clean-consumer restore / build / run: **PENDING**'
         ('- GitHub Release `{0}`: **NOT YET PUBLISHED**' -f $tag)
         '- GitHub Release ID: **PENDING**'
+        '- GitHub Release published at: **PENDING**'
         '- GitHub Release URL: **PENDING**'
-        '- GHCR `latest` digest promotion: **PENDING**'
+        '- GHCR `latest` promotion: **PENDING**'
+        '- `latest` promotion workflow run / attempt: **PENDING**'
+        '- GHCR `latest` digest: **PENDING**'
+        ('- `latest == {0}` by OCI digest: **PENDING**' -f $tag)
+        '- anonymous `latest` pull and OCI version/revision read-back: **PENDING**'
         '- Consumer verification results: **PENDING**'
         ''
         '## Publication invariants'

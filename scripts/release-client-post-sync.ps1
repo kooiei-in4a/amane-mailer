@@ -579,6 +579,695 @@ function Test-PublishedReleaseRecordCoreConsistency {
     return [pscustomobject]@{ State = 'CONFLICT'; Reason = ($unique -join ',') }
 }
 
+# --- Issue #691: observed post-sync evidence contract (schemaVersion=1) ---
+
+function Test-PostSyncObservationState {
+    param([string]$State)
+    return ($State -eq 'OBSERVED' -or $State -eq 'PENDING')
+}
+
+function Test-PostSyncConsumerResult {
+    param([string]$Result)
+    return ($Result -eq 'PASS' -or $Result -eq 'FAIL')
+}
+
+function Test-PostSyncWorkflowResult {
+    param([string]$Result)
+    return ($Result -eq 'SUCCESS' -or $Result -eq 'FAILURE' -or $Result -eq 'CANCELLED' -or $Result -eq 'SKIPPED')
+}
+
+function Test-PostSyncPositiveInteger {
+    param($Value)
+    if ($null -eq $Value) { return $false }
+    try {
+        $n = [long]$Value
+        return ($n -gt 0)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-PostSyncObservedEvidenceGroupState {
+    param($Group)
+    if ($null -eq $Group) { return 'MISSING' }
+    if ($null -eq $Group.PSObject.Properties['state']) { return 'MISSING' }
+    $state = [string]$Group.state
+    if (-not (Test-PostSyncObservationState -State $state)) { return 'INVALID' }
+    return $state
+}
+
+function ConvertTo-PostSyncEvidenceUtcString {
+    param($Value)
+    if ($null -eq $Value) { return '' }
+    if ($Value -is [datetime]) {
+        return $Value.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    return [string]$Value
+}
+
+function Get-PostSyncEvidenceNestedGroup {
+    param(
+        $Group,
+        [string]$Name
+    )
+    if ($null -eq $Group) { return $null }
+    if ($null -eq $Group.PSObject.Properties[$Name]) { return $null }
+    return $Group.$Name
+}
+
+function Get-PostSyncEvidencePropertyValue {
+    param(
+        $Group,
+        [string]$Name
+    )
+    if ($null -eq $Group) { return $null }
+    if ($null -eq $Group.PSObject.Properties[$Name]) { return $null }
+    return $Group.$Name
+}
+
+function Test-PostSyncObservedEvidenceGroupHasObservedValues {
+    param(
+        $Group,
+        [string[]]$PropertyNames
+    )
+    foreach ($name in $PropertyNames) {
+        $value = Get-PostSyncEvidencePropertyValue -Group $Group -Name $name
+        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Read-PostSyncObservedEvidenceFile {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Evidence = $null; Reason = 'MISSING_PATH' }
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Evidence = $null; Reason = 'MISSING_FILE' }
+    }
+    try {
+        $text = Read-PostSyncTextFile -Path $Path
+        $parsed = $text | ConvertFrom-Json
+    }
+    catch {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Evidence = $null; Reason = 'MALFORMED_JSON' }
+    }
+    if ($null -eq $parsed) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Evidence = $null; Reason = 'MALFORMED_JSON' }
+    }
+    return [pscustomobject]@{ State = 'PARSED'; Evidence = $parsed; Reason = '' }
+}
+
+function Test-PostSyncObservedEvidenceSchema {
+    param($Evidence)
+
+    if ($null -eq $Evidence) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'NULL_EVIDENCE' }
+    }
+
+    $schemaVersion = 0
+    if ($null -ne $Evidence.PSObject.Properties['schemaVersion']) {
+        $schemaVersion = [int]$Evidence.schemaVersion
+    }
+    if ($schemaVersion -ne 1) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'UNSUPPORTED_SCHEMA' }
+    }
+
+    $requiredTop = @('version', 'releaseCommitSha', 'publicOciDigest', 'supportedPlatforms')
+    foreach ($name in $requiredTop) {
+        if ($null -eq $Evidence.PSObject.Properties[$name]) {
+            return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = ('MISSING_' + $name.ToUpperInvariant()) }
+        }
+    }
+
+    if (-not (Test-ReleaseVersion ([string]$Evidence.version))) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'INVALID_VERSION' }
+    }
+    if (-not (Test-ReleaseSha ([string]$Evidence.releaseCommitSha))) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'INVALID_RELEASE_COMMIT_SHA' }
+    }
+    if (-not (Test-ReleaseDigest ([string]$Evidence.publicOciDigest))) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'INVALID_PUBLIC_OCI_DIGEST' }
+    }
+
+    $platforms = @()
+    foreach ($item in @($Evidence.supportedPlatforms)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$item)) {
+            $platforms += [string]$item
+        }
+    }
+    if ($platforms.Count -eq 0) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'EMPTY_SUPPORTED_PLATFORMS' }
+    }
+
+    $groupNames = @(
+        'annotatedTagObject'
+        'releaseImageWorkflow'
+        'publicationArtifact'
+        'publicationEvidenceArtifact'
+        'versionedGhcrConsumerVerification'
+        'githubRelease'
+        'latestPromotion'
+        'overallConsumerVerification'
+    )
+    foreach ($groupName in $groupNames) {
+        if ($null -eq $Evidence.PSObject.Properties[$groupName]) {
+            return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = ('MISSING_' + $groupName.ToUpperInvariant()) }
+        }
+        $groupState = Get-PostSyncObservedEvidenceGroupState -Group $Evidence.$groupName
+        if ($groupState -eq 'MISSING' -or $groupState -eq 'INVALID') {
+            return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = ('INVALID_' + $groupName.ToUpperInvariant() + '_STATE') }
+        }
+    }
+
+    if ($null -eq $Evidence.PSObject.Properties['nuget']) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'MISSING_NUGET' }
+    }
+    $nuget = $Evidence.nuget
+    foreach ($name in @('version', 'repositoryRevision', 'symbolObservation', 'cleanConsumerVerification')) {
+        if ($null -eq $nuget.PSObject.Properties[$name]) {
+            return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = ('MISSING_NUGET_' + $name.ToUpperInvariant()) }
+        }
+    }
+    if ($null -eq $nuget.PSObject.Properties['publicObservedAtUtc']) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'MISSING_NUGET_PUBLIC_OBSERVED_AT_UTC' }
+    }
+
+    $failReason = ''
+    $tagObj = $Evidence.annotatedTagObject
+    $tagState = Get-PostSyncObservedEvidenceGroupState -Group $tagObj
+    if ($tagState -eq 'OBSERVED') {
+        if (-not (Test-ReleaseSha ([string](Get-PostSyncEvidencePropertyValue -Group $tagObj -Name 'sha')))) { $failReason = 'ANNOTATED_TAG_OBJECT_SHA' }
+    }
+    elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $tagObj -PropertyNames @('sha')) {
+        $failReason = 'ANNOTATED_TAG_OBJECT_AMBIGUOUS'
+    }
+
+    $imageWorkflow = $Evidence.releaseImageWorkflow
+    $imageState = Get-PostSyncObservedEvidenceGroupState -Group $imageWorkflow
+    if ($imageState -eq 'OBSERVED') {
+        if (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $imageWorkflow -Name 'runId'))) { $failReason = 'RELEASE_IMAGE_WORKFLOW_RUN_ID' }
+        elseif (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $imageWorkflow -Name 'attempt'))) { $failReason = 'RELEASE_IMAGE_WORKFLOW_ATTEMPT' }
+        elseif (-not (Test-PostSyncWorkflowResult ([string](Get-PostSyncEvidencePropertyValue -Group $imageWorkflow -Name 'result')))) { $failReason = 'RELEASE_IMAGE_WORKFLOW_RESULT' }
+    }
+    elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $imageWorkflow -PropertyNames @('runId', 'attempt', 'result')) {
+        $failReason = 'RELEASE_IMAGE_WORKFLOW_AMBIGUOUS'
+    }
+
+    foreach ($artifactName in @('publicationArtifact', 'publicationEvidenceArtifact')) {
+        $artifact = $Evidence.$artifactName
+        $artifactState = Get-PostSyncObservedEvidenceGroupState -Group $artifact
+        if ($artifactState -eq 'OBSERVED') {
+            if ([string]::IsNullOrWhiteSpace([string](Get-PostSyncEvidencePropertyValue -Group $artifact -Name 'name'))) { $failReason = ($artifactName.ToUpperInvariant() + '_NAME') }
+            elseif (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $artifact -Name 'id'))) { $failReason = ($artifactName.ToUpperInvariant() + '_ID') }
+        }
+        elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $artifact -PropertyNames @('name', 'id')) {
+            $failReason = ($artifactName.ToUpperInvariant() + '_AMBIGUOUS')
+        }
+    }
+
+    $versionedConsumer = $Evidence.versionedGhcrConsumerVerification
+    $versionedConsumerState = Get-PostSyncObservedEvidenceGroupState -Group $versionedConsumer
+    if ($versionedConsumerState -eq 'OBSERVED') {
+        if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $versionedConsumer -Name 'result')))) { $failReason = 'VERSIONED_GHCR_CONSUMER_RESULT' }
+    }
+    elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $versionedConsumer -PropertyNames @('result')) {
+        $failReason = 'VERSIONED_GHCR_CONSUMER_AMBIGUOUS'
+    }
+
+    $symbol = $nuget.symbolObservation
+    $symbolState = Get-PostSyncObservedEvidenceGroupState -Group $symbol
+    if ($symbolState -eq 'OBSERVED') {
+        $symbolStatus = [string](Get-PostSyncEvidencePropertyValue -Group $symbol -Name 'status')
+        if ($symbolStatus -ne 'OBSERVED' -and $symbolStatus -ne 'PASS') { $failReason = 'NUGET_SYMBOL_STATUS' }
+    }
+    elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $symbol -PropertyNames @('status')) {
+        $failReason = 'NUGET_SYMBOL_AMBIGUOUS'
+    }
+
+    $cleanConsumer = $nuget.cleanConsumerVerification
+    $cleanConsumerState = Get-PostSyncObservedEvidenceGroupState -Group $cleanConsumer
+    if ($cleanConsumerState -eq 'OBSERVED') {
+        if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $cleanConsumer -Name 'result')))) { $failReason = 'NUGET_CLEAN_CONSUMER_RESULT' }
+    }
+    elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $cleanConsumer -PropertyNames @('result')) {
+        $failReason = 'NUGET_CLEAN_CONSUMER_AMBIGUOUS'
+    }
+
+    $observedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $nuget -Name 'publicObservedAtUtc')
+    if (-not [string]::IsNullOrWhiteSpace($observedAt) -and -not (Test-ReleaseUtcTimestamp -Value $observedAt)) {
+        $failReason = 'NUGET_PUBLIC_OBSERVED_AT_UTC'
+    }
+
+    $github = $Evidence.githubRelease
+    $githubState = Get-PostSyncObservedEvidenceGroupState -Group $github
+    if ($githubState -eq 'OBSERVED') {
+        if (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $github -Name 'id'))) { $failReason = 'GITHUB_RELEASE_ID' }
+        elseif (-not (Test-ReleaseUtcTimestamp (ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $github -Name 'publishedAtUtc')))) { $failReason = 'GITHUB_RELEASE_PUBLISHED_AT' }
+        elseif ([string]::IsNullOrWhiteSpace([string](Get-PostSyncEvidencePropertyValue -Group $github -Name 'url'))) { $failReason = 'GITHUB_RELEASE_URL' }
+    }
+    elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $github -PropertyNames @('id', 'publishedAtUtc', 'url')) {
+        $failReason = 'GITHUB_RELEASE_AMBIGUOUS'
+    }
+
+    $latest = $Evidence.latestPromotion
+    $latestState = Get-PostSyncObservedEvidenceGroupState -Group $latest
+    if ($latestState -eq 'OBSERVED') {
+        if (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowRunId'))) { $failReason = 'LATEST_WORKFLOW_RUN_ID' }
+        elseif (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowAttempt'))) { $failReason = 'LATEST_WORKFLOW_ATTEMPT' }
+        elseif (-not (Test-PostSyncWorkflowResult ([string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowResult')))) { $failReason = 'LATEST_WORKFLOW_RESULT' }
+        elseif (-not (Test-ReleaseDigest ([string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digest')))) { $failReason = 'LATEST_DIGEST' }
+        elseif (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digestEquality')))) { $failReason = 'LATEST_DIGEST_EQUALITY' }
+        else {
+            $latestConsumer = Get-PostSyncEvidenceNestedGroup -Group $latest -Name 'consumerVerification'
+            $latestConsumerState = Get-PostSyncObservedEvidenceGroupState -Group $latestConsumer
+            if ($latestConsumerState -eq 'OBSERVED') {
+                if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $latestConsumer -Name 'result')))) { $failReason = 'LATEST_CONSUMER_RESULT' }
+            }
+            elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $latestConsumer -PropertyNames @('result')) {
+                $failReason = 'LATEST_CONSUMER_AMBIGUOUS'
+            }
+        }
+    }
+    elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $latest -PropertyNames @('workflowRunId', 'workflowAttempt', 'workflowResult', 'digest', 'digestEquality')) {
+        $failReason = 'LATEST_PROMOTION_AMBIGUOUS'
+    }
+
+    $overall = $Evidence.overallConsumerVerification
+    $overallState = Get-PostSyncObservedEvidenceGroupState -Group $overall
+    if ($overallState -eq 'OBSERVED') {
+        if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $overall -Name 'result')))) { $failReason = 'OVERALL_CONSUMER_RESULT' }
+    }
+    elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $overall -PropertyNames @('result')) {
+        $failReason = 'OVERALL_CONSUMER_AMBIGUOUS'
+    }
+
+    if (-not [string]::IsNullOrEmpty($failReason)) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = $failReason }
+    }
+
+    return [pscustomobject]@{ State = 'PASS'; Reason = '' }
+}
+
+function Test-PostSyncObservedEvidenceBinding {
+    param(
+        $Evidence,
+        [string]$Version,
+        [string]$ReleaseCommitSha,
+        $VerifyMap,
+        [string[]]$ResolvedPlatforms
+    )
+
+    $schema = Test-PostSyncObservedEvidenceSchema -Evidence $Evidence
+    if ($schema.State -ne 'PASS') {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = $schema.Reason }
+    }
+
+    if ([string]$Evidence.version -ne $Version) {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'VERSION_MISMATCH' }
+    }
+    if ([string]$Evidence.releaseCommitSha -ne $ReleaseCommitSha) {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'RELEASE_COMMIT_SHA_MISMATCH' }
+    }
+    if ([string]$Evidence.publicOciDigest -ne [string]$VerifyMap['PUBLIC_DIGEST']) {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'PUBLIC_DIGEST_MISMATCH' }
+    }
+
+    $manifestPlatforms = @($Evidence.supportedPlatforms | ForEach-Object { [string]$_ } | Sort-Object)
+    $resolvedSorted = @($ResolvedPlatforms | Sort-Object)
+    if (($manifestPlatforms -join ',') -ne ($resolvedSorted -join ',')) {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'PLATFORM_MISMATCH' }
+    }
+
+    $nuget = $Evidence.nuget
+    if ([string]$nuget.version -ne $Version) {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'NUGET_VERSION_MISMATCH' }
+    }
+    if ([string]$nuget.repositoryRevision -ne $ReleaseCommitSha) {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'NUGET_REVISION_MISMATCH' }
+    }
+
+    $tag = 'v' + $Version
+    $expectedUrl = 'https://github.com/kooiei-in4a/amane-mailer/releases/tag/' + $tag
+    $githubState = Get-PostSyncObservedEvidenceGroupState -Group $Evidence.githubRelease
+    if ($githubState -eq 'OBSERVED' -and [string]$Evidence.githubRelease.url -ne $expectedUrl) {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'GITHUB_RELEASE_URL_MISMATCH' }
+    }
+
+    $latestState = Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion
+    if ($latestState -eq 'OBSERVED') {
+        if ([string]$Evidence.latestPromotion.digest -ne [string]$Evidence.publicOciDigest) {
+            return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_DIGEST_MISMATCH' }
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.versionedGhcrConsumerVerification) -eq 'OBSERVED' -and
+        [string]$Evidence.versionedGhcrConsumerVerification.result -eq 'FAIL') {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'VERSIONED_CONSUMER_FAIL' }
+    }
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $nuget.cleanConsumerVerification) -eq 'OBSERVED' -and
+        [string]$nuget.cleanConsumerVerification.result -eq 'FAIL') {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'NUGET_CLEAN_CONSUMER_FAIL' }
+    }
+    if ($latestState -eq 'OBSERVED' -and
+        (Get-PostSyncObservedEvidenceGroupState -Group (Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification')) -eq 'OBSERVED' -and
+        [string](Get-PostSyncEvidencePropertyValue -Group (Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification') -Name 'result') -eq 'FAIL') {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_CONSUMER_FAIL' }
+    }
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.overallConsumerVerification) -eq 'OBSERVED' -and
+        [string]$Evidence.overallConsumerVerification.result -eq 'FAIL') {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'OVERALL_CONSUMER_FAIL' }
+    }
+
+    $imageState = Get-PostSyncObservedEvidenceGroupState -Group $Evidence.releaseImageWorkflow
+    if ($imageState -eq 'OBSERVED' -and [string]$Evidence.releaseImageWorkflow.result -ne 'SUCCESS') {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'RELEASE_IMAGE_WORKFLOW_NOT_SUCCESS' }
+    }
+    if ($latestState -eq 'OBSERVED' -and [string]$Evidence.latestPromotion.workflowResult -ne 'SUCCESS') {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_WORKFLOW_NOT_SUCCESS' }
+    }
+
+    return [pscustomobject]@{ State = 'PASS'; Reason = '' }
+}
+
+function Apply-ObservedEvidenceToReleaseRecord {
+    param(
+        [string]$Text,
+        [string]$Version,
+        $Evidence
+    )
+
+    if ($null -eq $Evidence) {
+        return $Text
+    }
+
+    $tag = 'v' + $Version
+    $escTag = [regex]::Escape($tag)
+    $updatedLines = New-Object System.Collections.Generic.List[string]
+    $skipNext = $false
+    $lines = $Text -split '\r?\n', 0
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($skipNext) {
+            $skipNext = $false
+            continue
+        }
+
+        $line = $lines[$i]
+        $handled = $false
+
+        if (-not $handled -and $line -match '^-\s+annotated tag object:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.annotatedTagObject) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- annotated tag object: `' + [string]$Evidence.annotatedTagObject.sha + '`')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+Release image workflow run / attempt:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.releaseImageWorkflow) -eq 'OBSERVED') {
+                $wf = $Evidence.releaseImageWorkflow
+                [void]$updatedLines.Add(('- Release image workflow run / attempt: `{0}` / `{1}` - **{2}**' -f $wf.runId, $wf.attempt, $wf.result))
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+Publication artifact:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationArtifact) -eq 'OBSERVED') {
+                $artifact = $Evidence.publicationArtifact
+                [void]$updatedLines.Add(('- Publication artifact: `{0}` / ID `{1}`' -f $artifact.name, $artifact.id))
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+Publication evidence artifact:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationEvidenceArtifact) -eq 'OBSERVED') {
+                $artifact = $Evidence.publicationEvidenceArtifact
+                [void]$updatedLines.Add(('- Publication evidence artifact: `{0}` / ID `{1}`' -f $artifact.name, $artifact.id))
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+Publication evidence artifact name / ID:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationEvidenceArtifact) -eq 'OBSERVED') {
+                $artifact = $Evidence.publicationEvidenceArtifact
+                [void]$updatedLines.Add(('- Publication evidence artifact name / ID: `{0}` / `{1}`' -f $artifact.name, $artifact.id))
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+Public-consumer versioned-image verification:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.versionedGhcrConsumerVerification) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- Public-consumer versioned-image verification: **' + [string]$Evidence.versionedGhcrConsumerVerification.result + '**')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+Public-consumer verification evidence:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.versionedGhcrConsumerVerification) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- Public-consumer verification evidence: **' + [string]$Evidence.versionedGhcrConsumerVerification.result + '**')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+NuGet clean-consumer restore / build / run:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.nuget.cleanConsumerVerification) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- NuGet clean-consumer restore / build / run: **' + [string]$Evidence.nuget.cleanConsumerVerification.result + '**')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+GitHub Release ID:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.githubRelease) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- GitHub Release ID: `' + [string]$Evidence.githubRelease.id + '`')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+GitHub Release published at:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.githubRelease) -eq 'OBSERVED') {
+                $publishedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $Evidence.githubRelease -Name 'publishedAtUtc')
+                [void]$updatedLines.Add('- GitHub Release published at: `' + $publishedAt + '`')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+GHCR `latest` digest promotion:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- GHCR `latest` promotion: **PUBLISHED** by digest-preserving copy, no rebuild')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+`latest` promotion workflow run / attempt:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
+                $latest = $Evidence.latestPromotion
+                [void]$updatedLines.Add(('- `latest` promotion workflow run / attempt: `{0}` / `{1}` - **{2}**' -f $latest.workflowRunId, $latest.workflowAttempt, $latest.workflowResult))
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+GHCR `latest` digest:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- GHCR `latest` digest: `' + [string]$Evidence.latestPromotion.digest + '`')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match ('^-\s+`latest == ' + $escTag + '` by OCI digest:') -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
+                [void]$updatedLines.Add(('- `latest == {0}` by OCI digest: **{1}**' -f $tag, $Evidence.latestPromotion.digestEquality))
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+anonymous `latest` pull and OCI version/revision read-back:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            $latestConsumerGroup = Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification'
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $latestConsumerGroup) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- anonymous `latest` pull and OCI version/revision read-back: **' + [string](Get-PostSyncEvidencePropertyValue -Group $latestConsumerGroup -Name 'result') + '**')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+Consumer verification results:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.overallConsumerVerification) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- Consumer verification results: **' + [string]$Evidence.overallConsumerVerification.result + '** for versioned GHCR, NuGet, GitHub Release/tag, and promoted `latest`')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+publish workflow run:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.releaseImageWorkflow) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- publish workflow run: ``' + [string]$Evidence.releaseImageWorkflow.runId + '``')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+run attempt:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.releaseImageWorkflow) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- run attempt: ``' + [string]$Evidence.releaseImageWorkflow.attempt + '``')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+publication artifact ID:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationArtifact) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- publication artifact ID: ``' + [string]$Evidence.publicationArtifact.id + '``')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+published at:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.githubRelease) -eq 'OBSERVED') {
+                $publishedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $Evidence.githubRelease -Name 'publishedAtUtc')
+                [void]$updatedLines.Add('- published at: ``' + $publishedAt + '``')
+                $handled = $true
+            }
+        }
+
+        if (-not $handled -and $line -match '^-\s+release ID:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+            if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.githubRelease) -eq 'OBSERVED') {
+                [void]$updatedLines.Add('- release ID: ``' + [string]$Evidence.githubRelease.id + '``')
+                $handled = $true
+            }
+        }
+
+        if ($handled) {
+            continue
+        }
+
+        [void]$updatedLines.Add($line)
+    }
+
+    return [string]::Join("`n", $updatedLines)
+}
+
+function Test-ObservedEvidenceRenderingConsistency {
+    param(
+        [string]$Text,
+        [string]$Version,
+        $Evidence
+    )
+
+    if ($null -eq $Evidence) {
+        return [pscustomobject]@{ State = 'PASS'; Reason = '' }
+    }
+
+    $failures = New-Object System.Collections.Generic.List[string]
+    $tag = 'v' + $Version
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.annotatedTagObject) -eq 'OBSERVED') {
+        if ($Text -notmatch ('annotated tag object: `' + [regex]::Escape([string]$Evidence.annotatedTagObject.sha) + '`')) {
+            [void]$failures.Add('ANNOTATED_TAG_OBJECT')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.releaseImageWorkflow) -eq 'OBSERVED') {
+        $wf = $Evidence.releaseImageWorkflow
+        if (($Text -notmatch ([string]$wf.runId)) -or ($Text -match 'Release image workflow run / attempt: \*\*PENDING\*\*') -or ($Text -match 'publish workflow run: \*\*PENDING\*\*')) {
+            [void]$failures.Add('RELEASE_IMAGE_WORKFLOW')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationArtifact) -eq 'OBSERVED') {
+        $artifact = $Evidence.publicationArtifact
+        if (($Text -notmatch [regex]::Escape([string]$artifact.name)) -or ($Text -notmatch ([string]$artifact.id))) {
+            [void]$failures.Add('PUBLICATION_ARTIFACT')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationEvidenceArtifact) -eq 'OBSERVED') {
+        $artifact = $Evidence.publicationEvidenceArtifact
+        if (($Text -notmatch [regex]::Escape([string]$artifact.name)) -or ($Text -notmatch ([string]$artifact.id))) {
+            [void]$failures.Add('PUBLICATION_EVIDENCE_ARTIFACT')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.versionedGhcrConsumerVerification) -eq 'OBSERVED') {
+        if ($Text -notmatch ('Public-consumer versioned-image verification: \*\*' + [regex]::Escape([string]$Evidence.versionedGhcrConsumerVerification.result) + '\*\*')) {
+            [void]$failures.Add('VERSIONED_GHCR_CONSUMER')
+        }
+    }
+
+    $nugetObservedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $Evidence.nuget -Name 'publicObservedAtUtc')
+    if (-not [string]::IsNullOrWhiteSpace($nugetObservedAt)) {
+        if ($Text -notmatch [regex]::Escape($nugetObservedAt)) {
+            [void]$failures.Add('NUGET_OBSERVED_AT')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.nuget.symbolObservation) -eq 'OBSERVED') {
+        if ($Text -notmatch 'NuGet symbol package status: \*\*OBSERVED\*\*') {
+            [void]$failures.Add('NUGET_SYMBOL')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.nuget.cleanConsumerVerification) -eq 'OBSERVED') {
+        if ($Text -notmatch ('NuGet clean-consumer restore / build / run: \*\*' + [regex]::Escape([string]$Evidence.nuget.cleanConsumerVerification.result) + '\*\*')) {
+            [void]$failures.Add('NUGET_CLEAN_CONSUMER')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.githubRelease) -eq 'OBSERVED') {
+        $gh = $Evidence.githubRelease
+        $ghPublishedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $gh -Name 'publishedAtUtc')
+        if (($Text -notmatch ([string](Get-PostSyncEvidencePropertyValue -Group $gh -Name 'id'))) -or ($Text -notmatch [regex]::Escape($ghPublishedAt)) -or ($Text -notmatch [regex]::Escape([string](Get-PostSyncEvidencePropertyValue -Group $gh -Name 'url')))) {
+            [void]$failures.Add('GITHUB_RELEASE')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
+        $latest = $Evidence.latestPromotion
+        if (($Text -notmatch ([string]$latest.workflowRunId)) -or ($Text -notmatch [regex]::Escape([string]$latest.digest)) -or ($Text -notmatch ('`latest == ' + [regex]::Escape($tag)))) {
+            [void]$failures.Add('LATEST_PROMOTION')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group (Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification')) -eq 'OBSERVED') {
+        $latestConsumerGroup = Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification'
+        if ($Text -notmatch ('anonymous `latest` pull and OCI version/revision read-back: \*\*' + [regex]::Escape([string](Get-PostSyncEvidencePropertyValue -Group $latestConsumerGroup -Name 'result')) + '\*\*')) {
+            [void]$failures.Add('LATEST_CONSUMER')
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.overallConsumerVerification) -eq 'OBSERVED') {
+        if ($Text -notmatch ('Consumer verification results: \*\*' + [regex]::Escape([string]$Evidence.overallConsumerVerification.result) + '\*\*')) {
+            [void]$failures.Add('OVERALL_CONSUMER')
+        }
+    }
+
+    if ($failures.Count -gt 0) {
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = ($failures -join ',') }
+    }
+
+    return [pscustomobject]@{ State = 'PASS'; Reason = '' }
+}
+
+function Test-ObservedEvidenceRecordConflict {
+    param(
+        [string]$Text,
+        $Evidence
+    )
+
+    if ($null -eq $Evidence) {
+        return [pscustomobject]@{ State = 'PASS'; Reason = '' }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.annotatedTagObject) -eq 'OBSERVED') {
+        $expected = [string]$Evidence.annotatedTagObject.sha
+        if ($Text -match 'annotated tag object: `' + '([0-9a-f]{40})' + '`') {
+            if ($Matches[1] -ne $expected) {
+                return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'ANNOTATED_TAG_OBJECT' }
+            }
+        }
+    }
+
+    return [pscustomobject]@{ State = 'PASS'; Reason = '' }
+}
+
 function Update-ReleaseRecordObservableFields {
     param(
         [string]$Text,
@@ -818,7 +1507,8 @@ function Build-PublishedReleaseRecordForPostSync {
         [string]$PublicDigest,
         [string[]]$Platforms,
         [string]$NugetPublicObservedAtUtc = '',
-        [string]$NugetSymbolsStatus = ''
+        [string]$NugetSymbolsStatus = '',
+        $ObservedEvidence = $null
     )
 
     $recordState = Get-ReleaseRecordStateFromText -Text $Text
@@ -835,10 +1525,40 @@ function Build-PublishedReleaseRecordForPostSync {
         return [pscustomobject]@{ State = 'INCOMPLETE'; Text = ''; Reason = 'INVALID_DIGEST' }
     }
 
-    $transformed = Update-ReleaseRecordObservableFields -Text $Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest -Platforms $Platforms -NugetPublicObservedAtUtc $NugetPublicObservedAtUtc -NugetSymbolsStatus $NugetSymbolsStatus
+    if ($null -ne $ObservedEvidence) {
+        $recordConflict = Test-ObservedEvidenceRecordConflict -Text $Text -Evidence $ObservedEvidence
+        if ($recordConflict.State -ne 'PASS') {
+            return [pscustomobject]@{ State = 'CONFLICT'; Text = ''; Reason = $recordConflict.Reason }
+        }
+    }
+
+    $effectiveNugetObservedAt = $NugetPublicObservedAtUtc
+    $effectiveNugetSymbols = $NugetSymbolsStatus
+    if ($null -ne $ObservedEvidence) {
+        $manifestObservedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $ObservedEvidence.nuget -Name 'publicObservedAtUtc')
+        if (Test-ReleaseUtcTimestamp -Value $manifestObservedAt) {
+            $effectiveNugetObservedAt = $manifestObservedAt
+        }
+        if ((Get-PostSyncObservedEvidenceGroupState -Group $ObservedEvidence.nuget.symbolObservation) -eq 'OBSERVED') {
+            $effectiveNugetSymbols = 'OBSERVED'
+        }
+    }
+
+    $transformed = Update-ReleaseRecordObservableFields -Text $Text -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest -Platforms $Platforms -NugetPublicObservedAtUtc $effectiveNugetObservedAt -NugetSymbolsStatus $effectiveNugetSymbols
+    if ($null -ne $ObservedEvidence) {
+        $transformed = Apply-ObservedEvidenceToReleaseRecord -Text $transformed -Version $Version -Evidence $ObservedEvidence
+    }
+
     $consistency = Test-PublishedReleaseRecordCoreConsistency -Text $transformed -Version $Version -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $PublicDigest
     if ($consistency.State -ne 'PASS') {
         return [pscustomobject]@{ State = 'CONFLICT'; Text = ''; Reason = $consistency.Reason }
+    }
+
+    if ($null -ne $ObservedEvidence) {
+        $evidenceRender = Test-ObservedEvidenceRenderingConsistency -Text $transformed -Version $Version -Evidence $ObservedEvidence
+        if ($evidenceRender.State -ne 'PASS') {
+            return [pscustomobject]@{ State = 'CONFLICT'; Text = ''; Reason = ('EVIDENCE_RENDER_' + $evidenceRender.Reason) }
+        }
     }
 
     $published = Set-ReleaseRecordStatusPublished -Text $transformed
@@ -864,7 +1584,8 @@ function Get-ReleasePreparePostSyncPlan {
         [string]$ReleaseCommitSha,
         $VerifyMap,
         [bool]$Execute,
-        $LocalRepoOverride
+        $LocalRepoOverride,
+        $ObservedEvidence = $null
     )
 
     $plan = [pscustomobject]@{
@@ -1074,6 +1795,27 @@ function Get-ReleasePreparePostSyncPlan {
     }
     $resolvedPlatforms = $platformResolution.Platforms
 
+    if ($null -eq $ObservedEvidence) {
+        $plan.FollowerState = 'INCOMPLETE'
+        $plan.MutationResult = 'INCOMPLETE'
+        $plan.Reason = 'MISSING_OBSERVED_EVIDENCE'
+        return $plan
+    }
+
+    $evidenceBinding = Test-PostSyncObservedEvidenceBinding -Evidence $ObservedEvidence -Version $TargetVersion -ReleaseCommitSha $ReleaseCommitSha -VerifyMap $VerifyMap -ResolvedPlatforms $resolvedPlatforms
+    if ($evidenceBinding.State -ne 'PASS') {
+        if ($evidenceBinding.State -eq 'CONFLICT') {
+            $plan.FollowerState = 'CONFLICT'
+            $plan.MutationResult = 'CONFLICT'
+        }
+        else {
+            $plan.FollowerState = 'INCOMPLETE'
+            $plan.MutationResult = 'INCOMPLETE'
+        }
+        $plan.Reason = 'EVIDENCE_' + $evidenceBinding.Reason
+        return $plan
+    }
+
     $planned = New-Object System.Collections.Generic.List[string]
     $writes = New-Object System.Collections.Generic.List[hashtable]
 
@@ -1085,7 +1827,7 @@ function Get-ReleasePreparePostSyncPlan {
         if ($relativePath -eq 'release/current-public.json') { continue }
         if ($relativePath -eq $targetRecord) {
             [void]$planned.Add($targetRecord)
-            $recordBuild = Build-PublishedReleaseRecordForPostSync -Text $targetRecordText -Version $TargetVersion -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $publicDigest -Platforms $resolvedPlatforms -NugetPublicObservedAtUtc $nugetObservedAt -NugetSymbolsStatus $nugetSymbolsStatus
+            $recordBuild = Build-PublishedReleaseRecordForPostSync -Text $targetRecordText -Version $TargetVersion -ReleaseCommitSha $ReleaseCommitSha -PublicDigest $publicDigest -Platforms $resolvedPlatforms -NugetPublicObservedAtUtc $nugetObservedAt -NugetSymbolsStatus $nugetSymbolsStatus -ObservedEvidence $ObservedEvidence
             if ($recordBuild.State -eq 'ALREADY') { continue }
             if ($recordBuild.State -ne 'APPLIED') {
                 $plan.FollowerState = 'CONFLICT'
@@ -1166,6 +1908,8 @@ function Invoke-ReleasePreparePostSync {
         [string]$ReleaseCommitSha,
         [Parameter(Mandatory = $true)]
         [string]$RepoRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$ObservedEvidencePath,
         $Observers,
         $LocalRepoOverride,
         [switch]$Execute,
@@ -1178,10 +1922,18 @@ function Invoke-ReleasePreparePostSync {
     if (-not (Test-ReleaseSha $ReleaseCommitSha)) {
         throw 'ReleaseCommitSha must be a 40-character lowercase hex git commit.'
     }
+    if ([string]::IsNullOrWhiteSpace($ObservedEvidencePath)) {
+        throw 'ObservedEvidencePath is required for prepare-post-sync.'
+    }
+
+    $evidenceRead = Read-PostSyncObservedEvidenceFile -Path $ObservedEvidencePath
+    if ($evidenceRead.State -ne 'PARSED') {
+        throw ('ObservedEvidencePath is invalid: ' + $evidenceRead.Reason)
+    }
 
     $verifyMap = Invoke-ReleaseVerify -Version $Version -ReleaseCommitSha $ReleaseCommitSha -RepoRoot $RepoRoot -Observers $Observers -Quiet
 
-    $plan = Get-ReleasePreparePostSyncPlan -RepoRoot $RepoRoot -TargetVersion $Version -ReleaseCommitSha $ReleaseCommitSha -VerifyMap $verifyMap -Execute:$Execute -LocalRepoOverride $LocalRepoOverride
+    $plan = Get-ReleasePreparePostSyncPlan -RepoRoot $RepoRoot -TargetVersion $Version -ReleaseCommitSha $ReleaseCommitSha -VerifyMap $verifyMap -Execute:$Execute -LocalRepoOverride $LocalRepoOverride -ObservedEvidence $evidenceRead.Evidence
 
     if (-not $Quiet) {
         Write-ReleaseStderr ('release-client: prepare-post-sync VERSION={0} SHA={1}' -f $Version, $ReleaseCommitSha)

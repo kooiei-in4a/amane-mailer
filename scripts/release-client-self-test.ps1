@@ -1780,6 +1780,7 @@ Assert-Equal 'publish-image prod failed one runner call no retry' $script:Comman
 $PostSyncSha134 = Get-FixtureSha '4'
 $PostSyncSha135 = Get-FixtureSha '5'
 $PostSyncDigest135 = Get-FixtureDigest '5'
+$PostSyncEvidence135Path = Join-Path $PSScriptRoot 'fixtures/post-sync/observed-evidence-v1.3.5-core-only.json'
 
 function New-PostSyncVerifyObservers {
     param(
@@ -2022,13 +2023,13 @@ try {
     $localPass = New-PostSyncFixtureLocalRepo
     $verifyObs = New-PostSyncVerifyObservers
 
-    $dry = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $verifyObs -LocalRepoOverride $localPass -Quiet
+    $dry = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Quiet
     Assert-Equal 'post-sync dry MUTATION_RESULT' $dry.Plan.MutationResult 'NOT_ATTEMPTED'
     Assert-Equal 'post-sync dry MUTATION_ATTEMPTED' $dry.Plan.MutationAttempted 'FALSE'
     Assert-Equal 'post-sync dry MUTATION_PERFORMED' $dry.Plan.MutationPerformed 'FALSE'
 
     $beforeExecute = Get-Content -LiteralPath (Join-Path $fixtureRoot 'README.md') -Raw
-    $exec = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+    $exec = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
     Assert-Equal 'post-sync execute APPLIED' $exec.Plan.MutationResult 'APPLIED'
     Assert-Equal 'post-sync execute MUTATION_PERFORMED' $exec.Plan.MutationPerformed 'TRUE'
     Assert-True 'post-sync execute changed README' ($beforeExecute -ne (Get-Content -LiteralPath (Join-Path $fixtureRoot 'README.md') -Raw)) 'README should change'
@@ -2052,7 +2053,7 @@ try {
     Assert-Equal 'SMOKE_LINK_HREF_SYNC' $(if (($smokeJa -match '\(\.\./releases/v1\.3\.5\.md\)') -and ($smokeEn -match '\(\.\./releases/v1\.3\.5\.md\)')) { 'PASS' } else { 'FAIL' }) 'PASS'
 
 
-    $already = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+    $already = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
     Assert-Equal 'post-sync already synchronized' $already.Plan.MutationResult 'ALREADY_APPLIED'
     Assert-Equal 'post-sync already zero writes' $already.Plan.MutationAttempted 'FALSE'
 
@@ -2064,7 +2065,7 @@ try {
         $mixedSecurity = Get-Content -LiteralPath $mixedSecurityPath -Raw
         [System.IO.File]::WriteAllText($mixedSecurityPath, ($mixedSecurity -replace '\| 1\.3\.4   \| Yes \(latest release\) \|', '| 1.3.5   | Yes (latest release) |'))
         Assert-True 'post-sync mixed fixture corrupts SECURITY' ((Get-Content -LiteralPath $mixedSecurityPath -Raw) -match '\| 1\.3\.5   \| Yes \(latest release\) \|') 'SECURITY corruption missing'
-        $conflict = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $mixedRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+        $conflict = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $mixedRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
         Assert-Equal 'post-sync mixed follower CONFLICT' $conflict.Plan.MutationResult 'CONFLICT'
         Assert-Equal 'post-sync mixed zero writes' $conflict.Plan.MutationAttempted 'FALSE'
     }
@@ -2074,7 +2075,7 @@ try {
 
     $incompleteObs = New-PostSyncVerifyObservers
     $incompleteObs['Ghcr'] = { param($ver, $shaArg) New-ArtifactFact -State 'INCOMPLETE' -Reason 'AUTH' }
-    $incomplete = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -Observers $incompleteObs -LocalRepoOverride $localPass -Execute -Quiet
+    $incomplete = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $incompleteObs -LocalRepoOverride $localPass -Execute -Quiet
     Assert-Equal 'post-sync verify incomplete' $incomplete.Plan.MutationResult 'INCOMPLETE'
     Assert-Equal 'post-sync verify incomplete zero writes' $incomplete.Plan.MutationAttempted 'FALSE'
 
@@ -2086,7 +2087,7 @@ try {
         $platformRecord = Get-Content -LiteralPath $platformRecordPath -Raw
         $platformRecord = $platformRecord -replace 'supported platform: ``linux/amd64``', 'supported platform: **PENDING**'
         [System.IO.File]::WriteAllText($platformRecordPath, $platformRecord, (New-Object System.Text.UTF8Encoding $false))
-        $platformIncomplete = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $platformRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+        $platformIncomplete = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $platformRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
         Assert-Equal 'post-sync platform unknown INCOMPLETE' $platformIncomplete.Plan.MutationResult 'INCOMPLETE'
         Assert-Equal 'post-sync platform unknown zero writes' $platformIncomplete.Plan.MutationAttempted 'FALSE'
     }
@@ -2098,7 +2099,7 @@ try {
     New-Item -ItemType Directory -Path $syncRoot -Force | Out-Null
     try {
         Initialize-PostSyncFixtureRepo -Root $syncRoot -SynchronizedTo135
-        $candidate = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $syncRoot -Observers $verifyObs -LocalRepoOverride $localPass -Quiet
+        $candidate = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $syncRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Quiet
         Assert-Equal 'version-prep fixture authority remains target' $candidate.Plan.MutationResult 'ALREADY_APPLIED'
     }
     finally {
@@ -2109,7 +2110,7 @@ try {
     New-Item -ItemType Directory -Path $aheadRoot -Force | Out-Null
     try {
         Initialize-PostSyncFixtureRepo -Root $aheadRoot -SynchronizedTo135
-        $ahead = Invoke-ReleasePreparePostSync -Version '1.3.4' -ReleaseCommitSha $PostSyncSha134 -RepoRoot $aheadRoot -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+        $ahead = Invoke-ReleasePreparePostSync -Version '1.3.4' -ReleaseCommitSha $PostSyncSha134 -RepoRoot $aheadRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
         Assert-Equal 'post-sync authority ahead CONFLICT' $ahead.Plan.MutationResult 'CONFLICT'
         Assert-Equal 'post-sync authority ahead zero writes' $ahead.Plan.MutationAttempted 'FALSE'
     }
@@ -2120,6 +2121,125 @@ try {
 finally {
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# --- #691 observed post-sync evidence contract (synthetic 9.9.0) ---
+$Evidence691Sha = Get-FixtureSha '1'
+$Evidence691TagObject = Get-FixtureSha '2'
+$Evidence691Digest = Get-FixtureDigest 'a'
+$Evidence691Version = '9.9.0'
+$Evidence691CompletePath = Join-Path $PSScriptRoot 'fixtures/post-sync/observed-evidence-v9.9.0-complete.json'
+$Evidence691PendingPath = Join-Path $PSScriptRoot 'fixtures/post-sync/v9.9.0-production-shape-pending.md'
+$Evidence691PendingText = Get-Content -LiteralPath $Evidence691PendingPath -Raw
+$Evidence691Complete = (Read-PostSyncObservedEvidenceFile -Path $Evidence691CompletePath).Evidence
+
+Assert-Equal '691 evidence schema PASS' (Test-PostSyncObservedEvidenceSchema -Evidence $Evidence691Complete).State 'PASS'
+
+$Evidence691CompleteFinal = Build-PublishedReleaseRecordForPostSync -Text $Evidence691PendingText -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-Equal '691 complete evidence APPLIED' $Evidence691CompleteFinal.State 'APPLIED'
+Assert-Equal '691 complete evidence PUBLISHED' (Get-ReleaseRecordStateFromText -Text $Evidence691CompleteFinal.Text) 'PUBLISHED'
+Assert-True '691 annotated tag object exact' ($Evidence691CompleteFinal.Text -match ('annotated tag object: `' + [regex]::Escape($Evidence691TagObject) + '`')) 'annotated tag'
+Assert-True '691 release image workflow exact' ($Evidence691CompleteFinal.Text -match 'Release image workflow run / attempt: `990001` / `1` - \*\*SUCCESS\*\*') 'workflow'
+Assert-True '691 publication artifact exact' ($Evidence691CompleteFinal.Text -match 'Publication artifact: `publish-release-image-1111111111111111111111111111111111111111` / ID `990002`') 'publication artifact'
+Assert-True '691 publication evidence artifact exact' ($Evidence691CompleteFinal.Text -match 'Publication evidence artifact: `publish-release-image-evidence-1111111111111111111111111111111111111111` / ID `990003`') 'publication evidence'
+Assert-True '691 versioned consumer PASS' ($Evidence691CompleteFinal.Text -match 'Public-consumer versioned-image verification: \*\*PASS\*\*') 'versioned consumer'
+Assert-True '691 nuget observed-at exact' ($Evidence691CompleteFinal.Text -match 'NuGet public observed-at \(UTC\): `2026-08-31T12:01:00Z`') 'nuget observed-at'
+Assert-True '691 nuget symbol OBSERVED' ($Evidence691CompleteFinal.Text -match 'NuGet symbol package status: \*\*OBSERVED\*\*') 'nuget symbol'
+Assert-True '691 nuget clean consumer PASS' ($Evidence691CompleteFinal.Text -match 'NuGet clean-consumer restore / build / run: \*\*PASS\*\*') 'nuget clean consumer'
+Assert-True '691 github release id exact' ($Evidence691CompleteFinal.Text -match 'GitHub Release ID: `990004`') 'github id'
+Assert-True '691 github release published-at exact' ($Evidence691CompleteFinal.Text -match 'GitHub Release published at: `2026-08-31T12:00:00Z`') 'github published-at'
+Assert-True '691 github release url exact' ($Evidence691CompleteFinal.Text -match 'GitHub Release URL: `https://github.com/kooiei-in4a/amane-mailer/releases/tag/v9.9.0`') 'github url'
+Assert-True '691 latest workflow exact' ($Evidence691CompleteFinal.Text -match '`latest` promotion workflow run / attempt: `990005` / `1` - \*\*SUCCESS\*\*') 'latest workflow'
+Assert-True '691 latest digest exact' ($Evidence691CompleteFinal.Text -match ([regex]::Escape($Evidence691Digest))) 'latest digest'
+Assert-True '691 latest digest equality PASS' ($Evidence691CompleteFinal.Text -match '`latest == v9\.9\.0` by OCI digest: \*\*PASS\*\*') 'digest equality'
+Assert-True '691 latest consumer PASS' ($Evidence691CompleteFinal.Text -match 'anonymous `latest` pull and OCI version/revision read-back: \*\*PASS\*\*') 'latest consumer'
+Assert-True '691 overall consumer PASS' ($Evidence691CompleteFinal.Text -match 'Consumer verification results: \*\*PASS\*\*') 'overall consumer'
+Assert-True '691 nuget indexing timestamp remains PENDING' ($Evidence691CompleteFinal.Text -match 'NuGet publication timestamp: \*\*PENDING\*\*') 'indexing timestamp pending'
+
+$Evidence691PendingOnly = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$Evidence691PendingOnly.annotatedTagObject = [pscustomobject]@{ state = 'PENDING' }
+$Evidence691PendingOnly.releaseImageWorkflow = [pscustomobject]@{ state = 'PENDING' }
+$pendingOnlyFinal = Build-PublishedReleaseRecordForPostSync -Text $Evidence691PendingText -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -ObservedEvidence $Evidence691PendingOnly
+Assert-True '691 explicit pending annotated tag' ($pendingOnlyFinal.Text -match 'annotated tag object: \*\*PENDING\*\*') 'pending annotated tag'
+Assert-True '691 explicit pending workflow' ($pendingOnlyFinal.Text -match 'Release image workflow run / attempt: \*\*PENDING\*\*') 'pending workflow'
+
+$Evidence691VersionMismatch = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$Evidence691VersionMismatch.version = '9.9.1'
+$versionMismatchBinding = Test-PostSyncObservedEvidenceBinding -Evidence $Evidence691VersionMismatch -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap @{ PUBLIC_DIGEST = $Evidence691Digest } -ResolvedPlatforms @('linux/amd64')
+Assert-Equal '691 version mismatch CONFLICT' $versionMismatchBinding.State 'CONFLICT'
+
+$Evidence691ShaMismatch = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$Evidence691ShaMismatch.releaseCommitSha = Get-FixtureSha '3'
+$shaMismatchBinding = Test-PostSyncObservedEvidenceBinding -Evidence $Evidence691ShaMismatch -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap @{ PUBLIC_DIGEST = $Evidence691Digest } -ResolvedPlatforms @('linux/amd64')
+Assert-Equal '691 sha mismatch CONFLICT' $shaMismatchBinding.State 'CONFLICT'
+
+$Evidence691DigestMismatch = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$Evidence691DigestMismatch.publicOciDigest = Get-FixtureDigest 'b'
+$digestMismatchBinding = Test-PostSyncObservedEvidenceBinding -Evidence $Evidence691DigestMismatch -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap @{ PUBLIC_DIGEST = $Evidence691Digest } -ResolvedPlatforms @('linux/amd64')
+Assert-Equal '691 public digest mismatch CONFLICT' $digestMismatchBinding.State 'CONFLICT'
+
+$Evidence691LatestMismatch = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$Evidence691LatestMismatch.latestPromotion.digest = Get-FixtureDigest 'b'
+$latestMismatchBinding = Test-PostSyncObservedEvidenceBinding -Evidence $Evidence691LatestMismatch -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap @{ PUBLIC_DIGEST = $Evidence691Digest } -ResolvedPlatforms @('linux/amd64')
+Assert-Equal '691 latest digest mismatch CONFLICT' $latestMismatchBinding.State 'CONFLICT'
+
+$malformedEvidencePath = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-evidence-malformed-' + [Guid]::NewGuid().ToString('n') + '.json')
+[System.IO.File]::WriteAllText($malformedEvidencePath, '{ not-json', (New-Object System.Text.UTF8Encoding $false))
+try {
+    $malformedRead = Read-PostSyncObservedEvidenceFile -Path $malformedEvidencePath
+    Assert-Equal '691 malformed evidence INCOMPLETE' $malformedRead.State 'INCOMPLETE'
+}
+finally {
+    Remove-Item -LiteralPath $malformedEvidencePath -Force -ErrorAction SilentlyContinue
+}
+
+$contradictoryRecord = $Evidence691PendingText -replace 'annotated tag object: \*\*PENDING\*\*', ('annotated tag object: `' + (Get-FixtureSha '9') + '`')
+$contradictoryFinal = Build-PublishedReleaseRecordForPostSync -Text $contradictoryRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -ObservedEvidence $Evidence691Complete
+Assert-Equal '691 contradictory record CONFLICT' $contradictoryFinal.State 'CONFLICT'
+Assert-True '691 contradictory record zero write text' ([string]::IsNullOrEmpty($contradictoryFinal.Text)) 'zero write'
+
+function New-Evidence691VerifyObservers {
+    param(
+        [string]$Sha = $Evidence691Sha,
+        [string]$Digest = $Evidence691Digest
+    )
+    return @{
+        GitTag         = { param($ver) New-ArtifactFact -State 'PRESENT' -TargetSha $Sha }.GetNewClosure()
+        GitHubRelease  = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+        Nuget          = { param($ver) New-ArtifactFact -State 'PRESENT' }.GetNewClosure()
+        SourceVersions = { param($shaArg, $ver) [pscustomobject]@{ ContractsState = 'PRESENT'; ContractsVersion = $Evidence691Version; OpenApiState = 'PRESENT'; OpenApiVersion = $Evidence691Version } }.GetNewClosure()
+        NugetRevision  = { param($ver) [pscustomobject]@{ State = 'PRESENT'; Commit = $Sha; Reason = '' } }.GetNewClosure()
+        ReleaseRecord = { param($ver, $shaArg) [pscustomobject]@{ State = 'PRESENT'; Text = "> Status: **PENDING / NOT YET PUBLISHED**`n"; Reason = '' } }.GetNewClosure()
+        Ghcr           = { param($ver, $shaArg) New-ArtifactFact -State 'PRESENT' -Digest $Digest -Revision $Sha -OciVersion $Evidence691Version -ShaTagState 'PRESENT' -ShaTagDigest $Digest }.GetNewClosure()
+    }
+}
+
+$Evidence691FixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-evidence691-' + [Guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $Evidence691FixtureRoot -Force | Out-Null
+try {
+    $utf8NoBom691 = New-Object System.Text.UTF8Encoding $false
+    Initialize-PostSyncFixtureRepo -Root $Evidence691FixtureRoot -AuthorityVersion '1.3.4'
+    [System.IO.File]::WriteAllText((Join-Path $Evidence691FixtureRoot 'docs/releases/v9.9.0.md'), $Evidence691PendingText, $utf8NoBom691)
+
+    $evidence691Obs = New-Evidence691VerifyObservers
+    $evidence691Local = New-PostSyncFixtureLocalRepo -Sha $Evidence691Sha
+
+    $beforeDryMtime = (Get-Item -LiteralPath (Join-Path $Evidence691FixtureRoot 'docs/releases/v9.9.0.md')).LastWriteTimeUtc
+    $dry691 = Invoke-ReleasePreparePostSync -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -RepoRoot $Evidence691FixtureRoot -ObservedEvidencePath $Evidence691CompletePath -Observers $evidence691Obs -LocalRepoOverride $evidence691Local -Quiet
+    $afterDryMtime = (Get-Item -LiteralPath (Join-Path $Evidence691FixtureRoot 'docs/releases/v9.9.0.md')).LastWriteTimeUtc
+    Assert-Equal '691 dry-run MUTATION_RESULT' $dry691.Plan.MutationResult 'NOT_ATTEMPTED'
+    Assert-Equal '691 dry-run zero write mtime' $beforeDryMtime $afterDryMtime 'dry-run must not write'
+
+    $exec691 = Invoke-ReleasePreparePostSync -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -RepoRoot $Evidence691FixtureRoot -ObservedEvidencePath $Evidence691CompletePath -Observers $evidence691Obs -LocalRepoOverride $evidence691Local -Execute -Quiet
+    Assert-Equal '691 execute APPLIED' $exec691.Plan.MutationResult 'APPLIED'
+    $exec691Record = Get-Content -LiteralPath (Join-Path $Evidence691FixtureRoot 'docs/releases/v9.9.0.md') -Raw
+    Assert-Equal '691 execute record PUBLISHED' (Get-ReleaseRecordStateFromText -Text $exec691Record) 'PUBLISHED'
+    Assert-True '691 execute bounded write record only expected paths' (($exec691.Plan.FilesChanged | Sort-Object) -contains 'docs/releases/v9.9.0.md') 'record changed'
+}
+finally {
+    Remove-Item -LiteralPath $Evidence691FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Assert-Equal '691_OBSERVED_EVIDENCE_CONTRACT' 'PASS' 'PASS'
 
 # Observation API must be proven on fixtures, not caller-repo live current-public.json (#679 follow-up).
 $observationFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-authority-obs-' + [Guid]::NewGuid().ToString('n'))
