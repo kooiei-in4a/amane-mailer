@@ -757,117 +757,117 @@ function Test-PostSyncObservedEvidenceSchema {
         return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = 'MISSING_NUGET_PUBLIC_OBSERVED_AT_UTC' }
     }
 
-    $failReason = ''
+    $failReasons = New-Object System.Collections.Generic.List[string]
     $tagObj = $Evidence.annotatedTagObject
     $tagState = Get-PostSyncObservedEvidenceGroupState -Group $tagObj
     if ($tagState -eq 'OBSERVED') {
-        if (-not (Test-ReleaseSha ([string](Get-PostSyncEvidencePropertyValue -Group $tagObj -Name 'sha')))) { $failReason = 'ANNOTATED_TAG_OBJECT_SHA' }
+        if (-not (Test-ReleaseSha ([string](Get-PostSyncEvidencePropertyValue -Group $tagObj -Name 'sha')))) { [void]$failReasons.Add('ANNOTATED_TAG_OBJECT_SHA') }
     }
     elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $tagObj -PropertyNames @('sha')) {
-        $failReason = 'ANNOTATED_TAG_OBJECT_AMBIGUOUS'
+        [void]$failReasons.Add('ANNOTATED_TAG_OBJECT_AMBIGUOUS')
     }
 
     $imageWorkflow = $Evidence.releaseImageWorkflow
     $imageState = Get-PostSyncObservedEvidenceGroupState -Group $imageWorkflow
     if ($imageState -eq 'OBSERVED') {
-        if (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $imageWorkflow -Name 'runId'))) { $failReason = 'RELEASE_IMAGE_WORKFLOW_RUN_ID' }
-        elseif (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $imageWorkflow -Name 'attempt'))) { $failReason = 'RELEASE_IMAGE_WORKFLOW_ATTEMPT' }
-        elseif (-not (Test-PostSyncWorkflowResult ([string](Get-PostSyncEvidencePropertyValue -Group $imageWorkflow -Name 'result')))) { $failReason = 'RELEASE_IMAGE_WORKFLOW_RESULT' }
+        if (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $imageWorkflow -Name 'runId'))) { [void]$failReasons.Add('RELEASE_IMAGE_WORKFLOW_RUN_ID') }
+        elseif (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $imageWorkflow -Name 'attempt'))) { [void]$failReasons.Add('RELEASE_IMAGE_WORKFLOW_ATTEMPT') }
+        elseif (-not (Test-PostSyncWorkflowResult ([string](Get-PostSyncEvidencePropertyValue -Group $imageWorkflow -Name 'result')))) { [void]$failReasons.Add('RELEASE_IMAGE_WORKFLOW_RESULT') }
     }
     elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $imageWorkflow -PropertyNames @('runId', 'attempt', 'result')) {
-        $failReason = 'RELEASE_IMAGE_WORKFLOW_AMBIGUOUS'
+        [void]$failReasons.Add('RELEASE_IMAGE_WORKFLOW_AMBIGUOUS')
     }
 
     foreach ($artifactName in @('publicationArtifact', 'publicationEvidenceArtifact')) {
         $artifact = $Evidence.$artifactName
         $artifactState = Get-PostSyncObservedEvidenceGroupState -Group $artifact
         if ($artifactState -eq 'OBSERVED') {
-            if ([string]::IsNullOrWhiteSpace([string](Get-PostSyncEvidencePropertyValue -Group $artifact -Name 'name'))) { $failReason = ($artifactName.ToUpperInvariant() + '_NAME') }
-            elseif (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $artifact -Name 'id'))) { $failReason = ($artifactName.ToUpperInvariant() + '_ID') }
+            if ([string]::IsNullOrWhiteSpace([string](Get-PostSyncEvidencePropertyValue -Group $artifact -Name 'name'))) { [void]$failReasons.Add(($artifactName.ToUpperInvariant() + '_NAME')) }
+            elseif (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $artifact -Name 'id'))) { [void]$failReasons.Add(($artifactName.ToUpperInvariant() + '_ID')) }
         }
         elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $artifact -PropertyNames @('name', 'id')) {
-            $failReason = ($artifactName.ToUpperInvariant() + '_AMBIGUOUS')
+            [void]$failReasons.Add(($artifactName.ToUpperInvariant() + '_AMBIGUOUS'))
         }
     }
 
     $versionedConsumer = $Evidence.versionedGhcrConsumerVerification
     $versionedConsumerState = Get-PostSyncObservedEvidenceGroupState -Group $versionedConsumer
     if ($versionedConsumerState -eq 'OBSERVED') {
-        if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $versionedConsumer -Name 'result')))) { $failReason = 'VERSIONED_GHCR_CONSUMER_RESULT' }
+        if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $versionedConsumer -Name 'result')))) { [void]$failReasons.Add('VERSIONED_GHCR_CONSUMER_RESULT') }
     }
     elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $versionedConsumer -PropertyNames @('result')) {
-        $failReason = 'VERSIONED_GHCR_CONSUMER_AMBIGUOUS'
+        [void]$failReasons.Add('VERSIONED_GHCR_CONSUMER_AMBIGUOUS')
     }
 
     $symbol = $nuget.symbolObservation
     $symbolState = Get-PostSyncObservedEvidenceGroupState -Group $symbol
     if ($symbolState -eq 'OBSERVED') {
         $symbolStatus = [string](Get-PostSyncEvidencePropertyValue -Group $symbol -Name 'status')
-        if ($symbolStatus -ne 'OBSERVED' -and $symbolStatus -ne 'PASS') { $failReason = 'NUGET_SYMBOL_STATUS' }
+        if ($symbolStatus -ne 'OBSERVED' -and $symbolStatus -ne 'PASS') { [void]$failReasons.Add('NUGET_SYMBOL_STATUS') }
     }
     elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $symbol -PropertyNames @('status')) {
-        $failReason = 'NUGET_SYMBOL_AMBIGUOUS'
+        [void]$failReasons.Add('NUGET_SYMBOL_AMBIGUOUS')
     }
 
     $cleanConsumer = $nuget.cleanConsumerVerification
     $cleanConsumerState = Get-PostSyncObservedEvidenceGroupState -Group $cleanConsumer
     if ($cleanConsumerState -eq 'OBSERVED') {
-        if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $cleanConsumer -Name 'result')))) { $failReason = 'NUGET_CLEAN_CONSUMER_RESULT' }
+        if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $cleanConsumer -Name 'result')))) { [void]$failReasons.Add('NUGET_CLEAN_CONSUMER_RESULT') }
     }
     elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $cleanConsumer -PropertyNames @('result')) {
-        $failReason = 'NUGET_CLEAN_CONSUMER_AMBIGUOUS'
+        [void]$failReasons.Add('NUGET_CLEAN_CONSUMER_AMBIGUOUS')
     }
 
     $observedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $nuget -Name 'publicObservedAtUtc')
     if (-not [string]::IsNullOrWhiteSpace($observedAt) -and -not (Test-ReleaseUtcTimestamp -Value $observedAt)) {
-        $failReason = 'NUGET_PUBLIC_OBSERVED_AT_UTC'
+        [void]$failReasons.Add('NUGET_PUBLIC_OBSERVED_AT_UTC')
     }
 
     $github = $Evidence.githubRelease
     $githubState = Get-PostSyncObservedEvidenceGroupState -Group $github
     if ($githubState -eq 'OBSERVED') {
-        if (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $github -Name 'id'))) { $failReason = 'GITHUB_RELEASE_ID' }
-        elseif (-not (Test-ReleaseUtcTimestamp (ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $github -Name 'publishedAtUtc')))) { $failReason = 'GITHUB_RELEASE_PUBLISHED_AT' }
-        elseif ([string]::IsNullOrWhiteSpace([string](Get-PostSyncEvidencePropertyValue -Group $github -Name 'url'))) { $failReason = 'GITHUB_RELEASE_URL' }
+        if (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $github -Name 'id'))) { [void]$failReasons.Add('GITHUB_RELEASE_ID') }
+        elseif (-not (Test-ReleaseUtcTimestamp (ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $github -Name 'publishedAtUtc')))) { [void]$failReasons.Add('GITHUB_RELEASE_PUBLISHED_AT') }
+        elseif ([string]::IsNullOrWhiteSpace([string](Get-PostSyncEvidencePropertyValue -Group $github -Name 'url'))) { [void]$failReasons.Add('GITHUB_RELEASE_URL') }
     }
     elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $github -PropertyNames @('id', 'publishedAtUtc', 'url')) {
-        $failReason = 'GITHUB_RELEASE_AMBIGUOUS'
+        [void]$failReasons.Add('GITHUB_RELEASE_AMBIGUOUS')
     }
 
     $latest = $Evidence.latestPromotion
     $latestState = Get-PostSyncObservedEvidenceGroupState -Group $latest
     if ($latestState -eq 'OBSERVED') {
-        if (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowRunId'))) { $failReason = 'LATEST_WORKFLOW_RUN_ID' }
-        elseif (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowAttempt'))) { $failReason = 'LATEST_WORKFLOW_ATTEMPT' }
-        elseif (-not (Test-PostSyncWorkflowResult ([string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowResult')))) { $failReason = 'LATEST_WORKFLOW_RESULT' }
-        elseif (-not (Test-ReleaseDigest ([string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digest')))) { $failReason = 'LATEST_DIGEST' }
-        elseif (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digestEquality')))) { $failReason = 'LATEST_DIGEST_EQUALITY' }
+        if (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowRunId'))) { [void]$failReasons.Add('LATEST_WORKFLOW_RUN_ID') }
+        elseif (-not (Test-PostSyncPositiveInteger (Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowAttempt'))) { [void]$failReasons.Add('LATEST_WORKFLOW_ATTEMPT') }
+        elseif (-not (Test-PostSyncWorkflowResult ([string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowResult')))) { [void]$failReasons.Add('LATEST_WORKFLOW_RESULT') }
+        elseif (-not (Test-ReleaseDigest ([string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digest')))) { [void]$failReasons.Add('LATEST_DIGEST') }
+        elseif (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digestEquality')))) { [void]$failReasons.Add('LATEST_DIGEST_EQUALITY') }
         else {
             $latestConsumer = Get-PostSyncEvidenceNestedGroup -Group $latest -Name 'consumerVerification'
             $latestConsumerState = Get-PostSyncObservedEvidenceGroupState -Group $latestConsumer
             if ($latestConsumerState -eq 'OBSERVED') {
-                if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $latestConsumer -Name 'result')))) { $failReason = 'LATEST_CONSUMER_RESULT' }
+                if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $latestConsumer -Name 'result')))) { [void]$failReasons.Add('LATEST_CONSUMER_RESULT') }
             }
             elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $latestConsumer -PropertyNames @('result')) {
-                $failReason = 'LATEST_CONSUMER_AMBIGUOUS'
+                [void]$failReasons.Add('LATEST_CONSUMER_AMBIGUOUS')
             }
         }
     }
     elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $latest -PropertyNames @('workflowRunId', 'workflowAttempt', 'workflowResult', 'digest', 'digestEquality')) {
-        $failReason = 'LATEST_PROMOTION_AMBIGUOUS'
+        [void]$failReasons.Add('LATEST_PROMOTION_AMBIGUOUS')
     }
 
     $overall = $Evidence.overallConsumerVerification
     $overallState = Get-PostSyncObservedEvidenceGroupState -Group $overall
     if ($overallState -eq 'OBSERVED') {
-        if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $overall -Name 'result')))) { $failReason = 'OVERALL_CONSUMER_RESULT' }
+        if (-not (Test-PostSyncConsumerResult ([string](Get-PostSyncEvidencePropertyValue -Group $overall -Name 'result')))) { [void]$failReasons.Add('OVERALL_CONSUMER_RESULT') }
     }
     elseif (Test-PostSyncObservedEvidenceGroupHasObservedValues -Group $overall -PropertyNames @('result')) {
-        $failReason = 'OVERALL_CONSUMER_AMBIGUOUS'
+        [void]$failReasons.Add('OVERALL_CONSUMER_AMBIGUOUS')
     }
 
-    if (-not [string]::IsNullOrEmpty($failReason)) {
-        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = $failReason }
+    if ($failReasons.Count -gt 0) {
+        return [pscustomobject]@{ State = 'INCOMPLETE'; Reason = (($failReasons | Select-Object -Unique) -join ',') }
     }
 
     return [pscustomobject]@{ State = 'PASS'; Reason = '' }
@@ -922,6 +922,9 @@ function Test-PostSyncObservedEvidenceBinding {
     if ($latestState -eq 'OBSERVED') {
         if ([string]$Evidence.latestPromotion.digest -ne [string]$Evidence.publicOciDigest) {
             return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_DIGEST_MISMATCH' }
+        }
+        if ([string]$Evidence.latestPromotion.digestEquality -ne 'PASS') {
+            return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_DIGEST_EQUALITY_NOT_PASS' }
         }
     }
 
@@ -1055,7 +1058,12 @@ function Apply-ObservedEvidenceToReleaseRecord {
             }
         }
 
-        if (-not $handled -and $line -match '^-\s+GHCR `latest` digest promotion:' -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
+        # Canonical future shape: GHCR `latest` promotion:
+        # Backward-compatible historical shape: GHCR `latest` digest promotion:
+        if (-not $handled -and (
+                ($line -match '^-\s+GHCR `latest` promotion:') -or
+                ($line -match '^-\s+GHCR `latest` digest promotion:')
+            ) -and (Test-ReleaseRecordLineHasPendingValue -Line $line)) {
             if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
                 [void]$updatedLines.Add('- GHCR `latest` promotion: **PUBLISHED** by digest-preserving copy, no rebuild')
                 $handled = $true
@@ -1163,12 +1171,18 @@ function Test-ObservedEvidenceRenderingConsistency {
         if ($Text -notmatch ('annotated tag object: `' + [regex]::Escape([string]$Evidence.annotatedTagObject.sha) + '`')) {
             [void]$failures.Add('ANNOTATED_TAG_OBJECT')
         }
+        if ($Text -match '(?m)^-\s+annotated tag object:.*\*\*PENDING') {
+            [void]$failures.Add('ANNOTATED_TAG_OBJECT_STALE_PENDING')
+        }
     }
 
     if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.releaseImageWorkflow) -eq 'OBSERVED') {
         $wf = $Evidence.releaseImageWorkflow
         if (($Text -notmatch ([string]$wf.runId)) -or ($Text -match 'Release image workflow run / attempt: \*\*PENDING\*\*') -or ($Text -match 'publish workflow run: \*\*PENDING\*\*')) {
             [void]$failures.Add('RELEASE_IMAGE_WORKFLOW')
+        }
+        if ($Text -match '(?m)^-\s+Release image workflow run / attempt:.*\*\*PENDING') {
+            [void]$failures.Add('RELEASE_IMAGE_WORKFLOW_STALE_PENDING')
         }
     }
 
@@ -1177,6 +1191,9 @@ function Test-ObservedEvidenceRenderingConsistency {
         if (($Text -notmatch [regex]::Escape([string]$artifact.name)) -or ($Text -notmatch ([string]$artifact.id))) {
             [void]$failures.Add('PUBLICATION_ARTIFACT')
         }
+        if ($Text -match '(?m)^-\s+Publication artifact:.*\*\*PENDING') {
+            [void]$failures.Add('PUBLICATION_ARTIFACT_STALE_PENDING')
+        }
     }
 
     if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationEvidenceArtifact) -eq 'OBSERVED') {
@@ -1184,11 +1201,20 @@ function Test-ObservedEvidenceRenderingConsistency {
         if (($Text -notmatch [regex]::Escape([string]$artifact.name)) -or ($Text -notmatch ([string]$artifact.id))) {
             [void]$failures.Add('PUBLICATION_EVIDENCE_ARTIFACT')
         }
+        if ($Text -match '(?m)^-\s+Publication evidence artifact(?: name / ID)?:.*\*\*PENDING') {
+            [void]$failures.Add('PUBLICATION_EVIDENCE_ARTIFACT_STALE_PENDING')
+        }
     }
 
     if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.versionedGhcrConsumerVerification) -eq 'OBSERVED') {
-        if ($Text -notmatch ('Public-consumer versioned-image verification: \*\*' + [regex]::Escape([string]$Evidence.versionedGhcrConsumerVerification.result) + '\*\*')) {
+        $versionedRendered = ($Text -match ('Public-consumer versioned-image verification: \*\*' + [regex]::Escape([string]$Evidence.versionedGhcrConsumerVerification.result) + '\*\*')) -or
+            ($Text -match ('Public-consumer verification evidence: \*\*' + [regex]::Escape([string]$Evidence.versionedGhcrConsumerVerification.result) + '\*\*'))
+        if (-not $versionedRendered) {
             [void]$failures.Add('VERSIONED_GHCR_CONSUMER')
+        }
+        if ($Text -match '(?m)^-\s+Public-consumer versioned-image verification:.*\*\*PENDING' -or
+            $Text -match '(?m)^-\s+Public-consumer verification evidence:.*\*\*PENDING') {
+            [void]$failures.Add('VERSIONED_GHCR_CONSUMER_STALE_PENDING')
         }
     }
 
@@ -1197,17 +1223,26 @@ function Test-ObservedEvidenceRenderingConsistency {
         if ($Text -notmatch [regex]::Escape($nugetObservedAt)) {
             [void]$failures.Add('NUGET_OBSERVED_AT')
         }
+        if ($Text -match '(?m)^-\s+NuGet public observed-at \(UTC\):.*\*\*PENDING') {
+            [void]$failures.Add('NUGET_OBSERVED_AT_STALE_PENDING')
+        }
     }
 
     if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.nuget.symbolObservation) -eq 'OBSERVED') {
         if ($Text -notmatch 'NuGet symbol package status: \*\*OBSERVED\*\*') {
             [void]$failures.Add('NUGET_SYMBOL')
         }
+        if ($Text -match '(?m)^-\s+NuGet symbol package status:.*\*\*PENDING') {
+            [void]$failures.Add('NUGET_SYMBOL_STALE_PENDING')
+        }
     }
 
     if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.nuget.cleanConsumerVerification) -eq 'OBSERVED') {
         if ($Text -notmatch ('NuGet clean-consumer restore / build / run: \*\*' + [regex]::Escape([string]$Evidence.nuget.cleanConsumerVerification.result) + '\*\*')) {
             [void]$failures.Add('NUGET_CLEAN_CONSUMER')
+        }
+        if ($Text -match '(?m)^-\s+NuGet clean-consumer restore / build / run:.*\*\*PENDING') {
+            [void]$failures.Add('NUGET_CLEAN_CONSUMER_STALE_PENDING')
         }
     }
 
@@ -1217,12 +1252,29 @@ function Test-ObservedEvidenceRenderingConsistency {
         if (($Text -notmatch ([string](Get-PostSyncEvidencePropertyValue -Group $gh -Name 'id'))) -or ($Text -notmatch [regex]::Escape($ghPublishedAt)) -or ($Text -notmatch [regex]::Escape([string](Get-PostSyncEvidencePropertyValue -Group $gh -Name 'url')))) {
             [void]$failures.Add('GITHUB_RELEASE')
         }
+        if ($Text -match '(?m)^-\s+GitHub Release ID:.*\*\*PENDING' -or
+            $Text -match '(?m)^-\s+GitHub Release published at:.*\*\*PENDING' -or
+            $Text -match '(?m)^-\s+GitHub Release URL:.*\*\*PENDING') {
+            [void]$failures.Add('GITHUB_RELEASE_STALE_PENDING')
+        }
     }
 
     if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
         $latest = $Evidence.latestPromotion
         if (($Text -notmatch ([string]$latest.workflowRunId)) -or ($Text -notmatch [regex]::Escape([string]$latest.digest)) -or ($Text -notmatch ('`latest == ' + [regex]::Escape($tag)))) {
             [void]$failures.Add('LATEST_PROMOTION')
+        }
+        if ($Text -notmatch 'GHCR `latest` promotion: \*\*PUBLISHED\*\*') {
+            [void]$failures.Add('LATEST_PROMOTION_STATUS')
+        }
+        if ($Text -match '(?m)^-\s+GHCR `latest`(?: digest)? promotion:.*\*\*PENDING' -or
+            $Text -match '(?m)^-\s+`latest` promotion workflow run / attempt:.*\*\*PENDING' -or
+            $Text -match '(?m)^-\s+GHCR `latest` digest:.*\*\*PENDING' -or
+            $Text -match ('(?m)^-\s+`latest == ' + [regex]::Escape($tag) + '` by OCI digest:.*\*\*PENDING')) {
+            [void]$failures.Add('LATEST_PROMOTION_STALE_PENDING')
+        }
+        if ($Text -notmatch ('`latest == ' + [regex]::Escape($tag) + '` by OCI digest: \*\*PASS\*\*')) {
+            [void]$failures.Add('LATEST_DIGEST_EQUALITY')
         }
     }
 
@@ -1231,16 +1283,22 @@ function Test-ObservedEvidenceRenderingConsistency {
         if ($Text -notmatch ('anonymous `latest` pull and OCI version/revision read-back: \*\*' + [regex]::Escape([string](Get-PostSyncEvidencePropertyValue -Group $latestConsumerGroup -Name 'result')) + '\*\*')) {
             [void]$failures.Add('LATEST_CONSUMER')
         }
+        if ($Text -match '(?m)^-\s+anonymous `latest` pull and OCI version/revision read-back:.*\*\*PENDING') {
+            [void]$failures.Add('LATEST_CONSUMER_STALE_PENDING')
+        }
     }
 
     if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.overallConsumerVerification) -eq 'OBSERVED') {
         if ($Text -notmatch ('Consumer verification results: \*\*' + [regex]::Escape([string]$Evidence.overallConsumerVerification.result) + '\*\*')) {
             [void]$failures.Add('OVERALL_CONSUMER')
         }
+        if ($Text -match '(?m)^-\s+Consumer verification results:.*\*\*PENDING') {
+            [void]$failures.Add('OVERALL_CONSUMER_STALE_PENDING')
+        }
     }
 
     if ($failures.Count -gt 0) {
-        return [pscustomobject]@{ State = 'CONFLICT'; Reason = ($failures -join ',') }
+        return [pscustomobject]@{ State = 'CONFLICT'; Reason = (($failures | Select-Object -Unique) -join ',') }
     }
 
     return [pscustomobject]@{ State = 'PASS'; Reason = '' }

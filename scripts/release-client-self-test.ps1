@@ -2135,24 +2135,42 @@ $Evidence691Complete = (Read-PostSyncObservedEvidenceFile -Path $Evidence691Comp
 Assert-Equal '691 evidence schema PASS' (Test-PostSyncObservedEvidenceSchema -Evidence $Evidence691Complete).State 'PASS'
 
 $Evidence691CompleteFinal = Build-PublishedReleaseRecordForPostSync -Text $Evidence691PendingText -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
-Assert-Equal '691 complete evidence APPLIED' $Evidence691CompleteFinal.State 'APPLIED'
-Assert-Equal '691 complete evidence PUBLISHED' (Get-ReleaseRecordStateFromText -Text $Evidence691CompleteFinal.Text) 'PUBLISHED'
+Assert-equal '691 complete evidence APPLIED' $Evidence691CompleteFinal.State 'APPLIED'
+Assert-equal '691 complete evidence PUBLISHED' (Get-ReleaseRecordStateFromText -Text $Evidence691CompleteFinal.Text) 'PUBLISHED'
 Assert-True '691 annotated tag object exact' ($Evidence691CompleteFinal.Text -match ('annotated tag object: `' + [regex]::Escape($Evidence691TagObject) + '`')) 'annotated tag'
+Assert-True '691 annotated tag no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+annotated tag object:.*\*\*PENDING')) 'annotated tag stale pending'
 Assert-True '691 release image workflow exact' ($Evidence691CompleteFinal.Text -match 'Release image workflow run / attempt: `990001` / `1` - \*\*SUCCESS\*\*') 'workflow'
+Assert-True '691 release image workflow no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+Release image workflow run / attempt:.*\*\*PENDING')) 'workflow stale pending'
 Assert-True '691 publication artifact exact' ($Evidence691CompleteFinal.Text -match 'Publication artifact: `publish-release-image-1111111111111111111111111111111111111111` / ID `990002`') 'publication artifact'
+Assert-True '691 publication artifact no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+Publication artifact:.*\*\*PENDING')) 'publication artifact stale pending'
 Assert-True '691 publication evidence artifact exact' ($Evidence691CompleteFinal.Text -match 'Publication evidence artifact: `publish-release-image-evidence-1111111111111111111111111111111111111111` / ID `990003`') 'publication evidence'
+Assert-True '691 publication evidence no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+Publication evidence artifact:.*\*\*PENDING')) 'publication evidence stale pending'
 Assert-True '691 versioned consumer PASS' ($Evidence691CompleteFinal.Text -match 'Public-consumer versioned-image verification: \*\*PASS\*\*') 'versioned consumer'
+Assert-True '691 versioned consumer no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+Public-consumer versioned-image verification:.*\*\*PENDING')) 'versioned consumer stale pending'
 Assert-True '691 nuget observed-at exact' ($Evidence691CompleteFinal.Text -match 'NuGet public observed-at \(UTC\): `2026-08-31T12:01:00Z`') 'nuget observed-at'
+Assert-True '691 nuget observed-at no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+NuGet public observed-at \(UTC\):.*\*\*PENDING')) 'nuget observed-at stale pending'
 Assert-True '691 nuget symbol OBSERVED' ($Evidence691CompleteFinal.Text -match 'NuGet symbol package status: \*\*OBSERVED\*\*') 'nuget symbol'
+Assert-True '691 nuget symbol no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+NuGet symbol package status:.*\*\*PENDING')) 'nuget symbol stale pending'
 Assert-True '691 nuget clean consumer PASS' ($Evidence691CompleteFinal.Text -match 'NuGet clean-consumer restore / build / run: \*\*PASS\*\*') 'nuget clean consumer'
+Assert-True '691 nuget clean consumer no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+NuGet clean-consumer restore / build / run:.*\*\*PENDING')) 'nuget clean consumer stale pending'
 Assert-True '691 github release id exact' ($Evidence691CompleteFinal.Text -match 'GitHub Release ID: `990004`') 'github id'
+Assert-True '691 github release id no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+GitHub Release ID:.*\*\*PENDING')) 'github id stale pending'
 Assert-True '691 github release published-at exact' ($Evidence691CompleteFinal.Text -match 'GitHub Release published at: `2026-08-31T12:00:00Z`') 'github published-at'
+Assert-True '691 github release published-at no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+GitHub Release published at:.*\*\*PENDING')) 'github published-at stale pending'
 Assert-True '691 github release url exact' ($Evidence691CompleteFinal.Text -match 'GitHub Release URL: `https://github.com/kooiei-in4a/amane-mailer/releases/tag/v9.9.0`') 'github url'
+Assert-True '691 github release url no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+GitHub Release URL:.*\*\*PENDING')) 'github url stale pending'
+Assert-True '691 latest promotion PUBLISHED' ($Evidence691CompleteFinal.Text -match 'GHCR `latest` promotion: \*\*PUBLISHED\*\* by digest-preserving copy, no rebuild') 'latest promotion'
+Assert-True '691 latest promotion no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+GHCR `latest`(?: digest)? promotion:.*\*\*PENDING')) 'latest promotion stale pending'
 Assert-True '691 latest workflow exact' ($Evidence691CompleteFinal.Text -match '`latest` promotion workflow run / attempt: `990005` / `1` - \*\*SUCCESS\*\*') 'latest workflow'
-Assert-True '691 latest digest exact' ($Evidence691CompleteFinal.Text -match ([regex]::Escape($Evidence691Digest))) 'latest digest'
+Assert-True '691 latest workflow no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+`latest` promotion workflow run / attempt:.*\*\*PENDING')) 'latest workflow stale pending'
+Assert-True '691 latest digest exact' ($Evidence691CompleteFinal.Text -match ('GHCR `latest` digest: `' + [regex]::Escape($Evidence691Digest) + '`')) 'latest digest'
+Assert-True '691 latest digest no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+GHCR `latest` digest:.*\*\*PENDING')) 'latest digest stale pending'
 Assert-True '691 latest digest equality PASS' ($Evidence691CompleteFinal.Text -match '`latest == v9\.9\.0` by OCI digest: \*\*PASS\*\*') 'digest equality'
+Assert-True '691 latest digest equality no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+`latest == v9\.9\.0` by OCI digest:.*\*\*PENDING')) 'digest equality stale pending'
 Assert-True '691 latest consumer PASS' ($Evidence691CompleteFinal.Text -match 'anonymous `latest` pull and OCI version/revision read-back: \*\*PASS\*\*') 'latest consumer'
+Assert-True '691 latest consumer no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+anonymous `latest` pull and OCI version/revision read-back:.*\*\*PENDING')) 'latest consumer stale pending'
 Assert-True '691 overall consumer PASS' ($Evidence691CompleteFinal.Text -match 'Consumer verification results: \*\*PASS\*\*') 'overall consumer'
+Assert-True '691 overall consumer no stale PENDING' (-not ($Evidence691CompleteFinal.Text -match '(?m)^-\s+Consumer verification results:.*\*\*PENDING')) 'overall consumer stale pending'
 Assert-True '691 nuget indexing timestamp remains PENDING' ($Evidence691CompleteFinal.Text -match 'NuGet publication timestamp: \*\*PENDING\*\*') 'indexing timestamp pending'
 
 $Evidence691PendingOnly = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
@@ -2165,28 +2183,60 @@ Assert-True '691 explicit pending workflow' ($pendingOnlyFinal.Text -match 'Rele
 $Evidence691VersionMismatch = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
 $Evidence691VersionMismatch.version = '9.9.1'
 $versionMismatchBinding = Test-PostSyncObservedEvidenceBinding -Evidence $Evidence691VersionMismatch -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap @{ PUBLIC_DIGEST = $Evidence691Digest } -ResolvedPlatforms @('linux/amd64')
-Assert-Equal '691 version mismatch CONFLICT' $versionMismatchBinding.State 'CONFLICT'
+Assert-equal '691 version mismatch CONFLICT' $versionMismatchBinding.State 'CONFLICT'
+Assert-equal '691 version mismatch reason' $versionMismatchBinding.Reason 'VERSION_MISMATCH'
 
 $Evidence691ShaMismatch = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
 $Evidence691ShaMismatch.releaseCommitSha = Get-FixtureSha '3'
 $shaMismatchBinding = Test-PostSyncObservedEvidenceBinding -Evidence $Evidence691ShaMismatch -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap @{ PUBLIC_DIGEST = $Evidence691Digest } -ResolvedPlatforms @('linux/amd64')
-Assert-Equal '691 sha mismatch CONFLICT' $shaMismatchBinding.State 'CONFLICT'
+Assert-equal '691 sha mismatch CONFLICT' $shaMismatchBinding.State 'CONFLICT'
+Assert-equal '691 sha mismatch reason' $shaMismatchBinding.Reason 'RELEASE_COMMIT_SHA_MISMATCH'
 
 $Evidence691DigestMismatch = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
 $Evidence691DigestMismatch.publicOciDigest = Get-FixtureDigest 'b'
 $digestMismatchBinding = Test-PostSyncObservedEvidenceBinding -Evidence $Evidence691DigestMismatch -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap @{ PUBLIC_DIGEST = $Evidence691Digest } -ResolvedPlatforms @('linux/amd64')
-Assert-Equal '691 public digest mismatch CONFLICT' $digestMismatchBinding.State 'CONFLICT'
+Assert-equal '691 public digest mismatch CONFLICT' $digestMismatchBinding.State 'CONFLICT'
+Assert-equal '691 public digest mismatch reason' $digestMismatchBinding.Reason 'PUBLIC_DIGEST_MISMATCH'
 
 $Evidence691LatestMismatch = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
 $Evidence691LatestMismatch.latestPromotion.digest = Get-FixtureDigest 'b'
 $latestMismatchBinding = Test-PostSyncObservedEvidenceBinding -Evidence $Evidence691LatestMismatch -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap @{ PUBLIC_DIGEST = $Evidence691Digest } -ResolvedPlatforms @('linux/amd64')
-Assert-Equal '691 latest digest mismatch CONFLICT' $latestMismatchBinding.State 'CONFLICT'
+Assert-equal '691 latest digest mismatch CONFLICT' $latestMismatchBinding.State 'CONFLICT'
+Assert-equal '691 latest digest mismatch reason' $latestMismatchBinding.Reason 'LATEST_DIGEST_MISMATCH'
+
+$Evidence691EqualityFail = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$Evidence691EqualityFail.latestPromotion.digestEquality = 'FAIL'
+$equalityFailBinding = Test-PostSyncObservedEvidenceBinding -Evidence $Evidence691EqualityFail -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap @{ PUBLIC_DIGEST = $Evidence691Digest } -ResolvedPlatforms @('linux/amd64')
+Assert-equal '691 digestEquality FAIL with matching digests CONFLICT' $equalityFailBinding.State 'CONFLICT'
+Assert-equal '691 digestEquality FAIL reason' $equalityFailBinding.Reason 'LATEST_DIGEST_EQUALITY_NOT_PASS'
+
+$Evidence691UnsupportedSchema = [pscustomobject]@{ schemaVersion = 2 }
+$unsupportedSchema = Test-PostSyncObservedEvidenceSchema -Evidence $Evidence691UnsupportedSchema
+Assert-equal '691 unsupported schema INCOMPLETE' $unsupportedSchema.State 'INCOMPLETE'
+Assert-equal '691 unsupported schema reason' $unsupportedSchema.Reason 'UNSUPPORTED_SCHEMA'
+
+$Evidence691ObservedMissing = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$Evidence691ObservedMissing.latestPromotion = [pscustomobject]@{ state = 'OBSERVED' }
+$observedMissing = Test-PostSyncObservedEvidenceSchema -Evidence $Evidence691ObservedMissing
+Assert-equal '691 OBSERVED missing value INCOMPLETE' $observedMissing.State 'INCOMPLETE'
+Assert-True '691 OBSERVED missing value targets latest workflow' ($observedMissing.Reason -match 'LATEST_WORKFLOW_RUN_ID') 'expected LATEST_WORKFLOW_RUN_ID'
+
+$Evidence691PendingWithValue = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$Evidence691PendingWithValue.latestPromotion = [pscustomobject]@{
+    state          = 'PENDING'
+    digest         = $Evidence691Digest
+    digestEquality = 'PASS'
+}
+$pendingWithValue = Test-PostSyncObservedEvidenceSchema -Evidence $Evidence691PendingWithValue
+Assert-Equal '691 PENDING with observed values INCOMPLETE' $pendingWithValue.State 'INCOMPLETE'
+Assert-equal '691 PENDING with observed values reason' $pendingWithValue.Reason 'LATEST_PROMOTION_AMBIGUOUS'
 
 $malformedEvidencePath = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-evidence-malformed-' + [Guid]::NewGuid().ToString('n') + '.json')
 [System.IO.File]::WriteAllText($malformedEvidencePath, '{ not-json', (New-Object System.Text.UTF8Encoding $false))
 try {
     $malformedRead = Read-PostSyncObservedEvidenceFile -Path $malformedEvidencePath
-    Assert-Equal '691 malformed evidence INCOMPLETE' $malformedRead.State 'INCOMPLETE'
+    Assert-equal '691 malformed evidence INCOMPLETE' $malformedRead.State 'INCOMPLETE'
+    Assert-equal '691 malformed evidence reason' $malformedRead.Reason 'MALFORMED_JSON'
 }
 finally {
     Remove-Item -LiteralPath $malformedEvidencePath -Force -ErrorAction SilentlyContinue
@@ -2194,8 +2244,15 @@ finally {
 
 $contradictoryRecord = $Evidence691PendingText -replace 'annotated tag object: \*\*PENDING\*\*', ('annotated tag object: `' + (Get-FixtureSha '9') + '`')
 $contradictoryFinal = Build-PublishedReleaseRecordForPostSync -Text $contradictoryRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -ObservedEvidence $Evidence691Complete
-Assert-Equal '691 contradictory record CONFLICT' $contradictoryFinal.State 'CONFLICT'
+Assert-equal '691 contradictory record CONFLICT' $contradictoryFinal.State 'CONFLICT'
 Assert-True '691 contradictory record zero write text' ([string]::IsNullOrEmpty($contradictoryFinal.Text)) 'zero write'
+
+$missingLatestPromotionLine = ($Evidence691PendingText -split '\r?\n' | Where-Object { $_ -notmatch '^-\s+GHCR `latest` promotion:' }) -join "`n"
+$missingLatestFinal = Build-PublishedReleaseRecordForPostSync -Text $missingLatestPromotionLine -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 missing latest promotion line CONFLICT' $missingLatestFinal.State 'CONFLICT'
+Assert-True '691 missing latest promotion not PUBLISHED' ($missingLatestFinal.State -ne 'APPLIED') 'must not publish'
+Assert-True '691 missing latest promotion zero write text' ([string]::IsNullOrEmpty($missingLatestFinal.Text)) 'zero write'
+Assert-True '691 missing latest promotion render reason' ($missingLatestFinal.Reason -match 'EVIDENCE_RENDER_') 'expected evidence render failure'
 
 function New-Evidence691VerifyObservers {
     param(
@@ -2226,14 +2283,47 @@ try {
     $beforeDryMtime = (Get-Item -LiteralPath (Join-Path $Evidence691FixtureRoot 'docs/releases/v9.9.0.md')).LastWriteTimeUtc
     $dry691 = Invoke-ReleasePreparePostSync -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -RepoRoot $Evidence691FixtureRoot -ObservedEvidencePath $Evidence691CompletePath -Observers $evidence691Obs -LocalRepoOverride $evidence691Local -Quiet
     $afterDryMtime = (Get-Item -LiteralPath (Join-Path $Evidence691FixtureRoot 'docs/releases/v9.9.0.md')).LastWriteTimeUtc
-    Assert-Equal '691 dry-run MUTATION_RESULT' $dry691.Plan.MutationResult 'NOT_ATTEMPTED'
-    Assert-Equal '691 dry-run zero write mtime' $beforeDryMtime $afterDryMtime 'dry-run must not write'
+    Assert-equal '691 dry-run MUTATION_RESULT' $dry691.Plan.MutationResult 'NOT_ATTEMPTED'
+    Assert-equal '691 dry-run zero write mtime' $beforeDryMtime $afterDryMtime 'dry-run must not write'
+    Assert-equal '691 dry-run MUTATION_ATTEMPTED' $dry691.Plan.MutationAttempted 'FALSE'
+    Assert-equal '691 dry-run MUTATION_PERFORMED' $dry691.Plan.MutationPerformed 'FALSE'
+
+    $unsupportedPlan = Get-ReleasePreparePostSyncPlan -RepoRoot $Evidence691FixtureRoot -TargetVersion $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap $dry691.VerifyMap -Execute:$true -LocalRepoOverride $evidence691Local -ObservedEvidence $Evidence691UnsupportedSchema
+    Assert-equal '691 unsupported schema plan INCOMPLETE' $unsupportedPlan.MutationResult 'INCOMPLETE'
+    Assert-True '691 unsupported schema plan reason' ($unsupportedPlan.Reason -match 'EVIDENCE_UNSUPPORTED_SCHEMA') 'expected EVIDENCE_UNSUPPORTED_SCHEMA'
+    Assert-equal '691 unsupported schema zero writes' $unsupportedPlan.MutationAttempted 'FALSE'
+
+    $observedMissingPlan = Get-ReleasePreparePostSyncPlan -RepoRoot $Evidence691FixtureRoot -TargetVersion $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap $dry691.VerifyMap -Execute:$true -LocalRepoOverride $evidence691Local -ObservedEvidence $Evidence691ObservedMissing
+    Assert-equal '691 OBSERVED missing plan INCOMPLETE' $observedMissingPlan.MutationResult 'INCOMPLETE'
+    Assert-True '691 OBSERVED missing plan reason' ($observedMissingPlan.Reason -match 'EVIDENCE_LATEST_WORKFLOW_RUN_ID') 'expected EVIDENCE_LATEST_WORKFLOW_RUN_ID'
+    Assert-equal '691 OBSERVED missing zero writes' $observedMissingPlan.MutationAttempted 'FALSE'
+
+    $pendingValuePlan = Get-ReleasePreparePostSyncPlan -RepoRoot $Evidence691FixtureRoot -TargetVersion $Evidence691Version -ReleaseCommitSha $Evidence691Sha -VerifyMap $dry691.VerifyMap -Execute:$true -LocalRepoOverride $evidence691Local -ObservedEvidence $Evidence691PendingWithValue
+    Assert-equal '691 PENDING-with-value plan INCOMPLETE' $pendingValuePlan.MutationResult 'INCOMPLETE'
+    Assert-True '691 PENDING-with-value plan reason' ($pendingValuePlan.Reason -match 'EVIDENCE_LATEST_PROMOTION_AMBIGUOUS') 'expected EVIDENCE_LATEST_PROMOTION_AMBIGUOUS'
+    Assert-equal '691 PENDING-with-value zero writes' $pendingValuePlan.MutationAttempted 'FALSE'
 
     $exec691 = Invoke-ReleasePreparePostSync -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -RepoRoot $Evidence691FixtureRoot -ObservedEvidencePath $Evidence691CompletePath -Observers $evidence691Obs -LocalRepoOverride $evidence691Local -Execute -Quiet
-    Assert-Equal '691 execute APPLIED' $exec691.Plan.MutationResult 'APPLIED'
+    Assert-equal '691 execute APPLIED' $exec691.Plan.MutationResult 'APPLIED'
     $exec691Record = Get-Content -LiteralPath (Join-Path $Evidence691FixtureRoot 'docs/releases/v9.9.0.md') -Raw
-    Assert-Equal '691 execute record PUBLISHED' (Get-ReleaseRecordStateFromText -Text $exec691Record) 'PUBLISHED'
-    Assert-True '691 execute bounded write record only expected paths' (($exec691.Plan.FilesChanged | Sort-Object) -contains 'docs/releases/v9.9.0.md') 'record changed'
+    Assert-equal '691 execute record PUBLISHED' (Get-ReleaseRecordStateFromText -Text $exec691Record) 'PUBLISHED'
+    Assert-True '691 execute latest promotion PUBLISHED' ($exec691Record -match 'GHCR `latest` promotion: \*\*PUBLISHED\*\* by digest-preserving copy, no rebuild') 'execute latest promotion'
+    Assert-True '691 execute latest promotion no stale PENDING' (-not ($exec691Record -match '(?m)^-\s+GHCR `latest`(?: digest)? promotion:.*\*\*PENDING')) 'execute stale pending'
+    $expectedChanged691 = @(
+        'docs/ops/release-image-smoke.en.md'
+        'docs/ops/release-image-smoke.md'
+        'docs/releases/v9.9.0.md'
+        'infra/docker/docker-compose.release-smoke.yml'
+        'README.en.md'
+        'README.md'
+        'release/current-public.json'
+        'scripts/release-smoke.ps1'
+        'scripts/release-smoke.sh'
+        'SECURITY.md'
+    ) | Sort-Object
+    $actualChanged691 = @($exec691.Plan.FilesChanged) | Sort-Object
+    Assert-equal '691 execute exact FilesChanged count' $actualChanged691.Count $expectedChanged691.Count
+    Assert-equal '691 execute exact FilesChanged set' (($actualChanged691 -join ',')) (($expectedChanged691 -join ','))
 }
 finally {
     Remove-Item -LiteralPath $Evidence691FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
