@@ -5071,6 +5071,7 @@ Export-ModuleMember -Function @(
     'Apply-ObservedEvidenceToReleaseRecord',
     'Test-ObservedEvidenceRenderingConsistency',
     'Test-ObservedEvidenceRecordConflict',
+    'Test-PostSyncPositiveInteger',
     'Get-ReleasePreparePostSyncPlan',
     'Format-ReleasePreparePostSyncLines',
     'Invoke-ReleasePreparePostSync',

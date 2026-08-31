@@ -599,13 +599,23 @@ function Test-PostSyncWorkflowResult {
 function Test-PostSyncPositiveInteger {
     param($Value)
     if ($null -eq $Value) { return $false }
+    # ConvertFrom-Json / cast quirks: bools coerce to 0/1, strings and arrays
+    # must not silently become IDs, and fractional doubles must not truncate.
+    if ($Value -is [bool]) { return $false }
+    if ($Value -is [string]) { return $false }
+    if ($Value -is [char]) { return $false }
+    if ($Value -is [System.Array]) { return $false }
+
     try {
-        $n = [long]$Value
-        return ($n -gt 0)
+        $asDecimal = [decimal]$Value
     }
     catch {
         return $false
     }
+
+    if ($asDecimal -le 0) { return $false }
+    if ($asDecimal -ne [decimal]::Truncate($asDecimal)) { return $false }
+    return $true
 }
 
 function Get-PostSyncObservedEvidenceGroupState {
@@ -1261,30 +1271,104 @@ function Test-ObservedEvidenceRenderingConsistency {
 
     if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
         $latest = $Evidence.latestPromotion
-        if (($Text -notmatch ([string]$latest.workflowRunId)) -or ($Text -notmatch [regex]::Escape([string]$latest.digest)) -or ($Text -notmatch ('`latest == ' + [regex]::Escape($tag)))) {
-            [void]$failures.Add('LATEST_PROMOTION')
+        $expectedLatestDigest = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digest')
+        $expectedWorkflowRunId = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowRunId')
+        $expectedWorkflowAttempt = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowAttempt')
+        $expectedWorkflowResult = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowResult')
+        $expectedDigestEquality = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digestEquality')
+
+        $latestPromotionLine = $null
+        $latestWorkflowLine = $null
+        $latestDigestLine = $null
+        $latestEqualityLine = $null
+        foreach ($line in ($Text -split '\r?\n')) {
+            if ($null -eq $latestPromotionLine -and (
+                    $line -match '^-\s+GHCR `latest` promotion:' -or
+                    $line -match '^-\s+GHCR `latest` digest promotion:'
+                )) {
+                $latestPromotionLine = $line
+            }
+            elseif ($null -eq $latestWorkflowLine -and $line -match '^-\s+`latest` promotion workflow run / attempt:') {
+                $latestWorkflowLine = $line
+            }
+            elseif ($null -eq $latestDigestLine -and $line -match '^-\s+GHCR `latest` digest:') {
+                $latestDigestLine = $line
+            }
+            elseif ($null -eq $latestEqualityLine -and $line -match ('^-\s+`latest == ' + [regex]::Escape($tag) + '` by OCI digest:')) {
+                $latestEqualityLine = $line
+            }
         }
-        if ($Text -notmatch 'GHCR `latest` promotion: \*\*PUBLISHED\*\*') {
+
+        if ($null -eq $latestPromotionLine) {
             [void]$failures.Add('LATEST_PROMOTION_STATUS')
         }
-        if ($Text -match '(?m)^-\s+GHCR `latest`(?: digest)? promotion:.*\*\*PENDING' -or
-            $Text -match '(?m)^-\s+`latest` promotion workflow run / attempt:.*\*\*PENDING' -or
-            $Text -match '(?m)^-\s+GHCR `latest` digest:.*\*\*PENDING' -or
-            $Text -match ('(?m)^-\s+`latest == ' + [regex]::Escape($tag) + '` by OCI digest:.*\*\*PENDING')) {
+        elseif ($latestPromotionLine -notmatch 'GHCR `latest`(?: digest)? promotion: \*\*PUBLISHED\*\*') {
+            [void]$failures.Add('LATEST_PROMOTION_STATUS')
+        }
+        elseif ($latestPromotionLine -match '\*\*PENDING') {
             [void]$failures.Add('LATEST_PROMOTION_STALE_PENDING')
         }
-        if ($Text -notmatch ('`latest == ' + [regex]::Escape($tag) + '` by OCI digest: \*\*PASS\*\*')) {
+
+        if ($null -eq $latestWorkflowLine) {
+            [void]$failures.Add('LATEST_PROMOTION_WORKFLOW')
+        }
+        elseif ($latestWorkflowLine -match '\*\*PENDING') {
+            [void]$failures.Add('LATEST_PROMOTION_STALE_PENDING')
+        }
+        elseif ($latestWorkflowLine -notmatch (
+                '^-\s+`latest` promotion workflow run / attempt: `' +
+                [regex]::Escape($expectedWorkflowRunId) + '` / `' +
+                [regex]::Escape($expectedWorkflowAttempt) + '` - \*\*' +
+                [regex]::Escape($expectedWorkflowResult) + '\*\*'
+            )) {
+            [void]$failures.Add('LATEST_PROMOTION_WORKFLOW')
+        }
+
+        if ($null -eq $latestDigestLine) {
+            [void]$failures.Add('LATEST_DIGEST_MISSING')
+        }
+        elseif ($latestDigestLine -match '\*\*PENDING') {
+            [void]$failures.Add('LATEST_PROMOTION_STALE_PENDING')
+        }
+        elseif ($latestDigestLine -notmatch ('^-\s+GHCR `latest` digest: `' + [regex]::Escape($expectedLatestDigest) + '`$')) {
+            [void]$failures.Add('LATEST_DIGEST')
+        }
+
+        if ($null -eq $latestEqualityLine) {
+            [void]$failures.Add('LATEST_DIGEST_EQUALITY')
+        }
+        elseif ($latestEqualityLine -match '\*\*PENDING') {
+            [void]$failures.Add('LATEST_PROMOTION_STALE_PENDING')
+        }
+        elseif ($latestEqualityLine -notmatch (
+                '^-\s+`latest == ' + [regex]::Escape($tag) + '` by OCI digest: \*\*' +
+                [regex]::Escape($expectedDigestEquality) + '\*\*'
+            )) {
             [void]$failures.Add('LATEST_DIGEST_EQUALITY')
         }
     }
 
     if ((Get-PostSyncObservedEvidenceGroupState -Group (Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification')) -eq 'OBSERVED') {
         $latestConsumerGroup = Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification'
-        if ($Text -notmatch ('anonymous `latest` pull and OCI version/revision read-back: \*\*' + [regex]::Escape([string](Get-PostSyncEvidencePropertyValue -Group $latestConsumerGroup -Name 'result')) + '\*\*')) {
+        $expectedLatestConsumer = [string](Get-PostSyncEvidencePropertyValue -Group $latestConsumerGroup -Name 'result')
+        $latestConsumerLine = $null
+        foreach ($line in ($Text -split '\r?\n')) {
+            if ($line -match '^-\s+anonymous `latest` pull and OCI version/revision read-back:') {
+                $latestConsumerLine = $line
+                break
+            }
+        }
+        if ($null -eq $latestConsumerLine) {
             [void]$failures.Add('LATEST_CONSUMER')
         }
-        if ($Text -match '(?m)^-\s+anonymous `latest` pull and OCI version/revision read-back:.*\*\*PENDING') {
+        elseif ($latestConsumerLine -match '\*\*PENDING') {
             [void]$failures.Add('LATEST_CONSUMER_STALE_PENDING')
+        }
+        elseif ($latestConsumerLine -notmatch (
+                '^-\s+anonymous `latest` pull and OCI version/revision read-back: \*\*' +
+                [regex]::Escape($expectedLatestConsumer) + '\*\*'
+            )) {
+            [void]$failures.Add('LATEST_CONSUMER')
         }
     }
 
@@ -1320,6 +1404,33 @@ function Test-ObservedEvidenceRecordConflict {
             if ($Matches[1] -ne $expected) {
                 return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'ANNOTATED_TAG_OBJECT' }
             }
+        }
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
+        $expectedDigest = [string](Get-PostSyncEvidencePropertyValue -Group $Evidence.latestPromotion -Name 'digest')
+        $latestDigestLine = $null
+        foreach ($line in ($Text -split '\r?\n')) {
+            if ($line -match '^-\s+GHCR `latest` digest:') {
+                $latestDigestLine = $line
+                break
+            }
+        }
+
+        if ($null -eq $latestDigestLine) {
+            return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_DIGEST_FIELD_MISSING' }
+        }
+
+        if (Test-ReleaseRecordLineHasPendingValue -Line $latestDigestLine) {
+            # PENDING is replaced by the OBSERVED manifest digest.
+        }
+        elseif ($latestDigestLine -match '^-\s+GHCR `latest` digest:\s+`(sha256:[0-9a-f]{64})`\s*$') {
+            if ($Matches[1] -ne $expectedDigest) {
+                return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_RECORD_DIGEST_CONTRADICTION' }
+            }
+        }
+        else {
+            return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_DIGEST_MALFORMED' }
         }
     }
 
@@ -1890,7 +2001,12 @@ function Get-ReleasePreparePostSyncPlan {
             if ($recordBuild.State -ne 'APPLIED') {
                 $plan.FollowerState = 'CONFLICT'
                 $plan.MutationResult = 'INCOMPLETE'
-                $plan.Reason = 'RELEASE_RECORD_' + $recordBuild.State
+                if (-not [string]::IsNullOrWhiteSpace([string]$recordBuild.Reason)) {
+                    $plan.Reason = 'RELEASE_RECORD_' + [string]$recordBuild.Reason
+                }
+                else {
+                    $plan.Reason = 'RELEASE_RECORD_' + $recordBuild.State
+                }
                 return $plan
             }
             [void]$writes.Add(@{ Path = $targetRecord; Content = $recordBuild.Text })

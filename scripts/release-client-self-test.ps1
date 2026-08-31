@@ -2247,6 +2247,39 @@ $contradictoryFinal = Build-PublishedReleaseRecordForPostSync -Text $contradicto
 Assert-equal '691 contradictory record CONFLICT' $contradictoryFinal.State 'CONFLICT'
 Assert-True '691 contradictory record zero write text' ([string]::IsNullOrEmpty($contradictoryFinal.Text)) 'zero write'
 
+$Evidence691ContradictoryLatestDigest = Get-FixtureDigest 'b'
+$contradictoryLatestDigestRecord = $Evidence691PendingText -replace 'GHCR `latest` digest: \*\*PENDING\*\*', ('GHCR `latest` digest: `' + $Evidence691ContradictoryLatestDigest + '`')
+Assert-True '691 contradictory latest digest fixture digests differ' ($Evidence691Digest -ne $Evidence691ContradictoryLatestDigest) 'A != B'
+Assert-True '691 contradictory latest digest fixture line B' ($contradictoryLatestDigestRecord -match ('GHCR `latest` digest: `' + [regex]::Escape($Evidence691ContradictoryLatestDigest) + '`')) 'record has digest B'
+Assert-True '691 contradictory latest digest fixture evidence A' ($Evidence691Complete.latestPromotion.digest -eq $Evidence691Digest) 'evidence digest A'
+$contradictoryLatestDigestFinal = Build-PublishedReleaseRecordForPostSync -Text $contradictoryLatestDigestRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 contradictory latest digest CONFLICT' $contradictoryLatestDigestFinal.State 'CONFLICT'
+Assert-equal '691 contradictory latest digest reason' $contradictoryLatestDigestFinal.Reason 'LATEST_RECORD_DIGEST_CONTRADICTION'
+Assert-True '691 contradictory latest digest zero write text' ([string]::IsNullOrEmpty($contradictoryLatestDigestFinal.Text)) 'zero write'
+Assert-True '691 contradictory latest digest not PUBLISHED' ($contradictoryLatestDigestFinal.State -ne 'APPLIED') 'must not publish'
+
+$idempotentLatestDigestRecord = $Evidence691PendingText -replace 'GHCR `latest` digest: \*\*PENDING\*\*', ('GHCR `latest` digest: `' + $Evidence691Digest + '`')
+$idempotentLatestDigestFinal = Build-PublishedReleaseRecordForPostSync -Text $idempotentLatestDigestRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 idempotent latest digest APPLIED' $idempotentLatestDigestFinal.State 'APPLIED'
+Assert-equal '691 idempotent latest digest PUBLISHED' (Get-ReleaseRecordStateFromText -Text $idempotentLatestDigestFinal.Text) 'PUBLISHED'
+Assert-True '691 idempotent latest digest exact' ($idempotentLatestDigestFinal.Text -match ('(?m)^-\s+GHCR `latest` digest: `' + [regex]::Escape($Evidence691Digest) + '`$')) 'same concrete digest accepted'
+
+Assert-True '691 positive integer 1' (Test-PostSyncPositiveInteger 1) '1 must pass'
+Assert-True '691 positive integer 0 rejected' (-not (Test-PostSyncPositiveInteger 0)) '0 must fail'
+Assert-True '691 positive integer -1 rejected' (-not (Test-PostSyncPositiveInteger -1)) '-1 must fail'
+Assert-True '691 positive integer 1.5 rejected' (-not (Test-PostSyncPositiveInteger 1.5)) '1.5 must fail'
+Assert-True '691 positive integer 990004.7 rejected' (-not (Test-PostSyncPositiveInteger 990004.7)) '990004.7 must fail'
+Assert-True '691 positive integer array rejected' (-not (Test-PostSyncPositiveInteger @(1))) 'array must fail'
+Assert-True '691 positive integer bool rejected' (-not (Test-PostSyncPositiveInteger $true)) 'bool must fail'
+Assert-True '691 positive integer string rejected' (-not (Test-PostSyncPositiveInteger '12345')) 'string must fail'
+Assert-True '691 positive integer 12345' (Test-PostSyncPositiveInteger 12345) '12345 must pass'
+
+$Evidence691FractionalGithubId = $Evidence691Complete | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+$Evidence691FractionalGithubId.githubRelease.id = 990004.7
+$fractionalGithubIdSchema = Test-PostSyncObservedEvidenceSchema -Evidence $Evidence691FractionalGithubId
+Assert-equal '691 fractional githubRelease.id INCOMPLETE' $fractionalGithubIdSchema.State 'INCOMPLETE'
+Assert-True '691 fractional githubRelease.id reason' ($fractionalGithubIdSchema.Reason -match 'GITHUB_RELEASE_ID') 'expected GITHUB_RELEASE_ID'
+
 $missingLatestPromotionLine = ($Evidence691PendingText -split '\r?\n' | Where-Object { $_ -notmatch '^-\s+GHCR `latest` promotion:' }) -join "`n"
 $missingLatestFinal = Build-PublishedReleaseRecordForPostSync -Text $missingLatestPromotionLine -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
 Assert-equal '691 missing latest promotion line CONFLICT' $missingLatestFinal.State 'CONFLICT'
@@ -2302,6 +2335,43 @@ try {
     Assert-equal '691 PENDING-with-value plan INCOMPLETE' $pendingValuePlan.MutationResult 'INCOMPLETE'
     Assert-True '691 PENDING-with-value plan reason' ($pendingValuePlan.Reason -match 'EVIDENCE_LATEST_PROMOTION_AMBIGUOUS') 'expected EVIDENCE_LATEST_PROMOTION_AMBIGUOUS'
     Assert-equal '691 PENDING-with-value zero writes' $pendingValuePlan.MutationAttempted 'FALSE'
+
+    $contradictoryLatestPath = Join-Path $Evidence691FixtureRoot 'docs/releases/v9.9.0.md'
+    [System.IO.File]::WriteAllText($contradictoryLatestPath, $contradictoryLatestDigestRecord, $utf8NoBom691)
+    $beforeContradictoryMtime = (Get-Item -LiteralPath $contradictoryLatestPath).LastWriteTimeUtc
+    $contradictoryLatestDry = Invoke-ReleasePreparePostSync -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -RepoRoot $Evidence691FixtureRoot -ObservedEvidencePath $Evidence691CompletePath -Observers $evidence691Obs -LocalRepoOverride $evidence691Local -Quiet
+    $afterContradictoryDryMtime = (Get-Item -LiteralPath $contradictoryLatestPath).LastWriteTimeUtc
+    Assert-True '691 contradictory latest digest dry-run not APPLIED' ($contradictoryLatestDry.Plan.MutationResult -ne 'APPLIED') 'dry-run must not apply'
+    Assert-equal '691 contradictory latest digest dry-run MUTATION_ATTEMPTED' $contradictoryLatestDry.Plan.MutationAttempted 'FALSE'
+    Assert-equal '691 contradictory latest digest dry-run MUTATION_PERFORMED' $contradictoryLatestDry.Plan.MutationPerformed 'FALSE'
+    Assert-equal '691 contradictory latest digest dry-run zero write mtime' $beforeContradictoryMtime $afterContradictoryDryMtime 'dry-run must not write'
+    $contradictoryLatestExec = Invoke-ReleasePreparePostSync -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -RepoRoot $Evidence691FixtureRoot -ObservedEvidencePath $Evidence691CompletePath -Observers $evidence691Obs -LocalRepoOverride $evidence691Local -Execute -Quiet
+    $afterContradictoryExecMtime = (Get-Item -LiteralPath $contradictoryLatestPath).LastWriteTimeUtc
+    Assert-True '691 contradictory latest digest execute not APPLIED' ($contradictoryLatestExec.Plan.MutationResult -ne 'APPLIED') 'must not apply'
+    Assert-True '691 contradictory latest digest execute reason' (
+        ($contradictoryLatestExec.Plan.Reason -match 'LATEST_RECORD_DIGEST_CONTRADICTION') -or
+        ($contradictoryLatestExec.Plan.Reason -match 'RELEASE_RECORD_CONFLICT')
+    ) 'expected latest digest / release-record conflict'
+    Assert-equal '691 contradictory latest digest execute zero writes' $contradictoryLatestExec.Plan.MutationAttempted 'FALSE'
+    Assert-equal '691 contradictory latest digest execute MUTATION_PERFORMED' $contradictoryLatestExec.Plan.MutationPerformed 'FALSE'
+    Assert-equal '691 contradictory latest digest execute mtime' $beforeContradictoryMtime $afterContradictoryExecMtime 'execute conflict must not write'
+    [System.IO.File]::WriteAllText($contradictoryLatestPath, $Evidence691PendingText, $utf8NoBom691)
+
+    $fractionalIdPath = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-evidence691-frac-' + [Guid]::NewGuid().ToString('n') + '.json')
+    try {
+        $fractionalIdJson = $Evidence691FractionalGithubId | ConvertTo-Json -Depth 20
+        [System.IO.File]::WriteAllText($fractionalIdPath, $fractionalIdJson, $utf8NoBom691)
+        $beforeFractionalMtime = (Get-Item -LiteralPath $contradictoryLatestPath).LastWriteTimeUtc
+        $fractionalIdExec = Invoke-ReleasePreparePostSync -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -RepoRoot $Evidence691FixtureRoot -ObservedEvidencePath $fractionalIdPath -Observers $evidence691Obs -LocalRepoOverride $evidence691Local -Execute -Quiet
+        $afterFractionalMtime = (Get-Item -LiteralPath $contradictoryLatestPath).LastWriteTimeUtc
+        Assert-equal '691 fractional github id execute INCOMPLETE' $fractionalIdExec.Plan.MutationResult 'INCOMPLETE'
+        Assert-True '691 fractional github id execute reason' ($fractionalIdExec.Plan.Reason -match 'GITHUB_RELEASE_ID') 'expected GITHUB_RELEASE_ID'
+        Assert-equal '691 fractional github id execute zero writes' $fractionalIdExec.Plan.MutationAttempted 'FALSE'
+        Assert-equal '691 fractional github id execute mtime' $beforeFractionalMtime $afterFractionalMtime 'fractional id must not write'
+    }
+    finally {
+        Remove-Item -LiteralPath $fractionalIdPath -Force -ErrorAction SilentlyContinue
+    }
 
     $exec691 = Invoke-ReleasePreparePostSync -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -RepoRoot $Evidence691FixtureRoot -ObservedEvidencePath $Evidence691CompletePath -Observers $evidence691Obs -LocalRepoOverride $evidence691Local -Execute -Quiet
     Assert-equal '691 execute APPLIED' $exec691.Plan.MutationResult 'APPLIED'
