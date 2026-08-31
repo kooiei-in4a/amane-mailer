@@ -262,24 +262,47 @@ It drives release smoke drift checking and the deterministic post-sync follower 
 
 ### Deterministic post-release sync (`prepare-post-sync`)
 
-After public artifacts and required consumer verification are exact, and `latest` has been promoted when required, synchronize current-public followers locally:
+After publication, consumer verification, and `latest` promotion (when required), materialize a canonical observed-evidence JSON manifest (`schemaVersion=1`) from directly observed facts. Unobserved facts must be explicitly `PENDING` in the manifest; do not omit required groups.
+
+Canonical closeout order:
+
+```text
+publication
+  -> consumer verification
+  -> latest promotion
+  -> canonical observed-evidence JSON materialization (read-only / repeatable)
+  -> prepare-post-sync dry-run with -ObservedEvidencePath
+  -> Human-authorized prepare-post-sync -Execute with the same evidence input
+  -> local validation
+  -> PR / exact-head CI / Independent Review
+  -> merge
+  -> final canonical verify
+  -> develop safe synchronization
+```
+
+Evidence collection and manifest materialization are read-only and repeatable. Dry-run and `-Execute` must use the **same** evidence file. `-Execute` remains an exactly-once local mutation boundary.
+
+Synchronize current-public followers locally:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `
   -Version X.Y.Z `
-  -ReleaseCommitSha <40-lowercase-hex>
+  -ReleaseCommitSha <40-lowercase-hex> `
+  -ObservedEvidencePath .\path\to\observed-evidence.json
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `
   -Version X.Y.Z `
   -ReleaseCommitSha <40-lowercase-hex> `
+  -ObservedEvidencePath .\path\to\observed-evidence.json `
   -Execute
 ```
 
-Without `-Execute`: `MUTATION_ATTEMPTED=FALSE` and zero file writes. With `-Execute`: updates `release/current-public.json`, README / SECURITY / release smoke docs and scripts / compose defaults, and promotes `docs/releases/vX.Y.Z.md` from PENDING to PUBLISHED using externally observed facts only.
+Without `-Execute`: `MUTATION_ATTEMPTED=FALSE` and zero file writes. With `-Execute`: updates `release/current-public.json`, README / SECURITY / release smoke docs and scripts / compose defaults, and promotes `docs/releases/vX.Y.Z.md` from PENDING to PUBLISHED using the validated evidence manifest plus Fresh `verify` core facts only.
 
 Preconditions (Fresh, fail-closed):
 
-- explicit `Version` and `ReleaseCommitSha`
+- explicit `Version`, `ReleaseCommitSha`, and `-ObservedEvidencePath` (required)
+- validated observed-evidence manifest bound to Fresh `verify` (`version`, `releaseCommitSha`, `publicOciDigest`, platforms)
 - canonical repository identity and clean worktree
 - public cross-artifact identity is exact; a pre-post-sync canonical `verify` may differ only because the release record is still intentionally PENDING
 - required consumer verification is PASS
@@ -649,7 +672,9 @@ Closeout order:
 consumer verification PASS
   -> promote-latest
   -> latest consumer verification
-  -> prepare-post-sync
+  -> canonical observed-evidence JSON materialization
+  -> prepare-post-sync dry-run (-ObservedEvidencePath)
+  -> prepare-post-sync -Execute (same evidence file)
   -> merge post-sync authority
   -> final verify
   -> develop fast-forward sync
@@ -659,26 +684,34 @@ The workflow copies `ghcr.io/kooiei-in4a/amane-mailer@ExpectedDigest` to `:lates
 
 ## Phase 8 — Post-Release Documentation Sync
 
-After public artifacts exist, `latest` (when required) matches the verified digest, and required consumer verification is PASS, run deterministic local sync:
+After public artifacts exist, `latest` (when required) matches the verified digest, and required consumer verification is PASS, materialize the canonical observed-evidence JSON manifest, then run deterministic local sync:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `
   -Version X.Y.Z `
   -ReleaseCommitSha <releaseCommitSha> `
+  -ObservedEvidencePath .\path\to\observed-evidence.json
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release.ps1 prepare-post-sync `
+  -Version X.Y.Z `
+  -ReleaseCommitSha <releaseCommitSha> `
+  -ObservedEvidencePath .\path\to\observed-evidence.json `
   -Execute
 ```
+
+Use the same `-ObservedEvidencePath` for dry-run and `-Execute`. Dry-run performs zero file writes.
 
 Then run the local validation gate (`release-client-self-test`, `check-release-smoke-tag-drift.mjs`, `git diff --check`) before commit.
 
 The command updates at minimum:
 
 - `release/current-public.json` current-public authority
-- `docs/releases/vX.Y.Z.md` PENDING -> PUBLISHED with observed public facts only
+- `docs/releases/vX.Y.Z.md` PENDING -> PUBLISHED with validated observed-evidence facts
 - README / README.en / SECURITY / release smoke docs, scripts, and compose defaults aligned to the new current public release
 
 At minimum (manual checklist after sync):
 
-- Record exact tag target, GHCR digest/tags, workflow run IDs, evidence artifact IDs, NuGet package/status, GitHub Release URL/ID, platform, smoke/verification result, `latest` promotion result, and known limitations where not already filled by `prepare-post-sync`.
+- Confirm the evidence manifest captured every directly observed publication / promotion / consumer fact; genuinely unobserved facts remain explicitly PENDING in both manifest and record.
 - Confirm CHANGELOG wording still matches what was actually released.
 - Keep historical OCI-only or failed release attempts accurate; do not rewrite history to look cleaner.
 

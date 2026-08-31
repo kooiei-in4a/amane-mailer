@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "version": "1.3.5",
+  "releaseCommitSha": "5555555555555555555555555555555555555555",
+  "publicOciDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "supportedPlatforms": ["linux/amd64"],
+  "annotatedTagObject": { "state": "PENDING" },
+  "releaseImageWorkflow": { "state": "PENDING" },
+  "publicationArtifact": { "state": "PENDING" },
+  "publicationEvidenceArtifact": { "state": "PENDING" },
+  "versionedGhcrConsumerVerification": { "state": "PENDING" },
+  "nuget": {
+    "version": "1.3.5",
+    "repositoryRevision": "5555555555555555555555555555555555555555",
+    "publicObservedAtUtc": "",
+    "symbolObservation": { "state": "PENDING" },
+    "cleanConsumerVerification": { "state": "PENDING" }
+  },
+  "githubRelease": { "state": "PENDING" },
+  "latestPromotion": { "state": "PENDING" },
+  "overallConsumerVerification": { "state": "PENDING" }
+}

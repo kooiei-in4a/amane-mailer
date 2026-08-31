@@ -53,7 +53,7 @@
   .\scripts\release.ps1 promote-latest -Version X.Y.Z -ReleaseCommitSha <40-lowercase-hex> -ExpectedDigest sha256:<64-lowercase-hex>
 
 .EXAMPLE
-  .\scripts\release.ps1 prepare-post-sync -Version X.Y.Z -ReleaseCommitSha <40-lowercase-hex>
+  .\scripts\release.ps1 prepare-post-sync -Version X.Y.Z -ReleaseCommitSha <40-lowercase-hex> -ObservedEvidencePath <json>
 #>
 [CmdletBinding()]
 param(
@@ -73,7 +73,10 @@ param(
     [switch]$Execute,
 
     [Parameter()]
-    [string]$ReleaseNotesPath
+    [string]$ReleaseNotesPath,
+
+    [Parameter()]
+    [string]$ObservedEvidencePath
 )
 
 Set-StrictMode -Version Latest
@@ -209,8 +212,12 @@ if ($Command -eq 'promote-latest') {
 
 if ($Command -eq 'prepare-post-sync') {
     Test-MutationParameters -CommandName 'prepare-post-sync' -VersionValue $Version -ShaValue $ReleaseCommitSha
+    if ([string]::IsNullOrWhiteSpace($ObservedEvidencePath)) {
+        [Console]::Error.WriteLine('release.ps1 prepare-post-sync requires -ObservedEvidencePath <json> (canonical observed-evidence manifest).')
+        exit 2
+    }
     try {
-        $null = Invoke-ReleasePreparePostSync -Version $Version -ReleaseCommitSha $ReleaseCommitSha -RepoRoot $repoRoot -Execute:$Execute
+        $null = Invoke-ReleasePreparePostSync -Version $Version -ReleaseCommitSha $ReleaseCommitSha -RepoRoot $repoRoot -ObservedEvidencePath $ObservedEvidencePath -Execute:$Execute
         exit 0
     }
     catch {

@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "version": "9.9.0",
+  "releaseCommitSha": "1111111111111111111111111111111111111111",
+  "publicOciDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "supportedPlatforms": ["linux/amd64"],
+  "annotatedTagObject": {
+    "state": "OBSERVED",
+    "sha": "2222222222222222222222222222222222222222"
+  },
+  "releaseImageWorkflow": {
+    "state": "OBSERVED",
+    "runId": 990001,
+    "attempt": 1,
+    "result": "SUCCESS"
+  },
+  "publicationArtifact": {
+    "state": "OBSERVED",
+    "name": "publish-release-image-1111111111111111111111111111111111111111",
+    "id": 990002
+  },
+  "publicationEvidenceArtifact": {
+    "state": "OBSERVED",
+    "name": "publish-release-image-evidence-1111111111111111111111111111111111111111",
+    "id": 990003
+  },
+  "versionedGhcrConsumerVerification": {
+    "state": "OBSERVED",
+    "result": "PASS"
+  },
+  "nuget": {
+    "version": "9.9.0",
+    "repositoryRevision": "1111111111111111111111111111111111111111",
+    "publicObservedAtUtc": "2026-08-31T12:01:00Z",
+    "symbolObservation": {
+      "state": "OBSERVED",
+      "status": "OBSERVED"
+    },
+    "cleanConsumerVerification": {
+      "state": "OBSERVED",
+      "result": "PASS"
+    }
+  },
+  "githubRelease": {
+    "state": "OBSERVED",
+    "id": 990004,
+    "publishedAtUtc": "2026-08-31T12:00:00Z",
+    "url": "https://github.com/kooiei-in4a/amane-mailer/releases/tag/v9.9.0"
+  },
+  "latestPromotion": {
+    "state": "OBSERVED",
+    "workflowRunId": 990005,
+    "workflowAttempt": 1,
+    "workflowResult": "SUCCESS",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "digestEquality": "PASS",
+    "consumerVerification": {
+      "state": "OBSERVED",
+      "result": "PASS"
+    }
+  },
+  "overallConsumerVerification": {
+    "state": "OBSERVED",
+    "result": "PASS"
+  }
+}
