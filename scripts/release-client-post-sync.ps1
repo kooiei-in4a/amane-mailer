@@ -1163,6 +1163,417 @@ function Apply-ObservedEvidenceToReleaseRecord {
     return [string]::Join("`n", $updatedLines)
 }
 
+function Get-ObservedEvidenceFieldLineStateFromPendingOrConcrete {
+    param(
+        [string]$Line,
+        [scriptblock]$ConcreteExtractor
+    )
+
+    if (Test-ReleaseRecordLineHasPendingValue -Line $Line) {
+        return [pscustomobject]@{ State = 'PENDING'; Value = '' }
+    }
+
+    $concrete = & $ConcreteExtractor $Line
+    if ($null -eq $concrete) {
+        return [pscustomobject]@{ State = 'MALFORMED'; Value = '' }
+    }
+
+    return [pscustomobject]@{ State = 'CONCRETE'; Value = [string]$concrete }
+}
+
+function Resolve-ObservedEvidenceFieldConsistency {
+    param(
+        [object[]]$LineStates,
+        [string]$ExpectedValue
+    )
+
+    if ($null -eq $LineStates -or $LineStates.Count -eq 0) {
+        return 'ABSENT'
+    }
+
+    $hasPending = $false
+    $concreteValues = New-Object System.Collections.Generic.List[string]
+    foreach ($lineState in $LineStates) {
+        switch ($lineState.State) {
+            'MALFORMED' { return 'MALFORMED' }
+            'PENDING' { $hasPending = $true }
+            'CONCRETE' { [void]$concreteValues.Add([string]$lineState.Value) }
+        }
+    }
+
+    if ($concreteValues.Count -eq 0) {
+        if ($hasPending) { return 'PENDING_ONLY' }
+        return 'ABSENT'
+    }
+
+    foreach ($concrete in $concreteValues) {
+        if ($concrete -ne $ExpectedValue) {
+            return 'CONFLICT'
+        }
+    }
+
+    if ($hasPending) {
+        return 'EXACT_WITH_STALE_PENDING'
+    }
+
+    return 'EXACT'
+}
+
+function Test-ObservedEvidenceFieldConsistency {
+    param(
+        [string[]]$Lines,
+        [string[]]$LinePatterns,
+        [scriptblock]$ConcreteExtractor,
+        [string]$ExpectedValue
+    )
+
+    $fieldLines = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $Lines) {
+        foreach ($pattern in $LinePatterns) {
+            if ($line -match $pattern) {
+                [void]$fieldLines.Add($line)
+                break
+            }
+        }
+    }
+
+    $lineStates = New-Object System.Collections.Generic.List[object]
+    foreach ($line in $fieldLines) {
+        [void]$lineStates.Add((Get-ObservedEvidenceFieldLineStateFromPendingOrConcrete -Line $line -ConcreteExtractor $ConcreteExtractor))
+    }
+
+    return Resolve-ObservedEvidenceFieldConsistency -LineStates $lineStates.ToArray() -ExpectedValue $ExpectedValue
+}
+
+function Get-ObservedEvidenceLogicalFieldChecks {
+    param(
+        $Evidence,
+        [string]$Version
+    )
+
+    $checks = New-Object System.Collections.Generic.List[object]
+    $tag = 'v' + $Version
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.annotatedTagObject) -eq 'OBSERVED') {
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'ANNOTATED_TAG_OBJECT'
+                StalePendingReason = 'ANNOTATED_TAG_OBJECT_STALE_PENDING'
+                LinePatterns       = @('^-\s+annotated tag object:')
+                ExpectedValue      = [string]$Evidence.annotatedTagObject.sha
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+annotated tag object:\s+`([0-9a-f]{40})`\s*$') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.releaseImageWorkflow) -eq 'OBSERVED') {
+        $wf = $Evidence.releaseImageWorkflow
+        $expectedRunId = [string]$wf.runId
+        $expectedAttempt = [string]$wf.attempt
+        $expectedResult = [string]$wf.result
+
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'RELEASE_IMAGE_WORKFLOW_RUN_ID'
+                StalePendingReason = 'RELEASE_IMAGE_WORKFLOW_STALE_PENDING'
+                LinePatterns       = @('^-\s+Release image workflow run / attempt:', '^-\s+publish workflow run:')
+                ExpectedValue      = $expectedRunId
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+Release image workflow run / attempt:\s+`(\d+)`') { return $Matches[1] }
+                    if ($line -match '^-\s+publish workflow run:\s+``(\d+)``') { return $Matches[1] }
+                    if ($line -match '^-\s+publish workflow run:\s+`(\d+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'RELEASE_IMAGE_WORKFLOW_ATTEMPT'
+                StalePendingReason = 'RELEASE_IMAGE_WORKFLOW_STALE_PENDING'
+                LinePatterns       = @('^-\s+Release image workflow run / attempt:', '^-\s+run attempt:')
+                ExpectedValue      = $expectedAttempt
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+Release image workflow run / attempt:\s+`\d+`\s+/ `(\d+)`') { return $Matches[1] }
+                    if ($line -match '^-\s+run attempt:\s+``(\d+)``') { return $Matches[1] }
+                    if ($line -match '^-\s+run attempt:\s+`(\d+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'RELEASE_IMAGE_WORKFLOW_RESULT'
+                StalePendingReason = 'RELEASE_IMAGE_WORKFLOW_STALE_PENDING'
+                LinePatterns       = @('^-\s+Release image workflow run / attempt:')
+                ExpectedValue      = $expectedResult
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+Release image workflow run / attempt:.*-\s+\*\*([A-Z]+)\*\*\s*$') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationArtifact) -eq 'OBSERVED') {
+        $artifact = $Evidence.publicationArtifact
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'PUBLICATION_ARTIFACT_NAME'
+                StalePendingReason = 'PUBLICATION_ARTIFACT_STALE_PENDING'
+                LinePatterns       = @('^-\s+Publication artifact:')
+                ExpectedValue      = [string]$artifact.name
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+Publication artifact:\s+`([^`]+)`\s+/ ID `\d+`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'PUBLICATION_ARTIFACT_ID'
+                StalePendingReason = 'PUBLICATION_ARTIFACT_STALE_PENDING'
+                LinePatterns       = @('^-\s+Publication artifact:', '^-\s+publication artifact ID:')
+                ExpectedValue      = [string]$artifact.id
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+Publication artifact:.*ID `(\d+)`') { return $Matches[1] }
+                    if ($line -match '^-\s+publication artifact ID:\s+``(\d+)``') { return $Matches[1] }
+                    if ($line -match '^-\s+publication artifact ID:\s+`(\d+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationEvidenceArtifact) -eq 'OBSERVED') {
+        $artifact = $Evidence.publicationEvidenceArtifact
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'PUBLICATION_EVIDENCE_ARTIFACT_NAME'
+                StalePendingReason = 'PUBLICATION_EVIDENCE_ARTIFACT_STALE_PENDING'
+                LinePatterns       = @('^-\s+Publication evidence artifact:', '^-\s+Publication evidence artifact name / ID:')
+                ExpectedValue      = [string]$artifact.name
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+Publication evidence artifact:\s+`([^`]+)`\s+/ ID `\d+`') { return $Matches[1] }
+                    if ($line -match '^-\s+Publication evidence artifact name / ID:\s+`([^`]+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'PUBLICATION_EVIDENCE_ARTIFACT_ID'
+                StalePendingReason = 'PUBLICATION_EVIDENCE_ARTIFACT_STALE_PENDING'
+                LinePatterns       = @('^-\s+Publication evidence artifact:', '^-\s+Publication evidence artifact name / ID:')
+                ExpectedValue      = [string]$artifact.id
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+Publication evidence artifact:.*ID `(\d+)`') { return $Matches[1] }
+                    if ($line -match '^-\s+Publication evidence artifact name / ID:\s+`[^`]+`\s+/ `(\d+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.versionedGhcrConsumerVerification) -eq 'OBSERVED') {
+        $expectedConsumer = [string]$Evidence.versionedGhcrConsumerVerification.result
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'VERSIONED_GHCR_CONSUMER'
+                StalePendingReason = 'VERSIONED_GHCR_CONSUMER_STALE_PENDING'
+                LinePatterns       = @('^-\s+Public-consumer versioned-image verification:', '^-\s+Public-consumer verification evidence:')
+                ExpectedValue      = $expectedConsumer
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match ':\s+\*\*(PASS|FAIL)\*\*') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    $nugetObservedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $Evidence.nuget -Name 'publicObservedAtUtc')
+    if (-not [string]::IsNullOrWhiteSpace($nugetObservedAt)) {
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'NUGET_OBSERVED_AT'
+                StalePendingReason = 'NUGET_OBSERVED_AT_STALE_PENDING'
+                LinePatterns       = @('^-\s+NuGet public observed-at \(UTC\):')
+                ExpectedValue      = $nugetObservedAt
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+NuGet public observed-at \(UTC\):\s+`([^`]+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.nuget.symbolObservation) -eq 'OBSERVED') {
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'NUGET_SYMBOL'
+                StalePendingReason = 'NUGET_SYMBOL_STALE_PENDING'
+                LinePatterns       = @('^-\s+NuGet symbol package status:')
+                ExpectedValue      = 'OBSERVED'
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match ':\s+\*\*(OBSERVED)\*\*') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.nuget.cleanConsumerVerification) -eq 'OBSERVED') {
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'NUGET_CLEAN_CONSUMER'
+                StalePendingReason = 'NUGET_CLEAN_CONSUMER_STALE_PENDING'
+                LinePatterns       = @('^-\s+NuGet clean-consumer restore / build / run:')
+                ExpectedValue      = [string]$Evidence.nuget.cleanConsumerVerification.result
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match ':\s+\*\*(PASS|FAIL)\*\*') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.githubRelease) -eq 'OBSERVED') {
+        $gh = $Evidence.githubRelease
+        $ghPublishedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $gh -Name 'publishedAtUtc')
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'GITHUB_RELEASE_ID'
+                StalePendingReason = 'GITHUB_RELEASE_STALE_PENDING'
+                LinePatterns       = @('^-\s+GitHub Release ID:', '^-\s+release ID:')
+                ExpectedValue      = [string](Get-PostSyncEvidencePropertyValue -Group $gh -Name 'id')
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+GitHub Release ID:\s+`(\d+)`') { return $Matches[1] }
+                    if ($line -match '^-\s+release ID:\s+``(\d+)``') { return $Matches[1] }
+                    if ($line -match '^-\s+release ID:\s+`(\d+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'GITHUB_RELEASE_PUBLISHED_AT'
+                StalePendingReason = 'GITHUB_RELEASE_STALE_PENDING'
+                LinePatterns       = @('^-\s+GitHub Release published at:', '^-\s+published at:')
+                ExpectedValue      = $ghPublishedAt
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+GitHub Release published at:\s+`([^`]+)`') { return $Matches[1] }
+                    if ($line -match '^-\s+published at:\s+``([^`]+)``') { return $Matches[1] }
+                    if ($line -match '^-\s+published at:\s+`([^`]+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'GITHUB_RELEASE_URL'
+                StalePendingReason = 'GITHUB_RELEASE_STALE_PENDING'
+                LinePatterns       = @('^-\s+GitHub Release URL:', '^-\s+URL:')
+                ExpectedValue      = [string](Get-PostSyncEvidencePropertyValue -Group $gh -Name 'url')
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+GitHub Release URL:\s+`([^`]+)`') { return $Matches[1] }
+                    if ($line -match '^-\s+URL:\s+``([^`]+)``') { return $Matches[1] }
+                    if ($line -match '^-\s+URL:\s+`([^`]+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
+        $latest = $Evidence.latestPromotion
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'LATEST_PROMOTION_STATUS'
+                StalePendingReason = 'LATEST_PROMOTION_STALE_PENDING'
+                LinePatterns       = @('^-\s+GHCR `latest` promotion:', '^-\s+GHCR `latest` digest promotion:')
+                ExpectedValue      = 'PUBLISHED'
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match 'GHCR `latest`(?: digest)? promotion:\s+\*\*(PUBLISHED)\*\*') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'LATEST_PROMOTION_WORKFLOW'
+                StalePendingReason = 'LATEST_PROMOTION_STALE_PENDING'
+                LinePatterns       = @('^-\s+`latest` promotion workflow run / attempt:')
+                ExpectedValue      = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowRunId')
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+`latest` promotion workflow run / attempt:\s+`(\d+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'LATEST_PROMOTION_WORKFLOW_ATTEMPT'
+                StalePendingReason = 'LATEST_PROMOTION_STALE_PENDING'
+                LinePatterns       = @('^-\s+`latest` promotion workflow run / attempt:')
+                ExpectedValue      = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowAttempt')
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+`latest` promotion workflow run / attempt:\s+`\d+`\s+/ `(\d+)`') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'LATEST_PROMOTION_WORKFLOW_RESULT'
+                StalePendingReason = 'LATEST_PROMOTION_STALE_PENDING'
+                LinePatterns       = @('^-\s+`latest` promotion workflow run / attempt:')
+                ExpectedValue      = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowResult')
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+`latest` promotion workflow run / attempt:.*-\s+\*\*([A-Z]+)\*\*\s*$') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'LATEST_DIGEST'
+                StalePendingReason = 'LATEST_PROMOTION_STALE_PENDING'
+                RecordConflictCode = 'LATEST_RECORD_DIGEST_CONTRADICTION'
+                LinePatterns       = @('^-\s+GHCR `latest` digest:')
+                ExpectedValue      = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digest')
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match '^-\s+GHCR `latest` digest:\s+`(sha256:[0-9a-f]{64})`\s*$') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'LATEST_DIGEST_EQUALITY'
+                StalePendingReason = 'LATEST_PROMOTION_STALE_PENDING'
+                LinePatterns       = @(('^-\s+`latest == ' + [regex]::Escape($tag) + '` by OCI digest:'))
+                ExpectedValue      = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digestEquality')
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match ':\s+\*\*(PASS|FAIL)\*\*\s*$') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    $latestConsumerGroup = Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification'
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $latestConsumerGroup) -eq 'OBSERVED') {
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'LATEST_CONSUMER'
+                StalePendingReason = 'LATEST_CONSUMER_STALE_PENDING'
+                LinePatterns       = @('^-\s+anonymous `latest` pull and OCI version/revision read-back:')
+                ExpectedValue      = [string](Get-PostSyncEvidencePropertyValue -Group $latestConsumerGroup -Name 'result')
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match ':\s+\*\*(PASS|FAIL)\*\*') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.overallConsumerVerification) -eq 'OBSERVED') {
+        [void]$checks.Add([pscustomobject]@{
+                ReasonCode         = 'OVERALL_CONSUMER'
+                StalePendingReason = 'OVERALL_CONSUMER_STALE_PENDING'
+                LinePatterns       = @('^-\s+Consumer verification results:')
+                ExpectedValue      = [string]$Evidence.overallConsumerVerification.result
+                ConcreteExtractor  = {
+                    param($line)
+                    if ($line -match 'Consumer verification results:\s+\*\*(PASS|FAIL)\*\*') { return $Matches[1] }
+                    return $null
+                }.GetNewClosure()
+            })
+    }
+
+    return $checks.ToArray()
+}
+
 function Test-ObservedEvidenceRenderingConsistency {
     param(
         [string]$Text,
@@ -1175,209 +1586,26 @@ function Test-ObservedEvidenceRenderingConsistency {
     }
 
     $failures = New-Object System.Collections.Generic.List[string]
-    $tag = 'v' + $Version
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.annotatedTagObject) -eq 'OBSERVED') {
-        if ($Text -notmatch ('annotated tag object: `' + [regex]::Escape([string]$Evidence.annotatedTagObject.sha) + '`')) {
-            [void]$failures.Add('ANNOTATED_TAG_OBJECT')
-        }
-        if ($Text -match '(?m)^-\s+annotated tag object:.*\*\*PENDING') {
-            [void]$failures.Add('ANNOTATED_TAG_OBJECT_STALE_PENDING')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.releaseImageWorkflow) -eq 'OBSERVED') {
-        $wf = $Evidence.releaseImageWorkflow
-        if (($Text -notmatch ([string]$wf.runId)) -or ($Text -match 'Release image workflow run / attempt: \*\*PENDING\*\*') -or ($Text -match 'publish workflow run: \*\*PENDING\*\*')) {
-            [void]$failures.Add('RELEASE_IMAGE_WORKFLOW')
-        }
-        if ($Text -match '(?m)^-\s+Release image workflow run / attempt:.*\*\*PENDING') {
-            [void]$failures.Add('RELEASE_IMAGE_WORKFLOW_STALE_PENDING')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationArtifact) -eq 'OBSERVED') {
-        $artifact = $Evidence.publicationArtifact
-        if (($Text -notmatch [regex]::Escape([string]$artifact.name)) -or ($Text -notmatch ([string]$artifact.id))) {
-            [void]$failures.Add('PUBLICATION_ARTIFACT')
-        }
-        if ($Text -match '(?m)^-\s+Publication artifact:.*\*\*PENDING') {
-            [void]$failures.Add('PUBLICATION_ARTIFACT_STALE_PENDING')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.publicationEvidenceArtifact) -eq 'OBSERVED') {
-        $artifact = $Evidence.publicationEvidenceArtifact
-        if (($Text -notmatch [regex]::Escape([string]$artifact.name)) -or ($Text -notmatch ([string]$artifact.id))) {
-            [void]$failures.Add('PUBLICATION_EVIDENCE_ARTIFACT')
-        }
-        if ($Text -match '(?m)^-\s+Publication evidence artifact(?: name / ID)?:.*\*\*PENDING') {
-            [void]$failures.Add('PUBLICATION_EVIDENCE_ARTIFACT_STALE_PENDING')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.versionedGhcrConsumerVerification) -eq 'OBSERVED') {
-        $versionedRendered = ($Text -match ('Public-consumer versioned-image verification: \*\*' + [regex]::Escape([string]$Evidence.versionedGhcrConsumerVerification.result) + '\*\*')) -or
-            ($Text -match ('Public-consumer verification evidence: \*\*' + [regex]::Escape([string]$Evidence.versionedGhcrConsumerVerification.result) + '\*\*'))
-        if (-not $versionedRendered) {
-            [void]$failures.Add('VERSIONED_GHCR_CONSUMER')
-        }
-        if ($Text -match '(?m)^-\s+Public-consumer versioned-image verification:.*\*\*PENDING' -or
-            $Text -match '(?m)^-\s+Public-consumer verification evidence:.*\*\*PENDING') {
-            [void]$failures.Add('VERSIONED_GHCR_CONSUMER_STALE_PENDING')
-        }
-    }
-
-    $nugetObservedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $Evidence.nuget -Name 'publicObservedAtUtc')
-    if (-not [string]::IsNullOrWhiteSpace($nugetObservedAt)) {
-        if ($Text -notmatch [regex]::Escape($nugetObservedAt)) {
-            [void]$failures.Add('NUGET_OBSERVED_AT')
-        }
-        if ($Text -match '(?m)^-\s+NuGet public observed-at \(UTC\):.*\*\*PENDING') {
-            [void]$failures.Add('NUGET_OBSERVED_AT_STALE_PENDING')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.nuget.symbolObservation) -eq 'OBSERVED') {
-        if ($Text -notmatch 'NuGet symbol package status: \*\*OBSERVED\*\*') {
-            [void]$failures.Add('NUGET_SYMBOL')
-        }
-        if ($Text -match '(?m)^-\s+NuGet symbol package status:.*\*\*PENDING') {
-            [void]$failures.Add('NUGET_SYMBOL_STALE_PENDING')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.nuget.cleanConsumerVerification) -eq 'OBSERVED') {
-        if ($Text -notmatch ('NuGet clean-consumer restore / build / run: \*\*' + [regex]::Escape([string]$Evidence.nuget.cleanConsumerVerification.result) + '\*\*')) {
-            [void]$failures.Add('NUGET_CLEAN_CONSUMER')
-        }
-        if ($Text -match '(?m)^-\s+NuGet clean-consumer restore / build / run:.*\*\*PENDING') {
-            [void]$failures.Add('NUGET_CLEAN_CONSUMER_STALE_PENDING')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.githubRelease) -eq 'OBSERVED') {
-        $gh = $Evidence.githubRelease
-        $ghPublishedAt = ConvertTo-PostSyncEvidenceUtcString (Get-PostSyncEvidencePropertyValue -Group $gh -Name 'publishedAtUtc')
-        if (($Text -notmatch ([string](Get-PostSyncEvidencePropertyValue -Group $gh -Name 'id'))) -or ($Text -notmatch [regex]::Escape($ghPublishedAt)) -or ($Text -notmatch [regex]::Escape([string](Get-PostSyncEvidencePropertyValue -Group $gh -Name 'url')))) {
-            [void]$failures.Add('GITHUB_RELEASE')
-        }
-        if ($Text -match '(?m)^-\s+GitHub Release ID:.*\*\*PENDING' -or
-            $Text -match '(?m)^-\s+GitHub Release published at:.*\*\*PENDING' -or
-            $Text -match '(?m)^-\s+GitHub Release URL:.*\*\*PENDING') {
-            [void]$failures.Add('GITHUB_RELEASE_STALE_PENDING')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
-        $latest = $Evidence.latestPromotion
-        $expectedLatestDigest = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digest')
-        $expectedWorkflowRunId = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowRunId')
-        $expectedWorkflowAttempt = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowAttempt')
-        $expectedWorkflowResult = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'workflowResult')
-        $expectedDigestEquality = [string](Get-PostSyncEvidencePropertyValue -Group $latest -Name 'digestEquality')
-
-        $latestPromotionLine = $null
-        $latestWorkflowLine = $null
-        $latestDigestLine = $null
-        $latestEqualityLine = $null
-        foreach ($line in ($Text -split '\r?\n')) {
-            if ($null -eq $latestPromotionLine -and (
-                    $line -match '^-\s+GHCR `latest` promotion:' -or
-                    $line -match '^-\s+GHCR `latest` digest promotion:'
-                )) {
-                $latestPromotionLine = $line
+    $lines = @($Text -split '\r?\n')
+    foreach ($check in (Get-ObservedEvidenceLogicalFieldChecks -Evidence $Evidence -Version $Version)) {
+        $result = Test-ObservedEvidenceFieldConsistency -Lines $lines -LinePatterns $check.LinePatterns -ConcreteExtractor $check.ConcreteExtractor -ExpectedValue $check.ExpectedValue
+        switch ($result) {
+            'EXACT' { }
+            'EXACT_WITH_STALE_PENDING' {
+                [void]$failures.Add($check.ReasonCode)
+                if (-not [string]::IsNullOrWhiteSpace($check.StalePendingReason)) {
+                    [void]$failures.Add($check.StalePendingReason)
+                }
             }
-            elseif ($null -eq $latestWorkflowLine -and $line -match '^-\s+`latest` promotion workflow run / attempt:') {
-                $latestWorkflowLine = $line
+            'PENDING_ONLY' {
+                [void]$failures.Add($check.ReasonCode)
+                if (-not [string]::IsNullOrWhiteSpace($check.StalePendingReason)) {
+                    [void]$failures.Add($check.StalePendingReason)
+                }
             }
-            elseif ($null -eq $latestDigestLine -and $line -match '^-\s+GHCR `latest` digest:') {
-                $latestDigestLine = $line
+            default {
+                [void]$failures.Add($check.ReasonCode)
             }
-            elseif ($null -eq $latestEqualityLine -and $line -match ('^-\s+`latest == ' + [regex]::Escape($tag) + '` by OCI digest:')) {
-                $latestEqualityLine = $line
-            }
-        }
-
-        if ($null -eq $latestPromotionLine) {
-            [void]$failures.Add('LATEST_PROMOTION_STATUS')
-        }
-        elseif ($latestPromotionLine -notmatch 'GHCR `latest`(?: digest)? promotion: \*\*PUBLISHED\*\*') {
-            [void]$failures.Add('LATEST_PROMOTION_STATUS')
-        }
-        elseif ($latestPromotionLine -match '\*\*PENDING') {
-            [void]$failures.Add('LATEST_PROMOTION_STALE_PENDING')
-        }
-
-        if ($null -eq $latestWorkflowLine) {
-            [void]$failures.Add('LATEST_PROMOTION_WORKFLOW')
-        }
-        elseif ($latestWorkflowLine -match '\*\*PENDING') {
-            [void]$failures.Add('LATEST_PROMOTION_STALE_PENDING')
-        }
-        elseif ($latestWorkflowLine -notmatch (
-                '^-\s+`latest` promotion workflow run / attempt: `' +
-                [regex]::Escape($expectedWorkflowRunId) + '` / `' +
-                [regex]::Escape($expectedWorkflowAttempt) + '` - \*\*' +
-                [regex]::Escape($expectedWorkflowResult) + '\*\*'
-            )) {
-            [void]$failures.Add('LATEST_PROMOTION_WORKFLOW')
-        }
-
-        if ($null -eq $latestDigestLine) {
-            [void]$failures.Add('LATEST_DIGEST_MISSING')
-        }
-        elseif ($latestDigestLine -match '\*\*PENDING') {
-            [void]$failures.Add('LATEST_PROMOTION_STALE_PENDING')
-        }
-        elseif ($latestDigestLine -notmatch ('^-\s+GHCR `latest` digest: `' + [regex]::Escape($expectedLatestDigest) + '`$')) {
-            [void]$failures.Add('LATEST_DIGEST')
-        }
-
-        if ($null -eq $latestEqualityLine) {
-            [void]$failures.Add('LATEST_DIGEST_EQUALITY')
-        }
-        elseif ($latestEqualityLine -match '\*\*PENDING') {
-            [void]$failures.Add('LATEST_PROMOTION_STALE_PENDING')
-        }
-        elseif ($latestEqualityLine -notmatch (
-                '^-\s+`latest == ' + [regex]::Escape($tag) + '` by OCI digest: \*\*' +
-                [regex]::Escape($expectedDigestEquality) + '\*\*'
-            )) {
-            [void]$failures.Add('LATEST_DIGEST_EQUALITY')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group (Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification')) -eq 'OBSERVED') {
-        $latestConsumerGroup = Get-PostSyncEvidenceNestedGroup -Group $Evidence.latestPromotion -Name 'consumerVerification'
-        $expectedLatestConsumer = [string](Get-PostSyncEvidencePropertyValue -Group $latestConsumerGroup -Name 'result')
-        $latestConsumerLine = $null
-        foreach ($line in ($Text -split '\r?\n')) {
-            if ($line -match '^-\s+anonymous `latest` pull and OCI version/revision read-back:') {
-                $latestConsumerLine = $line
-                break
-            }
-        }
-        if ($null -eq $latestConsumerLine) {
-            [void]$failures.Add('LATEST_CONSUMER')
-        }
-        elseif ($latestConsumerLine -match '\*\*PENDING') {
-            [void]$failures.Add('LATEST_CONSUMER_STALE_PENDING')
-        }
-        elseif ($latestConsumerLine -notmatch (
-                '^-\s+anonymous `latest` pull and OCI version/revision read-back: \*\*' +
-                [regex]::Escape($expectedLatestConsumer) + '\*\*'
-            )) {
-            [void]$failures.Add('LATEST_CONSUMER')
-        }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.overallConsumerVerification) -eq 'OBSERVED') {
-        if ($Text -notmatch ('Consumer verification results: \*\*' + [regex]::Escape([string]$Evidence.overallConsumerVerification.result) + '\*\*')) {
-            [void]$failures.Add('OVERALL_CONSUMER')
-        }
-        if ($Text -match '(?m)^-\s+Consumer verification results:.*\*\*PENDING') {
-            [void]$failures.Add('OVERALL_CONSUMER_STALE_PENDING')
         }
     }
 
@@ -1398,39 +1626,22 @@ function Test-ObservedEvidenceRecordConflict {
         return [pscustomobject]@{ State = 'PASS'; Reason = '' }
     }
 
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.annotatedTagObject) -eq 'OBSERVED') {
-        $expected = [string]$Evidence.annotatedTagObject.sha
-        if ($Text -match 'annotated tag object: `' + '([0-9a-f]{40})' + '`') {
-            if ($Matches[1] -ne $expected) {
-                return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'ANNOTATED_TAG_OBJECT' }
+    $lines = @($Text -split '\r?\n')
+    foreach ($check in (Get-ObservedEvidenceLogicalFieldChecks -Evidence $Evidence -Version $Evidence.version)) {
+        $result = Test-ObservedEvidenceFieldConsistency -Lines $lines -LinePatterns $check.LinePatterns -ConcreteExtractor $check.ConcreteExtractor -ExpectedValue $check.ExpectedValue
+        if ($result -eq 'CONFLICT') {
+            $reason = $check.ReasonCode
+            if ($null -ne $check.PSObject.Properties['RecordConflictCode'] -and -not [string]::IsNullOrWhiteSpace([string]$check.RecordConflictCode)) {
+                $reason = [string]$check.RecordConflictCode
             }
+            return [pscustomobject]@{ State = 'CONFLICT'; Reason = $reason }
         }
-    }
-
-    if ((Get-PostSyncObservedEvidenceGroupState -Group $Evidence.latestPromotion) -eq 'OBSERVED') {
-        $expectedDigest = [string](Get-PostSyncEvidencePropertyValue -Group $Evidence.latestPromotion -Name 'digest')
-        $latestDigestLine = $null
-        foreach ($line in ($Text -split '\r?\n')) {
-            if ($line -match '^-\s+GHCR `latest` digest:') {
-                $latestDigestLine = $line
-                break
+        if ($result -eq 'MALFORMED') {
+            $reason = $check.ReasonCode
+            if ($check.ReasonCode -eq 'LATEST_DIGEST') {
+                $reason = 'LATEST_DIGEST_MALFORMED'
             }
-        }
-
-        if ($null -eq $latestDigestLine) {
-            return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_DIGEST_FIELD_MISSING' }
-        }
-
-        if (Test-ReleaseRecordLineHasPendingValue -Line $latestDigestLine) {
-            # PENDING is replaced by the OBSERVED manifest digest.
-        }
-        elseif ($latestDigestLine -match '^-\s+GHCR `latest` digest:\s+`(sha256:[0-9a-f]{64})`\s*$') {
-            if ($Matches[1] -ne $expectedDigest) {
-                return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_RECORD_DIGEST_CONTRADICTION' }
-            }
-        }
-        else {
-            return [pscustomobject]@{ State = 'CONFLICT'; Reason = 'LATEST_DIGEST_MALFORMED' }
+            return [pscustomobject]@{ State = 'CONFLICT'; Reason = $reason }
         }
     }
 

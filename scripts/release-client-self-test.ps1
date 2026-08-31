@@ -2264,6 +2264,106 @@ Assert-equal '691 idempotent latest digest APPLIED' $idempotentLatestDigestFinal
 Assert-equal '691 idempotent latest digest PUBLISHED' (Get-ReleaseRecordStateFromText -Text $idempotentLatestDigestFinal.Text) 'PUBLISHED'
 Assert-True '691 idempotent latest digest exact' ($idempotentLatestDigestFinal.Text -match ('(?m)^-\s+GHCR `latest` digest: `' + [regex]::Escape($Evidence691Digest) + '`$')) 'same concrete digest accepted'
 
+# --- #691 field-scoped dual-line contradiction regressions ---
+$dualLineWorkflowBase = ($Evidence691PendingText -split '\r?\n') | ForEach-Object {
+    if ($_ -match '^-\s+Release image workflow run / attempt:') {
+        @('- Release image workflow run / attempt: `888888` / `1` - **SUCCESS**', '- publish workflow run: **PENDING**')
+    }
+    else { $_ }
+}
+$dualLineWorkflowRecord = ($dualLineWorkflowBase -join "`n")
+$dualLineWorkflowFinal = Build-PublishedReleaseRecordForPostSync -Text $dualLineWorkflowRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 dual-line workflow run contradiction CONFLICT' $dualLineWorkflowFinal.State 'CONFLICT'
+Assert-True '691 dual-line workflow run contradiction zero write' ([string]::IsNullOrEmpty($dualLineWorkflowFinal.Text)) 'zero write'
+Assert-True '691 dual-line workflow run contradiction not PUBLISHED' ($dualLineWorkflowFinal.State -ne 'APPLIED') 'must not publish'
+Assert-True '691 dual-line workflow run contradiction reason' (
+    ($dualLineWorkflowFinal.Reason -match 'RELEASE_IMAGE_WORKFLOW_RUN_ID') -or
+    ($dualLineWorkflowFinal.Reason -match 'ANNOTATED_TAG_OBJECT')
+) 'expected workflow run id conflict'
+
+$dualLineGithubIdBase = ($Evidence691PendingText -split '\r?\n') | ForEach-Object {
+    if ($_ -match '^-\s+GitHub Release ID:') {
+        @('- GitHub Release ID: `111111`', '- release ID: **PENDING**')
+    }
+    else { $_ }
+}
+$dualLineGithubIdRecord = ($dualLineGithubIdBase -join "`n")
+$dualLineGithubIdFinal = Build-PublishedReleaseRecordForPostSync -Text $dualLineGithubIdRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 dual-line github release id contradiction CONFLICT' $dualLineGithubIdFinal.State 'CONFLICT'
+Assert-True '691 dual-line github release id contradiction zero write' ([string]::IsNullOrEmpty($dualLineGithubIdFinal.Text)) 'zero write'
+Assert-True '691 dual-line github release id contradiction reason' ($dualLineGithubIdFinal.Reason -match 'GITHUB_RELEASE_ID') 'expected github release id conflict'
+
+$dualLinePublicationArtifactBase = ($Evidence691PendingText -split '\r?\n') | ForEach-Object {
+    if ($_ -match '^-\s+Publication artifact:') {
+        @('- Publication artifact: `wrong-artifact-name` / ID `990099`', '- publication artifact ID: **PENDING**')
+    }
+    else { $_ }
+}
+$dualLinePublicationArtifactRecord = ($dualLinePublicationArtifactBase -join "`n")
+$dualLinePublicationArtifactFinal = Build-PublishedReleaseRecordForPostSync -Text $dualLinePublicationArtifactRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 dual-line publication artifact contradiction CONFLICT' $dualLinePublicationArtifactFinal.State 'CONFLICT'
+Assert-True '691 dual-line publication artifact zero write' ([string]::IsNullOrEmpty($dualLinePublicationArtifactFinal.Text)) 'zero write'
+
+$dualLinePublicationEvidenceBase = ($Evidence691PendingText -split '\r?\n') | ForEach-Object {
+    if ($_ -match '^-\s+Publication evidence artifact:') {
+        @('- Publication evidence artifact: `wrong-evidence-name` / ID `990099`', '- Publication evidence artifact name / ID: **PENDING**')
+    }
+    else { $_ }
+}
+$dualLinePublicationEvidenceRecord = ($dualLinePublicationEvidenceBase -join "`n")
+$dualLinePublicationEvidenceFinal = Build-PublishedReleaseRecordForPostSync -Text $dualLinePublicationEvidenceRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 dual-line publication evidence contradiction CONFLICT' $dualLinePublicationEvidenceFinal.State 'CONFLICT'
+Assert-True '691 dual-line publication evidence zero write' ([string]::IsNullOrEmpty($dualLinePublicationEvidenceFinal.Text)) 'zero write'
+
+$dualLineGithubMetaBase = ($Evidence691PendingText -split '\r?\n') | ForEach-Object {
+    if ($_ -match '^-\s+GitHub Release published at:') {
+        @('- GitHub Release published at: `2020-01-01T00:00:00Z`', '- published at: **PENDING**')
+    }
+    else { $_ }
+}
+$dualLineGithubMetaRecord = ($dualLineGithubMetaBase -join "`n")
+$dualLineGithubMetaFinal = Build-PublishedReleaseRecordForPostSync -Text $dualLineGithubMetaRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 dual-line github published-at contradiction CONFLICT' $dualLineGithubMetaFinal.State 'CONFLICT'
+Assert-True '691 dual-line github published-at zero write' ([string]::IsNullOrEmpty($dualLineGithubMetaFinal.Text)) 'zero write'
+
+$dualLineLatestWorkflowBase = ($Evidence691PendingText -split '\r?\n') | ForEach-Object {
+    if ($_ -match '^-\s+`latest` promotion workflow run / attempt:') {
+        '- `latest` promotion workflow run / attempt: `888888` / `1` - **SUCCESS**'
+    }
+    else { $_ }
+}
+$dualLineLatestWorkflowRecord = ($dualLineLatestWorkflowBase -join "`n")
+$dualLineLatestWorkflowFinal = Build-PublishedReleaseRecordForPostSync -Text $dualLineLatestWorkflowRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 dual-line latest workflow contradiction CONFLICT' $dualLineLatestWorkflowFinal.State 'CONFLICT'
+Assert-True '691 dual-line latest workflow zero write' ([string]::IsNullOrEmpty($dualLineLatestWorkflowFinal.Text)) 'zero write'
+Assert-True '691 dual-line latest workflow reason' ($dualLineLatestWorkflowFinal.Reason -match 'LATEST_PROMOTION_WORKFLOW') 'expected latest workflow conflict'
+
+$dualLineOverallConsumerBase = ($Evidence691PendingText -split '\r?\n') | ForEach-Object {
+    if ($_ -match '^-\s+Consumer verification results:') {
+        '- Consumer verification results: **FAIL** for versioned GHCR, NuGet, GitHub Release/tag, and promoted `latest`'
+    }
+    else { $_ }
+}
+$dualLineOverallConsumerRecord = ($dualLineOverallConsumerBase -join "`n")
+$dualLineOverallConsumerFinal = Build-PublishedReleaseRecordForPostSync -Text $dualLineOverallConsumerRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 dual-line overall consumer contradiction CONFLICT' $dualLineOverallConsumerFinal.State 'CONFLICT'
+Assert-True '691 dual-line overall consumer zero write' ([string]::IsNullOrEmpty($dualLineOverallConsumerFinal.Text)) 'zero write'
+Assert-True '691 dual-line overall consumer reason' ($dualLineOverallConsumerFinal.Reason -match 'OVERALL_CONSUMER') 'expected overall consumer conflict'
+
+# exact canonical + stale PENDING alias resolves after render (workflow)
+$exactCanonicalPendingAliasBase = ($Evidence691PendingText -split '\r?\n') | ForEach-Object {
+    if ($_ -match '^-\s+Release image workflow run / attempt:') {
+        @('- Release image workflow run / attempt: `990001` / `1` - **SUCCESS**', '- publish workflow run: **PENDING**')
+    }
+    else { $_ }
+}
+$exactCanonicalPendingAliasRecord = ($exactCanonicalPendingAliasBase -join "`n")
+$exactCanonicalPendingAliasFinal = Build-PublishedReleaseRecordForPostSync -Text $exactCanonicalPendingAliasRecord -Version $Evidence691Version -ReleaseCommitSha $Evidence691Sha -PublicDigest $Evidence691Digest -Platforms @('linux/amd64') -NugetPublicObservedAtUtc '2026-08-31T12:01:00Z' -NugetSymbolsStatus 'OBSERVED' -ObservedEvidence $Evidence691Complete
+Assert-equal '691 exact canonical pending alias workflow APPLIED' $exactCanonicalPendingAliasFinal.State 'APPLIED'
+Assert-True '691 exact canonical pending alias workflow rendered' ($exactCanonicalPendingAliasFinal.Text -match 'Release image workflow run / attempt: `990001` / `1` - \*\*SUCCESS\*\*') 'canonical exact'
+Assert-True '691 exact canonical pending alias workflow alias filled' ($exactCanonicalPendingAliasFinal.Text -match 'publish workflow run: ``990001``') 'alias filled'
+Assert-True '691 exact canonical pending alias workflow no stale pending' (-not ($exactCanonicalPendingAliasFinal.Text -match '(?m)^-\s+publish workflow run:.*\*\*PENDING')) 'no stale pending alias'
+
 Assert-True '691 positive integer 1' (Test-PostSyncPositiveInteger 1) '1 must pass'
 Assert-True '691 positive integer 0 rejected' (-not (Test-PostSyncPositiveInteger 0)) '0 must fail'
 Assert-True '691 positive integer -1 rejected' (-not (Test-PostSyncPositiveInteger -1)) '-1 must fail'
