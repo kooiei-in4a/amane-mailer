@@ -2716,7 +2716,7 @@ paths: {}
 
     $recordPath = Join-Path $Root ('docs/releases/v{0}.md' -f $PrepareTargetVersion)
     if ($WithExactTargetRecord) {
-        [System.IO.File]::WriteAllText($recordPath, (New-PrepareVersionPendingReleaseRecordText -Version $PrepareTargetVersion), $utf8NoBom)
+        [System.IO.File]::WriteAllText($recordPath, (New-PrepareVersionPendingReleaseRecordText -Version $PrepareTargetVersion -Platforms @('linux/amd64')), $utf8NoBom)
     }
     elseif ($WithConflictRecord) {
         $conflict = @(
@@ -2857,6 +2857,14 @@ try {
     Assert-Equal 'FOLLOWERS_UNCHANGED flag' $exec.Plan.FollowersPreserved 'TRUE'
     Assert-Equal 'EXTERNAL_MUTATION' $exec.Plan.ExternalMutation 'FALSE'
 
+    # --- #687 prepare-version / post-sync platform contract ---
+    Assert-True 'PREPARE_VERSION_PLATFORM_OUTPUT canonical line' ($recordText -match '(?m)^- supported platform: ``linux/amd64``\s*$') 'scaffold must emit canonical supported platform'
+    Assert-Equal 'PREPARE_VERSION_PLATFORM_OUTPUT parse' (@(Get-ReleaseRecordPlatformsFromText -Text $recordText)[0]) 'linux/amd64'
+    $producerConsumer = Resolve-PostSyncPlatforms -RecordText $recordText -AuthorityPlatforms @('linux/amd64')
+    Assert-Equal 'PREPARE_VERSION_POST_SYNC_PLATFORM_CONTRACT state' $producerConsumer.State 'RESOLVED'
+    Assert-Equal 'PREPARE_VERSION_POST_SYNC_PLATFORM_CONTRACT platform' (@($producerConsumer.Platforms)[0]) 'linux/amd64'
+    Assert-True 'PREPARE_VERSION_POST_SYNC_PLATFORM_CONTRACT not PLATFORM_NOT_CONFIRMED' ($producerConsumer.Reason -ne 'PLATFORM_NOT_CONFIRMED') 'producer/consumer must not fail PLATFORM_NOT_CONFIRMED'
+
     $already = Invoke-ReleasePrepareVersion -Version $PrepareTargetVersion -RepoRoot $happy.Root -Quiet
     Assert-Equal 'PREPARE_VERSION_ALREADY_APPLIED' $already.Plan.MutationResult 'ALREADY_APPLIED'
     Assert-Equal 'prepare-version already-applied attempted' $already.Plan.MutationAttempted 'FALSE'
@@ -2877,6 +2885,33 @@ try {
 finally {
     if ($null -ne $happy) { Remove-PrepareVersionFixtureRoot -Root $happy.Root }
 }
+
+# #687: producer scaffold text alone must round-trip through Resolve-PostSyncPlatforms.
+$scaffoldPlatformText = New-PrepareVersionPendingReleaseRecordText -Version '9.9.0' -Platforms @('linux/amd64')
+Assert-True 'PREPARE_VERSION_SCAFFOLD_PLATFORM_LINE' ($scaffoldPlatformText -match '(?m)^- supported platform: ``linux/amd64``\s*$') 'expected canonical platform line'
+Assert-Equal 'PREPARE_VERSION_SCAFFOLD_PLATFORM_PARSE' (@(Get-ReleaseRecordPlatformsFromText -Text $scaffoldPlatformText)[0]) 'linux/amd64'
+$scaffoldPlatformResolve = Resolve-PostSyncPlatforms -RecordText $scaffoldPlatformText -AuthorityPlatforms @('linux/amd64')
+Assert-Equal 'PREPARE_VERSION_SCAFFOLD_CONSUMER_RESOLVE' $scaffoldPlatformResolve.State 'RESOLVED'
+Assert-Equal 'PREPARE_VERSION_SCAFFOLD_CONSUMER_PLATFORM' (@($scaffoldPlatformResolve.Platforms)[0]) 'linux/amd64'
+
+$emptyPlatformAuthority = Resolve-PrepareVersionPlatformsFromAuthority -AuthorityPlatforms @()
+Assert-Equal 'PREPARE_VERSION_PLATFORM_FAIL_CLOSE empty state' $emptyPlatformAuthority.State 'INCOMPLETE'
+Assert-Equal 'PREPARE_VERSION_PLATFORM_FAIL_CLOSE empty reason' $emptyPlatformAuthority.Reason 'EMPTY_AUTHORITY_PLATFORMS'
+
+$malformedPlatformAuthority = Resolve-PrepareVersionPlatformsFromAuthority -AuthorityPlatforms @('not-a-platform')
+Assert-Equal 'PREPARE_VERSION_PLATFORM_FAIL_CLOSE malformed state' $malformedPlatformAuthority.State 'INCOMPLETE'
+Assert-Equal 'PREPARE_VERSION_PLATFORM_FAIL_CLOSE malformed reason' $malformedPlatformAuthority.Reason 'MALFORMED_AUTHORITY_PLATFORM'
+
+# Consumer parser fail-close preserved (missing / pending confirmation).
+$platformMissingText = $scaffoldPlatformText -replace '(?m)^- supported platform: ``linux/amd64``\r?\n', ''
+$platformMissingResolve = Resolve-PostSyncPlatforms -RecordText $platformMissingText -AuthorityPlatforms @('linux/amd64')
+Assert-Equal 'POST_SYNC_PLATFORM_FAIL_CLOSE missing state' $platformMissingResolve.State 'INCOMPLETE'
+Assert-Equal 'POST_SYNC_PLATFORM_FAIL_CLOSE missing reason' $platformMissingResolve.Reason 'PLATFORM_NOT_CONFIRMED'
+
+$platformPendingText = $scaffoldPlatformText -replace 'supported platform: ``linux/amd64``', 'supported platform: **PENDING**'
+$platformPendingResolve = Resolve-PostSyncPlatforms -RecordText $platformPendingText -AuthorityPlatforms @('linux/arm64')
+Assert-Equal 'POST_SYNC_PLATFORM_FAIL_CLOSE pending/mismatch state' $platformPendingResolve.State 'INCOMPLETE'
+Assert-Equal 'POST_SYNC_PLATFORM_FAIL_CLOSE pending/mismatch reason' $platformPendingResolve.Reason 'PLATFORM_NOT_CONFIRMED'
 
 # Fail-closed table: contradictory / authority / mixed states (zero write)
 $failCloseCases = @(

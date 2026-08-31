@@ -58,10 +58,73 @@ function Get-PrepareVersionReleaseRecordRelativePath {
     return ('docs/releases/v{0}.md' -f $Version)
 }
 
+# Resolve supported platforms from current-public authority for PENDING scaffold.
+# Fail-close on empty / malformed / ambiguous values; never invent platforms.
+function Resolve-PrepareVersionPlatformsFromAuthority {
+    param([string[]]$AuthorityPlatforms)
+
+    $result = [pscustomobject]@{
+        State     = 'INCOMPLETE'
+        Platforms = @()
+        Reason    = ''
+    }
+
+    $raw = @(
+        @($AuthorityPlatforms) |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($raw.Count -eq 0) {
+        $result.Reason = 'EMPTY_AUTHORITY_PLATFORMS'
+        return $result
+    }
+
+    $confirmed = New-Object System.Collections.Generic.List[string]
+    foreach ($platform in $raw) {
+        if ($platform -notmatch '^linux/[a-z0-9_-]+$') {
+            $result.Reason = 'MALFORMED_AUTHORITY_PLATFORM'
+            return $result
+        }
+        if ($confirmed -contains $platform) {
+            continue
+        }
+        [void]$confirmed.Add($platform)
+    }
+
+    if ($confirmed.Count -eq 0) {
+        $result.Reason = 'EMPTY_AUTHORITY_PLATFORMS'
+        return $result
+    }
+
+    # Deterministic order for exact scaffold comparison / idempotent TARGET checks.
+    $sorted = @($confirmed | Sort-Object)
+    $result.State = 'RESOLVED'
+    $result.Platforms = $sorted
+    $result.Reason = ''
+    return $result
+}
+
+function Format-PrepareVersionSupportedPlatformLine {
+    param([string]$Platform)
+    # Canonical form shared with post-sync fixtures / Get-ReleaseRecordPlatformsFromText.
+    return ('- supported platform: ``{0}``' -f $Platform)
+}
+
 function New-PrepareVersionPendingReleaseRecordText {
-    param([string]$Version)
+    param(
+        [string]$Version,
+        [string[]]$Platforms
+    )
+
+    $platformResolution = Resolve-PrepareVersionPlatformsFromAuthority -AuthorityPlatforms $Platforms
+    if ($platformResolution.State -ne 'RESOLVED') {
+        throw ('prepare-version pending record requires confirmed platforms: {0}' -f $platformResolution.Reason)
+    }
 
     $tag = 'v' + $Version
+    $platformLines = @(
+        $platformResolution.Platforms | ForEach-Object { Format-PrepareVersionSupportedPlatformLine -Platform $_ }
+    )
     $lines = @(
         ('# Release evidence — {0}' -f $tag)
         ''
@@ -101,6 +164,9 @@ function New-PrepareVersionPendingReleaseRecordText {
         ('- GHCR `ghcr.io/kooiei-in4a/amane-mailer:{0}`: **NOT YET PUBLISHED**' -f $tag)
         '- GHCR immutable `sha-<releaseCommitSha>` tag: **PENDING**'
         '- Public OCI digest: **PENDING**'
+    )
+    $lines += $platformLines
+    $lines += @(
         '- Release image workflow run / attempt: **PENDING**'
         '- Publication evidence artifact name / ID: **PENDING**'
         '- Public-consumer verification evidence: **PENDING**'
@@ -177,7 +243,8 @@ function Get-PrepareVersionOwnedFileState {
 function Get-PrepareVersionReleaseRecordFileState {
     param(
         [string]$RepoRoot,
-        [string]$Version
+        [string]$Version,
+        [string[]]$Platforms
     )
     $relativePath = Get-PrepareVersionReleaseRecordRelativePath -Version $Version
     $fullPath = Join-Path $RepoRoot $relativePath
@@ -199,7 +266,16 @@ function Get-PrepareVersionReleaseRecordFileState {
         }
     }
 
-    $expected = New-PrepareVersionPendingReleaseRecordText -Version $Version
+    try {
+        $expected = New-PrepareVersionPendingReleaseRecordText -Version $Version -Platforms $Platforms
+    }
+    catch {
+        return [pscustomobject]@{
+            State        = 'INCOMPLETE'
+            RelativePath = $relativePath
+            Text         = $text
+        }
+    }
     $recordState = Get-ReleaseRecordStateFromText -Text $text
     if ($recordState -ne 'PENDING') {
         return [pscustomobject]@{
@@ -285,6 +361,12 @@ function Get-ReleasePrepareVersionPlan {
         return (Set-PrepareVersionConflict -Plan $plan -Reason 'AUTHORITY_UNREADABLE_OR_INVALID')
     }
 
+    $platformResolution = Resolve-PrepareVersionPlatformsFromAuthority -AuthorityPlatforms @($authorityObs.Authority.Platforms)
+    if ($platformResolution.State -ne 'RESOLVED') {
+        return (Set-PrepareVersionConflict -Plan $plan -Reason $platformResolution.Reason)
+    }
+    $confirmedPlatforms = @($platformResolution.Platforms)
+
     if ($TargetVersion -eq $canonicalPredecessor) {
         $plan.ContractsState = 'CONFLICT'
         $plan.OpenApiState = 'CONFLICT'
@@ -313,7 +395,7 @@ function Get-ReleasePrepareVersionPlan {
     $plan.ContractsState = Get-PrepareVersionOwnedFileState -ObservedVersion $contractsVersion -TargetVersion $TargetVersion -CanonicalPredecessor $canonicalPredecessor -FilePresent $contractsPresent
     $plan.OpenApiState = Get-PrepareVersionOwnedFileState -ObservedVersion $openapiVersion -TargetVersion $TargetVersion -CanonicalPredecessor $canonicalPredecessor -FilePresent $openapiPresent
 
-    $recordObs = Get-PrepareVersionReleaseRecordFileState -RepoRoot $RepoRoot -Version $TargetVersion
+    $recordObs = Get-PrepareVersionReleaseRecordFileState -RepoRoot $RepoRoot -Version $TargetVersion -Platforms $confirmedPlatforms
     $plan.ReleaseRecordState = $recordObs.State
     $recordRel = $recordObs.RelativePath
     $ownedPaths = @($contractsRel, $openapiRel, $recordRel)
@@ -361,7 +443,12 @@ function Get-ReleasePrepareVersionPlan {
         return (Set-PrepareVersionConflict -Plan $plan -Reason 'OPENAPI_REWRITE_FAILED')
     }
 
-    $scaffold = New-PrepareVersionPendingReleaseRecordText -Version $TargetVersion
+    try {
+        $scaffold = New-PrepareVersionPendingReleaseRecordText -Version $TargetVersion -Platforms $confirmedPlatforms
+    }
+    catch {
+        return (Set-PrepareVersionConflict -Plan $plan -Reason 'PLATFORM_SCAFFOLD_FAILED')
+    }
     $writes = @(
         @{ Path = $contractsRel; Content = $newContracts }
         @{ Path = $openapiRel; Content = $newOpenApi }

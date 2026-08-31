@@ -5069,6 +5069,7 @@ Export-ModuleMember -Function @(
     'Format-ReleasePreparePostSyncLines',
     'Invoke-ReleasePreparePostSync',
     'New-PrepareVersionPendingReleaseRecordText',
+    'Resolve-PrepareVersionPlatformsFromAuthority',
     'Set-ContractsVersionInText',
     'Set-OpenApiVersionInText',
     'Get-ReleasePrepareVersionPlan',
