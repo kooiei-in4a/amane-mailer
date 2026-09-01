@@ -12,9 +12,9 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 
 ## Prerequisites
 
+- **Live release smoke verification requires Linux local Docker only** (release gate).
 - Docker (with the compose plugin) running.
-- On Linux / macOS / Git Bash: `bash`, `curl`, and `sha256sum` available.
-- On Windows: PowerShell 5.1+ and Docker Desktop (same Docker CLI context as PowerShell).
+- `bash`, `curl`, and `sha256sum` available.
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
 - For v1.3.6, the runtime image is **`linux/amd64` only**. Confirm the platform in the release notes or Docker
@@ -22,21 +22,15 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 - Default host ports `15280` (Mailer) and `18025` (Mailpit) are free.
 - **The target Mailer image must be supplied explicitly via `MAILER_IMAGE_TAG` or `MAILER_IMAGE_DIGEST` (exactly one; no implicit default).**
 
+`scripts/release-smoke.ps1` mirrors the shell contract for PowerShell and is validated by Linux fixture /
+self-tests. **Live smoke on Windows Docker Desktop is not a release verification gate.**
+
 ## Run
 
-From the repository root:
-
-Linux / macOS / Git Bash:
+From the repository root (canonical entrypoint):
 
 ```bash
 MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
-```
-
-Windows (PowerShell, Docker Desktop):
-
-```powershell
-$env:MAILER_IMAGE_TAG = 'v1.3.6'
-.\scripts\release-smoke.ps1
 ```
 
 Smoke by immutable digest:
@@ -44,15 +38,6 @@ Smoke by immutable digest:
 ```bash
 MAILER_IMAGE_DIGEST=sha256:<digest> bash scripts/release-smoke.sh
 ```
-
-```powershell
-$env:MAILER_IMAGE_DIGEST = 'sha256:<digest>'
-.\scripts\release-smoke.ps1
-```
-
-On Windows, prefer the PowerShell entrypoint above. Running
-`bash scripts/release-smoke.sh` through WSL can target a different Docker daemon
-than Docker Desktop's Windows CLI context.
 
 The script:
 
@@ -97,8 +82,11 @@ Smoke a different tag:
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
 ```
 
+PowerShell contract (fixture / self-test; Windows Docker live smoke is not a gate):
+
 ```powershell
-$env:MAILER_IMAGE_TAG = 'sha-<git-sha>'; .\scripts\release-smoke.ps1
+$env:MAILER_IMAGE_TAG = 'v1.3.6'
+.\scripts\release-smoke.ps1
 ```
 
 Mailpit is a smoke helper and is not included in the release artifact. See the

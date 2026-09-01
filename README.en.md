@@ -115,10 +115,10 @@ Operational runbooks:
 After v1.3.6 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v1.3.6`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
-run `scripts/release-smoke.sh` (Linux / macOS / Git Bash) or
-`scripts/release-smoke.ps1` (Windows / PowerShell with Docker Desktop). See
+run `scripts/release-smoke.sh` on Linux local Docker. See
 [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
-for steps and configuration. Published identities:
+for steps and configuration. `scripts/release-smoke.ps1` remains for contract parity
+(fixture / self-test); live smoke on Windows Docker Desktop is not a release gate. Published identities:
 [v1.3.6 release record](docs/releases/v1.3.6.md) /
 [GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.6).
 
@@ -130,11 +130,6 @@ Confirm the platform in the release notes or Docker manifest and pin
 
 ```bash
 MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
-```
-
-```powershell
-$env:MAILER_IMAGE_TAG = 'v1.3.6'
-.\scripts\release-smoke.ps1
 ```
 
 No-send / ACS deploy drill helper scripts under `infra/deploy/drills/`

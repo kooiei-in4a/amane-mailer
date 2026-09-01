@@ -7,13 +7,11 @@
   clean compose project and named volume, and exercises the public release
   runtime path end to end.
 
-  Each check prints [PASS]/[FAIL] with the failing detail, and the compose
-  project + volume are removed on exit (including on failure).
+  Live release smoke verification is Linux local Docker only. This PowerShell
+  entrypoint mirrors the shell contract for fixture / self-test validation;
+  Windows Docker Desktop live smoke is not a release gate.
 
-  Use this script on Windows with Docker Desktop so smoke runs against the same
-  Docker CLI context as PowerShell (no WSL /var/run/docker.sock mismatch).
-
-  Dependencies: PowerShell 5.1+, docker (with the compose plugin).
+  Dependencies: PowerShell 5.1+, docker (with the compose plugin) when executed.
 
   Required environment (exactly one):
     MAILER_IMAGE_TAG         e.g. v1.3.6 or sha-<40hex>

@@ -12,9 +12,9 @@ Mailer の状態は named volume に置き、終了時に `docker compose down -
 
 ## 前提
 
+- **live release smoke の検証 runtime は Linux local Docker のみ**（release verification gate）。
 - Docker（compose plugin 同梱）が起動していること。
-- Linux / macOS / Git Bash では `bash`、`curl`、`sha256sum` が使えること。
-- Windows では PowerShell 5.1+ と Docker Desktop（PowerShell と同じ Docker CLI context）を使うこと。
+- `bash`、`curl`、`sha256sum` が使えること。
 - GHCR イメージが pull できること（private の場合は事前に `docker login ghcr.io`。
   [GHCR image publish 手順](ghcr-image-publish.md) を参照）。
 - v1.3.6 release の runtime image platform は **`linux/amd64` only** です。release notes または Docker manifest を確認し、
@@ -22,21 +22,15 @@ Mailer の状態は named volume に置き、終了時に `docker compose down -
 - 既定の host port `15280`（Mailer）と `18025`（Mailpit）が空いていること。
 - **検証対象 Mailer イメージは `MAILER_IMAGE_TAG` または `MAILER_IMAGE_DIGEST` のどちらか一方を必ず明示**すること（暗黙 default はありません）。
 
+`scripts/release-smoke.ps1` は shell 版と同一 contract を保つための PowerShell 実装です。
+Linux 上の fixture / self-test で検証します。**Windows Docker Desktop 上での live smoke は release gate 対象外**です。
+
 ## 実行
 
-リポジトリ root で実行します。
-
-Linux / macOS / Git Bash:
+リポジトリ root で実行します（canonical entrypoint）:
 
 ```bash
 MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
-```
-
-Windows（PowerShell、Docker Desktop）:
-
-```powershell
-$env:MAILER_IMAGE_TAG = 'v1.3.6'
-.\scripts\release-smoke.ps1
 ```
 
 immutable digest で検証する例:
@@ -44,14 +38,6 @@ immutable digest で検証する例:
 ```bash
 MAILER_IMAGE_DIGEST=sha256:<digest> bash scripts/release-smoke.sh
 ```
-
-```powershell
-$env:MAILER_IMAGE_DIGEST = 'sha256:<digest>'
-.\scripts\release-smoke.ps1
-```
-
-WSL の `bash scripts/release-smoke.sh` は Docker Desktop の Windows 側 daemon と
-context がずれることがあるため、Windows では上記 PowerShell 版を使ってください。
 
 スクリプトは次を行います。
 
@@ -96,8 +82,11 @@ context がずれることがあるため、Windows では上記 PowerShell 版�
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
 ```
 
+PowerShell contract（fixture / self-test 用; Windows Docker live smoke は gate 対象外）:
+
 ```powershell
-$env:MAILER_IMAGE_TAG = 'sha-<git-sha>'; .\scripts\release-smoke.ps1
+$env:MAILER_IMAGE_TAG = 'v1.3.6'
+.\scripts\release-smoke.ps1
 ```
 
 Mailpit は release artifact に含まれない smoke helper です。`latest` の扱いと固定が必要な場合の
