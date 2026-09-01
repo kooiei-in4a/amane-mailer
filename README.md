@@ -109,23 +109,23 @@ commit しないでください。
 
 v1.3.6 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v1.3.6`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
-conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（Linux / macOS / Git Bash）または
-`scripts/release-smoke.ps1`（Windows / PowerShell + Docker Desktop）を使います。手順と設定は
-[公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
+conflict・401・403 を自動 smoke するには **Linux local Docker 上** で
+`scripts/release-smoke.sh`（サポート対象の canonical entrypoint）を使います。
+Windows Docker Desktop 上での release smoke live 実行は **サポート対象外** です。
+`scripts/release-smoke.ps1` は shell 版と同一 contract を保つ PowerShell 実装として維持し、
+contract 検証は Linux 上の self-test（`release-smoke-preflight-self-test.ps1` 等）で行います。
+手順と設定は [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
 公開 identities は [v1.3.6 release record](docs/releases/v1.3.6.md) /
 [GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.6) です。
 
 v1.3.6 release の GHCR runtime image は **`linux/amd64` only** です。
-既定 smoke tag は `v1.3.6`、既定 platform は `linux/amd64` です。
+現在公開中の release tag は `v1.3.6` ですが、smoke 実行時は `MAILER_IMAGE_TAG` または
+`MAILER_IMAGE_DIGEST` を明示指定してください（暗黙 default はありません）。
 release notes または Docker manifest で platform を確認し、必要に応じて
 `MAILER_IMAGE_PLATFORM=linux/amd64` を明示してください。
 
 ```bash
-bash scripts/release-smoke.sh
-```
-
-```powershell
-.\scripts\release-smoke.ps1
+MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
 ```
 
 `infra/deploy/drills/` 配下の no-send / ACS deploy drill helper script（`mail-05a-*`）は、

@@ -62,11 +62,15 @@ function Get-PostSyncJaPatternTokens {
     $ha = [char]0x306F
     $kitei = ([char]0x65E2).ToString() + [char]0x5B9A
     $kekkka = ([char]0x7D50).ToString() + [char]0x679C
+    $genzaiKokaiChu = ([char]0x73FE).ToString() + [char]0x5728 + [char]0x516C + [char]0x958B + [char]0x4E2D
+    $rei = [char]0x4F8B
     return [pscustomobject]@{
-        No     = $no
-        Ha     = $ha
-        Kitei  = $kitei
-        Kekkka = $kekkka
+        No             = $no
+        Ha             = $ha
+        Kitei          = $kitei
+        Kekkka         = $kekkka
+        GenzaiKokaiChu = $genzaiKokaiChu
+        Rei            = $rei
     }
 }
 
@@ -97,7 +101,7 @@ function Get-PostSyncFollowerReplacementRules {
         'docs/releases/v{prevVersion}.md'
         'releases/tag/v{prevVersion}'
         ('v{prevVersion} release ' + $ja.No + ' GHCR runtime image')
-        ($ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{prevTag}`')
+        ($ja.GenzaiKokaiChu + $ja.No + ' release tag ' + $ja.Ha + ' `{prevTag}`')
     ) @(
         'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
         'v{targetVersion} publish'
@@ -105,7 +109,7 @@ function Get-PostSyncFollowerReplacementRules {
         'docs/releases/v{targetVersion}.md'
         'releases/tag/v{targetVersion}'
         ('v{targetVersion} release ' + $ja.No + ' GHCR runtime image')
-        ($ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{targetTag}`')
+        ($ja.GenzaiKokaiChu + $ja.No + ' release tag ' + $ja.Ha + ' `{targetTag}`')
     ) @(1, 1, 1, 1, 1, 1, 1)
 
     Add-Rules 'README.en.md' @(
@@ -115,7 +119,7 @@ function Get-PostSyncFollowerReplacementRules {
         'docs/releases/v{prevVersion}.md'
         'releases/tag/v{prevVersion}'
         'The v{prevVersion} GHCR'
-        'default smoke tag is `{prevTag}`'
+        'current public release tag is `{prevTag}`'
     ) @(
         'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
         'After v{targetVersion} is published'
@@ -123,7 +127,7 @@ function Get-PostSyncFollowerReplacementRules {
         'docs/releases/v{targetVersion}.md'
         'releases/tag/v{targetVersion}'
         'The v{targetVersion} GHCR'
-        'default smoke tag is `{targetTag}`'
+        'current public release tag is `{targetTag}`'
     ) @(1, 1, 1, 1, 1, 1, 1)
 
     Add-Rules 'SECURITY.md' @(
@@ -134,67 +138,31 @@ function Get-PostSyncFollowerReplacementRules {
 
     Add-Rules 'docs/ops/release-image-smoke.md' @(
         'v{prevVersion} publish'
-        'ghcr.io/kooiei-in4a/amane-mailer:{prevTag}'
-        ('- v{prevVersion} release ' + $ja.No + $ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{prevTag}`')
-        '| `MAILER_IMAGE_TAG` | `{prevTag}` |'
+        ($ja.GenzaiKokaiChu + $ja.No + $ja.Rei + ': `ghcr.io/kooiei-in4a/amane-mailer:{prevTag}`')
         ('`{prevTag}` ' + $ja.No + ' value-free smoke ' + $ja.Kekkka)
-        # Label and href are separate deterministic rules so href-only rewrite cannot leave a stale label.
         '[docs/releases/v{prevVersion}.md]'
         '../releases/v{prevVersion}.md'
     ) @(
         'v{targetVersion} publish'
-        'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
-        ('- v{targetVersion} release ' + $ja.No + $ja.Kitei + ' smoke tag ' + $ja.Ha + ' `{targetTag}`')
-        '| `MAILER_IMAGE_TAG` | `{targetTag}` |'
+        ($ja.GenzaiKokaiChu + $ja.No + $ja.Rei + ': `ghcr.io/kooiei-in4a/amane-mailer:{targetTag}`')
         ('`{targetTag}` ' + $ja.No + ' value-free smoke ' + $ja.Kekkka)
         '[docs/releases/v{targetVersion}.md]'
         '../releases/v{targetVersion}.md'
-    ) @(1, 1, 1, 1, 1, 1, 1)
+    ) @(1, 1, 1, 1, 1)
 
     Add-Rules 'docs/ops/release-image-smoke.en.md' @(
         'After v{prevVersion} is published'
-        'ghcr.io/kooiei-in4a/amane-mailer:{prevTag}'
-        'For v{prevVersion}, the default smoke tag is `{prevTag}`'
-        '| `MAILER_IMAGE_TAG` | `{prevTag}` |'
+        ('current public example: `ghcr.io/kooiei-in4a/amane-mailer:{prevTag}`')
         'Value-free smoke results for `v{prevVersion}`'
-        # Label and href are separate deterministic rules so href-only rewrite cannot leave a stale label.
         '[docs/releases/v{prevVersion}.md]'
         '../releases/v{prevVersion}.md'
     ) @(
         'After v{targetVersion} is published'
-        'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
-        'For v{targetVersion}, the default smoke tag is `{targetTag}`'
-        '| `MAILER_IMAGE_TAG` | `{targetTag}` |'
+        ('current public example: `ghcr.io/kooiei-in4a/amane-mailer:{targetTag}`')
         'Value-free smoke results for `v{targetVersion}`'
         '[docs/releases/v{targetVersion}.md]'
         '../releases/v{targetVersion}.md'
-    ) @(1, 1, 1, 1, 1, 1, 1)
-
-    Add-Rules 'scripts/release-smoke.sh' @(
-        'ghcr.io/kooiei-in4a/amane-mailer:{prevTag}'
-        'MAILER_IMAGE_TAG         default {prevTag}'
-        'MAILER_IMAGE_TAG:-{prevTag}'
-    ) @(
-        'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
-        'MAILER_IMAGE_TAG         default {targetTag}'
-        'MAILER_IMAGE_TAG:-{targetTag}'
-    ) @(1, 1, 1)
-
-    Add-Rules 'scripts/release-smoke.ps1' @(
-        'ghcr.io/kooiei-in4a/amane-mailer:{prevTag}'
-        'MAILER_IMAGE_TAG         default {prevTag}'
-        "Get-EnvOrDefault 'MAILER_IMAGE_TAG' '{prevTag}'"
-    ) @(
-        'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
-        'MAILER_IMAGE_TAG         default {targetTag}'
-        "Get-EnvOrDefault 'MAILER_IMAGE_TAG' '{targetTag}'"
-    ) @(1, 1, 1)
-
-    Add-Rules 'infra/docker/docker-compose.release-smoke.yml' @(
-        'MAILER_IMAGE_TAG:-{prevTag}'
-    ) @(
-        'MAILER_IMAGE_TAG:-{targetTag}'
-    ) @(2)
+    ) @(1, 1, 1, 1, 1)
 
     return @($rules)
 }
@@ -2076,9 +2044,6 @@ function Get-ReleasePreparePostSyncPlan {
         'SECURITY.md'
         'docs/ops/release-image-smoke.md'
         'docs/ops/release-image-smoke.en.md'
-        'scripts/release-smoke.sh'
-        'scripts/release-smoke.ps1'
-        'infra/docker/docker-compose.release-smoke.yml'
         $targetRecord
     )
 

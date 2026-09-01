@@ -1,34 +1,33 @@
 <#
 .SYNOPSIS
-  Clean-state release smoke for the published Mailer image (issue #11, #53).
+  Clean-state release smoke for the published Mailer image (issue #11, #506).
 
 .DESCRIPTION
-  Pulls ghcr.io/kooiei-in4a/amane-mailer:v1.3.6, starts Mailer + Mailpit from a
+  Pulls an explicitly supplied Mailer release artifact, starts Mailer + Mailpit from a
   clean compose project and named volume, and exercises the public release
-  runtime path end to end:
-
-    - GET  /healthz                        -> 200
-    - GET  /readyz                         -> 200
-    - POST /internal/mail-requests (ok)    -> 202 accepted
-    - Mailpit receives the message
-    - same id + same payload               -> 202 already_accepted
-    - same id + different payload          -> 409 IDEMPOTENCY_CONFLICT
-    - invalid token                        -> 401 UNAUTHORIZED_TENANT
-    - unknown source_service               -> 403 SOURCE_SERVICE_NOT_ALLOWED
+  runtime path end to end.
 
   Each check prints [PASS]/[FAIL] with the failing detail, and the compose
   project + volume are removed on exit (including on failure).
 
-  Use this script on Windows with Docker Desktop so smoke runs against the same
-  Docker CLI context as PowerShell (no WSL /var/run/docker.sock mismatch).
+  Operational canonical release verification runs on Linux local Docker only
+  (scripts/release-smoke.sh).
+
+  This PowerShell script mirrors the shell contract for parity. It is not a
+  supported release gate platform: Windows Docker Desktop live smoke is out of
+  scope. Validate the contract on Linux via release-smoke-preflight-self-test.ps1
+  and release-client-self-test.ps1.
 
   Dependencies: PowerShell 5.1+, docker (with the compose plugin).
 
-  Config via environment (all optional):
+  Required environment (exactly one):
+    MAILER_IMAGE_TAG         e.g. v1.3.6 or sha-<40hex>
+    MAILER_IMAGE_DIGEST      e.g. sha256:<64-lowercase-hex>
+
+  Optional environment:
     MAILER_IMAGE_REPOSITORY  default ghcr.io/kooiei-in4a/amane-mailer
-    MAILER_IMAGE_TAG         default v1.3.6
     MAILER_IMAGE_PLATFORM    default linux/amd64
-    MAILER_PULL_POLICY       default always   (set "missing" to reuse a local image)
+    MAILER_PULL_POLICY       default always
     MAILPIT_IMAGE            default axllent/mailpit:latest
     MAILER_HTTP_PORT         default 15280
     MAILPIT_HTTP_PORT        default 18025
@@ -37,10 +36,10 @@
     RELEASE_SMOKE_KEEP       set to 1 to skip cleanup (debugging only)
 
 .EXAMPLE
-  .\scripts\release-smoke.ps1
+  $env:MAILER_IMAGE_TAG = 'v1.3.6'; .\scripts\release-smoke.ps1
 
 .EXAMPLE
-  $env:MAILER_IMAGE_TAG = 'sha-<git-sha>'; .\scripts\release-smoke.ps1
+  $env:MAILER_IMAGE_DIGEST = 'sha256:<digest>'; .\scripts\release-smoke.ps1
 #>
 [CmdletBinding()]
 param()
@@ -50,6 +49,7 @@ $ErrorActionPreference = 'Stop'
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $ComposeFile = Join-Path $RepoRoot 'infra\docker\docker-compose.release-smoke.yml'
+. (Join-Path $PSScriptRoot 'lib\release-smoke-preflight.ps1')
 
 function Get-EnvOrDefault {
     param(
@@ -61,21 +61,24 @@ function Get-EnvOrDefault {
     return $value
 }
 
-$env:MAILER_IMAGE_REPOSITORY = Get-EnvOrDefault 'MAILER_IMAGE_REPOSITORY' 'ghcr.io/kooiei-in4a/amane-mailer'
-$env:MAILER_IMAGE_TAG = Get-EnvOrDefault 'MAILER_IMAGE_TAG' 'v1.3.6'
 $env:MAILER_IMAGE_PLATFORM = Get-EnvOrDefault 'MAILER_IMAGE_PLATFORM' 'linux/amd64'
 $env:MAILER_PULL_POLICY = Get-EnvOrDefault 'MAILER_PULL_POLICY' 'always'
 $env:MAILPIT_IMAGE = Get-EnvOrDefault 'MAILPIT_IMAGE' 'axllent/mailpit:latest'
 $env:MAILER_HTTP_PORT = Get-EnvOrDefault 'MAILER_HTTP_PORT' '15280'
 $env:MAILPIT_HTTP_PORT = Get-EnvOrDefault 'MAILPIT_HTTP_PORT' '18025'
 $env:MAIL_SERVICE_TOKEN = Get-EnvOrDefault 'MAIL_SERVICE_TOKEN' 'local-mail-service-token'
-$env:RELEASE_SMOKE_PROJECT = Get-EnvOrDefault 'RELEASE_SMOKE_PROJECT' 'amane-mailer-release-smoke'
+
+try {
+    Invoke-ReleaseSmokePreflight -RepoRoot $RepoRoot -ComposeFilePath $ComposeFile
+}
+catch {
+    Write-Host "[error] $($_.Exception.Message)" -ForegroundColor Red
+    exit 2
+}
 
 $MailerUrl = "http://127.0.0.1:$($env:MAILER_HTTP_PORT)"
 $MailpitUrl = "http://127.0.0.1:$($env:MAILPIT_HTTP_PORT)"
-$ReleaseSmokeProject = $env:RELEASE_SMOKE_PROJECT
 
-# Fixed example-tenant values from config/mailer/tenants.example.json.
 $TENANT_ID = '00000000-0000-0000-0000-000000000101'
 $SOURCE_SERVICE = 'example-service'
 $TO_EMAIL = 'release-smoke@example.invalid'
@@ -195,9 +198,6 @@ function Invoke-MailRequest {
 
 function Get-HttpStatus {
     param([string]$Path)
-    # Wait-ForHttp only treats 200 as ready. Non-2xx or transport errors return '000',
-    # matching bash curl when the endpoint is not yet healthy. POST error bodies use
-    # Invoke-MailRequest, which reads status codes on PS7+ via -SkipHttpErrorCheck.
     try {
         $response = Invoke-WebRequest -UseBasicParsing -Uri "$MailerUrl$Path" -TimeoutSec 15
         return [string]$response.StatusCode
@@ -228,54 +228,14 @@ function Test-MailpitReceivedSubject {
             }
         }
         catch {
-            # Mailpit may not be ready yet.
         }
         Start-Sleep -Seconds 1
     }
     return $false
 }
 
-function Invoke-ReleaseCompose {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ComposeArgs)
-    & docker compose -f $ComposeFile @ComposeArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "docker compose failed: $($ComposeArgs -join ' ')"
-    }
-}
-
-function Test-RequiredDeps {
-    $missing = New-Object System.Collections.Generic.List[string]
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        [void]$missing.Add('docker')
-    }
-    else {
-        & docker compose version *> $null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Log "[error] 'docker compose' plugin is not available"
-            exit 2
-        }
-    }
-    if ($missing.Count -gt 0) {
-        Write-Log "[error] missing required tools: $($missing -join ', ')"
-        exit 2
-    }
-}
-
-function Invoke-DockerComposeQuiet {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$ComposeArgs)
-    # PS wraps native stderr as ErrorRecord; Continue keeps cleanup from aborting under Stop.
-    $prevEap = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        & docker compose -f $ComposeFile @ComposeArgs 2>&1 | Out-Null
-    }
-    finally {
-        $ErrorActionPreference = $prevEap
-    }
-}
-
 function Remove-ReleaseSmokeVolumeIfPresent {
-    $volumeName = "${ReleaseSmokeProject}_mailer-data"
+    $volumeName = "${script:ReleaseSmokeProject}_mailer-data"
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -289,43 +249,41 @@ function Remove-ReleaseSmokeVolumeIfPresent {
 }
 
 function Invoke-ReleaseSmokeTeardown {
-    Invoke-DockerComposeQuiet down -v --remove-orphans
+    Invoke-ReleaseSmokeComposeQuiet down -v --remove-orphans
     Remove-ReleaseSmokeVolumeIfPresent
 }
 
 function Invoke-Cleanup {
     if ($env:RELEASE_SMOKE_KEEP -eq '1') {
         Write-Log ''
-        Write-Log "[cleanup] RELEASE_SMOKE_KEEP=1 set; leaving project '$ReleaseSmokeProject' running."
+        Write-Log "[cleanup] RELEASE_SMOKE_KEEP=1 set; leaving project '$($script:ReleaseSmokeProject)' running."
     }
     else {
         Write-Log ''
-        Write-Log "[cleanup] removing compose project '$ReleaseSmokeProject' and its volume"
+        Write-Log "[cleanup] removing compose project '$($script:ReleaseSmokeProject)' and its volume"
         Invoke-ReleaseSmokeTeardown
     }
 }
 
 try {
     Write-Log '== Amane Mailer release smoke =='
-    Write-Log "image:   $($env:MAILER_IMAGE_REPOSITORY):$($env:MAILER_IMAGE_TAG)"
-    Write-Log "project: $ReleaseSmokeProject"
+    Write-Log "image:   $($env:MAILER_IMAGE_REFERENCE)"
+    Write-Log "project: $($script:ReleaseSmokeProject)"
     Write-Log "mailer:  $MailerUrl"
     Write-Log "mailpit: $MailpitUrl"
     Write-Log ''
 
-    Test-RequiredDeps
-
-    Write-Log "[setup] removing any previous '$ReleaseSmokeProject' project"
+    Write-Log "[setup] removing any previous '$($script:ReleaseSmokeProject)' project"
     Invoke-ReleaseSmokeTeardown
 
     Write-Log "[setup] starting Mailer + Mailpit (pull policy: $($env:MAILER_PULL_POLICY))"
     try {
-        Invoke-ReleaseCompose up -d --wait
+        Invoke-ReleaseSmokeCompose up -d --wait
     }
     catch {
         Write-Fail 'compose up' 'Mailer/Mailpit did not become healthy; recent logs follow'
-        & docker compose -f $ComposeFile ps
-        & docker compose -f $ComposeFile logs --no-color --tail 60
+        Invoke-ReleaseSmokeCompose ps
+        Invoke-ReleaseSmokeCompose logs --no-color --tail 60
         Write-Log ''
         Write-Log "Smoke result: 0 passed, $($script:FailCount) failed"
         $script:ExitCode = 1

@@ -411,7 +411,7 @@ prepare-version does not publish anything
 Specifically, `prepare-version` must **not**:
 
 - update `release/current-public.json`
-- update README / SECURITY / release-smoke current-public followers
+- update README / SECURITY / release smoke docs current-public followers
 - invent CHANGELOG release-scope prose
 - commit, push, create branches/PRs, dispatch workflows, create tags
 - publish GHCR / NuGet / GitHub Release, or promote `latest`

@@ -98,9 +98,15 @@ function assertContains(source, needle, label) {
   }
 }
 
+function assertNotContains(source, needle, label) {
+  if (source.includes(needle)) {
+    fail(`${label} must not contain '${needle}'.`);
+  }
+}
+
 const authority = parseCurrentPublicAuthority();
 if (!authority) {
-  console.error('Release smoke default tag drift check failed:');
+  console.error('Release smoke alignment check failed:');
   for (const error of errors) {
     console.error(`- ${error}`);
   }
@@ -108,7 +114,6 @@ if (!authority) {
 }
 
 const expectedImageTag = authority.tag;
-const expectedSupportedVersion = authority.version;
 const releaseRecordPath = authority.releaseRecord;
 
 const releaseSmokeSh = read('scripts/release-smoke.sh');
@@ -120,48 +125,39 @@ const readmeJa = read('README.md');
 const readmeEn = read('README.en.md');
 const security = read('SECURITY.md');
 
-assertEqual(
-  'scripts/release-smoke.sh default MAILER_IMAGE_TAG',
-  firstMatch(releaseSmokeSh, /MAILER_IMAGE_TAG:-(v[\d.]+)/, 'scripts/release-smoke.sh'),
-  expectedImageTag,
+// Release-smoke execution paths must not embed implicit Mailer tag defaults (#506).
+assertNotContains(
+  releaseSmokeSh,
+  'MAILER_IMAGE_TAG:-',
+  'scripts/release-smoke.sh implicit MAILER_IMAGE_TAG default',
 );
-
-assertEqual(
-  'scripts/release-smoke.ps1 default MAILER_IMAGE_TAG',
-  firstMatch(releaseSmokePs1, /Get-EnvOrDefault 'MAILER_IMAGE_TAG' '(v[\d.]+)'/, 'scripts/release-smoke.ps1'),
-  expectedImageTag,
+assertNotContains(
+  releaseSmokePs1,
+  "Get-EnvOrDefault 'MAILER_IMAGE_TAG'",
+  'scripts/release-smoke.ps1 implicit MAILER_IMAGE_TAG default',
 );
-
-const composeDefaults = [
-  ...releaseSmokeCompose.matchAll(/MAILER_IMAGE_TAG:-(v[\d.]+)/g),
-].map((match) => match[1]);
-
-if (composeDefaults.length === 0) {
-  fail('infra/docker/docker-compose.release-smoke.yml is missing MAILER_IMAGE_TAG defaults.');
-} else {
-  for (const [index, tag] of composeDefaults.entries()) {
-    assertEqual(
-      `infra/docker/docker-compose.release-smoke.yml default MAILER_IMAGE_TAG #${index + 1}`,
-      tag,
-      expectedImageTag,
-    );
-  }
-}
+assertNotContains(
+  releaseSmokeCompose,
+  'MAILER_IMAGE_TAG:-',
+  'infra/docker/docker-compose.release-smoke.yml implicit MAILER_IMAGE_TAG default',
+);
+assertContains(
+  releaseSmokeCompose,
+  'MAILER_IMAGE_REFERENCE:?MAILER_IMAGE_REFERENCE is required',
+  'infra/docker/docker-compose.release-smoke.yml MAILER_IMAGE_REFERENCE requirement',
+);
 
 for (const [label, source] of [
-  ['docs/ops/release-image-smoke.md MAILER_IMAGE_TAG table', releaseSmokeDocJa],
-  ['docs/ops/release-image-smoke.en.md MAILER_IMAGE_TAG table', releaseSmokeDocEn],
+  ['docs/ops/release-image-smoke.md MAILER_IMAGE_TAG required note', releaseSmokeDocJa],
+  ['docs/ops/release-image-smoke.en.md MAILER_IMAGE_TAG required note', releaseSmokeDocEn],
 ]) {
-  assertEqual(
-    label,
-    firstMatch(source, /\| `MAILER_IMAGE_TAG` \| `(v[\d.]+)` \|/, label),
-    expectedImageTag,
-  );
+  assertContains(source, '`MAILER_IMAGE_TAG`', label);
+  assertContains(source, '`MAILER_IMAGE_DIGEST`', label);
 }
 
 for (const [label, source] of [
-  ['README.md published image default tag', readmeJa],
-  ['README.en.md published image default tag', readmeEn],
+  ['README.md published image example tag', readmeJa],
+  ['README.en.md published image example tag', readmeEn],
 ]) {
   assertEqual(
     label,
@@ -183,14 +179,13 @@ for (const [label, source] of [
 
 assertContains(
   security,
-  `| ${expectedSupportedVersion}   | Yes (latest release) |`,
+  `| ${authority.version}   | Yes (latest release) |`,
   'SECURITY.md supported version table',
 );
 
 if (!existsSync(path.join(root, releaseRecordPath))) {
   fail(`Missing release record for ${expectedImageTag}: ${releaseRecordPath}.`);
 } else {
-  // Require synchronized Markdown label + href (not href-only / label-stale drift).
   const expectedSmokeReleaseLink = `[${releaseRecordPath}](../releases/${expectedImageTag}.md)`;
   for (const [label, source] of [
     ['docs/ops/release-image-smoke.md recorded smoke results link', releaseSmokeDocJa],
@@ -201,7 +196,7 @@ if (!existsSync(path.join(root, releaseRecordPath))) {
 }
 
 if (errors.length > 0) {
-  console.error('Release smoke default tag drift check failed:');
+  console.error('Release smoke alignment check failed:');
   for (const error of errors) {
     console.error(`- ${error}`);
   }
@@ -209,6 +204,6 @@ if (errors.length > 0) {
 }
 
 console.log(
-  `Release smoke default tag drift check passed: authority ${expectedImageTag}, README, release smoke docs/scripts/compose, `
-  + `and SECURITY supported version are aligned.`,
+  `Release smoke alignment check passed: authority ${expectedImageTag}, README, release smoke docs, `
+  + `SECURITY supported version are aligned; release-smoke scripts/compose have no implicit Mailer tag defaults.`,
 );

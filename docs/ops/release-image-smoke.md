@@ -2,7 +2,7 @@
 
 # 公開 release イメージの clean-state smoke
 
-v1.3.6 publish 後に、GHCR ランタイムイメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v1.3.6`）を
+v1.3.6 publish 後の GHCR ランタイムイメージ（現在公開中の例: `ghcr.io/kooiei-in4a/amane-mailer:v1.3.6`）を
 clean state から pull し、Mailer + Mailpit を起動して release runtime path を自動 smoke します。
 
 ローカル開発の `infra/docker/docker-compose.local.yml`（ソースから build）とは異なり、
@@ -10,36 +10,54 @@ clean state から pull し、Mailer + Mailpit を起動して release runtime p
 安全な example（`/app/config/mailer/tenants.example.json`）を使い、host の tenant JSON は mount しません。
 Mailer の状態は named volume に置き、終了時に `docker compose down -v` で削除します。
 
+## サポート対象プラットフォーム
+
+| 区分 | 対象 |
+|------|------|
+| **Release smoke gate（サポート）** | Linux local Docker 上の `scripts/release-smoke.sh` のみ |
+| **Contract parity（非 gate）** | `scripts/release-smoke.ps1` — shell 版と同一 contract を保つ PowerShell 実装。Linux 上の fixture / self-test で contract を検証する |
+| **サポート対象外** | Windows Docker Desktop 上での release smoke live 実行 |
+
+Windows Docker Desktop を release / acceptance gate としてはサポートしません。
+公開 release image の clean-state smoke は **Linux local Docker のみ** を公式 gate とします。
+`release-smoke.ps1` は削除せず contract 同等性の検証用として維持しますが、Windows 上での live smoke PASS を要求しません。
+
 ## 前提
 
-- Docker（compose plugin 同梱）が起動していること。
-- Linux / macOS / Git Bash では `bash`、`curl`、`sha256sum` が使えること。
-- Windows では PowerShell 5.1+ と Docker Desktop（PowerShell と同じ Docker CLI context）を使うこと。
+- Docker（compose plugin 同梱）が Linux 上で起動していること。
+- `bash`、`curl`、`sha256sum` が使えること。
 - GHCR イメージが pull できること（private の場合は事前に `docker login ghcr.io`。
   [GHCR image publish 手順](ghcr-image-publish.md) を参照）。
-- v1.3.6 release の既定 smoke tag は `v1.3.6`、platform は
-  **`linux/amd64` only** です。release notes または Docker manifest を確認し、
+- v1.3.6 release の runtime image platform は **`linux/amd64` only** です。release notes または Docker manifest を確認し、
   必要に応じて `MAILER_IMAGE_PLATFORM=linux/amd64` を明示してください。
 - 既定の host port `15280`（Mailer）と `18025`（Mailpit）が空いていること。
+- **検証対象 Mailer イメージは `MAILER_IMAGE_TAG` または `MAILER_IMAGE_DIGEST` のどちらか一方を必ず明示**すること（暗黙 default はありません）。
 
 ## 実行
 
-リポジトリ root で実行します。
-
-Linux / macOS / Git Bash:
+リポジトリ root で実行します（**サポート対象の canonical operational entrypoint**）:
 
 ```bash
-bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
 ```
 
-Windows（PowerShell、Docker Desktop）:
+immutable digest で検証する例:
 
-```powershell
-.\scripts\release-smoke.ps1
+```bash
+MAILER_IMAGE_DIGEST=sha256:<digest> bash scripts/release-smoke.sh
 ```
 
-WSL の `bash scripts/release-smoke.sh` は Docker Desktop の Windows 側 daemon と
-context がずれることがあるため、Windows では上記 PowerShell 版を使ってください。
+### PowerShell 版（contract parity / 非 gate）
+
+`scripts/release-smoke.ps1` は shell 版と同一 contract を保つ実装です。
+release gate としては **Linux local Docker の shell 版のみ** をサポートします。
+PowerShell 版の contract 検証は Linux 上の以下を使用してください。
+
+- `scripts/release-smoke-preflight-self-test.ps1`
+- `scripts/release-client-self-test.ps1`
+
+Windows Docker Desktop 上での live smoke は **サポート対象外** です。
+WSL 経由の `bash scripts/release-smoke.sh` も、Docker context の不一致リスクがあるため gate には使用しません。
 
 スクリプトは次を行います。
 
@@ -62,29 +80,26 @@ context がずれることがあるため、Windows では上記 PowerShell 版�
 いずれかが落ちると終了コードは `1` になり、末尾に `Smoke result: N passed, M failed` を出力します。
 起動自体に失敗した場合は `docker compose ps` と直近ログを出力します。
 
-## 設定（環境変数、すべて任意）
+## 設定（環境変数）
 
 | 変数 | 既定 | 用途 |
 |------|------|------|
+| `MAILER_IMAGE_TAG` | （必須・`MAILER_IMAGE_DIGEST` と排他） | 検証する Mailer イメージ tag（`latest` 不可） |
+| `MAILER_IMAGE_DIGEST` | （必須・`MAILER_IMAGE_TAG` と排他） | 検証する Mailer イメージ digest（`sha256:<64-lowercase-hex>`） |
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | イメージ repository |
-| `MAILER_IMAGE_TAG` | `v1.3.6` | 検証するタグ |
-| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | smoke 対象の Mailer runtime image platform。multi-arch release では `linux/amd64` / `linux/arm64` など release notes の platform ごとに実行します。 |
+| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | smoke 対象の Mailer runtime image platform |
 | `MAILER_PULL_POLICY` | `always` | ローカルイメージを使う場合は `missing` |
-| `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image。既定の `latest` は意図的です。tag / digest 固定が必要な場合に上書きします。 |
+| `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image。既定の `latest` は意図的です。 |
 | `MAILER_HTTP_PORT` | `15280` | Mailer の host port |
 | `MAILPIT_HTTP_PORT` | `18025` | Mailpit API/UI の host port |
 | `MAIL_SERVICE_TOKEN` | `local-mail-service-token` | example tenant の token |
 | `RELEASE_SMOKE_PROJECT` | `amane-mailer-release-smoke` | compose project 名 |
 | `RELEASE_SMOKE_KEEP` | （未設定） | `1` で終了時の cleanup を skip（デバッグ用） |
 
-別タグを検証する例:
+別 tag を検証する例:
 
 ```bash
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
-```
-
-```powershell
-$env:MAILER_IMAGE_TAG = 'sha-<git-sha>'; .\scripts\release-smoke.ps1
 ```
 
 Mailpit は release artifact に含まれない smoke helper です。`latest` の扱いと固定が必要な場合の
@@ -107,10 +122,8 @@ Mailpit は release artifact に含まれない smoke helper です。`latest` �
 
 ## deploy drill との使い分け
 
-- `scripts/release-smoke.sh` / `scripts/release-smoke.ps1`: **対象 release image** の HTTP /
-  冪等性 / Mailpit delivery を clean state から一括検証する release smoke。host 側の
-  HTTP クライアント（bash 版は curl、PowerShell 版は `Invoke-WebRequest`）のみで完結します。
-  Admin UI・webhook HTTPS tenant 起動・`db backup` CLI は対象外です。
+- `scripts/release-smoke.sh`: **対象 release image** の HTTP / 冪等性 / Mailpit delivery を clean state から一括検証する **サポート対象** release smoke gate。host 側 HTTP クライアント（curl）のみで完結します。
+- `scripts/release-smoke.ps1`: shell 版と同一 contract を保つ PowerShell 実装。**release gate としてはサポート対象外**（contract parity は Linux 上の self-test で検証）。Windows Docker Desktop live smoke は要求しません。
 - `scripts/native-aot-path-smoke.sh`: CI の `Native AOT publish smoke` が publish した
   **linux-x64 Native AOT binary** に対し、Admin login・HTTPS webhook tenant の `/readyz`・
   `db backup` など低頻度 path を black-box 検証します（issue #286）。release image や

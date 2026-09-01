@@ -4,4 +4,4 @@ v1.3.4 release record
 docs/releases/v1.3.4.md
 releases/tag/v1.3.4
 The v1.3.4 GHCR
-default smoke tag is `v1.3.4`
+current public release tag is `v1.3.4`
