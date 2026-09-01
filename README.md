@@ -116,15 +116,17 @@ conflict・401・403 を自動 smoke するには `scripts/release-smoke.sh`（L
 [GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.6) です。
 
 v1.3.6 release の GHCR runtime image は **`linux/amd64` only** です。
-既定 smoke tag は `v1.3.6`、既定 platform は `linux/amd64` です。
+現在公開中の release tag は `v1.3.6` ですが、smoke 実行時は `MAILER_IMAGE_TAG` または
+`MAILER_IMAGE_DIGEST` を明示指定してください（暗黙 default はありません）。
 release notes または Docker manifest で platform を確認し、必要に応じて
 `MAILER_IMAGE_PLATFORM=linux/amd64` を明示してください。
 
 ```bash
-bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
 ```
 
 ```powershell
+$env:MAILER_IMAGE_TAG = 'v1.3.6'
 .\scripts\release-smoke.ps1
 ```
 

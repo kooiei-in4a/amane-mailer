@@ -1,2 +1,2 @@
-image: repo:${MAILER_IMAGE_TAG:-v1.3.4}
-image: repo:${MAILER_IMAGE_TAG:-v1.3.4}
+image: ${MAILER_IMAGE_REFERENCE:?MAILER_IMAGE_REFERENCE is required}
+image: ${MAILER_IMAGE_REFERENCE:?MAILER_IMAGE_REFERENCE is required}

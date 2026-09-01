@@ -2,7 +2,7 @@
 
 # 公開 release イメージの clean-state smoke
 
-v1.3.6 publish 後に、GHCR ランタイムイメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v1.3.6`）を
+v1.3.6 publish 後の GHCR ランタイムイメージ（現在公開中の例: `ghcr.io/kooiei-in4a/amane-mailer:v1.3.6`）を
 clean state から pull し、Mailer + Mailpit を起動して release runtime path を自動 smoke します。
 
 ローカル開発の `infra/docker/docker-compose.local.yml`（ソースから build）とは異なり、
@@ -17,10 +17,10 @@ Mailer の状態は named volume に置き、終了時に `docker compose down -
 - Windows では PowerShell 5.1+ と Docker Desktop（PowerShell と同じ Docker CLI context）を使うこと。
 - GHCR イメージが pull できること（private の場合は事前に `docker login ghcr.io`。
   [GHCR image publish 手順](ghcr-image-publish.md) を参照）。
-- v1.3.6 release の既定 smoke tag は `v1.3.6`、platform は
-  **`linux/amd64` only** です。release notes または Docker manifest を確認し、
+- v1.3.6 release の runtime image platform は **`linux/amd64` only** です。release notes または Docker manifest を確認し、
   必要に応じて `MAILER_IMAGE_PLATFORM=linux/amd64` を明示してください。
 - 既定の host port `15280`（Mailer）と `18025`（Mailpit）が空いていること。
+- **検証対象 Mailer イメージは `MAILER_IMAGE_TAG` または `MAILER_IMAGE_DIGEST` のどちらか一方を必ず明示**すること（暗黙 default はありません）。
 
 ## 実行
 
@@ -29,12 +29,24 @@ Mailer の状態は named volume に置き、終了時に `docker compose down -
 Linux / macOS / Git Bash:
 
 ```bash
-bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
 ```
 
 Windows（PowerShell、Docker Desktop）:
 
 ```powershell
+$env:MAILER_IMAGE_TAG = 'v1.3.6'
+.\scripts\release-smoke.ps1
+```
+
+immutable digest で検証する例:
+
+```bash
+MAILER_IMAGE_DIGEST=sha256:<digest> bash scripts/release-smoke.sh
+```
+
+```powershell
+$env:MAILER_IMAGE_DIGEST = 'sha256:<digest>'
 .\scripts\release-smoke.ps1
 ```
 
@@ -62,22 +74,23 @@ context がずれることがあるため、Windows では上記 PowerShell 版�
 いずれかが落ちると終了コードは `1` になり、末尾に `Smoke result: N passed, M failed` を出力します。
 起動自体に失敗した場合は `docker compose ps` と直近ログを出力します。
 
-## 設定（環境変数、すべて任意）
+## 設定（環境変数）
 
 | 変数 | 既定 | 用途 |
 |------|------|------|
+| `MAILER_IMAGE_TAG` | （必須・`MAILER_IMAGE_DIGEST` と排他） | 検証する Mailer イメージ tag（`latest` 不可） |
+| `MAILER_IMAGE_DIGEST` | （必須・`MAILER_IMAGE_TAG` と排他） | 検証する Mailer イメージ digest（`sha256:<64-lowercase-hex>`） |
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | イメージ repository |
-| `MAILER_IMAGE_TAG` | `v1.3.6` | 検証するタグ |
-| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | smoke 対象の Mailer runtime image platform。multi-arch release では `linux/amd64` / `linux/arm64` など release notes の platform ごとに実行します。 |
+| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | smoke 対象の Mailer runtime image platform |
 | `MAILER_PULL_POLICY` | `always` | ローカルイメージを使う場合は `missing` |
-| `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image。既定の `latest` は意図的です。tag / digest 固定が必要な場合に上書きします。 |
+| `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image。既定の `latest` は意図的です。 |
 | `MAILER_HTTP_PORT` | `15280` | Mailer の host port |
 | `MAILPIT_HTTP_PORT` | `18025` | Mailpit API/UI の host port |
 | `MAIL_SERVICE_TOKEN` | `local-mail-service-token` | example tenant の token |
 | `RELEASE_SMOKE_PROJECT` | `amane-mailer-release-smoke` | compose project 名 |
 | `RELEASE_SMOKE_KEEP` | （未設定） | `1` で終了時の cleanup を skip（デバッグ用） |
 
-別タグを検証する例:
+別 tag を検証する例:
 
 ```bash
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh

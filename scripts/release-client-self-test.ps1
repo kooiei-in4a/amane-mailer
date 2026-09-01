@@ -1860,7 +1860,7 @@ function Initialize-PostSyncFixtureRepo {
 
     if ($SynchronizedTo135) {
         $applyRules = Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5'
-        foreach ($path in @('README.md', 'README.en.md', 'SECURITY.md', 'docs/ops/release-image-smoke.md', 'docs/ops/release-image-smoke.en.md', 'scripts/release-smoke.sh', 'scripts/release-smoke.ps1', 'infra/docker/docker-compose.release-smoke.yml')) {
+        foreach ($path in @('README.md', 'README.en.md', 'SECURITY.md', 'docs/ops/release-image-smoke.md', 'docs/ops/release-image-smoke.en.md')) {
             $full = Join-Path $Root $path
             $content = [System.IO.File]::ReadAllText($full, $utf8NoBom)
             $pathRules = Get-PostSyncRulesForPath -RelativePath $path -AllRules $applyRules
@@ -2483,12 +2483,9 @@ try {
         'docs/ops/release-image-smoke.en.md'
         'docs/ops/release-image-smoke.md'
         'docs/releases/v9.9.0.md'
-        'infra/docker/docker-compose.release-smoke.yml'
         'README.en.md'
         'README.md'
         'release/current-public.json'
-        'scripts/release-smoke.ps1'
-        'scripts/release-smoke.sh'
         'SECURITY.md'
     ) | Sort-Object
     $actualChanged691 = @($exec691.Plan.FilesChanged) | Sort-Object
@@ -3085,9 +3082,9 @@ paths: {}
         'SECURITY.md'                                   = "| $followerAuthority   | Yes (latest release) |`n"
         'docs/ops/release-image-smoke.md'               = "smoke docs v$followerAuthority`n"
         'docs/ops/release-image-smoke.en.md'            = "smoke docs en v$followerAuthority`n"
-        'scripts/release-smoke.sh'                      = "MAILER_IMAGE_TAG:-v$followerAuthority`n"
-        'scripts/release-smoke.ps1'                     = "Get-EnvOrDefault 'MAILER_IMAGE_TAG' 'v$followerAuthority'`n"
-        'infra/docker/docker-compose.release-smoke.yml' = "MAILER_IMAGE_TAG:-v$followerAuthority`nMAILER_IMAGE_TAG:-v$followerAuthority`n"
+        'scripts/release-smoke.sh'                      = "MAILER_IMAGE_REFERENCE:?MAILER_IMAGE_REFERENCE is required`n"
+        'scripts/release-smoke.ps1'                     = "Invoke-ReleaseSmokePreflight`n"
+        'infra/docker/docker-compose.release-smoke.yml' = "MAILER_IMAGE_REFERENCE:?MAILER_IMAGE_REFERENCE is required`n"
         'CHANGELOG.md'                                  = "# Changelog`n`n## [$followerAuthority] - 2026-01-01`n`n- historical entry only`n"
     }
     foreach ($path in $followerBodies.Keys) {

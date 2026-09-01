@@ -123,15 +123,17 @@ for steps and configuration. Published identities:
 [GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.6).
 
 The v1.3.6 GHCR runtime image is **`linux/amd64` only**.
-The default smoke tag is `v1.3.6` and the default platform is `linux/amd64`.
+The current public release tag is `v1.3.6`, but release smoke requires an explicit
+`MAILER_IMAGE_TAG` or `MAILER_IMAGE_DIGEST` (no implicit default).
 Confirm the platform in the release notes or Docker manifest and pin
 `MAILER_IMAGE_PLATFORM=linux/amd64` when needed.
 
 ```bash
-bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
 ```
 
 ```powershell
+$env:MAILER_IMAGE_TAG = 'v1.3.6'
 .\scripts\release-smoke.ps1
 ```
 

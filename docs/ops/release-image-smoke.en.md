@@ -2,8 +2,7 @@
 
 # Clean-state smoke for the published release image
 
-After v1.3.6 is published, this runbook pulls the GHCR runtime image (default
-`ghcr.io/kooiei-in4a/amane-mailer:v1.3.6`) from a clean state, starts Mailer +
+After v1.3.6 is published, this runbook pulls the GHCR runtime image (current public example: `ghcr.io/kooiei-in4a/amane-mailer:v1.3.6`) from a clean state, starts Mailer +
 Mailpit, and smokes the release runtime path.
 
 Unlike `infra/docker/docker-compose.local.yml` (which builds from source), this smoke
@@ -18,10 +17,10 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 - On Windows: PowerShell 5.1+ and Docker Desktop (same Docker CLI context as PowerShell).
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
-- For v1.3.6, the default smoke tag is `v1.3.6` and the runtime image is
-  **`linux/amd64` only**. Confirm the platform in the release notes or Docker
+- For v1.3.6, the runtime image is **`linux/amd64` only**. Confirm the platform in the release notes or Docker
   manifest and pin `MAILER_IMAGE_PLATFORM=linux/amd64` when needed.
 - Default host ports `15280` (Mailer) and `18025` (Mailpit) are free.
+- **The target Mailer image must be supplied explicitly via `MAILER_IMAGE_TAG` or `MAILER_IMAGE_DIGEST` (exactly one; no implicit default).**
 
 ## Run
 
@@ -30,12 +29,24 @@ From the repository root:
 Linux / macOS / Git Bash:
 
 ```bash
-bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
 ```
 
 Windows (PowerShell, Docker Desktop):
 
 ```powershell
+$env:MAILER_IMAGE_TAG = 'v1.3.6'
+.\scripts\release-smoke.ps1
+```
+
+Smoke by immutable digest:
+
+```bash
+MAILER_IMAGE_DIGEST=sha256:<digest> bash scripts/release-smoke.sh
+```
+
+```powershell
+$env:MAILER_IMAGE_DIGEST = 'sha256:<digest>'
 .\scripts\release-smoke.ps1
 ```
 
@@ -64,15 +75,16 @@ Checks:
 Any failure makes the exit code `1` and prints `Smoke result: N passed, M failed`.
 If startup itself fails, the script prints `docker compose ps` and recent logs.
 
-## Configuration (environment variables, all optional)
+## Configuration (environment variables)
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
+| `MAILER_IMAGE_TAG` | (required; mutually exclusive with `MAILER_IMAGE_DIGEST`) | Mailer image tag under test (`latest` is rejected) |
+| `MAILER_IMAGE_DIGEST` | (required; mutually exclusive with `MAILER_IMAGE_TAG`) | Mailer image digest (`sha256:<64-lowercase-hex>`) |
 | `MAILER_IMAGE_REPOSITORY` | `ghcr.io/kooiei-in4a/amane-mailer` | Image repository |
-| `MAILER_IMAGE_TAG` | `v1.3.6` | Tag under test |
-| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | Mailer runtime image platform to smoke. For multi-arch releases, run once per release-noted platform such as `linux/amd64` and `linux/arm64`. |
+| `MAILER_IMAGE_PLATFORM` | `linux/amd64` | Mailer runtime image platform to smoke |
 | `MAILER_PULL_POLICY` | `always` | Set `missing` to reuse a local image |
-| `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image. The default `latest` is intentional; override it when a tag / digest pin is needed. |
+| `MAILPIT_IMAGE` | `axllent/mailpit:latest` | Mailpit helper image. The default `latest` is intentional. |
 | `MAILER_HTTP_PORT` | `15280` | Mailer host port |
 | `MAILPIT_HTTP_PORT` | `18025` | Mailpit API/UI host port |
 | `MAIL_SERVICE_TOKEN` | `local-mail-service-token` | Example tenant token |
@@ -98,27 +110,3 @@ intentional `latest` usage and how to pin it when needed.
 Value-free smoke results for `v1.3.6` (digest, date, environment, per-check pass/fail)
 are recorded in [docs/releases/v1.3.6.md](../releases/v1.3.6.md).
 Previous `v1.2.0` results remain in [docs/releases/v1.2.0.md](../releases/v1.2.0.md).
-Previous `v1.1.0` results remain in [docs/releases/v1.1.0.md](../releases/v1.1.0.md).
-Previous `v1.0.1` results remain in [docs/releases/v1.0.1.md](../releases/v1.0.1.md),
-and `v1.0.0` results in [docs/releases/v1.0.0.md](../releases/v1.0.0.md).
-Previous `v0.9.2` results remain in [docs/releases/v0.9.2.md](../releases/v0.9.2.md).
-Previous `v0.9.1` results remain in [docs/releases/v0.9.1.md](../releases/v0.9.1.md).
-Previous `v0.9.0` results remain in [docs/releases/v0.9.0.md](../releases/v0.9.0.md).
-Previous `v0.4.0` results remain in [docs/releases/v0.4.0.md](../releases/v0.4.0.md).
-Previous `v0.3.0` results remain in [docs/releases/v0.3.0.md](../releases/v0.3.0.md).
-Older `v0.2.0` results remain in [docs/releases/v0.2.0.md](../releases/v0.2.0.md).
-
-## How it differs from the deploy drills
-
-- `scripts/release-smoke.sh` / `scripts/release-smoke.ps1`: a release smoke that validates the **target release image's**
-  HTTP / idempotency / Mailpit delivery from a clean state. The bash script uses host-side
-  `curl`; the PowerShell script uses `Invoke-WebRequest`. Admin UI, HTTPS webhook tenant
-  startup, and `db backup` CLI are out of scope.
-- `scripts/native-aot-path-smoke.sh`: black-box checks against the **linux-x64 Native AOT
-  binary** published by CI `Native AOT publish smoke` — Admin login, HTTPS webhook tenant
-  `/readyz`, and `db backup` (issue #286). It does not cover the release image or Mailpit
-  delivery. ACS live stays manual because it depends on secrets.
-- `infra/deploy/drills/mail-05a-*`: no-send / ACS deploy drills against a running compose
-  stack on a deploy host. They use the SQLite Mailer CLI (`healthcheck`, `db stats`,
-  `db request-state`) and a temporary curl compose client, and go deeper into worker
-  toggling and DB state. See [docs/ops/drills/mail-05a-drill-guide.html](drills/mail-05a-drill-guide.html).

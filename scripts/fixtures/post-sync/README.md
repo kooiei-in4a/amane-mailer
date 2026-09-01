@@ -4,4 +4,4 @@ v1.3.4 release record
 docs/releases/v1.3.4.md
 releases/tag/v1.3.4
 v1.3.4 release の GHCR runtime image
-既定 smoke tag は `v1.3.4`
+現在公開中の release tag は `v1.3.4`
