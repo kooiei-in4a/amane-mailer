@@ -10,11 +10,13 @@
   Each check prints [PASS]/[FAIL] with the failing detail, and the compose
   project + volume are removed on exit (including on failure).
 
-  Operational canonical release verification runs on Linux local Docker only.
-  Use this script on Windows with Docker Desktop so smoke runs against the same
-  Docker CLI context as PowerShell (no WSL /var/run/docker.sock mismatch).
-  The contract matches scripts/release-smoke.sh; cross-platform implementation
-  acceptance (e.g. issue #506) requires Windows live smoke to pass.
+  Operational canonical release verification runs on Linux local Docker only
+  (scripts/release-smoke.sh).
+
+  This PowerShell script mirrors the shell contract for parity. It is not a
+  supported release gate platform: Windows Docker Desktop live smoke is out of
+  scope. Validate the contract on Linux via release-smoke-preflight-self-test.ps1
+  and release-client-self-test.ps1.
 
   Dependencies: PowerShell 5.1+, docker (with the compose plugin).
 

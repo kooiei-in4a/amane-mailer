@@ -10,12 +10,22 @@ exercises the **release image itself after publish**. Tenant configuration is th
 into the image (`/app/config/mailer/tenants.example.json`); no host tenant JSON is mounted.
 Mailer state lives in a named volume that `docker compose down -v` removes on exit.
 
+## Supported platforms
+
+| Category | Scope |
+|----------|-------|
+| **Release smoke gate (supported)** | Linux local Docker only, via `scripts/release-smoke.sh` |
+| **Contract parity (non-gate)** | `scripts/release-smoke.ps1` — PowerShell implementation mirroring the shell contract; validated on Linux via fixture / self-tests |
+| **Out of support scope** | Release smoke live runs on Windows Docker Desktop |
+
+Windows Docker Desktop is **not** a supported release / acceptance gate platform.
+The official clean-state smoke gate for published release images is **Linux local Docker only**.
+`release-smoke.ps1` is retained for contract parity but a Windows live smoke PASS is not required.
+
 ## Prerequisites
 
-- **Operational canonical release gate**: normal release verification runs on Linux local Docker only.
-- Docker (with the compose plugin) running.
-- On Linux: `bash`, `curl`, and `sha256sum` available.
-- On Windows: PowerShell 5.1+ and Docker Desktop (same Docker CLI context as PowerShell).
+- Docker (with the compose plugin) running on Linux.
+- `bash`, `curl`, and `sha256sum` available.
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
 - For v1.3.6, the runtime image is **`linux/amd64` only**. Confirm the platform in the release notes or Docker
@@ -23,28 +33,13 @@ Mailer state lives in a named volume that `docker compose down -v` removes on ex
 - Default host ports `15280` (Mailer) and `18025` (Mailpit) are free.
 - **The target Mailer image must be supplied explicitly via `MAILER_IMAGE_TAG` or `MAILER_IMAGE_DIGEST` (exactly one; no implicit default).**
 
-`scripts/release-smoke.ps1` mirrors the shell contract for PowerShell. Linux fixture /
-self-tests validate the contract; **Windows Docker Desktop can run the same normal-path live smoke**.
-Cross-platform implementation acceptance (e.g. issue #506) requires both Linux and Windows live smoke to pass.
-
 ## Run
 
-From the repository root (canonical operational entrypoint on Linux):
+From the repository root (**supported canonical operational entrypoint**):
 
 ```bash
 MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
 ```
-
-Windows (PowerShell, Docker Desktop; same contract as shell):
-
-```powershell
-$env:MAILER_IMAGE_TAG = 'v1.3.6'
-.\scripts\release-smoke.ps1
-```
-
-On Windows, prefer the PowerShell entrypoint above. Running
-`bash scripts/release-smoke.sh` through WSL can target a different Docker daemon
-than Docker Desktop's Windows CLI context.
 
 Smoke by immutable digest:
 
@@ -52,10 +47,17 @@ Smoke by immutable digest:
 MAILER_IMAGE_DIGEST=sha256:<digest> bash scripts/release-smoke.sh
 ```
 
-```powershell
-$env:MAILER_IMAGE_DIGEST = 'sha256:<digest>'
-.\scripts\release-smoke.ps1
-```
+### PowerShell variant (contract parity / non-gate)
+
+`scripts/release-smoke.ps1` mirrors the shell contract.
+Only the **Linux local Docker shell entrypoint** is supported as a release gate.
+Validate the PowerShell contract on Linux with:
+
+- `scripts/release-smoke-preflight-self-test.ps1`
+- `scripts/release-client-self-test.ps1`
+
+Live smoke on Windows Docker Desktop is **out of support scope**.
+Do not use WSL `bash scripts/release-smoke.sh` as a gate either; Docker context can diverge from a supported Linux host.
 
 The script:
 
@@ -98,12 +100,6 @@ Smoke a different tag:
 
 ```bash
 MAILER_IMAGE_TAG=sha-<git-sha> bash scripts/release-smoke.sh
-```
-
-PowerShell (same contract; Windows Docker Desktop live smoke):
-
-```powershell
-$env:MAILER_IMAGE_TAG = 'sha-<git-sha>'; .\scripts\release-smoke.ps1
 ```
 
 Mailpit is a smoke helper and is not included in the release artifact. See the
