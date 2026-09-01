@@ -106,21 +106,38 @@ function Test-ReleaseSmokeRequiredTools {
     }
 }
 
-function Test-ReleaseSmokeLocalDockerEndpoint {
-    if ($env:RELEASE_SMOKE_SKIP_DOCKER_ENDPOINT_CHECK -eq '1') {
-        return
-    }
+function Get-ReleaseSmokeContextEndpoint {
+    param([string]$ContextName)
 
-    $endpoint = ''
-    $inspect = & docker context inspect --format '{{.Endpoints.docker.Host}}' 2>$null
-    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($inspect)) {
-        $endpoint = [string]$inspect
+    if (-not [string]::IsNullOrWhiteSpace($ContextName)) {
+        $inspect = & docker context inspect $ContextName --format '{{.Endpoints.docker.Host}}' 2>$null
     }
-    if ([string]::IsNullOrWhiteSpace($endpoint)) {
+    else {
+        $inspect = & docker context inspect --format '{{.Endpoints.docker.Host}}' 2>$null
+    }
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($inspect)) {
+        return ''
+    }
+    return [string]$inspect
+}
+
+function Test-ReleaseSmokeLocalDockerEndpoint {
+    $endpoint = ''
+
+    if (-not [string]::IsNullOrWhiteSpace($env:DOCKER_CONTEXT)) {
+        $endpoint = Get-ReleaseSmokeContextEndpoint -ContextName $env:DOCKER_CONTEXT
+        if ([string]::IsNullOrWhiteSpace($endpoint)) {
+            Exit-ReleaseSmokePreflightError -Message 'remote Docker endpoint is not allowed for release smoke'
+        }
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:DOCKER_HOST)) {
         $endpoint = [string]$env:DOCKER_HOST
     }
-    if ([string]::IsNullOrWhiteSpace($endpoint)) {
-        $endpoint = 'unix:///var/run/docker.sock'
+    else {
+        $endpoint = Get-ReleaseSmokeContextEndpoint -ContextName ''
+        if ([string]::IsNullOrWhiteSpace($endpoint)) {
+            Exit-ReleaseSmokePreflightError -Message 'remote Docker endpoint is not allowed for release smoke'
+        }
     }
 
     if ($endpoint -notmatch '^(unix://|npipe://)') {
@@ -168,7 +185,7 @@ function Invoke-ReleaseSmokeCompose {
     $argv = Get-ReleaseSmokeComposeArgs @ComposeArgs
     & docker @argv
     if ($LASTEXITCODE -ne 0) {
-        throw "docker compose failed: $($argv -join ' ')"
+        throw 'docker compose command failed'
     }
 }
 

@@ -49,14 +49,15 @@ release_smoke_preflight_validate_digest() {
 
 release_smoke_preflight_resolve_artifact() {
   local repository="${MAILER_IMAGE_REPOSITORY:-ghcr.io/kooiei-in4a/amane-mailer}"
-  local tag="${MAILER_IMAGE_TAG:-}"
-  local digest="${MAILER_IMAGE_DIGEST:-}"
+  local tag digest
+  tag="$(release_smoke_preflight_trim "${MAILER_IMAGE_TAG:-}")"
+  digest="$(release_smoke_preflight_trim "${MAILER_IMAGE_DIGEST:-}")"
   local tag_set=0 digest_set=0
 
-  if [[ -n "$(release_smoke_preflight_trim "$tag")" ]]; then
+  if [[ -n "$tag" ]]; then
     tag_set=1
   fi
-  if [[ -n "$(release_smoke_preflight_trim "$digest")" ]]; then
+  if [[ -n "$digest" ]]; then
     digest_set=1
   fi
 
@@ -130,20 +131,32 @@ release_smoke_preflight_is_local_endpoint() {
   esac
 }
 
-release_smoke_preflight_validate_docker_endpoint() {
-  if [[ "${RELEASE_SMOKE_SKIP_DOCKER_ENDPOINT_CHECK:-0}" == "1" ]]; then
-    return 0
-  fi
-
+release_smoke_preflight_inspect_context_endpoint() {
+  local context_name="${1:-}"
   local endpoint=""
-  if docker context inspect --format '{{.Endpoints.docker.Host}}' >/dev/null 2>&1; then
+  if [[ -n "$context_name" ]]; then
+    endpoint="$(docker context inspect "$context_name" --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+  else
     endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
   fi
-  if [[ -z "$endpoint" ]]; then
-    endpoint="${DOCKER_HOST:-}"
-  fi
-  if [[ -z "$endpoint" ]]; then
-    endpoint="unix:///var/run/docker.sock"
+  printf '%s' "$endpoint"
+}
+
+release_smoke_preflight_validate_docker_endpoint() {
+  local endpoint=""
+
+  if [[ -n "${DOCKER_CONTEXT:-}" ]]; then
+    endpoint="$(release_smoke_preflight_inspect_context_endpoint "${DOCKER_CONTEXT}")"
+    if [[ -z "$endpoint" ]]; then
+      release_smoke_preflight_fail 'remote Docker endpoint is not allowed for release smoke'
+    fi
+  elif [[ -n "${DOCKER_HOST:-}" ]]; then
+    endpoint="${DOCKER_HOST}"
+  else
+    endpoint="$(release_smoke_preflight_inspect_context_endpoint "")"
+    if [[ -z "$endpoint" ]]; then
+      release_smoke_preflight_fail 'remote Docker endpoint is not allowed for release smoke'
+    fi
   fi
 
   if ! release_smoke_preflight_is_local_endpoint "$endpoint"; then
