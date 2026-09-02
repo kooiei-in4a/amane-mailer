@@ -15,6 +15,44 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [1.3.7] - 2026-09-02
+
+Patch release focused on delivery correctness, production configuration
+hardening, shutdown robustness, and clearer OSS operating boundaries. There is
+no database migration or public HTTP contract shape change relative to v1.3.6.
+
+### Fixed
+
+- Finalize unmatched bounce feedback and recipient-mismatch outcomes as
+  terminal `discarded` inbox results, preserving their metrics without retry or
+  dead-letter loops; genuinely ambiguous correlations remain invariant errors.
+- Make the in-flight work lease copy-safe and idempotent across aliases so one
+  logical lease cannot decrement the shutdown drain count more than once.
+
+### Security
+
+- Fail closed at startup when Production, Staging, or an unknown host
+  environment uses a known placeholder tenant token, without exposing the
+  secret value or changing constant-time authentication comparison.
+
+### Changed
+
+- Isolate the supported Linux release-image smoke gate with a dedicated Compose
+  project, explicit artifact input, and local Docker-context checks; Windows
+  Docker Desktop live smoke remains outside the supported release gate.
+- Make post-release observed evidence deterministic and complete, and update
+  pinned GitHub Actions for the Node 24 runtime and current Buildx setup.
+- Align public project-state guidance and add canonical upgrade/rollback,
+  capacity/scaling, and contributor source-of-truth documentation.
+
+### Compatibility
+
+- No public endpoint or request/response field is removed or renamed, and the
+  migration inventory remains `001` through `018`.
+- `Amane.Mailer.Contracts` advances to `1.3.7` for release identity alignment;
+  its public DTO, constant, and payload-hash behavior is unchanged by this
+  patch.
+
 ## [1.3.6] - 2026-08-29
 
 Patch release focused on Release Engineering maintainability after the completed
