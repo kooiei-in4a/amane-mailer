@@ -33,10 +33,22 @@ public sealed class BounceIngestionStore(SqliteConnectionFactory connections)
             }
 
             var requestCandidates = await FindRequestCandidatesAsync(connection, claimed, cancellationToken);
-            if (requestCandidates.Count != 1)
+            if (requestCandidates.Count == 0)
+            {
+                await FinalizeAsync(
+                    connection,
+                    claimed,
+                    nowStorage,
+                    ProviderEventInboxDisposition.Discarded,
+                    cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return RecipientFeedbackProcessResult.Unmatched;
+            }
+
+            if (requestCandidates.Count > 1)
             {
                 throw new InvalidOperationException(
-                    "Recipient feedback did not match exactly one request-level submission evidence row.");
+                    "Recipient feedback matched more than one request-level submission evidence row.");
             }
 
             RecipientFeedbackRecipient? recipient;
@@ -56,8 +68,14 @@ public sealed class BounceIngestionStore(SqliteConnectionFactory connections)
 
             if (recipient is null)
             {
-                throw new InvalidOperationException(
-                    "Recipient feedback did not match exactly one canonical recipient row.");
+                await FinalizeAsync(
+                    connection,
+                    claimed,
+                    nowStorage,
+                    ProviderEventInboxDisposition.Discarded,
+                    cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return RecipientFeedbackProcessResult.RecipientMismatch;
             }
 
             var occurredAt = claimed.OccurredAt ?? now;

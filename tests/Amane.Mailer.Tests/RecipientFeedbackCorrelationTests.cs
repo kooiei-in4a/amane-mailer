@@ -295,7 +295,7 @@ public sealed class RecipientFeedbackCorrelationTests
     }
 
     [Fact]
-    public async Task Exact_provider_and_recipient_mismatches_roll_back()
+    public async Task Unmatched_and_recipient_mismatch_terminalize_without_feedback_side_effects()
     {
         var ct = TestContext.Current.CancellationToken;
         await using var db = await TestDatabase.CreateAsync(ct);
@@ -313,8 +313,11 @@ public sealed class RecipientFeedbackCorrelationTests
             FixedNow,
             ct,
             "mailpit");
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => new BounceIngestionStore(db.Factory).ProcessClaimedAsync(wrongProvider, FixedNow, ct));
+        Assert.Equal(
+            RecipientFeedbackProcessResult.Unmatched,
+            await new BounceIngestionStore(db.Factory).ProcessClaimedAsync(wrongProvider, FixedNow, ct));
+        Assert.Equal(ProviderEventInboxState.Processed, await db.ReadInboxStateAsync(wrongProvider.Id, ct));
+        Assert.Equal(ProviderEventInboxDisposition.Discarded, await db.ReadInboxDispositionAsync(wrongProvider.Id, ct));
 
         var wrongRecipient = await db.ClaimAsync(
             seeded,
@@ -323,12 +326,13 @@ public sealed class RecipientFeedbackCorrelationTests
             "other@example.com",
             FixedNow,
             ct);
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => new BounceIngestionStore(db.Factory).ProcessClaimedAsync(wrongRecipient, FixedNow, ct));
+        Assert.Equal(
+            RecipientFeedbackProcessResult.RecipientMismatch,
+            await new BounceIngestionStore(db.Factory).ProcessClaimedAsync(wrongRecipient, FixedNow, ct));
+        Assert.Equal(ProviderEventInboxState.Processed, await db.ReadInboxStateAsync(wrongRecipient.Id, ct));
+        Assert.Equal(ProviderEventInboxDisposition.Discarded, await db.ReadInboxDispositionAsync(wrongRecipient.Id, ct));
 
         Assert.Equal(0, await db.CountAsync("recipient_delivery_events", ct));
-        Assert.Equal(ProviderEventInboxState.Processing, await db.ReadInboxStateAsync(wrongProvider.Id, ct));
-        Assert.Equal(ProviderEventInboxState.Processing, await db.ReadInboxStateAsync(wrongRecipient.Id, ct));
         Assert.False(await db.SuppressionExistsAsync(seeded.TenantId, "exact@example.com", ct));
     }
 
@@ -679,6 +683,16 @@ public sealed class RecipientFeedbackCorrelationTests
             command.CommandText = "SELECT status FROM provider_event_inbox WHERE id = @Id;";
             command.Parameters.AddWithValue("@Id", id.ToString("D"));
             return (ProviderEventInboxState)Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
+        }
+
+        public async Task<string?> ReadInboxDispositionAsync(Guid id, CancellationToken cancellationToken)
+        {
+            await using var connection = await Factory.OpenConnectionAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT disposition FROM provider_event_inbox WHERE id = @Id;";
+            command.Parameters.AddWithValue("@Id", id.ToString("D"));
+            var value = await command.ExecuteScalarAsync(cancellationToken);
+            return value is DBNull or null ? null : (string)value;
         }
 
         public async Task<string> ReadEvidenceSnapshotAsync(
