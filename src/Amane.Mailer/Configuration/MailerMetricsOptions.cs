@@ -56,4 +56,7 @@ public sealed record MailerMetricsOptions
     internal static bool AllowsOptionalBearer(string? environmentName) =>
         string.Equals(environmentName, Environments.Development, StringComparison.OrdinalIgnoreCase)
         || string.Equals(environmentName, "Testing", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool RequiresStrictTenantTokenValidation(string? environmentName) =>
+        !AllowsOptionalBearer(environmentName);
 }

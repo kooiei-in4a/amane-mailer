@@ -79,6 +79,11 @@ scripts/validate-tenant-config.sh infra/deploy/tenants.json
 `live_sending=true` の場合の ACS secret（`ACS_CONNECTION_STRING_FILE` または
 `ACS_CONNECTION_STRING`）、Mailpit SMTP host / port の設定方針を確認します。
 この preflight は現在の shell environment を対象にし、`appsettings*.json` は読み込みません。
+`Development` / `Testing` 以外では、tenant authentication token が既知 placeholder に
+解決される場合、Mailer runtime 起動も fail-closed します（判定 predicate は `setup doctor` と
+この preflight script と同一。runtime enforcement は `Development` / `Testing` のみ緩和され、
+`setup doctor` はそれらの environment でも placeholder を報告し得ます）。
+`Testing` は test host 向けの特権的 environment 名であり、production deployment では使用しません。
 preflight validator の追加背景は [#150](https://github.com/kooiei-in4a/amane-mailer/issues/150) を参照してください。
 
 ## Tenant / env troubleshooting

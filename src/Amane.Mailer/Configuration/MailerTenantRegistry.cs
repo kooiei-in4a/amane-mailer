@@ -51,15 +51,16 @@ public sealed class MailerTenantRegistry
         return tenantFile;
     }
 
-    public static MailerTenantRegistry Load(IConfiguration configuration)
+    public static MailerTenantRegistry Load(IConfiguration configuration, string environmentName)
     {
         var tenantsPath = ResolveTenantsPath(configuration);
         var tenantFile = LoadTenantsFile(tenantsPath);
-        return LoadFromTenantsFile(configuration, tenantsPath, tenantFile);
+        return LoadFromTenantsFile(configuration, environmentName, tenantsPath, tenantFile);
     }
 
     public static MailerTenantRegistry LoadFromTenantsFile(
         IConfiguration configuration,
+        string environmentName,
         string tenantsPath,
         MailerTenantsFile tenantFile)
     {
@@ -83,6 +84,14 @@ public sealed class MailerTenantRegistry
                 throw new MailerConfigurationLoadException(
                     MailerConfigurationLoadFailureKind.TokenMissing,
                     $"Environment variable '{tenant.TokenEnv}' must be set for tenant '{tenant.Name}'.");
+            }
+
+            if (MailerMetricsOptions.RequiresStrictTenantTokenValidation(environmentName)
+                && ConfigurationPlaceholderDetector.LooksLikePlaceholder(token))
+            {
+                throw new MailerConfigurationLoadException(
+                    MailerConfigurationLoadFailureKind.TokenMissing,
+                    $"Environment variable '{tenant.TokenEnv}' contains a known placeholder value for tenant '{tenant.Name}'.");
             }
 
             tokensByTenantId.Add(tenant.TenantId, token);

@@ -1,6 +1,7 @@
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Setup;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 
 namespace Amane.Mailer.Tests.Setup;
 
@@ -28,7 +29,7 @@ public sealed class SetupInspectAotFixtureDiagTests
             ("MAILER_TENANTS_PATH", path),
             ("MAIL_SERVICE_TOKEN", InspectToken));
 
-        var load = MailerConfigurationSnapshot.TryLoad(config);
+        var load = MailerConfigurationSnapshot.TryLoad(config, Environments.Production);
         Assert.True(load.Succeeded, load.FailureKind.ToString());
         Assert.NotNull(load.Snapshot);
     }
@@ -44,7 +45,7 @@ public sealed class SetupInspectAotFixtureDiagTests
             ("MAILER_TENANTS_PATH", path),
             ("MAIL_SERVICE_TOKEN", InspectToken));
 
-        var load = MailerConfigurationSnapshot.TryLoad(config);
+        var load = MailerConfigurationSnapshot.TryLoad(config, Environments.Production);
         Assert.True(load.Succeeded, load.FailureKind.ToString());
         Assert.NotNull(load.Snapshot);
         Assert.Equal(
@@ -66,7 +67,7 @@ public sealed class SetupInspectAotFixtureDiagTests
             ("MAILER_TENANTS_PATH", path),
             ("MAIL_SERVICE_TOKEN", InspectToken));
 
-        var load = MailerConfigurationSnapshot.TryLoad(config);
+        var load = MailerConfigurationSnapshot.TryLoad(config, Environments.Production);
         Assert.False(load.Succeeded);
         Assert.Equal(
             MailerConfigurationSnapshot.LoadFailureKind.TenantsInvalid,
@@ -84,7 +85,7 @@ public sealed class SetupInspectAotFixtureDiagTests
             ("MAILER_TENANTS_PATH", path),
             ("MAIL_SERVICE_TOKEN", InspectToken));
 
-        var result = SetupInspectEffectiveEngine.Inspect(config);
+        var result = SetupInspectEffectiveEngine.Inspect(config, Environments.Production);
         Assert.False(result.Managed);
         Assert.Equal("mailpit", result.Effective.ProviderSummary);
         Assert.Equal(SetupInspectIntegrityResult.NotManaged, result.BundleIntegrity.Result);

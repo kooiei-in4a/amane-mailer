@@ -72,10 +72,12 @@ public sealed record AdminSetupStatusReadModel
     /// Named CreateFromConfiguration (not Load) so it is not treated as a startup-validated
     /// options entry point by MailerStartupValidationInventoryTests.
     /// </summary>
-    public static AdminSetupStatusReadModel CreateFromConfiguration(IConfiguration configuration)
+    public static AdminSetupStatusReadModel CreateFromConfiguration(
+        IConfiguration configuration,
+        string environmentName)
     {
-        var inspection = SetupInspectEffectiveEngine.Inspect(configuration);
-        TryLoadRecordedExtras(configuration, out var recordedExtra, out var senderEmail);
+        var inspection = SetupInspectEffectiveEngine.Inspect(configuration, environmentName);
+        TryLoadRecordedExtras(configuration, environmentName, out var recordedExtra, out var senderEmail);
         return FromInspection(inspection, recordedExtra, senderEmail, hostObservation: null);
     }
 
@@ -737,6 +739,7 @@ public sealed record AdminSetupStatusReadModel
 
     private static void TryLoadRecordedExtras(
         IConfiguration configuration,
+        string environmentName,
         out SetupRecordedMetadata? recorded,
         out string? senderEmail)
     {
@@ -763,7 +766,7 @@ public sealed record AdminSetupStatusReadModel
             }
         }
 
-        var load = MailerConfigurationSnapshot.TryLoad(configuration);
+        var load = MailerConfigurationSnapshot.TryLoad(configuration, environmentName);
         if (!load.Succeeded || load.Snapshot is null)
             return;
 

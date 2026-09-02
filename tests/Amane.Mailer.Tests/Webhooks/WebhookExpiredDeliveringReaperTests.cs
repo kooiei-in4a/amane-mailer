@@ -737,7 +737,7 @@ public sealed class WebhookExpiredDeliveringReaperTests
                     ["MAIL_SERVICE_TOKEN"] = "local-mail-service-token",
                 })
                 .Build();
-            var tenantRegistry = MailerTenantRegistry.Load(configuration);
+            var tenantRegistry = MailerTenantRegistry.Load(configuration, "Testing");
             var queue = new WebhookDeliveryQueue();
             var enqueuer = new DeliveryEventEnqueuer(
                 tenantRegistry,

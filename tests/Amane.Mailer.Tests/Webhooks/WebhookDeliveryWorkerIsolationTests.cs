@@ -646,7 +646,7 @@ public sealed class WebhookDeliveryWorkerIsolationTests
                     ["TEST_WEBHOOK_SECRET"] = WebhookSecret,
                 })
                 .Build();
-            var tenantRegistry = MailerTenantRegistry.Load(configuration);
+            var tenantRegistry = MailerTenantRegistry.Load(configuration, "Testing");
             var runtimeMetrics = new MailerRuntimeMetrics();
             var logCapture = new CapturingLoggerProvider();
             var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logCapture));

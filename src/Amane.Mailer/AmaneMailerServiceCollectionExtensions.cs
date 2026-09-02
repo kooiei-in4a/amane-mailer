@@ -22,7 +22,9 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddMailerAdmin(configuration);
 
         services.AddStartupValidatedSingleton(provider =>
-            MailerConfigurationSnapshot.Load(provider.GetRequiredService<IConfiguration>()));
+            MailerConfigurationSnapshot.Load(
+                provider.GetRequiredService<IConfiguration>(),
+                provider.GetRequiredService<IHostEnvironment>().EnvironmentName));
 
         services.AddStartupValidatedSingleton(provider =>
             provider.GetRequiredService<MailerConfigurationSnapshot>().Registry);

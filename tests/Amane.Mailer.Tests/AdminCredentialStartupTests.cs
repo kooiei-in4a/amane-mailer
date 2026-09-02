@@ -83,7 +83,8 @@ public sealed class AdminCredentialStartupTests
                         ["MAILER_TENANTS_PATH"] = tenantConfigPath,
                         ["MAIL_SERVICE_TOKEN"] = MailerWebApplicationFixtureBase.Token,
                     })
-                    .Build());
+                    .Build(),
+                "Testing");
             var sync = new AdminCredentialSync(sessions, users, tenantRegistry, options);
 
             using var cancelled = new CancellationTokenSource();

@@ -26,6 +26,7 @@ public static partial class SetupInspectEffectiveEngine
 
     public static SetupInspectEffectiveResult Inspect(
         IConfiguration configuration,
+        string environmentName,
         TimeProvider? timeProvider = null)
     {
         timeProvider ??= TimeProvider.System;
@@ -54,7 +55,7 @@ public static partial class SetupInspectEffectiveEngine
             };
         }
 
-        var load = MailerConfigurationSnapshot.TryLoad(configuration);
+        var load = MailerConfigurationSnapshot.TryLoad(configuration, environmentName);
         if (!load.Succeeded || load.Snapshot is null)
         {
             return TerminalConfigFailure(mailerVersion, managed, recordedSummary, load.FailureKind);

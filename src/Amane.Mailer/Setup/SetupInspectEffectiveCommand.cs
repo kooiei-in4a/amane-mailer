@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 
 namespace Amane.Mailer.Setup;
 
@@ -81,7 +82,10 @@ public static class SetupInspectEffectiveCommand
     {
         try
         {
-            var result = SetupInspectEffectiveEngine.Inspect(configuration, timeProvider);
+            var result = SetupInspectEffectiveEngine.Inspect(
+                configuration,
+                ReadEnvironmentName(),
+                timeProvider);
             var json = JsonSerializer.Serialize(result, SetupInspectJsonContext.Default.SetupInspectEffectiveResult);
             output.Write(json);
             if (!json.EndsWith('\n'))
@@ -163,6 +167,11 @@ public static class SetupInspectEffectiveCommand
 
         return InspectionIssueExitCode;
     }
+
+    private static string ReadEnvironmentName() =>
+        Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+        ?? Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
+        ?? Environments.Production;
 
     private static bool IsIssueResult(string result) =>
         result is SetupInspectIntegrityResult.Mismatch
