@@ -22,7 +22,7 @@ Mailer handles transport.
 
 The machine-readable source of truth for the current public release version and tag is [`release/current-public.json`](release/current-public.json). The README and setup entry point repeat the current tag where an operator needs it for a command, but updates start from that authority. Versions in `docs/releases/` are historical records and do not identify the current release.
 
-This service assumes the SQLite plus single Mailer process / one-replica boundary documented in the [service specification](docs/service-spec.en.md) and [ADR 0019](docs/adr/0019-sqlite-single-process-boundaries.md).
+This service assumes the SQLite plus single Mailer process / one-replica boundary documented in the [service specification](docs/service-spec.en.md) and [ADR 0019](docs/adr/0019-sqlite-single-process-boundaries.md). See [Capacity and scaling boundary](docs/ops/capacity-and-scaling.en.md) for operational interpretation, measurement, and scale-out decisions.
 
 Best fit:
 
