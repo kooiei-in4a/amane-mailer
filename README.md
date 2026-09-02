@@ -123,6 +123,7 @@ commit しないでください。
 
 運用 runbook:
 
+- [Upgrade / rollback ガイド](docs/ops/upgrade-guide.md) [(en)](docs/ops/upgrade-guide.en.md)
 - [ローカル deploy rehearsal](docs/ops/local-deploy-rehearsal-runbook.md) [(en)](docs/ops/local-deploy-rehearsal-runbook.en.md)
 - [ACS secret / platform-owned sender 登録 CLI](docs/ops/register-acs-cli-runbook.md) [(en)](docs/ops/register-acs-cli-runbook.en.md)
 - [バックアップ運用](docs/ops/backup-operations.md) [(en)](docs/ops/backup-operations.en.md)
