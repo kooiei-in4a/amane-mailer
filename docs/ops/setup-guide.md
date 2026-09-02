@@ -14,6 +14,7 @@ Parent tracking: [#445](https://github.com/kooiei-in4a/amane-mailer/issues/445) 
 |------|------|
 | [README](../../README.md) / [README.en](../../README.en.md) | リポジトリの最小入口 → 本ガイド |
 | **本 setup-guide** | 判断・経路選択・順序・安全境界（正本） |
+| [Upgrade / rollback ガイド](upgrade-guide.md) | 既存配備の current release への更新、migration、切戻し判断（正本） |
 | `docs/ops/` 配下の runbook | 詳細手順（リンクのみ。全文複製しない） |
 | [ADR 0021](../adr/0021-easy-setup-boundaries.md) | Easy Setup の Design authority |
 | [setup-release-bundle](setup-release-bundle.md) | maintainer 向け packaging / candidate handoff |
