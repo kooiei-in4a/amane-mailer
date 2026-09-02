@@ -27,7 +27,7 @@ public sealed class TenantRequestAuthorizerTests : IAsyncLifetime
             })
             .Build();
 
-        _registry = MailerTenantRegistry.Load(configuration);
+        _registry = MailerTenantRegistry.Load(configuration, "Testing");
     }
 
     public ValueTask DisposeAsync()

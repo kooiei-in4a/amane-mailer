@@ -23,9 +23,11 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
     [InlineData("   ")]
     public void Production_rejects_empty_or_whitespace_tenant_token(string token)
     {
-        using var harness = CreateHarness(Environments.Production, token);
+        using var harness = CreateValidationHarness(token);
 
-        var result = MailerConfigurationSnapshot.TryLoad(harness.Configuration);
+        var result = MailerConfigurationSnapshot.TryLoad(
+            harness.Configuration,
+            Environments.Production);
 
         Assert.False(result.Succeeded);
         Assert.Equal(MailerConfigurationSnapshot.LoadFailureKind.TokenMissing, result.FailureKind);
@@ -34,9 +36,11 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
     [Fact]
     public void Production_rejects_canonical_placeholder_tenant_token()
     {
-        using var harness = CreateHarness(Environments.Production, CanonicalPlaceholderToken);
+        using var harness = CreateValidationHarness(CanonicalPlaceholderToken);
 
-        var result = MailerConfigurationSnapshot.TryLoad(harness.Configuration);
+        var result = MailerConfigurationSnapshot.TryLoad(
+            harness.Configuration,
+            Environments.Production);
 
         Assert.False(result.Succeeded);
         Assert.Equal(MailerConfigurationSnapshot.LoadFailureKind.TokenMissing, result.FailureKind);
@@ -45,9 +49,11 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
     [Fact]
     public void Production_rejects_supported_placeholder_pattern_tenant_token()
     {
-        using var harness = CreateHarness(Environments.Production, PatternPlaceholderToken);
+        using var harness = CreateValidationHarness(PatternPlaceholderToken);
 
-        var result = MailerConfigurationSnapshot.TryLoad(harness.Configuration);
+        var result = MailerConfigurationSnapshot.TryLoad(
+            harness.Configuration,
+            Environments.Production);
 
         Assert.False(result.Succeeded);
         Assert.Equal(MailerConfigurationSnapshot.LoadFailureKind.TokenMissing, result.FailureKind);
@@ -56,9 +62,11 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
     [Fact]
     public void Production_accepts_valid_non_placeholder_tenant_token()
     {
-        using var harness = CreateHarness(Environments.Production, ValidProductionToken);
+        using var harness = CreateValidationHarness(ValidProductionToken);
 
-        var result = MailerConfigurationSnapshot.TryLoad(harness.Configuration);
+        var result = MailerConfigurationSnapshot.TryLoad(
+            harness.Configuration,
+            Environments.Production);
 
         Assert.True(result.Succeeded);
         Assert.NotNull(result.Snapshot);
@@ -67,34 +75,16 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
     [Fact]
     public void Production_failure_message_does_not_echo_secret_literal()
     {
-        using var harness = CreateHarness(Environments.Production, CanonicalPlaceholderToken);
+        using var harness = CreateValidationHarness(CanonicalPlaceholderToken);
 
-        var ex = Assert.Throws<MailerConfigurationLoadException>(
-            () => MailerConfigurationSnapshot.Load(harness.Configuration));
+        var ex = Assert.Throws<MailerConfigurationLoadException>(() =>
+            MailerConfigurationSnapshot.Load(
+                harness.Configuration,
+                Environments.Production));
 
         Assert.Equal(MailerConfigurationLoadFailureKind.TokenMissing, ex.Kind);
         Assert.Contains("known placeholder value", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(CanonicalPlaceholderToken, ex.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Development_allows_documented_local_placeholder_token()
-    {
-        using var harness = CreateHarness(Environments.Development, "local-mail-service-token");
-
-        var result = MailerConfigurationSnapshot.TryLoad(harness.Configuration);
-
-        Assert.True(result.Succeeded);
-    }
-
-    [Fact]
-    public void Testing_allows_test_fixture_token()
-    {
-        using var harness = CreateHarness("Testing", MailerWebApplicationFixtureBase.Token);
-
-        var result = MailerConfigurationSnapshot.TryLoad(harness.Configuration);
-
-        Assert.True(result.Succeeded);
     }
 
     [Fact]
@@ -114,17 +104,26 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
                 ConfigurationPlaceholderDetector.LooksLikePlaceholder(token),
                 $"Expected placeholder detection for token pattern '{token}'.");
 
-            using var harness = CreateHarness(Environments.Production, token);
-            var result = MailerConfigurationSnapshot.TryLoad(harness.Configuration);
+            using var harness = CreateValidationHarness(token);
+            var result = MailerConfigurationSnapshot.TryLoad(
+                harness.Configuration,
+                Environments.Production);
             Assert.False(result.Succeeded);
             Assert.Equal(MailerConfigurationSnapshot.LoadFailureKind.TokenMissing, result.FailureKind);
         }
     }
 
-    [Fact]
-    public async Task Host_startup_rejects_production_placeholder_token()
+    [Theory]
+    [InlineData("Production")]
+    [InlineData("Staging")]
+    [InlineData("SomeUnknownEnvironment")]
+    public async Task Host_strict_environments_reject_placeholder_token(string environmentName)
     {
-        await using var harness = await ProductionHostHarness.CreateAsync(CanonicalPlaceholderToken);
+        await using var harness = await PlaceholderHostHarness.CreateAsync(
+            environmentName,
+            CanonicalPlaceholderToken);
+
+        Assert.Equal(environmentName, harness.HostEnvironmentName);
 
         var ex = Assert.Throws<MailerConfigurationLoadException>(() => harness.CreateClient());
         Assert.Equal(MailerConfigurationLoadFailureKind.TokenMissing, ex.Kind);
@@ -133,16 +132,99 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
     }
 
     [Fact]
-    public async Task Host_startup_accepts_production_valid_token()
+    public async Task Host_development_allows_documented_local_placeholder_token()
     {
-        await using var harness = await ProductionHostHarness.CreateAsync(ValidProductionToken);
+        await using var harness = await PlaceholderHostHarness.CreateAsync(
+            Environments.Development,
+            "local-mail-service-token");
+
+        Assert.Equal(Environments.Development, harness.HostEnvironmentName);
 
         using var client = harness.CreateClient();
         using var response = await client.GetAsync("/healthz", TestContext.Current.CancellationToken);
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
     }
 
-    private static ValidationHarness CreateHarness(string environmentName, string token)
+    [Fact]
+    public async Task Host_testing_allows_test_fixture_token()
+    {
+        await using var harness = await PlaceholderHostHarness.CreateAsync(
+            "Testing",
+            MailerWebApplicationFixtureBase.Token);
+
+        Assert.Equal("Testing", harness.HostEnvironmentName);
+
+        using var client = harness.CreateClient();
+        using var response = await client.GetAsync("/healthz", TestContext.Current.CancellationToken);
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Host_production_rejects_production_placeholder_token()
+    {
+        await using var harness = await PlaceholderHostHarness.CreateAsync(
+            Environments.Production,
+            CanonicalPlaceholderToken);
+
+        Assert.Equal(Environments.Production, harness.HostEnvironmentName);
+
+        var ex = Assert.Throws<MailerConfigurationLoadException>(() => harness.CreateClient());
+        Assert.Equal(MailerConfigurationLoadFailureKind.TokenMissing, ex.Kind);
+        Assert.Contains("known placeholder value", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(CanonicalPlaceholderToken, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Host_production_accepts_production_valid_token()
+    {
+        await using var harness = await PlaceholderHostHarness.CreateAsync(
+            Environments.Production,
+            ValidProductionToken);
+
+        Assert.Equal(Environments.Production, harness.HostEnvironmentName);
+
+        using var client = harness.CreateClient();
+        using var response = await client.GetAsync("/healthz", TestContext.Current.CancellationToken);
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Host_production_with_config_aspnetcore_development_still_rejects_placeholder()
+    {
+        await using var harness = await PlaceholderHostHarness.CreateAsync(
+            Environments.Production,
+            CanonicalPlaceholderToken,
+            extraConfiguration: new Dictionary<string, string?>
+            {
+                ["ASPNETCORE_ENVIRONMENT"] = Environments.Development,
+            });
+
+        Assert.Equal(Environments.Production, harness.HostEnvironmentName);
+
+        var ex = Assert.Throws<MailerConfigurationLoadException>(() => harness.CreateClient());
+        Assert.Equal(MailerConfigurationLoadFailureKind.TokenMissing, ex.Kind);
+        Assert.Contains("known placeholder value", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Host_production_with_config_dotnet_development_still_rejects_placeholder()
+    {
+        await using var harness = await PlaceholderHostHarness.CreateAsync(
+            Environments.Production,
+            CanonicalPlaceholderToken,
+            extraConfiguration: new Dictionary<string, string?>
+            {
+                ["DOTNET_ENVIRONMENT"] = Environments.Development,
+            });
+
+        Assert.Equal(Environments.Production, harness.HostEnvironmentName);
+
+        var ex = Assert.Throws<MailerConfigurationLoadException>(() => harness.CreateClient());
+        Assert.Equal(MailerConfigurationLoadFailureKind.TokenMissing, ex.Kind);
+        Assert.Contains("known placeholder value", ex.Message, StringComparison.Ordinal);
+    }
+
+    private static ValidationHarness CreateValidationHarness(string token)
     {
         var root = Path.Combine(Path.GetTempPath(), "amane-mailer-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -152,7 +234,6 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["ASPNETCORE_ENVIRONMENT"] = environmentName,
                 ["Mailer:TenantsPath"] = tenantsPath,
                 ["MAIL_SERVICE_TOKEN"] = token,
                 ["Mailer:Worker:Enabled"] = "false",
@@ -176,18 +257,27 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
         }
     }
 
-    private sealed class ProductionHostHarness : IAsyncDisposable
+    private sealed class PlaceholderHostHarness : IAsyncDisposable
     {
         private readonly string _root;
         private readonly WebApplicationFactory<global::Program> _factory;
 
-        private ProductionHostHarness(string root, WebApplicationFactory<global::Program> factory)
+        private PlaceholderHostHarness(
+            string root,
+            WebApplicationFactory<global::Program> factory,
+            string hostEnvironmentName)
         {
             _root = root;
             _factory = factory;
+            HostEnvironmentName = hostEnvironmentName;
         }
 
-        public static async Task<ProductionHostHarness> CreateAsync(string token)
+        public string HostEnvironmentName { get; }
+
+        public static async Task<PlaceholderHostHarness> CreateAsync(
+            string environmentName,
+            string token,
+            IReadOnlyDictionary<string, string?>? extraConfiguration = null)
         {
             var root = Path.Combine(Path.GetTempPath(), "amane-mailer-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
@@ -205,19 +295,29 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
                     .Build());
             await new SqlMigrationRunner(migrateFactory).ApplyPendingAsync();
 
+            var settings = new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Mailer"] = connectionString,
+                ["MAILER_TENANTS_PATH"] = tenantConfigPath,
+                ["MAIL_SERVICE_TOKEN"] = token,
+                ["Mailer:Worker:Enabled"] = "false",
+                ["Mailer:Metrics:Enabled"] = "false",
+            };
+
+            if (extraConfiguration is not null)
+            {
+                foreach (var (key, value) in extraConfiguration)
+                {
+                    settings[key] = value;
+                }
+            }
+
             var factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
             {
-                builder.UseEnvironment(Environments.Production);
+                builder.UseEnvironment(environmentName);
                 builder.ConfigureAppConfiguration((_, configuration) =>
                 {
-                    configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                    {
-                        ["ConnectionStrings:Mailer"] = connectionString,
-                        ["MAILER_TENANTS_PATH"] = tenantConfigPath,
-                        ["MAIL_SERVICE_TOKEN"] = token,
-                        ["Mailer:Worker:Enabled"] = "false",
-                        ["Mailer:Metrics:Enabled"] = "false",
-                    });
+                    configuration.AddInMemoryCollection(settings);
                 });
                 builder.ConfigureServices(services =>
                 {
@@ -225,15 +325,18 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
                 });
             });
 
-            return new ProductionHostHarness(root, factory);
+            return new PlaceholderHostHarness(root, factory, environmentName);
         }
 
-        public HttpClient CreateClient() =>
-            _factory.CreateClient(new WebApplicationFactoryClientOptions
+        public HttpClient CreateClient()
+        {
+            _ = _factory.Services.GetRequiredService<IHostEnvironment>().EnvironmentName;
+            return _factory.CreateClient(new WebApplicationFactoryClientOptions
             {
                 AllowAutoRedirect = false,
                 BaseAddress = new Uri("https://localhost"),
             });
+        }
 
         public async ValueTask DisposeAsync()
         {

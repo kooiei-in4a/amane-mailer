@@ -4,6 +4,7 @@ using System.Text.Encodings.Web;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Setup;
+using Microsoft.Extensions.Hosting;
 
 namespace Amane.Mailer.Admin;
 
@@ -39,7 +40,8 @@ public static class AdminSetupStatusPage
             access.AllowedTenantIdsForQuery,
             cancellationToken);
 
-        var model = AdminSetupStatusReadModel.CreateFromConfiguration(configuration);
+        var environmentName = context.RequestServices.GetRequiredService<IHostEnvironment>().EnvironmentName;
+        var model = AdminSetupStatusReadModel.CreateFromConfiguration(configuration, environmentName);
         var asOfUtc = timeProvider.GetUtcNow();
 
         context.Response.Headers.CacheControl = "no-store";

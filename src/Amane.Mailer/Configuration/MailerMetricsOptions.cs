@@ -57,11 +57,6 @@ public sealed record MailerMetricsOptions
         string.Equals(environmentName, Environments.Development, StringComparison.OrdinalIgnoreCase)
         || string.Equals(environmentName, "Testing", StringComparison.OrdinalIgnoreCase);
 
-    internal static string ResolveEnvironmentName(IConfiguration configuration) =>
-        configuration["ASPNETCORE_ENVIRONMENT"]
-        ?? configuration["DOTNET_ENVIRONMENT"]
-        ?? Environments.Production;
-
     internal static bool RequiresStrictTenantTokenValidation(string? environmentName) =>
         !AllowsOptionalBearer(environmentName);
 }

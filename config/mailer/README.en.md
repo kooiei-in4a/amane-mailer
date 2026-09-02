@@ -92,7 +92,11 @@ SMTP host / port configuration policy. This preflight targets the current shell
 environment and does not read `appsettings*.json`.
 Outside `Development` / `Testing`, Mailer runtime startup also fail-closes when
 a tenant authentication token resolves to a known placeholder value, using the
-same placeholder rules as `setup doctor` and this preflight script.
+same placeholder detection predicate as `setup doctor` and this preflight script.
+Runtime enforcement is relaxed only in `Development` / `Testing`; `setup doctor`
+may still report placeholders in those environments.
+`Testing` is a privileged environment name for test hosts and must not be used
+in production deployment.
 See [#150](https://github.com/kooiei-in4a/amane-mailer/issues/150) for the
 tenant config preflight validator background.
 

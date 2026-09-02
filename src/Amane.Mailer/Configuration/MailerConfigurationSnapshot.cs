@@ -33,9 +33,9 @@ public sealed class MailerConfigurationSnapshot
         MailerConfigurationSnapshot? Snapshot,
         LoadFailureKind FailureKind);
 
-    public static MailerConfigurationSnapshot Load(IConfiguration configuration)
+    public static MailerConfigurationSnapshot Load(IConfiguration configuration, string environmentName)
     {
-        var result = TryLoad(configuration);
+        var result = TryLoad(configuration, environmentName);
         if (result.Succeeded && result.Snapshot is not null)
         {
             return result.Snapshot;
@@ -46,7 +46,7 @@ public sealed class MailerConfigurationSnapshot
             FailureMessage(result.FailureKind));
     }
 
-    public static LoadResult TryLoad(IConfiguration configuration)
+    public static LoadResult TryLoad(IConfiguration configuration, string environmentName)
     {
         string tenantsPath;
         MailerTenantsFile tenantsFile;
@@ -76,7 +76,11 @@ public sealed class MailerConfigurationSnapshot
         MailerTenantRegistry registry;
         try
         {
-            registry = MailerTenantRegistry.LoadFromTenantsFile(configuration, tenantsPath, tenantsFile);
+            registry = MailerTenantRegistry.LoadFromTenantsFile(
+                configuration,
+                environmentName,
+                tenantsPath,
+                tenantsFile);
         }
         catch (MailerConfigurationLoadException ex)
         {
