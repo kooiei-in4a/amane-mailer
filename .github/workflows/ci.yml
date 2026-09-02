@@ -460,7 +460,7 @@ jobs:
       - name: Self-test NuGet vulnerability audit script
         run: node scripts/nuget-vulnerability-audit.mjs --self-test
 
-      - name: Check release smoke default tag drift
+      - name: Check current public release alignment
         run: node scripts/check-release-smoke-tag-drift.mjs
 
       - name: Setup Python

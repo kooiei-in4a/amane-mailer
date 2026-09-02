@@ -104,9 +104,36 @@ function assertNotContains(source, needle, label) {
   }
 }
 
+function assertNoMatch(source, pattern, label) {
+  if (pattern.test(source)) {
+    fail(`${label} must not match ${pattern}.`);
+  }
+}
+
+function assertMarkedVersion(source, pattern, expected, label) {
+  const actual = firstMatch(source, pattern, label);
+  assertEqual(label, actual, expected);
+}
+
+function assertCurrentVersionLines(source, expected, label) {
+  const currentLinePattern = /(current|現行|recommended|推奨|canonical|正とする|default tag|既定タグ|published image|公開イメージ)/i;
+  const historicalLinePattern = /(historical|history|過去|以前|前の|prior|then-current|導入履歴|歴史的)/i;
+  const versionPattern = /\bv([0-9]+\.[0-9]+\.[0-9]+)\b/g;
+
+  for (const [index, line] of source.split(/\r?\n/).entries()) {
+    if (!currentLinePattern.test(line) || historicalLinePattern.test(line)) {
+      continue;
+    }
+
+    for (const match of line.matchAll(versionPattern)) {
+      assertEqual(`${label} current-version line ${index + 1}`, match[1], expected);
+    }
+  }
+}
+
 const authority = parseCurrentPublicAuthority();
 if (!authority) {
-  console.error('Release smoke alignment check failed:');
+  console.error('Current public release alignment check failed:');
   for (const error of errors) {
     console.error(`- ${error}`);
   }
@@ -124,6 +151,24 @@ const releaseSmokeDocEn = read('docs/ops/release-image-smoke.en.md');
 const readmeJa = read('README.md');
 const readmeEn = read('README.en.md');
 const security = read('SECURITY.md');
+const setupGuideJa = read('docs/ops/setup-guide.md');
+const setupGuideEn = read('docs/ops/setup-guide.en.md');
+const roadmap = read('ROADMAP.md');
+const agents = read('AGENTS.md');
+
+let globalJson;
+try {
+  globalJson = JSON.parse(read('global.json'));
+} catch {
+  fail('Malformed JSON in global.json.');
+}
+
+if (
+  typeof globalJson?.sdk?.version !== 'string' ||
+  !/^[0-9]+\.[0-9]+\.[0-9]+$/.test(globalJson.sdk.version)
+) {
+  fail('global.json sdk.version must be X.Y.Z.');
+}
 
 // Release-smoke execution paths must not embed implicit Mailer tag defaults (#506).
 assertNotContains(
@@ -166,6 +211,46 @@ for (const [label, source] of [
   );
 }
 
+for (const [label, source, marker] of [
+  [
+    'docs/ops/setup-guide.md current recommendation',
+    setupGuideJa,
+    /\*\*現行推奨:\*\*[^\n]*\bv([\d.]+)\b/,
+  ],
+  [
+    'docs/ops/setup-guide.en.md current recommendation',
+    setupGuideEn,
+    /\*\*Current recommendation:\*\*[^\n]*\bv([\d.]+)\b/i,
+  ],
+]) {
+  assertContains(source, 'release/current-public.json', `${label} authority link`);
+  assertMarkedVersion(source, marker, authority.version, label);
+  assertCurrentVersionLines(source, authority.version, label);
+}
+
+assertContains(roadmap, 'release/current-public.json', 'ROADMAP.md release authority link');
+assertMarkedVersion(
+  roadmap,
+  /current public stable line is \*\*v([\d.]+)\*\*/i,
+  authority.version,
+  'ROADMAP.md current stable line',
+);
+assertCurrentVersionLines(roadmap, authority.version, 'ROADMAP.md');
+
+assertContains(agents, 'global.json', 'AGENTS.md SDK source of truth');
+assertNoMatch(
+  agents,
+  /\.NET SDK:[^\n]*\b\d+\.\d+\.\d+\b/i,
+  'AGENTS.md duplicated SDK version',
+);
+for (const [label, source] of [
+  ['README.md SDK source of truth', readmeJa],
+  ['README.en.md SDK source of truth', readmeEn],
+]) {
+  assertContains(source, 'global.json', label);
+  assertNoMatch(source, /\.NET SDK[^\n]*\b\d+\.\d+\.\d+\b/i, `${label} duplicated SDK version`);
+}
+
 for (const [label, source] of [
   ['docs/ops/release-image-smoke.md intro image tag', releaseSmokeDocJa],
   ['docs/ops/release-image-smoke.en.md intro image tag', releaseSmokeDocEn],
@@ -196,7 +281,7 @@ if (!existsSync(path.join(root, releaseRecordPath))) {
 }
 
 if (errors.length > 0) {
-  console.error('Release smoke alignment check failed:');
+  console.error('Current public release alignment check failed:');
   for (const error of errors) {
     console.error(`- ${error}`);
   }
@@ -204,6 +289,6 @@ if (errors.length > 0) {
 }
 
 console.log(
-  `Release smoke alignment check passed: authority ${expectedImageTag}, README, release smoke docs, `
-  + `SECURITY supported version are aligned; release-smoke scripts/compose have no implicit Mailer tag defaults.`,
+  `Current public release alignment check passed: authority ${expectedImageTag}, README, setup guides, `
+  + `ROADMAP, release smoke docs, and SECURITY are aligned; release-smoke scripts/compose have no implicit Mailer tag defaults.`,
 );

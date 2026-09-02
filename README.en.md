@@ -18,9 +18,31 @@ Mailer handles transport.
 - `infra/deploy`: Deploy-time compose template for production.
 - `docs/`: API spec, ADRs, and runbooks.
 
+## Best fit and adoption boundaries
+
+The machine-readable source of truth for the current public release version and tag is [`release/current-public.json`](release/current-public.json). The README and setup entry point repeat the current tag where an operator needs it for a command, but updates start from that authority. Versions in `docs/releases/` are historical records and do not identify the current release.
+
+This service assumes the SQLite plus single Mailer process / one-replica boundary documented in the [service specification](docs/service-spec.en.md) and [ADR 0019](docs/adr/0019-sqlite-single-process-boundaries.md).
+
+Best fit:
+
+- Local or staging delivery checks using Mailpit
+- Self-hosted deployments that separate mail-delivery responsibility from multiple business applications
+- Single-node deployments that can operate a host-local SQLite volume with documented backup / restore
+- Deployments where tenant isolation can be managed as a logical boundary within the same service
+
+Not a fit:
+
+- Deployments that require active-active operation, multiple Workers, or horizontal scaling
+- Deployments that need the API and delivery Worker to scale as independent processes / deployments
+- Deployments that cannot accept a host-local SQLite file, file backup, or single-replica operation
+- Deployments requiring physical tenant isolation or a vendor-managed database / SLA from this service
+
+These are adoption boundaries, not capacity, performance, or availability-SLA guarantees.
+
 ## Prerequisites
 
-- [.NET SDK](https://dotnet.microsoft.com/download) — version pinned in `global.json` (currently 10.0.303)
+- [.NET SDK](https://dotnet.microsoft.com/download) — version pinned in `global.json` (check that file before building)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
 ## Setup entry point
