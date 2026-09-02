@@ -118,7 +118,8 @@ public sealed class MailerConfigurationSnapshot
     {
         LoadFailureKind.TenantsMissing => "Mailer tenant configuration file does not exist.",
         LoadFailureKind.TenantsInvalid => "Mailer tenant configuration is invalid.",
-        LoadFailureKind.TokenMissing => "A tenant token environment variable is missing.",
+        LoadFailureKind.TokenMissing =>
+            "A tenant authentication token is missing or contains a known placeholder value.",
         LoadFailureKind.WebhookSecretMissing => "A tenant webhook secret environment variable is missing.",
         LoadFailureKind.ProviderInvalid => "Mailer provider configuration is invalid.",
         LoadFailureKind.AcsCredentialMissing => "ACS connection string is required for live-sending ACS tenants.",

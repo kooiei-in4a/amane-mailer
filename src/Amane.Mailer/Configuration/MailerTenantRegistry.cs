@@ -85,6 +85,15 @@ public sealed class MailerTenantRegistry
                     $"Environment variable '{tenant.TokenEnv}' must be set for tenant '{tenant.Name}'.");
             }
 
+            if (MailerMetricsOptions.RequiresStrictTenantTokenValidation(
+                    MailerMetricsOptions.ResolveEnvironmentName(configuration))
+                && ConfigurationPlaceholderDetector.LooksLikePlaceholder(token))
+            {
+                throw new MailerConfigurationLoadException(
+                    MailerConfigurationLoadFailureKind.TokenMissing,
+                    $"Environment variable '{tenant.TokenEnv}' contains a known placeholder value for tenant '{tenant.Name}'.");
+            }
+
             tokensByTenantId.Add(tenant.TenantId, token);
 
             if (tenant.Webhook is not null)
