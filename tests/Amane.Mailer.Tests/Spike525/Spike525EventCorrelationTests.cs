@@ -64,8 +64,7 @@ public sealed class Spike525EventCorrelationTests
                 "Bounced",
                 "to-a@example.com");
             await SeedInboxRowAsync(factory, row, ct);
-            await Assert.ThrowsAsync<InvalidOperationException>(
-                () => store.ProcessClaimedAsync(row, DateTimeOffset.UtcNow, ct));
+            var result = await store.ProcessClaimedAsync(row, DateTimeOffset.UtcNow, ct);
             var eventCount = await CountRowsAsync(factory, "recipient_delivery_events", ct);
             var suppressionCount = await CountRowsAsync(factory, "mail_suppressions", ct);
             var inboxState = await ReadInboxStateAsync(factory, row.Id, ct);
@@ -73,15 +72,16 @@ public sealed class Spike525EventCorrelationTests
             Spike525Support.Evidence.Record("S-13", new
             {
                 Scenario = "unknown-message-id",
-                ProcessResult = "rolled-back-no-request-candidate",
+                ProcessResult = result,
                 EventCount = eventCount,
                 SuppressionCount = suppressionCount,
                 InboxState = inboxState,
             });
 
+            Assert.Equal(RecipientFeedbackProcessResult.Unmatched, result);
             Assert.Equal(0, eventCount);
             Assert.Equal(0, suppressionCount);
-            Assert.Equal(ProviderEventInboxState.Processing, inboxState);
+            Assert.Equal(ProviderEventInboxState.Processed, inboxState);
         }
         finally
         {
