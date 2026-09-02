@@ -7,7 +7,7 @@
 - Public contracts package: `src/Amane.Mailer.Contracts` — DTOs, error codes, payload hash helpers.
 - Tests: `tests/Amane.Mailer.Tests`, `tests/Amane.Mailer.Contracts.Tests`
 - Docs: `docs/` — service spec, ADRs, OpenAPI, runbooks.
-- .NET SDK: see `global.json` (currently 10.0.301).
+- .NET SDK: the exact version is pinned in `global.json`; use that file as the source of truth before building.
 
 For setup and contribution basics, start with [README.md](README.md) and
 [CONTRIBUTING.md](CONTRIBUTING.md). This file highlights project-specific

@@ -6,6 +6,11 @@ Starting with 1.0.0, Amane Mailer follows semantic versioning for the public HTT
 contract and `Amane.Mailer.Contracts` package. Only the latest patch release of
 the current minor version receives security fixes.
 
+The `Yes (latest release)` row is maintained from
+[`release/current-public.json`](release/current-public.json). Older rows are
+historical support records and must not be interpreted as the current public
+release.
+
 | Version | Supported          |
 | ------- | ------------------ |
 | 1.3.6   | Yes (latest release) |

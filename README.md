@@ -16,9 +16,31 @@ Amane Mailer は汎用メール送信マイクロサービスです。送信依�
 - `infra/deploy`: 本番向け deploy-time compose template。
 - `docs/`: API spec、ADR、runbook。
 
+## 適合する用途と境界
+
+公開中の release version / tag の機械可読な正本は [`release/current-public.json`](release/current-public.json) です。README とセットアップ入口は利用者がコマンドを組み立てられるよう current tag を表示しますが、更新時はこの authority を起点にします。`docs/releases/` にある過去 version は historical record であり、current release を示しません。
+
+このサービスは、[サービス仕様](docs/service-spec.md) と [ADR 0019](docs/adr/0019-sqlite-single-process-boundaries.md) に記載された SQLite + 単一 Mailer process / 1 replica の境界を前提にしています。
+
+適合する用途:
+
+- Mailpit を使う local / staging のメール配送確認
+- 複数の業務アプリからメール配送の責任を分離する self-hosted 構成
+- host-local の SQLite volume と、文書化された backup / restore を運用できる single-node 構成
+- tenant を同一サービス内の論理境界として管理できる構成
+
+適さない用途:
+
+- active-active、複数 Worker、または水平スケールが必須の構成
+- API と配送 Worker を独立した process / deployment としてスケールさせる必要がある構成
+- host-local SQLite file、file backup、または single-replica 運用を受け入れられない構成
+- 物理的な tenant 分離や、vendor-managed database / SLA をこのサービス自体に要求する構成
+
+これは採用境界であり、capacity・performance・availability SLA の保証ではありません。
+
 ## 前提ツール
 
-- [.NET SDK](https://dotnet.microsoft.com/download) — `global.json` で指定したバージョン（現在 10.0.303）
+- [.NET SDK](https://dotnet.microsoft.com/download) — `global.json` で固定したバージョン（ビルド前にファイルの値を確認）
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 
 ## セットアップ入口
