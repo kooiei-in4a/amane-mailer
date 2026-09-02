@@ -20,7 +20,7 @@ Amane Mailer は汎用メール送信マイクロサービスです。送信依�
 
 公開中の release version / tag の機械可読な正本は [`release/current-public.json`](release/current-public.json) です。README とセットアップ入口は利用者がコマンドを組み立てられるよう current tag を表示しますが、更新時はこの authority を起点にします。`docs/releases/` にある過去 version は historical record であり、current release を示しません。
 
-このサービスは、[サービス仕様](docs/service-spec.md) と [ADR 0019](docs/adr/0019-sqlite-single-process-boundaries.md) に記載された SQLite + 単一 Mailer process / 1 replica の境界を前提にしています。
+このサービスは、[サービス仕様](docs/service-spec.md) と [ADR 0019](docs/adr/0019-sqlite-single-process-boundaries.md) に記載された SQLite + 単一 Mailer process / 1 replica の境界を前提にしています。運用上の解釈、計測、scale-out の判断は [Capacity / scaling boundary](docs/ops/capacity-and-scaling.md) を参照してください。
 
 適合する用途:
 
