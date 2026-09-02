@@ -70,51 +70,97 @@ release record と照合した digest を pin してください。
 
 ## 2. Backup と rollback plan を準備する
 
-upgrade 前の Mailer を稼働させたまま、[バックアップ運用](backup-operations.md) に従って
-`backup-mailer.sh` を実行します。live WAL DB file の直接 copy ではなく、Mailer の SQLite
-online backup API を使う必要があります。
+[バックアップ運用](backup-operations.md) に従い、upgrade 用の最終 backup は呼び出し元を
+quiesce した後、旧 Mailer を停止する直前に取得します。`backup-mailer.sh` は稼働中 Mailer の
+SQLite online backup API を使います。live WAL DB file を直接 copy しません。
 
-確認事項:
+事前確認:
 
-- 新しい暗号化 `mailer-*.db.age` が作られ、平文 `.db` が残っていない
-- 必要な環境では offsite upload が成功している
 - 対応する age identity と復旧コピーが利用できる
 - `tenants.json`、`.env`、compose template、file secrets、Managed root など、DB 外の
   operator-owned state も private storage に保全されている
-- rollback に選択する backup について [リストア検証](restore-verification.md) が成功している
+- 最終 backup の取得後、target migration 前に [リストア検証](restore-verification.md) を実施できる
+  隔離環境と時間を確保している
 - 以前の immutable image reference と、その release に互換する config を取得できる
 
 rollback の承認者、呼び出し元を停止する方法、判断期限も先に決めます。実環境の DB restore は
 破壊的操作なので、[リストア手順](restore-procedure.md) が要求する明示承認なしに実行しません。
+
+backup snapshot の時刻が rollback の recovery point です。snapshot 後の DB 更新は、通常 traffic
+をまだ再開していなくても restore 先に含まれません。呼び出し元の quiesce は新規受付を減らしますが、
+既にある queue / in-flight work、Worker / Sweep、webhook / Admin / retention の DB 更新や provider
+呼び出しを停止するものではありません。snapshot 後から Mailer 停止完了までに起きた provider
+side effect は DB restore では戻りません。restore を承認する前に、この期間の request state と
+provider outcome を照合し、喪失する DB 更新と残存する外部 side effect を明示的に受け入れる必要が
+あります。provider 呼び出し結果が曖昧な request を安全に再送できるとは仮定しません。
 
 ## 3. Rollout
 
 以下は deploy host の Mailer compose directory で実行します。実際の path、image identity、
 secret は private な値を使います。
 
-1. 以前の private config を保全したうえで、`.env` の `MAILER_IMAGE_TAG` を検証済みの対象
-   immutable SHA tag に変更し、target image を pull します。pull だけでは稼働中 container を
-   置き換えません。
-2. 呼び出し元からの新規 request を止め、旧 Mailer の graceful shutdown を完了させます。
-3. 対象 image で schema を read-only 分類します。
+1. 呼び出し元からの新規 request を止めます。環境の運用基準に従って queue / in-flight state を
+   確認し、どの状態を recovery point にするか記録します。
+2. 旧 Mailer を稼働させたまま最終 online backup を取得します。新しい暗号化
+   `mailer-*.db.age`、必要な offsite upload、平文 `.db` が残っていないことを確認し、snapshot
+   時刻を記録します。
+3. 直ちに旧 Mailer の graceful shutdown を完了させます。snapshot 後に完了した DB 更新や
+   provider operation があれば reconciliation 対象として記録します。
+
+```bash
+docker compose --env-file .env -f compose.yml stop mailer
+```
+
+4. 保存済みの旧 private config / image identity を保持したまま、`.env` の
+   `MAILER_IMAGE_TAG` を検証済みの対象 immutable SHA tag に変更し、target image を pull します。
+5. 最終 backup を対象 image と隔離した disposable environment で
+   [リストア検証](restore-verification.md) します。そこでは通常 `mailer-migrate` と health /
+   readiness まで確認します。失敗した場合は production DB を変更せず停止し、保存済みの旧
+   image / config を明示的に復元して再起動するか、別の検証済み backup を選びます。
+6. 対象 image で schema を read-only 分類します。
 
 ```bash
 docker compose --env-file .env -f compose.yml --profile ops pull mailer-migrate mailer
-docker compose --env-file .env -f compose.yml stop mailer
 docker compose --env-file .env -f compose.yml --profile ops run --rm \
   mailer-migrate db migrate --status --format json
 ```
 
-既存配備では `Current` または `Behind` だけを続行候補にします。`AheadOrUnsupported`、`Unknown`、
-または想定外の `DatabaseAbsent` は path / mount / image / schema の不一致を示し得るため停止し、
-`db migrate` を実行しません。
+既存配備では通常、`Current` または `Behind` だけを続行候補にします。`AheadOrUnsupported` または
+想定外の `DatabaseAbsent` は停止です。`Unknown` も通常は path / mount / image / schema、SQLite
+open / I/O の問題を解消するまで停止します。ただし次の既知 legacy bootstrap だけは例外です。
 
-4. `Behind` なら、対象 image の migration runner を **1 つだけ**実行します。`Current` でも
-   同じ command は「up to date」で完了します。複数 runner を同時に起動しません。
-5. migration が成功した場合だけ対象 Mailer を起動します。
+### Legacy checksum bootstrap（限定例外）
+
+[service-spec](../service-spec.md#マイグレーション-checksum-policy) は、checksum column 導入前の
+既存 `schema_migrations` table に対し、最初の checksum 対応 `db migrate` が column を追加し、
+同梱中の適用済み migration version へ checksum を backfill する経路を定義しています。read-only
+`--status` はこの DB を `Unknown` と分類し得ます。
+
+`Unknown` で通常 migration を実行してよいのは、次をすべて満たす場合だけです。
+
+- 最終 backup の disposable copy を target migration 前に read-only で確認し、稼働元 release と
+  DB が既存 `schema_migrations` table を持つ一方で checksum column を持たない documented legacy
+  schema であることを operator が確認した
+- applied version が対象 image の期待する連続 prefix であり、DB path / mount、SQLite open / I/O、
+  権限、未知の applied version や migration gap など、legacy checksum 不在以外の `Unknown` 原因を
+  除外した
+- 最終 pre-upgrade backup を対象 image で restore verification し、通常 migration を含め成功した。
+  historical checksum が存在しないため、対象 image 同梱 SQL を最初の trust anchor にする判断も
+  明示承認した
+
+証明できなければ停止します。checksum column や値を手作業で追加・backfill せず、承認した対象
+image の通常 `db migrate` にだけ bootstrap を実行させます。
+
+7. `Behind` または承認済み legacy checksum bootstrap なら、対象 image の migration runner を
+   **1 つだけ**実行します。`Current` でも同じ command は「up to date」で完了します。複数
+   runner を同時に起動しません。
+8. migration 後に read-only status を再実行し、`Current` を要求します。
+9. migration と status 確認が成功した場合だけ対象 Mailer を起動します。
 
 ```bash
 docker compose --env-file .env -f compose.yml --profile ops run --rm mailer-migrate
+docker compose --env-file .env -f compose.yml --profile ops run --rm \
+  mailer-migrate db migrate --status --format json
 docker compose --env-file .env -f compose.yml up -d --wait mailer
 ```
 
@@ -152,13 +198,15 @@ readiness、queue / failure metrics、provider 結果を監視します。
 
 | 状態 | 処置 |
 |------|------|
-| migration 前に artifact / config / pull / status 確認が失敗 | 変更を中止。旧 image / config のまま再検証する |
+| migration 前に artifact / config / pull / status 確認が失敗 | 変更を中止。target `.env` へ変更済みなら、保存済みの旧 private config と immutable image identity を明示的に復元し、旧 image を起動して health / readiness を再確認する |
 | migration 未適用で新 runtime の起動・検証が失敗 | 呼び出し元を止めたまま以前の immutable image / config へ戻し、health / readiness を再確認する |
-| migration 適用後に起動・readiness・運用検証が失敗 | 古い binary を forward-migrated DB に当てない。以前の image / config と **pre-upgrade DB backup** を組にして、明示承認のうえ [リストア手順](restore-procedure.md) を実行する |
-| traffic 再開後に rollback が必要 | まず呼び出し元を止める。pre-upgrade backup への restore は upgrade 後に受理した DB state を含まないため、request / provider 副作用とデータ損失範囲を評価してから incident 手順を決める |
+| migration 適用後に起動・readiness・運用検証が失敗 | 古い binary を forward-migrated DB に当てない。snapshot 後の DB 更新と provider side effect を照合し、loss window を承認したうえで、以前の image / config と **pre-upgrade DB backup** を組にして [リストア手順](restore-procedure.md) を実行する |
+| traffic 再開後に rollback が必要 | まず呼び出し元を止める。snapshot 以降に受理・処理した request / provider outcome を照合する。loss window は traffic 再開時ではなく backup snapshot 時に始まるため、その全期間を明示承認してから incident 手順を決める |
 
-schema downgrade は保証されず、reverse migration は提供されません。restore では先に `.env` と
-compose state を以前の互換 image / config に戻し、選択した pre-upgrade backup を
+schema downgrade は保証されず、reverse migration は提供されません。restore による DB loss
+window は backup snapshot 時点から始まり、provider side effect は restore では取り消されません。
+承認者へ reconciliation 結果と範囲を提示したうえで、先に `.env` と compose state を以前の互換
+image / config に戻し、選択した pre-upgrade backup を
 [restore procedure](restore-procedure.md) に従って復元します。呼び出し元を無効のまま CLI
 `healthcheck`、`/healthz`、`/readyz`、`db stats` と環境固有の確認を通してから再開します。
 
@@ -173,6 +221,8 @@ rollback として使わないでください。
 - 以前と対象の immutable image identity
 - 対象 release record と確認した artifact digest / platform
 - backup artifact、restore verification、age identity availability の確認結果
+- backup snapshot 時刻、停止完了までの post-snapshot change / provider outcome、
+  reconciliation と承認
 - migration status と実行結果
 - health / readiness / environment-specific verification の結果
 - traffic stop / resume、rollback 判断、承認、未解決事項
