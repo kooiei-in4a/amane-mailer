@@ -14,6 +14,7 @@ Use placeholders only (`replace-with-*`, `example.invalid`, synthetic UUIDs / pa
 |----------|------|
 | [README](../../README.en.md) / [README.ja](../../README.md) | Minimal repository front door → this guide |
 | **This setup guide** | Judgment, path selection, order, safety boundaries (authority) |
+| [Upgrade / rollback guide](upgrade-guide.en.md) | Authority for updating an existing deployment to the current release, migrations, and rollback decisions |
 | Ops runbooks under `docs/ops/` | Detailed procedures (link; do not copy full text here) |
 | [ADR 0021](../adr/0021-easy-setup-boundaries.md) | Easy Setup design authority |
 | [setup-release-bundle](setup-release-bundle.en.md) | Maintainer packaging / candidate handoff |

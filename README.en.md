@@ -128,6 +128,7 @@ addresses, or deploy-host `.env` files.
 
 Operational runbooks:
 
+- [Upgrade / rollback guide](docs/ops/upgrade-guide.en.md) [(ja)](docs/ops/upgrade-guide.md)
 - [Local deploy rehearsal](docs/ops/local-deploy-rehearsal-runbook.en.md) [(ja)](docs/ops/local-deploy-rehearsal-runbook.md)
 - [ACS secret / platform-owned sender registration CLI](docs/ops/register-acs-cli-runbook.en.md) [(ja)](docs/ops/register-acs-cli-runbook.md)
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
