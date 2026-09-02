@@ -89,32 +89,16 @@ public sealed class InflightTracker
         return signal;
     }
 
-    /// <summary>
-    /// One in-flight lease. Idempotent only for the same local/variable used with
-    /// <c>using</c>; do not copy, store in a field, or pass by value — copies have
-    /// independent dispose state and a second Dispose would over-decrement.
-    /// </summary>
-    public struct InflightScope : IDisposable
+    /// <summary>One in-flight lease. Dispose is idempotent across reference aliases.</summary>
+    public sealed class InflightScope : IDisposable
     {
         private InflightTracker? _tracker;
-        private int _disposed;
 
         internal InflightScope(InflightTracker tracker)
         {
             _tracker = tracker;
-            _disposed = 0;
         }
 
-        public void Dispose()
-        {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            {
-                return;
-            }
-
-            var tracker = _tracker;
-            _tracker = null;
-            tracker?.Leave();
-        }
+        public void Dispose() => Interlocked.Exchange(ref _tracker, null)?.Leave();
     }
 }

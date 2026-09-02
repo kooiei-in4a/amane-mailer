@@ -145,6 +145,21 @@ public sealed class InflightTrackerTests
         scope.Dispose();
         Assert.Equal(0, tracker.InflightCount);
     }
+
+    [Fact]
+    public void InflightScope_Dispose_is_idempotent_across_reference_aliases()
+    {
+        var tracker = new InflightTracker();
+        var first = tracker.Enter();
+        var alias = first;
+        Assert.Equal(1, tracker.InflightCount);
+
+        first.Dispose();
+        Assert.Equal(0, tracker.InflightCount);
+
+        alias.Dispose();
+        Assert.Equal(0, tracker.InflightCount);
+    }
 }
 
 public sealed class MailerWebhookOptionsTests
