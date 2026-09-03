@@ -115,6 +115,7 @@ public sealed class MailRequestWorkerLogPiiCanaryTests
             var request = await SeedQueuedRequestAsync(factory, seeded, ct);
             SignalWorker(factory);
             await WaitUntilStatusAsync(connectionString, request.MailRequestId, MailRequestState.Failed, ct);
+            await WaitUntilLogContainsAsync(logCapture, "failed terminally", ct);
 
             var attemptErrorCode = await ReadLatestAttemptErrorCodeAsync(connectionString, request.MailRequestId, ct);
             Assert.Equal(errorCode, attemptErrorCode);
@@ -241,6 +242,35 @@ public sealed class MailRequestWorkerLogPiiCanaryTests
         }
 
         Assert.Fail($"Timed out waiting for {mailRequestId} to reach {status}. Last={last}.");
+    }
+
+    /// <summary>
+    /// Bounded poll for a Worker log substring after terminal status is observable.
+    /// Status persistence can precede the terminal-failure log write; do not dump
+    /// captured log text on timeout (may contain canary secrets/PII in failure paths).
+    /// </summary>
+    private static async Task WaitUntilLogContainsAsync(
+        CapturingLoggerProvider logCapture,
+        string expectedSubstring,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        var lastLineCount = 0;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            lastLineCount = logCapture.Snapshot().Count;
+            if (logCapture.JoinedOutput().Contains(expectedSubstring, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            await Task.Delay(50, cancellationToken);
+        }
+
+        Assert.Fail(
+            $"Timed out waiting for captured logs to contain the expected terminal-failure marker. " +
+            $"CapturedLineCount={lastLineCount}.");
     }
 
     private static async Task<string?> ReadLatestAttemptErrorCodeAsync(
