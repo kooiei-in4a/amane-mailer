@@ -30,7 +30,7 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
             Environments.Production);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(MailerConfigurationSnapshot.LoadFailureKind.TokenMissing, result.FailureKind);
+        Assert.Equal(MailerConfigurationLoadFailureKind.TokenMissing, result.FailureKind);
     }
 
     [Fact]
@@ -43,7 +43,7 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
             Environments.Production);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(MailerConfigurationSnapshot.LoadFailureKind.TokenMissing, result.FailureKind);
+        Assert.Equal(MailerConfigurationLoadFailureKind.TokenMissing, result.FailureKind);
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
             Environments.Production);
 
         Assert.False(result.Succeeded);
-        Assert.Equal(MailerConfigurationSnapshot.LoadFailureKind.TokenMissing, result.FailureKind);
+        Assert.Equal(MailerConfigurationLoadFailureKind.TokenMissing, result.FailureKind);
     }
 
     [Fact]
@@ -109,7 +109,7 @@ public sealed class MailerProductionPlaceholderTokenValidationTests
                 harness.Configuration,
                 Environments.Production);
             Assert.False(result.Succeeded);
-            Assert.Equal(MailerConfigurationSnapshot.LoadFailureKind.TokenMissing, result.FailureKind);
+            Assert.Equal(MailerConfigurationLoadFailureKind.TokenMissing, result.FailureKind);
         }
     }
 

@@ -73,7 +73,7 @@ public static partial class SetupInspectEffectiveEngine
                 mailerVersion,
                 managed,
                 recordedSummary,
-                MailerConfigurationSnapshot.LoadFailureKind.ProviderInvalid);
+                MailerConfigurationLoadFailureKind.ProviderInvalid);
         }
 
         var liveSending = tenants.Any(t => t.LiveSending);
@@ -182,25 +182,27 @@ public static partial class SetupInspectEffectiveEngine
         string mailerVersion,
         bool managed,
         SetupInspectRecordedSummary? recorded,
-        MailerConfigurationSnapshot.LoadFailureKind failureKind)
+        MailerConfigurationLoadFailureKind failureKind)
     {
         var (reason, credentialStatus) = failureKind switch
         {
-            MailerConfigurationSnapshot.LoadFailureKind.TenantsMissing =>
+            MailerConfigurationLoadFailureKind.TenantsMissing =>
                 (SetupInspectReason.TenantsMissing, SetupInspectCredentialStatus.NotApplicable),
-            MailerConfigurationSnapshot.LoadFailureKind.TenantsInvalid =>
+            MailerConfigurationLoadFailureKind.TenantsInvalid =>
                 (SetupInspectReason.TenantsInvalid, SetupInspectCredentialStatus.NotApplicable),
-            MailerConfigurationSnapshot.LoadFailureKind.TokenMissing =>
+            MailerConfigurationLoadFailureKind.TokenMissing =>
                 (SetupInspectReason.CredentialMissing, SetupInspectCredentialStatus.Missing),
-            MailerConfigurationSnapshot.LoadFailureKind.WebhookSecretMissing =>
+            MailerConfigurationLoadFailureKind.WebhookSecretMissing =>
                 (SetupInspectReason.CredentialMissing, SetupInspectCredentialStatus.Missing),
-            MailerConfigurationSnapshot.LoadFailureKind.AcsCredentialMissing =>
+            MailerConfigurationLoadFailureKind.AcsCredentialMissing =>
                 (SetupInspectReason.CredentialMissing, SetupInspectCredentialStatus.Missing),
-            MailerConfigurationSnapshot.LoadFailureKind.ProviderInvalid =>
+            MailerConfigurationLoadFailureKind.ProviderInvalid =>
                 (SetupInspectReason.ProviderInvalid, SetupInspectCredentialStatus.NotApplicable),
-            MailerConfigurationSnapshot.LoadFailureKind.MailpitInvalid =>
+            MailerConfigurationLoadFailureKind.MailpitInvalid =>
                 (SetupInspectReason.MailpitInvalid, SetupInspectCredentialStatus.NotApplicable),
-            _ => (SetupInspectReason.ConfigConflict, SetupInspectCredentialStatus.NotApplicable),
+            // None (and any future unclassified kind) map to config conflict; same as prior discard arm.
+            MailerConfigurationLoadFailureKind.None =>
+                (SetupInspectReason.ConfigConflict, SetupInspectCredentialStatus.NotApplicable),
         };
 
         var mount = managed
@@ -214,7 +216,7 @@ public static partial class SetupInspectEffectiveEngine
             new SetupInspectEffectiveSummary { CredentialStatus = credentialStatus },
             mount,
             DeriveProvisionalIntegrity(managed, mount),
-            failureKind == MailerConfigurationSnapshot.LoadFailureKind.TenantsMissing
+            failureKind == MailerConfigurationLoadFailureKind.TenantsMissing
                 ? SetupInspectSourceIds.NotApplicable
                 : SetupInspectSourceIds.ContainerTenants,
             SetupInspectSourceIds.NotApplicable,
