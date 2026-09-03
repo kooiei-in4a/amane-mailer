@@ -2,7 +2,7 @@
 
 # Clean-state smoke for the published release image
 
-After v1.3.6 is published, this runbook pulls the GHCR runtime image (current public example: `ghcr.io/kooiei-in4a/amane-mailer:v1.3.6`) from a clean state, starts Mailer +
+After v1.3.7 is published, this runbook pulls the GHCR runtime image (current public example: `ghcr.io/kooiei-in4a/amane-mailer:v1.3.7`) from a clean state, starts Mailer +
 Mailpit, and smokes the release runtime path.
 
 Unlike `infra/docker/docker-compose.local.yml` (which builds from source), this smoke
@@ -108,6 +108,6 @@ intentional `latest` usage and how to pin it when needed.
 
 ## Recorded smoke results
 
-Value-free smoke results for `v1.3.6` (digest, date, environment, per-check pass/fail)
-are recorded in [docs/releases/v1.3.6.md](../releases/v1.3.6.md).
+Value-free smoke results for `v1.3.7` (digest, date, environment, per-check pass/fail)
+are recorded in [docs/releases/v1.3.7.md](../releases/v1.3.7.md).
 Previous `v1.2.0` results remain in [docs/releases/v1.2.0.md](../releases/v1.2.0.md).
