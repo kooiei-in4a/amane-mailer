@@ -70,7 +70,7 @@ public sealed class SetupInspectAotFixtureDiagTests
         var load = MailerConfigurationSnapshot.TryLoad(config, Environments.Production);
         Assert.False(load.Succeeded);
         Assert.Equal(
-            MailerConfigurationSnapshot.LoadFailureKind.TenantsInvalid,
+            MailerConfigurationLoadFailureKind.TenantsInvalid,
             load.FailureKind);
     }
 

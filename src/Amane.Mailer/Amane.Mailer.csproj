@@ -15,7 +15,7 @@
     <StripSymbols>true</StripSymbols>
     <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
     <IlcTreatWarningsAsErrors>true</IlcTreatWarningsAsErrors>
-    <WarningsAsErrors>$(WarningsAsErrors);IL2026;IL3050;IL2104</WarningsAsErrors>
+    <WarningsAsErrors>$(WarningsAsErrors);CS8509;IL2026;IL3050;IL2104</WarningsAsErrors>
     <TrimmerSingleWarn>false</TrimmerSingleWarn>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>

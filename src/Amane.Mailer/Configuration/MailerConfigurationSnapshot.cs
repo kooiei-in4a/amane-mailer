@@ -14,24 +14,10 @@ public sealed class MailerConfigurationSnapshot
     public required MailerTenantRegistry Registry { get; init; }
     public required MailerOptions Options { get; init; }
 
-    // Compatibility alias used by inspect/command code.
-    // Keep numeric values aligned with MailerConfigurationLoadFailureKind.
-    public enum LoadFailureKind
-    {
-        None = 0,
-        TenantsMissing = 1,
-        TenantsInvalid = 2,
-        TokenMissing = 3,
-        WebhookSecretMissing = 4,
-        ProviderInvalid = 5,
-        AcsCredentialMissing = 6,
-        MailpitInvalid = 7,
-    }
-
     public readonly record struct LoadResult(
         bool Succeeded,
         MailerConfigurationSnapshot? Snapshot,
-        LoadFailureKind FailureKind);
+        MailerConfigurationLoadFailureKind FailureKind);
 
     public static MailerConfigurationSnapshot Load(IConfiguration configuration, string environmentName)
     {
@@ -42,7 +28,7 @@ public sealed class MailerConfigurationSnapshot
         }
 
         throw new MailerConfigurationLoadException(
-            (MailerConfigurationLoadFailureKind)result.FailureKind,
+            result.FailureKind,
             FailureMessage(result.FailureKind));
     }
 
@@ -55,22 +41,22 @@ public sealed class MailerConfigurationSnapshot
             tenantsPath = MailerTenantRegistry.ResolveTenantsPath(configuration);
             if (!File.Exists(tenantsPath))
             {
-                return new LoadResult(false, null, LoadFailureKind.TenantsMissing);
+                return new LoadResult(false, null, MailerConfigurationLoadFailureKind.TenantsMissing);
             }
 
             tenantsFile = MailerTenantRegistry.LoadTenantsFile(tenantsPath);
         }
         catch (MailerConfigurationLoadException ex)
         {
-            return new LoadResult(false, null, (LoadFailureKind)ex.Kind);
+            return new LoadResult(false, null, ex.Kind);
         }
         catch (InvalidOperationException)
         {
-            return new LoadResult(false, null, LoadFailureKind.TenantsInvalid);
+            return new LoadResult(false, null, MailerConfigurationLoadFailureKind.TenantsInvalid);
         }
         catch (JsonException)
         {
-            return new LoadResult(false, null, LoadFailureKind.TenantsInvalid);
+            return new LoadResult(false, null, MailerConfigurationLoadFailureKind.TenantsInvalid);
         }
 
         MailerTenantRegistry registry;
@@ -84,11 +70,11 @@ public sealed class MailerConfigurationSnapshot
         }
         catch (MailerConfigurationLoadException ex)
         {
-            return new LoadResult(false, null, (LoadFailureKind)ex.Kind);
+            return new LoadResult(false, null, ex.Kind);
         }
         catch (InvalidOperationException)
         {
-            return new LoadResult(false, null, LoadFailureKind.TenantsInvalid);
+            return new LoadResult(false, null, MailerConfigurationLoadFailureKind.TenantsInvalid);
         }
 
         MailerOptions options;
@@ -99,11 +85,11 @@ public sealed class MailerConfigurationSnapshot
         }
         catch (MailerConfigurationLoadException ex)
         {
-            return new LoadResult(false, null, (LoadFailureKind)ex.Kind);
+            return new LoadResult(false, null, ex.Kind);
         }
         catch (InvalidOperationException)
         {
-            return new LoadResult(false, null, LoadFailureKind.ProviderInvalid);
+            return new LoadResult(false, null, MailerConfigurationLoadFailureKind.ProviderInvalid);
         }
 
         return new LoadResult(
@@ -115,19 +101,19 @@ public sealed class MailerConfigurationSnapshot
                 Registry = registry,
                 Options = options,
             },
-            LoadFailureKind.None);
+            MailerConfigurationLoadFailureKind.None);
     }
 
-    private static string FailureMessage(LoadFailureKind kind) => kind switch
+    private static string FailureMessage(MailerConfigurationLoadFailureKind kind) => kind switch
     {
-        LoadFailureKind.TenantsMissing => "Mailer tenant configuration file does not exist.",
-        LoadFailureKind.TenantsInvalid => "Mailer tenant configuration is invalid.",
-        LoadFailureKind.TokenMissing =>
+        MailerConfigurationLoadFailureKind.None => "Mailer configuration load failed.",
+        MailerConfigurationLoadFailureKind.TenantsMissing => "Mailer tenant configuration file does not exist.",
+        MailerConfigurationLoadFailureKind.TenantsInvalid => "Mailer tenant configuration is invalid.",
+        MailerConfigurationLoadFailureKind.TokenMissing =>
             "A tenant authentication token is missing or contains a known placeholder value.",
-        LoadFailureKind.WebhookSecretMissing => "A tenant webhook secret environment variable is missing.",
-        LoadFailureKind.ProviderInvalid => "Mailer provider configuration is invalid.",
-        LoadFailureKind.AcsCredentialMissing => "ACS connection string is required for live-sending ACS tenants.",
-        LoadFailureKind.MailpitInvalid => "Mailpit SMTP configuration is invalid.",
-        _ => "Mailer configuration load failed.",
+        MailerConfigurationLoadFailureKind.WebhookSecretMissing => "A tenant webhook secret environment variable is missing.",
+        MailerConfigurationLoadFailureKind.ProviderInvalid => "Mailer provider configuration is invalid.",
+        MailerConfigurationLoadFailureKind.AcsCredentialMissing => "ACS connection string is required for live-sending ACS tenants.",
+        MailerConfigurationLoadFailureKind.MailpitInvalid => "Mailpit SMTP configuration is invalid.",
     };
 }
