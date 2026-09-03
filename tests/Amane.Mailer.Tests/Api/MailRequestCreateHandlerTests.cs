@@ -131,6 +131,35 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task HandleAsync_deletes_attachment_staging_after_payload_hash_mismatch()
+    {
+        var request = MailRequestTestData.CreateRequest(
+            attachments: [MailRequestTestData.CreateTextAttachment()]) with
+        {
+            PayloadHash = new string('1', 64),
+        };
+        var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
+        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
+
+        var result = await MailRequestCreateHandler.HandleAsync(
+            httpRequest,
+            request,
+            body,
+            new StubMailRequestRepository(),
+            new MailRequestQueue(),
+            _registry!,
+            _attachmentSpool!,
+            TimeProvider.System,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        var (statusCode, responseBody) = MailRequestHttpResultAssertions.Inspect(result);
+        Assert.Equal(StatusCodes.Status422UnprocessableEntity, statusCode);
+        Assert.Contains(MailerErrorCodes.InvalidPayloadHash, responseBody, StringComparison.Ordinal);
+        Assert.Empty(_attachmentSpool!.EnumerateStagingDirectories());
+    }
+
+    [Fact]
     public async Task HandleAsync_returns_already_accepted_for_idempotent_repost()
     {
         var request = MailRequestTestData.CreateRequest();
@@ -163,6 +192,42 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         Assert.Equal(StatusCodes.Status202Accepted, statusCode);
         Assert.Equal(MailRequestAcceptanceStatus.AlreadyAccepted, response.Status);
         Assert.Equal(0, repository.InsertCount);
+    }
+
+    [Fact]
+    public async Task HandleAsync_deletes_attachment_staging_for_idempotent_repost()
+    {
+        var request = MailRequestTestData.CreateRequest(
+            attachments: [MailRequestTestData.CreateTextAttachment()]);
+        var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
+        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
+        var repository = new StubMailRequestRepository
+        {
+            Existing = new MailRequestIdempotencyRow
+            {
+                Id = Guid.NewGuid(),
+                PayloadHash = request.PayloadHash,
+                Status = MailRequestState.Queued,
+            },
+        };
+
+        var result = await MailRequestCreateHandler.HandleAsync(
+            httpRequest,
+            request,
+            body,
+            repository,
+            new MailRequestQueue(),
+            _registry!,
+            _attachmentSpool!,
+            TimeProvider.System,
+            NullLogger.Instance,
+            CancellationToken.None);
+
+        var (statusCode, _) = MailRequestHttpResultAssertions.Inspect(result);
+        var response = MailRequestHttpResultAssertions.Value<MailRequestCreateResponse>(result);
+        Assert.Equal(StatusCodes.Status202Accepted, statusCode);
+        Assert.Equal(MailRequestAcceptanceStatus.AlreadyAccepted, response.Status);
+        Assert.Empty(_attachmentSpool!.EnumerateStagingDirectories());
     }
 
     [Fact]
