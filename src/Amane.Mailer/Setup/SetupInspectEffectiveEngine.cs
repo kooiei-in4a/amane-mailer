@@ -200,7 +200,7 @@ public static partial class SetupInspectEffectiveEngine
                 (SetupInspectReason.ProviderInvalid, SetupInspectCredentialStatus.NotApplicable),
             MailerConfigurationLoadFailureKind.MailpitInvalid =>
                 (SetupInspectReason.MailpitInvalid, SetupInspectCredentialStatus.NotApplicable),
-            // None (and any future unclassified kind) map to config conflict; same as prior discard arm.
+            // None preserves the prior fallback mapping. Missing named members fail the build via CS8509.
             MailerConfigurationLoadFailureKind.None =>
                 (SetupInspectReason.ConfigConflict, SetupInspectCredentialStatus.NotApplicable),
         };
