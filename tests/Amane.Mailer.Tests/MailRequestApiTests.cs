@@ -2,6 +2,7 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using Amane.Mailer.Api;
+using Amane.Mailer.Attachments.Spool;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Tests.Fixtures;
@@ -51,6 +52,54 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             ct);
         Assert.NotNull(stored);
         Assert.Equal(MailRequestState.Queued, stored.Status);
+    }
+
+    [Fact]
+    public async Task Post_accepts_attachment_and_transfers_spool_ownership_to_accepted_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateAuthorizedClient();
+        var request = MailRequestTestData.CreateRequest(
+            attachments: [MailRequestTestData.CreateTextAttachment()]);
+        Guid acceptedRequestId = Guid.Empty;
+
+        try
+        {
+            using var response = await client.PostAsync(
+                "/internal/mail-requests",
+                MailRequestTestData.ToJsonContent(request),
+                ct);
+
+            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            Assert.Equal(
+                MailRequestAcceptanceStatus.Accepted,
+                await MailRequestTestData.ReadStatusAsync(response, ct));
+
+            await using var scope = fixture.Factory.Services.CreateAsyncScope();
+            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+            var spool = scope.ServiceProvider.GetRequiredService<AttachmentSpool>();
+            var stored = await repository.FindByIdempotencyKeyAsync(
+                MailerWebApplicationFixtureBase.TenantId,
+                MailerWebApplicationFixtureBase.SourceService,
+                request.MailRequestId,
+                ct);
+            Assert.NotNull(stored);
+            acceptedRequestId = stored!.Id;
+
+            var attachments = await repository.ListAttachmentsAsync(acceptedRequestId, ct);
+            var attachment = Assert.Single(attachments);
+            Assert.True(spool.CommittedFileExists(acceptedRequestId, attachment.SpoolKey));
+            Assert.Empty(spool.EnumerateStagingDirectories());
+        }
+        finally
+        {
+            if (acceptedRequestId != Guid.Empty)
+            {
+                await using var scope = fixture.Factory.Services.CreateAsyncScope();
+                scope.ServiceProvider.GetRequiredService<AttachmentSpool>()
+                    .TryDeleteCommitted(acceptedRequestId);
+            }
+        }
     }
 
     [Fact]
