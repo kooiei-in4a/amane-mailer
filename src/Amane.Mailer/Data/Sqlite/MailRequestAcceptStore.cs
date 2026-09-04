@@ -174,16 +174,45 @@ public sealed class MailRequestAcceptStore(
             : insert.RecipientDisplayName;
 
         // Spool commit (atomic staging -> committed rename) happens before the SQLite
-        // transaction opens (ADR 0022 D-08 steps 4-5). If the transaction below fails after
-        // this succeeds, the committed directory is an orphan with no DB row -- reconciliation
-        // (D-08) cleans it up; it is never treated as a source of truth on its own.
+        // transaction opens (ADR 0022 D-08 steps 4-5). Until BEGIN IMMEDIATE succeeds,
+        // this method owns immediate cleanup of the committed spool on failure.
+        var cleanupCommittedBeforeTransaction = false;
         if (attachments is { Count: > 0 } && attachmentSpool is not null)
         {
             attachmentSpool.CommitStagingToCommitted(insert.Id);
+            cleanupCommittedBeforeTransaction = true;
         }
 
-        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
-        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        SqliteConnection connection;
+        SqliteImmediateTransaction transaction;
+        try
+        {
+            connection = await connections.OpenConnectionAsync(cancellationToken);
+            try
+            {
+                transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+            }
+            catch
+            {
+                await connection.DisposeAsync();
+                throw;
+            }
+        }
+        catch
+        {
+            if (cleanupCommittedBeforeTransaction)
+            {
+                attachmentSpool?.TryDeleteCommitted(insert.Id);
+            }
+
+            throw;
+        }
+
+        // From this point, the existing transaction catch owns rollback and committed-spool
+        // cleanup. Disable the pre-transaction guard so the same spool is never deleted twice.
+        cleanupCommittedBeforeTransaction = false;
+        await using var connectionScope = connection;
+        await using var transactionScope = transaction;
         try
         {
             // ADR 0022 D-09: the acceptance transaction checks the backup maintenance lease
