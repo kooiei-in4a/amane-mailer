@@ -130,7 +130,7 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
-v1.3.7 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v1.3.7`）を clean state から
+v1.3.8 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v1.3.8`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
 conflict・401・403 を自動 smoke するには **Linux local Docker 上** で
 `scripts/release-smoke.sh`（サポート対象の canonical entrypoint）を使います。
@@ -138,11 +138,11 @@ Windows Docker Desktop 上での release smoke live 実行は **サポート対�
 `scripts/release-smoke.ps1` は shell 版と同一 contract を保つ PowerShell 実装として維持し、
 contract 検証は Linux 上の self-test（`release-smoke-preflight-self-test.ps1` 等）で行います。
 手順と設定は [公開 release イメージ smoke](docs/ops/release-image-smoke.md) [(en)](docs/ops/release-image-smoke.en.md) を参照してください。
-公開 identities は [v1.3.7 release record](docs/releases/v1.3.7.md) /
-[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.7) です。
+公開 identities は [v1.3.8 release record](docs/releases/v1.3.8.md) /
+[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.8) です。
 
-v1.3.7 release の GHCR runtime image は **`linux/amd64` only** です。
-現在公開中の release tag は `v1.3.7` ですが、smoke 実行時は `MAILER_IMAGE_TAG` または
+v1.3.8 release の GHCR runtime image は **`linux/amd64` only** です。
+現在公開中の release tag は `v1.3.8` ですが、smoke 実行時は `MAILER_IMAGE_TAG` または
 `MAILER_IMAGE_DIGEST` を明示指定してください（暗黙 default はありません）。
 release notes または Docker manifest で platform を確認し、必要に応じて
 `MAILER_IMAGE_PLATFORM=linux/amd64` を明示してください。

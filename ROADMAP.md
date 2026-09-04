@@ -5,7 +5,7 @@ promise of exact scope, release contents, dates, capacity, or support level.
 
 ## Current stable line
 
-The current public stable line is **v1.3.7**. The authoritative current
+The current public stable line is **v1.3.8**. The authoritative current
 version, tag, supported image platform, and release record are maintained in
 [`release/current-public.json`](release/current-public.json). This roadmap is
 not a release authority; update the authority first when the public release

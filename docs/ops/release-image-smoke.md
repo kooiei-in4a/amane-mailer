@@ -2,7 +2,7 @@
 
 # 公開 release イメージの clean-state smoke
 
-v1.3.7 publish 後の GHCR ランタイムイメージ（現在公開中の例: `ghcr.io/kooiei-in4a/amane-mailer:v1.3.7`）を
+v1.3.8 publish 後の GHCR ランタイムイメージ（現在公開中の例: `ghcr.io/kooiei-in4a/amane-mailer:v1.3.8`）を
 clean state から pull し、Mailer + Mailpit を起動して release runtime path を自動 smoke します。
 
 ローカル開発の `infra/docker/docker-compose.local.yml`（ソースから build）とは異なり、
@@ -107,8 +107,8 @@ Mailpit は release artifact に含まれない smoke helper です。`latest` �
 
 ## 記録済み smoke 結果
 
-`v1.3.7` の value-free smoke 結果（digest、日付、環境、各 check の pass/fail）は
-[docs/releases/v1.3.7.md](../releases/v1.3.7.md) に記録します。過去の `v1.2.0` 結果は
+`v1.3.8` の value-free smoke 結果（digest、日付、環境、各 check の pass/fail）は
+[docs/releases/v1.3.8.md](../releases/v1.3.8.md) に記録します。過去の `v1.2.0` 結果は
 [docs/releases/v1.2.0.md](../releases/v1.2.0.md)、`v1.1.0` 結果は
 [docs/releases/v1.1.0.md](../releases/v1.1.0.md)、`v1.0.1` 結果は
 [docs/releases/v1.0.1.md](../releases/v1.0.1.md)、`v1.0.0` 結果は
