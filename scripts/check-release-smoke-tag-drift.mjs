@@ -192,6 +192,30 @@ assertContains(
   'infra/docker/docker-compose.release-smoke.yml MAILER_IMAGE_REFERENCE requirement',
 );
 
+// Active v2 release smoke / deploy drill Consumer contract (#730 rework).
+const mail05aNoSendSmoke = read('infra/deploy/drills/mail-05a-no-send-smoke.sh');
+const mail05aAcsDrill = read('infra/deploy/drills/mail-05a-acs-drill.sh');
+for (const [label, source] of [
+  ['scripts/release-smoke.sh', releaseSmokeSh],
+  ['scripts/release-smoke.ps1', releaseSmokePs1],
+  ['infra/deploy/drills/mail-05a-no-send-smoke.sh', mail05aNoSendSmoke],
+  ['infra/deploy/drills/mail-05a-acs-drill.sh', mail05aAcsDrill],
+]) {
+  assertNotContains(source, '/internal/mail-requests', `${label} v1 Consumer endpoint`);
+  assertContains(source, '/api/mail-requests', `${label} v2 Consumer endpoint`);
+  assertContains(source, 'MAILER_API_KEY', `${label} managed API key auth`);
+  assertNotContains(source, 'payload_hash', `${label} caller-supplied payload_hash`);
+}
+
+for (const [label, source] of [
+  ['scripts/release-smoke.sh', releaseSmokeSh],
+  ['scripts/release-smoke.ps1', releaseSmokePs1],
+]) {
+  assertNotContains(source, 'MAIL_SERVICE_TOKEN', `${label} v1 MAIL_SERVICE_TOKEN`);
+  assertNotContains(source, 'TENANT_ID', `${label} Consumer TENANT_ID`);
+  assertNotContains(source, 'SOURCE_SERVICE', `${label} Consumer SOURCE_SERVICE`);
+}
+
 for (const [label, source] of [
   ['docs/ops/release-image-smoke.md MAILER_IMAGE_TAG required note', releaseSmokeDocJa],
   ['docs/ops/release-image-smoke.en.md MAILER_IMAGE_TAG required note', releaseSmokeDocEn],

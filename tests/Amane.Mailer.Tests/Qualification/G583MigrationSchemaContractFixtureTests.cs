@@ -16,7 +16,7 @@ public sealed class G583MigrationSchemaContractFixtureTests
             ["016_recipient_persistence_and_plain_submission_evidence.sql"] = "c95e5b5c2d7b3ac52ab7ce6afc591f0a0e97aac59a151b9476bfca751dccc0c5",
             ["017_recipient_delivery_events.sql"] = "4e7f15fb61bc1bccd0386fecb3d267c23b0ce6044c87f7999c8fe1a74a1b2bdb",
             ["018_admin_user_capabilities.sql"] = "94af8770dec3a0e0ec925ce6a1946ad73f51f564e7137f2d82934b4fffb7f471",
-            ["019_sender_api_key_identity.sql"] = "6a4ab0db437101b95d48c4d951b58fd871ff9ddd4d3c845a2bec42311e693263",
+            ["019_sender_api_key_identity.sql"] = "3bc715bed02f186101e8a580a7410198a8ceeed6407a6ed773c7397200ec7d76",
         };
 
     [Fact]
