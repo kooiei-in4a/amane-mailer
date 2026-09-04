@@ -154,7 +154,7 @@ Confirm the platform in the release notes or Docker manifest and pin
 `MAILER_IMAGE_PLATFORM=linux/amd64` when needed.
 
 ```bash
-MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v1.3.8 bash scripts/release-smoke.sh
 ```
 
 No-send / ACS deploy drill helper scripts under `infra/deploy/drills/`

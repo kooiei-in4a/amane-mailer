@@ -148,7 +148,7 @@ release notes または Docker manifest で platform を確認し、必要に応
 `MAILER_IMAGE_PLATFORM=linux/amd64` を明示してください。
 
 ```bash
-MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v1.3.8 bash scripts/release-smoke.sh
 ```
 
 `infra/deploy/drills/` 配下の no-send / ACS deploy drill helper script（`mail-05a-*`）は、

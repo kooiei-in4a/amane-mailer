@@ -28,7 +28,7 @@ Windows Docker Desktop を release / acceptance gate としてはサポートし
 - `bash`、`curl`、`sha256sum` が使えること。
 - GHCR イメージが pull できること（private の場合は事前に `docker login ghcr.io`。
   [GHCR image publish 手順](ghcr-image-publish.md) を参照）。
-- v1.3.6 release の runtime image platform は **`linux/amd64` only** です。release notes または Docker manifest を確認し、
+- v1.3.8 release の runtime image platform は **`linux/amd64` only** です。release notes または Docker manifest を確認し、
   必要に応じて `MAILER_IMAGE_PLATFORM=linux/amd64` を明示してください。
 - 既定の host port `15280`（Mailer）と `18025`（Mailpit）が空いていること。
 - **検証対象 Mailer イメージは `MAILER_IMAGE_TAG` または `MAILER_IMAGE_DIGEST` のどちらか一方を必ず明示**すること（暗黙 default はありません）。
@@ -38,7 +38,7 @@ Windows Docker Desktop を release / acceptance gate としてはサポートし
 リポジトリ root で実行します（**サポート対象の canonical operational entrypoint**）:
 
 ```bash
-MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v1.3.8 bash scripts/release-smoke.sh
 ```
 
 immutable digest で検証する例:
