@@ -2,7 +2,7 @@
 
 # Clean-state smoke for the published release image
 
-After v1.3.7 is published, this runbook pulls the GHCR runtime image (current public example: `ghcr.io/kooiei-in4a/amane-mailer:v1.3.7`) from a clean state, starts Mailer +
+After v1.3.8 is published, this runbook pulls the GHCR runtime image (current public example: `ghcr.io/kooiei-in4a/amane-mailer:v1.3.8`) from a clean state, starts Mailer +
 Mailpit, and smokes the release runtime path.
 
 Unlike `infra/docker/docker-compose.local.yml` (which builds from source), this smoke
@@ -28,7 +28,7 @@ The official clean-state smoke gate for published release images is **Linux loca
 - `bash`, `curl`, and `sha256sum` available.
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
-- For v1.3.6, the runtime image is **`linux/amd64` only**. Confirm the platform in the release notes or Docker
+- For v1.3.8, the runtime image is **`linux/amd64` only**. Confirm the platform in the release notes or Docker
   manifest and pin `MAILER_IMAGE_PLATFORM=linux/amd64` when needed.
 - Default host ports `15280` (Mailer) and `18025` (Mailpit) are free.
 - **The target Mailer image must be supplied explicitly via `MAILER_IMAGE_TAG` or `MAILER_IMAGE_DIGEST` (exactly one; no implicit default).**
@@ -38,7 +38,7 @@ The official clean-state smoke gate for published release images is **Linux loca
 From the repository root (**supported canonical operational entrypoint**):
 
 ```bash
-MAILER_IMAGE_TAG=v1.3.6 bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v1.3.8 bash scripts/release-smoke.sh
 ```
 
 Smoke by immutable digest:
@@ -108,6 +108,6 @@ intentional `latest` usage and how to pin it when needed.
 
 ## Recorded smoke results
 
-Value-free smoke results for `v1.3.7` (digest, date, environment, per-check pass/fail)
-are recorded in [docs/releases/v1.3.7.md](../releases/v1.3.7.md).
+Value-free smoke results for `v1.3.8` (digest, date, environment, per-check pass/fail)
+are recorded in [docs/releases/v1.3.8.md](../releases/v1.3.8.md).
 Previous `v1.2.0` results remain in [docs/releases/v1.2.0.md](../releases/v1.2.0.md).
