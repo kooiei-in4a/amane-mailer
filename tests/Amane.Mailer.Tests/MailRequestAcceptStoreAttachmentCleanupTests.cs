@@ -25,7 +25,7 @@ public sealed class MailRequestAcceptStoreAttachmentCleanupTests(MailerApiFixtur
         var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
         var connections = scope.ServiceProvider.GetRequiredService<SqliteConnectionFactory>();
         var spool = scope.ServiceProvider.GetRequiredService<AttachmentSpool>();
-        var (insert, attachment) = await CreateStagedInsertAsync(spool, ct);
+        var (insert, _) = await CreateStagedInsertAsync(spool, ct);
 
         var missingRoot = Path.Combine(
             Path.GetTempPath(),
@@ -39,15 +39,12 @@ public sealed class MailRequestAcceptStoreAttachmentCleanupTests(MailerApiFixtur
         {
             await Assert.ThrowsAnyAsync<Exception>(() => repository.InsertAcceptedAsync(insert, ct));
 
-            Assert.False(Directory.Exists(spool.GetStagingDirectory(insert.Id)));
-            Assert.False(spool.CommittedDirectoryExists(insert.Id));
-            Assert.False(await RequestRowExistsAsync(insert.Id, ct));
+            await AssertFailedAcceptanceCleanupAsync(spool, insert, ct);
         }
         finally
         {
             ClearConnectionHooks(connections);
             CleanupSpool(spool, insert.Id);
-            _ = attachment;
         }
     }
 
@@ -70,9 +67,7 @@ public sealed class MailRequestAcceptStoreAttachmentCleanupTests(MailerApiFixtur
                 () => repository.InsertAcceptedAsync(insert, ct));
 
             Assert.StartsWith("injected pragma fault after", exception.Message, StringComparison.Ordinal);
-            Assert.False(Directory.Exists(spool.GetStagingDirectory(insert.Id)));
-            Assert.False(spool.CommittedDirectoryExists(insert.Id));
-            Assert.False(await RequestRowExistsAsync(insert.Id, ct));
+            await AssertFailedAcceptanceCleanupAsync(spool, insert, ct);
         }
         finally
         {
@@ -109,14 +104,36 @@ public sealed class MailRequestAcceptStoreAttachmentCleanupTests(MailerApiFixtur
             await Assert.ThrowsAnyAsync<Exception>(() => repository.InsertAcceptedAsync(insert, ct));
 
             Assert.NotNull(heldTransaction);
-            Assert.False(Directory.Exists(spool.GetStagingDirectory(insert.Id)));
-            Assert.False(spool.CommittedDirectoryExists(insert.Id));
-            Assert.False(await RequestRowExistsAsync(insert.Id, ct));
+            await AssertFailedAcceptanceCleanupAsync(spool, insert, ct);
         }
         finally
         {
             ClearConnectionHooks(connections);
             heldTransaction?.Dispose();
+            CleanupSpool(spool, insert.Id);
+        }
+    }
+
+    [Fact]
+    public async Task InsertAcceptedAsync_success_transfers_committed_spool_to_accepted_request_lifecycle()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
+        var spool = scope.ServiceProvider.GetRequiredService<AttachmentSpool>();
+        var (insert, attachment) = await CreateStagedInsertAsync(spool, ct);
+
+        try
+        {
+            await repository.InsertAcceptedAsync(insert, ct);
+
+            Assert.False(Directory.Exists(spool.GetStagingDirectory(insert.Id)));
+            Assert.True(spool.CommittedDirectoryExists(insert.Id));
+            Assert.True(spool.CommittedFileExists(insert.Id, attachment.SpoolKey));
+            Assert.True(await RequestRowExistsAsync(insert.Id, ct));
+        }
+        finally
+        {
             CleanupSpool(spool, insert.Id);
         }
     }
@@ -142,7 +159,6 @@ public sealed class MailRequestAcceptStoreAttachmentCleanupTests(MailerApiFixtur
             "payload",
             cancellationToken);
 
-        var now = DateTimeOffset.UtcNow;
         var insert = new AcceptedMailRequestInsert
         {
             Id = requestId,
@@ -156,11 +172,21 @@ public sealed class MailRequestAcceptStoreAttachmentCleanupTests(MailerApiFixtur
             TextBody = "payload",
             RecipientEmail = "recipient@example.com",
             MaxAttempts = 3,
-            AcceptedAt = now,
+            AcceptedAt = DateTimeOffset.UtcNow,
             Attachments = [attachment],
         };
 
         return (insert, attachment);
+    }
+
+    private async Task AssertFailedAcceptanceCleanupAsync(
+        AttachmentSpool spool,
+        AcceptedMailRequestInsert insert,
+        CancellationToken cancellationToken)
+    {
+        Assert.False(Directory.Exists(spool.GetStagingDirectory(insert.Id)));
+        Assert.False(spool.CommittedDirectoryExists(insert.Id));
+        Assert.False(await RequestRowExistsAsync(insert.Id, cancellationToken));
     }
 
     private async Task<bool> RequestRowExistsAsync(Guid requestId, CancellationToken cancellationToken)
