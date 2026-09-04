@@ -9,8 +9,8 @@ namespace Amane.Mailer.Tests.Spike525;
 /// S-08 (whole-request retry duplicate risk). Uses the REAL production
 /// <see cref="MailpitMailDeliveryProvider"/> and <see cref="ProviderErrorClassifier"/> against
 /// a real Mailpit instance via <see cref="Spike525SmtpRelay"/>; only the relay and the
-/// outer timeout wrapper (a direct copy of MailRequestWorker's send-timeout pattern, since
-/// that method is private) are spike-only.
+/// outer timeout wrapper (a direct copy of MailRequestDispatcher's send-timeout pattern) are
+/// spike-only.
 ///
 /// Gated by AMANE_SPIKE525_MAILPIT_TESTS=1 (see Spike525Gate).
 /// </summary>
@@ -61,9 +61,9 @@ public sealed class Spike525UnknownAfterSubmissionTests
             Retry = new MailerRetryOptions { MaxAttempts = 3, InitialDelaySeconds = 1, MaxDelaySeconds = 2 },
         };
 
-        // Mirrors MailRequestWorker.SendAndFinalizeAsync's send-timeout wrapper exactly
-        // (src/Amane.Mailer/Worker/MailRequestWorker.cs) — that method is private, so the
-        // wrapping is reproduced here rather than mocked, using the real provider beneath it.
+        // Mirrors MailRequestDispatcher.DispatchAsync's send-timeout wrapper exactly
+        // (src/Amane.Mailer/Worker/MailRequestDispatcher.cs). The spike reproduces the wrapper
+        // directly around the real provider rather than constructing the persistence dependencies.
         MailDeliveryResult result;
         try
         {
@@ -96,12 +96,12 @@ public sealed class Spike525UnknownAfterSubmissionTests
         });
 
         // The core #525 finding: current code classifies this as SEND_TIMEOUT/retryable=true
-        // (matching MailRequestWorker's real behavior) even though the provider already has
+        // (matching MailRequestDispatcher's real behavior) even though the provider already has
         // the message — i.e. today's classification cannot distinguish "never received" from
         // "received, response lost", contrary to the Draft ADR's no-automatic-retry requirement
         // for unknown_after_submission.
         Assert.False(result.Succeeded);
-        Assert.True(result.Retryable, "Current MailRequestWorker/ProviderErrorClassifier behavior: ambiguous post-submission timeouts are marked retryable.");
+        Assert.True(result.Retryable, "Current MailRequestDispatcher/ProviderErrorClassifier behavior: ambiguous post-submission timeouts are marked retryable.");
         Assert.True(receivedByProvider, "Mailpit must have actually received the message for this to be a genuine unknown_after_submission case (not definitely_not_submitted).");
     }
 
@@ -154,7 +154,7 @@ public sealed class Spike525UnknownAfterSubmissionTests
             }
             catch (OperationCanceledException)
             {
-                // Expected: matches MailRequestWorker's SEND_TIMEOUT/retryable=true path.
+                // Expected: matches MailRequestDispatcher's SEND_TIMEOUT/retryable=true path.
             }
         }
 

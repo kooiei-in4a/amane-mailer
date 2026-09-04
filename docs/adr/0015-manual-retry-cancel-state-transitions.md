@@ -142,7 +142,7 @@
 | フィールド | 意味 |
 |------------|------|
 | `mail_requests.attempt_count` | **現 dispatch サイクル**の試行予算カウンタ。手動再送で 0 に戻し、次回 claim から再カウントする |
-| `mail_attempts.attempt_number` | その attempt 行が記録された時点の `mail_requests.attempt_count` のスナップショット（[MailRequestWorker](../../src/Amane.Mailer/Worker/MailRequestWorker.cs) が claim 後の値を書き込む） |
+| `mail_attempts.attempt_number` | その attempt 行が記録された時点の `mail_requests.attempt_count` のスナップショット（[MailRequestDispatcher](../../src/Amane.Mailer/Worker/MailRequestDispatcher.cs) が claim 後の値を書き込む） |
 
 手動再送後は **過去の `mail_attempts` 行を削除しない**ため、異なるサイクルで同じ `attempt_number`（例: `1`）が複数行存在しうる。`attempt_number` は **グローバル連番ではない**。
 
