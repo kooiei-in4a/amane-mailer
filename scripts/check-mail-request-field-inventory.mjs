@@ -2,7 +2,7 @@
 
 /**
  * Compare MailRequestCreateRequest JSON field inventories across Contracts,
- * OpenAPI, payload_hash classification, and Python / TypeScript SDKs.
+ * OpenAPI and Python / TypeScript SDKs.
  *
  * Usage:
  *   node scripts/check-mail-request-field-inventory.mjs
@@ -21,21 +21,16 @@ const KNOWN_LAYERS = [
   'typescript-builder',
   'python-validation',
   'typescript-validation',
-  'python-payload-hash',
-  'typescript-payload-hash',
 ];
 
 const defaultPaths = {
   requestDto: 'src/Amane.Mailer.Contracts/MailRequests/MailRequestCreateRequest.cs',
   openApi: 'docs/api/openapi.yaml',
   openApiSchemaName: 'MailRequestCreateRequest',
-  payloadHashContract: 'src/Amane.Mailer.Contracts/Security/MailPayloadHashContract.cs',
   pythonBuilder: 'sdk/python/src/amane_mailer/builder.py',
   pythonValidation: 'sdk/python/src/amane_mailer/validation.py',
-  pythonPayloadHash: 'sdk/python/src/amane_mailer/payload_hash.py',
   tsBuilder: 'sdk/typescript/src/builder.mjs',
   tsValidation: 'sdk/typescript/src/validation.mjs',
-  tsPayloadHash: 'sdk/typescript/src/payload-hash.mjs',
   exceptions: defaultExceptionsPath,
 };
 
@@ -571,28 +566,10 @@ function checkInventory(paths = defaultPaths) {
     contractNullable,
   );
 
-  const includedHashFields = parseStringArray(paths.payloadHashContract, 'IncludedFields', errors);
-  const excludedHashFields = parseStringArray(paths.payloadHashContract, 'ExcludedFields', errors);
-
-  assertSameSet(
-    errors,
-    'payload_hash included+excluded vs Contracts request fields',
-    [...includedHashFields, ...excludedHashFields],
-    contractFields,
-  );
-
-  for (const field of includedHashFields) {
-    if (excludedHashFields.includes(field)) {
-      errors.push(`payload_hash field '${field}' is both included and excluded.`);
-    }
-  }
-
   const pythonBuilder = parsePythonBuilderInventory(paths.pythonBuilder, errors);
   const tsBuilder = parseTypeScriptBuilderInventory(paths.tsBuilder, errors);
   const pythonValidationFields = parsePythonValidationFields(paths.pythonValidation, errors);
   const tsValidationFields = parseTypeScriptValidationFields(paths.tsValidation, errors);
-  const pythonIncluded = parsePythonIncludedFields(paths.pythonPayloadHash, errors);
-  const tsIncluded = parseTypeScriptIncludedFields(paths.tsPayloadHash, errors);
 
   const layers = [
     { name: 'python-builder', fields: pythonBuilder.fields },
@@ -647,19 +624,6 @@ function checkInventory(paths = defaultPaths) {
     'TypeScript builder omit-null fields vs Contracts nullable fields',
     withoutExceptedFields(tsBuilder.omitNullFields, exceptions, 'typescript-builder'),
     withoutExceptedFields(contractNullable, exceptions, 'typescript-builder'),
-  );
-
-  assertSameSet(
-    errors,
-    'Python SDK INCLUDED_FIELDS vs Contracts IncludedFields',
-    withoutExceptedFields(pythonIncluded, exceptions, 'python-payload-hash'),
-    withoutExceptedFields(includedHashFields, exceptions, 'python-payload-hash'),
-  );
-  assertSameSet(
-    errors,
-    'TypeScript SDK INCLUDED_FIELDS vs Contracts IncludedFields',
-    withoutExceptedFields(tsIncluded, exceptions, 'typescript-payload-hash'),
-    withoutExceptedFields(includedHashFields, exceptions, 'typescript-payload-hash'),
   );
 
   return errors;
@@ -1061,15 +1025,6 @@ function runSelfTest() {
         }),
       },
       {
-        name: 'hash-classification-miss',
-        expectPass: false,
-        needle: 'payload_hash included+excluded',
-        files: mutateBaseline(baselineFixtureFiles(), (files) => {
-          files['MailPayloadHashContract.cs'] = files['MailPayloadHashContract.cs']
-            .replace('        "scheduled_at",\n', '');
-        }),
-      },
-      {
         name: 'sdk-one-side-only',
         expectPass: false,
         needle: 'typescript-builder fields drifted',
@@ -1289,7 +1244,7 @@ function main() {
 
   console.log(
     'Mail request field inventory check passed: Contracts, OpenAPI, '
-    + 'payload_hash classification, and Python/TypeScript SDK field sets are in sync.',
+    + 'Python/TypeScript SDK field sets are in sync.',
   );
 }
 

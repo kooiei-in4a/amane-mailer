@@ -39,7 +39,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest(scheduledAt: scheduledAt);
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -75,7 +75,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddMinutes(-1));
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -94,7 +94,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
             scheduledAt: DateTimeOffset.UtcNow.Add(MailRequestScheduleLimits.MaxScheduledAhead).AddMinutes(1));
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -120,11 +120,11 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         Assert.Equal(first.PayloadHash, second.PayloadHash);
 
         using var firstResponse = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(first),
             ct);
         using var secondResponse = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(second),
             ct);
 
@@ -143,7 +143,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(4));
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -163,7 +163,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(4));
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -189,7 +189,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -211,7 +211,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(2));
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -256,7 +256,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(5));
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -320,7 +320,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
 
         var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(2));
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -374,7 +374,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
 
         var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(5));
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -415,7 +415,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
 
         var request = MailRequestTestData.CreateRequest();
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -440,7 +440,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -468,7 +468,7 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -584,17 +584,17 @@ public sealed class MailRequestScheduledApiTests(MailerApiFixture fixture)
     }
 
     private static string StatusUrl(Guid mailRequestId) =>
-        $"/internal/mail-requests/{mailRequestId:D}" +
+        $"/api/mail-requests/{mailRequestId:D}" +
         $"?tenant_id={MailerWebApplicationFixtureBase.TenantId:D}" +
         $"&source_service={MailerWebApplicationFixtureBase.SourceService}";
 
     private static string CancelUrl(Guid mailRequestId) =>
-        $"/internal/mail-requests/{mailRequestId:D}/cancel" +
+        $"/api/mail-requests/{mailRequestId:D}/cancel" +
         $"?tenant_id={MailerWebApplicationFixtureBase.TenantId:D}" +
         $"&source_service={MailerWebApplicationFixtureBase.SourceService}";
 
     private static string RescheduleUrl(Guid mailRequestId) =>
-        $"/internal/mail-requests/{mailRequestId:D}/reschedule" +
+        $"/api/mail-requests/{mailRequestId:D}/reschedule" +
         $"?tenant_id={MailerWebApplicationFixtureBase.TenantId:D}" +
         $"&source_service={MailerWebApplicationFixtureBase.SourceService}";
 

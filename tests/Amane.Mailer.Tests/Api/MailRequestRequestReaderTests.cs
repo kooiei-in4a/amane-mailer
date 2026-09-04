@@ -57,15 +57,12 @@ public sealed class MailRequestRequestReaderTests
     {
         var json = """
             {
-              "tenant_id": "00000000-0000-0000-0000-000000000101",
-              "tenant_id": "00000000-0000-0000-0000-000000000102",
-              "source_service": "example-service",
               "mail_request_id": "00000000-0000-0000-0000-000000000201",
+              "mail_request_id": "00000000-0000-0000-0000-000000000202",
               "purpose": "FormResponseNotification",
               "to": [{ "email": "a@example.com" }],
               "subject": "s",
-              "text_body": "t",
-              "payload_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+              "text_body": "t"
             }
             """;
 

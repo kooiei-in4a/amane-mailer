@@ -1,17 +1,9 @@
-using Amane.Mailer.Configuration;
 using Amane.Mailer.Contracts.MailRequests;
-using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Webhooks.Models;
 
 namespace Amane.Mailer.Webhooks;
 
-public sealed class DeliveryEventEnqueuer(
-    MailerTenantRegistry tenantRegistry,
-    DeliveryEventRepository repository,
-    MailerWebhookOptions webhookOptions,
-    IWebhookDeliveryQueue queue,
-    TimeProvider timeProvider,
-    ILogger<DeliveryEventEnqueuer> logger)
+public sealed class DeliveryEventEnqueuer
 {
     internal const string PostCommitReasonTimeout = "timeout";
     internal const string PostCommitReasonCancellation = "cancellation";
@@ -23,18 +15,9 @@ public sealed class DeliveryEventEnqueuer(
     /// </summary>
     internal static readonly TimeSpan PostCommitEnqueueTimeout = TimeSpan.FromSeconds(5);
 
-    public async Task TryEnqueueForInternalRequestAsync(
+    public Task TryEnqueueForInternalRequestAsync(
         Guid internalRequestId,
-        CancellationToken cancellationToken = default)
-    {
-        var context = await repository.FindContextByInternalRequestIdAsync(internalRequestId, cancellationToken);
-        if (context is null)
-        {
-            return;
-        }
-
-        await TryEnqueueAsync(context, cancellationToken);
-    }
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
 
     /// <summary>
     /// Post-commit best-effort enqueue for an already-durable mutation (#269, #390).
@@ -43,97 +26,15 @@ public sealed class DeliveryEventEnqueuer(
     /// Gaps are recovered by <see cref="ReconcileMissingTerminalEventsAsync"/>.
     /// Returns whether the enqueue attempt completed.
     /// </summary>
-    public async Task<bool> TryEnqueueAfterCommitAsync(Guid internalRequestId)
-    {
-        using var timeout = new CancellationTokenSource(PostCommitEnqueueTimeout);
-        try
-        {
-            await TryEnqueueForInternalRequestAsync(internalRequestId, timeout.Token);
-            return true;
-        }
-        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
-        {
-            LogPostCommitEnqueueFailure(exception: null, PostCommitReasonTimeout, internalRequestId);
-        }
-        catch (OperationCanceledException ex)
-        {
-            LogPostCommitEnqueueFailure(ex, PostCommitReasonCancellation, internalRequestId);
-        }
-        catch (Exception ex)
-        {
-            LogPostCommitEnqueueFailure(ex, PostCommitReasonException, internalRequestId);
-        }
+    public Task<bool> TryEnqueueAfterCommitAsync(Guid internalRequestId) => Task.FromResult(true);
 
-        return false;
-    }
-
-    public async Task TryEnqueueAsync(
+    public Task TryEnqueueAsync(
         DeliveryEventContext context,
-        CancellationToken cancellationToken = default)
-    {
-        var tenant = tenantRegistry.Find(context.TenantId);
-        if (tenant?.Webhook is null)
-        {
-            return;
-        }
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
 
-        var payload = BuildPayload(context);
-        var inserted = await repository.TryInsertAsync(
-            payload,
-            webhookOptions.MaxAttempts,
-            timeProvider.GetUtcNow(),
-            cancellationToken);
-
-        if (!inserted)
-        {
-            return;
-        }
-
-        if (!queue.TrySignalWorkAvailable())
-        {
-            logger.LogWarning(
-                "Webhook delivery queue is full after enqueueing event {EventId} for mail request {MailRequestId}.",
-                payload.EventId,
-                payload.MailRequestId);
-        }
-    }
-
-    public async Task ReconcileMissingTerminalEventsAsync(
+    public Task ReconcileMissingTerminalEventsAsync(
         int batchSize,
-        CancellationToken cancellationToken = default)
-    {
-        var missingRequestIds = await repository.FindInternalRequestIdsMissingDeliveryEventsAsync(
-            batchSize,
-            cancellationToken);
-
-        foreach (var requestId in missingRequestIds)
-        {
-            await TryEnqueueForInternalRequestAsync(requestId, cancellationToken);
-        }
-    }
-
-    private void LogPostCommitEnqueueFailure(
-        Exception? exception,
-        string reason,
-        Guid internalRequestId)
-    {
-        // Identifiers and a fixed reason only. The exception object reaches the logger only for
-        // SQLite faults, whose text is DB-level: providers render exceptions via ToString(), so an
-        // arbitrary exception could otherwise carry the webhook URL or payload text into logs.
-        const string template =
-            "Post-commit webhook enqueue failed for internal request {InternalRequestId}. "
-            + "The mutation stays committed and reconciliation will recreate the event. "
-            + "Reason={Reason}; ExceptionType={ExceptionType}";
-        var exceptionType = exception?.GetType().FullName;
-
-        if (exception is not null && SqliteDatabaseExceptionClassifier.IsDatabaseException(exception))
-        {
-            logger.LogWarning(exception, template, internalRequestId, reason, exceptionType);
-            return;
-        }
-
-        logger.LogWarning(template, internalRequestId, reason, exceptionType);
-    }
+        CancellationToken cancellationToken = default) => Task.CompletedTask;
 
     internal static MailDeliveryEventPayload BuildPayload(DeliveryEventContext context) =>
         new()

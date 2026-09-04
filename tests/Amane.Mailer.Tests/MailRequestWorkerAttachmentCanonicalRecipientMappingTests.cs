@@ -7,6 +7,7 @@ using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Tests.Fixtures;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
@@ -159,7 +160,7 @@ public sealed class MailRequestWorkerAttachmentCanonicalRecipientMappingTests(Ma
                     new MailSuppressionInsert
                     {
                         Id = Guid.NewGuid(),
-                        TenantId = MailerWebApplicationFixtureBase.TenantId,
+                        TenantId = V2PersistenceCompatibility.SuppressionScopeId,
                         RecipientEmail = suppressedAddress,
                         Reason = MailSuppressionReasons.HardBounce,
                         CreatedAt = now,

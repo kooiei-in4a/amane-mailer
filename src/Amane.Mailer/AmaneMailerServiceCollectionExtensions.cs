@@ -4,6 +4,7 @@ using Amane.Mailer.Bounce;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Delivery;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Queue;
 using Amane.Mailer.Webhooks;
@@ -45,14 +46,8 @@ public static class AmaneMailerServiceCollectionExtensions
         });
 
         services.AddOptions<HostOptions>()
-            .Configure<MailerWorkerOptions, MailerWebhookOptions>((options, workerOptions, webhookOptions) =>
-            {
-                var mailHostTimeout = workerOptions.HostShutdownTimeout;
-                var webhookHostTimeout = webhookOptions.HostShutdownTimeout;
-                options.ShutdownTimeout = mailHostTimeout > webhookHostTimeout
-                    ? mailHostTimeout
-                    : webhookHostTimeout;
-            });
+            .Configure<MailerWorkerOptions>((options, workerOptions) =>
+                options.ShutdownTimeout = workerOptions.HostShutdownTimeout);
 
         services.AddStartupValidatedSingleton(provider =>
             MailerSweepOptions.Load(provider.GetRequiredService<IConfiguration>()));
@@ -64,20 +59,6 @@ public static class AmaneMailerServiceCollectionExtensions
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
             var options = MailerAdminAuditRetentionOptions.Load(resolvedConfiguration);
-            if (MailerWorkerOptions.IsEnabled(resolvedConfiguration))
-            {
-                options.Validate();
-            }
-
-            return options;
-        });
-
-        services.AddStartupValidatedSingleton(provider =>
-        {
-            var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
-            var logger = provider.GetRequiredService<ILoggerFactory>()
-                .CreateLogger(typeof(MailerWebhookOptions));
-            var options = MailerWebhookOptions.Load(resolvedConfiguration, logger);
             if (MailerWorkerOptions.IsEnabled(resolvedConfiguration))
             {
                 options.Validate();
@@ -120,6 +101,9 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<MailerReadinessEvaluator>();
 
         services.AddSingleton<SqliteConnectionFactory>();
+        services.AddSingleton<SenderRepository>();
+        services.AddSingleton<SenderDeliveryConfigurationAdapter>();
+        services.AddSingleton<ApiAuthenticationRateLimiter>();
         services.AddSingleton<MailerDbStatsReader>();
         services.AddSingleton<MailerDbStorageInfoReader>();
 
@@ -154,12 +138,7 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<IBounceIngestionQueue>(provider => provider.GetRequiredService<BounceIngestionQueue>());
         services.AddSingleton<DeliveryEventRepository>();
         services.AddSingleton<ExpiredProcessingReaper>();
-        services.AddSingleton<WebhookUrlValidator>();
-        services.AddSingleton<WebhookSignatureService>();
-        services.AddSingleton<WebhookDeliveryClient>();
         services.AddSingleton<DeliveryEventEnqueuer>();
-        services.AddSingleton<WebhookDeliveryQueue>();
-        services.AddSingleton<IWebhookDeliveryQueue>(provider => provider.GetRequiredService<WebhookDeliveryQueue>());
 
         services.AddSingleton<SqlMigrationRunner>();
 
@@ -175,21 +154,14 @@ public static class AmaneMailerServiceCollectionExtensions
 
         services.AddScoped<DbMigrateCommand>();
 
-        // WebhookDeliveryClient is always registered; keep IHttpClientFactory + named client
-        // available even when Mailer:Worker:Enabled=false so Development ValidateOnBuild
-        // (and worker-disabled hosts) can construct the graph (#341 AOT path smoke).
-        services.AddWebhookHttpClient();
-
         if (MailerWorkerOptions.IsEnabled(configuration))
         {
             services.AddSingleton<MailRequestDispatcher>();
             services.AddHostedService<MailRequestSweepService>();
-            services.AddHostedService<WebhookDeliverySweepService>();
             services.AddHostedService<RetentionService>();
             services.AddHostedService<AdminAuditRetentionService>();
             services.AddHostedService<MailerWalCheckpointShutdownService>();
             services.AddHostedService<MailRequestWorker>();
-            services.AddHostedService<WebhookDeliveryWorker>();
             services.AddHostedService<AttachmentSpoolReconciliationService>();
 
             if (MailerBounceIngestionOptions.IsEnabled(configuration))

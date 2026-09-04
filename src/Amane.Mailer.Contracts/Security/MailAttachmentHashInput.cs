@@ -6,7 +6,7 @@ namespace Amane.Mailer.Contracts.Security;
 /// generated from the zero-based position of the attachment within the list passed to
 /// <see cref="MailPayloadHasher"/>, never a caller-supplied value.
 /// </summary>
-public sealed record MailAttachmentHashInput(
+internal sealed record MailAttachmentHashInput(
     string FileName,
     string ContentType,
     long ByteLength,

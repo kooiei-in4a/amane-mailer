@@ -1,4 +1,3 @@
-import { computeDeliveryPayloadSha256Hex } from './payload-hash.mjs';
 import { validateMailRequestDraft } from './validation.mjs';
 import { generateMailRequestId } from './uuid.mjs';
 
@@ -29,16 +28,6 @@ export class MailRequestBuilder {
 
   #fields;
   #explicitNulls;
-
-  tenantId(value) {
-    this.#fields.tenant_id = value;
-    return this;
-  }
-
-  sourceService(value) {
-    this.#fields.source_service = value;
-    return this;
-  }
 
   mailRequestId(value) {
     this.#fields.mail_request_id = value;
@@ -197,14 +186,6 @@ export class MailRequestBuilder {
     }
 
     validateMailRequestDraft(draft);
-
-    const attachmentsForHash = draft.attachments && draft.attachments.length > 0
-      ? draft.attachments
-      : null;
-    draft.payload_hash = computeDeliveryPayloadSha256Hex(
-      { ...draft, payload_hash: 'placeholder' },
-      attachmentsForHash,
-    );
 
     return Object.freeze({ ...draft });
   }

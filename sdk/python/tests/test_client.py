@@ -22,8 +22,6 @@ from amane_mailer.validation import MailRequestValidationError, validate_mail_re
 def build_sample_request() -> dict[str, Any]:
     return (
         MailRequestBuilder()
-        .tenant_id("00000000-0000-0000-0000-000000000101")
-        .source_service("example-service")
         .mail_request_id("00000000-0000-0000-0000-000000000201")
         .purpose("FormResponseNotification")
         .to(email="admin@example.com")
@@ -52,13 +50,11 @@ class MockHandler(BaseHTTPRequestHandler):
 
 
 class ClientTests(unittest.TestCase):
-    def test_builder_computes_payload_hash(self) -> None:
+    def test_builder_omits_v1_identity_and_payload_hash(self) -> None:
         request = build_sample_request()
-        self.assertRegex(request["payload_hash"], r"^[0-9a-f]{64}$")
-        self.assertEqual(
-            request["payload_hash"],
-            "7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9",
-        )
+        self.assertNotIn("tenant_id", request)
+        self.assertNotIn("source_service", request)
+        self.assertNotIn("payload_hash", request)
 
     def test_builder_supports_cc_and_bcc_without_to(self) -> None:
         for role, email, subject, body, expected_hash in (
@@ -80,8 +76,6 @@ class ClientTests(unittest.TestCase):
             with self.subTest(role=role):
                 builder = (
                     MailRequestBuilder()
-                    .tenant_id("00000000-0000-0000-0000-000000000101")
-                    .source_service("example-service")
                     .mail_request_id("00000000-0000-0000-0000-000000000201")
                     .purpose("FormResponseNotification")
                     .subject(subject)
@@ -94,12 +88,10 @@ class ClientTests(unittest.TestCase):
 
                 self.assertNotIn("to", request)
                 self.assertEqual(request[role][0]["email"], email)
-                self.assertEqual(request["payload_hash"], expected_hash)
+                self.assertNotIn("payload_hash", request)
 
         request = (
             MailRequestBuilder()
-            .tenant_id("00000000-0000-0000-0000-000000000101")
-            .source_service("example-service")
             .mail_request_id("00000000-0000-0000-0000-000000000201")
             .purpose("FormResponseNotification")
             .to(email=None)
@@ -109,16 +101,11 @@ class ClientTests(unittest.TestCase):
             .build()
         )
         self.assertIsNone(request["to"])
-        self.assertEqual(
-            request["payload_hash"],
-            "22cee63ba2c526ce67078a838d1b9277f2ce089237dcc36ee28c6b4c086d06ac",
-        )
+        self.assertNotIn("payload_hash", request)
 
     def test_builder_preserves_multiple_recipient_order_and_limits(self) -> None:
         request = (
             MailRequestBuilder()
-            .tenant_id("00000000-0000-0000-0000-000000000101")
-            .source_service("example-service")
             .mail_request_id("00000000-0000-0000-0000-000000000201")
             .purpose("FormResponseNotification")
             .to(email="to1@example.com")
@@ -143,15 +130,10 @@ class ClientTests(unittest.TestCase):
             request["bcc"],
             [{"email": "bcc1@example.com"}, {"email": "bcc2@example.com"}],
         )
-        self.assertEqual(
-            request["payload_hash"],
-            "af1229397d1ac908b2cfb6d9267f6e03ba34927d22bd4efe97a1942123453da0",
-        )
+        self.assertNotIn("payload_hash", request)
 
         maximum = (
             MailRequestBuilder()
-            .tenant_id("00000000-0000-0000-0000-000000000101")
-            .source_service("example-service")
             .mail_request_id("00000000-0000-0000-0000-000000000201")
             .purpose("FormResponseNotification")
             .to(email="to0@example.com")
@@ -174,8 +156,6 @@ class ClientTests(unittest.TestCase):
     def test_validation_allows_empty_to_when_cc_is_present(self) -> None:
         validate_mail_request_draft(
             {
-                "tenant_id": "00000000-0000-0000-0000-000000000101",
-                "source_service": "example-service",
                 "mail_request_id": "00000000-0000-0000-0000-000000000201",
                 "purpose": "FormResponseNotification",
                 "to": [],
@@ -194,8 +174,6 @@ class ClientTests(unittest.TestCase):
             with self.subTest(value=value):
                 request = (
                     MailRequestBuilder()
-                    .tenant_id("00000000-0000-0000-0000-000000000101")
-                    .source_service("example-service")
                     .mail_request_id("00000000-0000-0000-0000-000000000201")
                     .purpose("FormResponseNotification")
                     .to(email="admin@example.com")
@@ -220,8 +198,6 @@ class ClientTests(unittest.TestCase):
                 with self.assertRaises(MailRequestValidationError):
                     (
                         MailRequestBuilder()
-                        .tenant_id("00000000-0000-0000-0000-000000000101")
-                        .source_service("example-service")
                         .mail_request_id("00000000-0000-0000-0000-000000000201")
                         .purpose("FormResponseNotification")
                         .to(email="admin@example.com")
@@ -234,8 +210,6 @@ class ClientTests(unittest.TestCase):
     def test_builder_allows_explicit_null_scheduled_at(self) -> None:
         request = (
             MailRequestBuilder()
-            .tenant_id("00000000-0000-0000-0000-000000000101")
-            .source_service("example-service")
             .mail_request_id("00000000-0000-0000-0000-000000000201")
             .purpose("FormResponseNotification")
             .to(email="admin@example.com")
@@ -247,12 +221,10 @@ class ClientTests(unittest.TestCase):
         self.assertIn("scheduled_at", request)
         self.assertIsNone(request["scheduled_at"])
 
-    def test_scheduled_at_does_not_affect_payload_hash(self) -> None:
+    def test_scheduled_at_is_emitted_without_payload_hash(self) -> None:
         base = build_sample_request()
         scheduled = (
             MailRequestBuilder()
-            .tenant_id("00000000-0000-0000-0000-000000000101")
-            .source_service("example-service")
             .mail_request_id("00000000-0000-0000-0000-000000000201")
             .purpose("FormResponseNotification")
             .to(email="admin@example.com")
@@ -261,16 +233,15 @@ class ClientTests(unittest.TestCase):
             .scheduled_at("2026-08-01T09:00:00Z")
             .build()
         )
-        self.assertEqual(base["payload_hash"], scheduled["payload_hash"])
+        self.assertNotIn("payload_hash", base)
+        self.assertNotIn("payload_hash", scheduled)
         self.assertNotEqual(base.get("scheduled_at"), scheduled["scheduled_at"])
 
-    def test_builder_rejects_invalid_source_service(self) -> None:
+    def test_builder_rejects_invalid_mail_request_id(self) -> None:
         with self.assertRaises(MailRequestValidationError):
             (
                 MailRequestBuilder()
-                .tenant_id("00000000-0000-0000-0000-000000000101")
-                .source_service("INVALID")
-                .mail_request_id("00000000-0000-0000-0000-000000000201")
+                .mail_request_id("not-a-uuid")
                 .purpose("FormResponseNotification")
                 .to(email="one@example.com")
                 .subject("x")
@@ -322,8 +293,6 @@ class ClientTests(unittest.TestCase):
             )
             request = (
                 MailRequestBuilder()
-                .tenant_id("00000000-0000-0000-0000-000000000101")
-                .source_service("example-service")
                 .mail_request_id("00000000-0000-0000-0000-000000000201")
                 .purpose("FormResponseNotification")
                 .to(email="admin@example.com")
@@ -335,7 +304,7 @@ class ClientTests(unittest.TestCase):
             response = client.send_mail(request)
             self.assertEqual(response.status, MailRequestAcceptanceStatus.ACCEPTED)
             self.assertEqual(captured["request"]["scheduled_at"], "2026-08-01T09:00:00Z")
-            self.assertEqual(captured["request"]["payload_hash"], request["payload_hash"])
+            self.assertNotIn("payload_hash", captured["request"])
         finally:
             server.shutdown()
             thread.join(timeout=2)
@@ -393,7 +362,7 @@ class ClientTests(unittest.TestCase):
             thread.join(timeout=2)
 
     def test_client_maps_validation_error(self) -> None:
-        MockHandler.responses = [(422, {"code": "INVALID_PAYLOAD_HASH"})]
+        MockHandler.responses = [(422, {"code": "INVALID_REQUEST"})]
         server = HTTPServer(("127.0.0.1", 0), MockHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

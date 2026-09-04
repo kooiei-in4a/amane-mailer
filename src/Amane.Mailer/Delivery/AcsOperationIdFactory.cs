@@ -3,11 +3,12 @@ namespace Amane.Mailer.Delivery;
 public static class AcsOperationIdFactory
 {
     /// <summary>
-    /// RFC 4122 UUIDv5 for ACS LRO correlation. Namespace is the tenant id; name is source_service:mail_request_id.
+    /// RFC 4122 UUIDv5 for ACS LRO correlation. Namespace is the Sender id and the
+    /// name is mail_request_id. Physical compatibility sentinel values are excluded.
     /// </summary>
-    public static Guid Create(Guid tenantId, string sourceService, Guid mailRequestId)
-    {
-        var name = $"{sourceService}:{mailRequestId:D}";
-        return UuidV5.Create(tenantId, name);
-    }
+    public static Guid Create(Guid senderId, Guid mailRequestId) =>
+        UuidV5.Create(senderId, mailRequestId.ToString("D"));
+
+    internal static Guid Create(Guid senderId, string _, Guid mailRequestId) =>
+        Create(senderId, mailRequestId);
 }

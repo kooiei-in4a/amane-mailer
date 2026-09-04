@@ -7,7 +7,7 @@ using Amane.Mailer.Contracts.MailRequests;
 
 namespace Amane.Mailer.Contracts.Security;
 
-public static class MailPayloadHasher
+internal static class MailPayloadHasher
 {
     private const string AttachmentsFieldName = "attachments";
     private const string ToFieldName = "to";
@@ -89,7 +89,6 @@ public static class MailPayloadHasher
     {
         var properties = new List<(string Name, string CanonicalValue)>
         {
-            ("source_service", EscapeJsonString(request.SourceService)),
             ("purpose", EscapeJsonString(request.Purpose)),
             ("subject", EscapeJsonString(request.Subject)),
         };

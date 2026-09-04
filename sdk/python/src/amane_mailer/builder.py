@@ -1,11 +1,10 @@
-"""Mail request builder with payload_hash computation."""
+"""Mail request builder for the v2 Sender-scoped API."""
 
 from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
 
-from amane_mailer.payload_hash import compute_delivery_payload_sha256_hex
 from amane_mailer.uuid import generate_mail_request_id
 from amane_mailer.validation import validate_mail_request_draft
 
@@ -14,14 +13,6 @@ class MailRequestBuilder:
     def __init__(self) -> None:
         self._fields: dict[str, Any] = {}
         self._explicit_nulls: set[str] = set()
-
-    def tenant_id(self, value: str) -> MailRequestBuilder:
-        self._fields["tenant_id"] = value
-        return self
-
-    def source_service(self, value: str) -> MailRequestBuilder:
-        self._fields["source_service"] = value
-        return self
 
     def mail_request_id(self, value: str) -> MailRequestBuilder:
         self._fields["mail_request_id"] = value
@@ -173,10 +164,4 @@ class MailRequestBuilder:
 
         validate_mail_request_draft(draft)
 
-        hash_input = {**draft, "payload_hash": "placeholder"}
-        attachments_for_hash = draft.get("attachments") or None
-        draft["payload_hash"] = compute_delivery_payload_sha256_hex(
-            hash_input,
-            attachments_for_hash,
-        )
         return draft

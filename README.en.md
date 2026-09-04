@@ -11,7 +11,7 @@ Mailer handles transport.
 ## Layout
 
 - `src/Amane.Mailer`: ASP.NET Core / Native AOT Mailer service.
-- `src/Amane.Mailer.Contracts`: source of truth for HTTP contract DTOs, error constants, and payload hash helper (NuGet package).
+- `src/Amane.Mailer.Contracts`: source of truth for HTTP contract DTOs and error constants (NuGet package).
 - `tests/`: Mailer and Contracts test suites.
 - `config/mailer`: Safe tenant examples and JSON schema.
 - `infra/docker`: Local Docker build and Mailpit compose.
@@ -72,9 +72,8 @@ See [Code quality gates](docs/ops/code-quality-gates.en.md)
 
 ## Run With Mailpit
 
-To confirm your **first delivered message**, start with the Admin-free
-[Zero-Admin first-mail quickstart](docs/ops/first-mail-quickstart.en.md) [(ja)](docs/ops/first-mail-quickstart.md).
-On PowerShell, run `.\scripts\local-first-mail-smoke.ps1`; on bash, run `bash scripts/local-first-mail-smoke.sh` for the same checks automatically.
+v2 delivery requires a pre-provisioned Sender and managed API key. Sender/API
+key Setup UI is tracked by #732 and is not part of this change.
 
 The local compose file builds the Mailer image and starts Mailpit:
 
@@ -88,8 +87,8 @@ Useful local URLs:
 - Mailer readiness: <http://127.0.0.1:5280/readyz>
 - Mailpit UI: <http://127.0.0.1:8025/>
 
-The default local token is `local-mail-service-token`, and the safe example
-tenant is loaded from the local `config/mailer/tenants.example.json` bind mount.
+Set `MAILER_API_KEY` to a managed API key. The key selects its Sender, so the
+consumer does not select a tenant, From address, or provider.
 For the full smoke procedure, including Admin UI setup, ACS switching, and Dead
 Letter checks, see
 [Local Mailer Docker runbook](docs/ops/local-mailer-docker-runbook.en.md) [(ja)](docs/ops/local-mailer-docker-runbook.md).
@@ -180,20 +179,17 @@ Minimum information to POST a mail request to a running Mailer and, when needed,
 
 ### Submit a mail request (POST)
 
-**Official Consumer SDKs (TypeScript / Python):** request builder, automatic
-`payload_hash`, typed errors, and 503 retries — see [sdk/](sdk/README.md).
+**Official Consumer SDKs (TypeScript / Python):** request builder, random request
+ID generation, typed errors, and 503 retries — see [sdk/](sdk/README.md).
 
-- **Endpoint**: `POST http://mailer:8080/internal/mail-requests`
-- **Auth**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
-  - Default local token: `local-mail-service-token`
-- **Required JSON fields**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `subject`, `payload_hash`
+- **Endpoint**: `POST http://mailer:8080/api/mail-requests`
+- **Auth**: `Authorization: Bearer <MANAGED_API_KEY>`
+- **Required JSON fields**: `mail_request_id`, `purpose`, `subject`
+- **Identity**: the API key selects its owning Sender; callers cannot select a Sender, From address, or provider.
 - **Recipient requirement**: at least one recipient across the `to`, `cc`, and `bcc` roles. Treat an omitted, `null`, or empty role as zero recipients.
 - **Content requirement**: at least one of `html_body` and `text_body` is required.
-- **`payload_hash`**: SHA-256 of the canonical delivery payload.
-  Use `MailPayloadHasher` from `Amane.Mailer.Contracts` (.NET),
-  or see [examples/payload-hash/](examples/payload-hash/README.md) for Python / JavaScript / Go,
-  verify a request JSON file with `python examples/payload-hash/python/verify_request.py request.json`,
-  and [docs/api/openapi.yaml](docs/api/openapi.yaml) for the algorithm spec.
+- **Idempotency**: Mailer computes the canonical payload hash on the server. The
+  namespace is `(Sender, mail_request_id)`; consumers do not send `payload_hash`.
 
 After starting the local compose stack, you can run this smoke request from the
 host. `mail_request_id` is the idempotency key, so use a fresh UUID for each
@@ -203,21 +199,18 @@ If `uuidgen` is unavailable, set `request_id` to any UUID string.
 ```bash
 request_id="$(uuidgen)"
 
-curl -i -X POST http://127.0.0.1:5280/internal/mail-requests \
-  -H "Authorization: Bearer local-mail-service-token" \
+curl -i -X POST http://127.0.0.1:5280/api/mail-requests \
+  -H "Authorization: Bearer ${MAILER_API_KEY}" \
   -H "Content-Type: application/json" \
   -d @- <<JSON
 {
-    "tenant_id": "00000000-0000-0000-0000-000000000101",
     "mail_request_id": "${request_id}",
-    "source_service": "example-service",
     "purpose": "FormResponseNotification",
     "to": [
       { "email": "admin@example.com" }
     ],
     "subject": "New response",
-    "text_body": "A new response arrived.",
-    "payload_hash": "7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9"
+    "text_body": "A new response arrived."
 }
 JSON
 ```
@@ -238,17 +231,15 @@ retry, not a new acceptance: it returns `202 Accepted` with
 whether the response body `status` is `accepted` or `already_accepted`.
 
 To safely try a conflict, use a local environment only, keep the same
-`request_id`, change a hash-covered field such as `subject`, recompute
-`payload_hash` for that payload, and POST again. The expected result is
+`request_id`, change a payload field such as `subject`, and POST again. The expected result is
 `409 Conflict` / `IDEMPOTENCY_CONFLICT`.
 
 ### Query delivery status (GET)
 
 `202 Accepted` only means the request was persisted. Use GET to learn the Worker delivery outcome (`delivered`, `failed`, and so on).
 
-- **Endpoint**: `GET http://mailer:8080/internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}`
+- **Endpoint**: `GET http://mailer:8080/api/mail-requests/{mail_request_id}`
 - **Auth**: same Bearer token as POST
-- **Required query params**: `tenant_id`, `source_service` (same values as the POST body)
 - **Response fields**: `mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`
 - **Optional**: POST `scheduled_at` (UTC) for deferred send. Pre-send cancel / reschedule are documented under OpenAPI `/cancel` and `/reschedule`
 - **No PII**: recipient, subject, and body are not returned
@@ -259,11 +250,11 @@ To safely try a conflict, use a local environment only, keep the same
 
 Missing IDs and other tenants' IDs both return **404 `NOT_FOUND`** without leaking existence.
 
-Example immediately after POST (reuse the same `request_id`, `tenant_id`, and `source_service`):
+Example immediately after POST (reuse the same `request_id`):
 
 ```bash
-curl -fsS "http://127.0.0.1:5280/internal/mail-requests/${request_id}?tenant_id=00000000-0000-0000-0000-000000000101&source_service=example-service" \
-  -H "Authorization: Bearer local-mail-service-token"
+curl -fsS "http://127.0.0.1:5280/api/mail-requests/${request_id}" \
+  -H "Authorization: Bearer ${MAILER_API_KEY}"
 ```
 
 Expected response right after acceptance:
@@ -282,11 +273,10 @@ After the Worker finishes delivery, `status` becomes `delivered` and related fie
 
 For the Consumer app compose network setup, see the comments in [infra/deploy/compose.yml](infra/deploy/compose.yml).
 
-For a full runnable Python Consumer sample that computes `payload_hash`, POSTs
+For a full runnable Python Consumer sample that POSTs
 to a local Mailer, and handles `accepted` / `already_accepted` /
 `IDEMPOTENCY_CONFLICT`, see [examples/consumer-python/](examples/consumer-python/README.md).
-For a full runnable Node.js Consumer sample that uses the existing JavaScript
-`payload_hash` helper, POSTs to a local Mailer, and handles `accepted` /
+For a full runnable Node.js Consumer sample that POSTs to a local Mailer and handles `accepted` /
 `already_accepted` / `IDEMPOTENCY_CONFLICT`, see
 [examples/consumer-node/](examples/consumer-node/README.md).
 
@@ -307,7 +297,6 @@ and compose smoke (arm64 Docker on `main` push). See
 - [Service spec](docs/service-spec.en.md) [(ja)](docs/service-spec.md)
 - [OpenAPI HTTP reference](docs/api/openapi.yaml)
 - [Consumer SDKs](sdk/README.md)
-- [Webhook verification](docs/consumer/webhook-verification.md)
 - [Prometheus metrics and alerts](docs/ops/metrics-and-alerts.en.md) [(ja)](docs/ops/metrics-and-alerts.md)
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
 - [GHCR image publishing](docs/ops/ghcr-image-publish.en.md) [(ja)](docs/ops/ghcr-image-publish.md)

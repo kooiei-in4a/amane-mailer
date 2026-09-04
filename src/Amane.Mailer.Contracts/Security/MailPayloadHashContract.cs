@@ -1,6 +1,6 @@
 namespace Amane.Mailer.Contracts.Security;
 
-public static class MailPayloadHashContract
+internal static class MailPayloadHashContract
 {
     /// <summary>
     /// Fields included in payload_hash. The hash document is the delivery payload, not the routing envelope.
@@ -26,7 +26,6 @@ public static class MailPayloadHashContract
     /// </summary>
     public static readonly string[] IncludedFields =
     [
-        "source_service",
         "purpose",
         "to",
         "cc",
@@ -45,6 +44,7 @@ public static class MailPayloadHashContract
     public static readonly string[] ExcludedFields =
     [
         "tenant_id",
+        "source_service",
         "mail_request_id",
         "payload_hash",
         "scheduled_at",

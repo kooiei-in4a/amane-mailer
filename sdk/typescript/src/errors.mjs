@@ -1,12 +1,11 @@
 export const MailerErrorCode = Object.freeze({
   InvalidRequest: 'INVALID_REQUEST',
   RequestTooLarge: 'REQUEST_TOO_LARGE',
-  SourceServiceNotAllowed: 'SOURCE_SERVICE_NOT_ALLOWED',
   TooManyRecipients: 'TOO_MANY_RECIPIENTS',
   IdempotencyConflict: 'IDEMPOTENCY_CONFLICT',
-  InvalidPayloadHash: 'INVALID_PAYLOAD_HASH',
   InvalidMetadata: 'INVALID_METADATA',
-  UnauthorizedTenant: 'UNAUTHORIZED_TENANT',
+  Unauthorized: 'UNAUTHORIZED',
+  AuthenticationRateLimited: 'AUTHENTICATION_RATE_LIMITED',
   MailerTemporarilyUnavailable: 'MAILER_TEMPORARILY_UNAVAILABLE',
   NotFound: 'NOT_FOUND',
 });

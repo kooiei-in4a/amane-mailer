@@ -1,5 +1,4 @@
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SOURCE_SERVICE_PATTERN = /^[a-z0-9][a-z0-9_-]{1,62}$/;
 const FORBIDDEN_METADATA_KEY_PATTERN = /token|password|secret|url/i;
 const SCHEDULED_AT_OFFSET_PATTERN = /(Z|[+-]\d{2}:\d{2})$/;
 const SCHEDULED_AT_DATE_PREFIX_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T/;
@@ -7,8 +6,6 @@ const SCHEDULED_AT_DATE_PREFIX_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T/;
 // JSON field inventory for MailRequestCreateRequest. Parsed by
 // scripts/check-mail-request-field-inventory.mjs — keep in sync with Contracts.
 export const MAIL_REQUEST_JSON_FIELDS = new Set([
-  'tenant_id',
-  'source_service',
   'mail_request_id',
   'purpose',
   'to',
@@ -21,7 +18,6 @@ export const MAIL_REQUEST_JSON_FIELDS = new Set([
   'metadata',
   'scheduled_at',
   'attachments',
-  'payload_hash',
 ]);
 
 // ADR 0022 D-01 fixed MVP limit. Mailer is the authority; this is a client-side fail-fast check
@@ -38,14 +34,6 @@ export class MailRequestValidationError extends Error {
 export function assertUuid(value, fieldName) {
   if (typeof value !== 'string' || !UUID_PATTERN.test(value)) {
     throw new MailRequestValidationError(`${fieldName} must be a UUID string.`);
-  }
-}
-
-export function assertSourceService(value) {
-  if (typeof value !== 'string' || !SOURCE_SERVICE_PATTERN.test(value)) {
-    throw new MailRequestValidationError(
-      'source_service must match ^[a-z0-9][a-z0-9_-]{1,62}$.',
-    );
   }
 }
 
@@ -171,9 +159,7 @@ export function assertAttachments(attachments) {
 }
 
 export function validateMailRequestDraft(draft) {
-  assertUuid(draft.tenant_id, 'tenant_id');
   assertUuid(draft.mail_request_id, 'mail_request_id');
-  assertSourceService(draft.source_service);
 
   if (typeof draft.purpose !== 'string' || draft.purpose.length === 0) {
     throw new MailRequestValidationError('purpose is required.');

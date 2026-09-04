@@ -1,14 +1,14 @@
 openapi: 3.1.0
 info:
   title: Amane Mailer Service API
-  version: "1.3.8"
+  version: "2.0.0"
   description: >-
     汎用メール送信マイクロサービス。送信依頼を受け付けて永続化し、
     バックグラウンド Worker が ACS (Azure Communication Services) または Mailpit
     経由で非同期に配送する。利用側（App）が本文を組み立て、本サービスは「配送専用」。
 
-    - 認証: テナント単位の Bearer トークン
-    - 冪等性: (tenant_id, source_service, mail_request_id) の一意制約。再送は 202 already_accepted、
+    - 認証: Sender に属する managed API Key（Bearer）
+    - 冪等性: (sender_id, mail_request_id) の一意制約。再送は 202 already_accepted、
       同一IDで内容差異は 409。
     - 実配送の一意性: HTTP 受付の冪等性とは別契約。v1.3ではplain／添付requestとも
       provider invocation前にdurable submission evidenceを確立し、Started以上のevidenceが
@@ -17,12 +17,7 @@ info:
       証明できない場合は delivery_unknown へ収束する。詳細は docs/service-spec.md の
       「配送一意性（実送信の保証）」節を参照。
     - 本文/宛先/件名は利用側が組み立て、payload に載せて渡す（テンプレートは持たない）。
-    - 配送結果 Webhook: テナント設定で HTTPS エンドポイントを登録すると、
-      `delivered` / `failed` / `dead_lettered` / `cancelled` / `delivery_unknown` 時に
-      `MailDeliveryEventPayload` を HMAC 署名付き POST で Push する。
-      同一 mail request 世代では **first-wins**（最初の終端状態のみ enqueue。
-      後続の別終端では webhook を再 enqueue / 更新しない）。
-      検証手順は docs/consumer/webhook-verification.md を参照。
+    - 配送結果は status API の polling で取得する。v1 outbound webhook は v2 で廃止。
   contact:
     name: Amane Mailer
 servers:
@@ -32,13 +27,11 @@ servers:
 tags:
   - name: mail-requests
     description: 送信依頼の受付
-  - name: delivery-webhooks
-    description: 配送結果 Webhook（Mailer → Consumer への outbound POST）
   - name: health
     description: ヘルス/レディネス
 
 paths:
-  /internal/mail-requests:
+  /api/mail-requests:
     post:
       tags: [mail-requests]
       summary: メール送信依頼を受け付ける
@@ -56,13 +49,13 @@ paths:
         provider invocation開始後は自動再送しない。添付ファイルの検証・上限・spool・
         provider mapping・DeliveryUnknown の詳細は
         docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md を参照。
-        `to`／`cc`／`bcc` は ADR 0023 D-01 の複数宛先契約として受理・検証・payload_hash 化
+        `to`／`cc`／`bcc` は ADR 0023 D-01 の複数宛先契約として受理・検証・server-side canonicalization
         され、canonical recipient persistenceを経由してTo、Cc、Bccの全件が1件のprovider
         messageへ送信される。legacy recipient shadowはbinary互換用途に限られ、Bcc-only
         では固定redacted sentinelを使用する（`to` schema の説明を参照）。
       operationId: createMailRequest
       security:
-        - tenantBearer: []
+        - managedApiKey: []
       requestBody:
         required: true
         content:
@@ -87,21 +80,21 @@ paths:
                 invalidUtf8:
                   value: { code: INVALID_REQUEST, message: "Request body is not valid UTF-8." }
         '401':
-          description: テナント/トークン不一致
+          description: API Key が invalid / unknown / revoked、または Sender が disabled
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
-                unauthorized: { value: { code: UNAUTHORIZED_TENANT } }
-        '403':
-          description: source_service がテナントの許可リスト外
+                unauthorized: { value: { code: UNAUTHORIZED } }
+        '429':
+          description: unauthenticated authentication attempts の rate limit
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
-                forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
+                rateLimited: { value: { code: AUTHENTICATION_RATE_LIMITED } }
         '409':
-          description: 同一 mail_request_id で payload_hash が異なる（冪等性衝突）
+          description: 同一 Sender / mail_request_id で server-side canonical payload が異なる
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -122,7 +115,6 @@ paths:
               examples:
                 tooManyRecipients: { value: { code: TOO_MANY_RECIPIENTS } }
                 invalidMetadata: { value: { code: INVALID_METADATA } }
-                invalidPayloadHash: { value: { code: INVALID_PAYLOAD_HASH } }
                 invalidRecipient: { value: { code: INVALID_REQUEST, message: "A valid recipient is required." } }
                 scheduledAtInPast: { value: { code: SCHEDULED_AT_IN_PAST } }
                 scheduledAtTooFar: { value: { code: SCHEDULED_AT_TOO_FAR } }
@@ -152,7 +144,7 @@ paths:
                 storageFull: { value: { code: STORAGE_FULL, retryable: false } }
                 attachmentStorageUnavailable: { value: { code: ATTACHMENT_STORAGE_UNAVAILABLE, retryable: true } }
 
-  /internal/mail-requests/{mail_request_id}/cancel:
+  /api/mail-requests/{mail_request_id}/cancel:
     post:
       tags: [mail-requests]
       summary: 送信前のメール依頼をキャンセルする
@@ -160,11 +152,11 @@ paths:
         `queued` かつ未 claim（送信前）の依頼のみキャンセルできる。
         成功時は `cancelled` ステータスを返す。既に `cancelled` の同一キーへの再 cancel は冪等に 200 を返す。
         active `processing` / `delivered` 等は 422 INVALID_STATE。
-        webhook enqueue は best-effort（失敗しても cancel HTTP 成功を崩さない。欠落は reconcile で補完し得る）。
-        他 tenant の ID は存在有無を漏らさず 404。
+        v2 は outbound webhook を生成しない。
+        他 Sender の ID は存在有無を漏らさず 404。
       operationId: cancelMailRequest
       security:
-        - tenantBearer: []
+        - managedApiKey: []
       parameters:
         - name: mail_request_id
           in: path
@@ -172,18 +164,6 @@ paths:
           schema:
             type: string
             format: uuid
-        - name: tenant_id
-          in: query
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: source_service
-          in: query
-          required: true
-          schema:
-            type: string
-            pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
       responses:
         '200':
           description: キャンセル後の配送ステータス
@@ -192,7 +172,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/MailRequestStatusResponse'
         '400':
-          description: mail_request_id / tenant_id / source_service が不正または欠落
+          description: mail_request_id が不正または欠落
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -202,14 +182,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
-                unauthorized: { value: { code: UNAUTHORIZED_TENANT } }
-        '403':
-          description: source_service がテナントの許可リスト外
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-              examples:
-                forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
+                unauthorized: { value: { code: UNAUTHORIZED } }
         '404':
           description: 指定スコープ内に mail request が存在しない
           content:
@@ -235,7 +208,7 @@ paths:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
                 storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
-  /internal/mail-requests/{mail_request_id}/reschedule:
+  /api/mail-requests/{mail_request_id}/reschedule:
     post:
       tags: [mail-requests]
       summary: 予約送信時刻を変更する
@@ -247,7 +220,7 @@ paths:
         `next_attempt_at`（再試行）とは独立。
       operationId: rescheduleMailRequest
       security:
-        - tenantBearer: []
+        - managedApiKey: []
       parameters:
         - name: mail_request_id
           in: path
@@ -255,18 +228,6 @@ paths:
           schema:
             type: string
             format: uuid
-        - name: tenant_id
-          in: query
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: source_service
-          in: query
-          required: true
-          schema:
-            type: string
-            pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
       requestBody:
         required: true
         content:
@@ -294,14 +255,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
-                unauthorized: { value: { code: UNAUTHORIZED_TENANT } }
-        '403':
-          description: source_service がテナントの許可リスト外
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-              examples:
-                forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
+                unauthorized: { value: { code: UNAUTHORIZED } }
         '404':
           description: 指定スコープ内に mail request が存在しない
           content:
@@ -336,17 +290,17 @@ paths:
                 unavailable: { value: { code: MAILER_TEMPORARILY_UNAVAILABLE, retryable: true } }
                 storageFull: { value: { code: STORAGE_FULL, retryable: false } }
 
-  /internal/mail-requests/{mail_request_id}:
+  /api/mail-requests/{mail_request_id}:
     get:
       tags: [mail-requests]
       summary: メール送信依頼の配送ステータスを照会する
       description: >-
-        指定 tenant / source_service スコープ内の mail request の Worker 配送ステータスを返す。
-        存在しない ID および他 tenant の ID は存在有無を漏らさず 404 を返す。
+        認証済み Sender スコープ内の mail request の Worker 配送ステータスを返す。
+        存在しない ID および他 Sender の ID は存在有無を漏らさず 404 を返す。
         返却 JSON には recipient / subject / body 等の PII は含めない。
       operationId: getMailRequestStatus
       security:
-        - tenantBearer: []
+        - managedApiKey: []
       parameters:
         - name: mail_request_id
           in: path
@@ -355,20 +309,6 @@ paths:
             type: string
             format: uuid
           description: 利用側生成の依頼 ID（POST 時と同じ値）。
-        - name: tenant_id
-          in: query
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: 環境×プロダクト単位の識別子。Bearer トークンと対で認可される。
-        - name: source_service
-          in: query
-          required: true
-          schema:
-            type: string
-            pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
-          description: 呼び出し元サービス名。テナントの source_services 許可リストに含まれる必要がある。
       responses:
         '200':
           description: 配送ステータス（Worker 状態）
@@ -393,7 +333,7 @@ paths:
                     accepted_at: "2026-07-21T12:00:00Z"
                     delivered_at: "2026-07-21T12:05:00Z"
         '400':
-          description: mail_request_id / tenant_id / source_service が不正または欠落
+          description: mail_request_id が不正または欠落
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -405,16 +345,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               examples:
-                unauthorized: { value: { code: UNAUTHORIZED_TENANT } }
-        '403':
-          description: source_service がテナントの許可リスト外
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-              examples:
-                forbidden: { value: { code: SOURCE_SERVICE_NOT_ALLOWED } }
+                unauthorized: { value: { code: UNAUTHORIZED } }
         '404':
-          description: 指定スコープ内に mail request が存在しない（他 tenant の ID も同様）
+          description: 指定スコープ内に mail request が存在しない（他 Sender の ID も同様）
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -479,35 +412,23 @@ paths:
 
 components:
   securitySchemes:
-    tenantBearer:
+    managedApiKey:
       type: http
       scheme: bearer
+      bearerFormat: managed API Key
       description: >-
-        テナント単位の共有シークレット。トークンの実体はサーバー側環境変数
-        （tenants.json の token_env が指す名前、例: MAIL_SERVICE_TOKEN_PRODUCTION）に格納。
-        ボディの tenant_id とトークンの組が一致しなければ 401。
+        `amk_<public-key-id>.<random-secret>` 形式の managed API Key。
+        Key が caller identity と Sender selection を同時に決定する。
 
   schemas:
     MailRequestCreateRequest:
       type: object
       additionalProperties: false
       required:
-        - tenant_id
-        - source_service
         - mail_request_id
         - purpose
         - subject
-        - payload_hash
       properties:
-        tenant_id:
-          type: string
-          format: uuid
-          description: 環境×プロダクト単位の識別子。Bearer トークンと対で認可される。
-        source_service:
-          type: string
-          pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
-          description: 呼び出し元サービス名。テナントの source_services 許可リストに含まれる必要がある。
-          example: example-service
         mail_request_id:
           type: string
           format: uuid
@@ -537,7 +458,7 @@ components:
           type: [array, "null"]
           description: >-
             CC 宛先（ADR 0023 D-01）。未指定・null・空配列は同義（Cc 0 件）で
-            payload_hash から省略される。role 上限・重複規則は `to` と同じ。
+            server-side canonical payload から省略される。role 上限・重複規則は `to` と同じ。
             canonical recipient persistenceを通じてproviderへ送信される（`to` の説明を参照）。
           maxItems: 10
           items:
@@ -546,7 +467,7 @@ components:
           type: [array, "null"]
           description: >-
             BCC 宛先（ADR 0023 D-01）。未指定・null・空配列は同義（Bcc 0 件）で
-            payload_hash から省略される。role 上限・重複規則は `to` と同じ。
+            server-side canonical payload から省略される。role 上限・重複規則は `to` と同じ。
             canonical recipient persistenceを通じてproviderへ送信される。legacy shadowには
             raw Bcc addressを保存しない（`to` の説明を参照）。
           maxItems: 10
@@ -598,44 +519,8 @@ components:
             Worker / Sweep は scheduled_at 到来前に claim しない。
             next_attempt_at（再試行バックオフ）とは独立。
             過去時刻は 422 SCHEDULED_AT_IN_PAST、受付時刻から 30 日超は 422 SCHEDULED_AT_TOO_FAR。
-            payload_hash 対象外（ルーティング / スケジュール envelope）。
-        payload_hash:
-          type: string
-          description: >-
-            配送ペイロードの SHA-256（hex）。サーバー側で再計算し不一致なら 422。
-            同一 mail_request_id で hash が違えば 409。
-            hash 対象は MailPayloadHashContract.IncludedFields と同じ
-            source_service, purpose, to, cc, bcc, subject, html_body, text_body,
-            reply_to, metadata, attachments。tenant_id, mail_request_id, payload_hash,
-            scheduled_at は routing / scheduling envelope / 自己参照のため除外する。
-            計算手順: 対象フィールドのみ抽出する。任意フィールドは payload JSON に
-            存在する場合だけ含め、明示的な null は null として含める。
-            省略された任意フィールドは hash 対象外。キーをアルファベット昇順でソートし、スペースなし canonical JSON
-            （MailPayloadHasher.BuildDeliveryPayloadJson() の独自エスケープ）へ
-            直列化する。UTF-8 エンコード後に SHA-256 を計算し、小文字 hex で出力する。
-            to／cc／bcc は同一の省略規則に従う（ADR 0023 D-02）: 未指定・null・空配列は
-            同義でそのrole propertyをhash documentから省略する（CC-only requestでも
-            "to" キーは一切出ない）。1 件以上の場合だけ role プロパティを含め、各要素を
-            role 内配列順のまま、受理済み canonical recipient（trim 済み・大文字小文字保持の
-            address、空白のみの display name は省略）で反映する。単一 To のみの request は
-            既存 v1.2 single-To hash vector と byte-identical。
-            attachments は未指定・空配列のいずれでも hash document から省略する
-            （添付なし ADR 0012 hash とバイト同一）。1 件以上ある場合だけ、各要素を
-            file_name（NFC）、content_type（ADR 0022 D-06 canonical 値）、byte_length、
-            content_sha256（小文字 hex）、order（0 始まり、配列位置から生成）の 5 項目へ
-            射影して含める。content_base64 と Consumer 申告の content_type は
-            hash に含めない（ADR 0022 D-03）。
-            テストベクトルは tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json
-            （single-To baseline）および
-            tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json
-            （ADR 0023 recipient conformance。詳細は examples/payload-hash/README.md を参照）。
-            ADR は docs/adr/0012-mail-via-mailer-microservice.md D-05 および
-            docs/adr/0022-attachment-contract-validation-and-delivery-boundaries.md D-03。
-            .NET Consumer は MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request) を使用し、
-            送信 JSON は null 任意フィールドを省略する設定に合わせる。
+            server-side canonical payload identity の対象外（schedule envelope）。
       example:
-        tenant_id: "00000000-0000-0000-0000-000000000301"
-        source_service: example-service
         mail_request_id: "018f7c2a-0000-7000-8000-000000000000"
         purpose: FormResponseNotification
         to:
@@ -646,7 +531,6 @@ components:
         html_body: "<p>ご回答ありがとうございました。</p>"
         metadata:
           form_id: "42"
-        payload_hash: "9c24a8154fa03970c9a6512e680af20e2d64fa5555849b80525215a74388b8fe"
 
     MailRecipient:
       type: object
@@ -794,58 +678,6 @@ components:
             新しい初回配送予定時刻（UTC）。null はスケジュール解除（即時）。
             過去時刻 / 30 日超は create と同じ 422 コード。
 
-    MailDeliveryEventPayload:
-      type: object
-      additionalProperties: false
-      description: >-
-        配送結果 Webhook の JSON 本文。recipient / subject / body 等の PII は含まない。
-        同一 mail request 世代に対して高々 1 イベントのみ enqueue される（first-wins:
-        最初の終端状態が残り、Admin 手動再送後の別終端では再 enqueue / 更新しない）。
-        Consumer は event_id で重複排除する。最新状態は status GET を正とする。
-      required:
-        - event_id
-        - event_type
-        - occurred_at
-        - tenant_id
-        - source_service
-        - mail_request_id
-        - status
-        - attempt_count
-      properties:
-        event_id:
-          type: string
-          format: uuid
-          description: イベント一意 ID。Webhook 再送時も同一値。
-        event_type:
-          type: string
-          enum: [delivered, failed, dead_lettered, cancelled, delivery_unknown]
-        occurred_at:
-          type: string
-          format: date-time
-        tenant_id:
-          type: string
-          format: uuid
-        source_service:
-          type: string
-          pattern: '^[a-z0-9][a-z0-9_-]{1,62}$'
-        mail_request_id:
-          type: string
-          format: uuid
-        status:
-          type: string
-          enum: [delivered, failed, dead_lettered, cancelled, delivery_unknown]
-          description: 配送結果ステータス（#216 ステータス API と同一モデル）。
-        attempt_count:
-          type: integer
-          minimum: 0
-        last_error_code:
-          type: [string, "null"]
-          description: >-
-            最新 attempt の stable delivery error code（`MailDeliveryErrorCodes`。例:
-            ACS_REQUEST_FAILED, PROVIDER_NETWORK, PROVIDER_UNKNOWN, RECIPIENT_SUPPRESSED,
-            ATTACHMENT_STORAGE_MISSING, DELIVERY_UNKNOWN。PII / exception 型名を含まない
-            分類コード）。
-
     Error:
       type: object
       required: [code]
@@ -855,12 +687,11 @@ components:
           enum:
             - INVALID_REQUEST
             - REQUEST_TOO_LARGE
-            - SOURCE_SERVICE_NOT_ALLOWED
             - TOO_MANY_RECIPIENTS
             - IDEMPOTENCY_CONFLICT
-            - INVALID_PAYLOAD_HASH
             - INVALID_METADATA
-            - UNAUTHORIZED_TENANT
+            - UNAUTHORIZED
+            - AUTHENTICATION_RATE_LIMITED
             - MAILER_TEMPORARILY_UNAVAILABLE
             - STORAGE_FULL
             - NOT_FOUND

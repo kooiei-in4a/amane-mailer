@@ -5,6 +5,7 @@ using Amane.Mailer.Api;
 using Amane.Mailer.Attachments.Spool;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
 using Amane.Mailer.Contracts.MailRequests;
 using Microsoft.AspNetCore.Hosting;
@@ -34,7 +35,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -66,7 +67,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         try
         {
             using var response = await client.PostAsync(
-                "/internal/mail-requests",
+                "/api/mail-requests",
                 MailRequestTestData.ToJsonContent(request),
                 ct);
 
@@ -110,11 +111,11 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var first = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         using var second = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -136,7 +137,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             .Select(async _ =>
             {
                 using var response = await client.PostAsync(
-                    "/internal/mail-requests",
+                    "/api/mail-requests",
                     MailRequestTestData.ToJsonContent(request),
                     ct);
 
@@ -162,11 +163,11 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             subject: "Changed subject");
 
         using var first = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(firstRequest),
             ct);
         using var second = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(conflictingRequest),
             ct);
 
@@ -178,24 +179,6 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
-    public async Task Unregistered_source_service_returns_403()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        using var client = CreateAuthorizedClient();
-        var request = MailRequestTestData.CreateRequest(sourceService: "unknown-service");
-
-        using var response = await client.PostAsync(
-            "/internal/mail-requests",
-            MailRequestTestData.ToJsonContent(request),
-            ct);
-
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        Assert.Equal(
-            MailerErrorCodes.SourceServiceNotAllowed,
-            await MailRequestTestData.ReadCodeAsync(response, ct));
-    }
-
-    [Fact]
     public async Task Unauthorized_token_returns_401()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -203,13 +186,13 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.UnauthorizedTenant,
+            MailerErrorCodes.Unauthorized,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
@@ -224,34 +207,13 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.UnauthorizedTenant,
-            await MailRequestTestData.ReadCodeAsync(response, ct));
-    }
-
-    [Fact]
-    public async Task Payload_hash_mismatch_returns_422()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        using var client = CreateAuthorizedClient();
-        var request = MailRequestTestData.CreateRequest() with
-        {
-            PayloadHash = new string('f', 64),
-        };
-
-        using var response = await client.PostAsync(
-            "/internal/mail-requests",
-            MailRequestTestData.ToJsonContent(request),
-            ct);
-
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-        Assert.Equal(
-            MailerErrorCodes.InvalidPayloadHash,
+            MailerErrorCodes.Unauthorized,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
@@ -266,7 +228,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         });
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -287,7 +249,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         });
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -308,7 +270,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         });
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -338,7 +300,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         };
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -368,7 +330,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         };
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -404,7 +366,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         };
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -443,7 +405,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         };
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -518,7 +480,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         };
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -536,7 +498,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest(replyTo: "not-an-email");
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -554,20 +516,17 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         using var content = new StringContent(
             $$"""
             {
-              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
-              "source_service": "{{MailerWebApplicationFixtureBase.SourceService}}",
               "mail_request_id": "{{Guid.NewGuid()}}",
               "purpose": "FormResponseNotification",
               "to": null,
               "subject": "Subject",
-              "text_body": "Body",
-              "payload_hash": "{{new string('0', 64)}}"
+              "text_body": "Body"
             }
             """,
             Encoding.UTF8,
             "application/json");
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
         Assert.Equal(
@@ -576,7 +535,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
-    public async Task Null_recipient_item_returns_422()
+    public async Task Null_recipient_item_returns_400()
     {
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
@@ -596,9 +555,9 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             Encoding.UTF8,
             "application/json");
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(
             MailerErrorCodes.InvalidRequest,
             await MailRequestTestData.ReadCodeAsync(response, ct));
@@ -624,7 +583,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             }
             """);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(
@@ -651,7 +610,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             }
             """);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(
@@ -679,7 +638,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             }
             """);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(
@@ -706,7 +665,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             }
             """);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(
@@ -734,7 +693,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             }
             """);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(
@@ -754,7 +713,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         });
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -784,13 +743,12 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             }
             """);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
-        // A malformed body is rejected as 400 before tenant authorization (401) is evaluated,
-        // matching the existing invalid-JSON path.
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        // Authentication is intentionally evaluated before parsing the request body.
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.InvalidRequest,
+            MailerErrorCodes.Unauthorized,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
@@ -814,19 +772,18 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             }
             """);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
-        // Unknown properties throw during deserialize, before authorization is evaluated.
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.InvalidRequest,
+            MailerErrorCodes.Unauthorized,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
     [Fact]
     public async Task Oversized_request_body_returns_413()
     {
-        // /internal/mail-requests accepts attachments (ADR 0022 D-02), so its cap is
+        // /api/mail-requests accepts attachments (ADR 0022 D-02), so its cap is
         // MailAttachmentLimits.MaxConsumerHttpEnvelopeBytes (16 MiB), not the base 256,000 bytes.
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
@@ -836,7 +793,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             "application/json");
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             content,
             ct);
 
@@ -857,7 +814,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             "application/json");
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             content,
             ct);
 
@@ -904,7 +861,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             var request = MailRequestTestData.CreateRequest();
 
             using var response = await client.PostAsync(
-                "/internal/mail-requests",
+                "/api/mail-requests",
                 MailRequestTestData.ToJsonContent(request),
                 ct);
 
@@ -932,6 +889,36 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
         {
             var tenantConfigPath = Path.Combine(root, "tenants.json");
             await File.WriteAllTextAsync(tenantConfigPath, TenantConfigJson, ct);
+
+            var bootstrapFactory = new SqliteConnectionFactory(
+                new ConfigurationBuilder()
+                    .AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["ConnectionStrings:Mailer"] = $"Data Source={databasePath}",
+                    })
+                    .Build());
+            await new SqlMigrationRunner(bootstrapFactory).ApplyPendingAsync(ct);
+            await using (var connection = await bootstrapFactory.OpenConnectionAsync(ct))
+            await using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    INSERT INTO senders (
+                        sender_id, email, display_name, enabled, created_at, disabled_at)
+                    VALUES (
+                        @SenderId, 'noreply@example.com', 'Example Service', 1,
+                        '2026-01-01T00:00:00.0000000Z', NULL);
+                    INSERT INTO api_keys (
+                        key_id, sender_id, name, secret_digest, created_at, revoked_at)
+                    VALUES (
+                        @SenderId, @SenderId, 'test',
+                        X'66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925',
+                        '2026-01-01T00:00:00.0000000Z', NULL);
+                    """;
+                command.Parameters.AddWithValue(
+                    "@SenderId",
+                    MailerWebApplicationFixtureBase.TenantId.ToString("D"));
+                await command.ExecuteNonQueryAsync(ct);
+            }
 
             using var storageFullFactory = new WebApplicationFactory<global::Program>()
                 .WithWebHostBuilder(builder =>
@@ -971,7 +958,7 @@ public sealed class MailRequestApiTests(MailerApiFixture fixture)
             var request = MailRequestTestData.CreateRequest();
 
             using var response = await client.PostAsync(
-                "/internal/mail-requests",
+                "/api/mail-requests",
                 MailRequestTestData.ToJsonContent(request),
                 ct);
 

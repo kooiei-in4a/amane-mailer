@@ -9,6 +9,7 @@ using Amane.Mailer.Contracts.Security;
 using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Json;
 using Amane.Mailer.Queue;
 using Amane.Mailer.Tests.Fixtures;
@@ -21,6 +22,16 @@ namespace Amane.Mailer.Tests.Api;
 
 public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
 {
+    private static readonly AuthenticatedApiKey Identity = new(
+        Guid.Parse("00000000-0000-0000-0000-000000000730"),
+        new SenderIdentity(
+            MailerWebApplicationFixtureBase.TenantId,
+            "noreply@example.com",
+            "Example Service",
+            true,
+            DateTimeOffset.UnixEpoch,
+            null));
+
     private string? _root;
     private MailerTenantRegistry? _registry;
     private AttachmentSpool? _attachmentSpool;
@@ -56,115 +67,10 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task HandleAsync_returns_401_for_unauthorized_token()
-    {
-        var request = MailRequestTestData.CreateRequest();
-        var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest("wrong-token");
-
-        var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
-            request,
-            body,
-            new StubMailRequestRepository(),
-            new MailRequestQueue(),
-            _registry!,
-            _attachmentSpool!,
-            TimeProvider.System,
-            NullLogger.Instance,
-            CancellationToken.None);
-
-        var (statusCode, responseBody) = MailRequestHttpResultAssertions.Inspect(result);
-        Assert.Equal(StatusCodes.Status401Unauthorized, statusCode);
-        Assert.Contains(MailerErrorCodes.UnauthorizedTenant, responseBody, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task HandleAsync_returns_403_for_disallowed_source_service()
-    {
-        var request = MailRequestTestData.CreateRequest(sourceService: "other-service");
-        var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
-
-        var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
-            request,
-            body,
-            new StubMailRequestRepository(),
-            new MailRequestQueue(),
-            _registry!,
-            _attachmentSpool!,
-            TimeProvider.System,
-            NullLogger.Instance,
-            CancellationToken.None);
-
-        var (statusCode, responseBody) = MailRequestHttpResultAssertions.Inspect(result);
-        Assert.Equal(StatusCodes.Status403Forbidden, statusCode);
-        Assert.Contains(MailerErrorCodes.SourceServiceNotAllowed, responseBody, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task HandleAsync_returns_422_for_payload_hash_mismatch()
-    {
-        var request = MailRequestTestData.CreateRequest() with
-        {
-            PayloadHash = new string('1', 64),
-        };
-        var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
-
-        var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
-            request,
-            body,
-            new StubMailRequestRepository(),
-            new MailRequestQueue(),
-            _registry!,
-            _attachmentSpool!,
-            TimeProvider.System,
-            NullLogger.Instance,
-            CancellationToken.None);
-
-        var (statusCode, responseBody) = MailRequestHttpResultAssertions.Inspect(result);
-        Assert.Equal(StatusCodes.Status422UnprocessableEntity, statusCode);
-        Assert.Contains(MailerErrorCodes.InvalidPayloadHash, responseBody, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task HandleAsync_deletes_attachment_staging_after_payload_hash_mismatch()
-    {
-        var request = MailRequestTestData.CreateRequest(
-            attachments: [MailRequestTestData.CreateTextAttachment()]) with
-        {
-            PayloadHash = new string('1', 64),
-        };
-        var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
-
-        var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
-            request,
-            body,
-            new StubMailRequestRepository(),
-            new MailRequestQueue(),
-            _registry!,
-            _attachmentSpool!,
-            TimeProvider.System,
-            NullLogger.Instance,
-            CancellationToken.None);
-
-        var (statusCode, responseBody) = MailRequestHttpResultAssertions.Inspect(result);
-        Assert.Equal(StatusCodes.Status422UnprocessableEntity, statusCode);
-        Assert.Contains(MailerErrorCodes.InvalidPayloadHash, responseBody, StringComparison.Ordinal);
-        Assert.Empty(_attachmentSpool!.EnumerateStagingDirectories());
-    }
-
-    [Fact]
     public async Task HandleAsync_returns_already_accepted_for_idempotent_repost()
     {
         var request = MailRequestTestData.CreateRequest();
         var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
         var repository = new StubMailRequestRepository
         {
             Existing = new MailRequestIdempotencyRow
@@ -176,12 +82,12 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         };
 
         var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
             request,
             body,
+            Identity,
+            _registry!.ListTenants().Single(),
             repository,
             new MailRequestQueue(),
-            _registry!,
             _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
@@ -200,7 +106,6 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         var request = MailRequestTestData.CreateRequest(
             attachments: [MailRequestTestData.CreateTextAttachment()]);
         var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
         var repository = new StubMailRequestRepository
         {
             Existing = new MailRequestIdempotencyRow
@@ -212,12 +117,12 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         };
 
         var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
             request,
             body,
+            Identity,
+            _registry!.ListTenants().Single(),
             repository,
             new MailRequestQueue(),
-            _registry!,
             _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
@@ -259,16 +164,15 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(draft),
         };
         var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
         var repository = new StubMailRequestRepository();
 
         var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
             request,
             body,
+            Identity,
+            _registry!.ListTenants().Single(),
             repository,
             new MailRequestQueue(),
-            _registry!,
             _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
@@ -286,7 +190,6 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
     {
         var request = MailRequestTestData.CreateRequest();
         var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
         var repository = new StubMailRequestRepository
         {
             Existing = new MailRequestIdempotencyRow
@@ -298,12 +201,12 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         };
 
         var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
             request,
             body,
+            Identity,
+            _registry!.ListTenants().Single(),
             repository,
             new MailRequestQueue(),
-            _registry!,
             _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
@@ -319,7 +222,6 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
     {
         var request = MailRequestTestData.CreateRequest();
         var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
         var repository = new StubMailRequestRepository
         {
             FindException = new SqliteException(
@@ -328,12 +230,12 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         };
 
         var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
             request,
             body,
+            Identity,
+            _registry!.ListTenants().Single(),
             repository,
             new MailRequestQueue(),
-            _registry!,
             _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
@@ -349,7 +251,6 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
     {
         var request = MailRequestTestData.CreateRequest();
         var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
         var repository = new StubMailRequestRepository
         {
             FindException = new SqliteException(
@@ -358,12 +259,12 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         };
 
         var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
             request,
             body,
+            Identity,
+            _registry!.ListTenants().Single(),
             repository,
             new MailRequestQueue(),
-            _registry!,
             _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
@@ -379,16 +280,15 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
     {
         var request = MailRequestTestData.CreateRequest();
         var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
         var repository = new StubMailRequestRepository();
 
         var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
             request,
             body,
+            Identity,
+            _registry!.ListTenants().Single(),
             repository,
             new MailRequestQueue(),
-            _registry!,
             _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
@@ -413,16 +313,15 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
         var request = MailRequestTestData.CreateRequest() with { To = to, Cc = cc, Bcc = bcc };
         request = request with { PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request) };
         var body = JsonSerializer.Serialize(request, MailerJsonContext.Default.MailRequestCreateRequest);
-        var httpRequest = CreateAuthorizedHttpRequest(MailerWebApplicationFixtureBase.Token);
         var repository = new StubMailRequestRepository();
 
         var result = await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
             request,
             body,
+            Identity,
+            _registry!.ListTenants().Single(),
             repository,
             new MailRequestQueue(),
-            _registry!,
             _attachmentSpool!,
             TimeProvider.System,
             NullLogger.Instance,
@@ -602,13 +501,6 @@ public sealed class MailRequestCreateHandlerTests : IAsyncLifetime
             Address = address,
             AddressKey = RecipientEmailNormalizer.Normalize(address),
         };
-
-    private static HttpRequest CreateAuthorizedHttpRequest(string token)
-    {
-        var context = new DefaultHttpContext();
-        context.Request.Headers.Authorization = $"Bearer {token}";
-        return context.Request;
-    }
 
     private sealed class StubMailRequestRepository : MailRequestRepository
     {

@@ -28,7 +28,7 @@ public sealed class MailRequestPayloadJsonRedactionTests(MailerAdminDbOpsFixture
         var request = MailRequestTestData.CreateRequest(attachments: [attachment]);
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
@@ -56,7 +56,7 @@ public sealed class MailRequestPayloadJsonRedactionTests(MailerAdminDbOpsFixture
         var request = MailRequestTestData.CreateRequest();
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);

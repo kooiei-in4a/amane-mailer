@@ -53,6 +53,7 @@ public sealed class MailRequestWorkerLogPiiCanaryTests
 
         await File.WriteAllTextAsync(tenantConfigPath, TenantConfigJson, ct);
         await ApplyMigrationsAsync(connectionString, ct);
+        await ManagedIdentityTestData.SeedAsync(connectionString, ct);
 
         WebApplicationFactory<global::Program>? factory = null;
         try

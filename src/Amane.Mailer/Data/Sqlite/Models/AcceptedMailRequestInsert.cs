@@ -19,6 +19,8 @@ public sealed class AcceptedMailRequestInsert
 
     public required string PayloadHash { get; init; }
 
+    public Guid? AcceptedApiKeyId { get; init; }
+
     public required string Subject { get; init; }
 
     public string? HtmlBody { get; init; }

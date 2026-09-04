@@ -3,6 +3,7 @@ using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Json;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Queue;
 using Amane.Mailer.Webhooks;
@@ -17,38 +18,39 @@ public static class MailRequestEndpoints
 {
     public static IEndpointRouteBuilder MapMailRequestEndpoints(this IEndpointRouteBuilder endpoints)
     {
-        endpoints.MapPost("/internal/mail-requests", CreateMailRequestAsync);
-        endpoints.MapGet("/internal/mail-requests/{mailRequestId}", GetMailRequestStatusAsync);
-        endpoints.MapPost("/internal/mail-requests/{mailRequestId}/cancel", CancelMailRequestAsync);
-        endpoints.MapPost("/internal/mail-requests/{mailRequestId}/reschedule", RescheduleMailRequestAsync);
+        endpoints.MapPost("/api/mail-requests", CreateMailRequestAsync);
+        endpoints.MapGet("/api/mail-requests/{mailRequestId}", GetMailRequestStatusAsync);
+        endpoints.MapPost("/api/mail-requests/{mailRequestId}/cancel", CancelMailRequestAsync);
+        endpoints.MapPost("/api/mail-requests/{mailRequestId}/reschedule", RescheduleMailRequestAsync);
         return endpoints;
     }
 
     private static async Task<IResult> GetMailRequestStatusAsync(
         string mailRequestId,
-        HttpRequest httpRequest,
+        HttpContext context,
         MailRequestRepository repository,
-        MailerTenantRegistry tenantRegistry,
+        SenderRepository senders,
+        ApiAuthenticationRateLimiter rateLimiter,
         CancellationToken cancellationToken)
     {
-        if (!TenantRequestAuthorizer.TryAuthorizeScoped(
-                httpRequest,
-                tenantRegistry,
-                mailRequestId,
-                out var tenantId,
-                out var sourceService,
-                out var parsedMailRequestId,
-                out var authError))
+        var authorization = await ApiKeyRequestAuthorizer.AuthorizeAsync(
+            context, senders, rateLimiter, cancellationToken);
+        if (authorization.Error is not null)
         {
-            return authError!;
+            return authorization.Error;
+        }
+
+        if (!TryParseMailRequestId(mailRequestId, out var parsedMailRequestId, out var parseError))
+        {
+            return parseError!;
         }
 
         MailRequestStatusRow? statusRow;
         try
         {
             statusRow = await repository.GetStatusByIdempotencyKeyAsync(
-                tenantId,
-                sourceService,
+                V2PersistenceCompatibility.ToPhysicalTenantId(authorization.Identity!.Sender.SenderId),
+                V2PersistenceCompatibility.SourceService,
                 parsedMailRequestId,
                 cancellationToken);
         }
@@ -73,28 +75,29 @@ public static class MailRequestEndpoints
 
     private static async Task<IResult> CancelMailRequestAsync(
         string mailRequestId,
-        HttpRequest httpRequest,
+        HttpContext context,
         MailRequestRepository repository,
         DeliveryEventEnqueuer deliveryEventEnqueuer,
-        MailerTenantRegistry tenantRegistry,
+        SenderRepository senders,
+        ApiAuthenticationRateLimiter rateLimiter,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        if (!TenantRequestAuthorizer.TryAuthorizeScoped(
-                httpRequest,
-                tenantRegistry,
-                mailRequestId,
-                out var tenantId,
-                out var sourceService,
-                out var parsedMailRequestId,
-                out var authError))
+        var authorization = await ApiKeyRequestAuthorizer.AuthorizeAsync(
+            context, senders, rateLimiter, cancellationToken);
+        if (authorization.Error is not null)
         {
-            return authError!;
+            return authorization.Error;
+        }
+
+        if (!TryParseMailRequestId(mailRequestId, out var parsedMailRequestId, out var parseError))
+        {
+            return parseError!;
         }
 
         return await MailRequestMutationHandler.CancelAsync(
-            tenantId,
-            sourceService,
+            V2PersistenceCompatibility.ToPhysicalTenantId(authorization.Identity!.Sender.SenderId),
+            V2PersistenceCompatibility.SourceService,
             parsedMailRequestId,
             repository,
             deliveryEventEnqueuer,
@@ -104,27 +107,28 @@ public static class MailRequestEndpoints
 
     private static async Task<IResult> RescheduleMailRequestAsync(
         string mailRequestId,
-        HttpRequest httpRequest,
+        HttpContext context,
         MailRequestRepository repository,
         IMailRequestQueue queue,
-        MailerTenantRegistry tenantRegistry,
+        SenderRepository senders,
+        ApiAuthenticationRateLimiter rateLimiter,
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
-        if (!TenantRequestAuthorizer.TryAuthorizeScoped(
-                httpRequest,
-                tenantRegistry,
-                mailRequestId,
-                out var tenantId,
-                out var sourceService,
-                out var parsedMailRequestId,
-                out var authError))
+        var authorization = await ApiKeyRequestAuthorizer.AuthorizeAsync(
+            context, senders, rateLimiter, cancellationToken);
+        if (authorization.Error is not null)
         {
-            return authError!;
+            return authorization.Error;
         }
 
-        var bodyRead = await MailRequestRequestReader.ReadAsync(httpRequest, cancellationToken);
+        if (!TryParseMailRequestId(mailRequestId, out var parsedMailRequestId, out var parseError))
+        {
+            return parseError!;
+        }
+
+        var bodyRead = await MailRequestRequestReader.ReadAsync(context.Request, cancellationToken);
         if (!bodyRead.Succeeded)
         {
             return MailRequestHttpErrorMapper.FromBodyReadFailure(bodyRead.Failure!.Value);
@@ -139,8 +143,8 @@ public static class MailRequestEndpoints
         }
 
         return await MailRequestMutationHandler.RescheduleAsync(
-            tenantId,
-            sourceService,
+            V2PersistenceCompatibility.ToPhysicalTenantId(authorization.Identity!.Sender.SenderId),
+            V2PersistenceCompatibility.SourceService,
             parsedMailRequestId,
             jsonRead.Value!,
             repository,
@@ -151,16 +155,26 @@ public static class MailRequestEndpoints
     }
 
     private static async Task<IResult> CreateMailRequestAsync(
-        HttpRequest httpRequest,
+        HttpContext context,
         MailRequestRepository repository,
         IMailRequestQueue queue,
-        MailerTenantRegistry tenantRegistry,
+        SenderRepository senders,
+        SenderDeliveryConfigurationAdapter senderConfiguration,
+        ApiAuthenticationRateLimiter rateLimiter,
         Amane.Mailer.Attachments.Spool.AttachmentSpool attachmentSpool,
         MailerRuntimeMetrics runtimeMetrics,
         TimeProvider timeProvider,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
+        var authorization = await ApiKeyRequestAuthorizer.AuthorizeAsync(
+            context, senders, rateLimiter, cancellationToken);
+        if (authorization.Error is not null)
+        {
+            return authorization.Error;
+        }
+
+        var httpRequest = context.Request;
         var logger = loggerFactory.CreateLogger("MailRequestEndpoints");
         if (MailRequestRequestReader.IsContentLengthTooLarge(
                 httpRequest,
@@ -187,17 +201,35 @@ public static class MailRequestEndpoints
         }
 
         return await MailRequestCreateHandler.HandleAsync(
-            httpRequest,
             jsonRead.Value!,
             bodyRead.Body!,
+            authorization.Identity!,
+            senderConfiguration.Resolve(authorization.Identity!.Sender),
             repository,
             queue,
-            tenantRegistry,
             attachmentSpool,
             timeProvider,
             logger,
             cancellationToken,
             runtimeMetrics);
+    }
+
+    private static bool TryParseMailRequestId(
+        string value,
+        out Guid mailRequestId,
+        out IResult? error)
+    {
+        if (Guid.TryParse(value, out mailRequestId))
+        {
+            error = null;
+            return true;
+        }
+
+        error = MailerJsonResults.ValidationError(
+            MailerErrorCodes.InvalidRequest,
+            "mail_request_id must be a UUID.",
+            StatusCodes.Status400BadRequest);
+        return false;
     }
 
     // Test seam retained for scheduled dispatch characterization tests.

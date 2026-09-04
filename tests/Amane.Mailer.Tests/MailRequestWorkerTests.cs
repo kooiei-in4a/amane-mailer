@@ -7,6 +7,7 @@ using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
 using Amane.Mailer.Operations;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Tests.Fixtures;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Contracts.Security;
@@ -36,7 +37,7 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -59,7 +60,7 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         var request = MailRequestTestData.CreateRequest(scheduledAt: DateTimeOffset.UtcNow.AddHours(3));
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
@@ -291,7 +292,7 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
 
         var stored = await WaitUntilStatusAsync(request.MailRequestId, MailRequestState.Failed, minAttemptCount: 1, ct);
 
-        Assert.Equal("Tenant is not configured.", stored.LastErrorMessage);
+        Assert.Equal("Sender is not configured.", stored.LastErrorMessage);
     }
 
     [Fact]
@@ -366,7 +367,7 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
@@ -876,7 +877,7 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
             new MailSuppressionInsert
             {
                 Id = Guid.CreateVersion7(now),
-                TenantId = MailerWebApplicationFixtureBase.TenantId,
+                TenantId = V2PersistenceCompatibility.SuppressionScopeId,
                 RecipientEmail = recipientEmail,
                 Reason = MailSuppressionReasons.HardBounce,
                 CreatedAt = now,

@@ -9,26 +9,15 @@ import os
 import sys
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
-PAYLOAD_HASH_HELPER_DIR = (
-    Path(__file__).resolve().parents[1] / "payload-hash" / "python"
-)
-sys.path.insert(0, str(PAYLOAD_HASH_HELPER_DIR))
-
-from mail_payload_hash import compute_delivery_payload_sha256_hex  # noqa: E402
-
-
 @dataclass(frozen=True)
 class SampleOptions:
     mailer_base_url: str
     mail_service_token: str
-    tenant_id: str
-    source_service: str
     recipient_email: str
     request_id: str
     mutate: bool
@@ -59,15 +48,7 @@ def parse_args(argv: list[str] | None = None) -> SampleOptions:
 
     return SampleOptions(
         mailer_base_url=os.environ.get("MAILER_BASE_URL", "http://127.0.0.1:5280/"),
-        mail_service_token=os.environ.get(
-            "MAIL_SERVICE_TOKEN",
-            "local-mail-service-token",
-        ),
-        tenant_id=os.environ.get(
-            "MAILER_TENANT_ID",
-            "00000000-0000-0000-0000-000000000101",
-        ),
-        source_service=os.environ.get("MAILER_SOURCE_SERVICE", "example-service"),
+        mail_service_token=os.environ.get("MAILER_API_KEY", ""),
         recipient_email=os.environ.get("MAILER_RECIPIENT_EMAIL", "admin@example.com"),
         request_id=args.request_id or str(uuid.uuid4()),
         mutate=args.mutate,
@@ -77,16 +58,12 @@ def parse_args(argv: list[str] | None = None) -> SampleOptions:
 
 def build_mail_request(options: SampleOptions) -> dict[str, Any]:
     request: dict[str, Any] = {
-        "tenant_id": options.tenant_id,
         "mail_request_id": options.request_id,
-        "source_service": options.source_service,
         "purpose": "FormResponseNotification",
         "to": [{"email": options.recipient_email}],
         "subject": "New response (edited)" if options.mutate else "New response",
         "text_body": "A new response arrived.",
-        "payload_hash": "",
     }
-    request["payload_hash"] = compute_delivery_payload_sha256_hex(request)
     return request
 
 
@@ -96,7 +73,7 @@ def post_mail_request(
 ) -> tuple[int, str]:
     endpoint = urljoin(
         options.mailer_base_url.rstrip("/") + "/",
-        "internal/mail-requests",
+        "api/mail-requests",
     )
     body = json.dumps(mail_request, separators=(",", ":"), ensure_ascii=False).encode(
         "utf-8",
@@ -128,7 +105,7 @@ def print_result(status_code: int, response_body: str, request_id: str) -> None:
         if status == "accepted":
             print("The Mailer accepted this request for asynchronous delivery.")
         elif status == "already_accepted":
-            print("This mail_request_id was already accepted with the same payload_hash;")
+            print("This mail_request_id was already accepted with the same canonical payload;")
             print("the Mailer treated this POST as an idempotent resend.")
         return
 
@@ -136,7 +113,7 @@ def print_result(status_code: int, response_body: str, request_id: str) -> None:
         print(f"HTTP 409 Conflict: {response_body}")
         print()
         print(f"mail_request_id {request_id} was already accepted with a different")
-        print("payload_hash. Reusing a mail_request_id after changing subject, body,")
+        print("payload. Reusing a mail_request_id after changing subject, body,")
         print("recipients, or metadata returns IDEMPOTENCY_CONFLICT.")
         return
 
@@ -145,15 +122,17 @@ def print_result(status_code: int, response_body: str, request_id: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     options = parse_args(argv)
+    if not options.mail_service_token:
+        print("MAILER_API_KEY must contain a managed API key.", file=sys.stderr)
+        return 2
     mail_request = build_mail_request(options)
     endpoint = urljoin(
         options.mailer_base_url.rstrip("/") + "/",
-        "internal/mail-requests",
+        "api/mail-requests",
     )
 
     print(f"POST {endpoint}")
     print(f"mail_request_id: {options.request_id}")
-    print(f"payload_hash:    {mail_request['payload_hash']}")
     print()
 
     try:

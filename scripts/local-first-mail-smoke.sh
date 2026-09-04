@@ -10,7 +10,7 @@
 # Config via environment (all optional):
 #   MAILER_HTTP_PORT       default 5280
 #   MAILPIT_HTTP_PORT      default 8025
-#   MAIL_SERVICE_TOKEN     default local-mail-service-token
+#   MAILER_API_KEY         required; managed key for a Sender already provisioned in this data volume
 #   LOCAL_FIRST_MAIL_SMOKE_KEEP  reserved (compose is left running after the script exits)
 set -Eeuo pipefail
 set +x
@@ -21,20 +21,16 @@ COMPOSE_FILE="$REPO_ROOT/infra/docker/docker-compose.local.yml"
 
 export MAILER_HTTP_PORT="${MAILER_HTTP_PORT:-5280}"
 export MAILPIT_HTTP_PORT="${MAILPIT_HTTP_PORT:-8025}"
-export MAIL_SERVICE_TOKEN="${MAIL_SERVICE_TOKEN:-local-mail-service-token}"
+: "${MAILER_API_KEY:?MAILER_API_KEY must contain a managed API key for a provisioned Sender}"
 
 MAILER_URL="http://127.0.0.1:${MAILER_HTTP_PORT}"
 MAILPIT_URL="http://127.0.0.1:${MAILPIT_HTTP_PORT}"
 COMPOSE=(docker compose -f "$COMPOSE_FILE")
 
-TENANT_ID="00000000-0000-0000-0000-000000000101"
-SOURCE_SERVICE="example-service"
 PURPOSE="FormResponseNotification"
 TO_EMAIL="admin@example.com"
 SUBJECT="New response"
 TEXT_BODY="A new response arrived."
-# Matches docs/ops/first-mail-quickstart.md and README consumer quickstart example.
-PAYLOAD_HASH="7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -100,8 +96,8 @@ finish() {
 post_mail_request() { # json_file
   local json_file="$1" raw
   raw="$(curl -sS -m 30 -o - -w $'\n__STATUS__%{http_code}' \
-    -X POST "$MAILER_URL/internal/mail-requests" \
-    -H "Authorization: Bearer $MAIL_SERVICE_TOKEN" \
+    -X POST "$MAILER_URL/api/mail-requests" \
+    -H "Authorization: Bearer $MAILER_API_KEY" \
     -H "Content-Type: application/json" \
     --data-binary @"$json_file" 2>&1)" || true
   HTTP_STATUS="${raw##*__STATUS__}"
@@ -152,14 +148,14 @@ fi
 REQUEST_ID="$(new_request_id)"
 JSON_FILE="$(mktemp)"
 trap 'rm -f "$JSON_FILE"' EXIT
-printf '%s' "$(printf '{"tenant_id":"%s","source_service":"%s","mail_request_id":"%s","purpose":"%s","to":[{"email":"%s"}],"subject":"%s","text_body":"%s","payload_hash":"%s"}' \
-  "$TENANT_ID" "$SOURCE_SERVICE" "$REQUEST_ID" "$PURPOSE" "$TO_EMAIL" "$SUBJECT" "$TEXT_BODY" "$PAYLOAD_HASH")" >"$JSON_FILE"
+printf '%s' "$(printf '{"mail_request_id":"%s","purpose":"%s","to":[{"email":"%s"}],"subject":"%s","text_body":"%s"}' \
+  "$REQUEST_ID" "$PURPOSE" "$TO_EMAIL" "$SUBJECT" "$TEXT_BODY")" >"$JSON_FILE"
 
 post_mail_request "$JSON_FILE"
 if [ "$HTTP_STATUS" = "202" ] && printf '%s' "$RESP_BODY" | grep -q '"status":"accepted"'; then
-  pass "POST /internal/mail-requests -> 202 accepted"
+  pass "POST /api/mail-requests -> 202 accepted"
 else
-  fail "POST /internal/mail-requests" "expected 202 accepted, got $HTTP_STATUS body=$RESP_BODY"
+  fail "POST /api/mail-requests" "expected 202 accepted, got $HTTP_STATUS body=$RESP_BODY"
 fi
 
 if mailpit_received_subject "$SUBJECT"; then

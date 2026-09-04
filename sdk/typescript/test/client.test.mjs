@@ -15,8 +15,6 @@ import { MailRequestValidationError, validateMailRequestDraft } from '../src/val
 
 function buildSampleRequest() {
   return MailRequestBuilder.create()
-    .tenantId('00000000-0000-0000-0000-000000000101')
-    .sourceService('example-service')
     .mailRequestId('00000000-0000-0000-0000-000000000201')
     .purpose('FormResponseNotification')
     .to({ email: 'admin@example.com' })
@@ -25,10 +23,11 @@ function buildSampleRequest() {
     .build();
 }
 
-test('MailRequestBuilder computes payload_hash and validates input', () => {
+test('MailRequestBuilder omits v1 identity and payload hash', () => {
   const request = buildSampleRequest();
-  assert.match(request.payload_hash, /^[0-9a-f]{64}$/);
-  assert.equal(request.payload_hash, '7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9');
+  assert.equal(Object.hasOwn(request, 'tenant_id'), false);
+  assert.equal(Object.hasOwn(request, 'source_service'), false);
+  assert.equal(Object.hasOwn(request, 'payload_hash'), false);
 });
 
 test('MailRequestBuilder supports cc and bcc without to', () => {
@@ -37,8 +36,6 @@ test('MailRequestBuilder supports cc and bcc without to', () => {
     ['bcc', { email: 'bcc@example.com' }, 'BCC only', 'BCC only body.', 'b834a8ba190ecb3f2ae6feeff0de486805de4edef8e98c2529b70771d5619d4d'],
   ]) {
     const builder = MailRequestBuilder.create()
-      .tenantId('00000000-0000-0000-0000-000000000101')
-      .sourceService('example-service')
       .mailRequestId('00000000-0000-0000-0000-000000000201')
       .purpose('FormResponseNotification')
       .subject(subject)
@@ -47,12 +44,10 @@ test('MailRequestBuilder supports cc and bcc without to', () => {
 
     assert.equal(Object.hasOwn(request, 'to'), false);
     assert.deepEqual(request[role], [recipient]);
-    assert.equal(request.payload_hash, expectedHash);
+    assert.equal(Object.hasOwn(request, 'payload_hash'), false);
   }
 
   const request = MailRequestBuilder.create()
-    .tenantId('00000000-0000-0000-0000-000000000101')
-    .sourceService('example-service')
     .mailRequestId('00000000-0000-0000-0000-000000000201')
     .purpose('FormResponseNotification')
     .to(null)
@@ -61,13 +56,11 @@ test('MailRequestBuilder supports cc and bcc without to', () => {
     .textBody('CC only body.')
     .build();
   assert.equal(request.to, null);
-  assert.equal(request.payload_hash, '22cee63ba2c526ce67078a838d1b9277f2ce089237dcc36ee28c6b4c086d06ac');
+  assert.equal(Object.hasOwn(request, 'payload_hash'), false);
 });
 
 test('MailRequestBuilder preserves multiple recipient order and limits', () => {
   const request = MailRequestBuilder.create()
-    .tenantId('00000000-0000-0000-0000-000000000101')
-    .sourceService('example-service')
     .mailRequestId('00000000-0000-0000-0000-000000000201')
     .purpose('FormResponseNotification')
     .to({ email: 'to1@example.com' })
@@ -88,11 +81,9 @@ test('MailRequestBuilder preserves multiple recipient order and limits', () => {
     { email: 'bcc1@example.com' },
     { email: 'bcc2@example.com' },
   ]);
-  assert.equal(request.payload_hash, 'af1229397d1ac908b2cfb6d9267f6e03ba34927d22bd4efe97a1942123453da0');
+  assert.equal(Object.hasOwn(request, 'payload_hash'), false);
 
   const maximum = MailRequestBuilder.create()
-    .tenantId('00000000-0000-0000-0000-000000000101')
-    .sourceService('example-service')
     .mailRequestId('00000000-0000-0000-0000-000000000201')
     .purpose('FormResponseNotification')
     .to({ email: 'to0@example.com' })
@@ -116,8 +107,6 @@ test('MailRequestBuilder omits scheduled_at when unset', () => {
 
 test('validation allows empty to when cc is present', () => {
   assert.doesNotThrow(() => validateMailRequestDraft({
-    tenant_id: '00000000-0000-0000-0000-000000000101',
-    source_service: 'example-service',
     mail_request_id: '00000000-0000-0000-0000-000000000201',
     purpose: 'FormResponseNotification',
     to: [],
@@ -134,8 +123,6 @@ test('MailRequestBuilder accepts scheduled_at with Z and offsets', () => {
     '2026-08-01T00:00:00-05:00',
   ]) {
     const request = MailRequestBuilder.create()
-      .tenantId('00000000-0000-0000-0000-000000000101')
-      .sourceService('example-service')
       .mailRequestId('00000000-0000-0000-0000-000000000201')
       .purpose('FormResponseNotification')
       .to({ email: 'admin@example.com' })
@@ -159,8 +146,6 @@ test('MailRequestBuilder rejects timezone-less and invalid scheduled_at', () => 
   ]) {
     assert.throws(() => {
       MailRequestBuilder.create()
-        .tenantId('00000000-0000-0000-0000-000000000101')
-        .sourceService('example-service')
         .mailRequestId('00000000-0000-0000-0000-000000000201')
         .purpose('FormResponseNotification')
         .to({ email: 'admin@example.com' })
@@ -174,8 +159,6 @@ test('MailRequestBuilder rejects timezone-less and invalid scheduled_at', () => 
 
 test('MailRequestBuilder allows explicit null scheduled_at', () => {
   const request = MailRequestBuilder.create()
-    .tenantId('00000000-0000-0000-0000-000000000101')
-    .sourceService('example-service')
     .mailRequestId('00000000-0000-0000-0000-000000000201')
     .purpose('FormResponseNotification')
     .to({ email: 'admin@example.com' })
@@ -188,11 +171,9 @@ test('MailRequestBuilder allows explicit null scheduled_at', () => {
   assert.equal(request.scheduled_at, null);
 });
 
-test('scheduled_at does not affect payload_hash', () => {
+test('scheduled_at is emitted without payload_hash', () => {
   const base = buildSampleRequest();
   const scheduled = MailRequestBuilder.create()
-    .tenantId('00000000-0000-0000-0000-000000000101')
-    .sourceService('example-service')
     .mailRequestId('00000000-0000-0000-0000-000000000201')
     .purpose('FormResponseNotification')
     .to({ email: 'admin@example.com' })
@@ -201,16 +182,15 @@ test('scheduled_at does not affect payload_hash', () => {
     .scheduledAt('2026-08-01T09:00:00Z')
     .build();
 
-  assert.equal(base.payload_hash, scheduled.payload_hash);
+  assert.equal(Object.hasOwn(base, 'payload_hash'), false);
+  assert.equal(Object.hasOwn(scheduled, 'payload_hash'), false);
   assert.notEqual(base.scheduled_at, scheduled.scheduled_at);
 });
 
-test('MailRequestBuilder rejects invalid source_service', () => {
+test('MailRequestBuilder rejects invalid mail_request_id', () => {
   assert.throws(() => {
     MailRequestBuilder.create()
-      .tenantId('00000000-0000-0000-0000-000000000101')
-      .sourceService('INVALID')
-      .mailRequestId('00000000-0000-0000-0000-000000000201')
+      .mailRequestId('not-a-uuid')
       .purpose('FormResponseNotification')
       .to({ email: 'one@example.com' })
       .subject('x')
@@ -261,8 +241,6 @@ test('MailerClient posts builder scheduled_at field', async () => {
   }, async (baseUrl) => {
     const client = new MailerClient({ baseUrl, bearerToken: 'token' });
     const request = MailRequestBuilder.create()
-      .tenantId('00000000-0000-0000-0000-000000000101')
-      .sourceService('example-service')
       .mailRequestId('00000000-0000-0000-0000-000000000201')
       .purpose('FormResponseNotification')
       .to({ email: 'admin@example.com' })
@@ -274,7 +252,7 @@ test('MailerClient posts builder scheduled_at field', async () => {
     const response = await client.sendMail(request);
     assert.equal(response.status, MailRequestAcceptanceStatus.Accepted);
     assert.equal(captured?.scheduled_at, '2026-08-01T09:00:00Z');
-    assert.equal(captured?.payload_hash, request.payload_hash);
+    assert.equal(Object.hasOwn(captured, 'payload_hash'), false);
   });
 });
 
@@ -319,7 +297,7 @@ test('MailerClient maps 409 IDEMPOTENCY_CONFLICT', async () => {
 test('MailerClient maps 422 validation errors', async () => {
   await withMockServer((_req, res) => {
     res.writeHead(422, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ code: 'INVALID_PAYLOAD_HASH' }));
+    res.end(JSON.stringify({ code: 'INVALID_REQUEST' }));
   }, async (baseUrl) => {
     const client = new MailerClient({ baseUrl, bearerToken: 'token' });
     await assert.rejects(

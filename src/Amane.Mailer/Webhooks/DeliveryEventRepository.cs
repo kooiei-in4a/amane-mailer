@@ -14,13 +14,13 @@ public sealed class DeliveryEventRepository(SqliteConnectionFactory connections)
 {
     internal const string LeaseExpiredMaxAttemptsErrorCode = "WEBHOOK_LEASE_EXPIRED_MAX_ATTEMPTS";
 
-    public async Task<bool> TryInsertAsync(
+    internal async Task<bool> TryInsertAsync(
         MailDeliveryEventPayload payload,
         int maxAttempts,
         DateTimeOffset now,
         CancellationToken cancellationToken = default)
     {
-        var payloadJson = JsonSerializer.Serialize(payload, MailerContractsJsonContext.Default.MailDeliveryEventPayload);
+        var payloadJson = JsonSerializer.Serialize(payload, MailerInternalJsonContext.Default.MailDeliveryEventPayload);
         var nowStorage = SqliteTime.ToStorageUtc(now);
 
         const string sql = """

@@ -9,7 +9,7 @@ namespace Amane.Mailer.Contracts.MailRequests;
 /// Admin manual retry that reaches a later terminal does not emit a second webhook.
 /// </summary>
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record MailDeliveryEventPayload
+internal sealed record MailDeliveryEventPayload
 {
     [JsonPropertyName("event_id")]
     public required Guid EventId { get; init; }

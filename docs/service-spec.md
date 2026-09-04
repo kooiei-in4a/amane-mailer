@@ -1,5 +1,29 @@
 [English](service-spec.en.md)
 
+# Amane Mailer v2.0.0 public contract
+
+この節が v2 Consumer 契約の正本です。下段の「v1.x historical reference」は
+既存運用資料を追跡するための凍結資料であり、v2 public/runtime product path ではありません。
+
+- Sender が durable resource owner、managed API Key が 1 Sender に属する revocable credential です。正規化 email は instance 内で一意です。
+- API Key が caller identity と Sender 選択を同時に決定し、Consumer は Sender、From、provider を指定しません。
+- public API は `POST /api/mail-requests`、`GET /api/mail-requests/{mail_request_id}`、`POST .../cancel`、`POST .../reschedule` です。
+- create body から `tenant_id`、`source_service`、`payload_hash` を削除しました。Mailer が canonical payload hash を server-side で計算します。
+- idempotency namespace は `(sender_id, mail_request_id)` です。別 Sender の同じ ID は独立し、API Key rotation 後も同 Sender の historical request にアクセスできます。
+- 別 Sender の request 操作は non-disclosure 404。invalid / unknown / revoked key と disabled Sender は同じ 401 `UNAUTHORIZED`。invalid authentication attempt は remote IP 単位で rate limit します。
+- physical compatibility mapping は `V2PersistenceCompatibility` に集約し、`tenant_id=sender_id`、`source_service=amane-v2-internal` とします。受付 Key は `accepted_api_key_id` に audit evidence として保存します。
+- suppression は instance-wide。provider operation identity は `(sender_id, mail_request_id)` に基づき、sentinel を含みません。
+- outbound delivery webhook は v2 の Contracts/runtime/configuration product path から削除し、delivery status polling を使用します。
+- populated v1 state は Sender state へ自動変換せず、migration が `unsupported major upgrade` として fail-safe します。fresh v2 deployment が canonical です。
+- provider managed configuration / live-sending safety gate は #731、Sender/API Key Setup UI と Admin primary UX は #732、追加 follow-up は #733 に defer します。
+
+schema と status code の正本は [OpenAPI](api/openapi.yaml)、実装判断は
+[ADR 0024](adr/0024-sender-and-managed-api-key-identity.md) を参照してください。
+
+---
+
+# v1.x historical reference（v2 public contract ではありません）
+
 # Amane Mailer Service — サービス仕様（SQLite + Native AOT）
 
 - **位置づけ:** 汎用メール送信マイクロサービス

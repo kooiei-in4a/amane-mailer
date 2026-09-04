@@ -44,8 +44,7 @@ Environment variables:
 | Variable | Default |
 |---|---|
 | `MAILER_BASE_URL` | `http://127.0.0.1:5280` |
-| `MAIL_SERVICE_TOKEN` | `local-mail-service-token` |
-| `MAILER_TENANT_ID` | `00000000-0000-0000-0000-000000000101` |
+| `MAILER_API_KEY` | required managed API key for one Sender |
 
 ## mail_request_id generation
 
@@ -76,3 +75,6 @@ except MailerRetryableError:
 `send_mail()` retries retryable errors (503 / `retryable: true`) with exponential backoff. Defaults: 3 retries, 0.2 s base delay. Override with `max_retries` and `base_delay_seconds`.
 
 Idempotent resend: POST the same `mail_request_id` and payload again; Mailer returns `already_accepted` without creating a duplicate queue entry.
+
+The managed API key selects the Sender. The SDK does not send `tenant_id`,
+`source_service`, `From`, provider, or `payload_hash`.

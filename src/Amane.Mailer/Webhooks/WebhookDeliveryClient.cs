@@ -12,7 +12,7 @@ public sealed class WebhookDeliveryClient(
     TimeProvider timeProvider,
     ILogger<WebhookDeliveryClient> logger)
 {
-    public async Task<WebhookDeliveryResult> DeliverAsync(
+    internal async Task<WebhookDeliveryResult> DeliverAsync(
         MailerTenant tenant,
         string webhookSecret,
         MailDeliveryEventPayload payload,

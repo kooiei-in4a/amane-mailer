@@ -86,7 +86,6 @@ public sealed class AcsMailDeliveryProvider(MailerOptions options)
 
             var operationId = AcsOperationIdFactory.Create(
                 tenant.TenantId,
-                job.SourceService,
                 job.MailRequestId);
 
             var operation = await _client.Value.SendAsync(

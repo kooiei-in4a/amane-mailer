@@ -367,16 +367,6 @@ compareDtoToOpenApiSchema('MailAttachmentDto', attachmentDto, attachmentSchema, 
 compareDtoToOpenApiSchema('MailRequestCreateResponse', responseDto, responseSchema);
 compareDtoToOpenApiSchema('MailRequestStatusResponse', statusResponseDto, statusResponseSchema);
 
-const deliveryEventDto = parseJsonDto('src/Amane.Mailer.Contracts/MailRequests/MailDeliveryEventPayload.cs');
-const deliveryEventSchema = parseOpenApiSchema(openapi, 'MailDeliveryEventPayload');
-compareDtoToOpenApiSchema('MailDeliveryEventPayload', deliveryEventDto, deliveryEventSchema, {
-  expectClosedSchema: deliveryEventDto.rejectsUnknownMembers,
-});
-
-if (!deliveryEventDto.rejectsUnknownMembers) {
-  fail('MailDeliveryEventPayload must reject unknown JSON members.');
-}
-
 if (!requestDto.rejectsUnknownMembers) {
   fail('MailRequestCreateRequest must reject unknown JSON members.');
 }
@@ -431,33 +421,9 @@ if (!deliveryStatusProperty) {
   );
 }
 
-const includedHashFields = parseStringArray(
-  'src/Amane.Mailer.Contracts/Security/MailPayloadHashContract.cs',
-  'IncludedFields',
-);
-const excludedHashFields = parseStringArray(
-  'src/Amane.Mailer.Contracts/Security/MailPayloadHashContract.cs',
-  'ExcludedFields',
-);
-
-assertSameSet(
-  'payload_hash included+excluded fields vs request DTO properties',
-  [...includedHashFields, ...excludedHashFields],
-  requestDto.properties.map((property) => property.jsonName),
-);
-
-for (const field of includedHashFields) {
-  if (excludedHashFields.includes(field)) {
-    fail(`payload_hash field '${field}' is both included and excluded.`);
-  }
-}
-
-const payloadHashProperty = requestSchema.properties.get('payload_hash');
-if (!payloadHashProperty) {
-  fail('OpenAPI MailRequestCreateRequest.payload_hash property is missing.');
-} else {
-  for (const field of [...includedHashFields, ...excludedHashFields]) {
-    assertContains(payloadHashProperty.block, field, 'OpenAPI payload_hash description');
+for (const removedField of ['tenant_id', 'source_service', 'payload_hash']) {
+  if (requestSchema.properties.has(removedField)) {
+    fail(`OpenAPI v2 request must not expose ${removedField}.`);
   }
 }
 
@@ -484,9 +450,7 @@ for (const typeName of [
   'MailerTenant',
   'MailerAddress',
   'MailerRetryOptions',
-  'MailerWebhookConfig',
   'List<MailerTenant>',
-  'MailDeliveryEventPayload',
   'PlatformSenderFile',
   'PlatformSenderAddress',
   'MailRequestCreateRequest',
@@ -519,7 +483,6 @@ for (const typeName of [
   'MailRequestCreateResponse',
   'MailRequestStatusResponse',
   'MailRequestRescheduleRequest',
-  'MailDeliveryEventPayload',
   'MailRecipientDto',
   'MailRecipientDto[]',
   'Dictionary<string, string>',
@@ -539,7 +502,7 @@ assertContains(
 const runtimeContractSources = [
   read('src/Amane.Mailer/Api/MailRequestEndpoints.cs'),
   read('src/Amane.Mailer/Api/MailRequestRequestReader.cs'),
-  read('src/Amane.Mailer/Api/TenantRequestAuthorizer.cs'),
+  read('src/Amane.Mailer/Api/ApiKeyRequestAuthorizer.cs'),
   read('src/Amane.Mailer/Api/MailRequestCreateHandler.cs'),
   read('src/Amane.Mailer/Api/MailRequestMutationHandler.cs'),
   read('src/Amane.Mailer/Api/MailRequestHttpErrorMapper.cs'),
@@ -578,7 +541,7 @@ assertMatches(
   // ADR 0022: the acceptance-path call gained an optional second argument (attachment hash
   // inputs) but must still hash requestBody as its first argument.
   /MailPayloadHasher\.ComputeDeliveryPayloadSha256Hex\s*\(\s*requestBody\s*(?:,[^)]*)?\)/s,
-  'Runtime payload hash validation',
+  'Runtime server-side canonical payload hash',
   'MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(requestBody)',
 );
 assertMatches(
@@ -624,13 +587,11 @@ for (const constant of acceptanceStatuses) {
   );
 }
 
-const contractStrictnessTests = read('tests/Amane.Mailer.Contracts.Tests/MailRequestDtoStrictnessTests.cs')
-  + read('tests/Amane.Mailer.Contracts.Tests/MailDeliveryEventPayloadStrictnessTests.cs');
+const contractStrictnessTests = read('tests/Amane.Mailer.Contracts.Tests/MailRequestDtoStrictnessTests.cs');
 for (const needle of [
   'MailRequestCreateRequest_rejects_unknown_property',
   'MailRecipientDto_rejects_unknown_property',
   'MailRequestCreateRequest_accepts_known_properties',
-  'MailDeliveryEventPayload_rejects_unknown_property',
 ]) {
   assertContains(contractStrictnessTests, needle, 'Contracts JSON strictness tests');
 }
@@ -654,96 +615,17 @@ for (const needle of [
   'Get_nonexistent_request_returns_404',
   'Get_other_tenant_request_returns_404',
   'Get_unauthorized_returns_401',
-  'Get_unregistered_source_service_returns_403',
+  'Get_ignores_legacy_source_service_query_and_does_not_disclose',
   'Get_invalid_mail_request_id_returns_400',
-  'Get_missing_tenant_id_returns_400',
-  'Get_invalid_tenant_id_returns_400',
-  'Get_missing_source_service_returns_400',
+  'Get_does_not_require_legacy_tenant_id_query',
+  'Get_ignores_legacy_tenant_id_query_and_does_not_disclose',
+  'Get_does_not_require_legacy_source_service_query',
   'Get_response_excludes_pii_fields',
   'Get_delivered_status_returns_expected_fields',
   'Get_cancelled_status_returns_expected_fields',
   'Get_processing_status_returns_expected_fields',
 ]) {
   assertContains(runtimeApiTests, needle, 'Mail request status GET API tests');
-}
-
-const payloadHashTests = read('tests/Amane.Mailer.Contracts.Tests/MailPayloadHasherTests.cs');
-for (const needle of [
-  'Shared_test_vectors_match_canonical_json_and_hash',
-  'BuildDeliveryPayloadJson_excludes_routing_envelope_fields',
-  'Openapi_example_payload_hash_matches_documented_value',
-]) {
-  assertContains(payloadHashTests, needle, 'Payload hash contract tests');
-}
-
-if (!existsSync(path.join(root, 'tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json'))) {
-  fail('payload_hash test vector fixture is missing.');
-}
-
-for (const needle of [
-  'scripts/check-contract-drift.mjs',
-  'payload-hash-vectors.json',
-]) {
-  assertContains(contractsReadme, needle, 'Contracts README update guidance');
-}
-
-const payloadHashExamplesReadme = read('examples/payload-hash/README.md');
-const payloadHashExamplePaths = [
-  'examples/payload-hash/python/mail_payload_hash.py',
-  'examples/payload-hash/python/verify_vectors.py',
-  'examples/payload-hash/python/verify_request.py',
-  'examples/payload-hash/python/verify_request_vectors.py',
-  'examples/payload-hash/javascript/mail_payload_hash.mjs',
-  'examples/payload-hash/javascript/verify_vectors.mjs',
-  'examples/payload-hash/go/mail_payload_hash.go',
-  'examples/payload-hash/go/verify_vectors_test.go',
-];
-
-for (const relativePath of payloadHashExamplePaths) {
-  if (!existsSync(path.join(root, relativePath))) {
-    fail(`payload_hash example file is missing: ${relativePath}.`);
-  }
-}
-
-const payloadHashExampleSources = {
-  python: read('examples/payload-hash/python/mail_payload_hash.py'),
-  javascript: read('examples/payload-hash/javascript/mail_payload_hash.mjs'),
-  go: read('examples/payload-hash/go/mail_payload_hash.go'),
-};
-
-for (const field of includedHashFields) {
-  assertContains(payloadHashExampleSources.python, `"${field}"`, 'Python INCLUDED_FIELDS');
-  assertContains(payloadHashExampleSources.javascript, `'${field}'`, 'JavaScript INCLUDED_FIELDS');
-  assertContains(payloadHashExampleSources.go, `"${field}":`, 'Go includedFields');
-}
-
-for (const field of includedHashFields) {
-  assertContains(payloadHashExamplesReadme, `\`${field}\``, 'payload_hash examples README included fields');
-}
-
-for (const field of excludedHashFields) {
-  assertContains(payloadHashExamplesReadme, `\`${field}\``, 'payload_hash examples README excluded fields');
-}
-
-for (const needle of [
-  'tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json',
-  'Null omission vs explicit null',
-  'metadata values are strings',
-  'Sort and escape rules',
-  'UTF-16 code-unit order',
-]) {
-  assertContains(payloadHashExamplesReadme, needle, 'payload_hash examples README contract notes');
-}
-
-for (const needle of [
-  'examples/payload-hash/',
-  'payload-hash-vectors.json',
-]) {
-  assertContains(contractsReadme, needle, 'Contracts README payload_hash examples guidance');
-}
-
-for (const readmePath of ['README.md', 'README.en.md']) {
-  assertContains(read(readmePath), 'examples/payload-hash/', `${readmePath} payload_hash examples link`);
 }
 
 if (errors.length > 0) {
@@ -756,5 +638,5 @@ if (errors.length > 0) {
 
 console.log(
   'Contract drift check passed: Contracts DTOs/constants, runtime JSON behavior, '
-  + 'OpenAPI schemas/enums, payload_hash fields, and strictness test coverage are in sync.',
+  + 'OpenAPI schemas/enums, v2 field removals, and strictness test coverage are in sync.',
 );

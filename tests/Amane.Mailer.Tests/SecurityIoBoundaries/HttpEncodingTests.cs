@@ -32,7 +32,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
             replyTo: null);
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 
@@ -57,7 +57,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
             textBody: "Body",
             payloadHash: new string('0', 64)));
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         await AssertInvalidUtf8RejectedAsync(response, mailRequestId, ct);
     }
@@ -79,7 +79,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
             textBodySuffix: string.Empty,
             payloadHash: new string('0', 64)));
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         await AssertInvalidUtf8RejectedAsync(response, mailRequestId, ct);
     }
@@ -101,7 +101,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
         Buffer.BlockCopy(bytes, 1, mutated, 2, bytes.Length - 1);
         using var content = RawBytesContent(mutated);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         await AssertInvalidUtf8RejectedAsync(response, mailRequestId, ct);
     }
@@ -121,7 +121,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
             textBody: "Body",
             payloadHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         await AssertInvalidUtf8RejectedAsync(response, mailRequestId, ct);
     }
@@ -135,7 +135,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
         Array.Fill(bytes, (byte)0xFF);
         using var content = RawBytesContent(bytes);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(
@@ -152,7 +152,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
     [Fact]
     public async Task Oversized_body_with_invalid_utf8_still_returns_413()
     {
-        // /internal/mail-requests accepts attachments (ADR 0022 D-02), so its cap is
+        // /api/mail-requests accepts attachments (ADR 0022 D-02), so its cap is
         // MailAttachmentLimits.MaxConsumerHttpEnvelopeBytes (16 MiB), not the base 256,000 bytes.
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
@@ -160,7 +160,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
         Array.Fill(bytes, (byte)0xFF);
         using var content = RawBytesContent(bytes);
 
-        using var response = await client.PostAsync("/internal/mail-requests", content, ct);
+        using var response = await client.PostAsync("/api/mail-requests", content, ct);
 
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
         Assert.Equal(
@@ -177,7 +177,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
             scheduledAt: DateTimeOffset.UtcNow.AddHours(2));
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -316,7 +316,7 @@ public sealed class HttpEncodingTests(MailerApiFixture fixture)
     }
 
     private static string RescheduleUrl(Guid mailRequestId) =>
-        $"/internal/mail-requests/{mailRequestId:D}/reschedule" +
+        $"/api/mail-requests/{mailRequestId:D}/reschedule" +
         $"?tenant_id={MailerWebApplicationFixtureBase.TenantId:D}" +
         $"&source_service={MailerWebApplicationFixtureBase.SourceService}";
 

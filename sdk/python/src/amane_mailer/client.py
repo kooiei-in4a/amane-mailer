@@ -51,7 +51,7 @@ class MailerClient:
         raise RuntimeError("send_mail exhausted retries without a response.")
 
     def _post_once(self, mail_request: dict[str, Any]) -> MailRequestAcceptedResponse:
-        endpoint = urljoin(self.base_url.rstrip("/") + "/", "internal/mail-requests")
+        endpoint = urljoin(self.base_url.rstrip("/") + "/", "api/mail-requests")
         body = json.dumps(mail_request, separators=(",", ":"), ensure_ascii=False).encode(
             "utf-8",
         )

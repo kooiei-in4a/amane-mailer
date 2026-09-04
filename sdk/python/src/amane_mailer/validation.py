@@ -10,7 +10,6 @@ UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
-SOURCE_SERVICE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{1,62}$")
 FORBIDDEN_METADATA_KEY_PATTERN = re.compile(r"token|password|secret|url", re.IGNORECASE)
 SCHEDULED_AT_OFFSET_PATTERN = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
 
@@ -18,8 +17,6 @@ SCHEDULED_AT_OFFSET_PATTERN = re.compile(r"(Z|[+-]\d{2}:\d{2})$")
 # scripts/check-mail-request-field-inventory.mjs — keep in sync with Contracts.
 MAIL_REQUEST_JSON_FIELDS = frozenset(
     {
-        "tenant_id",
-        "source_service",
         "mail_request_id",
         "purpose",
         "to",
@@ -32,7 +29,6 @@ MAIL_REQUEST_JSON_FIELDS = frozenset(
         "metadata",
         "scheduled_at",
         "attachments",
-        "payload_hash",
     }
 )
 
@@ -48,13 +44,6 @@ class MailRequestValidationError(ValueError):
 def _assert_uuid(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not UUID_PATTERN.fullmatch(value):
         raise MailRequestValidationError(f"{field_name} must be a UUID string.")
-
-
-def _assert_source_service(value: str) -> None:
-    if not isinstance(value, str) or not SOURCE_SERVICE_PATTERN.fullmatch(value):
-        raise MailRequestValidationError(
-            "source_service must match ^[a-z0-9][a-z0-9_-]{1,62}$.",
-        )
 
 
 def _assert_recipient(recipient: dict[str, Any], field_name: str, index: int) -> None:
@@ -143,9 +132,7 @@ def _assert_attachments(attachments: list[dict[str, Any]] | None) -> None:
 
 
 def validate_mail_request_draft(draft: dict[str, Any]) -> None:
-    _assert_uuid(draft["tenant_id"], "tenant_id")
     _assert_uuid(draft["mail_request_id"], "mail_request_id")
-    _assert_source_service(draft["source_service"])
 
     purpose = draft.get("purpose")
     if not isinstance(purpose, str) or not purpose:
