@@ -15,6 +15,38 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [1.3.8] - 2026-09-04
+
+Patch release focused on maintenance and correctness in the mail acceptance and
+delivery paths. There is no database migration or public HTTP contract shape
+change relative to v1.3.7.
+
+### Fixed
+
+- Eliminate the worker terminal log-capture timing race and enforce exhaustive
+  failure classification for configuration-load failures.
+- Preserve the existing acceptance behavior while clarifying the
+  `MailRequestCreateHandler` acceptance pipeline.
+- Clean committed attachment spools on connection, configuration, and
+  transaction-begin failures before acceptance becomes durable, while
+  preserving successful attachment spool ownership and redaction safeguards.
+
+### Changed
+
+- Separate mail delivery dispatch and execution from the worker host so the
+  worker remains responsible for orchestration while delivery behavior remains
+  unchanged.
+- Keep the v1.3.7 deterministic publication evidence and current-public
+  follower model as the release baseline.
+
+### Compatibility
+
+- No public endpoint or request/response field is removed or renamed, and the
+  migration inventory remains `001` through `018`.
+- `Amane.Mailer.Contracts` advances to `1.3.8` for release identity alignment;
+  its public DTO, constant, and payload-hash behavior is unchanged by this
+  patch.
+
 ## [1.3.7] - 2026-09-02
 
 Patch release focused on delivery correctness, production configuration
