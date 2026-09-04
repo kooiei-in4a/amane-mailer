@@ -182,6 +182,7 @@ public static class AmaneMailerServiceCollectionExtensions
 
         if (MailerWorkerOptions.IsEnabled(configuration))
         {
+            services.AddSingleton<MailRequestDispatcher>();
             services.AddHostedService<MailRequestSweepService>();
             services.AddHostedService<WebhookDeliverySweepService>();
             services.AddHostedService<RetentionService>();
