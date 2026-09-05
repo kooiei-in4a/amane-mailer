@@ -115,12 +115,22 @@ In production, use a reverse proxy, firewall, or Docker port publish restriction
 
 ## Deployment Notes
 
-The runtime image includes only safe examples and the tenant schema. Real tenant
-JSON files are deploy-time inputs and must be mounted into the container:
+The runtime image includes only safe examples and the tenant schema. For the
+generic base compose manual/compatibility path, real tenant JSON files are
+deploy-time inputs and must be mounted into the container. The VPS managed-v2
+reference path does not need tenant JSON:
 
 - Deploy compose: `infra/deploy/compose.yml`
 - Safe env template: `infra/deploy/.env.example`
+- VPS managed-v2 env template: `infra/deploy/.env.vps-dogfood.example`
 - Tenant schema: `config/mailer/tenants.schema.json`
+
+For the PR1 VPS reference profile with Caddy HTTPS, no public Mailer backend
+port, and operator-only Admin / Setup edge restrictions, see
+[VPS dogfood deployment](docs/ops/vps-dogfood-deployment.en.md) and the
+[Caddyfile example](infra/deploy/Caddyfile.vps-dogfood.example). The profile
+overlays `compose.vps-dogfood.yml` and publishes only Caddy's 80/443 listeners.
+Its first migration/setup does not require `tenants.json` or `MAIL_SERVICE_TOKEN*`.
 
 Do not commit real tenant tokens, ACS connection strings, production sender
 addresses, or deploy-host `.env` files.

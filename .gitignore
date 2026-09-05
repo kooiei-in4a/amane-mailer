@@ -12,6 +12,7 @@
 *.env
 .env.*
 !.env.example
+!.env.vps-dogfood.example
 .claude/*
 !.claude/skills/
 
@@ -29,6 +30,7 @@ infra/deploy/data/
 infra/deploy/tenants.json
 infra/deploy/secrets/
 infra/deploy/config/platform-sender/
+infra/deploy/Caddyfile.vps-dogfood
 infra/deploy/compose.acs-drill.yml
 infra/deploy/compose.mail-05a-client.yml
 infra/deploy/compose.worker-disabled.yml
