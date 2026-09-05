@@ -208,7 +208,11 @@ function Invoke-ClientProcess {
     Assert-Condition (-not $output.Contains($Recipient)) 'client output exposed the recipient.'
     Assert-Condition (-not $output.Contains($Subject)) 'client output exposed the subject.'
     Assert-Condition (-not $output.Contains($TextBody)) 'client output exposed the body.'
-    Assert-Condition ($process.ExitCode -eq [int]$ExpectedExitCode) "client returned an unexpected exit code for poll timeout $PollTimeout. Output: $output"
+    $fixtureRequestCount = 0
+    if (Test-Path -LiteralPath $LogPath) {
+        $fixtureRequestCount = @(Get-Content -LiteralPath $LogPath).Count
+    }
+    Assert-Condition ($process.ExitCode -eq [int]$ExpectedExitCode) "client returned an unexpected exit code for poll timeout $PollTimeout. FixtureRequests: $fixtureRequestCount. Output: $output"
     return $output
 }
 
