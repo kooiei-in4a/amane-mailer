@@ -73,20 +73,28 @@ function Start-Fixture {
         $listener = New-Object System.Net.HttpListener
         $listener.Prefixes.Add("http://127.0.0.1:$FixturePort/")
         $listener.Start()
-        New-Item -ItemType File -Path $FixtureReadyPath -Force | Out-Null
         $postCount = 0
         $successPollCount = 0
+        $contextTask = $null
+        $readyWritten = $false
 
         try {
             while ($true) {
                 if (Test-Path -LiteralPath $FixtureStopPath) {
                     break
                 }
-                $contextTask = $listener.GetContextAsync()
+                if ($null -eq $contextTask) {
+                    $contextTask = $listener.GetContextAsync()
+                    if (-not $readyWritten) {
+                        New-Item -ItemType File -Path $FixtureReadyPath -Force | Out-Null
+                        $readyWritten = $true
+                    }
+                }
                 if (-not $contextTask.Wait(500)) {
                     continue
                 }
                 $context = $contextTask.Result
+                $contextTask = $null
                 $request = $context.Request
                 $reader = $null
                 try {
