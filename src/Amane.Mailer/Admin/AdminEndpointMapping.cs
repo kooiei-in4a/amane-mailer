@@ -11,6 +11,8 @@ internal static class AdminEndpointMapping
         app.MapGet("/admin", RedirectAdminHome).AllowAnonymous();
         app.MapGet("/admin/login", AdminAuthenticationHandlers.RenderLoginPage).AllowAnonymous();
         app.MapGet("/admin/mail-requests", AdminMailRequestsPage.RenderAsync).RequireAuthorization();
+        app.MapGet("/admin/senders", AdminSendersPage.RenderAsync).RequireAuthorization();
+        app.MapGet("/admin/senders/{senderId:guid}", AdminSendersPage.RenderDetailAsync).RequireAuthorization();
         app.MapGet("/admin/dead-letters", AdminDeadLettersPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/webhook-dead-letters", AdminWebhookDeadLettersPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/suppressions", AdminSuppressionsPage.RenderAsync).RequireAuthorization();
@@ -20,6 +22,12 @@ internal static class AdminEndpointMapping
         app.MapGet("/admin/setup-status", AdminSetupStatusPage.RenderAsync).RequireAuthorization();
         app.MapPost("/admin/ops/checkpoint", AdminDbOpsHandlers.CheckpointAsync).RequireAuthorization();
         app.MapPost("/admin/ops/backup", AdminDbOpsHandlers.BackupAsync).RequireAuthorization();
+        app.MapPost("/admin/ops/live-sending", AdminOpsPage.SetLiveSendingAsync).RequireAuthorization();
+        app.MapPost("/admin/senders", AdminSenderMutationHandlers.CreateAsync).RequireAuthorization();
+        app.MapPost("/admin/senders/{senderId:guid}/enable", AdminSenderMutationHandlers.EnableAsync).RequireAuthorization();
+        app.MapPost("/admin/senders/{senderId:guid}/disable", AdminSenderMutationHandlers.DisableAsync).RequireAuthorization();
+        app.MapPost("/admin/senders/{senderId:guid}/api-keys", AdminSenderMutationHandlers.CreateApiKeyAsync).RequireAuthorization();
+        app.MapPost("/admin/senders/{senderId:guid}/api-keys/{keyId:guid}/revoke", AdminSenderMutationHandlers.RevokeApiKeyAsync).RequireAuthorization();
         app.MapGet("/admin/mail-requests/{id}", AdminMailRequestDetailPage.RenderAsync).RequireAuthorization();
         app.MapGet(
                 "/admin/mail-requests/{id}/recipients/bcc/{ordinal:int}",

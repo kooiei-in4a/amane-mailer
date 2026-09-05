@@ -82,6 +82,43 @@ public sealed class SenderRepository(
         return await reader.ReadAsync(cancellationToken) ? ReadSender(reader) : null;
     }
 
+    public async Task<IReadOnlyList<SenderSummary>> ListAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                s.sender_id,
+                s.email,
+                s.display_name,
+                s.enabled,
+                s.created_at,
+                s.disabled_at,
+                COUNT(k.key_id)
+            FROM senders s
+            LEFT JOIN api_keys k ON k.sender_id = s.sender_id
+            GROUP BY s.sender_id, s.email, s.display_name, s.enabled, s.created_at, s.disabled_at
+            ORDER BY s.created_at DESC, s.sender_id;
+            """;
+
+        var senders = new List<SenderSummary>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            senders.Add(new SenderSummary(
+                Guid.Parse(reader.GetString(0)),
+                reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetInt32(3) == 1,
+                SqliteTime.FromStorage(reader.GetString(4)),
+                reader.IsDBNull(5) ? null : SqliteTime.FromStorage(reader.GetString(5)),
+                Convert.ToInt32(reader.GetInt64(6), System.Globalization.CultureInfo.InvariantCulture)));
+        }
+
+        return senders;
+    }
+
     public async Task<int> CountAsync(CancellationToken cancellationToken = default)
     {
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
@@ -151,6 +188,54 @@ public sealed class SenderRepository(
         command.Parameters.AddWithValue("@KeyId", keyId.ToString("D"));
         command.Parameters.AddWithValue("@RevokedAt", SqliteTime.ToStorageUtc(timeProvider.GetUtcNow()));
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> RevokeApiKeyAsync(
+        Guid senderId,
+        Guid keyId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE api_keys
+            SET revoked_at = COALESCE(revoked_at, @RevokedAt)
+            WHERE sender_id = @SenderId
+              AND key_id = @KeyId;
+            """;
+        command.Parameters.AddWithValue("@SenderId", senderId.ToString("D"));
+        command.Parameters.AddWithValue("@KeyId", keyId.ToString("D"));
+        command.Parameters.AddWithValue("@RevokedAt", SqliteTime.ToStorageUtc(timeProvider.GetUtcNow()));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<IReadOnlyList<ApiKeyMetadata>> ListApiKeysAsync(
+        Guid senderId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT key_id, sender_id, name, created_at, revoked_at
+            FROM api_keys
+            WHERE sender_id = @SenderId
+            ORDER BY created_at DESC, key_id;
+            """;
+        command.Parameters.AddWithValue("@SenderId", senderId.ToString("D"));
+
+        var keys = new List<ApiKeyMetadata>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            keys.Add(new ApiKeyMetadata(
+                Guid.Parse(reader.GetString(0)),
+                Guid.Parse(reader.GetString(1)),
+                reader.GetString(2),
+                SqliteTime.FromStorage(reader.GetString(3)),
+                reader.IsDBNull(4) ? null : SqliteTime.FromStorage(reader.GetString(4))));
+        }
+
+        return keys;
     }
 
     public async Task<AuthenticatedApiKey?> AuthenticateAsync(

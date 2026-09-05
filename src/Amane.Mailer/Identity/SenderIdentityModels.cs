@@ -8,6 +8,22 @@ public sealed record SenderIdentity(
     DateTimeOffset CreatedAt,
     DateTimeOffset? DisabledAt);
 
+public sealed record SenderSummary(
+    Guid SenderId,
+    string Email,
+    string? DisplayName,
+    bool Enabled,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? DisabledAt,
+    int ApiKeyCount);
+
+public sealed record ApiKeyMetadata(
+    Guid KeyId,
+    Guid SenderId,
+    string Name,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? RevokedAt);
+
 public sealed record AuthenticatedApiKey(
     Guid KeyId,
     SenderIdentity Sender);

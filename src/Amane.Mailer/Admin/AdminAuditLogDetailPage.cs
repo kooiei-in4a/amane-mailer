@@ -26,7 +26,8 @@ public static class AdminAuditLogDetailPage
         var row = await auditRepository.GetForAdminAsync(
             id,
             access.AllowedTenantIdsForQuery,
-            cancellationToken);
+            cancellationToken,
+            includeManagedConfiguration: access.IsInstanceOwner);
         if (row is null)
             return Results.NotFound();
 

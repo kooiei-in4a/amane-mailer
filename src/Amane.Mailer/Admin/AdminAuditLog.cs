@@ -46,6 +46,13 @@ public static class AdminAuditLog
         public const string MailSuppressionsListUnmasked = "mail_suppressions.list_unmasked";
         public const string MailSuppressionsRemoved = "mail_suppressions.removed";
         public const string MailSuppressionsRemoveFailed = "mail_suppressions.remove_failed";
+        public const string SenderCreated = "sender.created";
+        public const string SenderEnabled = "sender.enabled";
+        public const string SenderDisabled = "sender.disabled";
+        public const string ApiKeyCreated = "api_key.created";
+        public const string ApiKeyRevoked = "api_key.revoked";
+        public const string InstanceLiveSendingEnabled = "instance.live_sending_enabled";
+        public const string InstanceLiveSendingDisabled = "instance.live_sending_disabled";
 
         public static IReadOnlyList<string> All { get; } =
         [
@@ -69,6 +76,13 @@ public static class AdminAuditLog
             MailSuppressionsListUnmasked,
             MailSuppressionsRemoved,
             MailSuppressionsRemoveFailed,
+            SenderCreated,
+            SenderEnabled,
+            SenderDisabled,
+            ApiKeyCreated,
+            ApiKeyRevoked,
+            InstanceLiveSendingEnabled,
+            InstanceLiveSendingDisabled,
         ];
     }
 
@@ -100,6 +114,9 @@ public static class AdminAuditLog
         public const string AdminSession = "admin_session";
         public const string DbOps = "db_ops";
         public const string MailSuppressions = "mail_suppressions";
+        public const string Sender = "sender";
+        public const string ApiKey = "api_key";
+        public const string InstanceConfiguration = "instance_configuration";
 
         /// <summary>
         /// Targets whose rows carry a mail tenant_id and must be filtered for scoped admins.
@@ -109,6 +126,18 @@ public static class AdminAuditLog
         [
             MailRequest,
             MailSuppressions,
+        ];
+
+        /// <summary>
+        /// Managed configuration events are only visible to the instance owner. Sender and
+        /// API-key rows use the legacy physical tenant_id column as a sender-id compatibility
+        /// value, but are not tenant-scoped Admin resources.
+        /// </summary>
+        public static IReadOnlyList<string> ManagedConfiguration { get; } =
+        [
+            Sender,
+            ApiKey,
+            InstanceConfiguration,
         ];
     }
 

@@ -86,6 +86,47 @@ public sealed class SenderApiKeyIdentityTests(MailerApiFixture fixture)
     }
 
     [Fact]
+    public async Task Sender_and_api_key_admin_queries_return_counts_and_metadata_without_secrets()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var senders = scope.ServiceProvider.GetRequiredService<SenderRepository>();
+        var isolatedSender = await senders.CreateAsync($"admin-query-{Guid.NewGuid():N}@example.com", "Admin query", ct);
+        var first = await senders.CreateApiKeyAsync(isolatedSender.SenderId, "first", ct);
+        var second = await senders.CreateApiKeyAsync(isolatedSender.SenderId, "second", ct);
+
+        var sender = Assert.Single(
+            await senders.ListAsync(ct),
+            item => item.SenderId == isolatedSender.SenderId);
+        Assert.Equal(2, sender.ApiKeyCount);
+
+        var metadata = await senders.ListApiKeysAsync(sender.SenderId, ct);
+        Assert.Equal(2, metadata.Count);
+        Assert.Contains(metadata, key => key.KeyId == first.KeyId && key.Name == first.Name);
+        Assert.Contains(metadata, key => key.KeyId == second.KeyId && key.Name == second.Name);
+        Assert.DoesNotContain(
+            first.Plaintext,
+            metadata.SelectMany(key => new[] { key.KeyId.ToString("D"), key.Name }));
+    }
+
+    [Fact]
+    public async Task Scoped_revoke_rejects_a_key_from_another_sender()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var scope = fixture.Factory.Services.CreateAsyncScope();
+        var senders = scope.ServiceProvider.GetRequiredService<SenderRepository>();
+        var other = await senders.CreateAsync($"other-{Guid.NewGuid():N}@example.com", "Other", ct);
+        var ownerKey = await senders.CreateApiKeyAsync(MailerWebApplicationFixtureBase.TenantId, "owner", ct);
+        var otherKey = await senders.CreateApiKeyAsync(other.SenderId, "other", ct);
+
+        Assert.False(await senders.RevokeApiKeyAsync(other.SenderId, ownerKey.KeyId, ct));
+        Assert.NotNull(await senders.AuthenticateAsync(ownerKey.Plaintext, ct));
+
+        Assert.True(await senders.RevokeApiKeyAsync(other.SenderId, otherKey.KeyId, ct));
+        Assert.Null(await senders.AuthenticateAsync(otherKey.Plaintext, ct));
+    }
+
+    [Fact]
     public async Task Invalid_unknown_revoked_and_disabled_credentials_share_stable_unauthorized_response()
     {
         var ct = TestContext.Current.CancellationToken;

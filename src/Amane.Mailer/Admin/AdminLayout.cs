@@ -6,6 +6,7 @@ namespace Amane.Mailer.Admin;
 public enum AdminNavItem
 {
     MailRequests,
+    Senders,
     DeadLetters,
     Suppressions,
     AuditLog,
@@ -55,6 +56,7 @@ public static class AdminLayout
         html.AppendLine("    <nav class=\"admin-sidenav\" aria-label=\"管理メニュー\">");
         html.AppendLine("      <ul class=\"admin-sidenav-list\">");
         AppendNavItem(html, "/admin/mail-requests", "送信依頼", activeNav == AdminNavItem.MailRequests, badgeCount: null);
+        AppendNavItem(html, "/admin/senders", "Senders", activeNav == AdminNavItem.Senders, badgeCount: null);
         AppendNavItem(
             html,
             "/admin/dead-letters",

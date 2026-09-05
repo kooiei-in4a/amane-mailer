@@ -13,6 +13,22 @@ public sealed class InstanceConfigurationRepository(
         return await ReadAsync(connection, cancellationToken);
     }
 
+    public async Task<bool> SetLiveSendingAsync(
+        bool enabled,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE instance_configuration
+            SET live_sending = @LiveSending
+            WHERE id = 1
+              AND initialized_at IS NOT NULL;
+            """;
+        command.Parameters.AddWithValue("@LiveSending", enabled ? 1 : 0);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     public async Task<bool> ConfigureAcsAsync(
         string secretPath,
         CancellationToken cancellationToken = default)
