@@ -140,6 +140,7 @@ Operational runbooks:
 - [Upgrade / rollback guide](docs/ops/upgrade-guide.en.md) [(ja)](docs/ops/upgrade-guide.md)
 - [Local deploy rehearsal](docs/ops/local-deploy-rehearsal-runbook.en.md) [(ja)](docs/ops/local-deploy-rehearsal-runbook.md)
 - [ACS secret / platform-owned sender registration CLI](docs/ops/register-acs-cli-runbook.en.md) [(ja)](docs/ops/register-acs-cli-runbook.md)
+- [VPS dogfood smoke checklist (Issue #733 / PR2)](docs/ops/vps-dogfood-smoke.en.md) [(ja)](docs/ops/vps-dogfood-smoke.md)
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
@@ -189,8 +190,12 @@ Minimum information to POST a mail request to a running Mailer and, when needed,
 
 ### Submit a mail request (POST)
 
-**Official Consumer SDKs (TypeScript / Python):** request builder, random request
-ID generation, typed errors, and 503 retries — see [sdk/](sdk/README.md).
+**Official Consumer SDKs (TypeScript / Python):** for package integration, use the
+request builder, random request ID generation, typed errors, and 503 retries in
+[sdk/](sdk/README.md). For an operator smoke against a VPS, use the dependency-free
+[official Python smoke client](examples/consumer-python/README.md) or the [official
+PowerShell smoke client](scripts/smoke/send-mail.ps1), both of which poll delivery
+status after submission.
 
 - **Endpoint**: `POST http://mailer:8080/api/mail-requests`
 - **Auth**: `Authorization: Bearer <MANAGED_API_KEY>`
@@ -205,6 +210,11 @@ After starting the local compose stack, you can run this smoke request from the
 host. `mail_request_id` is the idempotency key, so use a fresh UUID for each
 new request unless you intentionally want to retry the same request.
 If `uuidgen` is unavailable, set `request_id` to any UUID string.
+
+The curl below is a minimal operator convenience example. Its Authorization value
+can appear in shell process argv, so use the official Python/PowerShell smoke
+client for VPS operation; those clients never take the API key as a CLI argument.
+For any live send, make the approved recipient and `live_sending` intent explicit.
 
 ```bash
 request_id="$(uuidgen)"
@@ -283,9 +293,15 @@ After the Worker finishes delivery, `status` becomes `delivered` and related fie
 
 For the Consumer app compose network setup, see the comments in [infra/deploy/compose.yml](infra/deploy/compose.yml).
 
-For a full runnable Python Consumer sample that POSTs
-to a local Mailer, and handles `accepted` / `already_accepted` /
-`IDEMPOTENCY_CONFLICT`, see [examples/consumer-python/](examples/consumer-python/README.md).
+For the official Python smoke client (v2 POST, `accepted` / `already_accepted`,
+bounded status polling, `delivered` result, and safe `401` / `409` / `429`
+diagnostics), see [examples/consumer-python/](examples/consumer-python/README.md).
+For the official PowerShell smoke client (the same v2 contract, hidden API-key
+prompt, and bounded status polling), see
+[scripts/smoke/send-mail.ps1](scripts/smoke/send-mail.ps1).
+For the complete VPS procedure covering fresh setup, Sender A/B, Key A1/A2/B1,
+revoke, restart, rate limits, and secret exposure, see the [VPS dogfood smoke
+checklist](docs/ops/vps-dogfood-smoke.en.md).
 For a full runnable Node.js Consumer sample that POSTs to a local Mailer and handles `accepted` /
 `already_accepted` / `IDEMPOTENCY_CONFLICT`, see
 [examples/consumer-node/](examples/consumer-node/README.md).
