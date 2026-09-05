@@ -412,6 +412,8 @@ public sealed class SqlMigrationRunner
     {
         var requiresV2Identity = File.Exists(
             Path.Combine(_migrationDirectory, V2IdentityMigration.MigrationVersion));
+        var requiresInstanceConfiguration = File.Exists(
+            Path.Combine(_migrationDirectory, "020_instance_configuration.sql"));
         await using (var tables = connection.CreateCommand())
         {
             tables.CommandText = """
@@ -431,14 +433,22 @@ public sealed class SqlMigrationRunner
                     'mail_plain_submissions',
                     'recipient_delivery_events',
                     'senders',
-                    'api_keys');
+                    'api_keys',
+                    'instance_configuration');
                 """;
             var tableCount = await tables.ExecuteScalarAsync(cancellationToken);
-            var requiredTableCount = requiresV2Identity ? 13L : 11L;
+            var requiredTableCount = (requiresV2Identity ? 13L : 11L)
+                + (requiresInstanceConfiguration ? 1L : 0L);
             if (tableCount is not long count || count != requiredTableCount)
             {
                 return false;
             }
+        }
+
+        if (requiresInstanceConfiguration
+            && !await HasTableAsync(connection, "instance_configuration", cancellationToken))
+        {
+            return false;
         }
 
         // Migration-specific test databases may intentionally stop at an earlier bundled

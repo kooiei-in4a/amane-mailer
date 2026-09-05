@@ -15,13 +15,16 @@ internal static class AdminServiceRegistration
 {
     internal static IServiceCollection AddMailerAdmin(
         IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        InstanceRuntimeState? instanceState = null)
     {
         services.AddStartupValidatedSingleton(provider =>
         {
             var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
-            var options = MailerAdminOptions.Load(resolvedConfiguration);
-            options.Validate();
+            var databaseOwnedCredentials = instanceState?.IsInitialized == true
+                && instanceState.HasInstanceOwner;
+            var options = MailerAdminOptions.Load(resolvedConfiguration, databaseOwnedCredentials);
+            options.Validate(databaseOwnedCredentials);
             var environment = provider.GetRequiredService<IHostEnvironment>();
             AdminCookieTransportPolicy.Validate(
                 AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration, options.Enabled),

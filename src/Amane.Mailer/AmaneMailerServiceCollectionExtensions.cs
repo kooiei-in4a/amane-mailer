@@ -7,6 +7,7 @@ using Amane.Mailer.Delivery;
 using Amane.Mailer.Identity;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Queue;
+using Amane.Mailer.Setup;
 using Amane.Mailer.Webhooks;
 using Amane.Mailer.Worker;
 
@@ -16,16 +17,28 @@ public static class AmaneMailerServiceCollectionExtensions
 {
     public static IServiceCollection AddAmaneMailerServices(
         this IServiceCollection services,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        InstanceRuntimeState? instanceState = null)
     {
         services.AddSingleton(TimeProvider.System);
         services.AddMailerStartupValidator();
-        services.AddMailerAdmin(configuration);
+        services.AddSingleton(instanceState ?? InstanceRuntimeState.Unknown);
+        services.AddSingleton<SqliteConnectionFactory>();
+        services.AddSingleton<SqlMigrationRunner>();
+
+        if (instanceState?.IsUninitialized == true)
+        {
+            FirstRunSetupEndpoints.AddServices(services);
+            return services;
+        }
+
+        services.AddMailerAdmin(configuration, instanceState);
 
         services.AddStartupValidatedSingleton(provider =>
             MailerConfigurationSnapshot.Load(
                 provider.GetRequiredService<IConfiguration>(),
-                provider.GetRequiredService<IHostEnvironment>().EnvironmentName));
+                provider.GetRequiredService<IHostEnvironment>().EnvironmentName,
+                provider.GetRequiredService<InstanceRuntimeState>()));
 
         services.AddStartupValidatedSingleton(provider =>
             provider.GetRequiredService<MailerConfigurationSnapshot>().Registry);
@@ -100,7 +113,6 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<MailerRuntimeMetrics>();
         services.AddSingleton<MailerReadinessEvaluator>();
 
-        services.AddSingleton<SqliteConnectionFactory>();
         services.AddSingleton<SenderRepository>();
         services.AddSingleton<SenderDeliveryConfigurationAdapter>();
         services.AddSingleton<ApiAuthenticationRateLimiter>();
@@ -139,8 +151,6 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton<DeliveryEventRepository>();
         services.AddSingleton<ExpiredProcessingReaper>();
         services.AddSingleton<DeliveryEventEnqueuer>();
-
-        services.AddSingleton<SqlMigrationRunner>();
 
         services.AddSingleton<MailRequestQueue>();
 

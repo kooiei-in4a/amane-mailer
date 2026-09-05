@@ -17,6 +17,7 @@ public sealed class G583MigrationSchemaContractFixtureTests
             ["017_recipient_delivery_events.sql"] = "4e7f15fb61bc1bccd0386fecb3d267c23b0ce6044c87f7999c8fe1a74a1b2bdb",
             ["018_admin_user_capabilities.sql"] = "94af8770dec3a0e0ec925ce6a1946ad73f51f564e7137f2d82934b4fffb7f471",
             ["019_sender_api_key_identity.sql"] = "3bc715bed02f186101e8a580a7410198a8ceeed6407a6ed773c7397200ec7d76",
+            ["020_instance_configuration.sql"] = "5fe5a19ecf265d4a5d67a7f1c67bc360ac5885bb961c3ef35d92c5f0499a033b",
         };
 
     [Fact]
@@ -43,8 +44,8 @@ public sealed class G583MigrationSchemaContractFixtureTests
                     .Build());
             var runner = new SqlMigrationRunner(factory);
             var applied = await runner.ApplyPendingAsync(cancellationToken);
-            Assert.Equal(19, applied.Count);
-            Assert.Equal("019_sender_api_key_identity.sql", applied[^1]);
+            Assert.Equal(20, applied.Count);
+            Assert.Equal("020_instance_configuration.sql", applied[^1]);
             Assert.True(await runner.IsCurrentSchemaReadyAsync(cancellationToken));
 
             await using var connection = await factory.OpenConnectionAsync(cancellationToken);
@@ -119,6 +120,7 @@ public sealed class G583MigrationSchemaContractFixtureTests
                 "admin_user_capabilities",
                 "senders",
                 "api_keys",
+                "instance_configuration",
             });
 
         var indexes = await ReadNamesAsync(connection, "index", cancellationToken);

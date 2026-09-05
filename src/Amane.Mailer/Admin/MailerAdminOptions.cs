@@ -12,6 +12,12 @@ public sealed record MailerAdminOptions
 
     public bool Enabled { get; init; }
 
+    /// <summary>
+    /// True when the first-run instance owner is the authoritative credential source. In this
+    /// mode the legacy environment password hash is intentionally ignored on restart.
+    /// </summary>
+    public bool DatabaseOwnedCredentials { get; init; }
+
     public string Username { get; init; } = "admin";
 
     public string PasswordHash { get; init; } = string.Empty;
@@ -43,7 +49,12 @@ public sealed record MailerAdminOptions
     /// </summary>
     public bool ListPiiVisible { get; init; }
 
-    public static MailerAdminOptions Load(IConfiguration configuration)
+    public static MailerAdminOptions Load(IConfiguration configuration) =>
+        Load(configuration, databaseOwnedCredentials: false);
+
+    public static MailerAdminOptions Load(
+        IConfiguration configuration,
+        bool databaseOwnedCredentials)
     {
         // ENABLED is always strict-parsed. Other Admin UI settings are only load-bearing when
         // Admin is on (mirrors Validate early-return), so typos must not abort mail delivery.
@@ -52,7 +63,7 @@ public sealed record MailerAdminOptions
             defaultValue: false,
             "AMANE_ADMIN_ENABLED",
             "MAILER_ADMIN_ENABLED");
-        if (!enabled)
+        if (!enabled && !databaseOwnedCredentials)
             return new() { Enabled = false };
 
         var listPiiVisible = string.Equals(
@@ -69,8 +80,12 @@ public sealed record MailerAdminOptions
         return new()
         {
             Enabled = true,
+            DatabaseOwnedCredentials = databaseOwnedCredentials,
             Username = ReadString(configuration, "AMANE_ADMIN_USERNAME", "MAILER_ADMIN_USERNAME", "admin"),
-            PasswordHash = ReadString(configuration, "AMANE_ADMIN_PASSWORD_HASH", "MAILER_ADMIN_PASSWORD_HASH", string.Empty),
+            // Do not even retain the legacy environment hash in the DB-owned runtime options.
+            PasswordHash = databaseOwnedCredentials
+                ? string.Empty
+                : ReadString(configuration, "AMANE_ADMIN_PASSWORD_HASH", "MAILER_ADMIN_PASSWORD_HASH", string.Empty),
             AllowedLocalAddress = ReadString(
                 configuration,
                 "127.0.0.1",
@@ -125,7 +140,9 @@ public sealed record MailerAdminOptions
         };
     }
 
-    public void Validate()
+    public void Validate() => Validate(databaseOwnedCredentials: DatabaseOwnedCredentials);
+
+    public void Validate(bool databaseOwnedCredentials)
     {
         if (!Enabled)
             return;
@@ -133,10 +150,10 @@ public sealed record MailerAdminOptions
         if (string.IsNullOrWhiteSpace(Username))
             throw new InvalidOperationException("AMANE_ADMIN_USERNAME must not be empty when AMANE_ADMIN_ENABLED=true.");
 
-        if (string.IsNullOrWhiteSpace(PasswordHash))
+        if (!databaseOwnedCredentials && string.IsNullOrWhiteSpace(PasswordHash))
             throw new InvalidOperationException("AMANE_ADMIN_PASSWORD_HASH must be set when AMANE_ADMIN_ENABLED=true.");
 
-        if (!AdminPasswordHasher.IsSupportedHash(PasswordHash))
+        if (!databaseOwnedCredentials && !AdminPasswordHasher.IsSupportedHash(PasswordHash))
         {
             throw new InvalidOperationException(
                 "AMANE_ADMIN_PASSWORD_HASH must use pbkdf2:sha256 with iterations "

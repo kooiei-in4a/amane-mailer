@@ -9,9 +9,9 @@
 #   cli:admin-hash-password  — PBKDF2 hash CLI on the AOT binary
 #   cli:db-migrate           — SQLite migrate CLI
 #   cli:db-backup            — online SQLite backup CLI
-#   http:admin-login-get     — Admin enabled; GET /admin/login
-#   http:admin-login-post    — Admin cookie sign-in (CSRF + password hash)
-#   http:admin-ready         — Admin host starts; /readyz 200
+#   http:admin-login-get     — initialized fixture; GET /admin/login
+#   http:admin-login-post    — DB-owned Admin cookie sign-in (CSRF + password hash)
+#   http:admin-ready         — initialized fixture starts; /readyz 200
 #   cli:setup-core-self-check — Setup Core dry-run fingerprint smoke (#448)
 #   cli:setup-inspect-effective — Manual + Managed mount attestation JSON smoke (#447)
 #
@@ -248,6 +248,7 @@ start_mailer() { # tenants_path db_path password_hash log_file
     MAILPIT_SMTP_PORT=1025 \
     MAILPIT_SMTP_USE_SSL=false \
     ACS_CONNECTION_STRING= \
+    MAILER_SETUP_ACS_SECRET_PATH="$WORK_DIR/acs_connection_string" \
     MAILER_METRICS_BEARER_TOKEN=local-metrics-scrape-token \
     Mailer__Worker__Enabled=false \
     AMANE_ADMIN_ENABLED=true \
@@ -257,6 +258,51 @@ start_mailer() { # tenants_path db_path password_hash log_file
     AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=127.0.0.1 \
     "$MAILER_BIN" >"$log_file" 2>&1 &
   MAILER_PID=$!
+}
+
+seed_initialized_fixture() { # db_path password_hash secret_path
+  local db_path="$1"
+  local password_hash="$2"
+  local secret_path="$3"
+
+  # #731 makes a fresh migration intentionally uninitialized. Seed only this disposable
+  # low-frequency AOT fixture so the existing Admin/backup smoke remains an initialized-runtime
+  # check; no real ACS endpoint is contacted and no mail is sent.
+  printf '%s\n' 'Endpoint=https://example.communication.azure.com/;AccessKey=aot-path-smoke-key' >"$secret_path"
+  chmod 600 "$secret_path"
+  python3 - "$db_path" "$password_hash" "$secret_path" <<'PY'
+import datetime
+import sqlite3
+import sys
+
+db_path, password_hash, secret_path = sys.argv[1:]
+now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+connection = sqlite3.connect(db_path)
+try:
+    with connection:
+        connection.execute(
+            """
+            UPDATE instance_configuration
+            SET initialized_at = ?,
+                provider_type = 'acs',
+                provider_secret_ref = ?,
+                provider_configured_at = ?
+            WHERE id = 1
+            """,
+            (now, secret_path, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO admin_users (
+                username, password_hash, disabled, credential_epoch,
+                is_break_glass, created_at, updated_at, is_instance_owner
+            ) VALUES (?, ?, 0, 0, 0, ?, ?, 1)
+            """,
+            ("admin", password_hash, now, now),
+        )
+finally:
+    connection.close()
+PY
 }
 
 stop_mailer() {
@@ -474,6 +520,13 @@ fi
     fail "http:admin-ready" "pre-host migrate failed (see $WORK_DIR/migrate-host.err)"
     fail "http:admin-login-get" "skipped; pre-host migrate failed"
     fail "http:admin-login-post" "skipped; pre-host migrate failed"
+    finish
+  fi
+
+  if ! seed_initialized_fixture "$db_path" "$hash" "$WORK_DIR/acs_connection_string"; then
+    fail "http:admin-ready" "failed to seed disposable initialized fixture"
+    fail "http:admin-login-get" "skipped; initialized fixture seed failed"
+    fail "http:admin-login-post" "skipped; initialized fixture seed failed"
     finish
   fi
 

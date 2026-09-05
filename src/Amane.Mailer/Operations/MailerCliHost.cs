@@ -3,6 +3,8 @@ using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Operations.EventGridConfigCheck;
 using Amane.Mailer.Operations.VerifyDeliveryReport;
 using Amane.Mailer.Webhooks;
+using Amane.Mailer.Admin;
+using Amane.Mailer.Setup;
 
 namespace Amane.Mailer.Operations;
 
@@ -82,6 +84,45 @@ public static class MailerCliHost
     {
         var command = new AdminHashPasswordCommand();
         return command.ExecuteAsync(commandArgs, input, output, error);
+    }
+
+    public static Task<int> RunAdminResetPasswordAsync(
+        IConfiguration configuration,
+        IReadOnlyList<string> commandArgs,
+        TextReader input,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var factory = new SqliteConnectionFactory(configuration);
+        var users = new AdminUserRepository(factory, TimeProvider.System);
+        var configuredUsername = configuration["AMANE_ADMIN_USERNAME"]
+            ?? configuration["MAILER_ADMIN_USERNAME"]
+            ?? "admin";
+        var command = new AdminResetPasswordCommand();
+        return command.ExecuteAsync(
+            FilterConfigurationArgs(commandArgs),
+            input,
+            output,
+            error,
+            users,
+            configuredUsername,
+            cancellationToken);
+    }
+
+    public static async Task<int> RunBootstrapShowAsync(
+        IConfiguration configuration,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var command = new BootstrapShowCommand();
+        return await command.ExecuteAsync(
+            ["setup", "bootstrap", "show"],
+            configuration,
+            output,
+            error,
+            cancellationToken);
     }
 
     public static async Task<int> RunAdminUserCreateAsync(

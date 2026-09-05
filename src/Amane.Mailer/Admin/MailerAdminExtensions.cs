@@ -1,4 +1,5 @@
 using System.Net;
+using Amane.Mailer.Configuration;
 using Microsoft.Extensions.FileProviders;
 
 namespace Amane.Mailer.Admin;
@@ -13,8 +14,9 @@ public static class MailerAdminExtensions
 {
     public static IServiceCollection AddMailerAdmin(
         this IServiceCollection services,
-        IConfiguration configuration) =>
-        AdminServiceRegistration.AddMailerAdmin(services, configuration);
+        IConfiguration configuration,
+        InstanceRuntimeState? instanceState = null) =>
+        AdminServiceRegistration.AddMailerAdmin(services, configuration, instanceState);
 
     /// <summary>
     /// Synchronizes Admin credentials and tenant-scope readiness before Admin routes are mapped.
@@ -26,6 +28,9 @@ public static class MailerAdminExtensions
     {
         var options = app.Services.GetRequiredService<MailerAdminOptions>();
         if (!options.Enabled)
+            return;
+
+        if (options.DatabaseOwnedCredentials)
             return;
 
         var credentialSync = app.Services.GetRequiredService<AdminCredentialSync>();

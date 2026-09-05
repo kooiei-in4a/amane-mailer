@@ -13,6 +13,8 @@ public static class MailerReadinessReasons
     public const string HeartbeatStale = "heartbeat_stale";
     public const string DatabaseError = "database_error";
     public const string UnexpectedError = "unexpected_error";
+    public const string Uninitialized = "uninitialized";
+    public const string ProviderSecretMissing = "provider_secret_missing";
 
     public static readonly string[] All =
     [
@@ -23,5 +25,7 @@ public static class MailerReadinessReasons
         HeartbeatStale,
         DatabaseError,
         UnexpectedError,
+        Uninitialized,
+        ProviderSecretMissing,
     ];
 }

@@ -3,17 +3,18 @@ namespace Amane.Mailer.Data.Sqlite.Models;
 public sealed record AdminTenantAccess(
     string Username,
     bool IsBreakGlass,
-    IReadOnlySet<Guid> TenantIds)
+    IReadOnlySet<Guid> TenantIds,
+    bool IsInstanceOwner = false)
 {
     public IReadOnlySet<Guid>? AllowedTenantIdsForQuery =>
-        IsBreakGlass ? null : TenantIds;
+        IsBreakGlass || IsInstanceOwner ? null : TenantIds;
 
     public bool CanAccessTenant(Guid tenantId) =>
-        IsBreakGlass || TenantIds.Contains(tenantId);
+        IsBreakGlass || IsInstanceOwner || TenantIds.Contains(tenantId);
 
     public bool HasAllTenantScopes(IReadOnlyCollection<Guid> tenantIds)
     {
-        if (IsBreakGlass)
+        if (IsBreakGlass || IsInstanceOwner)
             return true;
 
         foreach (var tenantId in tenantIds)

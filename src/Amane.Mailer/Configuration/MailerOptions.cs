@@ -1,3 +1,5 @@
+using Amane.Mailer.Setup;
+
 namespace Amane.Mailer.Configuration;
 
 public sealed record MailerOptions
@@ -24,22 +26,37 @@ public sealed record MailerOptions
     /// </summary>
     internal string? MailpitSmtpPortLoadError { get; init; }
 
-    public static MailerOptions Load(IConfiguration configuration)
+    public static MailerOptions Load(IConfiguration configuration) =>
+        Load(configuration, instanceState: null);
+
+    public static MailerOptions Load(
+        IConfiguration configuration,
+        InstanceRuntimeState? instanceState)
     {
-        var (host, hostKey) = ResolveMailpitSmtpHost(configuration);
-        var (port, portError) = ResolveMailpitSmtpPort(configuration);
+        var databaseOwnedAcs = instanceState?.IsInitialized == true
+            && string.Equals(instanceState.ProviderType, "acs", StringComparison.Ordinal);
+        var (host, hostKey) = databaseOwnedAcs
+            ? ("mailpit", (string?)null)
+            : ResolveMailpitSmtpHost(configuration);
+        var (port, portError) = databaseOwnedAcs
+            ? (1025, (string?)null)
+            : ResolveMailpitSmtpPort(configuration);
 
         return new()
         {
-            ProviderOverride = configuration["MAILER_PROVIDER"]
-                ?? configuration["Mailer:Provider"]
-                ?? string.Empty,
+            // Once browser setup has committed the instance provider, the DB-owned ACS state
+            // cannot be overridden by the legacy process-wide provider switch.
+            ProviderOverride = databaseOwnedAcs
+                ? string.Empty
+                : configuration["MAILER_PROVIDER"]
+                    ?? configuration["Mailer:Provider"]
+                    ?? string.Empty,
             MailpitSmtpHost = host,
             MailpitSmtpHostConfiguredKey = hostKey,
             MailpitSmtpPort = port,
             MailpitSmtpPortLoadError = portError,
-            MailpitUseSsl = ResolveMailpitUseSsl(configuration),
-            AcsConnectionString = ResolveAcsConnectionString(configuration),
+            MailpitUseSsl = databaseOwnedAcs ? false : ResolveMailpitUseSsl(configuration),
+            AcsConnectionString = ResolveAcsConnectionString(configuration, instanceState),
         };
     }
 
@@ -211,6 +228,31 @@ public sealed record MailerOptions
     /// <c>ACS_CONNECTION_STRING</c> via its own compose override and unsets it on exit), the bare
     /// env var remains a valid fallback, matching existing drill behavior unchanged.
     /// </summary>
-    private static string ResolveAcsConnectionString(IConfiguration configuration) =>
-        MailerAcsCredential.Resolve(configuration).Value;
+    private static string ResolveAcsConnectionString(
+        IConfiguration configuration,
+        InstanceRuntimeState? instanceState)
+    {
+        if (instanceState?.IsInitialized == true
+            && string.Equals(instanceState.ProviderType, "acs", StringComparison.Ordinal))
+        {
+            if (!string.IsNullOrWhiteSpace(instanceState.ProviderSecretRef))
+            {
+                // The DB-owned reference is a protected persistent secret, not merely an
+                // arbitrary readable path. Reuse the setup preflight so a replacement with
+                // unsafe permissions or malformed ACS content cannot reach the delivery client.
+                if (FirstRunSetupStorage.TryReadValidAcsSecret(
+                        instanceState.ProviderSecretRef,
+                        out var protectedValue))
+                {
+                    return protectedValue;
+                }
+            }
+
+            // An initialized ACS instance is DB-owned. Never fall back to a bare environment
+            // variable when its durable secret reference is absent or unreadable.
+            return string.Empty;
+        }
+
+        return MailerAcsCredential.Resolve(configuration).Value;
+    }
 }
