@@ -196,7 +196,6 @@ function Invoke-ClientProcess {
         -RedirectStandardError $StderrPath `
         -PassThru `
         -Wait
-    Assert-Condition ($process.ExitCode -eq [int]$ExpectedExitCode) "client returned an unexpected exit code for poll timeout $PollTimeout."
 
     $output = ''
     if (Test-Path -LiteralPath $StdoutPath) {
@@ -209,6 +208,7 @@ function Invoke-ClientProcess {
     Assert-Condition (-not $output.Contains($Recipient)) 'client output exposed the recipient.'
     Assert-Condition (-not $output.Contains($Subject)) 'client output exposed the subject.'
     Assert-Condition (-not $output.Contains($TextBody)) 'client output exposed the body.'
+    Assert-Condition ($process.ExitCode -eq [int]$ExpectedExitCode) "client returned an unexpected exit code for poll timeout $PollTimeout. Output: $output"
     return $output
 }
 
