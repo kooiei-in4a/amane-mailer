@@ -79,6 +79,9 @@ jobs:
       - name: PTY smoke (ACS register-acs interactive paths)
         run: python3 scripts/pty-smoke-register-acs.py
 
+      - name: Official Python smoke client no-send self-test
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/smoke/test_send_mail.py
+
       - name: Qualified Git promotion validator self-test
         run: python3 scripts/validate-qualified-git-promotion-self-test.py
 
@@ -206,6 +209,10 @@ jobs:
       - name: Canonical release-client self-test
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-client-self-test.ps1
+
+      - name: Official PowerShell smoke client no-send self-test
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\smoke\send-mail-self-test.ps1
 
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68

@@ -133,6 +133,7 @@ commit しないでください。
 - [Upgrade / rollback ガイド](docs/ops/upgrade-guide.md) [(en)](docs/ops/upgrade-guide.en.md)
 - [ローカル deploy rehearsal](docs/ops/local-deploy-rehearsal-runbook.md) [(en)](docs/ops/local-deploy-rehearsal-runbook.en.md)
 - [ACS secret / platform-owned sender 登録 CLI](docs/ops/register-acs-cli-runbook.md) [(en)](docs/ops/register-acs-cli-runbook.en.md)
+- [VPS dogfood smoke checklist（Issue #733 / PR2）](docs/ops/vps-dogfood-smoke.md) [(en)](docs/ops/vps-dogfood-smoke.en.md)
 - [バックアップ運用](docs/ops/backup-operations.md) [(en)](docs/ops/backup-operations.en.md)
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
@@ -180,7 +181,7 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 
 ### 送信依頼（POST）
 
-**公式 Consumer SDK（TypeScript / Python）**: v2 リクエストビルダー、型付きエラー、503 リトライを含む SDK は [sdk/](sdk/README.md) を参照してください。
+**公式 Consumer SDK（TypeScript / Python）**: package として組み込む v2 リクエストビルダー、型付きエラー、503 リトライは [sdk/](sdk/README.md) を参照してください。VPS の operator smoke には、追加依存なしで送信後の status まで確認する [公式 Python smoke client](examples/consumer-python/README.md) または [公式 PowerShell smoke client](scripts/smoke/send-mail.ps1) を使います。
 
 - **エンドポイント**: `POST http://mailer:8080/api/mail-requests`
 - **認証**: `Authorization: Bearer <managed API key>`
@@ -192,6 +193,10 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 ローカル compose 起動後は、host から次の smoke request を実行できます。
 `mail_request_id` は冪等キーなので、同じ依頼として再送したい場合以外は毎回新しい UUID を使います。
 `uuidgen` がない環境では、`request_id` に任意の UUID 文字列を設定してください。
+
+下記は API の最小 operator convenience curl です。Authorization が shell の process argv に
+載り得るため、VPS の公式 smoke には API Key を CLI 引数へ置かない Python / PowerShell client
+を使ってください。実送信を行う場合は、宛先と `live_sending` の意図を明示します。
 
 ```bash
 request_id="$(uuidgen)"
@@ -271,9 +276,13 @@ Consumer アプリの compose ネットワーク接続例は [infra/deploy/compo
 .NET Consumer の full runnable sample（`Amane.Mailer.Contracts` 使用、
 `accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
 [examples/consumer-dotnet/](examples/consumer-dotnet/README.md) を参照してください。
-Python Consumer の full runnable sample（local Mailer への
-POST、`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
+Python Consumer の official smoke client（v2 POST、`accepted` / `already_accepted`、bounded
+status polling、`delivered` 判定、`401` / `409` / `429` の safe diagnostics を含む）は
 [examples/consumer-python/](examples/consumer-python/README.md) を参照してください。
+PowerShell の official smoke client（Python と同じ v2 contract、hidden API-key prompt、bounded
+status polling）は [scripts/smoke/send-mail.ps1](scripts/smoke/send-mail.ps1) を参照してください。
+VPS の fresh setup から Sender A/B、Key A1/A2/B1、revoke、restart、rate-limit、secret exposure
+確認までの手順は [VPS dogfood smoke checklist](docs/ops/vps-dogfood-smoke.md) にあります。
 Node.js Consumer の full runnable sample（local Mailer への
 POST、`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
 [examples/consumer-node/](examples/consumer-node/README.md) を参照してください。
