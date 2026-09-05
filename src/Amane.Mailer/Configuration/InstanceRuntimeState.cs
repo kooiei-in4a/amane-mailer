@@ -122,7 +122,8 @@ public static class InstanceRuntimeStateProbe
             command.CommandText = """
                 SELECT EXISTS (
                     SELECT 1 FROM admin_users
-                    WHERE is_instance_owner = 1);
+                    WHERE disabled = 0
+                      AND is_instance_owner = 1);
                 """;
             return Convert.ToInt32(
                        await command.ExecuteScalarAsync(cancellationToken),

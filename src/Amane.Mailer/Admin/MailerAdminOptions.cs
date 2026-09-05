@@ -13,8 +13,9 @@ public sealed record MailerAdminOptions
     public bool Enabled { get; init; }
 
     /// <summary>
-    /// True when the first-run instance owner is the authoritative credential source. In this
-    /// mode the legacy environment password hash is intentionally ignored on restart.
+    /// True when an initialized managed v2 instance owns the Admin credential state in SQLite.
+    /// In this mode the legacy environment password hash is intentionally ignored on restart,
+    /// and <c>AMANE_ADMIN_ENABLED</c> is not the Admin surface gate.
     /// </summary>
     public bool DatabaseOwnedCredentials { get; init; }
 

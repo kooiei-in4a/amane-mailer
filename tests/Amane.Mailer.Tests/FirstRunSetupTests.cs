@@ -4,8 +4,10 @@ using Amane.Mailer.Admin;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Setup;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
@@ -278,6 +280,156 @@ public sealed class FirstRunSetupTests
     }
 
     [Fact]
+    public async Task Setup_auth_rate_limits_repeated_invalid_tokens_at_http_endpoint()
+    {
+        var root = CreateRoot("auth-rate-limit");
+        WebApplicationFactory<global::Program>? factory = null;
+        try
+        {
+            var databasePath = Path.Combine(root, "mailer.db");
+            var tokenPath = Path.Combine(root, "bootstrap", "setup_token");
+            var configuration = CreateConfiguration(databasePath, tokenPath);
+            await new SqlMigrationRunner(new SqliteConnectionFactory(configuration))
+                .ApplyPendingAsync(TestContext.Current.CancellationToken);
+            var bootstrapToken = new BootstrapTokenStore(configuration).EnsureExists();
+
+            factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Testing");
+                builder.UseSetting("ConnectionStrings:Mailer", $"Data Source={databasePath}");
+                builder.UseSetting("MAILER_BOOTSTRAP_TOKEN_PATH", tokenPath);
+                builder.UseSetting("Mailer:Worker:Enabled", "false");
+                builder.ConfigureServices(services =>
+                {
+                    services.RemoveAll<IHostedService>();
+                    services.AddSingleton<IStartupFilter>(
+                        new TestRemoteAddressStartupFilter(IPAddress.Parse("203.0.113.20")));
+                });
+            });
+
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+                BaseAddress = new Uri("https://localhost"),
+            });
+            using var page = await client.GetAsync("/setup", TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+            var requestToken = ReadRequestToken(
+                await page.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+            var csrfCookie = page.Headers.GetValues("Set-Cookie")
+                .Single(value => value.StartsWith("__Host-amane-setup-csrf=", StringComparison.Ordinal))
+                .Split(';', 2)[0];
+
+            for (var attempt = 0; attempt < ApiAuthenticationRateLimiter.PermitLimit; attempt++)
+            {
+                using var response = await client.SendAsync(
+                    CreateSetupAuthRequest(requestToken, csrfCookie, "invalid-bootstrap-token"),
+                    TestContext.Current.CancellationToken);
+                Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            }
+
+            using var limited = await client.SendAsync(
+                CreateSetupAuthRequest(requestToken, csrfCookie, "invalid-bootstrap-token"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode);
+
+            using var correctAfterLimit = await client.SendAsync(
+                CreateSetupAuthRequest(requestToken, csrfCookie, bootstrapToken),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.TooManyRequests, correctAfterLimit.StatusCode);
+        }
+        finally
+        {
+            if (factory is not null)
+                await factory.DisposeAsync();
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task Initialized_runtime_hides_every_setup_route_even_when_bootstrap_file_is_stale()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = CreateRoot("initialized-setup-hidden");
+        WebApplicationFactory<global::Program>? factory = null;
+        try
+        {
+            var databasePath = Path.Combine(root, "mailer.db");
+            var tokenPath = Path.Combine(root, "bootstrap", "setup_token");
+            var configuration = CreateConfiguration(databasePath, tokenPath);
+            var connections = new SqliteConnectionFactory(configuration);
+            await new SqlMigrationRunner(connections).ApplyPendingAsync(ct);
+
+            var instance = new InstanceConfigurationRepository(connections, TimeProvider.System);
+            var secretPath = Path.Combine(root, "secrets", "acs_connection_string");
+            Assert.True(await instance.ConfigureAcsAsync(secretPath, ct));
+
+            var users = new AdminUserRepository(connections, TimeProvider.System);
+            Assert.True(await users.EnsureInstanceOwnerAsync(
+                "managed-owner",
+                AdminPasswordHasher.Hash("managed-owner-password"),
+                ct));
+
+            var senders = new SenderRepository(connections, TimeProvider.System);
+            await senders.CreateAsync("noreply@example.com", "Example", ct);
+            Assert.True(await instance.FinalizeAsync(ct));
+
+            // This valid token was created before the initialized runtime started and is
+            // intentionally left in place to model a stale bootstrap file.
+            var staleBootstrapToken = new BootstrapTokenStore(configuration).EnsureExists();
+            Assert.True(File.Exists(tokenPath));
+
+            factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Testing");
+                builder.UseSetting("ConnectionStrings:Mailer", $"Data Source={databasePath}");
+                builder.UseSetting("MAILER_BOOTSTRAP_TOKEN_PATH", tokenPath);
+                builder.UseSetting("Mailer:Worker:Enabled", "false");
+                builder.UseSetting("AMANE_ADMIN_ENABLED", "false");
+                builder.ConfigureServices(services => services.RemoveAll<IHostedService>());
+            });
+
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+                BaseAddress = new Uri("https://localhost"),
+            });
+
+            using var setup = await client.GetAsync("/setup", ct);
+            Assert.Equal(HttpStatusCode.NotFound, setup.StatusCode);
+
+            foreach (var path in new[]
+            {
+                "/setup/auth",
+                "/setup/provider",
+                "/setup/admin",
+                "/setup/sender",
+                "/setup/finalize",
+            })
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, path)
+                {
+                    Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                    {
+                        ["__RequestVerificationToken"] = "not-used-after-initialization",
+                    }),
+                };
+                request.Headers.TryAddWithoutValidation("Origin", "https://localhost");
+                using var response = await client.SendAsync(request, ct);
+                Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            }
+
+            Assert.Equal(staleBootstrapToken, File.ReadAllText(tokenPath).Trim());
+        }
+        finally
+        {
+            if (factory is not null)
+                await factory.DisposeAsync();
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
     public async Task Database_owned_admin_reset_bumps_epoch_and_revokes_sessions()
     {
         var root = CreateRoot("admin-reset");
@@ -354,7 +506,7 @@ public sealed class FirstRunSetupTests
     }
 
     [Fact]
-    public void Initialized_db_owned_snapshot_ignores_legacy_configuration_and_environment_credentials()
+    public void Initialized_snapshot_ignores_legacy_configuration_without_instance_owner()
     {
         var root = CreateRoot("managed-snapshot");
         try
@@ -375,7 +527,7 @@ public sealed class FirstRunSetupTests
                 "acs",
                 secretPath,
                 "2026-01-01T00:00:00Z",
-                true);
+                false);
 
             var snapshot = MailerConfigurationSnapshot.Load(configuration, "Production", state);
             var tenant = Assert.Single(snapshot.Registry.ListTenants());
@@ -432,6 +584,24 @@ public sealed class FirstRunSetupTests
         return html[start..end];
     }
 
+    private static HttpRequestMessage CreateSetupAuthRequest(
+        string requestToken,
+        string csrfCookie,
+        string bootstrapToken)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/setup/auth")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] = requestToken,
+                ["bootstrap_token"] = bootstrapToken,
+            }),
+        };
+        request.Headers.TryAddWithoutValidation("Origin", "https://localhost");
+        request.Headers.TryAddWithoutValidation("Cookie", csrfCookie);
+        return request;
+    }
+
     private static string CreateRoot(string name)
     {
         var root = Path.Combine(Path.GetTempPath(), "amane-mailer-first-run-" + name, Guid.NewGuid().ToString("N"));
@@ -444,5 +614,20 @@ public sealed class FirstRunSetupTests
         SqliteConnection.ClearAllPools();
         if (Directory.Exists(root))
             Directory.Delete(root, recursive: true);
+    }
+
+    private sealed class TestRemoteAddressStartupFilter(IPAddress remoteAddress) : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
+            app =>
+            {
+                app.Use(async (context, nextMiddleware) =>
+                {
+                    context.Connection.RemoteIpAddress = remoteAddress;
+                    await nextMiddleware();
+                });
+
+                next(app);
+            };
     }
 }

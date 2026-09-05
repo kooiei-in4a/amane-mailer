@@ -56,6 +56,22 @@ Amane.Mailer setup apply --config <absolute-path> --non-interactive
 
 `--port` は localhost Web の listen port。`--no-browser` はブラウザ起動を抑止。`--terminal` は対話式 terminal UI です。
 
+### 初回ブラウザセットアップ（Managed v2）
+
+deploy compose の新しいデータディレクトリでは、既存の migration service を先に適用し、`mailer` を起動して、コンテナ内から一度だけ使う bootstrap token を表示します。
+
+```bash
+docker compose --env-file .env -f compose.yml run --rm mailer-migrate
+docker compose --env-file .env -f compose.yml up -d mailer
+docker compose --env-file .env -f compose.yml exec mailer /app/Amane.Mailer setup bootstrap show
+```
+
+token は secret として扱い、ログや Issue に貼らないでください。`/setup` は、既に用意された HTTPS reverse proxy 経由でのみ開きます。標準 compose の Mailer は HTTP backend であり、このガイドでは proxy・証明書・DNS を構築しません。proxy で TLS を終端する場合だけ `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` を設定し、`MAILER_FORWARDED_HEADERS_TRUSTED_PROXIES` または `MAILER_FORWARDED_HEADERS_TRUSTED_NETWORKS` には proxy の送信元だけを指定します。
+
+ブラウザでは、bootstrap 認証 → ACS provider secret → 最初の Admin ユーザー → 最初の Sender → finalize の順に入力します。finalize は durable な初期化済みビットを書き込み、サービスを停止します。`mailer` を再度起動し、`/readyz` を確認してください。この bootstrap 確認に実メール送信は不要です。
+
+初期化後は、古い token file が残っていても `/setup` と bootstrap token は利用できません。Managed v2 の Admin は SQLite が正本で、`AMANE_ADMIN_ENABLED=false` でも Admin 面は有効です。legacy の環境 password hash は無視されます。managed password の変更は、対話式に `docker compose ... exec mailer /app/Amane.Mailer admin reset-password --username <db-admin-name>` を実行します。
+
 ### 候補の消費（検証方法）
 
 Easy Setup **release-candidate** host bundle（公開 GitHub Release ではない）を使う場合:
@@ -126,7 +142,7 @@ packaging maintainer 手順: [setup-release-bundle](setup-release-bundle.md)。�
 
 Staging 試験と Production は ACS / Queue / token を環境分離する。Staging drill を Production 証拠にしない。
 
-### Admin（任意・既定 disabled）
+### Admin（任意・Managed v2 初期化前は既定 disabled）
 
 - Admin 有効化は**任意**で**既定 disabled**。主セットアップ成功後の**独立した任意 transaction**
 - bootstrap は対話式 Web または terminal のみ。**non-interactive では行わない**
@@ -135,6 +151,7 @@ Staging 試験と Production は ACS / Queue / token を環境分離する。Sta
 - 対象 DB 状態は **fresh** と **managed same-user** 再適用のみ。既存 Manual / unsupported は Manual 経路
 - config bundle rollback と SQLite Admin 状態（`admin_config` / `admin_users` / session）の rollback は同一視しない
 - bootstrap 成功には login と `/admin/setup-status` 表示まで含む。Admin setup status に doctor / テスト送信 / Docker 操作はない
+- Managed v2 の初期化後は `initialized_at` が不可逆の gate となり、Admin user/password と Admin 面の有効化は SQLite が正本です。`AMANE_ADMIN_ENABLED=false` でもこの Admin 面は無効化されず、この環境変数は fresh または legacy/unmanaged runtime で引き続き有効です。
 
 #### Admin access profile
 

@@ -32,7 +32,7 @@ public sealed class MailerConfigurationSnapshot
         // A completed browser setup owns provider/sender state in SQLite and intentionally does
         // not depend on the legacy tenants.json. The retained registry is only a narrow DTO
         // bridge for the dispatcher; API identity remains in SenderRepository.
-        if (instanceState?.IsInitialized == true && instanceState.HasInstanceOwner)
+        if (instanceState?.IsInitialized == true)
         {
             return CreateManagedSnapshot(configuration, instanceState);
         }
