@@ -117,6 +117,11 @@ deploy-time input として用意し、container へ mount してください。
 - 安全な env template: `infra/deploy/.env.example`
 - Tenant schema: `config/mailer/tenants.schema.json`
 
+VPS で Caddy 配下の HTTPS、Mailer backend 非公開、Admin / Setup の operator-only
+edge restriction を使う標準 PR1 profile は [`vps-dogfood-deployment.md`](docs/ops/vps-dogfood-deployment.md)
+と [`Caddyfile.vps-dogfood.example`](infra/deploy/Caddyfile.vps-dogfood.example) を参照してください。
+profile は `compose.vps-dogfood.yml` を overlay し、Caddy の 80/443 だけを host に publish します。
+
 実 tenant token、ACS connection string、production sender address、deploy host の `.env` は
 commit しないでください。
 

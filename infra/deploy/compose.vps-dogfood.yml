@@ -1,0 +1,71 @@
+# VPS dogfood reference profile for Issue #733 / PR1.
+#
+# Usage (from this directory):
+#   docker compose --env-file .env -f compose.yml -f compose.vps-dogfood.yml \
+#     --profile vps-dogfood config --quiet
+#   docker compose --env-file .env -f compose.yml -f compose.vps-dogfood.yml \
+#     --profile vps-dogfood up -d
+#
+# The base deploy compose remains the source for Mailer runtime settings. This overlay only
+# supplies the reference edge and replaces the base consumer network on `mailer` so the VPS
+# profile cannot be bypassed by joining the legacy shared network.
+
+services:
+  mailer:
+    environment:
+      # The Caddy profile always terminates TLS and forwards plain HTTP to this fixed backend
+      # port. The host never publishes it.
+      ASPNETCORE_URLS: http://+:8080
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+      # Static proxy IP is the narrow forwarded-header trust boundary. Keep the proxy and
+      # mailer addresses below inside MAILER_VPS_PROXY_NETWORK_SUBNET.
+      MAILER_FORWARDED_HEADERS_TRUSTED_PROXIES: ${MAILER_VPS_PROXY_IPV4_ADDRESS:-172.30.0.2}
+      MAILER_FORWARDED_HEADERS_TRUSTED_NETWORKS: ""
+      # This is the Mailer server-side local address, not the operator/client source address.
+      # The Caddy remote_ip matcher below is the client-side management allowlist.
+      AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS: ${MAILER_VPS_MAILER_IPV4_ADDRESS:-172.30.0.3}
+      AMANE_ADMIN_ALLOW_HTTP: "false"
+    # !override is intentional. The base `mailer` network is a consumer integration network;
+    # retaining it here would allow a container on that network to reach mailer:8080 directly.
+    networks: !override
+      internal: {}
+      vps_proxy:
+        aliases:
+          - mailer
+        ipv4_address: ${MAILER_VPS_MAILER_IPV4_ADDRESS:-172.30.0.3}
+
+  proxy:
+    image: ${MAILER_VPS_PROXY_IMAGE:-caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d}
+    profiles:
+      - vps-dogfood
+    restart: unless-stopped
+    depends_on:
+      mailer:
+        condition: service_started
+    environment:
+      # These values are required so an unconfigured profile fails before Caddy starts.
+      MAILER_PUBLIC_HOSTNAME: ${MAILER_PUBLIC_HOSTNAME:?Set MAILER_PUBLIC_HOSTNAME to the public DNS name}
+      MAILER_MANAGEMENT_ALLOWED_CIDRS: ${MAILER_MANAGEMENT_ALLOWED_CIDRS:?Set MAILER_MANAGEMENT_ALLOWED_CIDRS to operator CIDRs}
+    ports:
+      - "${MAILER_VPS_HTTP_BIND:-0.0.0.0}:${MAILER_VPS_HTTP_PORT:-80}:80"
+      - "${MAILER_VPS_HTTPS_BIND:-0.0.0.0}:${MAILER_VPS_HTTPS_PORT:-443}:443"
+    volumes:
+      - ${MAILER_VPS_CADDYFILE_PATH:-./Caddyfile.vps-dogfood}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      vps_proxy:
+        ipv4_address: ${MAILER_VPS_PROXY_IPV4_ADDRESS:-172.30.0.2}
+
+networks:
+  vps_proxy:
+    # Deliberately not `internal`: Mailer needs outbound ACS access and Caddy needs outbound
+    # ACME/DNS access. No service other than proxy and mailer joins this dedicated network, and
+    # only proxy has host-published ports.
+    ipam:
+      config:
+        - subnet: ${MAILER_VPS_PROXY_NETWORK_SUBNET:-172.30.0.0/28}
+
+volumes:
+  caddy_data:
+  caddy_config:

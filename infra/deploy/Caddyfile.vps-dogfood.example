@@ -1,0 +1,46 @@
+# Caddy reference edge for the VPS dogfood deployment (Issue #733 / PR1).
+#
+# Copy this file to Caddyfile.vps-dogfood and replace the hostname and operator CIDRs in .env.
+# Caddy enables automatic HTTPS for a real hostname. DNS, firewall rules, and the public TLS
+# account remain operator-owned; this file does not provision any of them.
+#
+# MAILER_MANAGEMENT_ALLOWED_CIDRS is a space-separated list of operator source IPs/CIDRs, for
+# example: 192.0.2.0/24 2001:db8:1234::/48
+
+{$MAILER_PUBLIC_HOSTNAME} {
+	# Caddy's automatic HTTPS redirects HTTP to HTTPS for this named site.
+
+	# Management is a separate edge boundary. The first matcher admits only the configured
+	# operator network; the second returns 404 for every other source. Do not replace the
+	# remote_ip matcher with a forwarded header or an unrestricted IPv4 CIDR.
+	@management {
+		path /admin /admin/* /setup /setup/* /metrics
+	}
+	@management_operator {
+		path /admin /admin/* /setup /setup/* /metrics
+		remote_ip {$MAILER_MANAGEMENT_ALLOWED_CIDRS}
+	}
+	handle @management_operator {
+		reverse_proxy mailer:8080 {
+			# Caddy is the only trusted forwarded-header source on vps_proxy. Set the scheme
+			# from the actual TLS connection so client-supplied X-Forwarded-Proto is ignored.
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+	handle @management {
+		respond 404
+	}
+
+	# Consumer API and liveness/readiness are the only public paths in this reference profile.
+	@public path /api/* /healthz /readyz
+	handle @public {
+		reverse_proxy mailer:8080 {
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Keep undocumented paths, including an accidental root/static surface, closed.
+	handle {
+		respond 404
+	}
+}

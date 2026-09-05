@@ -122,6 +122,12 @@ JSON files are deploy-time inputs and must be mounted into the container:
 - Safe env template: `infra/deploy/.env.example`
 - Tenant schema: `config/mailer/tenants.schema.json`
 
+For the PR1 VPS reference profile with Caddy HTTPS, no public Mailer backend
+port, and operator-only Admin / Setup edge restrictions, see
+[VPS dogfood deployment](docs/ops/vps-dogfood-deployment.en.md) and the
+[Caddyfile example](infra/deploy/Caddyfile.vps-dogfood.example). The profile
+overlays `compose.vps-dogfood.yml` and publishes only Caddy's 80/443 listeners.
+
 Do not commit real tenant tokens, ACS connection strings, production sender
 addresses, or deploy-host `.env` files.
 
