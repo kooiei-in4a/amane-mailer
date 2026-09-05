@@ -77,10 +77,38 @@ public sealed class AdminManagedSenderLifecycleTests
                 Assert.Contains("/admin/senders", html, StringComparison.Ordinal);
             }
 
+            var createSenderToken = await ReadCsrfTokenAsync(ownerClient, "/admin/senders", ct);
+            using (var createSender = await ownerClient.PostAsync(
+                "/admin/senders",
+                Form(
+                    createSenderToken,
+                    ("email", "created@example.com"),
+                    ("display_name", "Created"),
+                    ("confirmation", "confirm")),
+                ct))
+            {
+                Assert.Equal(HttpStatusCode.SeeOther, createSender.StatusCode);
+            }
+
+            createSenderToken = await ReadCsrfTokenAsync(ownerClient, "/admin/senders", ct);
+            using (var duplicateSender = await ownerClient.PostAsync(
+                "/admin/senders",
+                Form(
+                    createSenderToken,
+                    ("email", " CREATED@EXAMPLE.COM "),
+                    ("display_name", "Duplicate"),
+                    ("confirmation", "confirm")),
+                ct))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, duplicateSender.StatusCode);
+            }
+
             var detailToken = await ReadCsrfTokenAsync(
                 ownerClient,
                 $"/admin/senders/{firstSender.SenderId:D}",
                 ct);
+            var createdKeyId = Guid.Empty;
+            var createdPlaintext = string.Empty;
             using (var createKey = await ownerClient.PostAsync(
                 $"/admin/senders/{firstSender.SenderId:D}/api-keys",
                 Form(
@@ -93,7 +121,13 @@ public sealed class AdminManagedSenderLifecycleTests
                 Assert.Contains("no-store", createKey.Headers.CacheControl?.ToString() ?? string.Empty, StringComparison.Ordinal);
                 var html = await createKey.Content.ReadAsStringAsync(ct);
                 Assert.Contains("このキーは今だけ表示されます。", html, StringComparison.Ordinal);
-                Assert.Matches(new Regex("amk_[A-Za-z0-9_.-]+", RegexOptions.CultureInvariant), html);
+                var keyMatch = Regex.Match(
+                    html,
+                    @"amk_([0-9a-f]{32})\.[A-Za-z0-9_-]+",
+                    RegexOptions.CultureInvariant);
+                Assert.True(keyMatch.Success);
+                createdKeyId = Guid.ParseExact(keyMatch.Groups[1].Value, "N");
+                createdPlaintext = keyMatch.Value;
             }
 
             using (var detail = await ownerClient.GetAsync(
@@ -104,6 +138,33 @@ public sealed class AdminManagedSenderLifecycleTests
                 Assert.DoesNotContain("amk_", html, StringComparison.Ordinal);
                 Assert.Contains("managed-key", html, StringComparison.Ordinal);
             }
+
+            var senderMutationToken = await ReadCsrfTokenAsync(
+                ownerClient,
+                $"/admin/senders/{firstSender.SenderId:D}",
+                ct);
+            using (var disableSender = await ownerClient.PostAsync(
+                $"/admin/senders/{firstSender.SenderId:D}/disable",
+                Form(senderMutationToken, ("confirmation", "confirm")),
+                ct))
+            {
+                Assert.Equal(HttpStatusCode.SeeOther, disableSender.StatusCode);
+            }
+
+            Assert.False((await senders.FindAsync(firstSender.SenderId, ct))!.Enabled);
+            senderMutationToken = await ReadCsrfTokenAsync(
+                ownerClient,
+                $"/admin/senders/{firstSender.SenderId:D}",
+                ct);
+            using (var enableSender = await ownerClient.PostAsync(
+                $"/admin/senders/{firstSender.SenderId:D}/enable",
+                Form(senderMutationToken, ("confirmation", "confirm")),
+                ct))
+            {
+                Assert.Equal(HttpStatusCode.SeeOther, enableSender.StatusCode);
+            }
+
+            Assert.True((await senders.FindAsync(firstSender.SenderId, ct))!.Enabled);
 
             var otherSender = await senders.CreateAsync("other@example.com", "Other", ct);
             var otherKey = await senders.CreateApiKeyAsync(otherSender.SenderId, "other", ct);
@@ -121,6 +182,21 @@ public sealed class AdminManagedSenderLifecycleTests
 
             Assert.NotNull(await senders.AuthenticateAsync(otherKey.Plaintext, ct));
 
+            revokeToken = await ReadCsrfTokenAsync(
+                ownerClient,
+                $"/admin/senders/{firstSender.SenderId:D}",
+                ct);
+            using (var revoke = await ownerClient.PostAsync(
+                $"/admin/senders/{firstSender.SenderId:D}/api-keys/{createdKeyId:D}/revoke",
+                Form(revokeToken, ("confirmation", "confirm")),
+                ct))
+            {
+                Assert.Equal(HttpStatusCode.SeeOther, revoke.StatusCode);
+            }
+
+            Assert.Null(await senders.AuthenticateAsync(createdPlaintext, ct));
+            Assert.NotNull(await senders.AuthenticateAsync(otherKey.Plaintext, ct));
+
             await users.CreateOrUpdateScopedUserAsync(
                 "scoped-admin-732",
                 AdminPasswordHasher.Hash("scoped-password"),
@@ -131,6 +207,28 @@ public sealed class AdminManagedSenderLifecycleTests
                 await LoginAsync(scopedClient, "scoped-admin-732", "scoped-password", ct);
                 using var denied = await scopedClient.GetAsync("/admin/senders", ct);
                 Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+            }
+
+            await users.CreateBreakGlassUserAsync(
+                "break-glass-732",
+                AdminPasswordHasher.Hash("break-glass-password"),
+                ct);
+            using (var breakGlassClient = CreateClient(factory))
+            {
+                await LoginAsync(breakGlassClient, "break-glass-732", "break-glass-password", ct);
+                using var denied = await breakGlassClient.GetAsync("/admin/senders", ct);
+                Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+                using var audit = await breakGlassClient.GetAsync("/admin/audit-log", ct);
+                Assert.Equal(HttpStatusCode.OK, audit.StatusCode);
+                var auditHtml = await audit.Content.ReadAsStringAsync(ct);
+                Assert.DoesNotContain(
+                    $"<td>{AdminAuditLog.EventTypes.ApiKeyCreated}</td>",
+                    auditHtml,
+                    StringComparison.Ordinal);
+                Assert.DoesNotContain(
+                    $"<td>{AdminAuditLog.EventTypes.InstanceLiveSendingEnabled}</td>",
+                    auditHtml,
+                    StringComparison.Ordinal);
             }
 
             using (var ops = await ownerClient.GetAsync("/admin/ops", ct))
@@ -164,7 +262,11 @@ public sealed class AdminManagedSenderLifecycleTests
 
             Assert.False((await instance.GetAsync(ct))!.LiveSending);
             var auditRows = await factory.Services.GetRequiredService<AdminAuditRepository>().ListRecentAsync(20, ct);
+            Assert.Contains(auditRows, row => row.EventType == AdminAuditLog.EventTypes.SenderCreated);
+            Assert.Contains(auditRows, row => row.EventType == AdminAuditLog.EventTypes.SenderEnabled);
+            Assert.Contains(auditRows, row => row.EventType == AdminAuditLog.EventTypes.SenderDisabled);
             Assert.Contains(auditRows, row => row.EventType == AdminAuditLog.EventTypes.ApiKeyCreated);
+            Assert.Contains(auditRows, row => row.EventType == AdminAuditLog.EventTypes.ApiKeyRevoked);
             Assert.Contains(auditRows, row => row.EventType == AdminAuditLog.EventTypes.InstanceLiveSendingEnabled);
             Assert.Contains(auditRows, row => row.EventType == AdminAuditLog.EventTypes.InstanceLiveSendingDisabled);
         }

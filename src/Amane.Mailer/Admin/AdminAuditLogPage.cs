@@ -77,6 +77,7 @@ public static class AdminAuditLogPage
                 OccurredFrom = occurredFrom,
                 OccurredToExclusive = occurredToExclusive,
                 AllowedTenantIds = access.AllowedTenantIdsForQuery,
+                IncludeManagedConfiguration = access.IsInstanceOwner,
                 CursorOccurredAt = cursor?.OccurredAt,
                 CursorId = cursor?.Id,
                 PageSize = PageSize,

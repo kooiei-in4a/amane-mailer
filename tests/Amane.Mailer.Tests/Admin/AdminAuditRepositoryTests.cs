@@ -337,6 +337,84 @@ public sealed class AdminAuditRepositoryTests
     }
 
     [Fact]
+    public async Task Managed_configuration_audit_is_visible_to_owner_but_not_break_glass_or_scoped_admin()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await AuditTestDatabase.CreateAsync(ct);
+        var repository = new AdminAuditRepository(db.Factory);
+        var occurredAt = new DateTimeOffset(2026, 7, 27, 12, 0, 0, TimeSpan.Zero);
+
+        await repository.WriteAsync(
+            new AdminAuditEvent
+            {
+                EventType = AdminAuditLog.EventTypes.SenderCreated,
+                Actor = "managed-sender-audit",
+                OccurredAt = occurredAt,
+                TargetType = AdminAuditLog.TargetTypes.Sender,
+                TargetId = Guid.NewGuid().ToString("D"),
+                Result = AdminAuditLog.Results.Success,
+            },
+            ct);
+        await repository.WriteAsync(
+            new AdminAuditEvent
+            {
+                EventType = AdminAuditLog.EventTypes.InstanceLiveSendingEnabled,
+                Actor = "managed-live-sending-audit",
+                OccurredAt = occurredAt.AddMinutes(1),
+                TargetType = AdminAuditLog.TargetTypes.InstanceConfiguration,
+                TargetId = "1",
+                Result = AdminAuditLog.Results.Success,
+            },
+            ct);
+        await repository.WriteAsync(
+            NewAuthAuditEvent(
+                AdminAuditLog.EventTypes.Logout,
+                "managed-audit-auth",
+                occurredAt.AddMinutes(2)),
+            ct);
+
+        var ownerPage = await repository.ListForAdminAsync(
+            new AdminAuditListQuery
+            {
+                AllowedTenantIds = null,
+                IncludeManagedConfiguration = true,
+                PageSize = 50,
+            },
+            ct);
+        Assert.Contains(ownerPage.Items, row => row.Actor == "managed-sender-audit");
+        Assert.Contains(ownerPage.Items, row => row.Actor == "managed-live-sending-audit");
+
+        var breakGlassPage = await repository.ListForAdminAsync(
+            new AdminAuditListQuery
+            {
+                AllowedTenantIds = null,
+                IncludeManagedConfiguration = false,
+                PageSize = 50,
+            },
+            ct);
+        Assert.DoesNotContain(breakGlassPage.Items, row => row.Actor == "managed-sender-audit");
+        Assert.DoesNotContain(breakGlassPage.Items, row => row.Actor == "managed-live-sending-audit");
+        Assert.Contains(breakGlassPage.Items, row => row.Actor == "managed-audit-auth");
+
+        var ownerRows = await repository.ListForAdminAsync(
+            new AdminAuditListQuery { IncludeManagedConfiguration = true, PageSize = 50 },
+            ct);
+        var senderAudit = Assert.Single(
+            ownerRows.Items,
+            row => row.Actor == "managed-sender-audit");
+        Assert.Null(await repository.GetForAdminAsync(
+            senderAudit.Id,
+            allowedTenantIds: null,
+            ct,
+            includeManagedConfiguration: false));
+        Assert.NotNull(await repository.GetForAdminAsync(
+            senderAudit.Id,
+            allowedTenantIds: null,
+            ct,
+            includeManagedConfiguration: true));
+    }
+
+    [Fact]
     public async Task List_for_admin_applies_event_type_and_actor_filters()
     {
         var ct = TestContext.Current.CancellationToken;

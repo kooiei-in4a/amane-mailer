@@ -77,7 +77,11 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
 
         var where = new StringBuilder("WHERE 1 = 1");
         AppendListFilters(where, command, query);
-        AppendAuditTenantScopeFilter(where, command, query.AllowedTenantIds);
+        AppendAuditTenantScopeFilter(
+            where,
+            command,
+            query.AllowedTenantIds,
+            query.IncludeManagedConfiguration);
 
         if (query.CursorOccurredAt is not null && query.CursorId is not null)
         {
@@ -121,14 +125,19 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
     public async Task<AdminAuditEventRow?> GetForAdminAsync(
         long id,
         IReadOnlySet<Guid>? allowedTenantIds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool includeManagedConfiguration = true)
     {
         await using var connection = await connections.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
 
         var where = new StringBuilder("WHERE ae.id = @Id");
         command.Parameters.AddWithValue("@Id", id);
-        AppendAuditTenantScopeFilter(where, command, allowedTenantIds);
+        AppendAuditTenantScopeFilter(
+            where,
+            command,
+            allowedTenantIds,
+            includeManagedConfiguration);
 
         command.CommandText = $"""
             SELECT
@@ -188,16 +197,23 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
     /// Scoped admins see auth/session/db_ops events service-wide (no mail tenant PII) and
     /// tenant-scoped targets (<see cref="AdminAuditLog.TargetTypes.TenantScoped"/>) only when
     /// the persisted tenant_id is in an allowed tenant. Null tenant_id on those targets is
-    /// hidden from scoped admins (break-glass only). Break-glass passes
-    /// <paramref name="allowedTenantIds"/> as null (no filter).
+    /// hidden from scoped admins. Managed configuration targets are separately controlled by
+    /// <paramref name="includeManagedConfiguration"/> so break-glass and instance-owner access
+    /// can be distinguished even though both are instance-wide for legacy audit events.
     /// </summary>
     private static void AppendAuditTenantScopeFilter(
         StringBuilder where,
         SqliteCommand command,
-        IReadOnlySet<Guid>? allowedTenantIds)
+        IReadOnlySet<Guid>? allowedTenantIds,
+        bool includeManagedConfiguration)
     {
         if (allowedTenantIds is null)
+        {
+            if (!includeManagedConfiguration)
+                AppendManagedConfigurationExclusion(where, command);
+
             return;
+        }
 
         where.AppendLine();
         if (allowedTenantIds.Count == 0)
@@ -230,6 +246,14 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
         where.Append(string.Join(", ", parameterNames));
         where.AppendLine("))");
 
+        if (!includeManagedConfiguration)
+            AppendManagedConfigurationExclusion(where, command);
+    }
+
+    private static void AppendManagedConfigurationExclusion(
+        StringBuilder where,
+        SqliteCommand command)
+    {
         var managedTargetNames = new List<string>(AdminAuditLog.TargetTypes.ManagedConfiguration.Count);
         for (var i = 0; i < AdminAuditLog.TargetTypes.ManagedConfiguration.Count; i++)
         {
@@ -238,6 +262,7 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
             command.Parameters.AddWithValue(parameterName, AdminAuditLog.TargetTypes.ManagedConfiguration[i]);
         }
 
+        where.AppendLine();
         where.Append("  AND (ae.target_type IS NULL OR ae.target_type NOT IN (");
         where.Append(string.Join(", ", managedTargetNames));
         where.Append("))");
