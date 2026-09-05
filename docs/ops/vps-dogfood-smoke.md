@@ -200,7 +200,7 @@ docker compose --env-file .env \
 - [ ] Admin の Sender A/B、A2/B1 の active state、revoke 済み A1、`live_sending`、provider 設定が SQLite managed state として残っている。
 - [ ] A2 で新しい UUID の send を行い、継続して `delivered` になることを確認する。
 - [ ] B1 でも同じ確認を行う。
-- [ ] `docker compose down -v`、volume 削除、DB 初期化を行わない。backup/restore の検証は PR3 へ残す。
+- [ ] `docker compose down -v`、volume 削除、DB 初期化を行わない。backup/restore は [専用 runbook](restore-verification.md) の PR3 検証範囲として別に扱う。
 
 ## 7. Runtime rate-limit proof
 

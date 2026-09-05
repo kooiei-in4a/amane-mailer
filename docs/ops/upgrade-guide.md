@@ -72,13 +72,17 @@ release record と照合した digest を pin してください。
 
 [バックアップ運用](backup-operations.md) に従い、upgrade 用の最終 backup は呼び出し元を
 quiesce した後、旧 Mailer を停止する直前に取得します。`backup-mailer.sh` は稼働中 Mailer の
-SQLite online backup API を使います。live WAL DB file を直接 copy しません。
+SQLite online backup API を使います。live WAL DB file を直接 copy しません。managed-v2 の
+full recovery point が必要な場合は、graceful shutdown 後に `backup-instance-state.sh` を実行し、
+DB、canonical provider secret、committed spool を同じ cold point から保全します。full script は
+stop/start を行いません。
 
 事前確認:
 
 - 対応する age identity と復旧コピーが利用できる
 - `tenants.json`、`.env`、compose template、file secrets、Managed root など、DB 外の
-  operator-owned state も private storage に保全されている
+  operator-owned state も private storage に保全されている。managed-v2 full archive の
+  対象外となる Caddy named volume と外部 bounce secret の扱いも決まっている
 - 最終 backup の取得後、target migration 前に [リストア検証](restore-verification.md) を実施できる
   隔離環境と時間を確保している
 - 以前の immutable image reference と、その release に互換する config を取得できる
@@ -101,11 +105,13 @@ secret は private な値を使います。
 
 1. 呼び出し元からの新規 request を止めます。環境の運用基準に従って queue / in-flight state を
    確認し、どの状態を recovery point にするか記録します。
-2. 旧 Mailer を稼働させたまま最終 online backup を取得します。新しい暗号化
+2. 旧 Mailer を稼働させたまま最終 online DB backup を取得します。新しい暗号化
    `mailer-*.db.age`、必要な offsite upload、平文 `.db` が残っていないことを確認し、snapshot
    時刻を記録します。
-3. 直ちに旧 Mailer の graceful shutdown を完了させます。snapshot 後に完了した DB 更新や
-   provider operation があれば reconciliation 対象として記録します。
+3. 直ちに旧 Mailer の graceful shutdown を完了させます。managed-v2 の full recovery point
+   を作る場合は、`backup-instance-state.sh` をここで実行し、`mailer-state-*.tar.age` と
+   平文 `.tar` の不存在を確認します。snapshot 後に完了した DB 更新や provider operation が
+   あれば reconciliation 対象として記録します。
 
 ```bash
 docker compose --env-file .env -f compose.yml stop mailer
@@ -113,7 +119,7 @@ docker compose --env-file .env -f compose.yml stop mailer
 
 4. 保存済みの旧 private config / image identity を保持したまま、`.env` の
    `MAILER_IMAGE_TAG` を検証済みの対象 immutable SHA tag に変更し、target image を pull します。
-5. 最終 backup を対象 image と隔離した disposable environment で
+5. 最終 DB/full backup を対象 image と隔離した disposable environment で
    [リストア検証](restore-verification.md) します。そこでは通常 `mailer-migrate` と health /
    readiness まで確認します。失敗した場合は production DB を変更せず停止し、保存済みの旧
    image / config を明示的に復元して再起動するか、別の検証済み backup を選びます。

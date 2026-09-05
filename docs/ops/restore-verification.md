@@ -2,112 +2,152 @@
 
 # リストア検証
 
-初回オフサイトバックアップ後、バックアップスクリプト変更後、大きな DB migration 後、オペレータが選んだ周期でリストア検証を実行します。使い捨て compose プロジェクトと使い捨てデータディレクトリを使い、本番ボリューム・ポート・リバースプロキシルーティングに影響しないようにします。
+初回の offsite backup 後、backup script の変更後、migration の大きな変更後、および
+operator が決めた周期で、使い捨て環境に full instance archive を復元して検証します。
+このドリルは実 ACS 送信、実 recipient、実 provider secret を使いません。検証用の
+fake SQLite／fake secret／fake committed spool を使う自動 fixture は次で実行できます:
 
-リストアドリルでは `docker compose down -v` や Docker volume prune コマンドを使わないでください。
+~~~bash
+bash /path/to/amane-mailer/scripts/backup-instance-state-self-test.sh
+~~~
 
-## 使い捨て Mailer ドリル
+この fixture は age/rclone/docker の test double を使い、archive の encrypt/decrypt
+経路、内容一致、除外境界、欠落 state の RED、非空 target 拒否を確認します。test double
+は本番暗号化の代替ではありません。
 
-1. 隔離した checkout またはコピーした Mailer deploy ディレクトリを準備します:
+## ドリルの安全境界
 
-   ```bash
-   set -euo pipefail
-   export MAILER_CHECKOUT=/path/to/amane-mailer
-   export COMPOSE_PROJECT_NAME=amane_mailer_restore_check
-   export MAILER_COMPOSE_FILE="$MAILER_CHECKOUT/infra/deploy/compose.yml"
-   mkdir -p ./restore-mailer-data ./restore ./keys
-   chmod 700 ./keys
-   RESTORE_MAILER_DATA="$(pwd)/restore-mailer-data"
-   ```
+- 本番の MAILER_DATA_PATH、Compose project、Caddy named volume を使わない。
+- docker compose down -v、volume prune、既存 data directory の削除や overwrite を
+  行わない。
+- restore helper は fresh または空の target だけを受け付ける。sentinel を置いた非空
+  directory への実行が失敗し、sentinel が残ることを確認する。
+- age identity は一時 path に置き、owner-only (600) にする。実 secret、recipient、
+  bearer token、recipient address をログや issue に出さない。
+- bounce ingestion を有効にせず、実 ACS endpoint へ接続しない。readiness の確認は
+  health endpoint と DB／filesystem state に限定する。
+- Caddy の caddy_data / caddy_config は復元せず、Mailer state と混ぜない。
 
-   ドリル用 `.env.mailer` は使い捨て token を使い、`MAILER_DATA_PATH` を `$RESTORE_MAILER_DATA` の絶対パスに、
-   `MAILER_TENANTS_HOST_PATH` を安全なドリル tenant JSON に向けます。
-   ドリルが provider 接続を明示的に含めない限り `ACS_CONNECTION_STRING` は空のままにします。
+## 使い捨て Compose の準備
 
-2. オペレータの非公開キー管理から age identity を取得します。永続コピーはリポジトリ外に置き、ドリル用一時コピーは次に置きます:
+以下では checkout を /path/to/amane-mailer、host Compose directory を
+/path/to/mailer とします。VPS overlay を使わない場合は compose.vps-dogfood.yml を
+各コマンドから外します:
 
-   ```text
-   ./keys/backup-age-key.txt
-   ```
+~~~bash
+set -Eeuo pipefail
+export COMPOSE_PROJECT_NAME=amane-mailer-restore-check
+cd /path/to/mailer
 
-3. オフサイトストレージから選択した暗号化 Mailer バックアップをコピーします:
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood config --quiet
 
-   ```bash
-   set -euo pipefail
-   chmod 600 ./keys/backup-age-key.txt
-   MAILER_BACKUP_FILE=mailer-YYYYMMDDTHHmmssZ.db.age
-   MAILER_BACKUP_RCLONE_REMOTE=remote:bucket-or-prefix/mailer/
-   rclone copy "$MAILER_BACKUP_RCLONE_REMOTE" ./restore --include "$MAILER_BACKUP_FILE"
-   ```
+mkdir -p ./restore ./keys ./secrets/acs
+chmod 700 ./restore ./keys ./secrets ./secrets/acs
+chmod 600 ./keys/backup-age-key.txt
+~~~
 
-   別の承認済み経路で暗号化ファイルをコピーした場合は `./restore/` に置き、`rclone copy` は省略します。
+encrypted full archive を private remote から取得する場合:
 
-4. 使い捨てデータディレクトリへ SQLite をリストアします:
+~~~bash
+MAILER_BACKUP_FILE=mailer-state-YYYYMMDDTHHmmssZ.tar.age
+MAILER_BACKUP_RCLONE_REMOTE=remote:bucket-or-prefix/mailer/
+rclone copy "$MAILER_BACKUP_RCLONE_REMOTE" ./restore --include "$MAILER_BACKUP_FILE"
+~~~
 
-   ```bash
-   set -euo pipefail
-   rm -f ./restore-mailer-data/mailer.db ./restore-mailer-data/mailer.db-wal ./restore-mailer-data/mailer.db-shm ./restore-mailer-data/mailer.db.restoring
+すでに承認済み archive を ./restore にコピー済みなら rclone は省略します。
 
-   age --decrypt --identity ./keys/backup-age-key.txt "./restore/$MAILER_BACKUP_FILE" \
-     > ./restore-mailer-data/mailer.db.restoring
-   [ -s ./restore-mailer-data/mailer.db.restoring ] || { echo "decrypt produced empty Mailer DB" >&2; exit 1; }
+## Full archive の復元と内容確認
 
-   if command -v sqlite3 >/dev/null 2>&1; then
-     integrity_result="$(sqlite3 ./restore-mailer-data/mailer.db.restoring 'PRAGMA integrity_check;')"
-     [ "$integrity_result" = "ok" ] || { echo "SQLite integrity_check failed: $integrity_result" >&2; exit 1; }
-   fi
+Mailer runtime と migration/admin mutator が動いていないことを確認し、fresh target を
+作成して helper を実行します。runtime UID/GID は image/runtime から確認した値に置き換え、
+説明用の 1654 を盲目的に使わないでください:
 
-   mv ./restore-mailer-data/mailer.db.restoring ./restore-mailer-data/mailer.db
+~~~bash
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood ps
 
-   chmod 600 ./restore-mailer-data/mailer.db
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" --profile ops run --rm mailer-migrate
-   ```
+RESTORE_TARGET="$(mktemp -d "$PWD/restore-mailer-data.XXXXXX")"
+MAILER_RUNTIME_UID=1654
+MAILER_RUNTIME_GID=1654
 
-5. 使い捨て Mailer サービスを起動します:
+bash /path/to/amane-mailer/infra/deploy/restore-instance-state.sh \
+  --archive "$PWD/restore/$MAILER_BACKUP_FILE" \
+  --identity "$PWD/keys/backup-age-key.txt" \
+  --target "$RESTORE_TARGET" \
+  --runtime-uid "$MAILER_RUNTIME_UID" \
+  --runtime-gid "$MAILER_RUNTIME_GID"
+~~~
 
-   ```bash
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" up -d mailer
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" exec -T mailer /app/Amane.Mailer healthcheck
-   MAILER_HTTP_PORT="$(sed -n 's/^MAILER_HTTP_PORT=//p' .env.mailer | tail -n 1 | sed "s/^['\"]//;s/['\"]$//")"
-   MAILER_HTTP_PORT="${MAILER_HTTP_PORT:-8080}"
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" exec -T mailer curl -fsS "http://localhost:${MAILER_HTTP_PORT}/healthz"
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" exec -T mailer curl -fsS "http://localhost:${MAILER_HTTP_PORT}/readyz"
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" exec -T mailer /app/Amane.Mailer db stats
-   ```
+成功した target について、次を確認します:
 
-6. ドリル `.env` で Admin UI が有効なら、ドリル専用資格情報でログイン、送信依頼一覧表示、Dead Letters ページ表示を確認します。
-   Admin の tenant scope 判定は `tenants.json` の tenant 件数と DB 内の履歴 tenant 件数の大きい方を使います。
-   tenant を設定から削除していても、復元 DB の `mail_requests` に 2 件以上の distinct `tenant_id` が残っている場合は multi-tenant 扱いです。
-   必要に応じて次を確認し、少なくとも 1 名の scoped admin または break-glass 管理者が用意されていることを確認します。
-   service-wide backup を Admin UI/API から実行する運用では、break-glass または全 effective tenant scope を持つ管理者も別途確認します:
+- mailer.db が存在し、helper が provider secret と同じ archive から復元した。
+- secrets/acs/acs_connection_string が存在し、owner-only directory と file mode 600
+  である。
+- attachment-spool/committed/ とその opaque request/spool files が存在し、元の fixture
+  または backup 時点の private inventory と byte-for-byte に一致する。
+- attachment-spool/staging、bootstrap、logs、data/backups が作成されていない。
+- age identity と archive の平文 tar が target や data volume に作成されていない。
+- 非空 target の拒否テストが sentinel を保持している。
 
-   ```bash
-   sqlite3 ./restore-mailer-data/mailer.db 'SELECT COUNT(DISTINCT tenant_id) FROM mail_requests;'
-   sqlite3 ./restore-mailer-data/mailer.db 'SELECT tenant_id, COUNT(*) FROM mail_requests GROUP BY tenant_id ORDER BY tenant_id;'
-   ```
+sqlite3 が利用可能なら DB integrity を補助的に確認します:
 
-7. ドリル日付、バックアップファイル名、リストア所要時間、検証結果、是正措置を非公開運用メモに記録します。
+~~~bash
+sqlite3 "$RESTORE_TARGET/mailer.db" 'PRAGMA integrity_check;'
+~~~
 
-   **Admin 監査ログ:** `admin_audit_events` は Mailer SQLite DB の一部です。`db backup` で取得したバックアップには、purge 実行前の時点で DB に残っている監査行が含まれます。リストア後に retention sweep や `db admin-audit purge` が走ると、保持期間を過ぎた行は削除されます。監査証跡を長期保持する必要がある環境では、バックアップ取得前の監査行を別途ログ収集基盤へエクスポートする運用を検討してください。
+期待値は ok です。これは migration の代わりではありません。
 
-8. ドリルコンテナを停止・削除します。クリーンアップ承認まで `restore-mailer-data/` は検査用に保持し、その後削除します:
+## Migration、起動、readiness
 
-   ```bash
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" stop mailer
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" rm -f mailer
-   rm -f ./keys/backup-age-key.txt ./restore/"$MAILER_BACKUP_FILE"
-   rm -rf ./restore-mailer-data
-   unset COMPOSE_PROJECT_NAME RESTORE_MAILER_DATA
-   ```
+target を使う検証 project にだけ data path を向け、元の ./data は変更しません。
+VPS overlay の external ACS mount は read-only compatibility mount として用意し、managed
+v2 の provider authority をそこへ複製しません:
 
-## 受け入れチェック
+~~~bash
+export MAILER_DATA_PATH="$RESTORE_TARGET"
+export MAILER_COMPOSE_FILE=compose.yml:compose.vps-dogfood.yml
 
-- 暗号化バックアップが保管済み age identity で復号できる。
-- 復元ファイルが使い捨てデータディレクトリに `mailer.db` として存在する。
-- `mailer-migrate` が成功する。
-- `/app/Amane.Mailer healthcheck` が 0 で終了する。
-- 使い捨て Mailer 環境で `/healthz` と `/readyz` が 200 を返す。
-- `db stats` が成功し、復元データの期待 status 件数を示す。
-- ドリルで Admin UI が有効なら、Admin ログイン、Mail Requests、Dead Letters が動作する。
-- Admin UI が有効なら、scoped admin または break-glass 管理者がある。Admin UI/API から service-wide backup を使う運用では、break-glass または全 effective tenant scope を持つ管理者がある。
-- 次のスケジュールバックアップに依存する前にドリル結果を記録する。
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood run --rm mailer-migrate
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood up -d mailer
+
+curl -fsS https://mailer.example.invalid/healthz
+curl -fsS https://mailer.example.invalid/readyz
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood exec -T mailer /app/Amane.Mailer db stats
+~~~
+
+確認結果には migration の終了 status、health/readiness の HTTP status、DB stats、
+復元した committed spool の件数、所要時間、使用 archive、runtime image tag、
+ownership/mode を記録します。実 provider send の証拠はこのドリルの目的ではありません。
+
+initialized DB の provider secret を検証用 target で一時的に欠落または破損させて再起動
+した場合、次を期待します:
+
+- /readyz は HTTP 503 で JSON reason が provider_secret_missing。
+- /setup は HTTP 404。
+- bare ACS_CONNECTION_STRING を追加しても fallback しない。
+- setup token で再初期化できない。
+
+negative test 後は target を破棄し、元の archive と本番 data を変更しません。
+
+## 完了と cleanup
+
+Mailer を停止して verification project を削除し、証跡を非公開運用メモへ保存します。
+監査・インシデント記録が済んだ後で、使い捨て target、downloaded archive、一時 identity
+だけを明示的に削除します。Caddy named volume と key vault recovery copy は削除しません:
+
+~~~bash
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood stop mailer
+rm -f -- "./restore/$MAILER_BACKUP_FILE" ./keys/backup-age-key.txt
+rm -rf -- "$RESTORE_TARGET"
+~~~

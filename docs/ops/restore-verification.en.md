@@ -2,135 +2,161 @@
 
 # Restore Verification
 
-Run a restore verification after the first offsite backup, after backup script
-changes, after significant database migrations, and on the operator's chosen
-cadence. Use a disposable compose project and disposable data directory so the
-drill cannot affect production volumes, ports, or reverse proxy routing.
+After the first offsite backup, after backup-script changes, after significant
+migrations, and on the operator's chosen cadence, restore a full instance
+archive in a disposable environment. This drill does not send through real ACS,
+use a real recipient, or expose a real provider secret. The automated fixture
+uses fake SQLite, a fake secret, and a fake committed spool:
 
-Do not use `docker compose down -v` or Docker volume prune commands in restore
-drills.
+~~~bash
+bash /path/to/amane-mailer/scripts/backup-instance-state-self-test.sh
+~~~
 
-## Disposable Mailer Drill
+The fixture uses age/rclone/docker test doubles and checks the encrypt/decrypt
+path, byte-for-byte content, exclusion boundary, missing-state RED cases, and
+non-empty-target refusal. The test double is not a production encryption
+replacement.
 
-1. Prepare an isolated checkout or copied Mailer deploy directory:
+## Drill Safety Boundary
 
-   ```bash
-   set -euo pipefail
-   export MAILER_CHECKOUT=/path/to/amane-mailer
-   export COMPOSE_PROJECT_NAME=amane_mailer_restore_check
-   export MAILER_COMPOSE_FILE="$MAILER_CHECKOUT/infra/deploy/compose.yml"
-   mkdir -p ./restore-mailer-data ./restore ./keys
-   chmod 700 ./keys
-   RESTORE_MAILER_DATA="$(pwd)/restore-mailer-data"
-   ```
+- Do not use the production MAILER_DATA_PATH, Compose project, or Caddy named
+  volumes.
+- Do not run docker compose down -v, volume-prune commands, or deletion/overwrite
+  against an existing data directory.
+- The restore helper accepts only a fresh or empty target. Confirm that a
+  restore against a directory containing a sentinel fails and leaves the
+  sentinel unchanged.
+- Keep the age identity in a temporary owner-only (600) path. Do not put real
+  secrets, recipients, bearer tokens, or addresses in logs or issues.
+- Keep bounce ingestion disabled and do not connect to a real ACS endpoint.
+  Readiness checks are limited to health endpoints and DB/filesystem state.
+- Do not restore Caddy caddy_data / caddy_config or mix them into Mailer state.
 
-   The drill `.env.mailer` should use throwaway tokens, point
-   `MAILER_DATA_PATH` at the absolute path in `$RESTORE_MAILER_DATA`, and point
-   `MAILER_TENANTS_HOST_PATH` at a safe drill tenant JSON. Keep
-   `ACS_CONNECTION_STRING` empty unless the drill explicitly includes provider
-   connectivity.
+## Prepare Disposable Compose
 
-2. Retrieve the age identity from the operator's private key manager. Keep the
-   durable copy outside the repository and place the temporary drill copy at:
+In these examples, /path/to/amane-mailer is the checkout and /path/to/mailer
+is the host Compose directory. If the VPS overlay is not used, remove
+compose.vps-dogfood.yml from each command:
 
-   ```text
-   ./keys/backup-age-key.txt
-   ```
+~~~bash
+set -Eeuo pipefail
+export COMPOSE_PROJECT_NAME=amane-mailer-restore-check
+cd /path/to/mailer
 
-3. Copy the selected encrypted Mailer backup from offsite storage:
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood config --quiet
 
-   ```bash
-   set -euo pipefail
-   chmod 600 ./keys/backup-age-key.txt
-   MAILER_BACKUP_FILE=mailer-YYYYMMDDTHHmmssZ.db.age
-   MAILER_BACKUP_RCLONE_REMOTE=remote:bucket-or-prefix/mailer/
-   rclone copy "$MAILER_BACKUP_RCLONE_REMOTE" ./restore --include "$MAILER_BACKUP_FILE"
-   ```
+mkdir -p ./restore ./keys ./secrets/acs
+chmod 700 ./restore ./keys ./secrets ./secrets/acs
+chmod 600 ./keys/backup-age-key.txt
+~~~
 
-   If the encrypted file was copied by another approved path, place it under
-   `./restore/` and skip `rclone copy`.
+To fetch the encrypted full archive from a private remote:
 
-4. Restore the SQLite database into the disposable data directory:
+~~~bash
+MAILER_BACKUP_FILE=mailer-state-YYYYMMDDTHHmmssZ.tar.age
+MAILER_BACKUP_RCLONE_REMOTE=remote:bucket-or-prefix/mailer/
+rclone copy "$MAILER_BACKUP_RCLONE_REMOTE" ./restore --include "$MAILER_BACKUP_FILE"
+~~~
 
-   ```bash
-   set -euo pipefail
-   rm -f ./restore-mailer-data/mailer.db ./restore-mailer-data/mailer.db-wal ./restore-mailer-data/mailer.db-shm ./restore-mailer-data/mailer.db.restoring
+Skip rclone when an approved archive is already in ./restore.
 
-   age --decrypt --identity ./keys/backup-age-key.txt "./restore/$MAILER_BACKUP_FILE" \
-     > ./restore-mailer-data/mailer.db.restoring
-   [ -s ./restore-mailer-data/mailer.db.restoring ] || { echo "decrypt produced empty Mailer DB" >&2; exit 1; }
+## Restore and Check Archive Contents
 
-   if command -v sqlite3 >/dev/null 2>&1; then
-     integrity_result="$(sqlite3 ./restore-mailer-data/mailer.db.restoring 'PRAGMA integrity_check;')"
-     [ "$integrity_result" = "ok" ] || { echo "SQLite integrity_check failed: $integrity_result" >&2; exit 1; }
-   fi
+Confirm that Mailer and migration/admin mutators are stopped. Create a fresh
+target and run the helper. Replace the example UID/GID with values confirmed
+from the image/runtime; do not blindly use 1654:
 
-   mv ./restore-mailer-data/mailer.db.restoring ./restore-mailer-data/mailer.db
+~~~bash
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood ps
 
-   chmod 600 ./restore-mailer-data/mailer.db
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" --profile ops run --rm mailer-migrate
-   ```
+RESTORE_TARGET="$(mktemp -d "$PWD/restore-mailer-data.XXXXXX")"
+MAILER_RUNTIME_UID=1654
+MAILER_RUNTIME_GID=1654
 
-5. Start the disposable Mailer service:
+bash /path/to/amane-mailer/infra/deploy/restore-instance-state.sh \
+  --archive "$PWD/restore/$MAILER_BACKUP_FILE" \
+  --identity "$PWD/keys/backup-age-key.txt" \
+  --target "$RESTORE_TARGET" \
+  --runtime-uid "$MAILER_RUNTIME_UID" \
+  --runtime-gid "$MAILER_RUNTIME_GID"
+~~~
 
-   ```bash
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" up -d mailer
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" exec -T mailer /app/Amane.Mailer healthcheck
-   MAILER_HTTP_PORT="$(sed -n 's/^MAILER_HTTP_PORT=//p' .env.mailer | tail -n 1 | sed "s/^['\"]//;s/['\"]$//")"
-   MAILER_HTTP_PORT="${MAILER_HTTP_PORT:-8080}"
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" exec -T mailer curl -fsS "http://localhost:${MAILER_HTTP_PORT}/healthz"
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" exec -T mailer curl -fsS "http://localhost:${MAILER_HTTP_PORT}/readyz"
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" exec -T mailer /app/Amane.Mailer db stats
-   ```
+For the successful target, confirm:
 
-6. If Admin UI is enabled in the drill `.env`, verify login, mail request list
-   visibility, and Dead Letters page rendering with drill-only credentials.
-   Admin tenant-scope readiness uses the larger of the `tenants.json` tenant
-   count and the restored DB's historical tenant count. Even if a tenant has
-   been removed from configuration, the restored DB is treated as multi-tenant
-   when `mail_requests` still contains 2 or more distinct `tenant_id` values.
-   Check the restored DB when needed and confirm that at least one scoped admin
-   or break-glass admin exists. When operators run service-wide backup through
-   Admin UI/API, also confirm that a break-glass admin or an admin with all
-   effective tenant scopes exists:
+- mailer.db exists and was restored from the same archive as the provider
+  secret.
+- secrets/acs/acs_connection_string exists under owner-only directories with
+  file mode 600.
+- attachment-spool/committed/ and its opaque request/spool files exist and
+  match the source fixture or private backup-time inventory byte-for-byte.
+- attachment-spool/staging, bootstrap, logs, and data/backups were not created.
+- Neither the age identity nor a plaintext tar appeared in the target or data
+  volume.
+- The non-empty-target refusal test preserved its sentinel.
 
-   ```bash
-   sqlite3 ./restore-mailer-data/mailer.db 'SELECT COUNT(DISTINCT tenant_id) FROM mail_requests;'
-   sqlite3 ./restore-mailer-data/mailer.db 'SELECT tenant_id, COUNT(*) FROM mail_requests GROUP BY tenant_id ORDER BY tenant_id;'
-   ```
+If sqlite3 is available, perform an additional DB integrity check:
 
-7. Record the drill date, backup filename, restore duration, verification
-   result, and any corrective action in private operations notes.
+~~~bash
+sqlite3 "$RESTORE_TARGET/mailer.db" 'PRAGMA integrity_check;'
+~~~
 
-   **Admin audit log:** `admin_audit_events` is part of the Mailer SQLite
-   database. A `db backup` snapshot includes audit rows that were present in
-   the DB before purge ran. After restore, retention sweep or
-   `db admin-audit purge` may delete rows older than the configured retention.
-   When long-term audit evidence is required, export audit rows to your log
-   platform before they age out or before relying on a backup alone.
+The expected result is ok. This does not replace migration.
 
-8. Stop and remove drill containers. Preserve `restore-mailer-data/` for
-   inspection until cleanup is approved, then remove it:
+## Migration, Startup, and Readiness
 
-   ```bash
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" stop mailer
-   docker compose --env-file .env.mailer -f "$MAILER_COMPOSE_FILE" rm -f mailer
-   rm -f ./keys/backup-age-key.txt ./restore/"$MAILER_BACKUP_FILE"
-   rm -rf ./restore-mailer-data
-   unset COMPOSE_PROJECT_NAME RESTORE_MAILER_DATA
-   ```
+Point only the verification project at the target; do not change the original
+./data. The external ACS bind in the VPS overlay is read-only compatibility
+state. Do not duplicate the managed v2 provider authority there:
 
-## Acceptance Checks
+~~~bash
+export MAILER_DATA_PATH="$RESTORE_TARGET"
+export MAILER_COMPOSE_FILE=compose.yml:compose.vps-dogfood.yml
 
-- The encrypted backup decrypts with the stored age identity.
-- The restored file exists as `mailer.db` in the disposable data directory.
-- `mailer-migrate` completes successfully.
-- `/app/Amane.Mailer healthcheck` exits 0.
-- `/healthz` and `/readyz` return 200 in the disposable Mailer environment.
-- `db stats` succeeds and shows expected status counts for the restored data.
-- Admin login, Mail Requests, and Dead Letters work when Admin UI is enabled for
-  the drill.
-- When Admin UI is enabled, a scoped admin or break-glass admin exists. When
-  service-wide backup is used through Admin UI/API, a break-glass admin or an
-  admin with all effective tenant scopes exists.
-- The drill result is recorded before relying on the next scheduled backup.
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood run --rm mailer-migrate
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood up -d mailer
+
+curl -fsS https://mailer.example.invalid/healthz
+curl -fsS https://mailer.example.invalid/readyz
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood exec -T mailer /app/Amane.Mailer db stats
+~~~
+
+Record migration exit status, health/readiness HTTP status, DB stats, committed
+spool count, elapsed time, archive name, runtime image tag, and ownership/mode
+in private operations notes. A real provider-send result is not part of this
+drill.
+
+For a negative check, temporarily remove or corrupt the provider secret in the
+disposable target and restart. Expect:
+
+- /readyz returns HTTP 503 with JSON reason provider_secret_missing.
+- /setup returns HTTP 404.
+- Adding bare ACS_CONNECTION_STRING does not produce a fallback.
+- A setup token cannot reinitialize the instance.
+
+After the negative check, discard the target without changing the source archive
+or production data.
+
+## Complete and Clean Up
+
+Stop the Mailer and remove the verification project. Save evidence in private
+operations notes. After audit and incident records are complete, delete only
+the explicitly named disposable target, downloaded archive, and temporary
+identity. Keep Caddy named volumes and the key-vault recovery copy:
+
+~~~bash
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood stop mailer
+rm -f -- "./restore/$MAILER_BACKUP_FILE" ./keys/backup-age-key.txt
+rm -rf -- "$RESTORE_TARGET"
+~~~

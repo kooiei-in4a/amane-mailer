@@ -8,6 +8,12 @@
 
 このcommandは、ACS connection stringと、System Admin platform-owned mail用のsender情報（email・display name）を、対話入力だけで安全に登録するための非公開one-shot CLIである。
 
+この runbook の `MAILER_ACS_SECRET_HOST_PATH` は base compose の manual / compatibility
+registration 経路です。VPS managed-v2 の browser setup では、initialized DB の
+`provider_secret_ref` と `MAILER_DATA_PATH/secrets/acs/acs_connection_string` が正本です。
+full instance backup は [バックアップ運用](backup-operations.md) の cold path を使い、
+この外部 compatibility mount を別の provider authority として archive に混ぜません。
+
 - ACS connection stringは deploy-time secret file（`acs_connection_string`）だけに保存する。tenant JSON、DB、amane-flow側のsecret経路には一切保存しない。
 - platform-owned sender情報は新規・tenant非依存の`platform-sender.json`に保存する。既存tenantへの割当てや偽tenantの作成は行わない。
 - このcommand単体では System Admin確認メールの実送信は完了しない。`platform-sender.json`をruntime送信経路へ組み込むのは、正式なplatform-owned mail request契約（MAIL-PLATFORM-01）の責務である。

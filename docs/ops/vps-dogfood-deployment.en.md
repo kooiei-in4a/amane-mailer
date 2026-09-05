@@ -6,9 +6,11 @@ This runbook is the Issue #733 PR1 reference deployment. Caddy owns the host's
 80/443 listeners, while Mailer runs as an HTTP backend on a Docker network.
 Mailer port 8080 is never published on the host.
 
-PR1 covers the deployment security boundary and the fresh setup route. It does
-not include ACS live sending, official smoke clients, multi-sender/API-key
-dogfood, revoke, restart dogfood, or backup/restore work.
+This document's PR1 scope is the deployment security boundary and the fresh
+setup route. ACS live sending, official smoke clients, multi-sender/API-key
+dogfood, revoke, and restart dogfood are separate verification scopes. The PR3
+full backup/restore path is now provided by the dedicated runbooks and helpers
+below; it does not mix Caddy state into the Mailer archive.
 
 ## Topology
 
@@ -66,10 +68,12 @@ Replace the VPS placeholders in `.env`. At minimum, verify:
   published Mailer image.
 - `MAILER_DATA_PATH` is the persistent directory for managed SQLite state.
 - `./secrets/acs` and `./secrets/bounce-queue` are protected mode-0700
-  directories. Register the ACS provider secret through the approved file-based
-  flow; do not put it in `.env` or in a tenant token variable. If metrics are
-  enabled, add a private `MAILER_METRICS_BEARER_TOKEN` only to the private host
-  `.env`.
+  directories. They are read-only compatibility/manual-registration mounts.
+  Browser setup stores the managed-v2 provider authority at
+  `MAILER_DATA_PATH/secrets/acs` (container: `/app/data/secrets/acs`). Register
+  the ACS provider secret through the approved file-based flow; do not put it in
+  `.env` or in a tenant token variable. If metrics are enabled, add a private
+  `MAILER_METRICS_BEARER_TOKEN` only to the private host `.env`.
 - `MAILER_PUBLIC_HOSTNAME` is the actual DNS name.
 - `MAILER_MANAGEMENT_ALLOWED_CIDRS` is the operator source IP/CIDR selected by
   the VPN/firewall boundary. The `192.0.2.0/24` in `.env.example` is TEST-NET
@@ -89,8 +93,10 @@ The reference path has this contract:
 
 - `SQLite managed state` = product configuration authority for provider,
   instance owner, sender, and API-key state.
-- `provider secret` = protected file. ACS secrets are handled only through the
-  file-based registration flow and its protected setup path.
+- `provider secret` = protected file. The browser-setup canonical path is
+  `MAILER_DATA_PATH/secrets/acs/acs_connection_string` (container:
+  `/app/data/secrets/acs/acs_connection_string`). ACS secrets are handled only
+  through the file-based registration flow and its protected setup path.
 - `bootstrap token` = transient protected file. Display it once, protect it like
   a password/provider secret, and remove the file safely when it is no longer needed.
 - `tenants.json` / `MAIL_SERVICE_TOKEN*` = legacy/manual path. They are not needed
@@ -184,8 +190,14 @@ management route.
   `tenants.json` / `MAIL_SERVICE_TOKEN*` are not needed by the VPS v2 reference
   deployment.
 - The `caddy_data` / `caddy_config` named volumes and Mailer's data volume are
-  persistent deployment state. Full backup/restore documentation changes are
-  PR3 work; this profile does not provide volume-deleting commands.
+  persistent deployment state. Mailer's full instance backup takes
+  `MAILER_DATA_PATH/mailer.db`, the canonical provider secret, and
+  `attachment-spool/committed` at one stopped point. Caddy volumes, bootstrap
+  tokens, logs, staging, and the external `/run/secrets/acs` compatibility mount
+  are not mixed into the archive. See
+  [backup-operations](backup-operations.en.md),
+  [restore-procedure](restore-procedure.en.md), and
+  [restore-verification](restore-verification.en.md) for the PR3 path.
 
 ## Stop
 

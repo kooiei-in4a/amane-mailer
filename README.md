@@ -124,6 +124,9 @@ edge restriction を使う標準 PR1 profile は [`vps-dogfood-deployment.md`](d
 と [`Caddyfile.vps-dogfood.example`](infra/deploy/Caddyfile.vps-dogfood.example) を参照してください。
 profile は `compose.vps-dogfood.yml` を overlay し、Caddy の 80/443 だけを host に publish します。
 この profile の初回 migration / setup では `tenants.json` と `MAIL_SERVICE_TOKEN*` を設定しません。
+managed-v2 の障害復旧では [`バックアップ運用`](docs/ops/backup-operations.md) の
+`backup-instance-state.sh` を使い、`MAILER_DATA_PATH` の DB、canonical ACS secret、
+`attachment-spool/committed` を停止点からまとめて保全します。Caddy named volume は別管理です。
 
 実 tenant token、ACS connection string、production sender address、deploy host の `.env` は
 commit しないでください。
