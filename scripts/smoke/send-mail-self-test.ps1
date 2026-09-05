@@ -18,6 +18,7 @@ $ClientPath = Join-Path $RepoRoot 'scripts\smoke\send-mail.ps1'
 $TempRoot = Join-Path ([IO.Path]::GetTempPath()) ("amane-mailer-smoke-" + [guid]::NewGuid().ToString('N'))
 $LogPath = Join-Path $TempRoot 'requests.jsonl'
 $StopPath = Join-Path $TempRoot 'stop.fixture'
+$ReadyPath = Join-Path $TempRoot 'fixture.ready'
 $StdoutPath = Join-Path $TempRoot 'client.stdout'
 $StderrPath = Join-Path $TempRoot 'client.stderr'
 $Secret = 'amk_fixture.secret-must-not-be-printed'
@@ -62,15 +63,17 @@ function Get-FreeLocalPort {
 function Start-Fixture {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
-        [Parameter(Mandatory = $true)][string]$FixtureStopPath
+        [Parameter(Mandatory = $true)][string]$FixtureStopPath,
+        [Parameter(Mandatory = $true)][string]$FixtureReadyPath
     )
 
     $script:ServerJob = Start-Job -ScriptBlock {
-        param($FixturePort, $FixtureLogPath, $FixtureStopPath)
+        param($FixturePort, $FixtureLogPath, $FixtureStopPath, $FixtureReadyPath)
 
         $listener = New-Object System.Net.HttpListener
         $listener.Prefixes.Add("http://127.0.0.1:$FixturePort/")
         $listener.Start()
+        New-Item -ItemType File -Path $FixtureReadyPath -Force | Out-Null
         $postCount = 0
         $successPollCount = 0
 
@@ -148,11 +151,11 @@ function Start-Fixture {
             $listener.Stop()
             $listener.Close()
         }
-    } -ArgumentList $Port, $LogPath, $FixtureStopPath
+    } -ArgumentList $Port, $LogPath, $FixtureStopPath, $FixtureReadyPath
 
-    for ($attempt = 0; $attempt -lt 40; $attempt++) {
-        if ($script:ServerJob.State -eq 'Running') {
-            Start-Sleep -Milliseconds 250
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+        if (Test-Path -LiteralPath $FixtureReadyPath) {
+            Start-Sleep -Milliseconds 100
             return
         }
         if ($script:ServerJob.State -in @('Failed', 'Stopped', 'Completed')) {
@@ -239,7 +242,7 @@ try {
     $env:MAILER_SUBJECT = $Subject
     $env:MAILER_TEXT_BODY = $TextBody
     Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
-    Start-Fixture -Port $port -FixtureStopPath $StopPath
+    Start-Fixture -Port $port -FixtureStopPath $StopPath -FixtureReadyPath $ReadyPath
 
     $successOutput = Invoke-ClientProcess -PollTimeout '2' -ExpectedExitCode '0'
     Assert-Condition ($successOutput.Contains('HTTP 202 Accepted')) 'client did not report acceptance.'
