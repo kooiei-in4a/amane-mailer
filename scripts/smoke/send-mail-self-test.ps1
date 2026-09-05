@@ -168,6 +168,7 @@ function Start-Fixture {
 
 function Invoke-ClientProcess {
     param(
+        [Parameter(Mandatory = $true)][string]$BaseUrl,
         [Parameter(Mandatory = $true)][string]$PollTimeout,
         [Parameter(Mandatory = $true)][string]$ExpectedExitCode
     )
@@ -185,6 +186,8 @@ function Invoke-ClientProcess {
         'Bypass',
         '-File',
         $ClientPath,
+        '-BaseUrl',
+        $BaseUrl,
         '-PollTimeoutSeconds',
         $PollTimeout,
         '-PollIntervalSeconds',
@@ -248,10 +251,11 @@ try {
     Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
     Start-Fixture -Port $port -FixtureStopPath $StopPath -FixtureReadyPath $ReadyPath
 
-    $successOutput = Invoke-ClientProcess -PollTimeout '2' -ExpectedExitCode '0'
+    $fixtureBaseUrl = "http://127.0.0.1:$port/"
+    $successOutput = Invoke-ClientProcess -BaseUrl $fixtureBaseUrl -PollTimeout '2' -ExpectedExitCode '0'
     Assert-Condition ($successOutput.Contains('HTTP 202 Accepted')) 'client did not report acceptance.'
     Assert-Condition ($successOutput.Contains('Delivery status: delivered')) 'client did not report delivery.'
-    $timeoutOutput = Invoke-ClientProcess -PollTimeout '0.05' -ExpectedExitCode '1'
+    $timeoutOutput = Invoke-ClientProcess -BaseUrl $fixtureBaseUrl -PollTimeout '0.05' -ExpectedExitCode '1'
     Assert-Condition ($timeoutOutput.Contains('Status polling timed out')) 'client did not report the bounded timeout.'
 
     $records = @(Get-Content -LiteralPath $LogPath | ForEach-Object { $_ | ConvertFrom-Json })
