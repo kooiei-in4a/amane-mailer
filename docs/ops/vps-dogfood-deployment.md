@@ -6,9 +6,10 @@
 80/443 だけを受け、Mailer は Docker network 内の HTTP backend として動きます。
 Mailer の 8080 は host に publish しません。
 
-この PR1 の範囲は deployment security boundary と fresh setup の経路確認です。ACS の
-実送信、公式 smoke client、複数 Sender / API Key dogfood、revoke、restart dogfood、
-backup / restore は含みません。
+この文書の PR1 の範囲は deployment security boundary と fresh setup の経路確認です。
+ACS の実送信、公式 smoke client、複数 Sender / API Key dogfood、revoke、restart dogfood
+は別の検証範囲です。PR3 で追加された full backup / restore は、下記の専用 runbook と
+helper を使い、PR1 の Caddy state と混ぜません。
 
 ## 構成
 
@@ -63,7 +64,9 @@ cp Caddyfile.vps-dogfood.example Caddyfile.vps-dogfood
 - `MAILER_IMAGE_REPOSITORY` と `MAILER_IMAGE_TAG` は公開済みの検証済み Mailer image。
 - `MAILER_DATA_PATH` は SQLite managed state を保存する persistent directory。
 - `./secrets/acs` と `./secrets/bounce-queue` は mode 0700 の protected directory として
-  用意する。ACS provider secret は承認済みの file-based register flow で保存し、`.env`
+  用意する。これは Compose の read-only compatibility / manual registration mount です。
+  Browser setup の managed-v2 provider authority は `MAILER_DATA_PATH/secrets/acs` に
+  保存されます。ACS provider secret は承認済みの file-based register flow で保存し、`.env`
   や tenant token には置かない。metrics を有効にする場合だけ、private な
   `MAILER_METRICS_BEARER_TOKEN` を deploy host の `.env` に追加する。
 - `MAILER_PUBLIC_HOSTNAME` は実際の DNS name。
@@ -83,8 +86,10 @@ cp Caddyfile.vps-dogfood.example Caddyfile.vps-dogfood
 
 - `SQLite managed state` = product configuration authority（provider、instance owner、
   sender、API key の正本）。
-- `provider secret` = protected file。ACS secret は file-based registration と setup の
-  定められた protected path だけで扱います。
+- `provider secret` = protected file。browser setup が保存する canonical path は
+  `MAILER_DATA_PATH/secrets/acs/acs_connection_string`（container 内では
+  `/app/data/secrets/acs/acs_connection_string`）です。ACS secret は file-based
+  registration と setup の定められた protected path だけで扱います。
 - `bootstrap token` = transient protected file。初回表示後は password や他の secret と
   同じ扱いにし、不要になった file は保護した上で削除します。
 - `tenants.json` / `MAIL_SERVICE_TOKEN*` = legacy/manual path。VPS v2 reference
@@ -176,8 +181,12 @@ management route の `/admin` から利用します。
   protected file、bootstrap token は transient protected file です。`tenants.json` /
   `MAIL_SERVICE_TOKEN*` は VPS v2 reference deployment では不要です。
 - Caddy の `caddy_data` / `caddy_config` named volume と Mailer の data volume は
-  persistent deployment state です。backup / restore 手順の全面更新は PR3 の対象であり、
-  この profile は volume を削除するコマンドを提供しません。
+  persistent deployment state です。Mailer の full instance backup は
+  `MAILER_DATA_PATH/mailer.db`、canonical provider secret、
+  `attachment-spool/committed` を停止点から取得します。Caddy volume、bootstrap token、
+  logs、staging、external `/run/secrets/acs` compatibility mount は archive に混ぜません。
+  詳細は [`backup-operations.md`](backup-operations.md)、[`restore-procedure.md`](restore-procedure.md)、
+  [`restore-verification.md`](restore-verification.md) を参照してください。
 
 ## 停止
 

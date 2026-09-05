@@ -2,92 +2,177 @@
 
 # リストア手順
 
-暗号化バックアップからセルフホスト Amane Mailer の SQLite データベースを復元する runbook です。Mailer を呼び出す可能性のあるアプリケーション DB は対象外で、利用側アプリの運用リポジトリに属します。
+この runbook は、v2 managed self-hosted Amane Mailer の coordinated/cold
+instance-state archive を、使い捨てまたは新規の空 data directory に復元する手順です。
+DB 単体の mailer-*.db.age は SQLite の緊急／オンラインスナップショットであり、
+provider secret や committed attachment spool を含まないため、この full restore の代替では
+ありません。
 
-実環境のリストアは破壊的操作であり、Mailer を停止したりデータを置き換える前にオペレータの明示的な承認が必要です。
+実環境の切り替えは破壊的になり得ます。既存の稼働 data directory に上書き復元せず、
+まず検証用の新しい target で起動・readiness を確認し、切り替えの判断を operator が行います。
+この手順と restore-instance-state.sh に --force や無言の overwrite はありません。
 
 ## 前提条件
 
-- 選択したバックアップでリストア検証がすでに成功していること。
-- 対応する age identity をオペレータの非公開キー管理から取得済みであること。age 鍵管理は [backup-operations.md](backup-operations.md) を参照。
-- 対象 Mailer compose ディレクトリに `compose.yml`、`.env`、`tenants.json` があること。
-- 選択した暗号化バックアップ名が Mailer 形式 `mailer-YYYYMMDDTHHmmssZ.db.age` に一致すること。
-- 対象 `.env` の image tag と tenant 設定が、復元後サービスに意図した値であること。
+- restore-verification.md で選択した
+  mailer-state-YYYYMMDDTHHmmssZ.tar.age の検証が成功していること。
+- 対応する age identity を非公開の key manager から取得済みで、リポジトリと backup
+  remote の外に置いていること。identity のモードは owner-only (600) にする。
+- 対象 checkout に compose.yml、VPS managed-v2 なら compose.vps-dogfood.yml、
+  .env があること。
+- MAILER_DATA_PATH の既存 directory を restore target に指定しないこと。target は
+  fresh または空の絶対パスにする。
+- コンテナの実行 UID/GID を対象 image または private deployment metadata から確認済み
+  であること。Dockerfile の数字を前提にせず、docker image inspect の Config.User
+  と実際の runtime identity を照合して --runtime-uid / --runtime-gid に渡す。
+- Mailer と migration/admin mutator が停止していること。script は stop/start を行わない。
+- Caddy の caddy_data / caddy_config は Mailer archive と別に扱うこと。
 
-## age identity の扱い
+## 復元される authority
 
-age identity はバックアップ復号の唯一の手段です。紛失すると暗号化バックアップは永久に復元不能です。
+full archive の復元単位は次の固定された state です:
 
-リストア中は identity を `./keys/backup-age-key.txt` など Git 無視の一時パスへコピーし、権限を制限し、インシデントまたはドリル完了後に一時コピーを削除します。identity をリポジトリやバックアップバケットに置かないでください。
+- mailer.db（managed provider、sender、admin credential epoch、request/evidence を含む）
+- secrets/acs/acs_connection_string（コンテナ内 /app/data/secrets/acs/acs_connection_string）
+- attachment-spool/committed/（未完了 accepted request が必要とする opaque files）
 
-## Mailer のリストア
+attachment-spool/staging、bootstrap token、logs、data/backups、tenant JSON、.env、
+platform-sender.json、age private key、外部 bounce queue secret、Caddy volume は
+archive に入りません。外部 secret が有効な構成は、同じ参照先を restore 前に別途用意します。
 
-承認後、Mailer compose ディレクトリから次を実行します。パスとファイル名はオペレータの非公開値に置き換えてください。
+initialized DB の provider secret は SQLite の provider_secret_ref が authority です。
+canonical secret が欠落または壊れている場合、Mailer は /readyz を
+503 provider_secret_missing にし、/setup を 404 のままにします。bare
+ACS_CONNECTION_STRING 環境変数を fallback にしたり、setup を再開したりしないでください。
 
-まずリストア作業領域を準備します:
+## 空 target への復元
 
-```bash
-set -euo pipefail
+以下の例では、/path/to/amane-mailer はチェックアウト、/path/to/mailer は
+実際の Compose ディレクトリです。値は private な運用値に置き換え、secret 自体は
+コマンドやログに貼りません。
+
+1. Compose の構成を検査し、Mailer の mutator を停止します:
+
+~~~bash
+set -Eeuo pipefail
 cd /path/to/mailer
-docker compose --env-file .env -f compose.yml config --quiet
 
-mkdir -p ./data ./restore ./restore/previous ./keys
-chmod 700 ./keys
-```
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood config --quiet
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood stop mailer mailer-migrate mailer-acs-admin 2>/dev/null || true
 
-非公開キー管理から `./keys/backup-age-key.txt` をコピーし、続けます:
+mkdir -p ./restore ./keys ./secrets/acs
+chmod 700 ./restore ./keys ./secrets/acs
+chmod 700 ./secrets
+~~~
 
-```bash
-set -euo pipefail
+stop の後に次を実行し、mailer、mailer-migrate、mailer-acs-admin が running
+でないことを確認します。caddy は edge state の所有者なので、Mailer archive の cold
+point を妨げない限り別管理です:
+
+~~~bash
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood ps
+~~~
+
+2. 非公開 key manager から identity を一時コピーし、権限を固定します。暗号化 archive
+   が remote にしかない場合だけ次の rclone copy を使い、すでに ./restore/ にある
+   場合は省略します:
+
+~~~bash
 chmod 600 ./keys/backup-age-key.txt
-MAILER_BACKUP_FILE=mailer-YYYYMMDDTHHmmssZ.db.age
+MAILER_BACKUP_FILE=mailer-state-YYYYMMDDTHHmmssZ.tar.age
 MAILER_BACKUP_RCLONE_REMOTE=remote:bucket-or-prefix/mailer/
 rclone copy "$MAILER_BACKUP_RCLONE_REMOTE" ./restore --include "$MAILER_BACKUP_FILE"
+~~~
 
-docker compose --env-file .env -f compose.yml stop mailer
-cp -a data/mailer.db "restore/previous/mailer.db.before-restore-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
-rm -f data/mailer.db data/mailer.db-wal data/mailer.db-shm data/mailer.db.restoring
+3. 新しい空 target を作成し、runtime UID/GID を指定して helper を実行します。既存の
+   ./data を target に指定すると拒否されます:
 
-age --decrypt --identity ./keys/backup-age-key.txt "./restore/$MAILER_BACKUP_FILE" \
-  > data/mailer.db.restoring
-[ -s data/mailer.db.restoring ] || { echo "decrypt produced empty Mailer DB" >&2; exit 1; }
+~~~bash
+RESTORE_TARGET="$(mktemp -d "$PWD/restore-mailer-data.XXXXXX")"
+MAILER_RUNTIME_UID=1654
+MAILER_RUNTIME_GID=1654
 
-if command -v sqlite3 >/dev/null 2>&1; then
-  integrity_result="$(sqlite3 data/mailer.db.restoring 'PRAGMA integrity_check;')"
-  [ "$integrity_result" = "ok" ] || { echo "SQLite integrity_check failed: $integrity_result" >&2; exit 1; }
-fi
+bash /path/to/amane-mailer/infra/deploy/restore-instance-state.sh \
+  --archive "$PWD/restore/$MAILER_BACKUP_FILE" \
+  --identity "$PWD/keys/backup-age-key.txt" \
+  --target "$RESTORE_TARGET" \
+  --runtime-uid "$MAILER_RUNTIME_UID" \
+  --runtime-gid "$MAILER_RUNTIME_GID"
+~~~
 
-mv data/mailer.db.restoring data/mailer.db
+上の 1654 は説明用の placeholder です。実行時は必ず image/runtime から確認した
+UID/GID に置き換えてください。helper は age で一時領域へ復号し、archive entry を
+固定 boundary と照合してから抽出し、DB と provider secret を 600、secret/spool
+directory を owner-only にします。migration、サービス起動、Caddy 操作は行いません。
 
-chmod 600 data/mailer.db
-docker compose --env-file .env -f compose.yml --profile ops run --rm mailer-migrate
-docker compose --env-file .env -f compose.yml up -d mailer
-```
+## 復元データの migration と readiness
 
-ローカルにコピーした暗号化バックアップでも同手順を使い、`rclone copy` だけ省略します。
+検証用 Compose は、MAILER_DATA_PATH を新しい target に一時的に向けます。元の
+.env と元の ./data は変更せず、shell の環境変数で target を override します。
+VPS overlay の /run/secrets/acs は read-only の互換 mount です。managed v2 の
+authority は restore された /app/data/secrets/acs/acs_connection_string であり、
+別の secret をそこへ登録して二重管理しません。
 
-## 検証
+~~~bash
+export MAILER_DATA_PATH="$RESTORE_TARGET"
+export MAILER_COMPOSE_FILE=compose.yml:compose.vps-dogfood.yml
 
-呼び出し元を再有効化する前に復元サービスを確認します:
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood run --rm mailer-migrate
 
-```bash
-docker compose --env-file .env -f compose.yml exec -T mailer /app/Amane.Mailer healthcheck
-MAILER_HTTP_PORT="$(sed -n 's/^MAILER_HTTP_PORT=//p' .env | tail -n 1 | sed "s/^['\"]//;s/['\"]$//")"
-MAILER_HTTP_PORT="${MAILER_HTTP_PORT:-8080}"
-docker compose --env-file .env -f compose.yml exec -T mailer curl -fsS "http://localhost:${MAILER_HTTP_PORT}/healthz"
-docker compose --env-file .env -f compose.yml exec -T mailer curl -fsS "http://localhost:${MAILER_HTTP_PORT}/readyz"
-docker compose --env-file .env -f compose.yml exec -T mailer /app/Amane.Mailer db stats
-```
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood up -d mailer
+~~~
 
-ホストで Admin UI が有効なら、承認済みリバースプロキシ経由でログイン、送信依頼一覧表示、Dead Letters ページ表示も確認します。
+migration が失敗したら Mailer を起動せず、target を破棄して別の検証済み archive を
+使います。起動後、呼び出し元を戻す前に /healthz、/readyz、DB stats を確認します:
 
-## ロールバック
+~~~bash
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood exec -T mailer \
+  /app/Amane.Mailer healthcheck
+curl -fsS https://mailer.example.invalid/healthz
+curl -fsS https://mailer.example.invalid/readyz
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood exec -T mailer \
+  /app/Amane.Mailer db stats
+~~~
 
-検証が失敗したら呼び出し元は無効のままにします。`restore/previous/` の以前の DB コピーを戻すか、次に信頼できる暗号化バックアップを同手順で復元します。インシデントメモが完了するまで失敗したバックアップファイルとコンテナログを保持します。
+/setup が 404 であることも確認します。initialized DB で provider secret を
+意図的に欠落／破損させた検証では、/readyz が 503 かつ JSON reason
+provider_secret_missing、/setup が 404 になることを確認します。その状態で
+setup token を使った再初期化や bare environment fallback を試してはいけません。
+これは障害時にも同じ fail-safe 契約です。
 
-インシデントまたはドリル後、DB ボリュームに触れず一時的なリストア資料を削除します:
+security-sensitive な時点へ戻した場合、DB には当時の API-key hash、credential epoch、
+revocation/session 状態が含まれます。restore 後に管理者 credential、API key、不要な
+session/revocation state、外部 secret を review し、必要なら operator の承認済み手順で
+rotate/revoke します。
 
-```bash
-MAILER_BACKUP_FILE=mailer-YYYYMMDDTHHmmssZ.db.age
-rm -f ./keys/backup-age-key.txt ./restore/"$MAILER_BACKUP_FILE" ./data/mailer.db.restoring
-```
+## 切り替え・ロールバック・cleanup
+
+検証が通るまで元の MAILER_DATA_PATH と edge を変更しません。切り替え時は対象の
+maintenance 手順で target を正式な data path として設定し、Compose config、ownership、
+readiness を再確認します。失敗時は Mailer を止め、MAILER_DATA_PATH を元へ戻して
+元の state を維持します。helper は既存 data を変更しないため、DB 単体の
+restore/previous コピーを上書きするロールバックは不要です。
+
+ドリル完了後、監査・インシデント記録が済んでから、明示した disposable target、
+downloaded .tar.age、一時 identity だけを削除します。元の data volume、Caddy named
+volume、key vault の recovery copy は削除しません:
+
+~~~bash
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood stop mailer
+rm -f -- "./restore/$MAILER_BACKUP_FILE" ./keys/backup-age-key.txt
+rm -rf -- "$RESTORE_TARGET"
+~~~

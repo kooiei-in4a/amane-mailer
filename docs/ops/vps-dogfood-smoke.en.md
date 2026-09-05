@@ -17,7 +17,7 @@ enable live sending.
 
 Before starting, confirm:
 
-- [ ] This is Issue #733 PR2 smoke/dogfood work; PR3 backup/restore work is not included.
+- [ ] This checklist is Issue #733 PR2 smoke/dogfood work; use the dedicated PR3 backup/restore runbooks separately.
 - [ ] The purpose, approved recipient, approved sender, execution window, and stop owner for any ACS live send are explicit.
 - [ ] On production, the public Mailer URL, management URL, operator CIDR, and ACS environment agree.
 - [ ] Recipient, API key, bootstrap token, ACS connection string, and password values will not be recorded in this document, shell history, an issue, chat, or CI logs.
@@ -208,7 +208,7 @@ docker compose --env-file .env \
 - [ ] Admin Senders A/B, active A2/B1, revoked A1, `live_sending`, and provider configuration remain in SQLite managed state.
 - [ ] A new-UUID send with A2 still reaches `delivered`.
 - [ ] A new-UUID send with B1 still reaches `delivered`.
-- [ ] Do not use `docker compose down -v`, delete volumes, or reinitialize the database. Backup/restore verification remains PR3 work.
+- [ ] Do not use `docker compose down -v`, delete volumes, or reinitialize the database. Backup/restore is covered separately by the [PR3 restore verification runbook](restore-verification.en.md).
 
 ## 7. Runtime rate-limit proof
 

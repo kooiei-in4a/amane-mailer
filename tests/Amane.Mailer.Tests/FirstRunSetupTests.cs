@@ -429,6 +429,86 @@ public sealed class FirstRunSetupTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Initialized_runtime_with_missing_or_corrupt_provider_secret_fails_safe(
+        bool corruptSecret)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = CreateRoot("initialized-secret-failsafe");
+        WebApplicationFactory<global::Program>? factory = null;
+        try
+        {
+            var databasePath = Path.Combine(root, "mailer.db");
+            var tokenPath = Path.Combine(root, "bootstrap", "setup_token");
+            var configuration = CreateConfiguration(databasePath, tokenPath);
+            var connections = new SqliteConnectionFactory(configuration);
+            await new SqlMigrationRunner(connections).ApplyPendingAsync(ct);
+
+            var secretPath = Path.Combine(root, "secrets", "acs", "acs_connection_string");
+            Assert.True(FirstRunSetupStorage.WriteAcsSecretCreateOnly(
+                secretPath,
+                "Endpoint=https://fixture.communication.azure.com/;AccessKey=fixture-only-not-real"));
+            var instance = new InstanceConfigurationRepository(connections, TimeProvider.System);
+            Assert.True(await instance.ConfigureAcsAsync(secretPath, ct));
+
+            var users = new AdminUserRepository(connections, TimeProvider.System);
+            Assert.True(await users.EnsureInstanceOwnerAsync(
+                "managed-owner",
+                AdminPasswordHasher.Hash("managed-owner-password"),
+                ct));
+
+            var senders = new SenderRepository(connections, TimeProvider.System);
+            await senders.CreateAsync("noreply@example.com", "Example", ct);
+            Assert.True(await instance.FinalizeAsync(ct));
+
+            if (corruptSecret)
+            {
+                File.WriteAllText(secretPath, "Endpoint=not-https;AccessKey=corrupt");
+            }
+            else
+            {
+                File.Delete(secretPath);
+            }
+
+            var staleBootstrapToken = new BootstrapTokenStore(configuration).EnsureExists();
+            factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Testing");
+                builder.UseSetting("ConnectionStrings:Mailer", $"Data Source={databasePath}");
+                builder.UseSetting("MAILER_BOOTSTRAP_TOKEN_PATH", tokenPath);
+                builder.UseSetting("Mailer:Worker:Enabled", "false");
+                builder.UseSetting("AMANE_ADMIN_ENABLED", "false");
+                builder.ConfigureServices(services => services.RemoveAll<IHostedService>());
+            });
+
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+                BaseAddress = new Uri("https://localhost"),
+            });
+
+            using var ready = await client.GetAsync("/readyz", ct);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, ready.StatusCode);
+            using var readyJson = JsonDocument.Parse(
+                await ready.Content.ReadAsStringAsync(ct));
+            Assert.Equal(
+                "provider_secret_missing",
+                readyJson.RootElement.GetProperty("reason").GetString());
+
+            using var setup = await client.GetAsync("/setup", ct);
+            Assert.Equal(HttpStatusCode.NotFound, setup.StatusCode);
+            Assert.Equal(staleBootstrapToken, File.ReadAllText(tokenPath).Trim());
+        }
+        finally
+        {
+            if (factory is not null)
+                await factory.DisposeAsync();
+            DeleteRoot(root);
+        }
+    }
+
     [Fact]
     public async Task Database_owned_admin_reset_bumps_epoch_and_revokes_sessions()
     {

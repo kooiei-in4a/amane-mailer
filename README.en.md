@@ -131,6 +131,9 @@ port, and operator-only Admin / Setup edge restrictions, see
 [Caddyfile example](infra/deploy/Caddyfile.vps-dogfood.example). The profile
 overlays `compose.vps-dogfood.yml` and publishes only Caddy's 80/443 listeners.
 Its first migration/setup does not require `tenants.json` or `MAIL_SERVICE_TOKEN*`.
+For managed-v2 disaster recovery, use the [`backup operations`](docs/ops/backup-operations.en.md)
+`backup-instance-state.sh` path to preserve the `MAILER_DATA_PATH` database, canonical ACS secret,
+and `attachment-spool/committed` at one stopped point. Caddy named volumes are separate state.
 
 Do not commit real tenant tokens, ACS connection strings, production sender
 addresses, or deploy-host `.env` files.

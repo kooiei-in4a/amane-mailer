@@ -70,12 +70,15 @@ Because there is one replica, another replica does not automatically take over w
 the Mailer process, host, or volume is unavailable. `/healthz` and `/readyz` report
 the state of that instance; they are health signals, not an availability SLA.
 
-The [backup runbook](backup-operations.en.md) creates a consistent backup from a
-running instance through the SQLite Online Backup API, but the
-[restore procedure](restore-procedure.en.md) stops Mailer and replaces the database
-file. A backup's existence does not guarantee RPO or RTO. The operator must validate
-recovery against the target storage, backup schedule, offsite copy, measured restore
-time, and caller shutdown plan.
+The [backup runbook](backup-operations.en.md) has two paths. `backup-mailer.sh`
+creates an online SQLite database-only snapshot, while
+`backup-instance-state.sh` captures the database, canonical provider secret, and
+committed spool at one cold point after Mailer and migration/admin mutators stop.
+The [restore procedure](restore-procedure.en.md) restores the full archive into an
+empty target before migration and readiness checks. A backup's existence does not
+guarantee RPO or RTO. The operator must validate recovery against the target
+storage, backup schedule, offsite copy, measured restore time, and caller shutdown
+plan. Caddy named volumes are a separate recovery unit.
 
 ## Provider throttling and backpressure
 

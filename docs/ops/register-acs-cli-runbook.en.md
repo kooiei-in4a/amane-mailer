@@ -10,6 +10,14 @@ This is a non-public, one-shot CLI for safely registering the ACS connection str
 sender identity (email, display name) for System Admin platform-owned mail, using interactive
 input only.
 
+The `MAILER_ACS_SECRET_HOST_PATH` in this runbook is the base-compose manual/
+compatibility registration path. For VPS managed-v2 browser setup, the initialized
+database `provider_secret_ref` and
+`MAILER_DATA_PATH/secrets/acs/acs_connection_string` are authoritative. Use the
+[Backup operations](backup-operations.en.md) cold path for a full instance backup;
+do not mix this external compatibility mount into the archive as a second provider
+authority.
+
 - The ACS connection string is stored only in a deploy-time secret file
   (`acs_connection_string`). It is never written to tenant JSON, the database, or any amane-flow
   secret path.

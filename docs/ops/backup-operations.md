@@ -5,6 +5,11 @@
 セルフホスト Amane Mailer インスタンスのバックアップ運用 runbook です。
 Mailer が所有するデータと移植可能な example に限定しています。ホストへのパッケージ導入、実 rclone remote、資格情報、age identity、cron 所有者、プロバイダ固有のバケットポリシーは、オペレータの非公開インフラメモに属します。
 
+バックアップ経路は二つあります。既存の `backup-mailer.sh` は稼働中 SQLite の
+DB 単体スナップショットです。障害復旧用の v2 managed instance 全体には、Mailer
+を停止した状態で `backup-instance-state.sh` を使います。DB 単体成果物を
+インスタンス全体のバックアップとして扱ってはいけません。
+
 ## スコープ境界
 
 Amane Mailer が文書化するもの:
@@ -12,6 +17,8 @@ Amane Mailer が文書化するもの:
 - バックアップ対象の Mailer ファイル
 - Mailer CLI によるオンライン SQLite バックアップの作成方法
 - `backup-mailer.sh` による暗号化と任意のアップロード
+- `backup-instance-state.sh` による停止確認付きの暗号化インスタンス状態バックアップ
+- `restore-instance-state.sh` による空ディレクトリ限定リストア
 - バックアップが復元可能であることの検証方法
 - オペレータが適用できる rclone とスケジューラの example 形
 
@@ -22,6 +29,7 @@ Amane Mailer が所有しないもの:
 - 実 age identity やキー保管場所
 - 特定組織の本番保持ポリシー
 - ホストレベルの cron や systemd timer の所有者
+- Caddy の証明書・設定・データ volume のバックアップ所有者
 
 ホスト固有の判断はリポジトリ外に置いてください。issue でホスト固有作業を追跡する場合は本 runbook へリンクし、secret やプロバイダ詳細を issue に貼らないでください。
 
@@ -31,19 +39,57 @@ Mailer が所有する次の項目をバックアップします:
 
 | 項目 | 既定の場所 | 備考 |
 | --- | --- | --- |
-| SQLite データベース | `/app/data/mailer.db` に mount される `./data/mailer.db` | `backup-mailer.sh` の対象。`Amane.Mailer db backup` を使い、稼働中の WAL DB ファイルを直接コピーしない。管理操作監査ログ（`admin_audit_events`）も同一 DB に含まれ、バックアップ・リストアで一緒に保全される |
+| SQLite データベース | `/app/data/mailer.db` に mount される `./data/mailer.db` | DB 単体経路では `backup-mailer.sh` の対象。`Amane.Mailer db backup` を使い、稼働中の WAL DB ファイルを直接コピーしない。管理操作監査ログ（`admin_audit_events`）も同一 DB に含まれ、バックアップ・リストアで一緒に保全される |
+| managed provider secret | `MAILER_DATA_PATH/secrets/acs/acs_connection_string`（コンテナ内 `/app/data/secrets/acs/acs_connection_string`） | initialized v2 の DB が参照する保護済みファイル。full instance backup では DB と同じ archive に含める。`MAILER_ACS_SECRET_HOST_PATH` の `/run/secrets/acs` mount は read-only の互換／手動登録経路であり、二つ目の authority ではない |
+| committed attachment spool | `MAILER_DATA_PATH/attachment-spool/committed`（コンテナ内 `/app/data/attachment-spool/committed`） | accepted request の未完了送信に必要な durable spool。full instance backup で含める。request-id と spool-key の opaque なパスだけを扱う |
+| transient attachment staging | `MAILER_DATA_PATH/attachment-spool/staging` | full archive から除外。起動時に orphan staging が cleanup されるため、復元対象の durable state ではない |
+| bootstrap token / logs / backup staging | `MAILER_DATA_PATH/bootstrap`、`logs`、`backups` | full archive から除外。bootstrap token は initialized state の authority ではなく、logs と既存 backup 成果物は復元入力にしない |
 | tenant 設定 | `./tenants.json` | オペレータによる手動バックアップ。ルーティングと token env 名を含む。運用 metadata を含む場合があり、復元前に確認する |
 | compose env | `./.env` | オペレータによる手動バックアップ。secret または secret 参照を含む。Git ではなく非公開 secret manager やホストバックアップにのみ保存 |
 | deploy テンプレート | `compose.yml` と `.env` の image tag | ホストローカル状態の手動バックアップ。チェックイン済みテンプレートは再利用可能。有効 image tag はホスト状態 |
-| 暗号化バックアップ成果物 | `./data/backups/mailer-*.db.age` | 暗号化とアクセスポリシー確認後のみアップロード安全 |
+| DB 単体の暗号化成果物 | `./data/backups/mailer-*.db.age` | `backup-mailer.sh` が作成。full instance archive ではない |
+| full instance の暗号化成果物 | `./data/backups/mailer-state-*.tar.age` | `backup-instance-state.sh` が作成。平文 tar は data volume に置かず、age 後に削除する |
+| Caddy state | Compose named volume `caddy_data`（`/data`）と `caddy_config`（`/config`） | Mailer archive に混ぜない。証明書・Caddy 設定を保持するか、復旧時に再発行するかを edge 運用者が別途決める |
 
 `ACS_CONNECTION_STRING`、tenant bearer token、管理画面パスワード hash、rclone 資格情報、age identity、実 backup remote 詳細をリポジトリ、公開ログ、PR 説明、GitHub issue に保存しないでください。
+
+## Full instance state の境界
+
+`backup-instance-state.sh` は generic backup framework ではありません。v2 managed
+instance の固定された最小復元単位だけを、次の archive entry として扱います:
+
+- `mailer.db`
+- `secrets/acs/acs_connection_string`
+- `attachment-spool/committed/` と、その下の Mailer が生成した opaque spool files
+
+実際の入力は、停止したサービス・migration container が共有する
+`MAILER_DATA_PATH` です。DB の `provider_secret_ref` がこの data root 外を指す古い／手動構成は、
+そのまま full backup しません。まず secret の authority と mount を運用メモで reconcile
+し、initialized DB が参照する secret を保護済み data-root 配下にそろえてから取得します。
+script は data-root 配下の canonical ACS secret、owner-only permission、committed spool
+の形を preflight します。
+
+full backup の cold 条件は次のとおりです。script 自体はサービスを停止・起動しません。
+operator が先に `mailer`、`mailer-migrate`、`mailer-acs-admin` を停止し、script が
+Compose の running service 一覧を再確認します。SQLite の `-wal`、`-shm`、`-journal`
+sidecar が残っている場合も失敗させます。これにより、DB と secret と committed spool
+が同じ停止点の状態になります。
+
+`attachment-spool/staging`、bootstrap token、logs、`data/backups`、tenant JSON、
+`.env`、`platform-sender.json`、bounce queue の外部 secret はこの archive に混ぜません。
+bounce queue を有効にした構成は、その外部 secret を別の operator-owned secret backup
+として扱い、復元前に同じ参照を用意します。Caddy の `caddy_data` と `caddy_config` も
+Mailer state とは別の backup unit です。
 
 ## 安全原則
 
 - Mailer DB バックアップは、稼働中サービスコンテナ内から SQLite オンラインバックアップ API を使う `./Amane.Mailer db backup` で取得する。
+- full instance backup は停止確認後にだけ取得し、DB・canonical provider secret・committed spool を同じ cold point から固定する。
+- full instance backup は明示した state path だけを tar に入れる。generic な全 volume 探索や `data/` 全体の再帰コピーは行わない。
 - 平文 `.db` バックアップはオフサイト転送前に必ず暗号化する。
-- 暗号化後は平文 `.db` バックアップファイルを直ちに削除する。
+- full instance の平文 `.tar` も、data volume や backup remote に残さず age の一時入力としてだけ扱う。
+- 暗号化後は平文 `.db` と `.tar` バックアップファイルを直ちに削除する。
+- age identity（private key）は archive、リポジトリ、ログに入れない。公開鍵だけを `MAILER_BACKUP_ENCRYPTION_PUBLIC_KEY` で指定する。
 - インシデント中にオペレータが意図的にローカル暗号化バックアップを受け入れない限り、実運用では `MAILER_BACKUP_REQUIRE_OFFSITE=true` を維持する。
 - `./data/backups/` はステージング用であり、永続バックアップ保管先ではない。
 - 初回オフサイトバックアップ後、バックアップスクリプト変更後、大きな migration 後、オペレータが選んだ周期でリストア検証を実行する。
@@ -74,9 +120,11 @@ age-keygen -y ./keys/backup-age-key.txt
 ```text
 /path/to/mailer/
   compose.yml
+  compose.vps-dogfood.yml       # VPS managed-v2 の場合
   .env
   tenants.json
   backup-mailer.sh
+  backup-instance-state.sh
   data/
   rclone/
     rclone.conf        # 非公開。コミットしない
@@ -90,6 +138,8 @@ MAILER_BACKUP_RCLONE_REMOTE=remote:bucket-or-prefix/mailer/
 MAILER_BACKUP_RCLONE_CONFIG_PATH=./rclone/rclone.conf
 MAILER_BACKUP_REQUIRE_OFFSITE=true
 MAILER_BACKUP_PING_URL=
+# VPS overlay を使う場合は .env に置くか、実行時に指定する
+MAILER_COMPOSE_FILE=compose.yml:compose.vps-dogfood.yml
 ```
 
 `MAILER_BACKUP_RCLONE_REMOTE` と `rclone.conf` の内容は非公開インフラ状態の example です。公開ドキュメントや issue ではプレースホルダー名を使います。secret 値を Git 外に置けるなら rclone の環境変数設定も可です。
@@ -115,16 +165,17 @@ MAILER_BACKUP_PING_URL=
 4. 非公開 rclone 設定をホストに置くか、承認済み `RCLONE_CONFIG_*` 環境変数を Git 外に設定する。
 5. ホスト `.env` に `MAILER_BACKUP_*` 値を設定する。
 6. `docker compose --env-file .env -f compose.yml config --quiet` を実行する。
-7. 手動バックアップを実行する。
-8. `data/backups/` に平文 `.db` が残っていないことを確認する。
-9. 暗号化 `.db.age` がローカルとオフサイト先の両方に存在することを確認する。
-10. スケジュール運用前にリストア検証を実行する。
+7. DB 単体が必要な場合はオンライン `backup-mailer.sh` を実行する。
+8. 障害復旧用には Mailer を停止し、`backup-instance-state.sh` を実行する。
+9. `data/backups/` に平文 `.db` または `.tar` が残っていないことを確認する。
+10. 暗号化 `.age` がローカルとオフサイト先の両方に存在することを確認する。
+11. スケジュール運用前に full instance のリストア検証を実行する。
 
 オフサイト先、資格情報、rclone 設定が整うまで、実ホストを `MAILER_BACKUP_REQUIRE_OFFSITE=true` に切り替えないでください。失敗モードは fail-secure ですが、設定完了までスケジュールバックアップは失敗します。
 
 ## 手動バックアップ
 
-`infra/deploy/backup-mailer.sh` を Mailer compose ディレクトリへコピーし、そのディレクトリから実行します（`MAILER_COMPOSE_DIR` を設定するか、ディレクトリで直接実行）。
+`infra/deploy/backup-mailer.sh` を Mailer compose ディレクトリへコピーし、そのディレクトリから実行します（`MAILER_COMPOSE_DIR` を設定するか、ディレクトリで直接実行）。これは DB 単体のオンライン経路です。
 
 ```bash
 cd /path/to/mailer
@@ -142,6 +193,40 @@ bash backup-mailer.sh 2>&1 | tee /tmp/mailer-backup-manual.log
 - ログに secret が出ない
 
 アクティブなバックアップ操作外で平文 `.db` が見つかった場合はホストから削除し、インシデントをオペレータの非公開メモに記録します。
+
+## Full instance backup（PR3）
+
+full instance は、停止点をそろえた coordinated/cold backup です。script は自動で
+stop/start しないため、運用者が停止を確認できる maintenance window で実行します。
+
+```bash
+cd /path/to/mailer
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood stop mailer mailer-migrate mailer-acs-admin 2>/dev/null || true
+
+MAILER_COMPOSE_DIR="$PWD" \
+MAILER_COMPOSE_FILE=compose.yml:compose.vps-dogfood.yml \
+  bash /path/to/amane-mailer/infra/deploy/backup-instance-state.sh
+```
+
+`mailer`、`mailer-migrate`、`mailer-acs-admin` のいずれかが running と見える場合、
+または DB sidecar が残っている場合は non-zero で終了します。停止コマンドで存在しない
+one-shot service を指定する差異がある環境では、停止後に `docker compose ... ps` で
+Mailer runtime が止まっていることを確認してから script を実行してください。停止確認を
+省略する環境変数や `--force` はありません。
+
+期待される成果物は `data/backups/mailer-state-YYYYMMDDTHHmmssZ.tar.age` です。archive
+には `mailer.db`、`secrets/acs/acs_connection_string`、`attachment-spool/committed`
+だけが入り、staging、bootstrap token、logs、既存 backup、age identity は入りません。
+ACS secret はログや shell 出力に表示せず、archive の作成後には平文 tar を削除します。
+暗号化と offsite upload の失敗時はローカルの未完成成果物も cleanup し、
+`MAILER_BACKUP_REQUIRE_OFFSITE=true` では remote 未設定・upload 失敗を成功扱いにしません。
+
+DB 単体の `mailer-*.db.age` と full instance の `mailer-state-*.tar.age` を同じものとして
+扱わないでください。full instance をスケジュールする場合も、停止と起動を所有する
+外部 maintenance orchestration は本リポジトリの script の外側に置き、無停止の cron
+から full script を呼ばないでください。
 
 ## Admin UI 経由 backup（任意）
 
@@ -206,7 +291,7 @@ unit パス、ユーザー、rclone バイナリパス、ログ先、タイム�
 - `MAILER_BACKUP_REQUIRE_OFFSITE=true` 時のオフサイト設定欠落
 - 最近の成功バックアップ成果物の欠如
 - `MAILER_BACKUP_PING_URL` 設定時の `/fail` または成功 ping 欠如
-- `data/backups/` の想定外平文 `.db` ファイル
+- `data/backups/` の想定外平文 `.db` / `.tar` ファイル
 
 ping URL、アラートルーティング、ログ先は本リポジトリ外です。
 

@@ -65,10 +65,13 @@ SQLite file を使います。行数や同時負荷が増えると、full-scan q
 引き継ぐ active-active / failover はありません。`/healthz` と `/readyz` はその instance の状態を
 示す health signal であり、availability SLA ではありません。
 
-[backup runbook](backup-operations.md) は稼働中 instance から SQLite Online Backup API で一貫した
-backup を作成しますが、[restore procedure](restore-procedure.md) は Mailer を停止して DB file を
-置換します。backup の存在だけでは RPO / RTO を保証しません。operator は対象 storage、backup
-周期、offsite copy、restore 所要時間、呼び出し元の停止を含む recovery を検証してください。
+[backup runbook](backup-operations.md) には二つの経路があります。`backup-mailer.sh` は稼働中
+instance から SQLite Online Backup API で DB 単体を作成し、`backup-instance-state.sh` は
+Mailer、migration、admin mutator の停止後に DB・canonical provider secret・committed spool を
+同じ cold point から保全します。[restore procedure](restore-procedure.md) は full archive を
+空の target に復元してから migration / readiness を確認します。backup の存在だけでは RPO / RTO
+を保証しません。operator は対象 storage、backup 周期、offsite copy、restore 所要時間、呼び出し元
+の停止を含む recovery を検証してください。Caddy named volume は別の recovery unit です。
 
 ## Provider throttling と backpressure
 

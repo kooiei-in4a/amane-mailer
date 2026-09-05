@@ -85,13 +85,18 @@ accepts a digest reference, pin the digest verified against that record.
 Under [Backup operations](backup-operations.en.md), take the final upgrade backup
 after quiescing callers and immediately before stopping the old Mailer.
 `backup-mailer.sh` uses the running Mailer's SQLite online backup API; do not
-directly copy a live WAL database file.
+directly copy a live WAL database file. When a managed-v2 full recovery point is
+needed, run `backup-instance-state.sh` after graceful shutdown to capture the
+database, canonical provider secret, and committed spool at one cold point. The
+full script does not stop or start services.
 
 Confirm in advance that:
 
 - the matching age identity and its recovery copy are available;
 - operator-owned state outside the database—such as `tenants.json`, `.env`, the
   compose template, file secrets, and any Managed root—is preserved in private storage;
+  treatment of Caddy named volumes and external bounce secrets excluded from the
+  managed-v2 archive is also decided;
 - an isolated environment and time are available to run
   [Restore verification](restore-verification.en.md) after taking the final backup
   and before migrating the target;
@@ -120,11 +125,14 @@ private values for real paths, image identities, and secrets.
 
 1. Stop new requests from callers. Under the environment's operating policy,
    inspect queued / in-flight state and record the intended recovery point.
-2. With the old Mailer still running, take the final online backup. Confirm the
+2. With the old Mailer still running, take the final online database backup. Confirm the
    new encrypted `mailer-*.db.age`, any required offsite upload, and that no
    plaintext `.db` remains. Record the snapshot time.
-3. Immediately complete graceful shutdown of the old Mailer. Record any database
-   updates or provider operations completed after the snapshot for reconciliation.
+3. Immediately complete graceful shutdown of the old Mailer. If a managed-v2
+   full recovery point is required, run `backup-instance-state.sh` here and
+   confirm `mailer-state-*.tar.age` exists with no plaintext `.tar` remaining.
+   Record any database updates or provider operations completed after the
+   snapshot for reconciliation.
 
 ```bash
 docker compose --env-file .env -f compose.yml stop mailer
@@ -133,7 +141,7 @@ docker compose --env-file .env -f compose.yml stop mailer
 4. Preserve the saved old private configuration / image identity, change
    `MAILER_IMAGE_TAG` in `.env` to the verified target immutable SHA tag, and
    pull the target image.
-5. Run [Restore verification](restore-verification.en.md) against the final backup
+5. Run [Restore verification](restore-verification.en.md) against the final database/full backup
    with the target image in an isolated disposable environment. This exercises
    normal `mailer-migrate` plus health / readiness checks. If it fails, stop
    without changing the production database and either explicitly restore and
