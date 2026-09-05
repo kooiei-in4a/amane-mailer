@@ -7,12 +7,22 @@
 #     --profile vps-dogfood up -d
 #
 # The base deploy compose remains the source for Mailer runtime settings. This overlay only
-# supplies the reference edge and replaces the base consumer network on `mailer` so the VPS
-# profile cannot be bypassed by joining the legacy shared network.
+# supplies the reference edge, removes the base legacy tenant inputs for managed-v2 first-run,
+# and replaces the base consumer network on `mailer` so the VPS profile cannot be bypassed by
+# joining the legacy shared network.
 
 services:
   mailer:
     environment:
+      # The generic base compose keeps these compatibility inputs for manual/v1 deployments.
+      # Compose !reset removes them from this managed-v2 reference profile; no tenant JSON,
+      # tenant token, or v1 provider setting is required for migration or first-run setup.
+      MAILER_TENANTS_PATH: !reset null
+      MAIL_SERVICE_TOKEN: !reset null
+      MAIL_SERVICE_TOKEN_DEVELOP: !reset null
+      MAIL_SERVICE_TOKEN_STAGING: !reset null
+      MAIL_SERVICE_TOKEN_PRODUCTION: !reset null
+      MAILER_PROVIDER: !reset null
       # The Caddy profile always terminates TLS and forwards plain HTTP to this fixed backend
       # port. The host never publishes it.
       ASPNETCORE_URLS: http://+:8080
@@ -25,6 +35,12 @@ services:
       # The Caddy remote_ip matcher below is the client-side management allowlist.
       AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS: ${MAILER_VPS_MAILER_IPV4_ADDRESS:-172.30.0.3}
       AMANE_ADMIN_ALLOW_HTTP: "false"
+    # The base list includes the legacy tenant JSON bind. Replace the list so a fresh VPS
+    # directory needs only managed state and protected provider/bounce secret directories.
+    volumes: !override
+      - ${MAILER_DATA_PATH:-./data}:/app/data
+      - ${MAILER_ACS_SECRET_HOST_PATH:-./secrets/acs}:/run/secrets/acs:ro
+      - ${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH:-./secrets/bounce-queue}:/run/secrets/bounce-queue:ro
     # !override is intentional. The base `mailer` network is a consumer integration network;
     # retaining it here would allow a container on that network to reach mailer:8080 directly.
     networks: !override
@@ -33,6 +49,19 @@ services:
         aliases:
           - mailer
         ipv4_address: ${MAILER_VPS_MAILER_IPV4_ADDRESS:-172.30.0.3}
+
+  mailer-migrate:
+    environment:
+      # Migration only creates/updates SQLite schema. It must not require the base tenant JSON
+      # or any MAIL_SERVICE_TOKEN* value before the managed-v2 setup flow can run.
+      MAILER_TENANTS_PATH: !reset null
+      MAIL_SERVICE_TOKEN: !reset null
+      MAIL_SERVICE_TOKEN_DEVELOP: !reset null
+      MAIL_SERVICE_TOKEN_STAGING: !reset null
+      MAIL_SERVICE_TOKEN_PRODUCTION: !reset null
+      MAILER_PROVIDER: !reset null
+    volumes: !override
+      - ${MAILER_DATA_PATH:-./data}:/app/data
 
   proxy:
     image: ${MAILER_VPS_PROXY_IMAGE:-caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d}

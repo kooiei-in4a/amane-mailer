@@ -12,6 +12,7 @@
 *.env
 .env.*
 !.env.example
+!.env.vps-dogfood.example
 .claude/*
 !.claude/skills/
 

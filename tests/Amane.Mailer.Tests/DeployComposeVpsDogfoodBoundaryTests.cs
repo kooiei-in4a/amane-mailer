@@ -32,7 +32,7 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
                 "(?ms)^  [a-z0-9][a-z0-9-]*:\\n.*?(?=^  [a-z0-9][a-z0-9-]*:\\n|^\\S|\\z)")
             .Select(match => match.Value)
             .ToArray();
-        Assert.Equal(2, serviceBlocks.Length);
+        Assert.Equal(3, serviceBlocks.Length);
         Assert.Single(serviceBlocks, block => block.Contains("ports:", StringComparison.Ordinal));
     }
 
@@ -59,6 +59,33 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             StringComparison.Ordinal);
         Assert.Contains("caddy_data:/data", proxy, StringComparison.Ordinal);
         Assert.Contains("caddy_config:/config", proxy, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("mailer")]
+    [InlineData("mailer-migrate")]
+    public void Vps_profile_removes_legacy_tenant_configuration_from_both_mailer_services(
+        string serviceName)
+    {
+        var compose = ReadRepositoryFile("infra", "deploy", "compose.vps-dogfood.yml");
+        var service = ServiceBlock(compose, serviceName);
+
+        foreach (var key in new[]
+                 {
+                     "MAILER_TENANTS_PATH",
+                     "MAIL_SERVICE_TOKEN",
+                     "MAIL_SERVICE_TOKEN_DEVELOP",
+                     "MAIL_SERVICE_TOKEN_STAGING",
+                     "MAIL_SERVICE_TOKEN_PRODUCTION",
+                     "MAILER_PROVIDER"
+                 })
+        {
+            Assert.Contains($"{key}: !reset null", service, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("volumes: !override", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("tenants.json", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("MAILER_TENANTS_HOST_PATH", service, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -135,14 +162,45 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
     }
 
     [Fact]
+    public void Vps_env_example_has_no_legacy_tenant_or_provider_inputs()
+    {
+        var env = ReadRepositoryFile("infra", "deploy", ".env.vps-dogfood.example");
+
+        foreach (var key in new[]
+                 {
+                     "MAILER_TENANTS_HOST_PATH",
+                     "MAILER_TENANTS_CONTAINER_PATH",
+                     "MAIL_SERVICE_TOKEN",
+                     "MAIL_SERVICE_TOKEN_DEVELOP",
+                     "MAIL_SERVICE_TOKEN_STAGING",
+                     "MAIL_SERVICE_TOKEN_PRODUCTION",
+                     "MAILER_PROVIDER"
+                 })
+        {
+            Assert.DoesNotContain($"{key}=", env, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("MAILER_METRICS_ENABLED=false", env, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Vps_runbook_explains_the_server_local_address_and_client_cidr_boundaries()
     {
         var runbook = ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.md");
 
         Assert.Contains("Connection.LocalIpAddress", runbook, StringComparison.Ordinal);
         Assert.Contains("MAILER_MANAGEMENT_ALLOWED_CIDRS", runbook, StringComparison.Ordinal);
+        Assert.Contains(".env.vps-dogfood.example", runbook, StringComparison.Ordinal);
+        Assert.Contains("SQLite managed state", runbook, StringComparison.Ordinal);
+        Assert.Contains("provider secret", runbook, StringComparison.Ordinal);
+        Assert.Contains("bootstrap token", runbook, StringComparison.Ordinal);
+        Assert.Contains("MAIL_SERVICE_TOKEN*", runbook, StringComparison.Ordinal);
         Assert.Contains("proxy bypass", runbook, StringComparison.Ordinal);
         Assert.Contains("down -v", runbook, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "MAILER_TENANTS_HOST_PATH が実 tenant JSON を指し",
+            runbook,
+            StringComparison.Ordinal);
     }
 
     private static string ServiceBlock(string compose, string serviceName)

@@ -110,17 +110,20 @@ Linux / macOS の bash と curl で Mailpit 到着、冪等再送、conflict ま
 
 ## デプロイ時の注意
 
-runtime image には安全な example と tenant schema だけを含めます。実 tenant JSON は
-deploy-time input として用意し、container へ mount してください。
+runtime image には安全な example と tenant schema だけを含めます。generic base compose の
+manual / compatibility path では、実 tenant JSON を deploy-time input として用意し、container
+へ mount してください。VPS managed-v2 reference path では tenant JSON は不要です。
 
 - Deploy compose: `infra/deploy/compose.yml`
 - 安全な env template: `infra/deploy/.env.example`
+- VPS managed-v2 env template: `infra/deploy/.env.vps-dogfood.example`
 - Tenant schema: `config/mailer/tenants.schema.json`
 
 VPS で Caddy 配下の HTTPS、Mailer backend 非公開、Admin / Setup の operator-only
 edge restriction を使う標準 PR1 profile は [`vps-dogfood-deployment.md`](docs/ops/vps-dogfood-deployment.md)
 と [`Caddyfile.vps-dogfood.example`](infra/deploy/Caddyfile.vps-dogfood.example) を参照してください。
 profile は `compose.vps-dogfood.yml` を overlay し、Caddy の 80/443 だけを host に publish します。
+この profile の初回 migration / setup では `tenants.json` と `MAIL_SERVICE_TOKEN*` を設定しません。
 
 実 tenant token、ACS connection string、production sender address、deploy host の `.env` は
 commit しないでください。

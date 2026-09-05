@@ -35,6 +35,11 @@ mailer:8080（host port なし）
 - Caddy の `/admin`、`/setup`、`/metrics` は `MAILER_MANAGEMENT_ALLOWED_CIDRS` の
   client source IP/CIDR からだけ通します。それ以外の管理経路は edge で 404 です。
   `/api/*`、`/healthz`、`/readyz` だけを public path として proxy します。
+- base compose に残る legacy tenant JSON bind と
+  `MAILER_TENANTS_PATH`、`MAIL_SERVICE_TOKEN*`、`MAILER_PROVIDER` は、この overlay の
+  Compose merge (`!override` / `!reset`) で `mailer` と `mailer-migrate` の実効設定から
+  除去されます。VPS managed-v2 の migration / first-run に tenant JSON、tenant token、
+  v1 provider 設定は必要ありません。
 
 `AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS` は operator の client IP ではありません。Mailer が
 proxy から受ける request の `Connection.LocalIpAddress`（この profile では Mailer の
@@ -43,27 +48,52 @@ proxy から受ける request の `Connection.LocalIpAddress`（この profile �
 
 ## 初回準備
 
-Docker Engine と Compose plugin（`!override` をサポートするバージョン）、公開 DNS、host firewall の設定は事前に用意します。
+Docker Engine と Compose plugin（`!override` と `!reset` をサポートするバージョン）、公開 DNS、host firewall の設定は事前に用意します。
 Mailer は Docker や firewall、DNS、TLS account を自動設定しません。
 
 `infra/deploy` で次を行います。
 
 ```bash
-cp .env.example .env
+cp .env.vps-dogfood.example .env
 cp Caddyfile.vps-dogfood.example Caddyfile.vps-dogfood
 ```
 
-`.env` の placeholder を deploy host の値へ置き換えます。少なくとも次を確認します。
+`.env` の VPS placeholder を deploy host の値へ置き換えます。少なくとも次を確認します。
 
 - `MAILER_IMAGE_REPOSITORY` と `MAILER_IMAGE_TAG` は公開済みの検証済み Mailer image。
-- `MAILER_TENANTS_HOST_PATH` が実 tenant JSON を指し、token 値は `.env` にだけ置かれる。
-- `MAILER_METRICS_BEARER_TOKEN` は production 用の private value。
+- `MAILER_DATA_PATH` は SQLite managed state を保存する persistent directory。
+- `./secrets/acs` と `./secrets/bounce-queue` は mode 0700 の protected directory として
+  用意する。ACS provider secret は承認済みの file-based register flow で保存し、`.env`
+  や tenant token には置かない。metrics を有効にする場合だけ、private な
+  `MAILER_METRICS_BEARER_TOKEN` を deploy host の `.env` に追加する。
 - `MAILER_PUBLIC_HOSTNAME` は実際の DNS name。
 - `MAILER_MANAGEMENT_ALLOWED_CIDRS` は VPN / firewall で決めた operator source IP/CIDR。
   `.env.example` の `192.0.2.0/24` は文書用 TEST-NET であり、そのまま使用しません。
   複数値は空白区切りで、例は `"192.0.2.0/24 2001:db8:1234::/48"` です。
 - `MAILER_VPS_PROXY_NETWORK_SUBNET` と固定 IPv4 が host 上の既存 network と衝突しない。
   変更する場合は subnet、proxy address、Mailer address の関係を保ちます。
+- `MAILER_TENANTS_HOST_PATH`、`MAILER_TENANTS_CONTAINER_PATH`、
+  `MAIL_SERVICE_TOKEN`、`MAIL_SERVICE_TOKEN_DEVELOP`、`MAIL_SERVICE_TOKEN_STAGING`、
+  `MAIL_SERVICE_TOKEN_PRODUCTION`、`MAILER_PROVIDER` は設定しない。fresh VPS 用の
+  `tenants.json` も作成しない。
+
+### VPS managed-v2 first-run の正本
+
+この reference path の contract は次の通りです。
+
+- `SQLite managed state` = product configuration authority（provider、instance owner、
+  sender、API key の正本）。
+- `provider secret` = protected file。ACS secret は file-based registration と setup の
+  定められた protected path だけで扱います。
+- `bootstrap token` = transient protected file。初回表示後は password や他の secret と
+  同じ扱いにし、不要になった file は保護した上で削除します。
+- `tenants.json` / `MAIL_SERVICE_TOKEN*` = legacy/manual path。VPS v2 reference
+  deployment では不要であり、初回 setup の active product configuration source of truth
+  ではありません。
+
+共通の `infra/deploy/.env.example` は base compose の manual / compatibility path 用です。
+VPS では上記の `.env.vps-dogfood.example` を使うため、共通 template にある legacy
+placeholder を設定する必要はありません。
 
 管理経路を SSH tunnel のみにする場合は、Caddy の host bind を `127.0.0.1` に変更し、
 remote host の 80/443 を公開しません。public API も tunnel 経由だけになります。通常の
@@ -81,11 +111,17 @@ docker compose --env-file .env \
 
 docker compose --env-file .env \
   -f compose.yml -f compose.vps-dogfood.yml \
+  --profile vps-dogfood run --rm mailer-migrate
+
+docker compose --env-file .env \
+  -f compose.yml -f compose.vps-dogfood.yml \
   --profile vps-dogfood up -d
 ```
 
 `config --quiet` が失敗する場合は placeholder、必須の hostname/CIDR、network の固定
-address を確認します。起動後の確認:
+address を確認します。rendered config の `mailer` / `mailer-migrate` に tenant JSON
+mount、`MAILER_TENANTS_PATH`、`MAIL_SERVICE_TOKEN*`、`MAILER_PROVIDER` がないことも確認
+します。起動後の確認:
 
 ```bash
 docker compose --env-file .env \
@@ -96,13 +132,16 @@ curl -fsS https://MAILER_PUBLIC_HOSTNAME/healthz
 curl -i https://MAILER_PUBLIC_HOSTNAME/readyz
 ```
 
-fresh state では migration 後も `/readyz` は `503`（uninitialized）です。これは失敗では
-なく setup 前の期待値です。`mailer` の直接 `http://host:8080` は接続できません。
+tenant JSON と `MAIL_SERVICE_TOKEN*` のない fresh state でも migration は成功し、migration
+後の `/readyz` は `503`（uninitialized）です。これは失敗ではなく setup 前の期待値です。
+承認済み management CIDR から `/setup` が利用でき、`mailer` の直接 `http://host:8080` は
+接続できません。
 
 ## Browser Setup
 
-bootstrap token は container 内から一度だけ表示し、password / ACS secret / token と同じ
-く secret として扱います。値を shell history、log、Issue、chat に貼りません。
+bootstrap token は container 内から一度だけ表示する transient protected file の値であり、
+password / provider secret と同じく secret として扱います。値を shell history、log、Issue、
+chat に貼りません。これは tenant token ではありません。
 
 ```bash
 docker compose --env-file .env \
@@ -111,8 +150,8 @@ docker compose --env-file .env \
 ```
 
 `https://MAILER_PUBLIC_HOSTNAME/setup` を、Caddy に設定した operator network から開き、
-bootstrap 認証、provider、instance owner、sender、finalize を既存の FirstRunSetup の
-順序で実行します。`/setup` は HTTPS が必要です。Caddy の `X-Forwarded-Proto` は
+bootstrap 認証、provider secret の file-based 登録、instance owner、sender、finalize を
+既存の FirstRunSetup の順序で実行します。`/setup` は HTTPS が必要です。Caddy の `X-Forwarded-Proto` は
 専用 proxy IP からのものだけを Mailer が信頼するため、Secure cookie と antiforgery の
 HTTPS contract を維持できます。
 
@@ -131,9 +170,11 @@ management route の `/admin` から利用します。
 - `/metrics` も management path として扱います。metrics bearer が設定されていても、
   edge restriction を省略しません。
 - `infra/deploy/compose.yml` の `MAILER_TENANTS_PATH`、`MAIL_SERVICE_TOKEN_*`、
-  `MAILER_PROVIDER` は manual / fresh compatibility のため残っています。managed v2
-  初期化後の provider、Admin、Sender、API key の正本は SQLite です。二つの設定を v2 の
-  source-of-truth として競合させないでください。legacy cleanup はこの PR1 の対象外です。
+  `MAILER_PROVIDER` は baseline の manual / v1 compatibility path のため残っています。
+  ただし `compose.vps-dogfood.yml` は両 service からそれらを除去します。VPS managed-v2
+  では `SQLite managed state` が product configuration authority、provider secret は
+  protected file、bootstrap token は transient protected file です。`tenants.json` /
+  `MAIL_SERVICE_TOKEN*` は VPS v2 reference deployment では不要です。
 - Caddy の `caddy_data` / `caddy_config` named volume と Mailer の data volume は
   persistent deployment state です。backup / restore 手順の全面更新は PR3 の対象であり、
   この profile は volume を削除するコマンドを提供しません。
