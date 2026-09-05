@@ -64,6 +64,33 @@ public sealed class SenderRepository(
         return await reader.ReadAsync(cancellationToken) ? ReadSender(reader) : null;
     }
 
+    public async Task<SenderIdentity?> FindByEmailAsync(
+        string email,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedEmail = NormalizeEmail(email);
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT sender_id, email, display_name, enabled, created_at, disabled_at
+            FROM senders
+            WHERE email = @Email
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@Email", normalizedEmail);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadSender(reader) : null;
+    }
+
+    public async Task<int> CountAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM senders;";
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     public async Task<CreatedApiKey> CreateApiKeyAsync(
         Guid senderId,
         string name,

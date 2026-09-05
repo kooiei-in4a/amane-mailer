@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Json;
 
 namespace Amane.Mailer.Configuration;
@@ -119,6 +120,50 @@ public sealed class MailerTenantRegistry
             tenantsById,
             tokensByTenantId,
             webhookSecretsByTenantId);
+    }
+
+    /// <summary>
+    /// Narrow compatibility registry for an initialized v2 instance that has no legacy
+    /// tenants.json. API authentication and sender identity remain DB-owned; this template only
+    /// supplies the retained dispatcher DTO shape.
+    /// </summary>
+    public static MailerTenantRegistry CreateManaged(InstanceRuntimeState state)
+    {
+        if (!string.Equals(state.ProviderType, "acs", StringComparison.Ordinal))
+        {
+            throw new MailerConfigurationLoadException(
+                MailerConfigurationLoadFailureKind.ProviderInvalid,
+                "Managed instance provider state is invalid.");
+        }
+
+        const string provider = "acs";
+        var tenant = new MailerTenant
+        {
+            TenantId = V2PersistenceCompatibility.SuppressionScopeId,
+            Name = "managed-instance",
+            SourceServices = [V2PersistenceCompatibility.SourceService],
+            DefaultFrom = new MailerAddress
+            {
+                Email = "noreply@example.invalid",
+                DisplayName = "Amane Mailer",
+            },
+            TokenEnv = "MANAGED_API_KEY",
+            Provider = provider,
+            LiveSending = state.LiveSending,
+            MetadataMaxBytes = MailerTenant.DefaultMetadataMaxBytes,
+            Retry = new MailerRetryOptions
+            {
+                MaxAttempts = 3,
+                InitialDelaySeconds = 1,
+                MaxDelaySeconds = 300,
+            },
+        };
+
+        return new MailerTenantRegistry(
+            [tenant],
+            new Dictionary<Guid, MailerTenant> { [tenant.TenantId] = tenant },
+            new Dictionary<Guid, string>(),
+            new Dictionary<Guid, string>());
     }
 
     public MailerTenant? Authorize(Guid tenantId, string? bearerToken)

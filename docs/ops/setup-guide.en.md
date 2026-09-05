@@ -56,6 +56,22 @@ Amane.Mailer setup apply --config <absolute-path> --non-interactive
 
 Optional `--port` selects the localhost Web listen port. `--no-browser` skips opening a browser. `--terminal` runs the interactive terminal UI.
 
+### First-run browser setup (Managed v2)
+
+For a fresh deploy Compose data directory, apply the existing migration service, start `mailer`, and display the one-time bootstrap token from inside the container:
+
+```bash
+docker compose --env-file .env -f compose.yml run --rm mailer-migrate
+docker compose --env-file .env -f compose.yml up -d mailer
+docker compose --env-file .env -f compose.yml exec mailer /app/Amane.Mailer setup bootstrap show
+```
+
+Treat the token as a secret and do not paste it into logs or tickets. Open `/setup` only through an already-approved HTTPS reverse proxy. The standard Compose service is an HTTP backend; this guide does not build the proxy, certificate, or DNS. If TLS terminates at that proxy, enable `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` and set only the proxy source in `MAILER_FORWARDED_HEADERS_TRUSTED_PROXIES` or `MAILER_FORWARDED_HEADERS_TRUSTED_NETWORKS`.
+
+In the browser, complete the forms in this order: bootstrap authentication → ACS provider secret → first Admin user → first Sender → finalize. Finalize commits the durable initialized bit and stops the service; start `mailer` again and check `/readyz`. No real message send is required for this bootstrap check.
+
+After initialization, `/setup` and the bootstrap token are intentionally unavailable, including when an old token file remains. Managed v2 Admin state is SQLite-authoritative: the Admin surface stays enabled even when `AMANE_ADMIN_ENABLED=false`, and the legacy environment password hash is ignored. Reset a managed password interactively with `docker compose ... exec mailer /app/Amane.Mailer admin reset-password --username <db-admin-name>`.
+
 ### Candidate consumption (verify methods)
 
 When consuming an Easy Setup **release-candidate** host bundle (not a published GitHub Release):
@@ -126,7 +142,7 @@ Do not copy full procedures here: [Backup operations](backup-operations.en.md), 
 
 Staging test vs Production: keep ACS / Queue / tokens separated per environment. Do not treat Staging drills as Production evidence.
 
-### Admin (optional; default disabled)
+### Admin (optional; default disabled before Managed v2 initialization)
 
 - Admin enablement is **optional** and **default disabled**. It is an independent transaction **after** Main setup succeeds.
 - Bootstrap only via interactive Web or terminal assistant — **not** non-interactive.
@@ -135,6 +151,7 @@ Staging test vs Production: keep ACS / Queue / tokens separated per environment.
 - Supported DB states: **fresh** and **managed same-user** reapply. Existing Manual / unsupported Admin state → Manual path.
 - Config bundle rollback ≠ SQLite Admin state rollback (`admin_config` / `admin_users` / sessions may remain).
 - Bootstrap success includes login and `/admin/setup-status` display. Admin setup status does **not** run doctor, test send, or Docker operations.
+- After Managed v2 initialization, `initialized_at` is the one-way gate: SQLite owns Admin users/passwords and the Admin surface remains enabled even if `AMANE_ADMIN_ENABLED=false`. That environment flag still controls fresh or legacy/unmanaged runtimes.
 
 #### Admin access profiles
 

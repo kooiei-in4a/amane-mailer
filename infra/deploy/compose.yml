@@ -10,8 +10,6 @@ services:
   mailer-migrate:
     image: ${MAILER_IMAGE_REPOSITORY}:${MAILER_IMAGE_TAG}
     pull_policy: ${MAILER_PULL_POLICY}
-    profiles:
-      - ops
     restart: "no"
     logging: *default-logging
     mem_limit: ${MAILER_MEM_LIMIT}
@@ -41,12 +39,17 @@ services:
     logging: *default-logging
     mem_limit: ${MAILER_MEM_LIMIT}
     cpus: ${MAILER_CPUS}
+    depends_on:
+      mailer-migrate:
+        condition: service_completed_successfully
     environment:
       # Deploy hosts must stay Production. Do not parameterize this — local Admin HTTP
       # rehearsal overrides ASPNETCORE_ENVIRONMENT only via compose.local-rehearsal.yml (#341).
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:${MAILER_HTTP_PORT:-8080}
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: ${ASPNETCORE_FORWARDEDHEADERS_ENABLED:-false}
+      MAILER_FORWARDED_HEADERS_TRUSTED_PROXIES: ${MAILER_FORWARDED_HEADERS_TRUSTED_PROXIES:-}
+      MAILER_FORWARDED_HEADERS_TRUSTED_NETWORKS: ${MAILER_FORWARDED_HEADERS_TRUSTED_NETWORKS:-}
       ConnectionStrings__Mailer: ${MAILER_CONNECTION_STRING:-Data Source=/app/data/mailer.db}
       MAILER_TENANTS_PATH: ${MAILER_TENANTS_CONTAINER_PATH:-/app/config/mailer/tenants.json}
       MAIL_SERVICE_TOKEN: ${MAIL_SERVICE_TOKEN}
@@ -60,6 +63,9 @@ services:
       # the local ACS drill (infra/deploy/drills/mail-05a-acs-drill.sh) via its own compose
       # override, never by this file. See DeployComposeAcsBoundaryTests.
       ACS_CONNECTION_STRING_FILE: /run/secrets/acs/acs_connection_string
+      # Browser first-run setup writes to the existing persistent data volume; the legacy
+      # /run/secrets/acs mount remains read-only for operator-managed ACS registration.
+      MAILER_SETUP_ACS_SECRET_PATH: /app/data/secrets/acs/acs_connection_string
       # Fail closed: without ACS_CONNECTION_STRING_FILE resolving to a value, MailerOptions must
       # not fall back to a bare ACS_CONNECTION_STRING env var here, even if one is present in the
       # container's process environment. The local ACS drill never sets this flag, so its own

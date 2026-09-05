@@ -44,4 +44,4 @@ public sealed record MailerServiceUnavailableResponse(string Code, bool Retryabl
 
 public sealed record HealthStatusResponse(bool Healthy);
 
-public sealed record ReadyStatusResponse(bool Ready);
+public sealed record ReadyStatusResponse(bool Ready, string? Reason = null);

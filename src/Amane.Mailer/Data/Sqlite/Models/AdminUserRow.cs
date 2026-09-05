@@ -6,4 +6,5 @@ public sealed record AdminUserRow(
     string PasswordHash,
     bool Disabled,
     int CredentialEpoch,
-    bool IsBreakGlass);
+    bool IsBreakGlass,
+    bool IsInstanceOwner);

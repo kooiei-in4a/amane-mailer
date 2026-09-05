@@ -7,7 +7,9 @@ using Amane.Mailer.Json;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Operations.EventGridConfigCheck;
 using Amane.Mailer.Operations.VerifyDeliveryReport;
+using Amane.Mailer.Setup;
 using Amane.Mailer.Worker;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging.EventLog;
 
 var commandArgs = NormalizeCommandArgs(args);
@@ -26,12 +28,14 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll db admin-audit purge --older-than-days <days>
       dotnet Amane.Mailer.dll db suppressions remove --tenant-id <uuid> --recipient <email>
       dotnet Amane.Mailer.dll admin hash-password
+      dotnet Amane.Mailer.dll admin reset-password
       dotnet Amane.Mailer.dll admin user create --username <name> --password-hash <pbkdf2> [--tenant-id <uuid> ...] [--break-glass]
       dotnet Amane.Mailer.dll admin user capability <grant|revoke> --username <name> --capability bcc_recipient_reveal
       dotnet Amane.Mailer.dll admin provider register-acs
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
       dotnet Amane.Mailer.dll admin provider test-acs-send
       dotnet Amane.Mailer.dll setup assistant [--port <1-65535>] [--no-browser] [--terminal]
+      dotnet Amane.Mailer.dll setup bootstrap show
       dotnet Amane.Mailer.dll setup assistant-self-check
       dotnet Amane.Mailer.dll setup doctor --mode <mode> [--compose-file <path>]
       dotnet Amane.Mailer.dll setup apply --config <absolute-path> --non-interactive
@@ -152,6 +156,32 @@ if (AdminHashPasswordCommand.IsAdminHashPasswordCommand(commandArgs))
         commandArgs,
         Console.In,
         Console.Out,
+        Console.Error);
+}
+
+if (AdminResetPasswordCommand.IsAdminResetPasswordCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunAdminResetPasswordAsync(
+            cliConfiguration,
+            commandArgs,
+            Console.In,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
+}
+
+if (BootstrapShowCommand.IsBootstrapShowCommand(commandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunBootstrapShowAsync(
+            cliConfiguration,
+            Console.Out,
+            Console.Error,
+            ct),
         Console.Error);
 }
 
@@ -292,6 +322,7 @@ if (EventGridConfigCheckCommand.IsEventGridConfigCheckCommand(commandArgs))
 }
 
 var builder = WebApplication.CreateBuilder(args);
+var instanceState = await InstanceRuntimeStateProbe.ReadAsync(builder.Configuration);
 
 if (OperatingSystem.IsWindows())
 {
@@ -299,10 +330,27 @@ if (OperatingSystem.IsWindows())
 }
 
 builder.Services.AddMailerJsonSerialization();
-builder.Services.AddAmaneMailerServices(builder.Configuration);
+builder.Services.AddAmaneMailerServices(builder.Configuration, instanceState);
 ForwardedHeadersStartup.ConfigureServices(builder.Services, builder.Configuration);
+var allowedHosts = builder.Configuration["AllowedHosts"];
+if (!string.IsNullOrWhiteSpace(allowedHosts))
+{
+    builder.Services.AddHostFiltering(options =>
+    {
+        options.AllowedHosts = allowedHosts
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToArray();
+        options.AllowEmptyHosts = false;
+        options.IncludeFailureMessage = false;
+    });
+}
 
 var app = builder.Build();
+
+if (!string.IsNullOrWhiteSpace(allowedHosts))
+{
+    app.UseHostFiltering();
+}
 
 // Single startup path: resolve every AddStartupValidatedSingleton registration so Load/Validate
 // fail-fast (Worker/Admin enabled gates stay inside each options type).
@@ -314,7 +362,24 @@ ForwardedHeadersStartup.UseIfEnabled(app);
 
 app.MapGet("/healthz", () => MailerJsonResults.Health(true));
 
+if (instanceState.IsUninitialized)
+{
+    // Token generation is intentionally part of the uninitialized startup path only. Once the
+    // singleton gate is initialized, a stale token file is neither read nor recreated.
+    app.Services.GetRequiredService<BootstrapTokenStore>().EnsureExists();
+    app.UseAuthentication();
+    app.UseAuthorization();
+    app.MapGet("/readyz", () => MailerJsonResults.Ready(
+        false,
+        StatusCodes.Status503ServiceUnavailable,
+        MailerReadinessReasons.Uninitialized));
+    FirstRunSetupEndpoints.Map(app);
+    await app.RunAsync();
+    return 0;
+}
+
 app.MapGet("/readyz", async (
+    InstanceRuntimeState runtimeState,
     SqlMigrationRunner migrationRunner,
     WorkerServiceStatus serviceStatus,
     MailRequestRepository repository,
@@ -323,6 +388,17 @@ app.MapGet("/readyz", async (
     IConfiguration configuration,
     CancellationToken cancellationToken) =>
 {
+    if (runtimeState.IsInitialized
+        && string.Equals(runtimeState.ProviderType, "acs", StringComparison.Ordinal)
+        && (string.IsNullOrWhiteSpace(runtimeState.ProviderSecretRef)
+            || !FirstRunSetupStorage.TryReadValidAcsSecret(runtimeState.ProviderSecretRef, out _)))
+    {
+        return MailerJsonResults.Ready(
+            false,
+            StatusCodes.Status503ServiceUnavailable,
+            MailerReadinessReasons.ProviderSecretMissing);
+    }
+
     var workerEnabled = MailerWorkerOptions.IsEnabled(configuration);
     var result = await readinessEvaluator.EvaluateAsync(
         migrationRunner,

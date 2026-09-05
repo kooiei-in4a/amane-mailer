@@ -56,4 +56,24 @@ public static class MailerAcsCredential
             MailerAcsCredentialSource.Missing,
             requiredFile);
     }
+
+    internal static MailerAcsCredentialResolution ResolveFromPath(string path)
+    {
+        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+        {
+            var value = File.ReadAllText(path).Trim();
+            if (!string.IsNullOrEmpty(value))
+            {
+                return new MailerAcsCredentialResolution(
+                    value,
+                    MailerAcsCredentialSource.File,
+                    RequiredFile: true);
+            }
+        }
+
+        return new MailerAcsCredentialResolution(
+            string.Empty,
+            MailerAcsCredentialSource.Missing,
+            RequiredFile: true);
+    }
 }

@@ -32,6 +32,7 @@ public sealed class AdminUserRepository(
                     normalizedUsername,
                     passwordHash,
                     isBreakGlass: false,
+                    isInstanceOwner: false,
                     now,
                     cancellationToken);
 
@@ -74,6 +75,93 @@ public sealed class AdminUserRepository(
         }
     }
 
+    public async Task<bool> EnsureInstanceOwnerAsync(
+        string username,
+        string passwordHash,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedUsername = NormalizeUsername(username);
+        var now = timeProvider.GetUtcNow();
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            if (await CountUsersAsync(connection, cancellationToken) > 0)
+            {
+                var existing = await ReadUserByUsernameAsync(connection, normalizedUsername, cancellationToken);
+                var accepted = existing is not null && !existing.Disabled && existing.IsInstanceOwner;
+                await transaction.CommitAsync(cancellationToken);
+                return accepted;
+            }
+
+            var userId = await InsertUserAsync(
+                connection,
+                normalizedUsername,
+                passwordHash,
+                isBreakGlass: false,
+                isInstanceOwner: true,
+                now,
+                cancellationToken);
+            await ReplaceTenantScopesAsync(connection, userId, [], cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return true;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    public async Task<bool> ResetPasswordAsync(
+        string username,
+        string passwordHash,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedUsername = NormalizeUsername(username);
+        var now = timeProvider.GetUtcNow();
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            var user = await ReadUserByUsernameAsync(connection, normalizedUsername, cancellationToken);
+            if (user is null || user.Disabled)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return false;
+            }
+
+            await using (var update = connection.CreateCommand())
+            {
+                update.CommandText = """
+                    UPDATE admin_users
+                    SET password_hash = @PasswordHash,
+                        credential_epoch = credential_epoch + 1,
+                        updated_at = @UpdatedAt
+                    WHERE id = @Id;
+                    """;
+                update.Parameters.AddWithValue("@PasswordHash", passwordHash);
+                update.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now));
+                update.Parameters.AddWithValue("@Id", user.Id);
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await RevokeActiveSessionsByActorAsync(
+                connection,
+                normalizedUsername,
+                AdminSessionRevokeReasons.CredentialChanged,
+                now,
+                cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return true;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
     public async Task EnsureTenantScopeReadyAsync(
         IEnumerable<Guid> configuredTenantIds,
         CancellationToken cancellationToken = default)
@@ -92,6 +180,7 @@ public sealed class AdminUserRepository(
             WHERE u.disabled = 0
               AND (
                   u.is_break_glass = 1
+                  OR u.is_instance_owner = 1
                   OR EXISTS (
                       SELECT 1
                       FROM admin_user_tenant_scopes s
@@ -138,7 +227,7 @@ public sealed class AdminUserRepository(
             return null;
 
         var scopes = await ReadTenantScopesAsync(connection, user.Id, cancellationToken);
-        return new AdminTenantAccess(user.Username, user.IsBreakGlass, scopes);
+        return new AdminTenantAccess(user.Username, user.IsBreakGlass, scopes, user.IsInstanceOwner);
     }
 
     public async Task<bool> HasCapabilityAsync(
@@ -346,6 +435,12 @@ public sealed class AdminUserRepository(
         try
         {
             var existing = await ReadUserByUsernameAsync(connection, username, cancellationToken);
+            if (existing?.IsInstanceOwner == true)
+            {
+                throw new InvalidOperationException(
+                    "The instance owner cannot be changed through the tenant-scoped admin command.");
+            }
+
             long userId;
             if (existing is null)
             {
@@ -354,6 +449,7 @@ public sealed class AdminUserRepository(
                     username,
                     passwordHash,
                     isBreakGlass,
+                    isInstanceOwner: false,
                     now,
                     cancellationToken);
             }
@@ -367,6 +463,7 @@ public sealed class AdminUserRepository(
                         disabled = 0,
                         credential_epoch = credential_epoch + 1,
                         is_break_glass = @IsBreakGlass,
+                        is_instance_owner = 0,
                         updated_at = @UpdatedAt
                     WHERE id = @Id;
                     """;
@@ -430,6 +527,7 @@ public sealed class AdminUserRepository(
         string username,
         string passwordHash,
         bool isBreakGlass,
+        bool isInstanceOwner,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
@@ -437,16 +535,17 @@ public sealed class AdminUserRepository(
         insert.CommandText = """
             INSERT INTO admin_users (
                 username, password_hash, disabled, credential_epoch,
-                is_break_glass, created_at, updated_at)
+                is_break_glass, is_instance_owner, created_at, updated_at)
             VALUES (
                 @Username, @PasswordHash, 0, 0,
-                @IsBreakGlass, @CreatedAt, @UpdatedAt);
+                @IsBreakGlass, @IsInstanceOwner, @CreatedAt, @UpdatedAt);
 
             SELECT last_insert_rowid();
             """;
         insert.Parameters.AddWithValue("@Username", username);
         insert.Parameters.AddWithValue("@PasswordHash", passwordHash);
         insert.Parameters.AddWithValue("@IsBreakGlass", isBreakGlass ? 1 : 0);
+        insert.Parameters.AddWithValue("@IsInstanceOwner", isInstanceOwner ? 1 : 0);
         insert.Parameters.AddWithValue("@CreatedAt", SqliteTime.ToStorageUtc(now));
         insert.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now));
 
@@ -526,7 +625,8 @@ public sealed class AdminUserRepository(
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT id, username, password_hash, disabled, credential_epoch, is_break_glass
+            SELECT id, username, password_hash, disabled, credential_epoch,
+                   is_break_glass, is_instance_owner
             FROM admin_users
             WHERE username = @Username
             LIMIT 1;
@@ -542,7 +642,8 @@ public sealed class AdminUserRepository(
     {
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT id, username, password_hash, disabled, credential_epoch, is_break_glass
+            SELECT id, username, password_hash, disabled, credential_epoch,
+                   is_break_glass, is_instance_owner
             FROM admin_users
             WHERE id = @UserId
             LIMIT 1;
@@ -565,7 +666,8 @@ public sealed class AdminUserRepository(
             reader.GetString(2),
             reader.GetInt32(3) != 0,
             reader.GetInt32(4),
-            reader.GetInt32(5) != 0);
+            reader.GetInt32(5) != 0,
+            reader.GetInt32(6) != 0);
     }
 
     private static async Task<HashSet<Guid>> ReadTenantScopesAsync(

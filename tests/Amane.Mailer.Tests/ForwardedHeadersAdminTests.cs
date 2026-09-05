@@ -6,6 +6,8 @@ using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +21,7 @@ namespace Amane.Mailer.Tests;
 /// <c>ASPNETCORE_FORWARDEDHEADERS_ENABLED=true</c> so antiforgery SecurePolicy.Always
 /// sees <see cref="HttpRequest.IsHttps"/> via <c>X-Forwarded-Proto</c>.
 /// </summary>
+[Collection(MailerTestCollection.Name)]
 public sealed class ForwardedHeadersAdminTests
 {
     [Fact]
@@ -74,6 +77,79 @@ public sealed class ForwardedHeadersAdminTests
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
             () => client.GetAsync("/admin/login", TestContext.Current.CancellationToken));
         Assert.Contains("SecurePolicy = Always", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Untrusted_forwarded_proto_does_not_expose_first_run_setup_over_http()
+    {
+        var get = await ExecuteForwardedHeadersProbeAsync(
+            IPAddress.Parse("203.0.113.10"),
+            "203.0.113.11",
+            HttpMethods.Get);
+        Assert.False(get.IsHttps);
+        Assert.Equal(StatusCodes.Status404NotFound, get.StatusCode);
+
+        var post = await ExecuteForwardedHeadersProbeAsync(
+            IPAddress.Parse("203.0.113.10"),
+            "203.0.113.11",
+            HttpMethods.Post);
+        Assert.False(post.IsHttps);
+    }
+
+    [Fact]
+    public async Task Configured_trusted_proxy_can_assert_forwarded_https_for_first_run_setup()
+    {
+        var trustedProxy = IPAddress.Parse("203.0.113.11");
+        var result = await ExecuteForwardedHeadersProbeAsync(
+            trustedProxy,
+            trustedProxy.ToString(),
+            HttpMethods.Get);
+
+        Assert.True(result.IsHttps);
+        Assert.Equal(StatusCodes.Status200OK, result.StatusCode);
+    }
+
+    private static async Task<(bool IsHttps, int StatusCode)> ExecuteForwardedHeadersProbeAsync(
+        IPAddress remoteAddress,
+        string trustedProxy,
+        string method)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                [ForwardedHeadersStartup.EnabledKey] = "true",
+                [ForwardedHeadersStartup.TrustedProxiesKey] = trustedProxy,
+            })
+            .Build();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        ForwardedHeadersStartup.ConfigureServices(services, configuration);
+
+        using var serviceProvider = services.BuildServiceProvider();
+        var application = new ApplicationBuilder(serviceProvider);
+        application.UseForwardedHeaders();
+        application.Run(context =>
+        {
+            context.Response.StatusCode = context.Request.IsHttps
+                ? StatusCodes.Status200OK
+                : StatusCodes.Status404NotFound;
+            return Task.CompletedTask;
+        });
+
+        var context = new DefaultHttpContext
+        {
+            RequestServices = serviceProvider,
+        };
+        context.Connection.RemoteIpAddress = remoteAddress;
+        context.Request.Method = method;
+        context.Request.Path = method == HttpMethods.Get ? "/setup" : "/setup/auth";
+        context.Request.Scheme = "http";
+        context.Request.Headers["X-Forwarded-Proto"] = "https";
+
+        // The direct context is intentional: TestServer otherwise defaults the peer to loopback,
+        // which would make an untrusted X-Forwarded-Proto look trusted in this regression test.
+        await application.Build()(context);
+        return (context.Request.IsHttps, context.Response.StatusCode);
     }
 
     private sealed class ProductionAdminHarness : IAsyncDisposable
@@ -186,6 +262,7 @@ public sealed class ForwardedHeadersAdminTests
                 app.Use(async (context, nextMiddleware) =>
                 {
                     context.Connection.LocalIpAddress ??= localAddress;
+                    context.Connection.RemoteIpAddress ??= IPAddress.Loopback;
                     await nextMiddleware();
                 });
 

@@ -45,9 +45,12 @@ public static class MailerJsonResults
             new HealthStatusResponse(healthy),
             MailerJsonContext.Default.HealthStatusResponse);
 
-    public static IResult Ready(bool ready, int? statusCode = null) =>
+    public static IResult Ready(
+        bool ready,
+        int? statusCode = null,
+        string? reason = null) =>
         Results.Json(
-            new ReadyStatusResponse(ready),
+            new ReadyStatusResponse(ready, reason),
             MailerJsonContext.Default.ReadyStatusResponse,
             statusCode: statusCode);
 }

@@ -501,8 +501,14 @@ internal static class MailerAdminFixtureHelpers
         string connectionString,
         string tenantConfigPath,
         string passwordHash,
-        IReadOnlyDictionary<string, string?>? extraConfiguration = null) =>
-        new AdminTestFactory(connectionString, tenantConfigPath, passwordHash, extraConfiguration);
+        IReadOnlyDictionary<string, string?>? extraConfiguration = null,
+        bool useEarlyInstanceProbe = false) =>
+        new AdminTestFactory(
+            connectionString,
+            tenantConfigPath,
+            passwordHash,
+            extraConfiguration,
+            useEarlyInstanceProbe);
 
     internal static string TenantConfigJson =>
         $$"""
@@ -536,11 +542,18 @@ internal static class MailerAdminFixtureHelpers
         string connectionString,
         string tenantConfigPath,
         string passwordHash,
-        IReadOnlyDictionary<string, string?>? extraConfiguration) : WebApplicationFactory<global::Program>
+        IReadOnlyDictionary<string, string?>? extraConfiguration,
+        bool useEarlyInstanceProbe) : WebApplicationFactory<global::Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Testing");
+            if (useEarlyInstanceProbe)
+            {
+                // Top-level Program probes the instance gate before ConfigureAppConfiguration
+                // runs; make the test database available to that early probe as well.
+                builder.UseSetting("ConnectionStrings:Mailer", connectionString);
+            }
             builder.ConfigureAppConfiguration((_, configuration) =>
             {
                 var settings = new Dictionary<string, string?>
