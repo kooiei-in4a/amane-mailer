@@ -124,6 +124,12 @@ explicit confirmation. This is a delivery gate, not proof that setup is
 complete. After the run, or when stopping, disable it according to the
 organization's procedure.
 
+The official clients follow the v2 standard deployment contract for Base URLs:
+VPS and remote endpoints require `https://`. Plain HTTP is reserved for local
+or no-send fixture tests using `localhost`, `127.0.0.1`, or `::1`; the clients
+reject remote HTTP before acquiring the API key. There is no `--allow-insecure`
+or `ALLOW_INSECURE_HTTP` escape hatch.
+
 ### Python
 
 Python needs no additional package. If `MAILER_API_KEY` is not set, a hidden

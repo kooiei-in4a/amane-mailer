@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 import re
@@ -91,14 +92,19 @@ def _validate_seconds(value: float, name: str, *, allow_zero: bool) -> float:
 
 
 def normalize_base_url(value: str) -> str:
-    """Validate a base URL and remove only its trailing slash."""
+    """Validate a base URL and remove only its trailing slash.
+
+    Public Consumer API endpoints must use HTTPS. Plain HTTP is intentionally
+    limited to loopback so a managed API key cannot be sent to a remote host.
+    """
 
     try:
         parsed = urlsplit(value)
     except ValueError as error:
         raise SmokeClientError("MAILER_BASE_URL is not a valid URL.") from error
 
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not parsed.netloc:
         raise SmokeClientError("MAILER_BASE_URL must use an http or https URL.")
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise SmokeClientError(
@@ -107,12 +113,29 @@ def normalize_base_url(value: str) -> str:
 
     # urlsplit().hostname can raise for malformed bracketed IPv6 hosts.
     try:
-        if not parsed.hostname:
+        hostname = parsed.hostname
+        # Force validation of an invalid or out-of-range port before any key
+        # is read or request is attempted.
+        _ = parsed.port
+        if not hostname:
             raise SmokeClientError("MAILER_BASE_URL must contain a host.")
     except ValueError as error:
         raise SmokeClientError("MAILER_BASE_URL is not a valid URL.") from error
 
-    safe_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+    if scheme == "http":
+        normalized_hostname = hostname.rstrip(".").lower()
+        is_loopback = normalized_hostname == "localhost"
+        if not is_loopback:
+            try:
+                is_loopback = ipaddress.ip_address(hostname).is_loopback
+            except ValueError:
+                is_loopback = False
+        if not is_loopback:
+            raise SmokeClientError(
+                "MAILER_BASE_URL must use HTTPS; plain HTTP is allowed only for loopback testing."
+            )
+
+    safe_url = urlunsplit((scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
     return safe_url + "/"
 
 

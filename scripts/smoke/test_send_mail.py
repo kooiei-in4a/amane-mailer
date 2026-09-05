@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -14,6 +17,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +26,16 @@ SECRET = "amk_fixture.secret-must-not-be-printed"
 RECIPIENT = "recipient-canary@example.invalid"
 SUBJECT = "subject-canary-must-not-be-printed"
 TEXT_BODY = "body-canary-must-not-be-printed"
+
+
+def load_client_module() -> Any:
+    spec = importlib.util.spec_from_file_location("amane_mailer_smoke_client", CLIENT_PATH)
+    if spec is None or spec.loader is None:
+        raise AssertionError("could not load the official Python smoke client")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 class FixtureState:
@@ -141,6 +155,63 @@ def run_client(base_url: str, *, extra_args: list[str] | None = None) -> subproc
 
 
 class OfficialPythonSmokeClientTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = load_client_module()
+
+    def test_base_url_allows_https_and_loopback_http_only(self) -> None:
+        allowed = (
+            "https://mailer.example.com",
+            "http://localhost",
+            "http://127.0.0.1",
+            "http://[::1]",
+        )
+        for base_url in allowed:
+            with self.subTest(base_url=base_url):
+                self.assertTrue(self.client.normalize_base_url(base_url).endswith("/"))
+
+        rejected = (
+            "http://mailer.example.com",
+            "http://192.168.1.10",
+            "http://10.0.0.8",
+            "http://172.16.0.8",
+            "http://arbitrary-host",
+        )
+        for base_url in rejected:
+            with self.subTest(base_url=base_url):
+                with self.assertRaises(self.client.SmokeClientError):
+                    self.client.normalize_base_url(base_url)
+
+    def test_remote_http_is_rejected_before_request_with_secret_canary(self) -> None:
+        class UnexpectedHttpOpener:
+            def open(self, *_: Any, **__: Any) -> Any:
+                raise AssertionError("HTTP request occurred before base URL rejection")
+
+        environment = {
+            "MAILER_API_KEY": SECRET,
+            "MAILER_RECIPIENT_EMAIL": RECIPIENT,
+            "MAILER_SUBJECT": SUBJECT,
+            "MAILER_TEXT_BODY": TEXT_BODY,
+        }
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch.dict(os.environ, environment), patch.object(
+            self.client,
+            "HTTP_OPENER",
+            UnexpectedHttpOpener(),
+        ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as exit_info:
+                self.client.main(
+                    ["--base-url", "http://example.com/", "--recipient", RECIPIENT],
+                )
+
+        diagnostics = stdout.getvalue() + stderr.getvalue()
+        self.assertEqual(exit_info.exception.code, 2)
+        self.assertIn("HTTPS", diagnostics)
+        self.assertIn("loopback", diagnostics)
+        self.assertNotIn("example.com", diagnostics)
+        self.assertNotIn(SECRET, diagnostics)
+
     def test_success_posts_v2_request_and_polls_until_delivered(self) -> None:
         state = FixtureState()
         state.statuses.extend(["queued", "processing", "delivered"])

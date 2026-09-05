@@ -114,6 +114,11 @@ provider preflight が safe であることを確認したうえで、明示確�
 完了の証明ではなく、実送信を許可する gate です。実行終了後または中止時には、組織の手順に従って
 disabled に戻します。
 
+公式 client の Base URL boundary は v2 standard deployment contract に従います。VPS・remote
+endpoint は `https://` 必須です。plain HTTP は `localhost`、`127.0.0.1`、`::1` の local/no-send
+fixture test 専用で、client は API Key を取得する前に remote HTTP を拒否します。`--allow-insecure`
+や `ALLOW_INSECURE_HTTP` の escape hatch はありません。
+
 ### Python
 
 Python は追加 package 不要です。API Key を `MAILER_API_KEY` に置かない場合は、TTY の hidden prompt

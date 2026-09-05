@@ -10,6 +10,9 @@
 
   Dependencies: Windows PowerShell 5.1+ or PowerShell 7+.
 
+  Public/VPS endpoints must use HTTPS. Plain HTTP is allowed only for loopback
+  local testing (localhost, 127.0.0.1, or ::1).
+
   Required input:
     -Recipient or MAILER_RECIPIENT_EMAIL
 
@@ -114,6 +117,17 @@ function Resolve-BaseUri {
     }
     if (-not [string]::IsNullOrEmpty($uri.UserInfo) -or -not [string]::IsNullOrEmpty($uri.Query) -or -not [string]::IsNullOrEmpty($uri.Fragment)) {
         throw 'MAILER_BASE_URL must not contain credentials, a query, or a fragment.'
+    }
+
+    $isLoopback = $uri.Host.Equals('localhost', [StringComparison]::OrdinalIgnoreCase)
+    if (-not $isLoopback) {
+        $ipAddress = $null
+        if ([Net.IPAddress]::TryParse($uri.Host, [ref]$ipAddress)) {
+            $isLoopback = [Net.IPAddress]::IsLoopback($ipAddress)
+        }
+    }
+    if ($uri.Scheme -eq 'http' -and -not $isLoopback) {
+        throw 'MAILER_BASE_URL must use HTTPS; plain HTTP is allowed only for loopback testing.'
     }
 
     return ([Uri]($uri.AbsoluteUri.TrimEnd('/') + '/'))

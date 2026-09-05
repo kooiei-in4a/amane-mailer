@@ -178,7 +178,8 @@ function Invoke-ClientProcess {
     param(
         [Parameter(Mandatory = $true)][string]$BaseUrl,
         [Parameter(Mandatory = $true)][string]$PollTimeout,
-        [Parameter(Mandatory = $true)][string]$ExpectedExitCode
+        [Parameter(Mandatory = $true)][string]$ExpectedExitCode,
+        [AllowNull()][string]$TimeoutSeconds
     )
 
     $engine = Get-Command pwsh -ErrorAction SilentlyContinue
@@ -201,6 +202,9 @@ function Invoke-ClientProcess {
         '-PollIntervalSeconds',
         '0'
     )
+    if (-not [string]::IsNullOrWhiteSpace($TimeoutSeconds)) {
+        $arguments += @('-TimeoutSeconds', $TimeoutSeconds)
+    }
     $process = Start-Process -FilePath $engine.Source `
         -ArgumentList $arguments `
         -RedirectStandardOutput $StdoutPath `
@@ -227,6 +231,15 @@ function Invoke-ClientProcess {
     return $output
 }
 
+function Invoke-BaseValidationOnly {
+    param([Parameter(Mandatory = $true)][string]$BaseUrl)
+
+    $output = Invoke-ClientProcess -BaseUrl $BaseUrl -PollTimeout '0.05' -ExpectedExitCode '1' -TimeoutSeconds '0'
+    Assert-Condition ($output.Contains('TimeoutSeconds must be greater than zero')) "base URL $BaseUrl was not accepted before the expected timeout validation failure."
+    Assert-Condition (-not $output.Contains('must use HTTPS')) "base URL $BaseUrl was incorrectly rejected by the HTTPS boundary."
+    return $output
+}
+
 try {
     Assert-Condition (Test-Path -LiteralPath $ClientPath) 'official PowerShell smoke client is missing.'
     $source = Get-Content -LiteralPath $ClientPath -Raw
@@ -235,6 +248,8 @@ try {
     Assert-Condition ($source.Contains('[guid]::NewGuid()')) 'random request ID generation is missing.'
     Assert-Condition ($source.Contains('MaximumRedirection = 0')) 'redirect refusal is missing.'
     Assert-Condition ($source.Contains('delivery_unknown')) 'delivery_unknown terminal handling is missing.'
+    Assert-Condition (-not $source.Contains('ALLOW_INSECURE_HTTP')) 'insecure HTTP escape hatch must not exist.'
+    Assert-Condition ($source.IndexOf('$baseUri = Resolve-BaseUri') -lt $source.IndexOf('$apiKey = Get-ApiKey')) 'base URL validation must happen before API key acquisition.'
     $parameterSection = $source.Substring(0, $source.IndexOf('Set-StrictMode'))
     Assert-Condition (-not ($parameterSection -match '(?im)^\s*\[string\]\$ApiKey\s*$')) 'API key must not be a top-level CLI parameter.'
 
@@ -258,6 +273,31 @@ try {
     $env:MAILER_TEXT_BODY = $TextBody
     Remove-Item -LiteralPath $LogPath -Force -ErrorAction SilentlyContinue
     Start-Fixture -Port $port -FixtureStopPath $StopPath -FixtureReadyPath $ReadyPath
+
+    foreach ($allowedBaseUrl in @(
+        'https://mailer.example.com/',
+        'http://localhost/',
+        'http://127.0.0.1/',
+        'http://[::1]/'
+    )) {
+        $null = Invoke-BaseValidationOnly -BaseUrl $allowedBaseUrl
+    }
+
+    foreach ($remoteHttpBaseUrl in @(
+        'http://mailer.example.com/',
+        'http://192.168.1.10/',
+        'http://10.0.0.8/',
+        'http://172.16.0.8/',
+        'http://arbitrary-host/'
+    )) {
+        $requestCountBefore = if (Test-Path -LiteralPath $LogPath) { @(Get-Content -LiteralPath $LogPath).Count } else { 0 }
+        $remoteOutput = Invoke-ClientProcess -BaseUrl $remoteHttpBaseUrl -PollTimeout '0.05' -ExpectedExitCode '1' -TimeoutSeconds '0'
+        Assert-Condition ($remoteOutput.Contains('must use HTTPS; plain HTTP is allowed only for loopback testing.')) "remote HTTP URL was not rejected: $remoteHttpBaseUrl"
+        Assert-Condition (-not $remoteOutput.Contains($remoteHttpBaseUrl)) 'base URL rejection exposed the full URL.'
+        Assert-Condition (-not $remoteOutput.Contains($Secret)) 'remote HTTP rejection exposed the API key.'
+        $requestCountAfter = if (Test-Path -LiteralPath $LogPath) { @(Get-Content -LiteralPath $LogPath).Count } else { 0 }
+        Assert-Condition ($requestCountAfter -eq $requestCountBefore) 'remote HTTP validation allowed a request to reach the local fixture.'
+    }
 
     $fixtureBaseUrl = "http://127.0.0.1:$port/"
     $successOutput = Invoke-ClientProcess -BaseUrl $fixtureBaseUrl -PollTimeout '2' -ExpectedExitCode '0'

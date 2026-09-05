@@ -5,6 +5,11 @@
 /api/mail-requests/{id}` を bounded polling して、`delivered` のときだけ exit code
 `0` を返します。Python package や production SDK ではありません。
 
+Base URL の境界は v2 standard deployment contract に従います。VPS・remote endpoint は
+`https://` 必須で、plain HTTP は `localhost`、`127.0.0.1`、`::1` の local/fixture test
+だけに許可されます。client は API Key を読む前に remote HTTP を拒否し、`--allow-insecure`
+や `ALLOW_INSECURE_HTTP` のような escape hatch はありません。
+
 ## 前提
 
 - Python 3.x（標準ライブラリだけを使用）
@@ -58,7 +63,7 @@ CLI option は同名の環境変数より優先します。API Key に対応す�
 
 | 設定 | 既定値 / 必須 | 用途 |
 |---|---|---|
-| `MAILER_BASE_URL` / `--base-url` | `http://127.0.0.1:5280/` | Mailer の HTTP(S) base URL |
+| `MAILER_BASE_URL` / `--base-url` | `http://127.0.0.1:5280/` | VPS/remote は HTTPS。plain HTTP は loopback test 専用 |
 | `MAILER_API_KEY` | 必須（TTY では hidden prompt） | 1 Sender を選択する managed API Key |
 | `MAILER_RECIPIENT_EMAIL` / `--recipient` | 必須 | 宛先。`--to` も利用可能 |
 | `MAILER_SUBJECT` / `--subject` | `Amane Mailer smoke` | 件名 |
