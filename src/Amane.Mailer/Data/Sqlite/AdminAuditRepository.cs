@@ -228,6 +228,18 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
         where.Append(string.Join(", ", scopedTargetNames));
         where.Append(") OR ae.tenant_id IN (");
         where.Append(string.Join(", ", parameterNames));
+        where.AppendLine("))");
+
+        var managedTargetNames = new List<string>(AdminAuditLog.TargetTypes.ManagedConfiguration.Count);
+        for (var i = 0; i < AdminAuditLog.TargetTypes.ManagedConfiguration.Count; i++)
+        {
+            var parameterName = "@ManagedTarget" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            managedTargetNames.Add(parameterName);
+            command.Parameters.AddWithValue(parameterName, AdminAuditLog.TargetTypes.ManagedConfiguration[i]);
+        }
+
+        where.Append("  AND (ae.target_type IS NULL OR ae.target_type NOT IN (");
+        where.Append(string.Join(", ", managedTargetNames));
         where.Append("))");
     }
 

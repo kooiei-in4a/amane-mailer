@@ -33,6 +33,7 @@ public static class AmaneMailerServiceCollectionExtensions
         }
 
         services.AddMailerAdmin(configuration, instanceState);
+        services.AddSingleton<InstanceConfigurationRepository>();
 
         services.AddStartupValidatedSingleton(provider =>
             MailerConfigurationSnapshot.Load(

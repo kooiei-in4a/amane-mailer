@@ -107,6 +107,21 @@ public sealed class AdminAuditLogTests
         Assert.Equal("field ctrl", entry.State["FieldName"]);
     }
 
+    [Fact]
+    public void Issue_732_mutation_events_are_registered_without_secret_fields()
+    {
+        Assert.Contains(AdminAuditLog.EventTypes.SenderCreated, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.SenderEnabled, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.SenderDisabled, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.ApiKeyCreated, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.ApiKeyRevoked, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.InstanceLiveSendingEnabled, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.InstanceLiveSendingDisabled, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.TargetTypes.Sender, AdminAuditLog.TargetTypes.ManagedConfiguration);
+        Assert.Contains(AdminAuditLog.TargetTypes.ApiKey, AdminAuditLog.TargetTypes.ManagedConfiguration);
+        Assert.Contains(AdminAuditLog.TargetTypes.InstanceConfiguration, AdminAuditLog.TargetTypes.ManagedConfiguration);
+    }
+
     private sealed class CapturingLogger : ILogger
     {
         public List<LogEntry> Entries { get; } = [];

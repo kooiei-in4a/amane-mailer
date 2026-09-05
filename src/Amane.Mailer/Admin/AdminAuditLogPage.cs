@@ -189,7 +189,11 @@ public static class AdminAuditLogPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Tenant scope\">");
         html.AppendLine("                  <p class=\"ops-meta\">");
-        if (access.IsBreakGlass)
+        if (access.IsInstanceOwner)
+        {
+            html.AppendLine("                    instance owner: 全監査イベントを閲覧できます。");
+        }
+        else if (access.IsBreakGlass)
         {
             html.AppendLine("                    break-glass 管理者: 全監査イベントを閲覧できます。");
         }

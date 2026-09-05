@@ -3,7 +3,9 @@ using System.Text;
 using System.Text.Encodings.Web;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
+using Amane.Mailer.Setup;
 using Amane.Mailer.Webhooks;
 using Amane.Mailer.Worker;
 using Microsoft.AspNetCore.Antiforgery;
@@ -21,6 +23,7 @@ public static class AdminOpsPage
         ProviderQueueDeadLetterRepository providerQueueDeadLetterRepository,
         MailerDbStatsReader statsReader,
         MailerDbStorageInfoReader storageInfoReader,
+        InstanceConfigurationRepository instanceConfigurationRepository,
         WorkerServiceStatus serviceStatus,
         MailerAdminDbOpsOptions dbOpsOptions,
         MailerTenantRegistry tenantRegistry,
@@ -59,9 +62,15 @@ public static class AdminOpsPage
             cancellationToken);
         var providerQueueDeadLettersCount = await providerQueueDeadLetterRepository.CountAsync(cancellationToken);
 
+        var instanceConfiguration = access.IsInstanceOwner
+            ? await instanceConfigurationRepository.GetAsync(cancellationToken)
+            : null;
+        var providerPreflightSafe = access.IsInstanceOwner
+            && IsProviderPreflightSafe(instanceConfiguration);
+
         var workerEnabled = MailerWorkerOptions.IsEnabled(configuration);
         var readiness = BuildReadiness(storageInfo, serviceStatus, workerEnabled);
-        var csrfToken = dbOpsOptions.Enabled && canRunServiceWideDbOps
+        var csrfToken = (dbOpsOptions.Enabled && canRunServiceWideDbOps) || access.IsInstanceOwner
             ? HtmlEncoder.Default.Encode(antiforgery.GetAndStoreTokens(context).RequestToken ?? string.Empty)
             : null;
 
@@ -77,6 +86,8 @@ public static class AdminOpsPage
                 webhookCounts,
                 webhookDeadLetterCount,
                 providerQueueDeadLettersCount,
+                instanceConfiguration,
+                providerPreflightSafe,
                 dbOpsOptions,
                 canRunServiceWideDbOps,
                 csrfToken,
@@ -112,6 +123,8 @@ public static class AdminOpsPage
         (long PendingCount, long DeadLetteredCount) webhookCounts,
         int webhookDeadLetterCount,
         long providerQueueDeadLettersCount,
+        InstanceConfigurationRow? instanceConfiguration,
+        bool providerPreflightSafe,
         MailerAdminDbOpsOptions dbOpsOptions,
         bool canRunServiceWideDbOps,
         string? csrfToken,
@@ -142,7 +155,11 @@ public static class AdminOpsPage
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Tenant scope\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Tenant scope</h2>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
-        if (access.IsBreakGlass)
+        if (access.IsInstanceOwner)
+        {
+            AppendDefinition(html, "Scope", "Instance-wide Admin");
+        }
+        else if (access.IsBreakGlass)
         {
             AppendDefinition(html, "Scope", "All tenants (break-glass)");
         }
@@ -190,6 +207,11 @@ public static class AdminOpsPage
         }
 
         html.AppendLine("                </section>");
+
+        if (access.IsInstanceOwner)
+        {
+            AppendLiveSendingSection(html, instanceConfiguration, providerPreflightSafe, csrfToken);
+        }
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Webhook delivery\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Webhook delivery</h2>");
@@ -327,6 +349,227 @@ public static class AdminOpsPage
 
         AdminLayout.AppendDocumentEnd(html);
         return html.ToString();
+    }
+
+    public static async Task<IResult> SetLiveSendingAsync(
+        HttpContext context,
+        InstanceConfigurationRepository instanceConfigurationRepository,
+        AdminUserRepository userRepository,
+        AdminAuditRepository auditRepository,
+        MailerAdminOptions adminOptions,
+        IAntiforgery antiforgery,
+        ILoggerFactory loggerFactory,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        if (!await ValidateAntiforgeryAsync(context, antiforgery))
+            return Results.BadRequest("Invalid CSRF token.");
+
+        var accessResult = await AdminManagedConfigurationAuthorization.RequireInstanceOwnerAsync(
+            context,
+            userRepository,
+            cancellationToken);
+        if (accessResult.Error is not null)
+            return accessResult.Error;
+
+        IFormCollection form;
+        try
+        {
+            form = await context.Request.ReadFormAsync(cancellationToken);
+        }
+        catch (InvalidDataException)
+        {
+            return Results.BadRequest("Invalid form body.");
+        }
+
+        var operation = form["operation"].ToString();
+        var enabled = operation switch
+        {
+            "enable" => true,
+            "disable" => false,
+            _ => (bool?)null,
+        };
+        if (enabled is null || !AdminSenderMutationHandlers.HasConfirmation(form))
+            return Results.BadRequest("Explicit confirmation is required.");
+
+        var current = await instanceConfigurationRepository.GetAsync(cancellationToken);
+        if (current?.InitializedAt is null)
+            return Results.Conflict();
+
+        if (enabled.Value && !IsProviderPreflightSafe(current))
+        {
+            await WriteLiveSendingAuditAsync(
+                context,
+                auditRepository,
+                adminOptions,
+                loggerFactory,
+                timeProvider,
+                enabled.Value,
+                AdminAuditLog.Results.Failure,
+                "provider_not_ready",
+                cancellationToken);
+            return Results.Conflict();
+        }
+
+        if (!await instanceConfigurationRepository.SetLiveSendingAsync(enabled.Value, cancellationToken))
+        {
+            await WriteLiveSendingAuditAsync(
+                context,
+                auditRepository,
+                adminOptions,
+                loggerFactory,
+                timeProvider,
+                enabled.Value,
+                AdminAuditLog.Results.Failure,
+                AdminAuditLog.ErrorCodes.OperationFailed,
+                cancellationToken);
+            return Results.Conflict();
+        }
+
+        await WriteLiveSendingAuditAsync(
+            context,
+            auditRepository,
+            adminOptions,
+            loggerFactory,
+            timeProvider,
+            enabled.Value,
+            AdminAuditLog.Results.Success,
+            null,
+            cancellationToken);
+        context.Response.Headers.CacheControl = "no-store";
+        return new SeeOtherRedirectResult("/admin/ops");
+    }
+
+    private static void AppendLiveSendingSection(
+        StringBuilder html,
+        InstanceConfigurationRow? instanceConfiguration,
+        bool providerPreflightSafe,
+        string? csrfToken)
+    {
+        html.AppendLine("                <section class=\"ops-section\" aria-label=\"Live sending\">");
+        html.AppendLine("                  <h2 class=\"ops-heading\">Live sending</h2>");
+        html.AppendLine("                  <dl class=\"ops-dl\">");
+        AppendDefinition(
+            html,
+            "live_sending",
+            instanceConfiguration is null
+                ? "unavailable"
+                : instanceConfiguration.LiveSending ? "enabled" : "disabled");
+        AppendDefinition(
+            html,
+            "Provider preflight",
+            providerPreflightSafe ? "configured / safe" : "not ready");
+        html.AppendLine("                  </dl>");
+
+        if (instanceConfiguration is null || csrfToken is null)
+        {
+            html.AppendLine("                  <p class=\"ops-empty\">Managed instance configuration is unavailable.</p>");
+        }
+        else
+        {
+            html.AppendLine("                  <div class=\"ops-actions\">");
+            AppendLiveSendingForm(
+                html,
+                "disable",
+                "実送信を無効化",
+                "実送信を無効化することを確認します。",
+                csrfToken);
+            AppendLiveSendingForm(
+                html,
+                "enable",
+                "実送信を有効化",
+                "実送信を有効化することを確認します。",
+                csrfToken);
+            html.AppendLine("                  </div>");
+        }
+
+        html.AppendLine("                </section>");
+    }
+
+    private static void AppendLiveSendingForm(
+        StringBuilder html,
+        string operation,
+        string label,
+        string confirmationLabel,
+        string csrfToken)
+    {
+        html.AppendLine("                    <form method=\"post\" action=\"/admin/ops/live-sending\" class=\"ops-form\">");
+        html.Append("                      <input type=\"hidden\" name=\"__RequestVerificationToken\" value=\"");
+        html.Append(csrfToken);
+        html.AppendLine("\">");
+        html.Append("                      <input type=\"hidden\" name=\"operation\" value=\"");
+        html.Append(Html(operation));
+        html.AppendLine("\">");
+        html.Append("                      <label><input type=\"checkbox\" name=\"confirmation\" value=\"confirm\" required> ");
+        html.Append(Html(confirmationLabel));
+        html.AppendLine("</label>");
+        html.Append("                      <button type=\"submit\">");
+        html.Append(Html(label));
+        html.AppendLine("</button>");
+        html.AppendLine("                    </form>");
+    }
+
+    private static bool IsProviderPreflightSafe(InstanceConfigurationRow? configuration) =>
+        configuration is not null
+        && string.Equals(configuration.ProviderType, "acs", StringComparison.Ordinal)
+        && !string.IsNullOrWhiteSpace(configuration.ProviderSecretRef)
+        && FirstRunSetupStorage.TryReadValidAcsSecret(configuration.ProviderSecretRef, out _);
+
+    private sealed class SeeOtherRedirectResult(string url) : IResult
+    {
+        public Task ExecuteAsync(HttpContext httpContext)
+        {
+            httpContext.Response.StatusCode = StatusCodes.Status303SeeOther;
+            httpContext.Response.Headers.Location = url;
+            return Task.CompletedTask;
+        }
+    }
+
+    private static async Task WriteLiveSendingAuditAsync(
+        HttpContext context,
+        AdminAuditRepository auditRepository,
+        MailerAdminOptions options,
+        ILoggerFactory loggerFactory,
+        TimeProvider timeProvider,
+        bool enabled,
+        string result,
+        string? errorCode,
+        CancellationToken cancellationToken)
+    {
+        var auditEvent = new AdminAuditEvent
+        {
+            EventType = enabled
+                ? AdminAuditLog.EventTypes.InstanceLiveSendingEnabled
+                : AdminAuditLog.EventTypes.InstanceLiveSendingDisabled,
+            Actor = AdminAuditLog.ResolveActor(context),
+            OccurredAt = timeProvider.GetUtcNow(),
+            SourceIp = options.ResolveAuditSourceIp(AdminAuditLog.ResolveSourceIp(context)),
+            UserAgentSummary = AdminAuditLog.SummarizeUserAgent(context),
+            TargetType = AdminAuditLog.TargetTypes.InstanceConfiguration,
+            TargetId = "1",
+            Result = result,
+            ErrorCode = errorCode,
+        };
+        await AdminAuditLog.WriteBestEffortAsync(
+            auditRepository,
+            loggerFactory.CreateLogger(AdminAuditLog.LoggerCategory),
+            auditEvent,
+            cancellationToken);
+    }
+
+    private static async Task<bool> ValidateAntiforgeryAsync(
+        HttpContext context,
+        IAntiforgery antiforgery)
+    {
+        try
+        {
+            await antiforgery.ValidateRequestAsync(context);
+            return true;
+        }
+        catch (AntiforgeryValidationException)
+        {
+            return false;
+        }
     }
 
     private static void AppendDefinition(StringBuilder html, string term, string value)
