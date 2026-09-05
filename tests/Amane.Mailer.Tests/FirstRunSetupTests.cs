@@ -361,7 +361,7 @@ public sealed class FirstRunSetupTests
             await new SqlMigrationRunner(connections).ApplyPendingAsync(ct);
 
             var instance = new InstanceConfigurationRepository(connections, TimeProvider.System);
-            var secretPath = Path.Combine(root, "secrets", "acs", "acs_connection_string");
+            var secretPath = Path.Combine(root, "secrets", "acs_connection_string");
             Assert.True(await instance.ConfigureAcsAsync(secretPath, ct));
 
             var users = new AdminUserRepository(connections, TimeProvider.System);
@@ -446,7 +446,7 @@ public sealed class FirstRunSetupTests
             var connections = new SqliteConnectionFactory(configuration);
             await new SqlMigrationRunner(connections).ApplyPendingAsync(ct);
 
-            var secretPath = Path.Combine(root, "secrets", "acs_connection_string");
+            var secretPath = Path.Combine(root, "secrets", "acs", "acs_connection_string");
             Assert.True(FirstRunSetupStorage.WriteAcsSecretCreateOnly(
                 secretPath,
                 "Endpoint=https://fixture.communication.azure.com/;AccessKey=fixture-only-not-real"));
