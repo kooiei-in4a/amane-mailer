@@ -69,9 +69,8 @@ formatter / 段階 analyzer の詳細は
 
 ## Mailpit で起動する
 
-**初めて 1 通届くところまで確認する**場合は、Admin 不要の
-[Zero-Admin 初回メール quickstart](docs/ops/first-mail-quickstart.md) [(en)](docs/ops/first-mail-quickstart.en.md)
-から始めてください。PowerShell なら `.\scripts\local-first-mail-smoke.ps1`、bash なら `bash scripts/local-first-mail-smoke.sh` で同じ確認を自動実行できます。
+v2 の送信には、事前に作成された Sender と managed API Key が必要です。
+Sender/API Key の Setup UI は #732 の対象で、この変更には含まれません。
 
 local compose は Mailer イメージを build し、Mailpit を起動します。
 
@@ -85,8 +84,8 @@ docker compose -f infra/docker/docker-compose.local.yml up -d --build --wait mai
 - Mailer readiness: <http://127.0.0.1:5280/readyz>
 - Mailpit UI: <http://127.0.0.1:8025/>
 
-既定のローカルトークンは `local-mail-service-token` です。安全な example tenant は、
-ローカルの `config/mailer/tenants.example.json` bind mount から読み込まれます。
+Consumer は `MAILER_API_KEY` に managed API Key を設定します。API Key が
+Sender を選択するため、Consumer から tenant / From / provider は指定しません。
 Admin UI setup、ACS 切替、Dead Letter 確認を含む smoke 手順は
 [ローカル Mailer Docker runbook](docs/ops/local-mailer-docker-runbook.md) [(en)](docs/ops/local-mailer-docker-runbook.en.md) を参照してください。
 Linux / macOS の bash と curl で Mailpit 到着、冪等再送、conflict まで確認する手順は
@@ -173,19 +172,14 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 
 ### 送信依頼（POST）
 
-**公式 Consumer SDK（TypeScript / Python）**: リクエストビルダー、`payload_hash` 自動計算、型付きエラー、503 リトライを含む SDK は [sdk/](sdk/README.md) を参照してください。
+**公式 Consumer SDK（TypeScript / Python）**: v2 リクエストビルダー、型付きエラー、503 リトライを含む SDK は [sdk/](sdk/README.md) を参照してください。
 
-- **エンドポイント**: `POST http://mailer:8080/internal/mail-requests`
-- **認証**: `Authorization: Bearer <MAIL_SERVICE_TOKEN>`
-  - ローカル既定トークン: `local-mail-service-token`
-- **JSON上の必須フィールド**: `tenant_id`, `source_service`, `mail_request_id`, `purpose`, `subject`, `payload_hash`
+- **エンドポイント**: `POST http://mailer:8080/api/mail-requests`
+- **認証**: `Authorization: Bearer <managed API key>`
+- **JSON上の必須フィールド**: `mail_request_id`, `purpose`, `subject`
 - **宛先要件**: `to` / `cc` / `bcc` の全 role 合計で1件以上。各 role は未指定・`null`・空配列を0件として扱います。
 - **本文要件**: `html_body` / `text_body` の少なくとも一方が必要です。
-- **`payload_hash`**: 配送フィールドの canonical JSON SHA-256。
-  .NET は `Amane.Mailer.Contracts` の `MailPayloadHasher` を使用。
-  Python / JavaScript / Go の実装例: [examples/payload-hash/](examples/payload-hash/README.md)
-  自分の request JSON を検証: `python examples/payload-hash/python/verify_request.py request.json`
-  アルゴリズム仕様・エラーコード・冪等性: [docs/api/openapi.yaml](docs/api/openapi.yaml)
+- **冪等性**: `(API Key が選択する Sender, mail_request_id)`。payload identity は server-side で計算します。
 
 ローカル compose 起動後は、host から次の smoke request を実行できます。
 `mail_request_id` は冪等キーなので、同じ依頼として再送したい場合以外は毎回新しい UUID を使います。
@@ -194,21 +188,18 @@ Contracts package は consumer 互換のため `net8.0` を target します。M
 ```bash
 request_id="$(uuidgen)"
 
-curl -i -X POST http://127.0.0.1:5280/internal/mail-requests \
-  -H "Authorization: Bearer local-mail-service-token" \
+curl -i -X POST http://127.0.0.1:5280/api/mail-requests \
+  -H "Authorization: Bearer ${MAILER_API_KEY}" \
   -H "Content-Type: application/json" \
   -d @- <<JSON
 {
-    "tenant_id": "00000000-0000-0000-0000-000000000101",
     "mail_request_id": "${request_id}",
-    "source_service": "example-service",
     "purpose": "FormResponseNotification",
     "to": [
       { "email": "admin@example.com" }
     ],
     "subject": "New response",
-    "text_body": "A new response arrived.",
-    "payload_hash": "7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9"
+    "text_body": "A new response arrived."
 }
 JSON
 ```
@@ -227,16 +218,15 @@ JSON
 レスポンス body の `status` が `accepted` か `already_accepted` かで見分けます。
 
 conflict を安全に試す場合はローカル環境でのみ、同じ `request_id` のまま `subject` など
-hash 対象フィールドを変更し、その payload に合わせて `payload_hash` を再計算してから POST してください。
+payload identity 対象フィールドを変更して POST してください（hash は Mailer が計算します）。
 期待結果は `409 Conflict` / `IDEMPOTENCY_CONFLICT` です。
 
 ### 配送ステータスの照会（GET）
 
 `202 Accepted` は「依頼を受け付けた」ことだけを示します。Worker による実際の配送結果（`delivered` / `failed` など）は GET で確認します。
 
-- **エンドポイント**: `GET http://mailer:8080/internal/mail-requests/{mail_request_id}?tenant_id={uuid}&source_service={name}`
-- **認証**: POST と同じ Bearer トークン
-- **必須 query**: `tenant_id`, `source_service`（POST body と同じ値）
+- **エンドポイント**: `GET http://mailer:8080/api/mail-requests/{mail_request_id}`
+- **認証**: POST と同じ managed API Key（その Sender 所有 request のみ）
 - **返却フィールド**: `mail_request_id`, `status`, `attempt_count`, `max_attempts`, `next_attempt_at`, `scheduled_at`, `accepted_at`, `delivered_at`, `last_error_code`
 - **任意**: POST の `scheduled_at`（UTC）で予約送信。送信前キャンセル / 再スケジュールは OpenAPI の `/cancel`・`/reschedule` を参照
 - **PII なし**: 宛先・件名・本文は返しません
@@ -245,13 +235,13 @@ hash 対象フィールドを変更し、その payload に合わせて `payload
 
 `delivery_unknown` は終端 status です。provider invocation 開始後に provider acceptance を証明できなかった状態で、未送信または安全に retry 可能であることを意味しません。同じ `mail_request_id` の配送を Mailer が自動・手動で再送することはありません。これは Consumer SDK の一時的な HTTP 503 retry、同じ JSON の idempotent POST retry、新しい `mail_request_id` を使った重複可能性評価済みの業務上の再送とは別概念です。
 
-存在しない ID、または他 tenant の ID に対しては **404 `NOT_FOUND`** を返します（存在有無を漏らしません）。
+存在しない ID、または他 Sender の ID に対しては **404 `NOT_FOUND`** を返します（存在有無を漏らしません）。
 
-POST 直後の例（同じ `request_id` / `tenant_id` / `source_service` を使う）:
+POST 直後の例（同じ `request_id` と managed API Key を使う）:
 
 ```bash
-curl -fsS "http://127.0.0.1:5280/internal/mail-requests/${request_id}?tenant_id=00000000-0000-0000-0000-000000000101&source_service=example-service" \
-  -H "Authorization: Bearer local-mail-service-token"
+curl -fsS "http://127.0.0.1:5280/api/mail-requests/${request_id}" \
+  -H "Authorization: Bearer ${MAILER_API_KEY}"
 ```
 
 期待レスポンス（受付直後）:
@@ -270,13 +260,13 @@ Worker が配送を完了すると `status` は `delivered` などに変わり�
 
 Consumer アプリの compose ネットワーク接続例は [infra/deploy/compose.yml](infra/deploy/compose.yml) のコメントを参照してください。
 
-.NET Consumer の full runnable sample（`Amane.Mailer.Contracts` 使用、`payload_hash` 計算、
+.NET Consumer の full runnable sample（`Amane.Mailer.Contracts` 使用、
 `accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
 [examples/consumer-dotnet/](examples/consumer-dotnet/README.md) を参照してください。
-Python Consumer の full runnable sample（既存 Python `payload_hash` helper 使用、local Mailer への
+Python Consumer の full runnable sample（local Mailer への
 POST、`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
 [examples/consumer-python/](examples/consumer-python/README.md) を参照してください。
-Node.js Consumer の full runnable sample（既存 JavaScript `payload_hash` helper 使用、local Mailer への
+Node.js Consumer の full runnable sample（local Mailer への
 POST、`accepted` / `already_accepted` / `IDEMPOTENCY_CONFLICT` の分岐を含む）は
 [examples/consumer-node/](examples/consumer-node/README.md) を参照してください。
 
@@ -298,7 +288,6 @@ smoke を含むフル CI が走ります（arm64 Docker は `main` push）。詳
 - [サービス仕様](docs/service-spec.md) [(en)](docs/service-spec.en.md)
 - [OpenAPI HTTP reference](docs/api/openapi.yaml)
 - [Consumer SDKs](sdk/README.md)
-- [Webhook 検証](docs/consumer/webhook-verification.md)
 - [Prometheus メトリクスとアラート](docs/ops/metrics-and-alerts.md) [(en)](docs/ops/metrics-and-alerts.en.md)
 - [バックアップ運用](docs/ops/backup-operations.md) [(en)](docs/ops/backup-operations.en.md)
 - [GHCR image publish 手順](docs/ops/ghcr-image-publish.md) [(en)](docs/ops/ghcr-image-publish.en.md)

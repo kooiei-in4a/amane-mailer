@@ -233,7 +233,7 @@ public sealed class WebhookDeliveryWorker(
         {
             payload = JsonSerializer.Deserialize(
                 row.PayloadJson,
-                MailerContractsJsonContext.Default.MailDeliveryEventPayload);
+                MailerInternalJsonContext.Default.MailDeliveryEventPayload);
         }
         catch (JsonException)
         {

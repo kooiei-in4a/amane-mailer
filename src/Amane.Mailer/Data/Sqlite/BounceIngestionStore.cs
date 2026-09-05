@@ -1,6 +1,7 @@
 using Amane.Mailer.Bounce;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
+using Amane.Mailer.Identity;
 using Microsoft.Data.Sqlite;
 
 namespace Amane.Mailer.Data.Sqlite;
@@ -130,7 +131,7 @@ public sealed class BounceIngestionStore(SqliteConnectionFactory connections)
                 await InsertSuppressionAsync(
                     connection,
                     eventRowId,
-                    requestCandidates[0].TenantId,
+                    V2PersistenceCompatibility.SuppressionScopeId,
                     recipient.AddressKey,
                     nowStorage,
                     cancellationToken);

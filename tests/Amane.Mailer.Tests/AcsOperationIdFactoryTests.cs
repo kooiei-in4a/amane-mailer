@@ -30,12 +30,12 @@ public sealed class AcsOperationIdFactoryTests
     }
 
     [Fact]
-    public void Create_changes_when_source_service_changes()
+    public void Create_is_independent_of_legacy_source_service_sentinel()
     {
         var baseline = AcsOperationIdFactory.Create(TenantId, "example-service", MailRequestId);
         var other = AcsOperationIdFactory.Create(TenantId, "other-service", MailRequestId);
 
-        Assert.NotEqual(baseline, other);
+        Assert.Equal(baseline, other);
     }
 
     [Fact]

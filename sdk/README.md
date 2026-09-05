@@ -2,17 +2,15 @@
 
 Official TypeScript and Python SDKs for posting mail delivery requests to Amane Mailer.
 
-Phase 1 scope (issue #218):
+v2 scope:
 
 - Request builder with pre-validation
-- Automatic `payload_hash` computation (matches Contracts test vectors)
 - UUID generation (UUIDv7 preferred; UUIDv4 fallback documented)
 - Typed handling for `accepted`, `already_accepted`, `IDEMPOTENCY_CONFLICT`, and retryable 503
 - Idempotent resend and exponential backoff for retryable errors
 
-Status GET (#216) is available on the HTTP API. SDK status-polling helpers remain
-a follow-up (Phase 2). Webhook signature helpers wait on Consumer SDK follow-up
-after #219.
+Status GET is available on the HTTP API. SDK status-polling helpers remain a
+follow-up. Outbound delivery webhooks are not part of v2; poll status instead.
 
 ## Quickstart
 
@@ -28,13 +26,11 @@ import { MailerClient, MailRequestBuilder } from '@amane/mailer';
 
 const client = new MailerClient({
   baseUrl: process.env.MAILER_BASE_URL ?? 'http://127.0.0.1:5280',
-  bearerToken: process.env.MAIL_SERVICE_TOKEN ?? 'local-mail-service-token',
+  bearerToken: process.env.MAILER_API_KEY,
 });
 
 const response = await client.sendMail(
   MailRequestBuilder.create()
-    .tenantId('00000000-0000-0000-0000-000000000101')
-    .sourceService('example-service')
     .generateMailRequestId()
     .purpose('FormResponseNotification')
     .to({ email: 'admin@example.com' })
@@ -48,13 +44,11 @@ console.log(response.status); // 'accepted' | 'already_accepted'
 
 Scheduled send uses OpenAPI `date-time` with timezone `Z` or an explicit offset.
 Omit `scheduled_at` (or set it to `null`) for immediate delivery. The field is
-excluded from `payload_hash`.
+included in the server-side canonical payload comparison.
 
 ```javascript
 const response = await client.sendMail(
   MailRequestBuilder.create()
-    .tenantId('00000000-0000-0000-0000-000000000101')
-    .sourceService('example-service')
     .generateMailRequestId()
     .purpose('FormResponseNotification')
     .to({ email: 'admin@example.com' })
@@ -75,17 +69,17 @@ python -m unittest discover -s tests -v
 ```
 
 ```python
+import os
+
 from amane_mailer import MailerClient, MailRequestBuilder
 
 client = MailerClient(
     base_url="http://127.0.0.1:5280",
-    bearer_token="local-mail-service-token",
+    bearer_token=os.environ["MAILER_API_KEY"],
 )
 
 response = client.send_mail(
     MailRequestBuilder()
-    .tenant_id("00000000-0000-0000-0000-000000000101")
-    .source_service("example-service")
     .generate_mail_request_id()
     .purpose("FormResponseNotification")
     .to(email="admin@example.com")
@@ -99,13 +93,11 @@ print(response.status)  # accepted | already_accepted
 
 Scheduled send uses the same OpenAPI `date-time` rules (`Z` or an explicit offset).
 Omit `scheduled_at` (or set it to `None`) for immediate delivery. The field is
-excluded from `payload_hash`.
+included in the server-side canonical payload comparison.
 
 ```python
 response = client.send_mail(
     MailRequestBuilder()
-    .tenant_id("00000000-0000-0000-0000-000000000101")
-    .source_service("example-service")
     .generate_mail_request_id()
     .purpose("FormResponseNotification")
     .to(email="admin@example.com")
@@ -118,17 +110,8 @@ response = client.send_mail(
 
 See [python/README.md](python/README.md) for error handling, retries, and local Mailer integration.
 
-## payload_hash verification
-
-Both SDKs ship cross-check tests against the official vectors:
-
-`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` and
-`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json`
-
-CI runs SDK tests in the `sdk-tests` job. Lower-level language examples remain in [examples/payload-hash/](../examples/payload-hash/README.md).
-
 ## Related docs
 
 - [OpenAPI](../docs/api/openapi.yaml)
-- [ADR 0012 D-05 payload_hash](../docs/adr/0012-mail-via-mailer-microservice.md)
+- [ADR 0024 Sender and managed API key identity](../docs/adr/0024-sender-and-managed-api-key-identity.md)
 - [Consumer quickstart in README](../README.md#consumer-クイックスタート)

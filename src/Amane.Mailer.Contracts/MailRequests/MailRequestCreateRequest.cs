@@ -5,11 +5,13 @@ namespace Amane.Mailer.Contracts.MailRequests;
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record MailRequestCreateRequest
 {
-    [JsonPropertyName("tenant_id")]
-    public required Guid TenantId { get; init; }
+    // Test-only source compatibility for physical-persistence regression fixtures. JsonIgnore
+    // keeps these legacy values out of the v2 public contract and serialized request surface.
+    [JsonIgnore]
+    internal Guid TenantId { get; init; }
 
-    [JsonPropertyName("source_service")]
-    public required string SourceService { get; init; }
+    [JsonIgnore]
+    internal string SourceService { get; init; } = string.Empty;
 
     [JsonPropertyName("mail_request_id")]
     public required Guid MailRequestId { get; init; }
@@ -30,7 +32,7 @@ public sealed record MailRequestCreateRequest
     /// <summary>
     /// Carbon-copy recipients (ADR 0023 D-01). Same role limits and duplicate rules as
     /// <see cref="To"/>. Unspecified, <c>null</c>, and an empty array are equivalent and are
-    /// omitted from <c>payload_hash</c> (ADR 0023 D-02).
+    /// omitted from the server-computed canonical payload identity (ADR 0023 D-02).
     /// </summary>
     [JsonPropertyName("cc")]
     public IReadOnlyList<MailRecipientDto>? Cc { get; init; }
@@ -38,7 +40,7 @@ public sealed record MailRequestCreateRequest
     /// <summary>
     /// Blind carbon-copy recipients (ADR 0023 D-01). Same role limits and duplicate rules as
     /// <see cref="To"/>. Unspecified, <c>null</c>, and an empty array are equivalent and are
-    /// omitted from <c>payload_hash</c> (ADR 0023 D-02).
+    /// omitted from the server-computed canonical payload identity (ADR 0023 D-02).
     /// </summary>
     [JsonPropertyName("bcc")]
     public IReadOnlyList<MailRecipientDto>? Bcc { get; init; }
@@ -66,7 +68,7 @@ public sealed record MailRequestCreateRequest
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 
     /// <summary>
-    /// Optional first-dispatch time (UTC). Null means immediate. Excluded from payload_hash.
+    /// Optional first-dispatch time (UTC). Null means immediate. Excluded from payload identity.
     /// Independent from <c>next_attempt_at</c> (retry backoff).
     /// </summary>
     [JsonPropertyName("scheduled_at")]
@@ -74,13 +76,14 @@ public sealed record MailRequestCreateRequest
 
     /// <summary>
     /// Optional attachments (ADR 0022 D-01). Unspecified or an empty array means no attachment;
-    /// both are equivalent and omitted from payload_hash (ADR 0022 D-03). Array order is
+    /// both are equivalent and omitted from the canonical document (ADR 0022 D-03). Array order is
     /// submission order and part of payload identity; at most
     /// <see cref="MailAttachmentLimits.MaxAttachmentCount"/> entries are accepted.
     /// </summary>
     [JsonPropertyName("attachments")]
     public IReadOnlyList<MailAttachmentDto>? Attachments { get; init; }
 
-    [JsonPropertyName("payload_hash")]
-    public required string PayloadHash { get; init; }
+    [JsonIgnore]
+    internal string PayloadHash { get; init; } = string.Empty;
+
 }

@@ -1,5 +1,29 @@
 [日本語](service-spec.md)
 
+# Amane Mailer v2.0.0 public contract
+
+This section is authoritative for v2 Consumers. The lower "v1.x historical
+reference" is frozen operational history and is not a v2 public/runtime product path.
+
+- A Sender is the durable resource owner and a managed API key is a revocable credential belonging to one Sender. Normalized email is unique per instance.
+- The key determines caller identity and Sender selection. Consumers cannot select Sender, From, or provider.
+- The public API is `POST /api/mail-requests`, `GET /api/mail-requests/{mail_request_id}`, `POST .../cancel`, and `POST .../reschedule`.
+- The create body has no `tenant_id`, `source_service`, or `payload_hash`; Mailer computes the canonical payload hash server-side.
+- The idempotency namespace is `(sender_id, mail_request_id)`. The same ID is independent under another Sender, and key rotation preserves historical access for the Sender.
+- Another Sender's request returns non-disclosing 404. Invalid, unknown, or revoked keys and a disabled Sender converge on 401 `UNAUTHORIZED`. Invalid authentication attempts are rate-limited by remote IP.
+- `V2PersistenceCompatibility` exclusively maps physical `tenant_id=sender_id` and `source_service=amane-v2-internal`; `accepted_api_key_id` retains the accepting credential as audit evidence.
+- Suppression is instance-wide. Provider operation identity is based on `(sender_id, mail_request_id)` and excludes the sentinel.
+- Outbound delivery webhooks are removed from the v2 Contracts/runtime/configuration product path; Consumers poll delivery status.
+- Populated v1 state is not silently converted to Sender state. Migration fails safe as an `unsupported major upgrade`; a fresh v2 deployment is canonical.
+- Provider-managed configuration/live-sending safety belongs to #731, Sender/API key Setup UI and primary Admin UX to #732, and additional follow-up to #733.
+
+See [OpenAPI](api/openapi.yaml) for schemas/status codes and
+[ADR 0024](adr/0024-sender-and-managed-api-key-identity.md) for implementation decisions.
+
+---
+
+# v1.x historical reference (not the v2 public contract)
+
 # Amane Mailer Service — Service Specification (SQLite + Native AOT)
 
 - **Role:** General-purpose mail delivery microservice

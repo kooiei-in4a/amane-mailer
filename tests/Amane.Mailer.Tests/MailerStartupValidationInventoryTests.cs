@@ -28,7 +28,6 @@ public sealed class MailerStartupValidationInventoryTests
         typeof(MailerSweepOptions),
         typeof(MailerRetentionOptions),
         typeof(MailerAdminAuditRetentionOptions),
-        typeof(MailerWebhookOptions),
         typeof(MailerHealthcheckOptions),
         typeof(MailerMetricsOptions),
         typeof(MailerBounceIngestionOptions),

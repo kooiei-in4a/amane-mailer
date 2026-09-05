@@ -3,12 +3,7 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { randomUUID } from 'node:crypto';
 
-import { computeDeliveryPayloadSha256Hex } from '../payload-hash/javascript/mail_payload_hash.mjs';
-
 const DEFAULT_MAILER_BASE_URL = 'http://127.0.0.1:5280/';
-const DEFAULT_MAIL_SERVICE_TOKEN = 'local-mail-service-token';
-const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000101';
-const DEFAULT_SOURCE_SERVICE = 'example-service';
 const DEFAULT_RECIPIENT_EMAIL = 'admin@example.com';
 const DEFAULT_TIMEOUT_SECONDS = 10;
 
@@ -35,9 +30,7 @@ function parseOptions(args) {
 
   return {
     mailerBaseUrl: process.env.MAILER_BASE_URL ?? DEFAULT_MAILER_BASE_URL,
-    mailServiceToken: process.env.MAIL_SERVICE_TOKEN ?? DEFAULT_MAIL_SERVICE_TOKEN,
-    tenantId: process.env.MAILER_TENANT_ID ?? DEFAULT_TENANT_ID,
-    sourceService: process.env.MAILER_SOURCE_SERVICE ?? DEFAULT_SOURCE_SERVICE,
+    mailServiceToken: process.env.MAILER_API_KEY,
     recipientEmail: process.env.MAILER_RECIPIENT_EMAIL ?? DEFAULT_RECIPIENT_EMAIL,
     requestId: readOptionValue(args, '--request-id') ?? randomUUID(),
     mutate: args.includes('--mutate'),
@@ -46,24 +39,19 @@ function parseOptions(args) {
 }
 
 function buildEndpoint(mailerBaseUrl) {
-  return new URL('internal/mail-requests', mailerBaseUrl.endsWith('/')
+  return new URL('api/mail-requests', mailerBaseUrl.endsWith('/')
     ? mailerBaseUrl
     : `${mailerBaseUrl}/`);
 }
 
 function buildMailRequest(options) {
   const mailRequest = {
-    tenant_id: options.tenantId,
     mail_request_id: options.requestId,
-    source_service: options.sourceService,
     purpose: 'FormResponseNotification',
     to: [{ email: options.recipientEmail }],
     subject: options.mutate ? 'New response (edited)' : 'New response',
     text_body: 'A new response arrived.',
-    payload_hash: '',
   };
-
-  mailRequest.payload_hash = computeDeliveryPayloadSha256Hex(mailRequest);
   return mailRequest;
 }
 
@@ -117,7 +105,7 @@ function printResult(statusCode, statusMessage, responseBody, requestId) {
     if (response.status === 'accepted') {
       console.log('The Mailer accepted this request for asynchronous delivery.');
     } else if (response.status === 'already_accepted') {
-      console.log('This mail_request_id was already accepted with the same payload_hash;');
+      console.log('This mail_request_id was already accepted with the same canonical payload;');
       console.log('the Mailer treated this POST as an idempotent resend.');
     }
     return;
@@ -127,7 +115,7 @@ function printResult(statusCode, statusMessage, responseBody, requestId) {
     console.log(`HTTP 409 Conflict: ${responseBody}`);
     console.log();
     console.log(`mail_request_id ${requestId} was already accepted with a different`);
-    console.log('payload_hash. Reusing a mail_request_id after changing subject, body,');
+    console.log('payload. Reusing a mail_request_id after changing subject, body,');
     console.log('recipients, or metadata returns IDEMPOTENCY_CONFLICT.');
     return;
   }
@@ -137,12 +125,14 @@ function printResult(statusCode, statusMessage, responseBody, requestId) {
 
 async function main() {
   const options = parseOptions(process.argv.slice(2));
+  if (!options.mailServiceToken) {
+    throw new Error('MAILER_API_KEY must contain a managed API key.');
+  }
   const mailRequest = buildMailRequest(options);
   const endpoint = buildEndpoint(options.mailerBaseUrl);
 
   console.log(`POST ${endpoint.href}`);
   console.log(`mail_request_id: ${options.requestId}`);
-  console.log(`payload_hash:    ${mailRequest.payload_hash}`);
   console.log();
 
   const response = await postJson(

@@ -11,14 +11,11 @@ public sealed class MailRequestDtoStrictnessTests
     {
         const string json = """
             {
-              "tenant_id": "00000000-0000-0000-0000-000000000301",
-              "source_service": "example-service",
               "mail_request_id": "018f7c2a-0000-7000-8000-000000000000",
               "purpose": "FormResponseNotification",
               "to": [{ "email": "user@example.com" }],
               "subject": "Subject",
               "text_body": "Body",
-              "payload_hash": "0000000000000000000000000000000000000000000000000000000000000000",
               "unexpected": "value"
             }
             """;
@@ -43,15 +40,12 @@ public sealed class MailRequestDtoStrictnessTests
     {
         const string json = """
             {
-              "tenant_id": "00000000-0000-0000-0000-000000000301",
-              "source_service": "example-service",
               "mail_request_id": "018f7c2a-0000-7000-8000-000000000000",
               "purpose": "FormResponseNotification",
               "to": [{ "email": "user@example.com", "display_name": "User" }],
               "subject": "Subject",
               "text_body": "Body",
-              "metadata": { "form_id": "42" },
-              "payload_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+              "metadata": { "form_id": "42" }
             }
             """;
 
@@ -59,7 +53,7 @@ public sealed class MailRequestDtoStrictnessTests
             json, MailerContractsJsonContext.Default.MailRequestCreateRequest);
 
         Assert.NotNull(request);
-        Assert.Equal("example-service", request.SourceService);
+        Assert.Equal(Guid.Parse("018f7c2a-0000-7000-8000-000000000000"), request.MailRequestId);
         Assert.Equal("user@example.com", request.To![0].Email);
     }
 }

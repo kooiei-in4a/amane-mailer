@@ -179,7 +179,7 @@ jobs:
       - name: Native AOT setup assistant self-check
         run: artifacts/publish/aot-linux-x64/Amane.Mailer setup assistant-self-check
 
-      # Low-frequency Native AOT paths (Admin / webhook HTTPS tenant / db backup).
+      # Low-frequency Native AOT paths (Admin / db backup).
       # Complements release-smoke (core API + Mailpit on the GHCR image). See #286.
       - name: Native AOT low-frequency path smoke
         env:
@@ -467,20 +467,3 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.22"
-
-      - name: Verify payload_hash examples (Python)
-        run: |
-          python examples/payload-hash/python/verify_vectors.py
-          python examples/payload-hash/python/verify_request_vectors.py
-
-      - name: Verify payload_hash examples (JavaScript)
-        run: node examples/payload-hash/javascript/verify_vectors.mjs
-
-      - name: Verify payload_hash examples (Go)
-        working-directory: examples/payload-hash/go
-        run: go test ./...

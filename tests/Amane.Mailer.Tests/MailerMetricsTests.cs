@@ -374,7 +374,7 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -395,7 +395,7 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
             attachments: [MailRequestTestData.CreateTextAttachment()]);
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, post.StatusCode);
@@ -419,7 +419,7 @@ public sealed class MailerMetricsTests(MailerMetricsFixture fixture)
         var request = MailRequestTestData.CreateRequest(attachments: tooMany);
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.UnprocessableEntity, post.StatusCode);

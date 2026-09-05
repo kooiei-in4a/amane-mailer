@@ -56,10 +56,10 @@ public sealed record MailerWebhookOptions
     public TimeSpan HostShutdownTimeout =>
         ShutdownDrainTimeout + TimeSpan.FromSeconds(HostShutdownSlackSeconds);
 
-    public static MailerWebhookOptions Load(IConfiguration configuration) =>
+    internal static MailerWebhookOptions Load(IConfiguration configuration) =>
         Load(configuration, logger: null);
 
-    public static MailerWebhookOptions Load(IConfiguration configuration, ILogger? logger)
+    internal static MailerWebhookOptions Load(IConfiguration configuration, ILogger? logger)
     {
         ArgumentNullException.ThrowIfNull(configuration);
 

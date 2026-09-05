@@ -124,13 +124,13 @@ public sealed class MailRequestAcceptStore(
                 payload_json, payload_hash, subject, html_body, text_body, reply_to,
                 recipient_email, recipient_display_name, metadata_json,
                 status, attempt_count, max_attempts, scheduled_at, attachment_count,
-                accepted_at, created_at, updated_at)
+                accepted_api_key_id, accepted_at, created_at, updated_at)
             VALUES (
                 @Id, @TenantId, @SourceService, @MailRequestId, @Purpose,
                 @PayloadJson, @PayloadHash, @Subject, @HtmlBody, @TextBody, @ReplyTo,
                 @RecipientEmail, @RecipientDisplayName, @MetadataJson,
                 @Status, 0, @MaxAttempts, @ScheduledAt, @AttachmentCount,
-                @AcceptedAt, @CreatedAt, @UpdatedAt);
+                @AcceptedApiKeyId, @AcceptedAt, @CreatedAt, @UpdatedAt);
             """;
 
         const string insertAttachmentSql = """
@@ -253,6 +253,11 @@ public sealed class MailRequestAcceptStore(
                         ? DBNull.Value
                         : SqliteTime.ToStorageUtc(insert.ScheduledAt.Value));
                 command.Parameters.AddWithValue("@AttachmentCount", attachments?.Count ?? 0);
+                command.Parameters.AddWithValue(
+                    "@AcceptedApiKeyId",
+                    insert.AcceptedApiKeyId is null
+                        ? DBNull.Value
+                        : insert.AcceptedApiKeyId.Value.ToString("D"));
                 command.Parameters.AddWithValue("@AcceptedAt", nowStorage);
                 command.Parameters.AddWithValue("@CreatedAt", nowStorage);
                 command.Parameters.AddWithValue("@UpdatedAt", nowStorage);

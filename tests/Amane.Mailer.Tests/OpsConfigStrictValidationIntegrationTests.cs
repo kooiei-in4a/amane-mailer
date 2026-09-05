@@ -98,7 +98,7 @@ public sealed class OpsConfigStrictValidationIntegrationTests
     }
 
     [Fact]
-    public void AddAmaneMailerServices_rejects_invalid_webhook_max_attempts_on_resolve()
+    public void AddAmaneMailerServices_ignores_removed_outbound_webhook_configuration()
     {
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -116,16 +116,15 @@ public sealed class OpsConfigStrictValidationIntegrationTests
         services.AddAmaneMailerServices(configuration);
 
         using var provider = services.BuildServiceProvider();
-        var ex = Assert.Throws<InvalidOperationException>(
-            () => provider.GetRequiredService<MailerWebhookOptions>());
-        Assert.Contains("Mailer:Webhook:MaxAttempts", ex.Message, StringComparison.Ordinal);
+        Assert.Null(provider.GetService<MailerWebhookOptions>());
+        Assert.Null(provider.GetService<Amane.Mailer.Webhooks.IWebhookDeliveryQueue>());
     }
 
     [Fact]
-    public void AddAmaneMailerServices_registers_http_client_factory_when_worker_disabled()
+    public void AddAmaneMailerServices_does_not_register_outbound_webhook_http_client()
     {
         // Native AOT path smoke: Development + Worker:Enabled=false (#341).
-        // WebhookDeliveryClient stays registered; IHttpClientFactory must too.
+        // v2 removes the tenant-scoped outbound webhook product path.
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -144,7 +143,7 @@ public sealed class OpsConfigStrictValidationIntegrationTests
         services.AddAmaneMailerServices(configuration);
 
         using var provider = services.BuildServiceProvider();
-        Assert.NotNull(provider.GetService<System.Net.Http.IHttpClientFactory>());
+        Assert.Null(provider.GetService<System.Net.Http.IHttpClientFactory>());
     }
 
     private sealed class IntegrationHostEnvironment : IHostEnvironment

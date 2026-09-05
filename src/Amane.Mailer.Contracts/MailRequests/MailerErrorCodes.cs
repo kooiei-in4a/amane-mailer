@@ -4,12 +4,14 @@ public static class MailerErrorCodes
 {
     public const string InvalidRequest = "INVALID_REQUEST";
     public const string RequestTooLarge = "REQUEST_TOO_LARGE";
-    public const string SourceServiceNotAllowed = "SOURCE_SERVICE_NOT_ALLOWED";
+    internal const string SourceServiceNotAllowed = "SOURCE_SERVICE_NOT_ALLOWED";
     public const string TooManyRecipients = "TOO_MANY_RECIPIENTS";
     public const string IdempotencyConflict = "IDEMPOTENCY_CONFLICT";
-    public const string InvalidPayloadHash = "INVALID_PAYLOAD_HASH";
+    internal const string InvalidPayloadHash = "INVALID_PAYLOAD_HASH";
     public const string InvalidMetadata = "INVALID_METADATA";
-    public const string UnauthorizedTenant = "UNAUTHORIZED_TENANT";
+    public const string Unauthorized = "UNAUTHORIZED";
+    internal const string UnauthorizedTenant = "UNAUTHORIZED_TENANT";
+    public const string AuthenticationRateLimited = "AUTHENTICATION_RATE_LIMITED";
     public const string MailerTemporarilyUnavailable = "MAILER_TEMPORARILY_UNAVAILABLE";
     public const string StorageFull = "STORAGE_FULL";
     public const string NotFound = "NOT_FOUND";

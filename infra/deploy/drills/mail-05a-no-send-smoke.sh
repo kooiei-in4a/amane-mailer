@@ -3,8 +3,10 @@ set -Eeuo pipefail
 set +x
 
 COMPOSE_DIR="${MAIL05A_COMPOSE_DIR:-/opt/amane-mailer}"
+# Physical tenant_id for db CLI lookups equals the Sender ID that owns MAILER_API_KEY.
 TENANT_DEVELOP="${MAIL05A_TENANT_DEVELOP:-00000000-0000-0000-0000-000000000101}"
-SOURCE_SERVICE="${MAIL05A_SOURCE_SERVICE:-example-service}"
+# Compatibility-only persistence identity used by db request-state (not a Consumer field).
+SOURCE_SERVICE="amane-v2-internal"
 WORK_DIR="mail-05a-work"
 CLIENT_COMPOSE="compose.mail-05a-client.yml"
 WORKER_DISABLED_COMPOSE="compose.worker-disabled.yml"
@@ -105,28 +107,17 @@ wait_ready() {
 write_payload() {
   local path="$1"
   local request_id="$2"
-  TENANT_DEVELOP="$TENANT_DEVELOP" \
-  SOURCE_SERVICE="$SOURCE_SERVICE" \
   python3 - "$path" "$request_id" <<'PY'
-import hashlib
 import json
-import os
 import sys
 
 path, request_id = sys.argv[1], sys.argv[2]
-delivery = {
-    "source_service": os.environ["SOURCE_SERVICE"],
+request = {
+    "mail_request_id": request_id,
     "purpose": "mail-05a-smoke",
     "to": [{"email": "mail-05a-smoke@example.invalid"}],
     "subject": "MAIL-05a smoke",
     "text_body": "MAIL-05a smoke test. No live delivery expected.",
-}
-canonical = json.dumps(delivery, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-request = {
-    "tenant_id": os.environ["TENANT_DEVELOP"],
-    **delivery,
-    "mail_request_id": request_id,
-    "payload_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
 }
 with open(path, "w", encoding="utf-8") as f:
     json.dump(request, f, ensure_ascii=False, separators=(",", ":"))
@@ -135,7 +126,7 @@ PY
 
 write_curl_config() {
   local path="$1"
-  local token="$2"
+  local api_key="$2"
   local payload_path="$3"
 
   (
@@ -143,8 +134,8 @@ write_curl_config() {
     printf '%s\n' 'silent'
     printf '%s\n' 'show-error'
     printf '%s\n' 'request = "POST"'
-    printf 'url = "%s/internal/mail-requests"\n' "$MAILER_BASE_URL"
-    printf 'header = "Authorization: Bearer %s"\n' "$token"
+    printf 'url = "%s/api/mail-requests"\n' "$MAILER_BASE_URL"
+    printf 'header = "Authorization: Bearer %s"\n' "$api_key"
     printf '%s\n' 'header = "Content-Type: application/json"'
     printf 'data = "@/mail-05a/%s"\n' "$payload_path"
     printf '%s\n' 'write-out = "\nHTTP_STATUS=%{http_code}\n"'
@@ -210,20 +201,14 @@ fi
 unset ACS_CONFIGURED
 echo ACS_CONNECTION_STRING_EMPTY
 
-echo "[precheck tenant tokens distinct]"
-TOKEN_DEVELOP="$(read_env_value MAIL_SERVICE_TOKEN_DEVELOP || true)"
-TOKEN_STAGING="$(read_env_value MAIL_SERVICE_TOKEN_STAGING || true)"
-TOKEN_PRODUCTION="$(read_env_value MAIL_SERVICE_TOKEN_PRODUCTION || true)"
-if [ -z "$TOKEN_DEVELOP" ] || [ -z "$TOKEN_STAGING" ] || [ -z "$TOKEN_PRODUCTION" ]; then
-  echo TENANT_TOKEN_MISSING
+echo "[precheck managed API key]"
+MAILER_API_KEY="$(read_env_value MAILER_API_KEY || true)"
+if [ -z "$MAILER_API_KEY" ]; then
+  echo "MAILER_API_KEY is required."
+  echo "Provide a managed API key for the Sender used by this smoke test."
   exit 1
 fi
-if [ "$TOKEN_DEVELOP" = "$TOKEN_STAGING" ] || [ "$TOKEN_DEVELOP" = "$TOKEN_PRODUCTION" ] || [ "$TOKEN_STAGING" = "$TOKEN_PRODUCTION" ]; then
-  echo TENANT_TOKENS_NOT_DISTINCT
-  exit 1
-fi
-echo TENANT_TOKENS_DISTINCT
-unset TOKEN_STAGING TOKEN_PRODUCTION
+echo MAILER_API_KEY_PRESENT
 
 echo "[precheck healthz]"
 run_client BASE -fsS "$MAILER_BASE_URL/healthz"
@@ -249,13 +234,13 @@ echo "REQ202=$REQ202"
 
 echo "[write 401 payload]"
 write_payload "$WORK_DIR/mail-05a-401.json" "$REQ401"
-write_curl_config "$WORK_DIR/mail-05a-401.curlrc" "invalid-mail-05a-token" "mail-05a-401.json"
+write_curl_config "$WORK_DIR/mail-05a-401.curlrc" "invalid-mail-05a-api-key" "mail-05a-401.json"
 
 echo "[401 api call]"
 OUT401="$(run_client BASE --config /mail-05a/mail-05a-401.curlrc)"
 printf '%s\n' "$OUT401"
 printf '%s\n' "$OUT401" | grep -q 'HTTP_STATUS=401'
-printf '%s\n' "$OUT401" | grep -q 'UNAUTHORIZED_TENANT'
+printf '%s\n' "$OUT401" | grep -q 'UNAUTHORIZED'
 
 echo "[401 db verification]"
 STATE401="$(request_state BASE "$REQ401")"
@@ -277,8 +262,8 @@ echo WORKER_DISABLED_BY_HEALTHCHECK
 
 echo "[write 202 payload]"
 write_payload "$WORK_DIR/mail-05a-202.json" "$REQ202"
-write_curl_config "$WORK_DIR/mail-05a-202.curlrc" "$TOKEN_DEVELOP" "mail-05a-202.json"
-unset TOKEN_DEVELOP
+write_curl_config "$WORK_DIR/mail-05a-202.curlrc" "$MAILER_API_KEY" "mail-05a-202.json"
+unset MAILER_API_KEY
 
 echo "[202 api call]"
 OUT202="$(run_client DISABLED --config /mail-05a/mail-05a-202.curlrc)"

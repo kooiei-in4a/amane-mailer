@@ -17,6 +17,7 @@ public sealed class SqlMigrationRunner
         {
             [RecipientPersistenceMigration.MigrationVersion] = RecipientPersistenceMigration.Step,
             [RecipientDeliveryEventMigration.MigrationVersion] = RecipientDeliveryEventMigration.Step,
+            [V2IdentityMigration.MigrationVersion] = V2IdentityMigration.Step,
         };
 
     private readonly SqliteConnectionFactory _connections;
@@ -409,6 +410,8 @@ public sealed class SqlMigrationRunner
         SqliteConnection connection,
         CancellationToken cancellationToken)
     {
+        var requiresV2Identity = File.Exists(
+            Path.Combine(_migrationDirectory, V2IdentityMigration.MigrationVersion));
         await using (var tables = connection.CreateCommand())
         {
             tables.CommandText = """
@@ -426,10 +429,13 @@ public sealed class SqlMigrationRunner
                     'mailer_maintenance_leases',
                     'mail_request_recipients',
                     'mail_plain_submissions',
-                    'recipient_delivery_events');
+                    'recipient_delivery_events',
+                    'senders',
+                    'api_keys');
                 """;
             var tableCount = await tables.ExecuteScalarAsync(cancellationToken);
-            if (tableCount is not long count || count != 11L)
+            var requiredTableCount = requiresV2Identity ? 13L : 11L;
+            if (tableCount is not long count || count != requiredTableCount)
             {
                 return false;
             }
@@ -449,6 +455,7 @@ public sealed class SqlMigrationRunner
         columns.CommandText = "PRAGMA table_info(mail_requests);";
         var hasScheduledAt = false;
         var hasAttachmentCount = false;
+        var hasAcceptedApiKeyId = false;
         await using (var reader = await columns.ExecuteReaderAsync(cancellationToken))
         {
             while (await reader.ReadAsync(cancellationToken))
@@ -462,10 +469,16 @@ public sealed class SqlMigrationRunner
                 {
                     hasAttachmentCount = true;
                 }
+                else if (string.Equals(columnName, "accepted_api_key_id", StringComparison.Ordinal))
+                {
+                    hasAcceptedApiKeyId = true;
+                }
             }
         }
 
-        if (!hasScheduledAt || !hasAttachmentCount)
+        if (!hasScheduledAt
+            || !hasAttachmentCount
+            || (requiresV2Identity && !hasAcceptedApiKeyId))
         {
             return false;
         }

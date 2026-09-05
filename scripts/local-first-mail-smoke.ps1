@@ -15,7 +15,7 @@
   Config via environment (all optional):
     MAILER_HTTP_PORT       default 5280
     MAILPIT_HTTP_PORT      default 8025
-    MAIL_SERVICE_TOKEN     default local-mail-service-token
+    MAILER_API_KEY         required; managed key for a Sender already provisioned in this data volume
     LOCAL_FIRST_MAIL_SMOKE_KEEP  reserved (compose is left running after the script exits)
 
 .EXAMPLE
@@ -45,19 +45,17 @@ function Get-EnvOrDefault {
 
 $env:MAILER_HTTP_PORT = Get-EnvOrDefault 'MAILER_HTTP_PORT' '5280'
 $env:MAILPIT_HTTP_PORT = Get-EnvOrDefault 'MAILPIT_HTTP_PORT' '8025'
-$env:MAIL_SERVICE_TOKEN = Get-EnvOrDefault 'MAIL_SERVICE_TOKEN' 'local-mail-service-token'
+if ([string]::IsNullOrEmpty($env:MAILER_API_KEY)) {
+    throw 'MAILER_API_KEY must contain a managed API key for a provisioned Sender.'
+}
 
 $MailerUrl = "http://127.0.0.1:$($env:MAILER_HTTP_PORT)"
 $MailpitUrl = "http://127.0.0.1:$($env:MAILPIT_HTTP_PORT)"
 
-$TENANT_ID = '00000000-0000-0000-0000-000000000101'
-$SOURCE_SERVICE = 'example-service'
 $PURPOSE = 'FormResponseNotification'
 $TO_EMAIL = 'admin@example.com'
 $SUBJECT = 'New response'
 $TEXT_BODY = 'A new response arrived.'
-# Matches docs/ops/first-mail-quickstart.md and README consumer quickstart example.
-$PAYLOAD_HASH = '7c6d491cc70ac1b48fcc770d90ff80ae8a13c0e5ed3284fd1de9705d7e801ea9'
 
 $script:PassCount = 0
 $script:FailCount = 0
@@ -134,10 +132,10 @@ function Invoke-MailRequest {
     param([string]$Json)
 
     $headers = @{
-        Authorization = "Bearer $($env:MAIL_SERVICE_TOKEN)"
+        Authorization = "Bearer $($env:MAILER_API_KEY)"
         'Content-Type' = 'application/json'
     }
-    $uri = "$MailerUrl/internal/mail-requests"
+    $uri = "$MailerUrl/api/mail-requests"
 
     if ($PSVersionTable.PSVersion.Major -ge 7) {
         try {
@@ -285,15 +283,15 @@ try {
     }
 
     $requestId = [guid]::NewGuid().ToString()
-    $json = ('{{"tenant_id":"{0}","source_service":"{1}","mail_request_id":"{2}","purpose":"{3}","to":[{{"email":"{4}"}}],"subject":"{5}","text_body":"{6}","payload_hash":"{7}"}}' -f
-        $TENANT_ID, $SOURCE_SERVICE, $requestId, $PURPOSE, $TO_EMAIL, $SUBJECT, $TEXT_BODY, $PAYLOAD_HASH)
+    $json = ('{{"mail_request_id":"{0}","purpose":"{1}","to":[{{"email":"{2}"}}],"subject":"{3}","text_body":"{4}"}}' -f
+        $requestId, $PURPOSE, $TO_EMAIL, $SUBJECT, $TEXT_BODY)
 
     Invoke-MailRequest -Json $json
     if ($script:HttpStatus -eq 202 -and $script:RespBody -match '"status"\s*:\s*"accepted"') {
-        Write-Pass 'POST /internal/mail-requests -> 202 accepted'
+        Write-Pass 'POST /api/mail-requests -> 202 accepted'
     }
     else {
-        Write-Fail 'POST /internal/mail-requests' "expected 202 accepted, got $($script:HttpStatus) body=$($script:RespBody)"
+        Write-Fail 'POST /api/mail-requests' "expected 202 accepted, got $($script:HttpStatus) body=$($script:RespBody)"
     }
 
     if (Test-MailpitReceivedSubject -Subject $SUBJECT) {

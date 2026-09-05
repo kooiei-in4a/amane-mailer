@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Amane.Mailer.Contracts.MailRequests;
 using Amane.Mailer.Contracts.Security;
+using Amane.Mailer.Identity;
 
 namespace Amane.Mailer.Tests;
 
@@ -25,7 +26,7 @@ internal static class MailRequestTestData
         var request = new MailRequestCreateRequest
         {
             TenantId = Fixtures.MailerWebApplicationFixtureBase.TenantId,
-            SourceService = sourceService,
+            SourceService = V2PersistenceCompatibility.SourceService,
             MailRequestId = mailRequestId ?? Guid.NewGuid(),
             Purpose = "FormResponseNotification",
             To =

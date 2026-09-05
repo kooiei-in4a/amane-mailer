@@ -31,7 +31,7 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         using var get = await client.GetAsync(StatusUrl(request.MailRequestId), ct);
@@ -96,12 +96,12 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.UnauthorizedTenant,
+            MailerErrorCodes.Unauthorized,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
     [Fact]
-    public async Task Get_unregistered_source_service_returns_403()
+    public async Task Get_ignores_legacy_source_service_query_and_does_not_disclose()
     {
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
@@ -109,9 +109,9 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
 
         using var response = await client.GetAsync(url, ct);
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.SourceServiceNotAllowed,
+            MailerErrorCodes.NotFound,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
@@ -134,7 +134,7 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
     }
 
     [Fact]
-    public async Task Get_missing_tenant_id_returns_400()
+    public async Task Get_does_not_require_legacy_tenant_id_query()
     {
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
@@ -142,14 +142,14 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
 
         using var response = await client.GetAsync(url, ct);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.InvalidRequest,
+            MailerErrorCodes.NotFound,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
     [Fact]
-    public async Task Get_invalid_tenant_id_returns_400()
+    public async Task Get_ignores_legacy_tenant_id_query_and_does_not_disclose()
     {
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
@@ -159,14 +159,14 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
 
         using var response = await client.GetAsync(url, ct);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.InvalidRequest,
+            MailerErrorCodes.NotFound,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
     [Fact]
-    public async Task Get_missing_source_service_returns_400()
+    public async Task Get_does_not_require_legacy_source_service_query()
     {
         var ct = TestContext.Current.CancellationToken;
         using var client = CreateAuthorizedClient();
@@ -174,9 +174,9 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
 
         using var response = await client.GetAsync(url, ct);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal(
-            MailerErrorCodes.InvalidRequest,
+            MailerErrorCodes.NotFound,
             await MailRequestTestData.ReadCodeAsync(response, ct));
     }
 
@@ -188,7 +188,7 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
         var request = MailRequestTestData.CreateRequest();
 
         using var post = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         using var get = await client.GetAsync(StatusUrl(request.MailRequestId), ct);
@@ -454,7 +454,7 @@ public sealed class MailRequestStatusApiTests(MailerApiFixture fixture)
         }
 
         var query = queryParts.Count == 0 ? string.Empty : "?" + string.Join("&", queryParts);
-        return $"/internal/mail-requests/{mailRequestId}{query}";
+        return $"/api/mail-requests/{mailRequestId}{query}";
     }
 
     private static async Task<string?> ReadMessageAsync(

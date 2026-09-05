@@ -1,7 +1,7 @@
 # Amane.Mailer.Contracts
 
-NuGet package containing Mailer HTTP contract DTOs, status constants, and the
-delivery payload hash helper for use by consumer applications and the Mailer service.
+NuGet package containing the Mailer v2 HTTP contract DTOs and status constants
+for use by consumer applications and the Mailer service.
 
 The C# root namespace is `Amane.Mailer.Contracts`.
 
@@ -21,7 +21,7 @@ to the same TFM.
 
 This package is the code-level source of truth for Mailer HTTP request/response
 DTOs, error code constants, acceptance status constants, delivery status
-constants, JSON serialization context, and payload hash helper. The Mailer
+constants, and JSON serialization context. The Mailer
 runtime references this package directly, and consumer applications should use
 the published NuGet package.
 
@@ -35,18 +35,16 @@ field inventories across Contracts / OpenAPI / SDKs with
 
 When changing the contract, review drift across this package, runtime behavior,
 OpenAPI, SDKs, and tests for DTO JSON property names, required / nullable fields,
-`MailerErrorCodes`, `MailRequestAcceptanceStatus`, `MailRequestStatus`, payload
-hash fields, and JSON unknown / duplicate property behavior. The drift check
+`MailerErrorCodes`, `MailRequestAcceptanceStatus`, `MailRequestStatus`, and JSON
+unknown / duplicate property behavior. The drift check
 derives DTO / constant expectations from Contracts, compares them to OpenAPI,
-and verifies the runtime/test coverage hooks for strict JSON and payload hashing.
+and verifies the runtime/test coverage hooks for strict JSON and server-side hashing.
 If the contract intentionally changes, update the Contracts type/constant first,
 then update `docs/api/openapi.yaml`, runtime behavior, examples, Python /
 TypeScript SDK field inventories, and related tests in the same change. There is
 no separate generated snapshot to refresh today; the drift check derives expected
 DTO / constant shape from source.
-Recompute any affected OpenAPI payload hash example and update
-`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json`
-when canonicalization fixtures change. Validate with:
+Validate with:
 
 ```bash
 node scripts/validate-openapi.mjs docs/api/openapi.yaml
@@ -99,10 +97,7 @@ dotnet add package Amane.Mailer.Contracts
 | `MailRequestStatusResponse` | `Amane.Mailer.Contracts.MailRequests` | GET / cancel / reschedule status response DTO |
 | `MailRequestRescheduleRequest` | `Amane.Mailer.Contracts.MailRequests` | Reschedule request body |
 | `MailRequestScheduleLimits` | `Amane.Mailer.Contracts.MailRequests` | Max schedule horizon (`MaxScheduledAhead`) |
-| `MailDeliveryEventPayload` | `Amane.Mailer.Contracts.MailRequests` | Outbound delivery-result webhook JSON body (first-wins: one event per mail-request generation) |
-| `MailDeliveryEventType` | `Amane.Mailer.Contracts.MailRequests` | Webhook `event_type` / terminal status constants |
 | `MailRecipientDto` | `Amane.Mailer.Contracts.MailRequests` | Recipient DTO used by `to`, `cc`, and `bcc` arrays |
-| `MailPayloadHasher` | `Amane.Mailer.Contracts.Security` | `payload_hash` computation helper |
 | `MailRequestAcceptanceStatus` | `Amane.Mailer.Contracts.MailRequests` | Response `status` constants |
 | `MailRequestStatus` | `Amane.Mailer.Contracts.MailRequests` | Worker delivery status constants |
 | `MailerErrorCodes` | `Amane.Mailer.Contracts.MailRequests` | HTTP acceptance error code constants |
@@ -118,24 +113,14 @@ using System.Text;
 using System.Text.Json;
 using Amane.Mailer.Contracts.Json;
 using Amane.Mailer.Contracts.MailRequests;
-using Amane.Mailer.Contracts.Security;
 
 var request = new MailRequestCreateRequest
 {
-    TenantId = Guid.Parse("00000000-0000-0000-0000-000000000101"),
-    SourceService = "my-service",
     MailRequestId = Guid.NewGuid(),   // UUIDv7 recommended
     Purpose = "FormResponseNotification",
     To = [new MailRecipientDto { Email = "user@example.com" }],
     Subject = "Subject line",
     TextBody = "Plain text body",
-    PayloadHash = string.Empty,  // Excluded from the hash input
-};
-
-// Compute payload_hash before sending
-request = request with
-{
-    PayloadHash = MailPayloadHasher.ComputeDeliveryPayloadSha256Hex(request),
 };
 
 var requestJson = JsonSerializer.Serialize(
@@ -143,13 +128,13 @@ var requestJson = JsonSerializer.Serialize(
     MailerContractsJsonContext.Default.MailRequestCreateRequest);
 
 using var httpClient = new HttpClient { BaseAddress = new Uri("http://mailer:8080") };
-using var message = new HttpRequestMessage(HttpMethod.Post, "/internal/mail-requests")
+using var message = new HttpRequestMessage(HttpMethod.Post, "/api/mail-requests")
 {
     Content = new StringContent(requestJson, Encoding.UTF8, "application/json"),
 };
 message.Headers.Authorization = new AuthenticationHeaderValue(
     "Bearer",
-    "MAIL_SERVICE_TOKEN_VALUE");
+    "MANAGED_API_KEY_VALUE");
 
 using var httpResponse = await httpClient.SendAsync(message);
 httpResponse.EnsureSuccessStatusCode();
@@ -166,26 +151,10 @@ if (accepted is null)
 
 if (accepted.Status == MailRequestAcceptanceStatus.AlreadyAccepted)
 {
-    // The same mail_request_id and payload_hash were already accepted.
+    // The same Sender, mail_request_id, and canonical payload were already accepted.
 }
 ```
 
-The bundled JSON context omits null optional properties. If you compute the
-hash from raw JSON instead, pass the exact JSON string that will be sent.
-
-## Non-.NET payload_hash examples
-
-Python, JavaScript (Node.js), and Go reference implementations with official
-test vector verification live under
-[`examples/payload-hash/`](../../examples/payload-hash/README.md).
-CI runs each language verifier against both
-`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-vectors.json` (baseline) and
-`tests/Amane.Mailer.Contracts.Tests/TestVectors/payload-hash-recipient-v1.3-vectors.json`
-(ADR 0023 recipient conformance). When canonicalization rules change, update those examples in
-the same change as the test vectors.
-
-The Python/TypeScript **SDKs** (`sdk/python`, `sdk/typescript`, as opposed to the
-language-independent reference examples above) verify both the baseline and recipient v1.3
-fixtures after issue [#542](https://github.com/kooiei-in4a/amane-mailer/issues/542) implemented
-`cc`/`bcc`/optional-`to` support in SDK production code. See
-[examples/payload-hash/README.md#vector-fixtures-baseline-vs-recipient-v13](../../examples/payload-hash/README.md#vector-fixtures-baseline-vs-recipient-v13).
+The bundled JSON context omits null optional properties. The managed API key
+selects the Sender and Mailer computes the canonical payload hash server-side;
+`tenant_id`, `source_service`, and `payload_hash` are not v2 contract fields.

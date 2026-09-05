@@ -11,6 +11,7 @@ using Amane.Mailer.Contracts.Security;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Json;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Queue;
 using Microsoft.Data.Sqlite;
@@ -29,6 +30,8 @@ public static class MailRequestCreateHandler
         Guid RequestId,
         DateTimeOffset Now,
         DateTimeOffset? ScheduledAtUtc,
+        AuthenticatedApiKey Identity,
+        string PayloadHash,
         MailerTenant Tenant,
         CanonicalMailRecipientSet CanonicalRecipients,
         AttachmentAcceptanceResult AttachmentResult);
@@ -38,32 +41,20 @@ public static class MailRequestCreateHandler
         IResult? Error);
 
     public static async Task<IResult> HandleAsync(
-        HttpRequest httpRequest,
         MailRequestCreateRequest request,
         string requestBody,
+        AuthenticatedApiKey identity,
+        MailerTenant tenant,
         MailRequestRepository repository,
         IMailRequestQueue queue,
-        MailerTenantRegistry tenantRegistry,
         AttachmentSpool attachmentSpool,
         TimeProvider timeProvider,
         ILogger logger,
         CancellationToken cancellationToken,
         MailerRuntimeMetrics? runtimeMetrics = null)
     {
-        var bearerToken = TenantRequestAuthorizer.ReadBearerToken(httpRequest);
-        if (!TenantRequestAuthorizer.TryAuthorizeCreate(
-                tenantRegistry,
-                request.TenantId,
-                request.SourceService,
-                bearerToken,
-                out var tenant,
-                out var authError))
-        {
-            return authError!;
-        }
-
         var now = timeProvider.GetUtcNow();
-        var validationError = ValidateRequest(request, tenant!, now, runtimeMetrics, out var canonicalRecipients);
+        var validationError = ValidateRequest(request, tenant, now, runtimeMetrics, out var canonicalRecipients);
         if (validationError is not null)
         {
             return validationError;
@@ -72,7 +63,8 @@ public static class MailRequestCreateHandler
         var preparation = await PrepareAcceptanceAsync(
             request,
             requestBody,
-            tenant!,
+            identity,
+            tenant,
             canonicalRecipients!,
             now,
             attachmentSpool,
@@ -129,6 +121,7 @@ public static class MailRequestCreateHandler
     private static async Task<PreparationOutcome> PrepareAcceptanceAsync(
         MailRequestCreateRequest request,
         string requestBody,
+        AuthenticatedApiKey identity,
         MailerTenant tenant,
         CanonicalMailRecipientSet canonicalRecipients,
         DateTimeOffset now,
@@ -161,8 +154,9 @@ public static class MailRequestCreateHandler
             }
         }
 
-        // D-04 step 8: payload_hash is computed from the original request body and verified
-        // attachment metadata, never from the redacted persisted snapshot.
+        // The canonical payload identity is server-computed from the accepted request and
+        // verified attachment metadata, never supplied by the caller and never computed from
+        // the redacted persisted snapshot.
         string computedHash;
         try
         {
@@ -179,16 +173,6 @@ public static class MailRequestCreateHandler
                     MailerErrorCodes.InvalidRequest,
                     "Request body is not valid JSON.",
                     StatusCodes.Status400BadRequest));
-        }
-
-        if (!string.Equals(computedHash, request.PayloadHash, StringComparison.Ordinal))
-        {
-            attachmentSpool.TryDeleteStaging(requestId);
-            return new(
-                null,
-                MailRequestHttpErrorMapper.Error(
-                    StatusCodes.Status422UnprocessableEntity,
-                    MailerErrorCodes.InvalidPayloadHash));
         }
 
         // D-04 step 10: best-effort provider envelope estimate. Worker dispatch performs the
@@ -214,6 +198,8 @@ public static class MailRequestCreateHandler
                 requestId,
                 now,
                 request.ScheduledAt?.ToUniversalTime(),
+                identity,
+                computedHash,
                 tenant,
                 canonicalRecipients,
                 attachmentResult),
@@ -233,8 +219,8 @@ public static class MailRequestCreateHandler
         try
         {
             existing = await repository.FindByIdempotencyKeyAsync(
-                request.TenantId,
-                request.SourceService,
+                V2PersistenceCompatibility.ToPhysicalTenantId(prepared.Identity.Sender.SenderId),
+                V2PersistenceCompatibility.SourceService,
                 request.MailRequestId,
                 cancellationToken);
         }
@@ -258,7 +244,7 @@ public static class MailRequestCreateHandler
         // never attached to an already-accepted row, including a conflicting repost.
         attachmentSpool.TryDeleteStaging(prepared.RequestId);
 
-        if (!string.Equals(existing.PayloadHash, request.PayloadHash, StringComparison.Ordinal))
+        if (!string.Equals(existing.PayloadHash, prepared.PayloadHash, StringComparison.Ordinal))
         {
             return MailRequestHttpErrorMapper.Error(
                 StatusCodes.Status409Conflict,
@@ -331,8 +317,8 @@ public static class MailRequestCreateHandler
         return new AcceptedMailRequestInsert
         {
             Id = prepared.RequestId,
-            TenantId = request.TenantId,
-            SourceService = request.SourceService,
+            TenantId = V2PersistenceCompatibility.ToPhysicalTenantId(prepared.Identity.Sender.SenderId),
+            SourceService = V2PersistenceCompatibility.SourceService,
             MailRequestId = request.MailRequestId,
             Purpose = request.Purpose,
             // SQLite stores a safe request snapshot, never attachment bytes or recipient PII.
@@ -341,7 +327,8 @@ public static class MailRequestCreateHandler
                 attachments is { Count: > 0 }
                     ? RedactAttachmentContentBase64(requestBody)
                     : requestBody),
-            PayloadHash = request.PayloadHash,
+            PayloadHash = prepared.PayloadHash,
+            AcceptedApiKeyId = prepared.Identity.KeyId,
             Subject = request.Subject,
             HtmlBody = request.HtmlBody,
             TextBody = request.TextBody,
@@ -376,8 +363,8 @@ public static class MailRequestCreateHandler
         try
         {
             duplicate = await repository.FindByIdempotencyKeyAsync(
-                request.TenantId,
-                request.SourceService,
+                V2PersistenceCompatibility.ToPhysicalTenantId(prepared.Identity.Sender.SenderId),
+                V2PersistenceCompatibility.SourceService,
                 request.MailRequestId,
                 cancellationToken);
         }
@@ -405,7 +392,7 @@ public static class MailRequestCreateHandler
             throw originalException;
         }
 
-        if (!string.Equals(duplicate.PayloadHash, request.PayloadHash, StringComparison.Ordinal))
+        if (!string.Equals(duplicate.PayloadHash, prepared.PayloadHash, StringComparison.Ordinal))
         {
             return MailRequestHttpErrorMapper.Error(
                 StatusCodes.Status409Conflict,

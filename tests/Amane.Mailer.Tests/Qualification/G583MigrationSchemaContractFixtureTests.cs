@@ -16,6 +16,7 @@ public sealed class G583MigrationSchemaContractFixtureTests
             ["016_recipient_persistence_and_plain_submission_evidence.sql"] = "c95e5b5c2d7b3ac52ab7ce6afc591f0a0e97aac59a151b9476bfca751dccc0c5",
             ["017_recipient_delivery_events.sql"] = "4e7f15fb61bc1bccd0386fecb3d267c23b0ce6044c87f7999c8fe1a74a1b2bdb",
             ["018_admin_user_capabilities.sql"] = "94af8770dec3a0e0ec925ce6a1946ad73f51f564e7137f2d82934b4fffb7f471",
+            ["019_sender_api_key_identity.sql"] = "3bc715bed02f186101e8a580a7410198a8ceeed6407a6ed773c7397200ec7d76",
         };
 
     [Fact]
@@ -42,8 +43,8 @@ public sealed class G583MigrationSchemaContractFixtureTests
                     .Build());
             var runner = new SqlMigrationRunner(factory);
             var applied = await runner.ApplyPendingAsync(cancellationToken);
-            Assert.Equal(18, applied.Count);
-            Assert.Equal("018_admin_user_capabilities.sql", applied[^1]);
+            Assert.Equal(19, applied.Count);
+            Assert.Equal("019_sender_api_key_identity.sql", applied[^1]);
             Assert.True(await runner.IsCurrentSchemaReadyAsync(cancellationToken));
 
             await using var connection = await factory.OpenConnectionAsync(cancellationToken);
@@ -116,6 +117,8 @@ public sealed class G583MigrationSchemaContractFixtureTests
                 "mail_plain_submissions",
                 "recipient_delivery_events",
                 "admin_user_capabilities",
+                "senders",
+                "api_keys",
             });
 
         var indexes = await ReadNamesAsync(connection, "index", cancellationToken);
@@ -143,6 +146,7 @@ public sealed class G583MigrationSchemaContractFixtureTests
         Assert.Contains("CONSTRAINT uq_mail_requests_idempotency", mailRequests, StringComparison.Ordinal);
         Assert.Contains("attachment_count", mailRequests, StringComparison.Ordinal);
         Assert.Contains("delivery_unknown_at", mailRequests, StringComparison.Ordinal);
+        Assert.Contains("accepted_api_key_id", mailRequests, StringComparison.Ordinal);
 
         var recipients = await ReadTableSqlAsync(connection, "mail_request_recipients", cancellationToken);
         Assert.Contains("recipient_role IN (0, 1, 2)", recipients, StringComparison.Ordinal);

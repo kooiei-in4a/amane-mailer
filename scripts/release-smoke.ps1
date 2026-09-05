@@ -20,9 +20,13 @@
 
   Dependencies: PowerShell 5.1+, docker (with the compose plugin).
 
-  Required environment (exactly one):
+  Required environment (exactly one image selector):
     MAILER_IMAGE_TAG         e.g. v1.3.6 or sha-<40hex>
     MAILER_IMAGE_DIGEST      e.g. sha256:<64-lowercase-hex>
+
+  Required authentication:
+    MAILER_API_KEY           managed API key for a Sender already provisioned
+                             in the target data volume (do not bootstrap here)
 
   Optional environment:
     MAILER_IMAGE_REPOSITORY  default ghcr.io/kooiei-in4a/amane-mailer
@@ -31,15 +35,14 @@
     MAILPIT_IMAGE            default axllent/mailpit:latest
     MAILER_HTTP_PORT         default 15280
     MAILPIT_HTTP_PORT        default 18025
-    MAIL_SERVICE_TOKEN       default local-mail-service-token
     RELEASE_SMOKE_PROJECT    default amane-mailer-release-smoke
     RELEASE_SMOKE_KEEP       set to 1 to skip cleanup (debugging only)
 
 .EXAMPLE
-  $env:MAILER_IMAGE_TAG = 'v1.3.6'; .\scripts\release-smoke.ps1
+  $env:MAILER_IMAGE_TAG = 'v1.3.6'; $env:MAILER_API_KEY = '<managed-key>'; .\scripts\release-smoke.ps1
 
 .EXAMPLE
-  $env:MAILER_IMAGE_DIGEST = 'sha256:<digest>'; .\scripts\release-smoke.ps1
+  $env:MAILER_IMAGE_DIGEST = 'sha256:<digest>'; $env:MAILER_API_KEY = '<managed-key>'; .\scripts\release-smoke.ps1
 #>
 [CmdletBinding()]
 param()
@@ -66,7 +69,12 @@ $env:MAILER_PULL_POLICY = Get-EnvOrDefault 'MAILER_PULL_POLICY' 'always'
 $env:MAILPIT_IMAGE = Get-EnvOrDefault 'MAILPIT_IMAGE' 'axllent/mailpit:latest'
 $env:MAILER_HTTP_PORT = Get-EnvOrDefault 'MAILER_HTTP_PORT' '15280'
 $env:MAILPIT_HTTP_PORT = Get-EnvOrDefault 'MAILPIT_HTTP_PORT' '18025'
-$env:MAIL_SERVICE_TOKEN = Get-EnvOrDefault 'MAIL_SERVICE_TOKEN' 'local-mail-service-token'
+
+if ([string]::IsNullOrEmpty($env:MAILER_API_KEY)) {
+    Write-Host '[error] MAILER_API_KEY is required.' -ForegroundColor Red
+    Write-Host 'Provide a managed API key for the Sender used by this smoke test.' -ForegroundColor Red
+    exit 2
+}
 
 try {
     Invoke-ReleaseSmokePreflight -RepoRoot $RepoRoot -ComposeFilePath $ComposeFile
@@ -79,8 +87,6 @@ catch {
 $MailerUrl = "http://127.0.0.1:$($env:MAILER_HTTP_PORT)"
 $MailpitUrl = "http://127.0.0.1:$($env:MAILPIT_HTTP_PORT)"
 
-$TENANT_ID = '00000000-0000-0000-0000-000000000101'
-$SOURCE_SERVICE = 'example-service'
 $TO_EMAIL = 'release-smoke@example.invalid'
 $PURPOSE = 'ReleaseSmoke'
 $TEXT_BODY = 'Amane release smoke. Mailpit delivery only.'
@@ -88,7 +94,6 @@ $SUBJECT_OK = 'Amane release smoke'
 $SUBJECT_CONFLICT = 'Amane release smoke (conflict)'
 $REQUEST_ID_OK = '00000000-0000-0000-0000-000000000201'
 $REQUEST_ID_401 = '00000000-0000-0000-0000-000000000202'
-$REQUEST_ID_403 = '00000000-0000-0000-0000-000000000203'
 
 $script:PassCount = 0
 $script:FailCount = 0
@@ -116,44 +121,26 @@ function Write-Fail {
     Write-Host "[FAIL] $Message -- $Detail"
 }
 
-function Get-CanonicalPayload {
-    param(
-        [string]$Subject,
-        [string]$SourceService
-    )
-    return ('{{"purpose":"{0}","source_service":"{1}","subject":"{2}","text_body":"{3}","to":[{{"email":"{4}"}}]}}' -f
-        $PURPOSE, $SourceService, $Subject, $TEXT_BODY, $TO_EMAIL)
-}
-
-function Get-PayloadHash {
-    param([string]$CanonicalJson)
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($CanonicalJson)
-    $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
-    return -join ($hash | ForEach-Object { $_.ToString('x2') })
-}
-
 function Get-RequestJson {
     param(
         [string]$MailRequestId,
-        [string]$SourceService,
-        [string]$Subject,
-        [string]$PayloadHash
+        [string]$Subject
     )
-    return ('{{"tenant_id":"{0}","source_service":"{1}","mail_request_id":"{2}","purpose":"{3}","to":[{{"email":"{4}"}}],"subject":"{5}","text_body":"{6}","payload_hash":"{7}"}}' -f
-        $TENANT_ID, $SourceService, $MailRequestId, $PURPOSE, $TO_EMAIL, $Subject, $TEXT_BODY, $PayloadHash)
+    return ('{{"mail_request_id":"{0}","purpose":"{1}","to":[{{"email":"{2}"}}],"subject":"{3}","text_body":"{4}"}}' -f
+        $MailRequestId, $PURPOSE, $TO_EMAIL, $Subject, $TEXT_BODY)
 }
 
 function Invoke-MailRequest {
     param(
-        [string]$Token,
+        [string]$ApiKey,
         [string]$Json
     )
 
     $headers = @{
-        Authorization = "Bearer $Token"
+        Authorization = "Bearer $ApiKey"
         'Content-Type' = 'application/json'
     }
-    $uri = "$MailerUrl/internal/mail-requests"
+    $uri = "$MailerUrl/api/mail-requests"
 
     if ($PSVersionTable.PSVersion.Major -ge 7) {
         $response = Invoke-WebRequest -UseBasicParsing -Method Post `
@@ -304,15 +291,13 @@ try {
         Write-Fail 'GET /readyz' "no 200 from $MailerUrl/readyz within timeout"
     }
 
-    $canonOk = Get-CanonicalPayload -Subject $SUBJECT_OK -SourceService $SOURCE_SERVICE
-    $hashOk = Get-PayloadHash -CanonicalJson $canonOk
-    $jsonOk = Get-RequestJson -MailRequestId $REQUEST_ID_OK -SourceService $SOURCE_SERVICE -Subject $SUBJECT_OK -PayloadHash $hashOk
-    Invoke-MailRequest -Token $env:MAIL_SERVICE_TOKEN -Json $jsonOk
+    $jsonOk = Get-RequestJson -MailRequestId $REQUEST_ID_OK -Subject $SUBJECT_OK
+    Invoke-MailRequest -ApiKey $env:MAILER_API_KEY -Json $jsonOk
     if ($script:HttpStatus -eq 202 -and $script:RespBody -match '"status"\s*:\s*"accepted"') {
-        Write-Pass 'POST /internal/mail-requests -> 202 accepted'
+        Write-Pass 'POST /api/mail-requests -> 202 accepted'
     }
     else {
-        Write-Fail 'POST /internal/mail-requests' "expected 202 accepted, got $($script:HttpStatus) body=$($script:RespBody)"
+        Write-Fail 'POST /api/mail-requests' "expected 202 accepted, got $($script:HttpStatus) body=$($script:RespBody)"
     }
 
     if (Test-MailpitReceivedSubject -Subject $SUBJECT_OK) {
@@ -322,7 +307,7 @@ try {
         Write-Fail 'Mailpit delivery' "message '$SUBJECT_OK' not found in Mailpit within timeout"
     }
 
-    Invoke-MailRequest -Token $env:MAIL_SERVICE_TOKEN -Json $jsonOk
+    Invoke-MailRequest -ApiKey $env:MAILER_API_KEY -Json $jsonOk
     if ($script:HttpStatus -eq 202 -and $script:RespBody -match '"status"\s*:\s*"already_accepted"') {
         Write-Pass 'Repost same id+payload -> 202 already_accepted'
     }
@@ -330,10 +315,8 @@ try {
         Write-Fail 'Repost same id+payload' "expected 202 already_accepted, got $($script:HttpStatus) body=$($script:RespBody)"
     }
 
-    $canonConflict = Get-CanonicalPayload -Subject $SUBJECT_CONFLICT -SourceService $SOURCE_SERVICE
-    $hashConflict = Get-PayloadHash -CanonicalJson $canonConflict
-    $jsonConflict = Get-RequestJson -MailRequestId $REQUEST_ID_OK -SourceService $SOURCE_SERVICE -Subject $SUBJECT_CONFLICT -PayloadHash $hashConflict
-    Invoke-MailRequest -Token $env:MAIL_SERVICE_TOKEN -Json $jsonConflict
+    $jsonConflict = Get-RequestJson -MailRequestId $REQUEST_ID_OK -Subject $SUBJECT_CONFLICT
+    Invoke-MailRequest -ApiKey $env:MAILER_API_KEY -Json $jsonConflict
     if ($script:HttpStatus -eq 409 -and $script:RespBody -match 'IDEMPOTENCY_CONFLICT') {
         Write-Pass 'Repost same id+different payload -> 409 IDEMPOTENCY_CONFLICT'
     }
@@ -341,25 +324,13 @@ try {
         Write-Fail 'Repost same id+different payload' "expected 409 IDEMPOTENCY_CONFLICT, got $($script:HttpStatus) body=$($script:RespBody)"
     }
 
-    $json401 = Get-RequestJson -MailRequestId $REQUEST_ID_401 -SourceService $SOURCE_SERVICE -Subject $SUBJECT_OK -PayloadHash $hashOk
-    Invoke-MailRequest -Token 'invalid-release-smoke-token' -Json $json401
-    if ($script:HttpStatus -eq 401 -and $script:RespBody -match 'UNAUTHORIZED_TENANT') {
-        Write-Pass 'Invalid token -> 401 UNAUTHORIZED_TENANT'
+    $json401 = Get-RequestJson -MailRequestId $REQUEST_ID_401 -Subject $SUBJECT_OK
+    Invoke-MailRequest -ApiKey 'invalid-release-smoke-api-key' -Json $json401
+    if ($script:HttpStatus -eq 401 -and $script:RespBody -match 'UNAUTHORIZED') {
+        Write-Pass 'Invalid API key -> 401 UNAUTHORIZED'
     }
     else {
-        Write-Fail 'Invalid token' "expected 401 UNAUTHORIZED_TENANT, got $($script:HttpStatus) body=$($script:RespBody)"
-    }
-
-    $unknownService = 'unknown-service'
-    $canon403 = Get-CanonicalPayload -Subject $SUBJECT_OK -SourceService $unknownService
-    $hash403 = Get-PayloadHash -CanonicalJson $canon403
-    $json403 = Get-RequestJson -MailRequestId $REQUEST_ID_403 -SourceService $unknownService -Subject $SUBJECT_OK -PayloadHash $hash403
-    Invoke-MailRequest -Token $env:MAIL_SERVICE_TOKEN -Json $json403
-    if ($script:HttpStatus -eq 403 -and $script:RespBody -match 'SOURCE_SERVICE_NOT_ALLOWED') {
-        Write-Pass 'Unknown source_service -> 403 SOURCE_SERVICE_NOT_ALLOWED'
-    }
-    else {
-        Write-Fail 'Unknown source_service' "expected 403 SOURCE_SERVICE_NOT_ALLOWED, got $($script:HttpStatus) body=$($script:RespBody)"
+        Write-Fail 'Invalid API key' "expected 401 UNAUTHORIZED, got $($script:HttpStatus) body=$($script:RespBody)"
     }
 
     Write-Log ''

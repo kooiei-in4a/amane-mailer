@@ -36,7 +36,6 @@ public sealed class MailerJsonContextInventoryTests
         typeof(MailerRetryOptions),
         typeof(MailerWebhookConfig),
         typeof(List<MailerTenant>),
-        typeof(MailDeliveryEventPayload),
         typeof(PlatformSenderFile),
         typeof(PlatformSenderAddress),
         typeof(MailRequestCreateRequest),

@@ -4,6 +4,7 @@ using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Operations;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -175,7 +176,7 @@ public sealed class BounceIngestionWorkerTests
         Assert.Equal(0, metrics.CaptureSnapshot().BounceUnmatchedTotal);
         Assert.True(await new BounceEventRepository(db.Factory).ExistsAsync(
             await FindBounceEventIdAsync(db.Factory, "event-ok", ct), ct));
-        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
+        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(V2PersistenceCompatibility.SuppressionScopeId, Recipient, ct));
         Assert.False(await inbox.HasPendingWorkAsync(FixedNow.AddMinutes(1), ct));
     }
 
@@ -199,7 +200,7 @@ public sealed class BounceIngestionWorkerTests
         Assert.Equal(0, metrics.CaptureSnapshot().BounceUnmatchedTotal);
         Assert.True(await new BounceEventRepository(db.Factory).ExistsAsync(
             await FindBounceEventIdAsync(db.Factory, "event-suppressed", ct), ct));
-        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
+        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(V2PersistenceCompatibility.SuppressionScopeId, Recipient, ct));
         Assert.False(await inbox.HasPendingWorkAsync(FixedNow.AddMinutes(1), ct));
     }
 
@@ -565,7 +566,7 @@ public sealed class BounceIngestionWorkerTests
         var metrics = new MailerRuntimeMetrics();
         await CreateWorker(db.Factory, metrics).ProcessClaimedEventForTestsAsync(claimed, ct);
         Assert.Equal(1, metrics.CaptureSnapshot().BounceEventsTotal);
-        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(TenantId, Recipient, ct));
+        Assert.True(await new MailSuppressionRepository(db.Factory).ExistsAsync(V2PersistenceCompatibility.SuppressionScopeId, Recipient, ct));
     }
 
     [Fact]

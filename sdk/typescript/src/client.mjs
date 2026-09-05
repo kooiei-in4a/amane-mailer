@@ -17,7 +17,7 @@ function sleep(ms) {
 
 function buildEndpoint(baseUrl) {
   const normalized = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
-  return new URL('internal/mail-requests', normalized);
+  return new URL('api/mail-requests', normalized);
 }
 
 function serializeMailRequest(request) {

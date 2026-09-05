@@ -3,8 +3,7 @@
 #
 # Runs against a published linux-x64 Amane.Mailer binary (not the GHCR image).
 # Complements scripts/release-smoke.sh, which covers core API + Mailpit on the
-# release image and does not exercise Admin, webhook HTTPS tenant load, or
-# db backup on the AOT binary.
+# release image and does not exercise Admin or db backup on the AOT binary.
 #
 # Paths (labels appear in [PASS]/[FAIL] lines):
 #   cli:admin-hash-password  — PBKDF2 hash CLI on the AOT binary
@@ -12,13 +11,12 @@
 #   cli:db-backup            — online SQLite backup CLI
 #   http:admin-login-get     — Admin enabled; GET /admin/login
 #   http:admin-login-post    — Admin cookie sign-in (CSRF + password hash)
-#   http:webhook-https-ready — HTTPS webhook tenant config loads; /readyz 200
+#   http:admin-ready         — Admin host starts; /readyz 200
 #   cli:setup-core-self-check — Setup Core dry-run fingerprint smoke (#448)
 #   cli:setup-inspect-effective — Manual + Managed mount attestation JSON smoke (#447)
 #
 # Non-goals (remain JIT tests / manual / release-smoke):
-#   ACS live send, full signed webhook delivery e2e (SSRF blocks loopback;
-#   public receivers are not CI-stable), multi-arch, release-image Mailpit flow.
+#   ACS live send, multi-arch, release-image Mailpit flow.
 #
 # Dependencies: bash, curl, awk; python3 optional (for free-port selection).
 #
@@ -99,7 +97,7 @@ dump_failure_diagnostics() {
     return
   fi
   local file
-  for file in mailer.log migrate.err migrate-webhook.err backup.err hash.err login-post.out \
+  for file in mailer.log migrate.err migrate-host.err backup.err hash.err login-post.out \
     inspect-effective.out.json inspect-effective.err.txt \
     inspect-effective-managed.out.json inspect-effective-managed.err.txt \
     inspect-effective.meta.txt inspect-effective-managed.meta.txt; do
@@ -152,42 +150,8 @@ require_mailer_bin() {
   fi
 }
 
-write_tenants_json() { # path include_webhook(0|1)
+write_tenants_json() { # path
   local path="$1"
-  local include_webhook="$2"
-  if [ "$include_webhook" = "1" ]; then
-    cat >"$path" <<'EOF'
-{
-  "version": 1,
-  "environment": "develop",
-  "tenants": [
-    {
-      "tenant_id": "00000000-0000-0000-0000-000000000101",
-      "name": "aot-path-smoke",
-      "source_services": ["example-service"],
-      "default_from": {
-        "email": "noreply@example.invalid",
-        "display_name": "AOT Path Smoke"
-      },
-      "token_env": "MAIL_SERVICE_TOKEN",
-      "provider": "mailpit",
-      "live_sending": false,
-      "metadata_max_bytes": 4096,
-      "retry": {
-        "max_attempts": 3,
-        "initial_delay_seconds": 1,
-        "max_delay_seconds": 2
-      },
-      "webhook": {
-        "url": "https://example.com/internal/mailer/webhooks",
-        "secret_env": "AOT_PATH_SMOKE_WEBHOOK_SECRET",
-        "allowed_host_suffixes": ["example.com"]
-      }
-    }
-  ]
-}
-EOF
-  else
     cat >"$path" <<'EOF'
 {
   "version": 1,
@@ -214,7 +178,6 @@ EOF
   ]
 }
 EOF
-  fi
 }
 
 run_cli_hash_password() {
@@ -292,7 +255,6 @@ start_mailer() { # tenants_path db_path password_hash log_file
     "AMANE_ADMIN_PASSWORD_HASH=${password_hash}" \
     AMANE_ADMIN_ALLOW_HTTP=true \
     AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=127.0.0.1 \
-    AOT_PATH_SMOKE_WEBHOOK_SECRET=local-aot-path-smoke-webhook-secret \
     "$MAILER_BIN" >"$log_file" 2>&1 &
   MAILER_PID=$!
 }
@@ -315,7 +277,7 @@ main() {
   local db_path="$WORK_DIR/mailer.db"
   local backup_path="$WORK_DIR/backups/mailer-backup.db"
   local tenants_plain="$WORK_DIR/tenants.plain.json"
-  local tenants_webhook="$WORK_DIR/tenants.webhook.json"
+  local tenants_host="$WORK_DIR/tenants.host.json"
   local hash_out="$WORK_DIR/hash.out"
   local hash_err="$WORK_DIR/hash.err"
   local login_html="$WORK_DIR/login.html"
@@ -325,8 +287,8 @@ main() {
   local hash=""
 
   mkdir -p "$WORK_DIR/backups"
-  write_tenants_json "$tenants_plain" 0
-  write_tenants_json "$tenants_webhook" 1
+  write_tenants_json "$tenants_plain"
+  write_tenants_json "$tenants_host"
 
   log "Native AOT path smoke"
   log "  MAILER_BIN=$MAILER_BIN"
@@ -456,7 +418,7 @@ fi
     fail "cli:db-backup" "skipped; no password hash from admin hash-password"
     fail "http:admin-login-get" "skipped; no password hash from admin hash-password"
     fail "http:admin-login-post" "skipped; no password hash from admin hash-password"
-    fail "http:webhook-https-ready" "skipped; no password hash from admin hash-password"
+    fail "http:admin-ready" "skipped; no password hash from admin hash-password"
     finish
   fi
 
@@ -494,11 +456,11 @@ fi
     fail "cli:db-backup" "skipped; migrate did not create a database"
   fi
 
-  # --- http:admin + webhook HTTPS (single process with webhook tenant) ---
+  # --- http:admin (single process) ---
   if [ ! -f "$db_path" ]; then
     fail "http:admin-login-get" "skipped; no database"
     fail "http:admin-login-post" "skipped; no database"
-    fail "http:webhook-https-ready" "skipped; no database"
+    fail "http:admin-ready" "skipped; no database"
     finish
   fi
 
@@ -506,23 +468,22 @@ fi
   rm -f "$db_path" "${db_path}-wal" "${db_path}-shm"
   if ! env \
     "ConnectionStrings__Mailer=Data Source=${db_path}" \
-    "MAILER_TENANTS_PATH=${tenants_webhook}" \
+    "MAILER_TENANTS_PATH=${tenants_host}" \
     MAIL_SERVICE_TOKEN=local-mail-service-token \
-    AOT_PATH_SMOKE_WEBHOOK_SECRET=local-aot-path-smoke-webhook-secret \
-    "$MAILER_BIN" db migrate >"$WORK_DIR/migrate-webhook.out" 2>"$WORK_DIR/migrate-webhook.err"; then
-    fail "http:webhook-https-ready" "pre-host migrate failed (see $WORK_DIR/migrate-webhook.err)"
+    "$MAILER_BIN" db migrate >"$WORK_DIR/migrate-host.out" 2>"$WORK_DIR/migrate-host.err"; then
+    fail "http:admin-ready" "pre-host migrate failed (see $WORK_DIR/migrate-host.err)"
     fail "http:admin-login-get" "skipped; pre-host migrate failed"
     fail "http:admin-login-post" "skipped; pre-host migrate failed"
     finish
   fi
 
-  start_mailer "$tenants_webhook" "$db_path" "$hash" "$server_log"
+  start_mailer "$tenants_host" "$db_path" "$hash" "$server_log"
 
   local ready_status=""
   if ready_status="$(wait_for_http "$base_url/readyz" "200" 30)"; then
-    pass "http:webhook-https-ready"
+    pass "http:admin-ready"
   else
-    fail "http:webhook-https-ready" "readyz returned '${ready_status:-none}' within 30s (see $server_log)"
+    fail "http:admin-ready" "readyz returned '${ready_status:-none}' within 30s (see $server_log)"
   fi
 
   # One GET stores both the HTML (CSRF field) and antiforgery cookie for POST.

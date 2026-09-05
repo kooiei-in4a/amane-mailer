@@ -3,6 +3,7 @@ using Amane.Mailer.Data;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
+using Amane.Mailer.Identity;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 
@@ -70,7 +71,10 @@ public sealed class RecipientFeedbackCorrelationTests
         Assert.Equal(MailRecipientDeliveryState.Pending, await db.ReadStateAsync(seeded.RequestId, 0, 0, ct));
         Assert.Equal(MailRecipientDeliveryState.Pending, await db.ReadStateAsync(seeded.RequestId, 0, 1, ct));
         Assert.Equal(MailRecipientDeliveryState.Pending, await db.ReadStateAsync(seeded.RequestId, 1, 0, ct));
-        Assert.True(await db.SuppressionExistsAsync(seeded.TenantId, "bcc-pii-canary@example.com", ct));
+        Assert.True(await db.SuppressionExistsAsync(
+            V2PersistenceCompatibility.SuppressionScopeId,
+            "bcc-pii-canary@example.com",
+            ct));
     }
 
     [Theory]

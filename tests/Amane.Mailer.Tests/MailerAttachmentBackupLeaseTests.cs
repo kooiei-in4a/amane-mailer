@@ -414,7 +414,7 @@ public sealed class MailerAttachmentBackupLeaseTests(MailerAdminDbOpsFixture dbO
             attachments: [MailRequestTestData.CreateTextAttachment()]);
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
 

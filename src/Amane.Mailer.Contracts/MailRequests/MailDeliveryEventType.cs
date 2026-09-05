@@ -1,6 +1,6 @@
 namespace Amane.Mailer.Contracts.MailRequests;
 
-public static class MailDeliveryEventType
+internal static class MailDeliveryEventType
 {
     public const string Delivered = "delivered";
     public const string Failed = "failed";

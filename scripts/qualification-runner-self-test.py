@@ -199,6 +199,54 @@ def build_v13_candidate_fixture(
     return candidate, oci_layout, oci_digest, workflow_ref
 
 
+def build_v13_repository_fixture(root: Path, profile: dict) -> tuple[Path, str]:
+    repo_root = root / "release-repo"
+    migration_paths = [
+        f"src/Amane.Mailer/Data/Migrations/{name}"
+        for name in profile["migration"]["fullInventory"]
+    ]
+    repository_paths = [
+        "README.md",
+        "README.en.md",
+        "docs/ops/setup-guide.md",
+        "docs/ops/setup-guide.en.md",
+        "docs/ops/setup-release-bundle.md",
+        "docs/ops/setup-release-bundle.en.md",
+        profile["planFilePath"],
+        *migration_paths,
+    ]
+    for relative_path in repository_paths:
+        destination = repo_root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((ROOT.parent / relative_path).read_bytes())
+
+    subprocess.run(["git", "-C", str(repo_root), "init", "--quiet"], check=True)
+    subprocess.run(["git", "-C", str(repo_root), "add", "--", *repository_paths], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repo_root),
+            "-c", "user.name=qualification-self-test",
+            "-c", "user.email=qualification-self-test@example.invalid",
+            "commit", "--quiet", "-m", "v1.3 qualification fixture",
+        ],
+        check=True,
+    )
+    source = subprocess.check_output(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    actual_inventory = subprocess.check_output(
+        [
+            "git", "-C", str(repo_root), "ls-tree", "-r", "--name-only", source,
+            "--", "src/Amane.Mailer/Data/Migrations",
+        ],
+        text=True,
+    ).splitlines()
+    if actual_inventory != migration_paths:
+        raise AssertionError(f"v1.3 fixture migration inventory changed: {actual_inventory}")
+    return repo_root, source
+
+
 def build_v13_migration_pin(
     runner,
     path: Path,
@@ -808,12 +856,6 @@ def main() -> int:
         if binding["runAttemptNonce"] == "self-test-1":
             raise AssertionError("operator nonce seed was reused as the run nonce")
 
-        v13_repo_root = ROOT.parent
-        v13_source = subprocess.check_output(
-            ["git", "-C", str(v13_repo_root), "rev-parse", "HEAD"],
-            text=True,
-        ).strip()
-
         def expect_runner_failure(label, callback, message=None):
             try:
                 callback()
@@ -835,6 +877,7 @@ def main() -> int:
 
         def bind_v13_fixture(label, release_version, selected_scope, selected_profile, issue_body):
             fixture_root = root / label
+            v13_repo_root, v13_source = build_v13_repository_fixture(fixture_root, selected_profile)
             candidate_root, layout_root, expected_oci, workflow_ref = build_v13_candidate_fixture(
                 fixture_root,
                 v13_source,

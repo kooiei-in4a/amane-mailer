@@ -34,6 +34,7 @@ public sealed class MailRequestWorkerShutdownTests
 
         await File.WriteAllTextAsync(tenantConfigPath, TenantConfigJson, ct);
         await ApplyMigrationsAsync(connectionString, ct);
+        await ManagedIdentityTestData.SeedAsync(connectionString, ct);
 
         WebApplicationFactory<global::Program>? factory = null;
         try

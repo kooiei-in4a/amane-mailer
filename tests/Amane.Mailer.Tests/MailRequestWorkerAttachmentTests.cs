@@ -36,7 +36,7 @@ public sealed class MailRequestWorkerAttachmentTests(MailerWorkerFixture fixture
             attachments: [MailRequestTestData.CreateTextAttachment()]);
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
@@ -68,7 +68,7 @@ public sealed class MailRequestWorkerAttachmentTests(MailerWorkerFixture fixture
             attachments: [MailRequestTestData.CreateTextAttachment()]);
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
@@ -104,7 +104,7 @@ public sealed class MailRequestWorkerAttachmentTests(MailerWorkerFixture fixture
             attachments: [MailRequestTestData.CreateTextAttachment()]);
 
         using var response = await client.PostAsync(
-            "/internal/mail-requests",
+            "/api/mail-requests",
             MailRequestTestData.ToJsonContent(request),
             ct);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);

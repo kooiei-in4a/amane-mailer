@@ -5,9 +5,11 @@ set +x
 COMPOSE_DIR="${MAIL05A_COMPOSE_DIR:-/opt/amane-mailer}"
 INPUT_FILE="${ACS_DRILL_INPUT_FILE:-./mail-05a-acs-drill.input.json}"
 KEEP_INPUT="$(printf '%s' "${ACS_DRILL_KEEP_INPUT:-false}" | tr '[:upper:]' '[:lower:]')"
+# Physical tenant_id for db CLI lookups equals the Sender ID that owns MAILER_API_KEY.
 TENANT_DEVELOP="${MAIL05A_TENANT_DEVELOP:-00000000-0000-0000-0000-000000000101}"
 TENANT_PRODUCTION="${MAIL05A_TENANT_PRODUCTION:-00000000-0000-0000-0000-000000000301}"
-SOURCE_SERVICE="${MAIL05A_SOURCE_SERVICE:-example-service}"
+# Compatibility-only persistence / tenants.json identity (not a Consumer request field).
+SOURCE_SERVICE="amane-v2-internal"
 WORK_DIR="mail-05a-work"
 CLIENT_COMPOSE="compose.mail-05a-client.yml"
 ACS_DRILL_COMPOSE="compose.acs-drill.yml"
@@ -271,28 +273,18 @@ write_payload() {
   local path="$1"
   local request_id="$2"
   RECIPIENT_EMAIL="$RECIPIENT_EMAIL" \
-  TENANT_DEVELOP="$TENANT_DEVELOP" \
-  SOURCE_SERVICE="$SOURCE_SERVICE" \
   python3 - "$path" "$request_id" <<'PY'
-import hashlib
 import json
 import os
 import sys
 
 path, request_id = sys.argv[1], sys.argv[2]
-delivery = {
-    "source_service": os.environ["SOURCE_SERVICE"],
+request = {
+    "mail_request_id": request_id,
     "purpose": "mail-05a-acs-drill",
     "to": [{"email": os.environ["RECIPIENT_EMAIL"]}],
     "subject": "MAIL-05a ACS delivery drill",
     "text_body": "MAIL-05a ACS delivery drill. One approved verification recipient only.",
-}
-canonical = json.dumps(delivery, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-request = {
-    "tenant_id": os.environ["TENANT_DEVELOP"],
-    **delivery,
-    "mail_request_id": request_id,
-    "payload_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
 }
 with open(path, "w", encoding="utf-8") as f:
     json.dump(request, f, ensure_ascii=False, separators=(",", ":"))
@@ -301,7 +293,7 @@ PY
 
 write_curl_config() {
   local path="$1"
-  local token="$2"
+  local api_key="$2"
   local payload_path="$3"
 
   (
@@ -309,8 +301,8 @@ write_curl_config() {
     printf '%s\n' 'silent'
     printf '%s\n' 'show-error'
     printf '%s\n' 'request = "POST"'
-    printf 'url = "%s/internal/mail-requests"\n' "$MAILER_BASE_URL"
-    printf 'header = "Authorization: Bearer %s"\n' "$token"
+    printf 'url = "%s/api/mail-requests"\n' "$MAILER_BASE_URL"
+    printf 'header = "Authorization: Bearer %s"\n' "$api_key"
     printf '%s\n' 'header = "Content-Type: application/json"'
     printf 'data = "@/mail-05a/%s"\n' "$payload_path"
     printf '%s\n' 'write-out = "\nHTTP_STATUS=%{http_code}\n"'
@@ -405,13 +397,14 @@ echo "REQ_ACS=$REQ_ACS"
 
 echo "[prepare request payload]"
 write_payload "$WORK_DIR/mail-05a-acs-payload.json" "$REQ_ACS"
-TOKEN_DEVELOP="$(read_env_value MAIL_SERVICE_TOKEN_DEVELOP || true)"
-if [ -z "$TOKEN_DEVELOP" ]; then
-  echo MAIL_SERVICE_TOKEN_DEVELOP_MISSING
+MAILER_API_KEY="$(read_env_value MAILER_API_KEY || true)"
+if [ -z "$MAILER_API_KEY" ]; then
+  echo "MAILER_API_KEY is required."
+  echo "Provide a managed API key for the Sender used by this smoke test."
   exit 1
 fi
-write_curl_config "$WORK_DIR/mail-05a-acs.curlrc" "$TOKEN_DEVELOP" "mail-05a-acs-payload.json"
-unset TOKEN_DEVELOP RECIPIENT_EMAIL
+write_curl_config "$WORK_DIR/mail-05a-acs.curlrc" "$MAILER_API_KEY" "mail-05a-acs-payload.json"
+unset MAILER_API_KEY RECIPIENT_EMAIL
 echo "payload prepared"
 
 echo "[post ACS request]"

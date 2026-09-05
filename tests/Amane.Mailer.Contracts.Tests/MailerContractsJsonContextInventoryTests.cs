@@ -27,7 +27,6 @@ public sealed class MailerContractsJsonContextInventoryTests
         typeof(MailRequestCreateResponse),
         typeof(MailRequestStatusResponse),
         typeof(MailRequestRescheduleRequest),
-        typeof(MailDeliveryEventPayload),
         typeof(MailRecipientDto),
         typeof(MailRecipientDto[]),
         typeof(MailAttachmentDto),

@@ -7,6 +7,7 @@ using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Delivery;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Webhooks;
+using Amane.Mailer.Identity;
 
 namespace Amane.Mailer.Worker;
 
@@ -14,6 +15,8 @@ public sealed class MailRequestDispatcher
 {
     private readonly MailRequestRepository _repository;
     private readonly MailerTenantRegistry _tenants;
+    private readonly SenderRepository _senders;
+    private readonly SenderDeliveryConfigurationAdapter _senderConfiguration;
     private readonly MailerOptions _mailerOptions;
     private readonly MailerWorkerOptions _workerOptions;
     private readonly IMailDeliveryProvider _deliveryProvider;
@@ -26,6 +29,8 @@ public sealed class MailRequestDispatcher
     public MailRequestDispatcher(
         MailRequestRepository repository,
         MailerTenantRegistry tenants,
+        SenderRepository senders,
+        SenderDeliveryConfigurationAdapter senderConfiguration,
         MailerOptions mailerOptions,
         MailerWorkerOptions workerOptions,
         IMailDeliveryProvider deliveryProvider,
@@ -37,6 +42,8 @@ public sealed class MailRequestDispatcher
     {
         _repository = repository;
         _tenants = tenants;
+        _senders = senders;
+        _senderConfiguration = senderConfiguration;
         _mailerOptions = mailerOptions;
         _workerOptions = workerOptions;
         _deliveryProvider = deliveryProvider;
@@ -50,17 +57,20 @@ public sealed class MailRequestDispatcher
     public async Task DispatchAsync(MailRequestRow row, CancellationToken stoppingToken)
     {
         var startedAt = _timeProvider.GetUtcNow();
-        var tenant = _tenants.Find(row.TenantId);
-        if (tenant is null)
+        var sender = await _senders.FindAsync(row.TenantId, stoppingToken);
+        if (sender is null)
         {
             await FinalizeTerminalFailureAsync(
                 row,
                 startedAt,
                 provider: "none",
-                errorCode: "TENANT_NOT_CONFIGURED",
-                errorMessage: "Tenant is not configured.");
+                errorCode: "SENDER_NOT_CONFIGURED",
+                errorMessage: "Sender is not configured.");
             return;
         }
+
+        // Historical identity remains resolvable after disable; disable affects only new auth.
+        var tenant = _senderConfiguration.Resolve(sender);
 
         // Attachment requests are an explicit ADR 0022 exception to the at-least-once model
         // below: request-unique submission evidence, at-most-once provider invocation, and
@@ -84,7 +94,7 @@ public sealed class MailRequestDispatcher
         // 0022 evidence-first design below.
         var invocation = await _repository.TryPreparePlainProviderInvocationAsync(
             row.Id,
-            row.TenantId,
+            V2PersistenceCompatibility.SuppressionScopeId,
             providerName,
             row.LockToken,
             row.AttemptCount,
@@ -383,7 +393,7 @@ public sealed class MailRequestDispatcher
         // FinalizeTerminalFailureAsync for that case because the store already committed it.
         var suppressionPrecheck = await _repository.TryApplyAttachmentSuppressionPrecheckAsync(
             row.Id,
-            row.TenantId,
+            V2PersistenceCompatibility.SuppressionScopeId,
             row.LockToken,
             row.AttemptCount,
             stoppingToken);

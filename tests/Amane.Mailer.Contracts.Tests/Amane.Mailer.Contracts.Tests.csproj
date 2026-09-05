@@ -20,11 +20,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="TestVectors\payload-hash-vectors.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="TestVectors\payload-hash-recipient-v1.3-vectors.json" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 

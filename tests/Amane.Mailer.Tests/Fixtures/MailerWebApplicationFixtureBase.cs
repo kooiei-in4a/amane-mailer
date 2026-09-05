@@ -17,8 +17,8 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
     private TestWebApplicationFactory? _factory;
 
     public static readonly Guid TenantId = Guid.Parse("00000000-0000-0000-0000-000000000101");
-    public const string SourceService = "example-service";
-    public const string Token = "test-mail-service-token";
+    public const string SourceService = "amane-v2-internal";
+    public const string Token = "amk_00000000000000000000000000000101.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     public WebApplicationFactory<global::Program> Factory => _factory!;
     public string ConnectionString => $"Data Source={_databasePath}";
@@ -47,6 +47,7 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
                 .Build());
         var runner = new SqlMigrationRunner(factory);
         await runner.ApplyPendingAsync();
+        await SeedManagedIdentityAsync(factory);
 
         _factory = new TestWebApplicationFactory(
             ConnectionString,
@@ -134,6 +135,29 @@ public abstract class MailerWebApplicationFixtureBase(bool workerEnabled) : IAsy
 
     protected virtual void ConfigureMailerServices(IServiceCollection services)
     {
+    }
+
+    private static async Task SeedManagedIdentityAsync(SqliteConnectionFactory factory)
+    {
+        await using var connection = await factory.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO senders (
+                sender_id, email, display_name, enabled, created_at, disabled_at)
+            VALUES (
+                @SenderId, 'noreply@example.com', 'Example Service', 1,
+                '2026-01-01T00:00:00.0000000Z', NULL);
+
+            INSERT INTO api_keys (
+                key_id, sender_id, name, secret_digest, created_at, revoked_at)
+            VALUES (
+                @KeyId, @SenderId, 'test',
+                X'66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925',
+                '2026-01-01T00:00:00.0000000Z', NULL);
+            """;
+        command.Parameters.AddWithValue("@SenderId", TenantId.ToString("D"));
+        command.Parameters.AddWithValue("@KeyId", TenantId.ToString("D"));
+        await command.ExecuteNonQueryAsync();
     }
 
     protected virtual string BuildTenantConfigJson() =>
