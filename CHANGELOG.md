@@ -15,6 +15,146 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [2.0.0]
+Major breaking release. Replaces the v1 tenant credential model with managed
+Sender + API Key identity, moves the public Consumer API to `/api/mail-requests`,
+removes caller-supplied identity / payload-hash fields and the v1 outbound
+delivery webhook, and makes a fresh managed-v2 deployment the supported
+introduction path. Includes first-run Browser Setup, Admin Sender/API Key
+lifecycle, a VPS dogfood security profile, official smoke clients, and a
+coordinated cold instance-state backup/restore path. Database migrations
+`019` and `020` are required. Populated v1 mail state cannot be upgraded
+in place.
+
+### Breaking / Migration
+
+- **Identity / auth**: Tenant Bearer tokens and `tenants.json`-scoped consumer
+  credentials are no longer the v2 Consumer auth model. Callers authenticate with
+  a Sender-scoped managed API Key. The key selects the Sender; callers do not
+  supply From / tenant / provider identity.
+- **Public HTTP**: Mail request routes move from `/internal/mail-requests*` to
+  `/api/mail-requests*`. Create, status, cancel, and reschedule no longer take
+  `tenant_id` or `source_service` in the body or query string.
+- **Create body**: Public fields `tenant_id`, `source_service`, and
+  `payload_hash` are removed. Mailer computes the canonical payload identity
+  server-side. Unknown JSON members remain rejected.
+- **Idempotency**: The durable namespace is `(sender_id, mail_request_id)`.
+  Same ID under different Senders is independent. Key rotation does not change
+  ownership of already-accepted requests for that Sender.
+- **Outbound delivery webhook**: The v1 tenant outbound delivery webhook is
+  removed from the public contract and is not started in the v2 runtime.
+  Delivery outcomes are observed through the status API. No replacement webhook
+  framework is shipped.
+- **Suppressions**: Suppression scope is instance-wide (no longer tenant-partitioned
+  for callers).
+- **No v1 Consumer compatibility layer**: Existing v1.3.x clients, SDKs pinned to
+  the v1 contract, and payload-hash client helpers must be rewritten for v2.
+- **Database**: Apply `019_sender_api_key_identity.sql` then
+  `020_instance_configuration.sql` (inventory `001`–`020`). Migration `019`
+  fail-safes when populated v1 mail/suppression/provider-inbox state is present
+  (`unsupported major upgrade`); start a fresh v2 database. Fresh deployment is
+  canonical; automatic reinterpretation of populated v1 rows as Sender state is
+  not supported.
+- **Contracts / SDKs**: `Amane.Mailer.Contracts` and OpenAPI `info.version` move
+  to `2.0.0`. Python / TypeScript SDKs and consumer examples target the managed
+  API Key contract; client-side payload-hash modules and `examples/payload-hash/`
+  are removed.
+- **Operators**: Prefer the managed-v2 first-run path (Browser Setup → Admin →
+  Sender / API Key → optional live-sending). Initialized instances use SQLite
+  managed configuration and a protected provider secret file rather than legacy
+  env/Admin/provider credential fallback. The baseline deploy compose retains
+  legacy tenant inputs for manual/v1-oriented use; the VPS dogfood overlay removes
+  them for managed-v2.
+
+### Added
+
+- Managed Sender as the durable resource owner, with managed API Keys that
+  support create, one-time plaintext reveal, revoke, and Sender isolation
+  (ADR 0024 / #730, Admin lifecycle / #732).
+- First-run Browser Setup for uninitialized instances: bootstrap credential,
+  first Admin, ACS provider registration / preflight, first Sender, one-way
+  initialized gate, and host-local recovery (`setup bootstrap show`,
+  `admin reset-password`) (#731).
+- Admin UI for Sender list/detail/enable/disable, API Key metadata / create /
+  reveal / revoke, and owner-only live-sending controls under `/admin/ops` with
+  ACS preflight and audited mutations (#732).
+- Official stdlib-only Python smoke client
+  (`examples/consumer-python/send_mail.py`) and PowerShell smoke client
+  (`scripts/smoke/send-mail.ps1`) with env or hidden prompt for the API Key,
+  v2 POST, bounded status polling, and delivered-only success; plus local
+  no-send self-tests and VPS dogfood runbooks (#738).
+- VPS dogfood Compose/Caddy reference profile: reverse-proxy edge, management
+  CIDR boundary, no host-published Mailer backend port, trusted forwarded-header
+  boundary, and removal of legacy tenant JSON/token/provider inputs from the
+  managed-v2 overlay (#737).
+- Coordinated cold full instance-state backup and restore
+  (`backup-instance-state.sh` / `restore-instance-state.sh`) covering SQLite,
+  the canonical ACS provider secret, and `attachment-spool/committed`, with age
+  encryption and fail-safe plaintext cleanup; kept separate from the existing
+  online SQLite-only `backup-mailer.sh` (#739).
+- Normal Compose startup runs `mailer-migrate` to
+  `service_completed_successfully` before Mailer (#731).
+
+### Changed
+
+- Consumer delivery observation is status-API polling rather than outbound
+  webhook delivery.
+- Provider operation identity for ACS uses `(sender_id, mail_request_id)`.
+- Invalid / unknown / revoked API Keys and disabled Senders share the same
+  unauthorized response; cross-Sender request access returns non-disclosing
+  `404`.
+- Live sending remains disabled until an instance owner explicitly enables it
+  after provider preflight.
+- Ops docs and README first-use guidance cover the managed-v2 Install → Setup →
+  Sender → API Key → smoke → integrate path, including VPS dogfood and
+  backup/restore runbooks.
+
+### Security
+
+- API Key secrets are generated with >=256-bit CSPRNG entropy; only a SHA-256
+  digest is persisted; verification uses fixed-time comparison; plaintext is
+  shown once at creation and is not stored.
+- Failed Consumer authentication attempts are rate-limited per remote IP
+  (`AUTHENTICATION_RATE_LIMITED`).
+- First-run setup mutations require HTTPS, same-Origin, antiforgery, bootstrap
+  authentication, and runtime rate limiting; forwarded headers are trusted only
+  from configured proxy/network boundaries.
+- Bootstrap tokens use >=256-bit CSPRNG entropy, are not logged, and become
+  permanently unusable after initialization.
+- ACS provider secrets are stored as protected files, not as normal SQLite
+  plaintext.
+- Admin Sender / API Key / live-sending mutations require CSRF validation and
+  explicit confirmation, and emit owner-visible audit events.
+- Official smoke clients intentionally omit CLI secret arguments so keys are not
+  left in shell history; remote smoke endpoints require HTTPS.
+- The VPS dogfood profile avoids publishing the Mailer backend host port and
+  keeps Admin/Setup behind the management allowlist boundary.
+- Cold instance-state backup encrypts with age, refuses to run while Mailer /
+  migration mutators are still up, and fail-safes plaintext archive cleanup /
+  offsite failure handling.
+
+### Deployment / Operations
+
+- Managed-v2 Docker/Compose path: migrate-before-mailer, Browser Setup, then
+  Admin-managed Sender/API Key and live-sending control.
+- VPS dogfood reference overlay + Caddy example and JA/EN deployment / smoke
+  runbooks.
+- Full recovery point for managed-v2 uses cold `backup-instance-state.sh`;
+  restore requires an empty target and does not silently overwrite or start
+  services. Caddy volumes and external bounce secrets remain separate recovery
+  units.
+- Initialized managed configuration and Sender/API Key metadata are persisted in
+  SQLite, while the ACS provider credential is persisted in the protected
+  provider secret file. Plaintext API Key values remain one-time reveal only.
+
+### Compatibility
+
+- Breaking major relative to v1.3.8 for the public HTTP contract,
+  `Amane.Mailer.Contracts`, SDKs/examples, auth model, and webhook consumers.
+- Migration inventory advances from `001`–`018` to `001`–`020`.
+- Populated v1 state is not supported for an in-place major upgrade; fresh v2
+  deployment is canonical.
+
 ## [1.3.8] - 2026-09-04
 
 Patch release focused on maintenance and correctness in the mail acceptance and
