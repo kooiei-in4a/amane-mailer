@@ -115,6 +115,7 @@ public sealed class MailerHeartbeatTests
             var configuration = BuildConfiguration(databasePath);
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
+            await MarkInitializedAsync(databasePath, ct);
 
             var repository = MailRequestRepository.CreateStandalone(factory);
             var now = DateTimeOffset.UtcNow;
@@ -145,6 +146,7 @@ public sealed class MailerHeartbeatTests
             var configuration = BuildConfiguration(databasePath);
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
+            await MarkInitializedAsync(databasePath, ct);
 
             var repository = MailRequestRepository.CreateStandalone(factory);
             var now = DateTimeOffset.UtcNow;
@@ -175,11 +177,70 @@ public sealed class MailerHeartbeatTests
             var configuration = BuildConfiguration(databasePath);
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
+            await MarkInitializedAsync(databasePath, ct);
 
             var repository = MailRequestRepository.CreateStandalone(factory);
             var now = DateTimeOffset.UtcNow;
             await repository.UpsertHeartbeatAsync("worker", now, ct);
             await repository.UpsertHeartbeatAsync("sweep", now.AddMinutes(-10), ct);
+
+            var exitCode = await MailerCliHost.RunHealthCheckAsync(configuration, ct);
+
+            Assert.Equal(1, exitCode);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task healthcheck_returns_healthy_when_uninitialized_without_heartbeats()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-heartbeat-uninitialized", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+
+        try
+        {
+            var configuration = BuildConfiguration(databasePath);
+            var factory = new SqliteConnectionFactory(configuration);
+            await MigrateAsync(factory, ct);
+
+            var exitCode = await MailerCliHost.RunHealthCheckAsync(configuration, ct);
+
+            Assert.Equal(DbMigrateCommand.SuccessExitCode, exitCode);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task healthcheck_returns_unhealthy_when_instance_state_unknown()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-heartbeat-unknown", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+
+        try
+        {
+            var configuration = BuildConfiguration(databasePath);
+            var factory = new SqliteConnectionFactory(configuration);
+            await MigrateAsync(factory, ct);
+
+            await using (var connection = new SqliteConnection($"Data Source={databasePath}"))
+            {
+                await connection.OpenAsync(ct);
+                await using var command = connection.CreateCommand();
+                command.CommandText = "DELETE FROM instance_configuration WHERE id = 1;";
+                await command.ExecuteNonQueryAsync(ct);
+            }
 
             var exitCode = await MailerCliHost.RunHealthCheckAsync(configuration, ct);
 
@@ -205,6 +266,7 @@ public sealed class MailerHeartbeatTests
             var configuration = BuildConfiguration(databasePath);
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
+            await MarkInitializedAsync(databasePath, ct);
 
             var exitCode = await MailerCliHost.RunHealthCheckAsync(configuration, ct);
 
@@ -230,6 +292,7 @@ public sealed class MailerHeartbeatTests
             var configuration = BuildConfiguration(databasePath);
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
+            await MarkInitializedAsync(databasePath, ct);
 
             var repository = MailRequestRepository.CreateStandalone(factory);
             await repository.UpsertHeartbeatAsync("worker", DateTimeOffset.UtcNow, ct);
@@ -258,6 +321,7 @@ public sealed class MailerHeartbeatTests
             var configuration = BuildConfiguration(databasePath);
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
+            await MarkInitializedAsync(databasePath, ct);
 
             var repository = MailRequestRepository.CreateStandalone(factory);
             await repository.UpsertHeartbeatAsync("sweep", DateTimeOffset.UtcNow, ct);
@@ -293,6 +357,7 @@ public sealed class MailerHeartbeatTests
 
             var factory = new SqliteConnectionFactory(configuration);
             await MigrateAsync(factory, ct);
+            await MarkInitializedAsync(databasePath, ct);
 
             var exitCode = await MailerCliHost.RunHealthCheckAsync(configuration, ct);
 
@@ -354,6 +419,15 @@ public sealed class MailerHeartbeatTests
     {
         var runner = new SqlMigrationRunner(factory);
         await runner.ApplyPendingAsync(ct);
+    }
+
+    private static async Task MarkInitializedAsync(string databasePath, CancellationToken ct)
+    {
+        await using var connection = new SqliteConnection($"Data Source={databasePath}");
+        await connection.OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE instance_configuration SET initialized_at = '2026-01-01T00:00:00Z' WHERE id = 1;";
+        await command.ExecuteNonQueryAsync(ct);
     }
 
     private static IReadOnlyDictionary<string, string> ParseStats(string stats) =>
