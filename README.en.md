@@ -148,7 +148,7 @@ Operational runbooks:
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
 
-After v1.3.8 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v1.3.8`)
+After v2.0.0 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v2.0.0`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
 run `scripts/release-smoke.sh` on **Linux local Docker** (supported canonical entrypoint).
@@ -157,11 +157,11 @@ Live release smoke on Windows Docker Desktop is **out of support scope**.
 validate that contract on Linux via self-tests (`release-smoke-preflight-self-test.ps1`, etc.).
 See [Published release image smoke](docs/ops/release-image-smoke.en.md) [(ja)](docs/ops/release-image-smoke.md)
 for steps and configuration. Published identities:
-[v1.3.8 release record](docs/releases/v1.3.8.md) /
-[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v1.3.8).
+[v2.0.0 release record](docs/releases/v2.0.0.md) /
+[GitHub Release](https://github.com/kooiei-in4a/amane-mailer/releases/tag/v2.0.0).
 
-The v1.3.8 GHCR runtime image is **`linux/amd64` only**.
-The current public release tag is `v1.3.8`, but release smoke requires an explicit
+The v2.0.0 GHCR runtime image is **`linux/amd64` only**.
+The current public release tag is `v2.0.0`, but release smoke requires an explicit
 `MAILER_IMAGE_TAG` or `MAILER_IMAGE_DIGEST` (no implicit default).
 Confirm the platform in the release notes or Docker manifest and pin
 `MAILER_IMAGE_PLATFORM=linux/amd64` when needed.
