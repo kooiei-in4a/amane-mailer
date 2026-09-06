@@ -154,11 +154,15 @@ public sealed class FirstRunSetupTests
 
             using var health = await client.GetAsync("/healthz", TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+            using var healthJson = JsonDocument.Parse(
+                await health.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+            Assert.True(healthJson.RootElement.GetProperty("healthy").GetBoolean());
 
             using var ready = await client.GetAsync("/readyz", TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.ServiceUnavailable, ready.StatusCode);
             using var readyJson = JsonDocument.Parse(
                 await ready.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+            Assert.False(readyJson.RootElement.GetProperty("ready").GetBoolean());
             Assert.Equal("uninitialized", readyJson.RootElement.GetProperty("reason").GetString());
 
             using var api = await client.GetAsync("/api/mail-requests/not-available", TestContext.Current.CancellationToken);

@@ -254,36 +254,60 @@ if ! "${COMPOSE[@]}" up -d --wait mailer >"${COMPOSE_LOG}" 2>&1; then
   die 'release-smoke compose failed to start'
 fi
 
-wait_for_http() {
-  local path="$1" output="$2" attempt
+READYZ_EXPECTATION="${SCRIPT_DIR}/release-image-readyz-expectation.py"
+MAILER_MAJOR="${MAILER_VERSION%%.*}"
+
+# Capture status + body without treating non-2xx as transport failure. v2 fresh
+# managed instances intentionally return /readyz 503 reason=uninitialized.
+wait_for_http_status() {
+  local path="$1" output="$2" expected_status="$3" attempt status
   for attempt in $(seq 1 30); do
-    if curl -fsS -m 15 "${MAILER_URL}${path}" -o "${output}"; then
+    status="$(curl -sS -m 15 -o "${output}" -w '%{http_code}' "${MAILER_URL}${path}" || true)"
+    if [[ "${status}" == "${expected_status}" ]]; then
+      printf '%s\n' "${status}"
       return 0
     fi
     sleep 2
   done
+  printf '%s\n' "${status:-000}"
   return 1
 }
 
-if wait_for_http '/healthz' "${HEALTH_FILE}"; then
-  printf '[PASS] GET /healthz -> 200\n'
+HEALTH_STATUS="$(wait_for_http_status '/healthz' "${HEALTH_FILE}" 200)" || die "GET /healthz did not return 200 (last=${HEALTH_STATUS})"
+python3 "${READYZ_EXPECTATION}" validate-healthz \
+  --status-code "${HEALTH_STATUS}" \
+  --body-file "${HEALTH_FILE}"
+printf '[PASS] GET /healthz -> 200 healthy=true\n'
+
+if [[ "${MAILER_MAJOR}" -ge 2 ]]; then
+  READY_EXPECTED_STATUS=503
 else
-  die 'GET /healthz did not return 200'
+  READY_EXPECTED_STATUS=200
 fi
 
-if wait_for_http '/readyz' "${READY_FILE}"; then
+READY_STATUS="$(wait_for_http_status '/readyz' "${READY_FILE}" "${READY_EXPECTED_STATUS}")" || \
+  die "GET /readyz did not return ${READY_EXPECTED_STATUS} (last=${READY_STATUS})"
+python3 "${READYZ_EXPECTATION}" validate-readyz \
+  --mailer-version "${MAILER_VERSION}" \
+  --status-code "${READY_STATUS}" \
+  --body-file "${READY_FILE}"
+if [[ "${MAILER_MAJOR}" -ge 2 ]]; then
+  printf '[PASS] GET /readyz -> 503 ready=false reason=uninitialized\n'
+else
   printf '[PASS] GET /readyz -> 200\n'
-else
-  die 'GET /readyz did not return 200'
 fi
 
-python3 - "${IDENTITY_FILE}" "${REPORT_FILE}" "${HELP_FILE}" "${HEALTH_FILE}" "${READY_FILE}" <<'PY'
+python3 - "${IDENTITY_FILE}" "${REPORT_FILE}" "${HELP_FILE}" "${HEALTH_FILE}" "${READY_FILE}" "${MAILER_VERSION}" "${READY_STATUS}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-identity_path, report_path, help_path, health_path, ready_path = sys.argv[1:]
+identity_path, report_path, help_path, health_path, ready_path, mailer_version, ready_status = sys.argv[1:]
 identity = json.loads(Path(identity_path).read_text(encoding="utf-8"))
+ready_body = json.loads(Path(ready_path).read_text(encoding="utf-8"))
+major = int(mailer_version.split(".", 1)[0])
+# Keep smoke.* values as the literal "PASS" strings expected by
+# scripts/verify-published-release-image.py; put v2 observation details aside.
 report = {
     "schemaVersion": 1,
     "sourceCommitSha": identity["sourceCommitSha"],
@@ -303,6 +327,12 @@ report = {
         "readyzFile": Path(ready_path).name,
     },
 }
+if major >= 2:
+    report["readyzObservation"] = {
+        "httpStatus": int(ready_status),
+        "ready": ready_body.get("ready"),
+        "reason": ready_body.get("reason"),
+    }
 Path(report_path).write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
 

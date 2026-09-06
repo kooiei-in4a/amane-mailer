@@ -12,12 +12,15 @@ REPRO_TARGET="${REPO_ROOT}/scripts/check-release-image-reproducibility.sh"
 VERIFY_TARGET="${REPO_ROOT}/scripts/verify-published-release-image.sh"
 VERIFY_PYTHON_TARGET="${REPO_ROOT}/scripts/verify-published-release-image.py"
 VERIFY_SELF_TEST="${REPO_ROOT}/scripts/verify-published-release-image-self-test.sh"
+READYZ_EXPECTATION="${REPO_ROOT}/scripts/release-image-readyz-expectation.py"
 
 bash -n "${TARGET}"
 bash -n "${PUBLISH_TARGET}"
 bash -n "${REPRO_TARGET}"
 bash -n "${VERIFY_TARGET}" "${VERIFY_SELF_TEST}"
 python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))' "${VERIFY_PYTHON_TARGET}"
+python3 -c 'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))' "${READYZ_EXPECTATION}"
+python3 "${READYZ_EXPECTATION}" self-test
 
 grep -F -- '--platform "${PLATFORM}"' "${TARGET}" >/dev/null
 grep -F -- '--build-arg "SOURCE_COMMIT=${SOURCE_SHA}"' "${TARGET}" >/dev/null
@@ -36,7 +39,15 @@ grep -F -- 'export MAILER_PULL_POLICY="never"' "${TARGET}" >/dev/null
 grep -F -- 'container --help' "${TARGET}" >/dev/null
 grep -F -- "'/healthz'" "${TARGET}" >/dev/null
 grep -F -- "'/readyz'" "${TARGET}" >/dev/null
+grep -F -- 'release-image-readyz-expectation.py' "${TARGET}" >/dev/null
+grep -F -- 'ready=false reason=uninitialized' "${TARGET}" >/dev/null
 grep -F -- 'sourceDateEpoch' "${TARGET}" >/dev/null
+
+# Must not treat any HTTP 503 as success; v2 requires exact uninitialized body.
+if grep -nE 'HTTP 503ならPASS|status_code == 503[^0-9]|http_code.*503.*PASS' "${TARGET}" "${READYZ_EXPECTATION}"; then
+  echo '[error] release smoke must not accept generic HTTP 503 as readiness success' >&2
+  exit 1
+fi
 
 grep -F -- 'ARG SOURCE_DATE_EPOCH=' "${REPO_ROOT}/infra/docker/Dockerfile" >/dev/null
 grep -F -- 'DeterministicStaticWebAssetsTimestamp' "${REPO_ROOT}/infra/docker/Dockerfile" >/dev/null

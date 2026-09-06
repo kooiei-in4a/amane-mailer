@@ -169,6 +169,15 @@ public static class MailerCliHost
             if (!ok)
                 return 1;
 
+            // Liveness (CLI healthcheck) is not readiness. A valid fresh v2 managed instance is
+            // Uninitialized until first-run setup completes: schema is current and the process can
+            // serve setup, but workers are intentionally not running and /readyz stays 503.
+            var instanceState = await InstanceRuntimeStateProbe.ReadAsync(configuration, cancellationToken);
+            if (instanceState.Kind == InstanceRuntimeStateKind.Unknown)
+                return 1;
+            if (instanceState.IsUninitialized)
+                return DbMigrateCommand.SuccessExitCode;
+
             var workerEnabled = MailerWorkerOptions.IsEnabled(configuration);
             if (!workerEnabled)
                 return DbMigrateCommand.SuccessExitCode;
