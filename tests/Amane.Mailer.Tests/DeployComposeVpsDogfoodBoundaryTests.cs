@@ -319,6 +319,33 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
         {
             foreach (var required in new[]
                      {
+                         "amane-platform-edge",
+                         "com.docker.compose.project",
+                         "com.docker.compose.service",
+                         "single-file",
+                         "bind mount",
+                         "0644",
+                         "owner",
+                         "group",
+                         "mode",
+                         "inode",
+                         "device",
+                         "current",
+                         "container-visible",
+                         "HOST_CADDY_SHA",
+                         "CANDIDATE_SHA",
+                         "CONTAINER_CADDY_SHA",
+                         "in-place",
+                         "fsync",
+                         "caddy validate --config -",
+                         "caddy reload",
+                         "operator",
+                         "staging",
+                         "last-known-good",
+                         "same inode",
+                         "exactly one",
+                         "/etc/caddy/Caddyfile",
+                         "RW=false",
                          "real GeoLite",
                          "/srv/platform/edge/Caddyfile",
                          "IPv4 CIDR count",
@@ -334,10 +361,7 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
                          "Caddy 2.10.2",
                          "caddy validate",
                          "Human approval",
-                         "last-known-good",
-                         "install -o root -g root",
-                         "mv -f",
-                         "caddy reload",
+                         "install -o",
                          "/healthz",
                          "/readyz",
                          "/api",
@@ -350,6 +374,37 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             {
                 Assert.Contains(required, runbook, StringComparison.Ordinal);
             }
+
+            Assert.True(
+                runbook.Contains("preserve", StringComparison.OrdinalIgnoreCase)
+                    || runbook.Contains("その値をそのまま維持", StringComparison.Ordinal),
+                "The runbook must preserve the freshly observed current owner/mode.");
+
+            foreach (var forbidden in new[]
+                     {
+                         "docker exec proxy",
+                         "docker inspect proxy",
+                         "expected_mode=600",
+                         "expected_mode = 600",
+                         "chmod 600",
+                         "atomic rename",
+                         "atomic replace",
+                         "mv -f",
+                         "\"${candidate}\" \"${current}\"",
+                         "\"${rollback_candidate}\" \"${current}\"",
+                         "--mount \"type=bind,src=${candidate}",
+                         "/secure/geolite",
+                         "/secure/operator-secrets"
+                     })
+            {
+                Assert.DoesNotContain(forbidden, runbook, StringComparison.OrdinalIgnoreCase);
+            }
+
+            Assert.Contains(
+                "install -o \"${original_owner}\" -g \"${original_group}\" -m \"${original_mode}\"",
+                runbook,
+                StringComparison.Ordinal);
+            Assert.Contains("last-known-good backup", runbook, StringComparison.OrdinalIgnoreCase);
         }
 
         var smokeRunbooks = new[]
