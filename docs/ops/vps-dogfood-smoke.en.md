@@ -28,6 +28,23 @@ an executed run needs evidence, record only value-free facts such as image
 digest, time, HTTP status/code, Mailer's `mail_request_id`, and delivery status.
 Do not record recipient or message content.
 
+## Issue #744 / #745 ownership and acceptance boundary
+
+This checklist separates the responsibilities of #744 and #745. #744 acceptance is limited to
+these edge and regression checks:
+
+- JP / non-JP edge (the JP allow-list and the pre-challenge non-JP 404)
+- Caddy Basic Auth fail/success boundary
+- Mailer's own authentication boundary
+- `/api` regression
+- backend `:8080` unreachable from the host/public network
+- SSH login and the SSH rollback path
+
+Fresh reset/setup, real ACS send, and UX dogfood belong to #745 and are not performed during #744.
+The existing fresh VPS, bootstrap/setup, A1/A2/B1, and restart sections are retained as historical
+dogfood procedure and context for the later #745 operator run; they are not #744 acceptance evidence
+and are not executed during this rework.
+
 ## 1. Prerequisites and fresh VPS
 
 - [ ] Docker Engine and a Compose plugin supporting `!override` / `!reset` are installed.

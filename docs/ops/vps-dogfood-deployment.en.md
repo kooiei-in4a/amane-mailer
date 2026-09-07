@@ -154,6 +154,195 @@ missing required columns, conflicting mappings, and an empty/invalid hash stop t
 render fail-closed. Raw GeoLite CSV data is not copied to the output, and the hash
 value is not printed in logs or the summary.
 
+### Caddy Basic Auth credential boundary
+
+For live operations, generate a new, sufficiently strong random Caddy Basic Auth password
+with an approved password manager or CSPRNG. This rework does not generate a real password
+or real hash. The Caddy Basic Auth password is a separate credential from the Mailer Admin
+password and from the Setup bootstrap token; never reuse any of them. It is also unrelated
+to MaxMind / GeoLite download credentials, account IDs, or license keys.
+
+- For the Basic Auth credential material, only the bcrypt hash belongs in the `Caddyfile`. Never
+  store the plaintext password in the repository, production `Caddyfile`, `.env`, an issue, or a log.
+- Give the renderer the already-generated hash only, using `--basic-auth-hash-file`; do not
+  give it a plaintext password or a password generator. Do not print the hash in logs or evidence.
+- Handle the live password and bcrypt hash separately through the operator's approved secret
+  path. This rework does not generate or record a real credential.
+
+### Safe live-edge apply lifecycle (production runbook)
+
+This section is a production live-edge runbook. The VPS commands below are documentation only
+and are **not executed during this rework**. Source Stage build/validation approval does not
+authorize live mutation. Before changing production, obtain a separate Human approval recorded
+with the change ID, hostname, candidate digest, executor, and rollback owner.
+
+1. **Generate a candidate from real GeoLite input.** From the reviewed source checkout root, use
+   the operator-secured current GeoLite2 Country IPv4 blocks, IPv6 blocks, locations-en CSV, and
+   an already-generated bcrypt hash file—not the self-test fixture. Do not change the production
+   `/srv/platform/edge/Caddyfile` at this stage.
+
+   ```bash
+   set -Eeuo pipefail
+   umask 077
+   edge_dir=/srv/platform/edge
+   candidate="${edge_dir}/Caddyfile.candidate"
+   change_id="$(date -u +%Y%m%dT%H%M%SZ)"
+   render_record="${edge_dir}/change-records/${change_id}-caddy-render.txt"
+   mkdir -p "${edge_dir}/change-records"
+
+   if ! python3 infra/deploy/render-vps-management-edge.py \
+     --ipv4-blocks /secure/geolite/current/GeoLite2-Country-Blocks-IPv4.csv \
+     --ipv6-blocks /secure/geolite/current/GeoLite2-Country-Blocks-IPv6.csv \
+     --locations /secure/geolite/current/GeoLite2-Country-Locations-en.csv \
+     --basic-auth-username caddy-admin \
+     --basic-auth-hash-file /secure/operator-secrets/caddy-admin.bcrypt \
+     --template infra/deploy/Caddyfile.vps-dogfood.example \
+     --output "${candidate}" >"${render_record}"; then
+     echo 'STOP: GeoLite render failed; production Caddyfile was not changed.' >&2
+     exit 1
+   fi
+   ```
+
+   `caddy-admin` is a non-secret example. Use a deployment-specific username in live operations.
+   Keep the render summary as a protected value-free change record; it must not contain a hash or password.
+
+2. **Record candidate counts, size, and digest.** Reconcile the renderer summary with the candidate
+   and record `IPv4 CIDR count`, `IPv6 CIDR count`, `bytes`, and `SHA-256` in the change record.
+   The following additional record checks the candidate on disk without displaying a secret value.
+
+   ```bash
+   {
+     grep -E '^(IPv4 CIDR count|IPv6 CIDR count|output bytes|SHA-256):' "${render_record}"
+     printf 'candidate bytes: %s\n' "$(stat -c '%s' "${candidate}")"
+     printf 'candidate SHA-256: %s\n' "$(sha256sum "${candidate}" | awk '{print $1}')"
+   } >>"${render_record}"
+   ```
+
+   A zero count, unexpected count, mismatched bytes/SHA-256, or inability to record the summary is
+   STOP. Do not copy raw GeoLite CSV data, the password, or the bcrypt hash into the change record.
+
+3. **Validate with pinned/running Caddy 2.10.2 before changing production.** Record the running
+   `proxy` version and image digest and confirm that they match the repository pin. Keep the image
+   pinned; do not substitute digest-less `caddy:2.10.2` or `latest`.
+
+   ```bash
+   caddy_image='caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d'
+   running_image="$(docker inspect --format '{{.Config.Image}}' proxy)"
+   test "${running_image}" = "${caddy_image}"
+   docker exec proxy caddy version
+
+   if ! docker run --rm --pull=never \
+     --env MAILER_PUBLIC_HOSTNAME=mailer.example.invalid \
+     --env MAILER_MANAGEMENT_ALLOWED_CIDRS=192.0.2.0/24 \
+     --mount "type=bind,src=${candidate},dst=/etc/caddy/Caddyfile,readonly" \
+     "${caddy_image}" \
+     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
+     echo 'STOP: candidate Caddyfile validation failed; production Caddyfile was not changed.' >&2
+     exit 1
+   fi
+   ```
+
+   The hostname and metrics CIDR above are documentation placeholders. Pass the production values
+   from operator configuration without printing them. A validation failure is always STOP: do not
+   replace production with the candidate and do not fall back to an allow-all CIDR.
+
+4. **Perform live mutation only after separate Human approval.** Source Stage approval, the renderer
+   self-test, CI pass, and a successful step-3 validation are not the live-mutation Human approval.
+   STOP if the approval is not recorded, the candidate digest changed, or the SSH rollback owner is absent.
+
+5. **Save current as timestamped/SHA-256 last-known-good.** After approval, verify that
+   `/srv/platform/edge/Caddyfile` is not a symlink, is owned by `root:root`, and has this profile's
+   expected mode `0600`. Do not repair a different owner/mode in place and continue; stop for review.
+   Compute current's SHA-256 and save it in a same-filesystem directory named
+   `Caddyfile.<UTC timestamp>.sha256-<64 hex>`. Record that the backup hash matches current.
+
+   ```bash
+   current="${edge_dir}/Caddyfile"
+   test -f "${current}" && test ! -L "${current}"
+   test "$(stat -c '%U:%G' "${current}")" = 'root:root'
+   expected_mode="$(stat -c '%a' "${current}")"
+   test "${expected_mode}" = '600'
+   current_sha256="$(sha256sum "${current}" | awk '{print $1}')"
+   last_known_good_dir="${edge_dir}/last-known-good"
+   last_known_good="${last_known_good_dir}/Caddyfile.${change_id}.sha256-${current_sha256}"
+   mkdir -p "${last_known_good_dir}"
+   install -o root -g root -m "${expected_mode}" \
+     "${current}" "${last_known_good}"
+   test "$(sha256sum "${last_known_good}" | awk '{print $1}')" = "${current_sha256}"
+   ```
+
+6. **Atomic-replace the candidate.** Confirm that candidate and current are on the same filesystem
+   and that candidate is also `root:root` / expected mode `0600`. Set candidate ownership/mode before
+   the replace, then rename within the same directory and verify afterward.
+
+   ```bash
+   test -f "${candidate}" && test ! -L "${candidate}"
+   chown root:root "${candidate}"
+   chmod "${expected_mode}" "${candidate}"
+   test "$(stat -c '%d' "${candidate}")" = "$(stat -c '%d' "${current}")"
+   mv -f -- "${candidate}" "${current}"
+   test "$(stat -c '%U:%G %a' "${current}")" = 'root:root 600'
+   ```
+
+   Do not copy across directories, edit, truncate, or temporarily replace the file with an allow-all
+   configuration. If `mv` fails, STOP and leave current unchanged.
+
+7. **Use `caddy reload`, not a container restart/recreate.** After replacing the mounted current path,
+   run only the Caddy reload below. Do not use `docker compose restart`, `up -d --force-recreate`, or
+   container stop/start in this apply lifecycle.
+
+   ```bash
+   docker exec proxy caddy reload \
+     --config /etc/caddy/Caddyfile --adapter caddyfile
+   ```
+
+8. **Run all post-reload acceptance checks.** Record each result in the existing value-free acceptance
+   record. From a JP source, `/admin` and `/setup` must cover the Caddy Basic Auth fail/success boundary
+   and Mailer's own authentication boundary; a non-JP source must receive a 404 before the challenge.
+   The `/api` regression must be an approved no-send regression check.
+
+   - `/healthz`
+   - `/readyz`
+   - `/api` regression
+   - `/admin`
+   - `/setup`
+   - public host `:8080` is unreachable (the Mailer backend port is not published)
+   - SSH login / rollback session
+
+9. **On failure, restore old Caddyfile → validate → reload → regression verification.** For a reload
+   failure, acceptance failure, JP allow-list misgeneration, or ownership/mode drift, do not skip steps
+   or edit around the failure. Restore last-known-good, validate it with the same pinned Caddy 2.10.2,
+   then `caddy reload`, then repeat every step-8 acceptance check and the `/api` regression. If restore,
+   validation, reload, or regression verification fails, keep SSH available, STOP, and escalate.
+
+   Restore the current path without editing it in place: put last-known-good in a same-directory
+   temporary file with root ownership / expected mode, then atomically rename it.
+
+   ```bash
+   rollback_candidate="${edge_dir}/Caddyfile.rollback.${change_id}"
+   install -o root -g root -m "${expected_mode}" \
+     "${last_known_good}" "${rollback_candidate}"
+   mv -f -- "${rollback_candidate}" "${current}"
+   test "$(stat -c '%U:%G %a' "${current}")" = 'root:root 600'
+
+   docker run --rm --pull=never \
+     --env MAILER_PUBLIC_HOSTNAME=mailer.example.invalid \
+     --env MAILER_MANAGEMENT_ALLOWED_CIDRS=192.0.2.0/24 \
+     --mount "type=bind,src=${current},dst=/etc/caddy/Caddyfile,readonly" \
+     "${caddy_image}" \
+     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+   docker exec proxy caddy reload \
+     --config /etc/caddy/Caddyfile --adapter caddyfile
+   ```
+
+   If an incorrectly generated JP allow-list rejects every request from Japan, do not attempt to fix it
+   through the public path. Use the pre-established SSH session to restore last-known-good, validate,
+   reload, and verify the regression. Do not begin an apply until SSH rollback has been confirmed.
+
+10. **Fail closed on GeoLite download/render/validate/update failure.** Keep the current last-known-good
+    production Caddyfile in place. Never fall back to an empty candidate, empty CIDRs, default routes, or
+    allow-all (`0.0.0.0/0` / `::/0`). Record the failure and STOP.
+
 For SSH-tunnel-only access, bind Caddy's host ports to `127.0.0.1` and do not
 publish the remote host's 80/443. This makes the public API tunnel-only too.
 For a public API with private management, operate public 80/443 through the

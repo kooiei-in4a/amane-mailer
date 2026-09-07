@@ -306,6 +306,81 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Vps_runbooks_document_safe_live_edge_apply_and_issue_744_745_ownership()
+    {
+        var deploymentRunbooks = new[]
+        {
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.md"),
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.en.md")
+        };
+
+        foreach (var runbook in deploymentRunbooks)
+        {
+            foreach (var required in new[]
+                     {
+                         "real GeoLite",
+                         "/srv/platform/edge/Caddyfile",
+                         "IPv4 CIDR count",
+                         "IPv6 CIDR count",
+                         "SHA-256",
+                         "Caddy Basic Auth password",
+                         "Mailer Admin",
+                         "Setup bootstrap token",
+                         "bcrypt hash",
+                         "plaintext password",
+                         "MaxMind",
+                         "--basic-auth-hash-file",
+                         "Caddy 2.10.2",
+                         "caddy validate",
+                         "Human approval",
+                         "last-known-good",
+                         "install -o root -g root",
+                         "mv -f",
+                         "caddy reload",
+                         "/healthz",
+                         "/readyz",
+                         "/api",
+                         "/admin",
+                         "/setup",
+                         ":8080",
+                         "SSH",
+                         "allow-all"
+                     })
+            {
+                Assert.Contains(required, runbook, StringComparison.Ordinal);
+            }
+        }
+
+        var smokeRunbooks = new[]
+        {
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-smoke.md"),
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-smoke.en.md")
+        };
+
+        foreach (var runbook in smokeRunbooks)
+        {
+            foreach (var required in new[]
+                     {
+                         "#744",
+                         "#745",
+                         "JP / non-JP",
+                         "Basic Auth",
+                         "Mailer",
+                         "/api",
+                         ":8080",
+                         "SSH",
+                         "reset/setup",
+                         "real ACS send",
+                         "UX dogfood",
+                         "historical"
+                     })
+            {
+                Assert.Contains(required, runbook, StringComparison.Ordinal);
+            }
+        }
+    }
+
     private static string ServiceBlock(string compose, string serviceName)
     {
         var lines = compose.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');

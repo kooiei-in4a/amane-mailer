@@ -26,6 +26,23 @@ operator が後日、目的・宛先・時間帯を明示して実行するた�
 記録するのは image digest、時刻、HTTP status/code、Mailer が表示する `mail_request_id`、
 delivery status などの value-free な情報に限定します。宛先や message body は記録しません。
 
+## Issue #744 / #745 の ownership と acceptance boundary
+
+この checklist では #744 と #745 の責務を分けます。#744 の acceptance は次の edge / regression
+だけです。
+
+- JP / non-JP edge（JP allow-list と non-JP の challenge 前 404）
+- Caddy Basic Auth の fail / success boundary
+- Mailer 自身の auth boundary
+- `/api` regression
+- backend `:8080` が host/public から到達不能であること
+- SSH login と SSH からの rollback 経路
+
+fresh reset/setup、real ACS send、UX dogfood は #745 の ownership であり、#744 中には実施しません。
+この文書に残る fresh VPS、bootstrap/setup、A1/A2/B1、restart などの historical dogfood 内容は、
+#745 の後続 operator 手順と context として保持しています。これらを #744 の acceptance evidence
+や、この rework 中に実行した作業とは扱いません。
+
 ## 1. 前提と fresh VPS
 
 - [ ] Docker Engine と Compose plugin（`!override` / `!reset` 対応）がある。
