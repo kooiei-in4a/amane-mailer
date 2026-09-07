@@ -3,8 +3,8 @@ using System.Text.RegularExpressions;
 namespace Amane.Mailer.Tests;
 
 /// <summary>
-/// Structural regression guards for the Issue #733 PR1 VPS reference profile. These checks are
-/// intentionally dependency-free and complement (rather than replace) `docker compose config`.
+/// Structural regression guards for the Issue #744 VPS management-edge reference profile. These
+/// checks are intentionally dependency-free and complement (rather than replace) `docker compose config`.
 /// </summary>
 public sealed class DeployComposeVpsDogfoodBoundaryTests
 {
@@ -115,7 +115,7 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
     }
 
     [Fact]
-    public void Caddyfile_separates_operator_management_from_public_api_paths()
+    public void Caddyfile_requires_japan_basic_auth_for_browser_management_and_preserves_metrics_boundary()
     {
         var caddyfile = ReadRepositoryFile(
             "infra",
@@ -124,16 +124,85 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
 
         Assert.Contains("{$MAILER_PUBLIC_HOSTNAME}", caddyfile, StringComparison.Ordinal);
         Assert.Contains(
-            "path /admin /admin/* /setup /setup/* /metrics",
+            "path /admin /admin/* /setup /setup/*",
             caddyfile,
             StringComparison.Ordinal);
         Assert.Contains(
-            "remote_ip {$MAILER_MANAGEMENT_ALLOWED_CIDRS}",
+            "{{JP_IPV4_CIDRS}}",
             caddyfile,
             StringComparison.Ordinal);
+        Assert.Contains(
+            "{{JP_IPV6_CIDRS}}",
+            caddyfile,
+            StringComparison.Ordinal);
+        Assert.Contains("basic_auth", caddyfile, StringComparison.Ordinal);
+        Assert.Contains(
+            "{{CADDY_BASIC_AUTH_USERNAME}} {{CADDY_BASIC_AUTH_BCRYPT_HASH}}",
+            caddyfile,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "admin {{CADDY_BASIC_AUTH_BCRYPT_HASH}}",
+            caddyfile,
+            StringComparison.Ordinal);
+        Assert.Contains("header_up -Authorization", caddyfile, StringComparison.Ordinal);
+        Assert.Contains("\troute {", caddyfile, StringComparison.Ordinal);
         Assert.Matches(
-            new Regex(@"handle @management \{\s+respond 404\s+\}", RegexOptions.Multiline),
+            new Regex(@"handle @browser_family \{\s+respond 404\s+\}", RegexOptions.Multiline),
             caddyfile);
+
+        var browserMatcherIndex = caddyfile.IndexOf("@browser_jp {", StringComparison.Ordinal);
+        var metricsMatcherIndex = caddyfile.IndexOf("@metrics_operator {", StringComparison.Ordinal);
+        var metricsMatcherEndIndex = metricsMatcherIndex >= 0
+            ? caddyfile.IndexOf("@metrics {", metricsMatcherIndex, StringComparison.Ordinal)
+            : -1;
+        Assert.True(browserMatcherIndex >= 0);
+        Assert.True(metricsMatcherIndex >= 0 && metricsMatcherEndIndex > metricsMatcherIndex);
+        var browserMatcher = caddyfile[browserMatcherIndex..metricsMatcherIndex];
+        var metricsMatcher = caddyfile[metricsMatcherIndex..metricsMatcherEndIndex];
+        Assert.Contains("{{JP_IPV4_CIDRS}}", browserMatcher, StringComparison.Ordinal);
+        Assert.Contains("{{JP_IPV6_CIDRS}}", browserMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("/metrics", browserMatcher, StringComparison.Ordinal);
+        Assert.Contains(
+            "remote_ip {$MAILER_MANAGEMENT_ALLOWED_CIDRS}",
+            metricsMatcher,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("{{JP_IPV4_CIDRS}}", metricsMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("{{JP_IPV6_CIDRS}}", metricsMatcher, StringComparison.Ordinal);
+
+        var browserHandlerIndex = caddyfile.IndexOf("handle @browser_jp {", StringComparison.Ordinal);
+        var nonJapanHandlerIndex = caddyfile.IndexOf("handle @browser_family {", StringComparison.Ordinal);
+        var metricsHandlerIndex = caddyfile.IndexOf("handle @metrics_operator {", StringComparison.Ordinal);
+        var metricsFallbackIndex = caddyfile.IndexOf("handle @metrics {", StringComparison.Ordinal);
+        var publicHandlerIndex = caddyfile.IndexOf("handle @public {", StringComparison.Ordinal);
+        var fallbackHandlerIndex = publicHandlerIndex >= 0
+            ? caddyfile.IndexOf("handle {", publicHandlerIndex, StringComparison.Ordinal)
+            : -1;
+        Assert.True(browserHandlerIndex >= 0 && browserHandlerIndex < nonJapanHandlerIndex);
+        Assert.True(nonJapanHandlerIndex < metricsHandlerIndex);
+        Assert.True(metricsHandlerIndex < metricsFallbackIndex);
+        Assert.True(metricsFallbackIndex < publicHandlerIndex);
+        Assert.True(publicHandlerIndex < fallbackHandlerIndex);
+
+        var browserHandler = caddyfile[browserHandlerIndex..nonJapanHandlerIndex];
+        var nonJapanHandler = caddyfile[nonJapanHandlerIndex..metricsHandlerIndex];
+        var metricsHandler = caddyfile[metricsHandlerIndex..metricsFallbackIndex];
+        var publicHandler = caddyfile[publicHandlerIndex..fallbackHandlerIndex];
+        var fallbackHandler = caddyfile[fallbackHandlerIndex..];
+
+        var basicAuthIndex = browserHandler.IndexOf("basic_auth", StringComparison.Ordinal);
+        var browserProxyIndex = browserHandler.IndexOf("reverse_proxy mailer:8080", StringComparison.Ordinal);
+        Assert.True(basicAuthIndex >= 0 && basicAuthIndex < browserProxyIndex);
+        Assert.Contains("header_up -Authorization", browserHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("basic_auth", nonJapanHandler, StringComparison.Ordinal);
+        Assert.Contains("respond 404", nonJapanHandler, StringComparison.Ordinal);
+        Assert.Contains("reverse_proxy mailer:8080", metricsHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("basic_auth", metricsHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("header_up -Authorization", metricsHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("JP_IPV", metricsHandler, StringComparison.Ordinal);
+        Assert.Contains("reverse_proxy mailer:8080", publicHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("basic_auth", publicHandler, StringComparison.Ordinal);
+        Assert.Contains("respond 404", fallbackHandler, StringComparison.Ordinal);
+
         Assert.Contains(
             "@public path /api/* /healthz /readyz",
             caddyfile,
@@ -143,6 +212,40 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
         Assert.DoesNotMatch(
             new Regex(@"^\s*remote_ip\s+0\.0\.0\.0/0", RegexOptions.Multiline),
             caddyfile);
+        Assert.DoesNotContain("$2a$", caddyfile, StringComparison.Ordinal);
+        Assert.DoesNotContain("$2b$", caddyfile, StringComparison.Ordinal);
+        Assert.DoesNotContain("$2y$", caddyfile, StringComparison.Ordinal);
+
+        var gitignore = ReadRepositoryFile(".gitignore");
+        Assert.Contains(
+            "infra/deploy/Caddyfile.vps-dogfood",
+            gitignore,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Caddyfile_template_and_renderer_have_no_download_or_plaintext_secret_path()
+    {
+        var caddyfile = ReadRepositoryFile(
+            "infra",
+            "deploy",
+            "Caddyfile.vps-dogfood.example");
+        var renderer = ReadRepositoryFile(
+            "infra",
+            "deploy",
+            "render-vps-management-edge.py");
+
+        Assert.Contains("{{JP_IPV4_CIDRS}}", caddyfile, StringComparison.Ordinal);
+        Assert.Contains("{{JP_IPV6_CIDRS}}", caddyfile, StringComparison.Ordinal);
+        Assert.Contains("{{CADDY_BASIC_AUTH_BCRYPT_HASH}}", caddyfile, StringComparison.Ordinal);
+        Assert.Contains("ipaddress", renderer, StringComparison.Ordinal);
+        Assert.Contains("--self-test", renderer, StringComparison.Ordinal);
+        Assert.Contains("--basic-auth-username", renderer, StringComparison.Ordinal);
+        Assert.Contains("validate_basic_auth_username", renderer, StringComparison.Ordinal);
+        Assert.DoesNotContain("maxmind.com", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("urllib", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("urlopen", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("--password", renderer, StringComparison.Ordinal);
     }
 
     [Fact]

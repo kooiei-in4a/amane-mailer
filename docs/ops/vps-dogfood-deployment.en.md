@@ -1,12 +1,12 @@
 [日本語](vps-dogfood-deployment.md)
 
-# VPS dogfood deployment (PR1)
+# VPS dogfood deployment (Issue #744 Source Stage)
 
-This runbook is the Issue #733 PR1 reference deployment. Caddy owns the host's
+This runbook is the Issue #744 source-stage reference deployment. Caddy owns the host's
 80/443 listeners, while Mailer runs as an HTTP backend on a Docker network.
 Mailer port 8080 is never published on the host.
 
-This document's PR1 scope is the deployment security boundary and the fresh
+This document's scope is the deployment security boundary and the fresh
 setup route. ACS live sending, official smoke clients, multi-sender/API-key
 dogfood, revoke, and restart dogfood are separate verification scopes. The PR3
 full backup/restore path is now provided by the dedicated runbooks and helpers
@@ -24,6 +24,18 @@ proxy (Caddy, host :80/:443 only)
 mailer:8080 (no host port)
 ```
 
+The edge path contract is:
+
+| Path | Caddy edge boundary | Authentication sent to Mailer |
+|---|---|---|
+| `/api/*`, `/healthz`, `/readyz` | public | Existing path-specific authentication |
+| `/admin`, `/admin/*`, `/setup`, `/setup/*` | GeoLite2 JP CIDR **and** Caddy Basic Auth | Caddy `Authorization` is removed; Mailer's own Admin/Setup authentication remains |
+| `/metrics` | `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator CIDR | Existing Mailer metrics bearer |
+| Everything else | 404 | Not sent upstream |
+
+For Admin/Setup, a source outside the JP CIDRs receives an edge 404 before Caddy can issue a
+Basic Auth challenge. Only a JP source that passes Caddy Basic Auth is reverse-proxied to Mailer.
+
 `compose.vps-dogfood.yml` overlays the base `mailer` service as follows:
 
 - `mailer` joins only `internal` and the dedicated `vps_proxy` network. The
@@ -35,9 +47,15 @@ mailer:8080 (no host port)
 - The dedicated network is intentionally not Docker `internal: true`: Mailer
   needs outbound ACS access and Caddy needs outbound ACME access. Only `proxy`
   and `mailer` join it, and only `proxy` publishes host ports.
-- Caddy admits `/admin`, `/setup`, and `/metrics` only from the client source
-  IP/CIDRs in `MAILER_MANAGEMENT_ALLOWED_CIDRS`. Other management requests get
-  an edge 404. Only `/api/*`, `/healthz`, and `/readyz` are public proxy paths.
+- Caddy requires `/admin` and `/setup` to match the JP IPv4/IPv6 CIDRs derived by
+  the renderer from GeoLite2 Country CSVs and to pass Caddy Basic Auth. Non-JP
+  requests get a 404 before the challenge, and the successful Caddy Basic
+  credential is removed with `header_up -Authorization` before Mailer receives it.
+- `/metrics` keeps the existing `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator
+  restriction and Mailer metrics bearer. The JP list must not be reused to expose
+  metrics to all of Japan.
+- Only `/api/*`, `/healthz`, and `/readyz` are public proxy paths; everything else
+  gets a 404.
 - The legacy tenant JSON bind and `MAILER_TENANTS_PATH`, `MAIL_SERVICE_TOKEN*`,
   and `MAILER_PROVIDER` kept by the base compose are removed from the effective
   `mailer` and `mailer-migrate` services by this overlay's Compose merge
@@ -55,11 +73,11 @@ Provide the Docker Engine and a Compose plugin that supports `!override` and `!r
 DNS, and host firewall policy first. Mailer does not install Docker or configure
 firewall, DNS, or a TLS account.
 
-From `infra/deploy`:
+From `infra/deploy`, create `.env`. Do not simply copy the Caddyfile: render it
+from GeoLite2 and the hash input.
 
 ```bash
 cp .env.vps-dogfood.example .env
-cp Caddyfile.vps-dogfood.example Caddyfile.vps-dogfood
 ```
 
 Replace the VPS placeholders in `.env`. At minimum, verify:
@@ -75,10 +93,10 @@ Replace the VPS placeholders in `.env`. At minimum, verify:
   `.env` or in a tenant token variable. If metrics are enabled, add a private
   `MAILER_METRICS_BEARER_TOKEN` only to the private host `.env`.
 - `MAILER_PUBLIC_HOSTNAME` is the actual DNS name.
-- `MAILER_MANAGEMENT_ALLOWED_CIDRS` is the operator source IP/CIDR selected by
-  the VPN/firewall boundary. The `192.0.2.0/24` in `.env.example` is TEST-NET
-  documentation space and must be replaced. Separate multiple values with
-  spaces, for example `"192.0.2.0/24 2001:db8:1234::/48"`.
+- `MAILER_MANAGEMENT_ALLOWED_CIDRS` is the `/metrics` operator source IP/CIDR
+  selected by the VPN/firewall boundary. The `192.0.2.0/24` in `.env.example` is
+  TEST-NET documentation space and must be replaced. Separate multiple values
+  with spaces, for example `"192.0.2.0/24 2001:db8:1234::/48"`.
 - `MAILER_VPS_PROXY_NETWORK_SUBNET` and the fixed IPv4 values do not conflict
   with an existing host network. If they change, keep the subnet and both
   fixed addresses consistent.
@@ -107,6 +125,35 @@ The common `infra/deploy/.env.example` serves the base compose manual/compatibil
 path. Use `.env.vps-dogfood.example` for VPS, so its legacy placeholders do not
 need to be configured.
 
+### Generate the Caddy edge artifact
+
+The operator obtains and stores the GeoLite2 Country CSVs separately. The renderer
+does not connect to MaxMind, download data, or handle a license key/account ID. Pass
+the three CSVs and an already-generated bcrypt hash file from a separate secure
+provisioning path. Generating the real password or hash is outside this source stage.
+
+```bash
+python3 render-vps-management-edge.py \
+  --ipv4-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv4.csv \
+  --ipv6-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv6.csv \
+  --locations /secure/geolite/GeoLite2-Country-Locations-en.csv \
+  --basic-auth-username caddy-admin \
+  --basic-auth-hash-file /secure/operator-secrets/caddy-admin.bcrypt \
+  --template Caddyfile.vps-dogfood.example \
+  --output Caddyfile.vps-dogfood
+```
+
+`caddy-admin` is a non-secret example. Choose and pass a deployment-specific username;
+the renderer rejects empty, whitespace, newline, and Caddyfile-token-injection values.
+
+`Caddyfile.vps-dogfood` is an ignored runtime artifact. The renderer uses only
+`network.geoname_id → locations.geoname_id → country_iso_code == JP`; it never
+falls back to `registered_country_geoname_id` or `represented_country_geoname_id`.
+Empty/unknown network geonames are not JP. Zero JP CIDRs, invalid/default CIDRs,
+missing required columns, conflicting mappings, and an empty/invalid hash stop the
+render fail-closed. Raw GeoLite CSV data is not copied to the output, and the hash
+value is not printed in logs or the summary.
+
 For SSH-tunnel-only access, bind Caddy's host ports to `127.0.0.1` and do not
 publish the remote host's 80/443. This makes the public API tunnel-only too.
 For a public API with private management, operate public 80/443 through the
@@ -131,8 +178,8 @@ docker compose --env-file .env \
   --profile vps-dogfood up -d
 ```
 
-If `config --quiet` fails, check placeholders, the required hostname/CIDR, and
-the fixed network addresses. Also verify that the rendered `mailer` and
+If `config --quiet` fails, check placeholders, the required hostname, the metrics
+CIDR, the fixed network addresses, and the generated Caddyfile. Also verify that the rendered `mailer` and
 `mailer-migrate` services contain no tenant JSON mount,
 `MAILER_TENANTS_PATH`, `MAIL_SERVICE_TOKEN*`, or `MAILER_PROVIDER`. After startup:
 
@@ -147,8 +194,10 @@ curl -i https://MAILER_PUBLIC_HOSTNAME/readyz
 
 With fresh state and no tenant JSON or `MAIL_SERVICE_TOKEN*`, migration still
 succeeds and `/readyz` remains `503` (uninitialized). That is the expected
-pre-setup state. `/setup` is reachable from the approved management CIDR, and
-direct `http://host:8080` access to Mailer must fail.
+pre-setup state. From an approved JP source, `/setup` requires Caddy Basic Auth
+and Mailer's own authentication; a non-JP source gets a 404 before the challenge.
+`/metrics` separately requires the operator CIDR and metrics bearer, and direct
+`http://host:8080` access to Mailer must fail.
 
 ## Browser Setup
 
@@ -162,9 +211,9 @@ docker compose --env-file .env \
   --profile vps-dogfood exec mailer /app/Amane.Mailer setup bootstrap show
 ```
 
-Open `https://MAILER_PUBLIC_HOSTNAME/setup` from an operator network allowed by
-Caddy, then follow the existing FirstRunSetup order: bootstrap authentication,
-file-based provider-secret registration, instance owner, sender, and finalize. `/setup` requires HTTPS. Caddy's
+Open `https://MAILER_PUBLIC_HOSTNAME/setup` from a source covered by the generated
+JP CIDRs. Pass Caddy Basic Auth first, then follow the existing FirstRunSetup order:
+Mailer bootstrap authentication, file-based provider-secret registration, instance owner, sender, and finalize. `/setup` requires HTTPS. Caddy's
 `X-Forwarded-Proto` is trusted only from the dedicated proxy IP, preserving the
 Secure-cookie and antiforgery HTTPS contract.
 
@@ -177,11 +226,12 @@ management route.
 
 - Public consumer requests use `https://MAILER_PUBLIC_HOSTNAME/api/...`. The
   backend Docker name/port is not the consumer's public contract.
-- Combine the Caddy CIDR restriction for `/admin` and `/setup` with a
-  VPN/firewall/SSH tunnel and instance-owner authentication. This profile does
-  not make a public Admin safe through the Mailer application alone.
-- `/metrics` is also a management path. A metrics bearer token does not replace
-  the edge restriction.
+- `/admin` and `/setup` require both a GeoLite2-derived JP CIDR and Caddy Basic
+  Auth. Non-JP sources get a 404 before the Basic challenge. Combine this with a
+  VPN/firewall/SSH tunnel and instance-owner authentication; this profile does not
+  make a public Admin safe through the Mailer application alone.
+- `/metrics` uses the operator boundary in `MAILER_MANAGEMENT_ALLOWED_CIDRS`, not
+  the Japan CIDR list, and still requires the Mailer metrics bearer.
 - `MAILER_TENANTS_PATH`, `MAIL_SERVICE_TOKEN_*`, and `MAILER_PROVIDER` remain in
   `infra/deploy/compose.yml` for the baseline manual/v1 compatibility path, but
   `compose.vps-dogfood.yml` removes them from both services. In VPS managed-v2,
@@ -209,5 +259,5 @@ docker compose --env-file .env \
   --profile vps-dogfood down
 ```
 
-Do not use `down -v` from this PR1 runbook: it can delete the Mailer database
+Do not use `down -v` from this source-stage runbook: it can delete the Mailer database
 and Caddy certificate state.

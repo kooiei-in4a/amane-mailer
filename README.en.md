@@ -125,11 +125,14 @@ reference path does not need tenant JSON:
 - VPS managed-v2 env template: `infra/deploy/.env.vps-dogfood.example`
 - Tenant schema: `config/mailer/tenants.schema.json`
 
-For the PR1 VPS reference profile with Caddy HTTPS, no public Mailer backend
-port, and operator-only Admin / Setup edge restrictions, see
-[VPS dogfood deployment](docs/ops/vps-dogfood-deployment.en.md) and the
-[Caddyfile example](infra/deploy/Caddyfile.vps-dogfood.example). The profile
-overlays `compose.vps-dogfood.yml` and publishes only Caddy's 80/443 listeners.
+For the #744 VPS reference profile with Caddy HTTPS, no public Mailer backend
+port, and GeoLite2 JP CIDR plus Caddy Basic Auth operator-only Admin / Setup edge
+restrictions, see [VPS dogfood deployment](docs/ops/vps-dogfood-deployment.en.md)
+and the [Caddyfile template](infra/deploy/Caddyfile.vps-dogfood.example). The
+profile overlays `compose.vps-dogfood.yml` and publishes only Caddy's 80/443 listeners.
+`/metrics` keeps the existing `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator boundary.
+Use [`render-vps-management-edge.py`](infra/deploy/render-vps-management-edge.py) to render the
+ignored Caddy artifact from operator-provided GeoLite2 CSVs and an already-generated bcrypt hash.
 Its first migration/setup does not require `tenants.json` or `MAIL_SERVICE_TOKEN*`.
 For managed-v2 disaster recovery, use the [`backup operations`](docs/ops/backup-operations.en.md)
 `backup-instance-state.sh` path to preserve the `MAILER_DATA_PATH` database, canonical ACS secret,
@@ -143,7 +146,7 @@ Operational runbooks:
 - [Upgrade / rollback guide](docs/ops/upgrade-guide.en.md) [(ja)](docs/ops/upgrade-guide.md)
 - [Local deploy rehearsal](docs/ops/local-deploy-rehearsal-runbook.en.md) [(ja)](docs/ops/local-deploy-rehearsal-runbook.md)
 - [ACS secret / platform-owned sender registration CLI](docs/ops/register-acs-cli-runbook.en.md) [(ja)](docs/ops/register-acs-cli-runbook.md)
-- [VPS dogfood smoke checklist (Issue #733 / PR2)](docs/ops/vps-dogfood-smoke.en.md) [(ja)](docs/ops/vps-dogfood-smoke.md)
+- [VPS dogfood smoke checklist (Issue #744 edge)](docs/ops/vps-dogfood-smoke.en.md) [(ja)](docs/ops/vps-dogfood-smoke.md)
 - [Backup operations](docs/ops/backup-operations.en.md) [(ja)](docs/ops/backup-operations.md)
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)

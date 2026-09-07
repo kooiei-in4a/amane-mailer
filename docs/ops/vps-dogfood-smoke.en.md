@@ -1,9 +1,9 @@
 [日本語](vps-dogfood-smoke.md)
 
-# VPS dogfood smoke checklist (Issue #733 / PR2)
+# VPS dogfood smoke checklist (Issue #744 edge / managed-v2 smoke)
 
 This checklist is the reproducible operator procedure for validating the v2
-Consumer API on the PR1 VPS managed-v2 deployment. The two official clients are
+Consumer API on the #744-edge VPS managed-v2 deployment. The two official clients are
 the [Python smoke client](../../examples/consumer-python/README.md) and the
 [PowerShell smoke client](../../scripts/smoke/send-mail.ps1).
 
@@ -17,9 +17,9 @@ enable live sending.
 
 Before starting, confirm:
 
-- [ ] This checklist is Issue #733 PR2 smoke/dogfood work; use the dedicated PR3 backup/restore runbooks separately.
+- [ ] This checklist covers the #744 management edge and managed-v2 smoke; use the dedicated PR3 backup/restore runbooks separately.
 - [ ] The purpose, approved recipient, approved sender, execution window, and stop owner for any ACS live send are explicit.
-- [ ] On production, the public Mailer URL, management URL, operator CIDR, and ACS environment agree.
+- [ ] On production, the public Mailer URL, generated JP CIDRs, Caddy Basic Auth, metrics operator CIDR, and ACS environment agree.
 - [ ] Recipient, API key, bootstrap token, ACS connection string, and password values will not be recorded in this document, shell history, an issue, chat, or CI logs.
 - [ ] If the run is cancelled, do not start the client and do not enable `live_sending`.
 
@@ -36,20 +36,40 @@ Do not record recipient or message content.
 - [ ] `MAILER_DATA_PATH` is persistent, and ACS/bounce secret directories are mode `0700`.
 - [ ] On a fresh state, do not create `tenants.json`, `MAIL_SERVICE_TOKEN*`, or legacy `MAILER_PROVIDER`.
 
-The [VPS dogfood deployment (PR1)](vps-dogfood-deployment.en.md) is authoritative
-for the security boundary, fixed proxy network, unpublished Mailer port, and
-management CIDR. Do not use `down -v`: it can delete the Mailer database and
-Caddy certificate state.
+The [VPS dogfood deployment](vps-dogfood-deployment.en.md) is authoritative for
+the #744 security boundary, fixed proxy network, unpublished Mailer port, generated
+JP CIDRs, Caddy Basic Auth, and metrics operator CIDR. Do not use `down -v`: it can
+delete the Mailer database and Caddy certificate state.
 
 ## 2. Deploy, migrate, and bootstrap setup
 
-1. Use the PR1 `infra/deploy/.env.vps-dogfood.example` and Caddyfile to create
-   uncommitted deploy-host configuration. Verify the image, hostname, operator
-   CIDR, data path, and protected secret paths.
-2. Without displaying secret values, verify that rendered Compose has no host
+1. Use `infra/deploy/.env.vps-dogfood.example` and the Caddy template to create
+   uncommitted deploy-host configuration. Verify the image, hostname, metrics
+   operator CIDR, data path, and protected secret paths. Obtain the GeoLite2
+   IPv4/IPv6 blocks, locations-en CSV, and already-generated bcrypt hash file
+   through the operator's secure path.
+2. Render the ignored runtime artifact. The renderer does not download data,
+   handle a MaxMind license/account credential, or request a plaintext password.
+   Do not paste the hash into output or logs.
+
+```bash
+python3 infra/deploy/render-vps-management-edge.py \
+  --ipv4-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv4.csv \
+  --ipv6-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv6.csv \
+  --locations /secure/geolite/GeoLite2-Country-Locations-en.csv \
+  --basic-auth-username caddy-admin \
+  --basic-auth-hash-file /secure/operator-secrets/caddy-admin.bcrypt \
+  --template infra/deploy/Caddyfile.vps-dogfood.example \
+  --output infra/deploy/Caddyfile.vps-dogfood
+```
+
+`caddy-admin` is a non-secret example; choose a deployment-specific username and do not display
+the hash or any plaintext password in logs.
+
+3. Without displaying secret values, verify that rendered Compose has no host
    Mailer port `8080` publish, legacy tenant mount, `MAIL_SERVICE_TOKEN*`, or
    `MAILER_PROVIDER`.
-3. Run config validation, migration, and startup with the profile explicit.
+4. Run config validation, migration, and startup with the profile explicit.
 
 ```bash
 docker compose --env-file .env \
@@ -65,8 +85,8 @@ docker compose --env-file .env \
   --profile vps-dogfood up -d
 ```
 
-4. Check `/healthz` and `/readyz`. With fresh state, `/readyz` `503` before setup is expected.
-5. Display the bootstrap token once from inside the container and enter it in
+5. Check `/healthz` and `/readyz`. With fresh state, `/readyz` `503` before setup is expected.
+6. Display the bootstrap token once from inside the container and enter it in
    the browser through an operator TTY. Do not copy it into shell history,
    logs, issues, chat, or CI artifacts.
 
@@ -76,15 +96,17 @@ docker compose --env-file .env \
   --profile vps-dogfood exec mailer /app/Amane.Mailer setup bootstrap show
 ```
 
-6. From the operator-only HTTPS route, complete `/setup` in this order:
+7. From a source covered by the generated JP CIDRs, open the operator-only HTTPS
+   `/setup`, pass Caddy Basic Auth, then complete Mailer's own authentication in
+   this order. A non-JP source receives a 404 before the Basic challenge.
 
-   `bootstrap authentication → ACS provider secret → first Admin → first Sender → finalize`
+   `Caddy Basic Auth → bootstrap authentication → ACS provider secret → first Admin → first Sender → finalize`
 
    Enter the ACS connection string in the password field. Do not put it in an
    environment variable, URL, or CLI argument. Finalize commits durable managed
    state. Restart Mailer and verify that `/readyz` becomes ready.
 
-7. After setup, as the instance owner, confirm in `/admin/ops` that `Provider
+8. After setup, as the instance owner, confirm in `/admin/ops` that `Provider
    preflight` is `configured / safe` and `live_sending` is `disabled`. `/readyz`
    plus this Admin display are the canonical preflight for tenant runtime on a
    VPS managed-v2 deployment. `setup doctor --mode production-acs` checks the

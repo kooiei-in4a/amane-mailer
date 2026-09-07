@@ -119,10 +119,14 @@ manual / compatibility path では、実 tenant JSON を deploy-time input と�
 - VPS managed-v2 env template: `infra/deploy/.env.vps-dogfood.example`
 - Tenant schema: `config/mailer/tenants.schema.json`
 
-VPS で Caddy 配下の HTTPS、Mailer backend 非公開、Admin / Setup の operator-only
-edge restriction を使う標準 PR1 profile は [`vps-dogfood-deployment.md`](docs/ops/vps-dogfood-deployment.md)
-と [`Caddyfile.vps-dogfood.example`](infra/deploy/Caddyfile.vps-dogfood.example) を参照してください。
+VPS で Caddy 配下の HTTPS、Mailer backend 非公開、GeoLite2 JP CIDR と Caddy Basic Auth による
+Admin / Setup の operator-only edge restriction を使う #744 profile は
+[`vps-dogfood-deployment.md`](docs/ops/vps-dogfood-deployment.md) と
+[`Caddyfile.vps-dogfood.example`](infra/deploy/Caddyfile.vps-dogfood.example) を参照してください。
 profile は `compose.vps-dogfood.yml` を overlay し、Caddy の 80/443 だけを host に publish します。
+`/metrics` は `MAILER_MANAGEMENT_ALLOWED_CIDRS` の既存 operator boundary を維持します。
+GeoLite2 CSV と既生成 bcrypt hash から ignored Caddy artifact を作る renderer は
+[`render-vps-management-edge.py`](infra/deploy/render-vps-management-edge.py) です。
 この profile の初回 migration / setup では `tenants.json` と `MAIL_SERVICE_TOKEN*` を設定しません。
 managed-v2 の障害復旧では [`バックアップ運用`](docs/ops/backup-operations.md) の
 `backup-instance-state.sh` を使い、`MAILER_DATA_PATH` の DB、canonical ACS secret、
@@ -136,7 +140,7 @@ commit しないでください。
 - [Upgrade / rollback ガイド](docs/ops/upgrade-guide.md) [(en)](docs/ops/upgrade-guide.en.md)
 - [ローカル deploy rehearsal](docs/ops/local-deploy-rehearsal-runbook.md) [(en)](docs/ops/local-deploy-rehearsal-runbook.en.md)
 - [ACS secret / platform-owned sender 登録 CLI](docs/ops/register-acs-cli-runbook.md) [(en)](docs/ops/register-acs-cli-runbook.en.md)
-- [VPS dogfood smoke checklist（Issue #733 / PR2）](docs/ops/vps-dogfood-smoke.md) [(en)](docs/ops/vps-dogfood-smoke.en.md)
+- [VPS dogfood smoke checklist（Issue #744 edge）](docs/ops/vps-dogfood-smoke.md) [(en)](docs/ops/vps-dogfood-smoke.en.md)
 - [バックアップ運用](docs/ops/backup-operations.md) [(en)](docs/ops/backup-operations.en.md)
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
