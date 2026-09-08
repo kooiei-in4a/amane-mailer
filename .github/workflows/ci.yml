@@ -82,6 +82,27 @@ jobs:
       - name: Official Python smoke client no-send self-test
         run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/smoke/test_send_mail.py
 
+      - name: VPS management edge renderer self-test (#744)
+        run: PYTHONDONTWRITEBYTECODE=1 python3 infra/deploy/render-vps-management-edge.py --self-test
+
+      - name: Validate generated VPS management edge with pinned Caddy (#744)
+        env:
+          CADDY_IMAGE: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+        run: |
+          set -Eeuo pipefail
+          generated="${RUNNER_TEMP}/amane-mailer-744/Caddyfile"
+          PYTHONDONTWRITEBYTECODE=1 python3 infra/deploy/render-vps-management-edge.py \
+            --self-test \
+            --self-test-output "${generated}"
+          test -s "${generated}"
+          test ! -e infra/deploy/Caddyfile.vps-dogfood
+          docker run --rm --pull=always \
+            --env MAILER_PUBLIC_HOSTNAME=mailer.example.invalid \
+            --env MAILER_MANAGEMENT_ALLOWED_CIDRS=192.0.2.0/24 \
+            --mount "type=bind,src=${generated},dst=/etc/caddy/Caddyfile,readonly" \
+            "${CADDY_IMAGE}" \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
       - name: Managed instance backup/restore fixture self-test
         run: bash scripts/backup-instance-state-self-test.sh
 

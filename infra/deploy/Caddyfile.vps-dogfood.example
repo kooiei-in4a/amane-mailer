@@ -1,46 +1,82 @@
-# Caddy reference edge for the VPS dogfood deployment (Issue #733 / PR1).
+# Caddy reference edge template for the VPS dogfood deployment (Issue #744 / Source Stage).
 #
-# Copy this file to Caddyfile.vps-dogfood and replace the hostname and operator CIDRs in .env.
-# Caddy enables automatic HTTPS for a real hostname. DNS, firewall rules, and the public TLS
-# account remain operator-owned; this file does not provision any of them.
+# The renderer fills the JP CIDR and bcrypt markers into the ignored runtime artifact
+# Caddyfile.vps-dogfood. It consumes operator-provided GeoLite2 Country CSV files only; it does
+# not download MaxMind data or handle a MaxMind account/license key. Caddy enables automatic HTTPS
+# for a real hostname. DNS, firewall rules, and the public TLS account remain operator-owned.
 #
-# MAILER_MANAGEMENT_ALLOWED_CIDRS is a space-separated list of operator source IPs/CIDRs, for
-# example: 192.0.2.0/24 2001:db8:1234::/48
+# MAILER_MANAGEMENT_ALLOWED_CIDRS remains the operator-only boundary for /metrics. It is not the
+# browser Admin/Setup allow-list; that list is derived from GeoLite2 and rendered below.
 
 {$MAILER_PUBLIC_HOSTNAME} {
 	# Caddy's automatic HTTPS redirects HTTP to HTTPS for this named site.
 
-	# Management is a separate edge boundary. The first matcher admits only the configured
-	# operator network; the second returns 404 for every other source. Do not replace the
-	# remote_ip matcher with a forwarded header or an unrestricted IPv4 CIDR.
-	@management {
-		path /admin /admin/* /setup /setup/* /metrics
+	# The renderer replaces the two CIDR markers with deterministic, collapsed GeoLite2 ranges.
+	# Each range becomes its own remote_ip line so the Caddyfile has no unbounded line.
+	# This matcher intentionally excludes /metrics: its existing operator restriction is separate.
+	@browser_jp {
+		path /admin /admin/* /setup /setup/*
+		{{JP_IPV4_CIDRS}}
+		{{JP_IPV6_CIDRS}}
 	}
-	@management_operator {
-		path /admin /admin/* /setup /setup/* /metrics
+	@browser_family {
+		path /admin /admin/* /setup /setup/*
+	}
+	@metrics_operator {
+		path /metrics
 		remote_ip {$MAILER_MANAGEMENT_ALLOWED_CIDRS}
 	}
-	handle @management_operator {
-		reverse_proxy mailer:8080 {
-			# Caddy is the only trusted forwarded-header source on vps_proxy. Set the scheme
-			# from the actual TLS connection so client-supplied X-Forwarded-Proto is ignored.
-			header_up X-Forwarded-Proto {scheme}
-		}
+	@metrics {
+		path /metrics
 	}
-	handle @management {
-		respond 404
-	}
-
-	# Consumer API and liveness/readiness are the only public paths in this reference profile.
 	@public path /api/* /healthz /readyz
-	handle @public {
-		reverse_proxy mailer:8080 {
-			header_up X-Forwarded-Proto {scheme}
-		}
-	}
 
-	# Keep undocumented paths, including an accidental root/static surface, closed.
-	handle {
-		respond 404
+	# Keep route order explicit: the JP+Basic route must be selected before the path-only 404,
+	# and all of these handlers must remain mutually exclusive.
+	route {
+		# The edge Basic Auth is an additional gate. A successful edge login is not Mailer's own
+		# Admin/Setup authentication; both layers remain enabled.
+		handle @browser_jp {
+			basic_auth {
+				{{CADDY_BASIC_AUTH_USERNAME}} {{CADDY_BASIC_AUTH_BCRYPT_HASH}}
+			}
+			reverse_proxy mailer:8080 {
+				# Never pass Caddy's Basic Authorization header to Mailer. Mailer retains its own
+				# Admin/Setup authentication and session boundary.
+				header_up -Authorization
+				# Caddy is the only trusted forwarded-header source on vps_proxy. Set the scheme
+				# from the actual TLS connection so client-supplied X-Forwarded-Proto is ignored.
+				header_up X-Forwarded-Proto {scheme}
+			}
+		}
+
+		# Non-JP requests receive 404 before Caddy can issue a Basic Auth challenge. Keep this
+		# path-family handler immediately after the JP+Basic route.
+		handle @browser_family {
+			respond 404
+		}
+
+		# Metrics keeps the current operator CIDR boundary and Mailer's bearer authentication. Do not
+		# replace this with the JP list or expose it to Japan as a whole.
+		handle @metrics_operator {
+			reverse_proxy mailer:8080 {
+				header_up X-Forwarded-Proto {scheme}
+			}
+		}
+		handle @metrics {
+			respond 404
+		}
+
+		# Consumer API and liveness/readiness are the only public paths in this reference profile.
+		handle @public {
+			reverse_proxy mailer:8080 {
+				header_up X-Forwarded-Proto {scheme}
+			}
+		}
+
+		# Keep undocumented paths, including an accidental root/static surface, closed.
+		handle {
+			respond 404
+		}
 	}
 }

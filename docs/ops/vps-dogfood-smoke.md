@@ -1,8 +1,8 @@
 [English](vps-dogfood-smoke.en.md)
 
-# VPS dogfood smoke checklist（Issue #733 / PR2）
+# VPS dogfood smoke checklist（Issue #744 edge / managed-v2 smoke）
 
-この checklist は、PR1 の VPS managed-v2 deployment 上で v2 Consumer API を確認するための
+この checklist は、#744 edge の VPS managed-v2 deployment 上で v2 Consumer API を確認するための
 再現可能な運用手順です。公式 client は [Python smoke client](../../examples/consumer-python/README.md)
 と [PowerShell smoke client](../../scripts/smoke/send-mail.ps1) の 2 つです。
 
@@ -15,9 +15,9 @@ operator が後日、目的・宛先・時間帯を明示して実行するた�
 
 実行前に次を確認します。
 
-- [ ] Issue #733 の対象が PR2 smoke / dogfood であり、PR3 backup/restore の作業を混ぜない。
+- [ ] この checklist は #744 の管理edge と managed-v2 smoke の確認であり、PR3 backup/restore の作業を混ぜない。
 - [ ] real ACS send の目的、承認済み recipient、承認済み sender、実行時間、停止担当者を決めた。
-- [ ] production では Mailer の公開 URL、管理 URL、operator CIDR、ACS environment が一致している。
+- [ ] production では Mailer の公開 URL、生成済みJP CIDR、Caddy Basic Auth、metrics operator CIDR、ACS environment が一致している。
 - [ ] recipient、API Key、bootstrap token、ACS connection string、password をこの文書、shell history、
       Issue、chat、CI log に記録しない。
 - [ ] 実行を取りやめる場合は client を起動せず、`live_sending` を有効にしない。
@@ -25,6 +25,23 @@ operator が後日、目的・宛先・時間帯を明示して実行するた�
 `A1 real send` などの表記は、この PR の実行結果を意味しません。実行済みの証跡を残す場合も、
 記録するのは image digest、時刻、HTTP status/code、Mailer が表示する `mail_request_id`、
 delivery status などの value-free な情報に限定します。宛先や message body は記録しません。
+
+## Issue #744 / #745 の ownership と acceptance boundary
+
+この checklist では #744 と #745 の責務を分けます。#744 の acceptance は次の edge / regression
+だけです。
+
+- JP / non-JP edge（JP allow-list と non-JP の challenge 前 404）
+- Caddy Basic Auth の fail / success boundary
+- Mailer 自身の auth boundary
+- `/api` regression
+- backend `:8080` が host/public から到達不能であること
+- SSH login と SSH からの rollback 経路
+
+fresh reset/setup、real ACS send、UX dogfood は #745 の ownership であり、#744 中には実施しません。
+この文書に残る fresh VPS、bootstrap/setup、A1/A2/B1、restart などの historical dogfood 内容は、
+#745 の後続 operator 手順と context として保持しています。これらを #744 の acceptance evidence
+や、この rework 中に実行した作業とは扱いません。
 
 ## 1. 前提と fresh VPS
 
@@ -34,17 +51,35 @@ delivery status などの value-free な情報に限定します。宛先や mes
 - [ ] `MAILER_DATA_PATH` は永続 directory、ACS / bounce secret directory は mode `0700` である。
 - [ ] fresh state で `tenants.json`、`MAIL_SERVICE_TOKEN*`、legacy `MAILER_PROVIDER` を作成していない。
 
-PR1 の security boundary、固定 proxy network、Mailer port 非公開、management CIDR の設定は
-[VPS dogfood deployment (PR1)](vps-dogfood-deployment.md) を正本とします。`down -v` は Mailer DB と
-Caddy certificate state を削除し得るため、この手順でも使いません。
+#744 の security boundary、固定 proxy network、Mailer port 非公開、GeoLite2-derived JP CIDR、
+Caddy Basic Auth、metrics operator CIDR の設定は [VPS dogfood deployment](vps-dogfood-deployment.md)
+を正本とします。`down -v` は Mailer DB と Caddy certificate state を削除し得るため、この手順でも使いません。
 
 ## 2. Deploy / migration / bootstrap setup
 
-1. PR1 runbook の `infra/deploy/.env.vps-dogfood.example` と Caddyfile から deploy host 用の
-   未コミット設定を作り、image、hostname、operator CIDR、data path、protected secret path を確認する。
-2. rendered Compose に Mailer の host `8080` publish、legacy tenant mount、`MAIL_SERVICE_TOKEN*`、
+1. `infra/deploy/.env.vps-dogfood.example` と Caddy template から deploy host 用の未コミット設定を作り、
+   image、hostname、metrics operator CIDR、data path、protected secret path を確認する。GeoLite2 の
+   blocks IPv4/IPv6、locations-en CSV と既生成 bcrypt hash file を operator の安全な場所から用意する。
+2. renderer を実行して ignored runtime artifact を作る。renderer は download、MaxMind license/account
+   credential、plaintext password を要求しない。hash の値を出力へ貼ったり log に表示したりしない。
+
+```bash
+python3 infra/deploy/render-vps-management-edge.py \
+  --ipv4-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv4.csv \
+  --ipv6-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv6.csv \
+  --locations /secure/geolite/GeoLite2-Country-Locations-en.csv \
+  --basic-auth-username caddy-admin \
+  --basic-auth-hash-file /secure/operator-secrets/caddy-admin.bcrypt \
+  --template infra/deploy/Caddyfile.vps-dogfood.example \
+  --output infra/deploy/Caddyfile.vps-dogfood
+```
+
+`caddy-admin` は非秘密の例です。deploymentごとに選んだ username を渡し、hash や
+plaintext password を log に表示しないでください。
+
+3. rendered Compose に Mailer の host `8080` publish、legacy tenant mount、`MAIL_SERVICE_TOKEN*`、
    `MAILER_PROVIDER` がないことを、secret の値を表示せず確認する。
-3. profile を明示して config、migration、起動を実行する。
+4. profile を明示して config、migration、起動を実行する。
 
 ```bash
 docker compose --env-file .env \
@@ -60,8 +95,8 @@ docker compose --env-file .env \
   --profile vps-dogfood up -d
 ```
 
-4. `/healthz` と `/readyz` を確認する。fresh state で setup 前の `/readyz` `503` は期待値です。
-5. bootstrap token は container 内から一度だけ表示し、TTY で browser に入力する。値をコピーして
+5. `/healthz` と `/readyz` を確認する。fresh state で setup 前の `/readyz` `503` は期待値です。
+6. bootstrap token は container 内から一度だけ表示し、TTY で browser に入力する。値をコピーして
    shell history、log、Issue、chat、CI artifact に残さない。
 
 ```bash
@@ -70,14 +105,15 @@ docker compose --env-file .env \
   --profile vps-dogfood exec mailer /app/Amane.Mailer setup bootstrap show
 ```
 
-6. operator-only HTTPS の `/setup` で、次の順序を完了する。
+7. JP CIDR に含まれる source から operator-only HTTPS の `/setup` を開き、Caddy Basic Auth の後に
+   Mailer 自身の認証で次の順序を完了する。JP 外の source は Basic challenge 前に 404 になる。
 
-   `bootstrap 認証 → ACS provider secret → 最初の Admin → 最初の Sender → finalize`
+   `Caddy Basic Auth → bootstrap 認証 → ACS provider secret → 最初の Admin → 最初の Sender → finalize`
 
    ACS connection string はフォームの password 欄に入力し、環境変数・URL・CLI 引数へ置かない。
    finalize は永続 managed state を確定する。Mailer を再起動し、`/readyz` が ready になることを確認する。
 
-7. setup 後、instance owner として `/admin/ops` の `Provider preflight` が
+8. setup 後、instance owner として `/admin/ops` の `Provider preflight` が
    `configured / safe` であること、`live_sending` が `disabled` であることを確認する。
    `/readyz` とこの Admin 表示が、VPS managed-v2 の tenant runtime に対する canonical preflight です。
    `setup doctor --mode production-acs` は tenants.json を使う legacy / setup bundle mode の
