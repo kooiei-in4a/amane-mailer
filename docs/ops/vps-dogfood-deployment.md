@@ -132,6 +132,7 @@ source stage では行いません。以下の `operator_input_dir` と `caddy_h
 `agent-dev01` 側だけの path であり、`/srv/platform/edge` ではありません。
 
 ```bash
+# Run on operator / agent-dev01
 operator_input_dir='/path/on/operator-or-agent-dev01/geolite/current'
 caddy_hash_file='/path/on/operator-or-agent-dev01/caddy-admin.bcrypt'
 
@@ -172,353 +173,281 @@ license key とも無関係です。
 
 ### 安全な live-edge apply lifecycle（production runbook）
 
-ここは production の live edge を更新するための runbook です。以下の実 VPS command は手順の
-記述だけであり、この rework 中には実行しません。Source Stage の build / validation の承認は
-live mutation の承認を兼ねません。production を変更する前に、別の Human approval（change ID、
-対象 hostname、candidate digest、実行者、rollback owner を含む）を記録します。
+ここは production の live edge を更新する runbook です。以下の実 VPS command は手順の記述だけであり、
+この rework 中には実行しません。Source Stage の build / validation の承認は live mutation の承認では
+ありません。production 変更前に change ID、hostname、candidate digest、実行者、rollback owner を含む
+別の Human approval を記録します。
 
-Fresh-confirmed な実VPS topology は次のとおりです。`amane-platform-edge-proxy-1` は確認時に
-観測された名前ですが、shared host の runbook では Docker CLI の selector として名前を
-hardcode せず、Compose label から毎回1件に解決します。
+#### Execution contexts / 実行コンテキスト
 
-| item | 正本 |
-| --- | --- |
-| Compose project / service | `amane-platform-edge` / `proxy` |
-| edge working directory / compose | `/srv/platform/edge` / `/srv/platform/edge/compose.yml` |
-| current Caddyfile | `/srv/platform/edge/Caddyfile` |
-| observed running container name | `amane-platform-edge-proxy-1`（参考値。label resolutionを使用） |
-| current ownership / mode baseline | `root:root` / `0644`（Fresh確認値。liveでは再取得して保存・維持） |
-| container path / mount | `/etc/caddy/Caddyfile`、single-file read-only bind mount |
-| mount source / destination | `/srv/platform/edge/Caddyfile` → `/etc/caddy/Caddyfile`、RW=false |
-| pinned image | `caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d` |
+| context | 実行内容 | boundary |
+| --- | --- | --- |
+| A. OPERATOR / agent-dev01 | GeoLite inputs、bcrypt hash input、renderer、operator-side candidate、CIDR counts、bytes、SHA-256 | raw GeoLite CSV と bcrypt input hash はここにだけ残す。VPSへ送らない。 |
+| B. REMOTE VPS READ-ONLY | deploy user の SSH 内で Compose label resolution、container inspect、image/version/mount確認、read-only stat、stdin pre-validation | remote VPS read-only body の docker ps、docker inspect、docker exec だけ。production mutation はしない。 |
+| C. REMOTE VPS PRIVILEGED LIVE MUTATION | Human approval 後の backup、same-inode write、SHA guards、validate、reload、rollback | 既存 approved sudo / root path の sudo -n sh -c boundary 内だけ。sudoers、SSH、root login は変更しない。 |
 
-1. **operator側で real GeoLite input から candidate を生成する。** reviewed source checkout の
-   root と operator / `agent-dev01` の secure input path で、self-test fixture ではない現行
-   GeoLite2 Country の IPv4 blocks、IPv6 blocks、locations-en CSV、既生成 bcrypt hash file を
-   使います。raw CSV、MaxMind credential、bcrypt input hash file、plaintext password は VPS に
-   置きません。production の `/srv/platform/edge/Caddyfile` はこの段階では変更しません。
+Candidate は operator に保持し、VPS には candidate の persistent file を作りません。candidate bytes は
+SSH stdin stream で remote process が消費します。PERSISTENT_VPS_STAGING_REQUIRED=false、candidate file persisted on VPS=false、GeoLite raw data transferred=false、bcrypt input file transferred=false です。
 
-   ```bash
+Fresh topology は Compose project=amane-platform-edge、service=proxy、current
+/srv/platform/edge/Caddyfile、container path=/etc/caddy/Caddyfile、single-file read-only bind mount、
+mount source=/srv/platform/edge/Caddyfile、destination=/etc/caddy/Caddyfile、RW=false、
+pinned Caddy 2.10.2 です。observed container name は参考値で、毎回 label から exactly one に
+resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 is Fresh baseline only です。
+
+1. **OPERATOR / agent-dev01 で candidate を生成する。** raw GeoLite CSV、MaxMind credential、
+   bcrypt input hash file、plaintext password は VPS に置きません。production Caddyfile はこの段階で
+   変更しません。
+
+   ~~~bash
+   # Run on operator / agent-dev01
    set -Eeuo pipefail
    umask 077
-   operator_input_dir='/path/on/operator-or-agent-dev01/geolite/current'
-   caddy_hash_file='/path/on/operator-or-agent-dev01/caddy-admin.bcrypt'
-   candidate="${PWD}/infra/deploy/Caddyfile.vps-dogfood"
-   change_id="$(date -u +%Y%m%dT%H%M%SZ)"
-   render_record="${PWD}/${change_id}-caddy-render.txt"
-
-   if ! python3 infra/deploy/render-vps-management-edge.py \
-     --ipv4-blocks "${operator_input_dir}/GeoLite2-Country-Blocks-IPv4.csv" \
-     --ipv6-blocks "${operator_input_dir}/GeoLite2-Country-Blocks-IPv6.csv" \
-     --locations "${operator_input_dir}/GeoLite2-Country-Locations-en.csv" \
+   operator_input_dir=/path/on/operator-or-agent-dev01/geolite/current
+   caddy_hash_file=/path/on/operator-or-agent-dev01/caddy-admin.bcrypt
+   candidate=$PWD/infra/deploy/Caddyfile.vps-dogfood
+   render_record=$PWD/caddy-render.txt
+   python3 infra/deploy/render-vps-management-edge.py \
+     --ipv4-blocks "$operator_input_dir/GeoLite2-Country-Blocks-IPv4.csv" \
+     --ipv6-blocks "$operator_input_dir/GeoLite2-Country-Blocks-IPv6.csv" \
+     --locations "$operator_input_dir/GeoLite2-Country-Locations-en.csv" \
      --basic-auth-username caddy-admin \
-     --basic-auth-hash-file "${caddy_hash_file}" \
+     --basic-auth-hash-file "$caddy_hash_file" \
      --template infra/deploy/Caddyfile.vps-dogfood.example \
-     --output "${candidate}" >"${render_record}"; then
-     echo 'STOP: GeoLite render failed; production Caddyfile was not changed.' >&2
-     exit 1
-   fi
-   test -f "${candidate}" && test ! -L "${candidate}"
-   ```
+     --output "$candidate" >"$render_record"
+   test -f "$candidate" && test ! -L "$candidate"
+   ~~~
 
-   `caddy-admin` は非秘密の例です。実運用では deployment 固有の username を使います。render
-   summary は hash / password を含まない value-free record として operator 側で保護します。
+2. **OPERATOR / agent-dev01 で counts / bytes / SHA を記録する。** IPv4 CIDR count、IPv6 CIDR count、
+   bytes、SHA-256 の不一致、count 0、summary の記録不能は STOP です。
 
-2. **candidate の件数・サイズ・digest を operator 側で記録する。** renderer の summary と
-   candidate 自体を照合し、change record に `IPv4 CIDR count`、`IPv6 CIDR count`、`bytes`、
-   `SHA-256` を記録します。count 0、想定外の件数、bytes / SHA-256 の不一致、summary の記録
-   不能は STOP です。raw GeoLite CSV、password、bcrypt hash を change record にコピーしません。
+   ~~~bash
+   # Run on operator / agent-dev01
+   candidate_bytes="$(stat -c '%s' "$candidate")"
+   candidate_sha256="$(sha256sum "$candidate" | awk '{print $1}')"
+   grep -E '^(IPv4 CIDR count|IPv6 CIDR count|output bytes|SHA-256):' "$render_record"
+   printf 'candidate bytes: %s\ncandidate SHA-256: %s\n' "$candidate_bytes" "$candidate_sha256"
+   ~~~
 
-   ```bash
-   candidate_bytes="$(stat -c '%s' "${candidate}")"
-   candidate_sha256="$(sha256sum "${candidate}" | awk '{print $1}')"
-   {
-     grep -E '^(IPv4 CIDR count|IPv6 CIDR count|output bytes|SHA-256):' "${render_record}"
-     printf 'candidate bytes: %s\n' "${candidate_bytes}"
-     printf 'candidate SHA-256: %s\n' "${candidate_sha256}"
-   } >>"${render_record}"
-   ```
+3. **REMOTE VPS READ-ONLY で label resolution を行う。** operator shell で local Docker を操作せず、
+   deploy user の SSH body 内だけで project label、service label、Config.Image、Caddy version、mount
+   type/source/destination、RW=false を確認します。0件または複数件は STOP です。
 
-3. **production Caddyfile を変更する前に、labelで解決した running Caddy 2.10.2 へ stdin で
-   validate する。** candidate はまだ VPS へ転送せず、実際に running な対象 container の Caddy
-   binary へ stdin で渡します。0件または2件以上なら STOP です。
+   ~~~bash
+   # Run on VPS via SSH, read-only
+   ssh "$VPS_ALIAS" 'bash -s' <<'REMOTE_READ_ONLY'
+   set -Eeuo pipefail
+   project=amane-platform-edge
+   service=proxy
+   current=/srv/platform/edge/Caddyfile
+   image=caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+   ids="$(docker ps --quiet --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=$service --filter status=running)"
+   count="$(printf '%s\n' "$ids" | awk 'NF {n++} END {print n+0}')"
+   test "$count" -eq 1
+   container="$(printf '%s\n' "$ids" | awk 'NF {print; exit}')"
+   test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")" = "$project"
+   test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")" = "$service"
+   test "$(docker inspect --format '{{.Config.Image}}' "$container")" = "$image"
+   mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{end}}{{end}}' "$container")"
+   test "$mount" = 'bind|/srv/platform/edge/Caddyfile|/etc/caddy/Caddyfile|false'
+   docker exec "$container" caddy version | grep -F v2.10.2 >/dev/null
+   test -f "$current" && test ! -L "$current"
+   test "$(stat -c '%F' "$current")" = 'regular file'
+   REMOTE_READ_ONLY
+   ~~~
 
-   ```bash
-   edge_project='amane-platform-edge'
-   edge_service='proxy'
-   edge_workdir='/srv/platform/edge'
-   current="${edge_workdir}/Caddyfile"
-   caddy_container_path='/etc/caddy/Caddyfile'
-   caddy_image='caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d'
+4. **OPERATOR → SSH stdin で pre-validation する。** candidate bytes だけを stdin で渡し、remote 側で
+   label resolution を再実行して、同じ running container に caddy validate --config - を実行します。
+   candidate file は VPS に保存しません。
 
-   mapfile -t edge_container_ids < <(
-     docker ps --quiet \
-       --filter "label=com.docker.compose.project=${edge_project}" \
-       --filter "label=com.docker.compose.service=${edge_service}" \
-       --filter status=running
-   )
-   if (( ${#edge_container_ids[@]} != 1 )); then
-     echo 'STOP: expected exactly one running edge container.' >&2
-     exit 1
-   fi
-   edge_container="${edge_container_ids[0]}"
+   ~~~bash
+   # Run on operator / agent-dev01; only candidate bytes cross SSH stdin.
+   cat "$candidate" | ssh "$VPS_ALIAS" '
+     # Run on VPS via SSH, read-only
+     set -Eeuo pipefail
+     project=amane-platform-edge
+     service=proxy
+     ids="$(docker ps --quiet --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=$service --filter status=running)"
+     test "$(printf "%s\n" "$ids" | awk "NF {n++} END {print n+0}")" -eq 1
+     container="$(printf "%s\n" "$ids" | awk "NF {print; exit}")"
+     test "$(docker inspect --format "{{.Config.Image}}" "$container")" = "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"
+     docker exec "$container" caddy version | grep -F v2.10.2 >/dev/null
+     docker exec -i "$container" caddy validate --config - --adapter caddyfile
+   '
+   ~~~
 
-   test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "${edge_container}")" = "${edge_project}"
-   test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "${edge_container}")" = "${edge_service}"
-   running_image="$(docker inspect --format '{{.Config.Image}}' "${edge_container}")"
-   test "${running_image}" = "${caddy_image}"
-   mount_record="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{end}}{{end}}' "${edge_container}")"
-   test "${mount_record}" = "bind|/srv/platform/edge/Caddyfile|/etc/caddy/Caddyfile|false"
-   running_version="$(docker exec "${edge_container}" caddy version)"
-   case "${running_version}" in
-     *v2.10.2*) ;;
-     *) echo 'STOP: running Caddy is not 2.10.2.' >&2; exit 1 ;;
-   esac
+   pre-validation failure は STOP、production Caddyfile mutation=false、candidate file persisted on VPS=false
+   です。allow-all CIDR fallback はしません。
 
-   # resolve/inspectはVPS側のSSH sessionで行い、candidateのbytesだけをoperator側からstdinで送る。
-   if ! ssh vps docker exec -i "${edge_container}" \
-     caddy validate --config - --adapter caddyfile <"${candidate}"; then
-     echo 'STOP: actual running Caddy rejected candidate; production Caddyfile was not changed.' >&2
-     exit 1
-   fi
-   ```
+5. **Human approval 後にだけ privileged mutation を開始する。** Source Stage approval、renderer
+   self-test、CI、stdin validation PASS は live approval ではありません。digest、counts、bytes、
+   hostname、executor、rollback owner、SSH rollback session を確認し、欠落や digest 変更なら STOP
+   します。
 
-   `caddy validate --config -` が failure なら必ず STOP し、candidate を転送せず、production を
-   変更せず、allow-all CIDR へ fallback しません。stdin validate により GeoLite CSV と bcrypt
-   input hash file を VPS へ置かずに actual Caddy binary を検証できます。
+6. **REMOTE VPS PRIVILEGED LIVE MUTATION で preflight / backup を行う。** deploy は read-only user
+   なので、root-owned Caddyfile への unprivileged write は禁止です。backup directory、root-owned
+   last-known-good backup、current write、chown、chmod restoration、reload、rollback は approved
+   sudo -n sh -c 内だけで行います。Fresh の root:root / 0644 を再設定せず、live に再取得した owner、
+   group、mode、device、inode、uid、gid、bytes、SHA-256 を preserve します。#744 は mode hardening
+   をしません。candidate は remote に永続化せず、remote temporary candidate path も作りません。
 
-4. **別の Human approval 後にだけ live mutation を行う。** Source Stage の approval、renderer
-   self-test、CI pass、または step 3 の actual Caddy validate pass は、live mutation の Human
-   approval ではありません。step 1/2 の candidate digest、count、bytes、step 3 の validate
-   PASS、対象 hostname、実行者、SSH rollback owner を確認した別 approval を記録します。approval
-   がない、digest が変わった、または rollback owner / SSH session がない場合は STOP します。
+7. **transaction / failure handler を先に準備する。** backup と original SHA の検証後にだけ
+   mutation_started=true とし、初期値は mutation_started=false、rollback_in_progress=false とします。
+   candidate short read / short write、Python exception、fsync failure、host SHA mismatch、
+   container SHA mismatch、inode drift、owner/mode drift、post-write caddy validate failure、
+   caddy reload failure、post-reload acceptance failure の ANY FAILURE は automatic rollback 対象です。
+   trap ERR は rollback_in_progress guard で再帰を防ぎ、rollback_current_in_place を一度だけ呼びます。
 
-5. **live preflightで current の metadataをFresh取得し、last-known-goodを作る。** approval 後に
-   `/srv/platform/edge/Caddyfile` が regular file で symlink でなく、上記 mount source と一致する
-   ことを確認します。Fresh-confirmed baseline は `root:root` / `0644` ですが、これは事前に観測した
-   値であり、`0644` への再設定を意味しません。live preflightでは owner、group、mode、inode、
-   device、SHA-256、bytes を取得して記録し、その値をそのまま維持します。異なる値なら STOP して
-   別Human approvalを得ます。mode変更を #744 live edge apply に混ぜません。
+   ~~~bash
+   # Run on operator / agent-dev01; candidate stays here and is SSH stdin only.
+   cat "$candidate" | ssh "$VPS_ALIAS" 'sudo -n sh -c '"'"'
+     # Run on VPS via approved privileged sudo/root shell
+     set -Eeuo pipefail
+     exec 3<&0
+     mutation_started=false
+     rollback_in_progress=false
+     current=/srv/platform/edge/Caddyfile
+     container_path=/etc/caddy/Caddyfile
+     candidate_sha256=$1
+     candidate_bytes=$2
 
-   ```bash
-   current='/srv/platform/edge/Caddyfile'
-   test -f "${current}" && test ! -L "${current}"
-   test "$(stat -c '%F' "${current}")" = 'regular file'
-   test "${mount_record}" = 'bind|/srv/platform/edge/Caddyfile|/etc/caddy/Caddyfile|false'
+     # Resolve project=amane-platform-edge / service=proxy here; exactly one or STOP.
+     project=amane-platform-edge
+     service=proxy
+     image=caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+     ids="$(docker ps --quiet --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=$service --filter status=running)"
+     test "$(printf '%s\n' "$ids" | awk 'NF {n++} END {print n+0}')" -eq 1
+     container="$(printf '%s\n' "$ids" | awk 'NF {print; exit}')"
+     test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")" = "$project"
+     test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")" = "$service"
+     test "$(docker inspect --format '{{.Config.Image}}' "$container")" = "$image"
+     mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{end}}{{end}}' "$container")"
+     test "$mount" = 'bind|/srv/platform/edge/Caddyfile|/etc/caddy/Caddyfile|false'
+     docker exec "$container" caddy version | grep -F v2.10.2 >/dev/null
+     test -f "$current" && test ! -L "$current"
+     original_device="$(stat -c '%d' "$current")"
+     original_inode="$(stat -c '%i' "$current")"
+     original_uid="$(stat -c '%u' "$current")"
+     original_gid="$(stat -c '%g' "$current")"
+     original_owner="$(stat -c '%U' "$current")"
+     original_group="$(stat -c '%G' "$current")"
+     original_mode="$(stat -c '%a' "$current")"
+     original_bytes="$(stat -c '%s' "$current")"
+     original_sha256="$(sha256sum "$current" | awk '{print $1}')"
+     change_id="$(date -u +%Y%m%dT%H%M%SZ)"
+     last_known_good_dir=/srv/platform/edge/last-known-good
+     last_known_good="$last_known_good_dir/Caddyfile.$change_id.sha256-$original_sha256"
+     # Record device, inode, uid, gid, owner, group, mode, bytes, and SHA-256.
+     install -d -o root -g root -m 0700 /srv/platform/edge/last-known-good
+     install -o "$original_owner" -g "$original_group" -m "$original_mode" \
+       -- "$current" "$last_known_good"
+     test "$(sha256sum "$last_known_good" | awk '"'"'{print $1}'"'"')" = "$original_sha256"
 
-   original_device="$(stat -c '%d' "${current}")"
-   original_inode="$(stat -c '%i' "${current}")"
-   original_owner="$(stat -c '%U' "${current}")"
-   original_group="$(stat -c '%G' "${current}")"
-   original_uid="$(stat -c '%u' "${current}")"
-   original_gid="$(stat -c '%g' "${current}")"
-   original_mode="$(stat -c '%a' "${current}")"
-   original_bytes="$(stat -c '%s' "${current}")"
-   original_sha256="$(sha256sum "${current}" | awk '{print $1}')"
-   printf 'current owner=%s group=%s mode=%s inode=%s device=%s bytes=%s SHA-256=%s\n' \
-     "${original_owner}" "${original_group}" "${original_mode}" "${original_inode}" \
-     "${original_device}" "${original_bytes}" "${original_sha256}"
-
-   edge_dir='/srv/platform/edge'
-   last_known_good_dir="${edge_dir}/last-known-good"
-   last_known_good="${last_known_good_dir}/Caddyfile.${change_id}.sha256-${original_sha256}"
-   mkdir -p "${last_known_good_dir}"
-   install -o "${original_owner}" -g "${original_group}" -m "${original_mode}" \
-     -- "${current}" "${last_known_good}"
-   test "$(sha256sum "${last_known_good}" | awk '{print $1}')" = "${original_sha256}"
-   printf 'last-known-good change_id=%s original_owner=%s original_group=%s original_mode=%s original_inode=%s original_device=%s original_SHA-256=%s\n' \
-     "${change_id}" "${original_owner}" "${original_group}" "${original_mode}" \
-     "${original_inode}" "${original_device}" "${original_sha256}" \
-     >>"${edge_dir}/change-records/${change_id}-caddy-live.txt"
-   ```
-
-   backup は current とは別 inode でよいですが、記録する metadata は original current の
-   owner、group、mode、inode、device、SHA-256、bytes です。`install` は last-known-good backup
-   の作成にだけ使い、mounted current path を別 inode のファイルで置き換える用途には使いません。
-
-6. **Human approval後に generated Caddy candidate だけを protected stagingへ転送する。** operator
-   側から `/srv/platform/edge/staging/<change-id>/Caddyfile` へ candidate だけを転送します。staging
-   は public、Git managed、Compose config ではなく、generated Caddy 以外を置かない protected
-   directory とします。raw CSV、MaxMind credential、bcrypt input hash file、plaintext password は
-   転送しません。転送後に size と SHA-256 を operator 側の記録と照合し、不一致なら STOP します。
-
-   ```bash
-   # operator側。Human approval後にだけ実行する。
-   scp -- "${candidate}" \
-     "vps:/srv/platform/edge/staging/${change_id}/Caddyfile"
-
-   # VPS側。既存の protected staging directoryを使い、candidateだけを確認する。
-   staging_candidate="/srv/platform/edge/staging/${change_id}/Caddyfile"
-   test -f "${staging_candidate}" && test ! -L "${staging_candidate}"
-   chown "${original_uid}:${original_gid}" "${staging_candidate}"
-   chmod "${original_mode}" "${staging_candidate}"
-   test "$(stat -c '%s' "${staging_candidate}")" = "${candidate_bytes}"
-   test "$(sha256sum "${staging_candidate}" | awk '{print $1}')" = "${candidate_sha256}"
-   ```
-
-7. **single-file bind mountの同一inodeを保ったまま、currentのcontentsだけをin-place更新する。**
-   candidate を current path の別 inode として置き換えません。単純な `cp candidate current` に
-   依存せず、candidate 全 bytes を read し、current を write mode で開き、original device / inode /
-   owner / group / mode を guard してから truncate、exact bytes write、flush、`os.fsync()`、close
-   します。current の device または inode が変わっていれば write せず STOP します。
-
-   ```bash
-   write_contents_in_place() {
-     python3 - "$1" "$2" "$3" "$4" \
-       "${original_device}" "${original_inode}" "${original_uid}" "${original_gid}" "${original_mode}" <<'PY'
-   import hashlib
-   import os
-   import pathlib
-   import stat
-   import sys
-
-   source = pathlib.Path(sys.argv[1])
-   target = pathlib.Path(sys.argv[2])
-   expected_sha256 = sys.argv[3]
-   expected_bytes = int(sys.argv[4])
-   expected_device = int(sys.argv[5])
-   expected_inode = int(sys.argv[6])
-   expected_uid = int(sys.argv[7])
-   expected_gid = int(sys.argv[8])
-   original_mode = int(sys.argv[9], 8)
-
-   source_stat = source.lstat()
-   if source.is_symlink() or not stat.S_ISREG(source_stat.st_mode):
-       raise SystemExit("STOP: candidate is not a regular non-symlink file")
-   data = source.read_bytes()
+     write_contents_in_place() {
+       source=$1
+       expected_sha=$2
+       expected_bytes=$3
+       python3 -c "$(cat <<'PY'
+   import hashlib, os, stat, sys
+   target, expected_sha, expected_bytes = sys.argv[1], sys.argv[2], int(sys.argv[3])
+   expected_dev, expected_ino = int(sys.argv[4]), int(sys.argv[5])
+   expected_uid, expected_gid = int(sys.argv[6]), int(sys.argv[7])
+   expected_mode = int(sys.argv[8], 8)
+   data = sys.stdin.buffer.read(expected_bytes + 1)
    if len(data) != expected_bytes:
-       raise SystemExit("STOP: candidate byte count changed")
-   if hashlib.sha256(data).hexdigest() != expected_sha256:
-       raise SystemExit("STOP: candidate SHA-256 changed")
-
-   flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-   fd = os.open(target, flags)
+       raise RuntimeError("candidate short read or trailing bytes")
+   if hashlib.sha256(data).hexdigest() != expected_sha:
+       raise RuntimeError("candidate SHA-256 mismatch")
+   fd = os.open(target, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
    try:
-       target_stat = os.fstat(fd)
-       if not stat.S_ISREG(target_stat.st_mode):
-           raise SystemExit("STOP: current is not a regular file")
-       if (
-           target_stat.st_dev != expected_device
-           or target_stat.st_ino != expected_inode
-           or target_stat.st_uid != expected_uid
-           or target_stat.st_gid != expected_gid
-           or stat.S_IMODE(target_stat.st_mode) != original_mode
-       ):
-           raise SystemExit("STOP: current device/inode/ownership/mode guard failed")
-       with os.fdopen(fd, "r+b", buffering=0, closefd=False) as handle:
-           handle.seek(0)
-           handle.truncate(0)
-           written = handle.write(data)
-           if written != len(data):
-               raise SystemExit("STOP: short write")
-           handle.flush()
-           os.fsync(handle.fileno())
+       before = os.fstat(fd)
+       if (before.st_dev, before.st_ino, before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) != (expected_dev, expected_ino, expected_uid, expected_gid, expected_mode):
+           raise RuntimeError("current device/inode/ownership/mode guard failed")
+       os.ftruncate(fd, 0)
+       written = 0
+       while written < len(data):
+           part = os.write(fd, data[written:])
+           if part <= 0:
+               raise RuntimeError("short write")
+           written += part
+       os.fsync(fd)
    finally:
        os.close(fd)
    PY
-   }
+       ) "$current" "$expected_sha" "$expected_bytes" "$original_device" "$original_inode" \
+         "$original_uid" "$original_gid" "$original_mode" <"$source"
+     }
 
-   write_contents_in_place "${staging_candidate}" "${current}" \
-     "${candidate_sha256}" "${candidate_bytes}"
+     rollback_current_in_place() {
+       rollback_in_progress=true
+       set +e
+       test "$(stat -c '%d' "$current")" = "$original_device" || return 1
+       test "$(stat -c '%i' "$current")" = "$original_inode" || return 1
+       chown "$original_uid:$original_gid" "$current" || return 1
+       chmod "$original_mode" "$current" || return 1
+       rollback_sha="$(sha256sum "$last_known_good" | awk '"'"'{print $1}'"'"')"
+       write_contents_in_place "$last_known_good" "$rollback_sha" "$original_bytes" || return 1
+       test "$(stat -c '%d' "$current")" = "$original_device" || return 1
+       test "$(stat -c '%i' "$current")" = "$original_inode" || return 1
+       test "$(stat -c '%u' "$current")" = "$original_uid" || return 1
+       test "$(stat -c '%g' "$current")" = "$original_gid" || return 1
+       test "$(stat -c '%a' "$current")" = "$original_mode" || return 1
+       test "$(sha256sum "$current" | awk '"'"'{print $1}'"'"')" = "$rollback_sha" || return 1
+       test "$(docker exec "$container" sha256sum "$container_path" | awk '"'"'{print $1}'"'"')" = "$rollback_sha" || return 1
+       docker exec "$container" caddy validate --config "$container_path" --adapter caddyfile || return 1
+       docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile || return 1
+       run_approved_value_free_acceptance_checks || return 1
+     }
 
-   test "$(stat -c '%d' "${current}")" = "${original_device}"
-   test "$(stat -c '%i' "${current}")" = "${original_inode}"
-   test "$(stat -c '%U' "${current}")" = "${original_owner}"
-   test "$(stat -c '%G' "${current}")" = "${original_group}"
-   test "$(stat -c '%a' "${current}")" = "${original_mode}"
+     failure_handler() {
+       status=$?
+       if [ "$mutation_started" != true ] || [ "$rollback_in_progress" = true ]; then return "$status"; fi
+       trap - ERR
+       rollback_current_in_place || echo 'automatic rollback failed; keep SSH and escalate.' >&2
+       exit "$status"
+     }
+     trap failure_handler ERR
 
-   host_caddy_sha="$(sha256sum "${current}" | awk '{print $1}')"
-   container_caddy_sha="$(docker exec "${edge_container}" sha256sum /etc/caddy/Caddyfile | awk '{print $1}')"
-   test "${host_caddy_sha}" = "${candidate_sha256}"
-   test "${container_caddy_sha}" = "${candidate_sha256}"
-   # HOST_CADDY_SHA == CANDIDATE_SHA == CONTAINER_CADDY_SHA を満たさない限り STOP。
-   ```
+     mutation_started=true
+     write_contents_in_place /dev/fd/3 "$candidate_sha256" "$candidate_bytes"
+     test "$(stat -c '%d' "$current")" = "$original_device"
+     test "$(stat -c '%i' "$current")" = "$original_inode"
+     test "$(stat -c '%u' "$current")" = "$original_uid"
+     test "$(stat -c '%g' "$current")" = "$original_gid"
+     test "$(stat -c '%a' "$current")" = "$original_mode"
+     host_sha="$(sha256sum "$current" | awk '"'"'{print $1}'"'"')"
+     container_sha="$(docker exec "$container" sha256sum "$container_path" | awk '"'"'{print $1}'"'"')"
+     test "$host_sha" = "$candidate_sha256"
+     test "$container_sha" = "$candidate_sha256"
+     # HOST_SHA == CANDIDATE_SHA == CONTAINER_SHA before validate/reload.
+     # HOST_CADDY_SHA == CANDIDATE_SHA == CONTAINER_CADDY_SHA is the recorded equality.
+     docker exec "$container" caddy validate --config "$container_path" --adapter caddyfile
+     docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile
+     # Approved no-send checks: /healthz /readyz /api /admin /setup /:8080 /SSH.
+     run_approved_value_free_acceptance_checks
+   '"'"'' -- "$candidate_sha256" "$candidate_bytes"
+   ~~~
 
-   上記の host current と container `/etc/caddy/Caddyfile` の SHA-256 equality を確認するまで
-   reloadしません。single-file read-only bind mount でも container-visible bytes が candidate と
-   一致していることを必須 guard にします。
+   production current は same inode の in-place write として fd に truncate、exact write、fsync します。path replacement や
+   live current を別 inode にする操作、container recreate は使いません。container-visible SHA は
+   candidate SHA と一致しなければなりません。
 
-8. **container-visible bytes の確認後、actual containerで validate、続いて `caddy reload` を行う。**
-   validate failure は STOP して reload せず、container restart / recreate もしません。この lifecycle
-   では `docker restart`、`docker compose restart`、`docker stop/start`、`up -d --force-recreate`、
-   container recreate を使用しません。
+8. **automatic rollback の完了条件。** validate failure、reload failure、post-reload acceptance failure
+   を含む ANY FAILURE は rollback on validate failure / rollback on reload failure として扱います。
+   disk 上の candidate を戻さず exit してはいけません。rollback は last-known-good を同じ inode に
+   restore し、device、inode、uid、gid、owner、group、mode、HOST_SHA == ORIGINAL_SHA ==
+   CONTAINER_SHA を確認します。その後 old config の caddy validate、必要な caddy reload、/healthz、
+   /readyz、/api regression、/admin、/setup、:8080 unreachable、SSH を再確認します。rollback 自体が
+   failure なら SSH を維持して STOP し、operator に escalate します。inode drift は path を置換せず
+   STOP します。
 
-   ```bash
-   if ! docker exec "${edge_container}" \
-     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
-     echo 'STOP: mounted candidate validation failed; do not reload.' >&2
-     exit 1
-   fi
-   docker exec "${edge_container}" \
-     caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
-   ```
-
-9. **reload 後の acceptance をすべて確認する。** 既存の value-free acceptance record に、次を
-   各々記録します。`/admin` と `/setup` は JP source から Caddy Basic Auth の fail/success boundary
-   と Mailer 自身の auth boundary を確認し、non-JP source は challenge 前の 404 を確認します。
-   `/api` regression は実送信を伴わない approved regression check を使います。
-
-   - `/healthz`
-   - `/readyz`
-   - `/api` regression
-   - `/admin`
-   - `/setup`
-   - public host `:8080` が unreachable（Mailer backend の port を公開していない）
-   - SSH login / rollback session
-
-10. **failure 時は old Caddyfile を same inode のまま restore → validate → reload → regression
-    verification の順で戻す。** reload failure、acceptance failure、JP allow-list の誤生成、ownership
-    / mode drift のいずれでも、手順を省略して再編集しません。事前に確保した SSH session から
-    last-known-good の bytes を current へ in-place restore し、original owner / group / mode も
-    同じ inode 上で復元します。current の device / inode が original と異なる場合は path を置換せず
-    STOP して escalate します。
-
-    restore後も必ず `device unchanged`、`inode unchanged`、`owner restored`、`group restored`、
-    `mode restored`、`HOST_CADDY_SHA == BACKUP_SHA == CONTAINER_CADDY_SHA` を確認します。その後、
-    同じ pinned Caddy 2.10.2 で `caddy validate`、pass 後に `caddy reload`、step 9 の全 acceptance
-    と `/api` regression を再確認します。restore、validate、reload、regression のどこかが失敗
-    したら SSH を維持して STOP し、operator に escalate します。
-
-    ```bash
-    # current pathが同じ regular file / original inodeであることを先に確認する。
-    test -f "${current}" && test ! -L "${current}"
-    test "$(stat -c '%d' "${current}")" = "${original_device}"
-    test "$(stat -c '%i' "${current}")" = "${original_inode}"
-
-    # metadata driftがあれば、同じinodeのままoriginal metadataを復元する。
-    chown "${original_uid}:${original_gid}" "${current}"
-    chmod "${original_mode}" "${current}"
-    write_contents_in_place "${last_known_good}" "${current}" \
-      "${original_sha256}" "${original_bytes}"
-
-    test "$(stat -c '%d' "${current}")" = "${original_device}"
-    test "$(stat -c '%i' "${current}")" = "${original_inode}"
-    test "$(stat -c '%U' "${current}")" = "${original_owner}"
-    test "$(stat -c '%G' "${current}")" = "${original_group}"
-    test "$(stat -c '%a' "${current}")" = "${original_mode}"
-    backup_sha="$(sha256sum "${last_known_good}" | awk '{print $1}')"
-    host_caddy_sha="$(sha256sum "${current}" | awk '{print $1}')"
-    container_caddy_sha="$(docker exec "${edge_container}" sha256sum /etc/caddy/Caddyfile | awk '{print $1}')"
-    test "${host_caddy_sha}" = "${backup_sha}"
-    test "${container_caddy_sha}" = "${backup_sha}"
-
-    docker exec "${edge_container}" \
-      caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-    docker exec "${edge_container}" \
-      caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
-    # ここでstep 9の全acceptanceと/api regressionを再実行する。
-    ```
-
-    特に JP allow-list を誤生成して日本から `/admin` / `/setup` が全拒否になっても、公開経路で
-   直そうとせず、事前に確保した SSH session から last-known-good を same inode に restore、
-   validate、reload できます。SSH rollback が確認できない apply は開始しません。
-
-11. **GeoLite download / render / validate / update が失敗した場合の fail-closed。** GeoLite の取得は
-    operator側だけで行い、失敗時はその時点の current last-known-good production Caddyfile を維持
-    します。raw CSV、MaxMind credential、bcrypt input hash file を VPSへ置かず、空の candidate、
-    空 CIDR、default route、allow-all (`0.0.0.0/0` / `::/0`) へ fallback せず、失敗を記録して STOP
-    します。
-
+9. **fail-closed と既存 security contract。** GeoLite download / render / validate / update は operator
+   側だけで行い、raw CSV、MaxMind credential、bcrypt input hash file、plaintext password を VPS に
+   置きません。空 CIDR、default route、allow-all (0.0.0.0/0 / ::/0) へ fallback しません。
+   /admin /setup は JP CIDR + Caddy Basic Auth + Mailer own auth、non-JP/unknown は challenge 前の
+   404、/metrics は MAILER_MANAGEMENT_ALLOWED_CIDRS、/api/* /healthz /readyz は public、Caddy
+   Authorization は Mailer upstream へ forwardしない、Mailer :8080 は host unpublished を維持します。
+   #744 は edge hardening、#745 の fresh setup / real ACS send / UX dogfood は開始しません。
 管理経路を SSH tunnel のみにする場合は、Caddy の host bind を `127.0.0.1` に変更し、
 remote host の 80/443 を公開しません。public API も tunnel 経由だけになります。通常の
 public API + private management 構成では、public 80/443 を firewall で運用し、management

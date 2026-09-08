@@ -144,6 +144,7 @@ metadata. Generating the real password or hash is outside this source stage. The
 `agent-dev01`, never `/srv/platform/edge`.
 
 ```bash
+# Run on operator / agent-dev01
 operator_input_dir='/path/on/operator-or-agent-dev01/geolite/current'
 caddy_hash_file='/path/on/operator-or-agent-dev01/caddy-admin.bcrypt'
 
@@ -185,350 +186,285 @@ to MaxMind / GeoLite download credentials, account IDs, or license keys.
 
 ### Safe live-edge apply lifecycle (production runbook)
 
-This section is a production live-edge runbook. The VPS commands below are documentation only
-and are **not executed during this rework**. Source Stage build/validation approval does not
-authorize live mutation. Before changing production, obtain a separate Human approval recorded
-with the change ID, hostname, candidate digest, executor, and rollback owner.
+This is the production live-edge runbook. The VPS commands below are documentation only and are not executed
+during this rework. Source Stage build/validation approval is not live-mutation approval. Before production
+change, record a separate Human approval containing the change ID, hostname, candidate digest, executor, and
+rollback owner.
 
-Fresh-confirmed actual VPS topology is:
+#### Execution contexts
 
-| item | source of truth |
-| --- | --- |
-| Compose project / service | `amane-platform-edge` / `proxy` |
-| edge working directory / compose | `/srv/platform/edge` / `/srv/platform/edge/compose.yml` |
-| current Caddyfile | `/srv/platform/edge/Caddyfile` |
-| observed running container name | `amane-platform-edge-proxy-1` (reference only; resolve by labels) |
-| current ownership / mode baseline | `root:root` / `0644` (Fresh-confirmed; re-read and preserve live) |
-| container path / mount | `/etc/caddy/Caddyfile`, single-file read-only bind mount |
-| mount source / destination | `/srv/platform/edge/Caddyfile` → `/etc/caddy/Caddyfile`, RW=false |
-| pinned image | `caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d` |
+The live procedure has exactly three separate execution contexts:
 
-1. **Generate a candidate from real GeoLite input on the operator side.** From the reviewed source
-   checkout root and the operator / `agent-dev01` secure input path, use current GeoLite2 Country
-   IPv4 blocks, IPv6 blocks, locations-en CSV, and an already-generated bcrypt hash file—not the
-   self-test fixture. Never place raw CSV, MaxMind credentials, the bcrypt input hash file, or the
-   plaintext password on the VPS. Do not change `/srv/platform/edge/Caddyfile` at this stage.
+| context | work | boundary |
+| --- | --- | --- |
+| A. OPERATOR / agent-dev01 | GeoLite inputs, bcrypt hash input, renderer, operator-side candidate, CIDR counts, bytes, and SHA-256 | Raw GeoLite CSV and the bcrypt input hash remain here and never go to the VPS. |
+| B. REMOTE VPS READ-ONLY | Compose label resolution, container inspect, image/version/mount checks, read-only stat, and candidate stdin pre-validation as deploy | docker ps, docker inspect, and docker exec occur only inside SSH remote command bodies. No production mutation. |
+| C. REMOTE VPS PRIVILEGED LIVE MUTATION | Human-approved backup, same-inode write, SHA guards, Caddy validate, reload, and rollback | Only inside the existing approved sudo/root path, using sudo -n sh -c. No sudoers, SSH, or root-login change. |
 
-   ```bash
+The candidate remains on the operator. No persistent candidate file is created on the VPS; candidate bytes are
+consumed by the remote process from SSH stdin. PERSISTENT_VPS_STAGING_REQUIRED=false, candidate file persisted on VPS=false,
+GeoLite raw data transferred=false, and bcrypt input file transferred=false.
+
+Fresh topology is Compose project=amane-platform-edge, service=proxy, current
+/srv/platform/edge/Caddyfile, container path=/etc/caddy/Caddyfile, single-file read-only bind mount,
+mount source=/srv/platform/edge/Caddyfile, destination=/etc/caddy/Caddyfile, RW=false, and pinned Caddy 2.10.2.
+The observed container name is reference-only; resolve by labels every time and require exactly one.
+The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline only.
+
+1. **OPERATOR / agent-dev01: generate the real GeoLite candidate.** Do not put raw GeoLite CSV, MaxMind
+   credentials, the bcrypt input hash file, or the plaintext password on the VPS. Production Caddyfile is
+   unchanged at this stage.
+
+   ~~~bash
+   # Run on operator / agent-dev01
    set -Eeuo pipefail
    umask 077
-   operator_input_dir='/path/on/operator-or-agent-dev01/geolite/current'
-   caddy_hash_file='/path/on/operator-or-agent-dev01/caddy-admin.bcrypt'
-   candidate="${PWD}/infra/deploy/Caddyfile.vps-dogfood"
-   change_id="$(date -u +%Y%m%dT%H%M%SZ)"
-   render_record="${PWD}/${change_id}-caddy-render.txt"
-
-   if ! python3 infra/deploy/render-vps-management-edge.py \
-     --ipv4-blocks "${operator_input_dir}/GeoLite2-Country-Blocks-IPv4.csv" \
-     --ipv6-blocks "${operator_input_dir}/GeoLite2-Country-Blocks-IPv6.csv" \
-     --locations "${operator_input_dir}/GeoLite2-Country-Locations-en.csv" \
+   operator_input_dir=/path/on/operator-or-agent-dev01/geolite/current
+   caddy_hash_file=/path/on/operator-or-agent-dev01/caddy-admin.bcrypt
+   candidate=$PWD/infra/deploy/Caddyfile.vps-dogfood
+   render_record=$PWD/caddy-render.txt
+   python3 infra/deploy/render-vps-management-edge.py \
+     --ipv4-blocks "$operator_input_dir/GeoLite2-Country-Blocks-IPv4.csv" \
+     --ipv6-blocks "$operator_input_dir/GeoLite2-Country-Blocks-IPv6.csv" \
+     --locations "$operator_input_dir/GeoLite2-Country-Locations-en.csv" \
      --basic-auth-username caddy-admin \
-     --basic-auth-hash-file "${caddy_hash_file}" \
+     --basic-auth-hash-file "$caddy_hash_file" \
      --template infra/deploy/Caddyfile.vps-dogfood.example \
-     --output "${candidate}" >"${render_record}"; then
-     echo 'STOP: GeoLite render failed; production Caddyfile was not changed.' >&2
-     exit 1
-   fi
-   test -f "${candidate}" && test ! -L "${candidate}"
-   ```
+     --output "$candidate" >"$render_record"
+   test -f "$candidate" && test ! -L "$candidate"
+   ~~~
 
-   `caddy-admin` is a non-secret example. Use a deployment-specific username in live operations.
-   Keep the render summary as a protected, value-free operator-side record; it must not contain a
-   hash or password.
+2. **OPERATOR / agent-dev01: record candidate counts, bytes, and SHA.** Reconcile IPv4 CIDR count,
+   IPv6 CIDR count, bytes, and SHA-256 with the renderer summary. Zero/unexpected counts, any mismatch,
+   or inability to record the summary is STOP.
 
-2. **Record candidate counts, size, and digest on the operator side.** Reconcile the renderer summary
-   with the candidate and record `IPv4 CIDR count`, `IPv6 CIDR count`, `bytes`, and `SHA-256` in the
-   change record. A zero count, unexpected count, mismatched bytes/SHA-256, or inability to record the
-   summary is STOP. Do not copy raw GeoLite CSV data, the password, or the bcrypt hash into the record.
+   ~~~bash
+   # Run on operator / agent-dev01
+   candidate_bytes="$(stat -c '%s' "$candidate")"
+   candidate_sha256="$(sha256sum "$candidate" | awk '{print $1}')"
+   grep -E '^(IPv4 CIDR count|IPv6 CIDR count|output bytes|SHA-256):' "$render_record"
+   printf 'candidate bytes: %s\ncandidate SHA-256: %s\n' "$candidate_bytes" "$candidate_sha256"
+   ~~~
 
-   ```bash
-   candidate_bytes="$(stat -c '%s' "${candidate}")"
-   candidate_sha256="$(sha256sum "${candidate}" | awk '{print $1}')"
-   {
-     grep -E '^(IPv4 CIDR count|IPv6 CIDR count|output bytes|SHA-256):' "${render_record}"
-     printf 'candidate bytes: %s\n' "${candidate_bytes}"
-     printf 'candidate SHA-256: %s\n' "${candidate_sha256}"
-   } >>"${render_record}"
-   ```
+3. **REMOTE VPS READ-ONLY: resolve the Compose container by labels.** Do not run local docker ps, docker
+   inspect, or docker exec on the operator. Inside the deploy SSH body, verify project label, service label,
+   Config.Image, Caddy version, mount type/source/destination, and RW=false. Zero or multiple matches is STOP.
 
-3. **Validate with the pinned/running Caddy 2.10.2 before changing production.** Resolve the running
-   edge container from Compose labels. The candidate is still local to the operator; send it to the
-   actual Caddy binary over stdin. Zero or multiple matching running containers is STOP.
+   ~~~bash
+   # Run on VPS via SSH, read-only
+   ssh "$VPS_ALIAS" 'bash -s' <<'REMOTE_READ_ONLY'
+   set -Eeuo pipefail
+   project=amane-platform-edge
+   service=proxy
+   current=/srv/platform/edge/Caddyfile
+   image=caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+   ids="$(docker ps --quiet --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=$service --filter status=running)"
+   count="$(printf '%s\n' "$ids" | awk 'NF {n++} END {print n+0}')"
+   test "$count" -eq 1
+   container="$(printf '%s\n' "$ids" | awk 'NF {print; exit}')"
+   test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")" = "$project"
+   test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")" = "$service"
+   test "$(docker inspect --format '{{.Config.Image}}' "$container")" = "$image"
+   mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{end}}{{end}}' "$container")"
+   test "$mount" = 'bind|/srv/platform/edge/Caddyfile|/etc/caddy/Caddyfile|false'
+   docker exec "$container" caddy version | grep -F v2.10.2 >/dev/null
+   test -f "$current" && test ! -L "$current"
+   test "$(stat -c '%F' "$current")" = 'regular file'
+   REMOTE_READ_ONLY
+   ~~~
 
-   ```bash
-   edge_project='amane-platform-edge'
-   edge_service='proxy'
-   edge_workdir='/srv/platform/edge'
-   current="${edge_workdir}/Caddyfile"
-   caddy_container_path='/etc/caddy/Caddyfile'
-   caddy_image='caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d'
+4. **OPERATOR → SSH stdin: pre-validate candidate bytes remotely.** Stream only the operator candidate to
+   the actual running container after resolving labels again on the VPS. The candidate is never persisted on
+   the VPS.
 
-   mapfile -t edge_container_ids < <(
-     docker ps --quiet \
-       --filter "label=com.docker.compose.project=${edge_project}" \
-       --filter "label=com.docker.compose.service=${edge_service}" \
-       --filter status=running
-   )
-   if (( ${#edge_container_ids[@]} != 1 )); then
-     echo 'STOP: expected exactly one running edge container.' >&2
-     exit 1
-   fi
-   edge_container="${edge_container_ids[0]}"
+   ~~~bash
+   # Run on operator / agent-dev01; only candidate bytes cross SSH stdin.
+   cat "$candidate" | ssh "$VPS_ALIAS" '
+     # Run on VPS via SSH, read-only
+     set -Eeuo pipefail
+     project=amane-platform-edge
+     service=proxy
+     ids="$(docker ps --quiet --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=$service --filter status=running)"
+     test "$(printf "%s\n" "$ids" | awk "NF {n++} END {print n+0}")" -eq 1
+     container="$(printf "%s\n" "$ids" | awk "NF {print; exit}")"
+     test "$(docker inspect --format "{{.Config.Image}}" "$container")" = "caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d"
+     docker exec "$container" caddy version | grep -F v2.10.2 >/dev/null
+     docker exec -i "$container" caddy validate --config - --adapter caddyfile
+   '
+   ~~~
 
-   test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "${edge_container}")" = "${edge_project}"
-   test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "${edge_container}")" = "${edge_service}"
-   running_image="$(docker inspect --format '{{.Config.Image}}' "${edge_container}")"
-   test "${running_image}" = "${caddy_image}"
-   mount_record="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{end}}{{end}}' "${edge_container}")"
-   test "${mount_record}" = "bind|/srv/platform/edge/Caddyfile|/etc/caddy/Caddyfile|false"
-   running_version="$(docker exec "${edge_container}" caddy version)"
-   case "${running_version}" in
-     *v2.10.2*) ;;
-     *) echo 'STOP: running Caddy is not 2.10.2.' >&2; exit 1 ;;
-   esac
+   A caddy validate --config - failure is STOP: do not persist the candidate, mutate production, or fall
+   back to allow-all CIDRs. This proves production Caddyfile mutation=false and candidate file persisted on
+   VPS=false.
 
-   # Resolve/inspect on the VPS SSH session; stream only candidate bytes from the operator via stdin.
-   if ! ssh vps docker exec -i "${edge_container}" \
-     caddy validate --config - --adapter caddyfile <"${candidate}"; then
-     echo 'STOP: actual running Caddy rejected candidate; production Caddyfile was not changed.' >&2
-     exit 1
-   fi
-   ```
+5. **Start REMOTE VPS PRIVILEGED LIVE MUTATION only after separate Human approval.** Source Stage approval,
+   renderer self-test, CI, and stdin validation PASS are not live approval. Confirm digest, counts, bytes,
+   hostname, executor, rollback owner, and an SSH rollback session; missing approval or changed digest is STOP.
 
-   `caddy validate --config -` failure is always STOP: do not transfer the candidate, mutate
-   production, or fall back to an allow-all CIDR. This stdin validation uses the actual running
-   binary without placing GeoLite CSVs or the bcrypt input hash file on the VPS.
+6. **Privileged preflight and last-known-good backup.** deploy is a read-only user; an unprivileged deploy
+   write to the root-owned production Caddyfile is forbidden. Backup-directory creation, root-owned
+   last-known-good backup, current write, chown, chmod restoration, reload, and rollback run only inside
+   approved sudo -n sh -c. Do not change sudoers, SSH settings, or root login. Re-read and preserve current
+   device, inode, uid, gid, owner, group, mode, bytes, and SHA-256. Do not reset the Fresh root:root / 0644
+   baseline; 0644 is Fresh baseline only. Candidate is not persisted remotely and no remote temporary
+   candidate path is created.
 
-4. **Perform live mutation only after separate Human approval.** Source Stage approval, renderer
-   self-test, CI pass, and the step-3 actual Caddy validation PASS are not the live-mutation Human
-   approval. Record a separate approval after confirming the candidate count, bytes, SHA-256, target
-   hostname, executor, and SSH rollback owner. STOP if approval is absent, the digest changed, or the
-   rollback owner / SSH session is absent.
+7. **Enable the transaction and failure handler before same-inode write.** Initialize mutation_started=false
+   and rollback_in_progress=false. Set mutation_started=true only after backup and original SHA verification.
+   Candidate short read/write, Python exception, fsync failure, host SHA mismatch, container SHA mismatch,
+   inode drift, owner/mode drift, post-write caddy validate failure, caddy reload failure, and post-reload
+   acceptance failure are ANY FAILURE and trigger automatic rollback after mutation starts. Guard recursive ERR
+   handling with rollback_in_progress and call rollback_current_in_place exactly once.
 
-5. **Fresh-read current metadata and save a timestamped/SHA-256 last-known-good.** After approval,
-   verify that `/srv/platform/edge/Caddyfile` is a regular non-symlink and matches the mount source.
-   The Fresh-confirmed baseline is `root:root` / `0644`, but this is an observed baseline, not an
-   instruction to reset the mode. The live preflight obtains and records owner, group, mode, inode,
-   device, SHA-256, and bytes, then preserves those values unchanged. If they differ, STOP for a
-   separate Human approval; do not mix a mode change into the #744 live edge apply.
+   ~~~bash
+   # Run on operator / agent-dev01; candidate stays here and is SSH stdin only.
+   cat "$candidate" | ssh "$VPS_ALIAS" 'sudo -n sh -c '"'"'
+     # Run on VPS via approved privileged sudo/root shell
+     set -Eeuo pipefail
+     exec 3<&0
+     mutation_started=false
+     rollback_in_progress=false
+     current=/srv/platform/edge/Caddyfile
+     container_path=/etc/caddy/Caddyfile
+     candidate_sha256=$1
+     candidate_bytes=$2
 
-   ```bash
-   current='/srv/platform/edge/Caddyfile'
-   test -f "${current}" && test ! -L "${current}"
-   test "$(stat -c '%F' "${current}")" = 'regular file'
-   test "${mount_record}" = 'bind|/srv/platform/edge/Caddyfile|/etc/caddy/Caddyfile|false'
+     # Resolve project=amane-platform-edge / service=proxy here; exactly one or STOP.
+     project=amane-platform-edge
+     service=proxy
+     image=caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+     ids="$(docker ps --quiet --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=$service --filter status=running)"
+     test "$(printf '%s\n' "$ids" | awk 'NF {n++} END {print n+0}')" -eq 1
+     container="$(printf '%s\n' "$ids" | awk 'NF {print; exit}')"
+     test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")" = "$project"
+     test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")" = "$service"
+     test "$(docker inspect --format '{{.Config.Image}}' "$container")" = "$image"
+     mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{end}}{{end}}' "$container")"
+     test "$mount" = 'bind|/srv/platform/edge/Caddyfile|/etc/caddy/Caddyfile|false'
+     docker exec "$container" caddy version | grep -F v2.10.2 >/dev/null
+     test -f "$current" && test ! -L "$current"
+     original_device="$(stat -c '%d' "$current")"
+     original_inode="$(stat -c '%i' "$current")"
+     original_uid="$(stat -c '%u' "$current")"
+     original_gid="$(stat -c '%g' "$current")"
+     original_owner="$(stat -c '%U' "$current")"
+     original_group="$(stat -c '%G' "$current")"
+     original_mode="$(stat -c '%a' "$current")"
+     original_bytes="$(stat -c '%s' "$current")"
+     original_sha256="$(sha256sum "$current" | awk '{print $1}')"
+     change_id="$(date -u +%Y%m%dT%H%M%SZ)"
+     last_known_good_dir=/srv/platform/edge/last-known-good
+     last_known_good="$last_known_good_dir/Caddyfile.$change_id.sha256-$original_sha256"
+     # Record device, inode, uid, gid, owner, group, mode, bytes, and SHA-256.
+     install -d -o root -g root -m 0700 /srv/platform/edge/last-known-good
+     install -o "$original_owner" -g "$original_group" -m "$original_mode" \
+       -- "$current" "$last_known_good"
+     test "$(sha256sum "$last_known_good" | awk '"'"'{print $1}'"'"')" = "$original_sha256"
 
-   original_device="$(stat -c '%d' "${current}")"
-   original_inode="$(stat -c '%i' "${current}")"
-   original_owner="$(stat -c '%U' "${current}")"
-   original_group="$(stat -c '%G' "${current}")"
-   original_uid="$(stat -c '%u' "${current}")"
-   original_gid="$(stat -c '%g' "${current}")"
-   original_mode="$(stat -c '%a' "${current}")"
-   original_bytes="$(stat -c '%s' "${current}")"
-   original_sha256="$(sha256sum "${current}" | awk '{print $1}')"
-   printf 'current owner=%s group=%s mode=%s inode=%s device=%s bytes=%s SHA-256=%s\n' \
-     "${original_owner}" "${original_group}" "${original_mode}" "${original_inode}" \
-     "${original_device}" "${original_bytes}" "${original_sha256}"
-
-   edge_dir='/srv/platform/edge'
-   last_known_good_dir="${edge_dir}/last-known-good"
-   last_known_good="${last_known_good_dir}/Caddyfile.${change_id}.sha256-${original_sha256}"
-   mkdir -p "${last_known_good_dir}"
-   install -o "${original_owner}" -g "${original_group}" -m "${original_mode}" \
-     -- "${current}" "${last_known_good}"
-   test "$(sha256sum "${last_known_good}" | awk '{print $1}')" = "${original_sha256}"
-   printf 'last-known-good change_id=%s original_owner=%s original_group=%s original_mode=%s original_inode=%s original_device=%s original_SHA-256=%s\n' \
-     "${change_id}" "${original_owner}" "${original_group}" "${original_mode}" \
-     "${original_inode}" "${original_device}" "${original_sha256}" \
-     >>"${edge_dir}/change-records/${change_id}-caddy-live.txt"
-   ```
-
-   The backup may have a different inode, but its recorded metadata is the original current owner,
-   group, mode, inode, device, SHA-256, and bytes. `install` is used only to create the
-   last-known-good backup; it is never used to replace the mounted current path.
-
-6. **After Human approval, transfer only the generated Caddy candidate to protected staging.** From
-   the operator side, transfer only to `/srv/platform/edge/staging/<change-id>/Caddyfile`. The staging
-   directory is not public, Git-managed, or Compose configuration, and contains generated Caddy only.
-   Do not transfer raw CSV, MaxMind credentials, the bcrypt input hash file, or the plaintext password.
-   Compare staging size and SHA-256 with the operator record; mismatch is STOP.
-
-   ```bash
-   # Operator side; run only after Human approval.
-   scp -- "${candidate}" \
-     "vps:/srv/platform/edge/staging/${change_id}/Caddyfile"
-
-   # VPS side; use the existing protected staging directory and inspect only the candidate.
-   staging_candidate="/srv/platform/edge/staging/${change_id}/Caddyfile"
-   test -f "${staging_candidate}" && test ! -L "${staging_candidate}"
-   chown "${original_uid}:${original_gid}" "${staging_candidate}"
-   chmod "${original_mode}" "${staging_candidate}"
-   test "$(stat -c '%s' "${staging_candidate}")" = "${candidate_bytes}"
-   test "$(sha256sum "${staging_candidate}" | awk '{print $1}')" = "${candidate_sha256}"
-   ```
-
-7. **Preserve the single-file bind mount inode and update current contents in-place.** Do not replace
-   current with a different inode. Do not rely on a bare `cp candidate current`; read all candidate
-   bytes, open current in write mode, guard original device / inode / owner / group / mode, truncate,
-   write the exact bytes, flush, call `os.fsync()`, and close. If current device or inode changed, do
-   not write and STOP.
-
-   ```bash
-   write_contents_in_place() {
-     python3 - "$1" "$2" "$3" "$4" \
-       "${original_device}" "${original_inode}" "${original_uid}" "${original_gid}" "${original_mode}" <<'PY'
-   import hashlib
-   import os
-   import pathlib
-   import stat
-   import sys
-
-   source = pathlib.Path(sys.argv[1])
-   target = pathlib.Path(sys.argv[2])
-   expected_sha256 = sys.argv[3]
-   expected_bytes = int(sys.argv[4])
-   expected_device = int(sys.argv[5])
-   expected_inode = int(sys.argv[6])
-   expected_uid = int(sys.argv[7])
-   expected_gid = int(sys.argv[8])
-   original_mode = int(sys.argv[9], 8)
-
-   source_stat = source.lstat()
-   if source.is_symlink() or not stat.S_ISREG(source_stat.st_mode):
-       raise SystemExit("STOP: candidate is not a regular non-symlink file")
-   data = source.read_bytes()
+     write_contents_in_place() {
+       source=$1
+       expected_sha=$2
+       expected_bytes=$3
+       python3 -c "$(cat <<'PY'
+   import hashlib, os, stat, sys
+   target, expected_sha, expected_bytes = sys.argv[1], sys.argv[2], int(sys.argv[3])
+   expected_dev, expected_ino = int(sys.argv[4]), int(sys.argv[5])
+   expected_uid, expected_gid = int(sys.argv[6]), int(sys.argv[7])
+   expected_mode = int(sys.argv[8], 8)
+   data = sys.stdin.buffer.read(expected_bytes + 1)
    if len(data) != expected_bytes:
-       raise SystemExit("STOP: candidate byte count changed")
-   if hashlib.sha256(data).hexdigest() != expected_sha256:
-       raise SystemExit("STOP: candidate SHA-256 changed")
-
-   flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-   fd = os.open(target, flags)
+       raise RuntimeError("candidate short read or trailing bytes")
+   if hashlib.sha256(data).hexdigest() != expected_sha:
+       raise RuntimeError("candidate SHA-256 mismatch")
+   fd = os.open(target, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
    try:
-       target_stat = os.fstat(fd)
-       if not stat.S_ISREG(target_stat.st_mode):
-           raise SystemExit("STOP: current is not a regular file")
-       if (
-           target_stat.st_dev != expected_device
-           or target_stat.st_ino != expected_inode
-           or target_stat.st_uid != expected_uid
-           or target_stat.st_gid != expected_gid
-           or stat.S_IMODE(target_stat.st_mode) != original_mode
-       ):
-           raise SystemExit("STOP: current device/inode/ownership/mode guard failed")
-       with os.fdopen(fd, "r+b", buffering=0, closefd=False) as handle:
-           handle.seek(0)
-           handle.truncate(0)
-           written = handle.write(data)
-           if written != len(data):
-               raise SystemExit("STOP: short write")
-           handle.flush()
-           os.fsync(handle.fileno())
+       before = os.fstat(fd)
+       if (before.st_dev, before.st_ino, before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode)) != (expected_dev, expected_ino, expected_uid, expected_gid, expected_mode):
+           raise RuntimeError("current device/inode/ownership/mode guard failed")
+       os.ftruncate(fd, 0)
+       written = 0
+       while written < len(data):
+           part = os.write(fd, data[written:])
+           if part <= 0:
+               raise RuntimeError("short write")
+           written += part
+       os.fsync(fd)
    finally:
        os.close(fd)
    PY
-   }
+       ) "$current" "$expected_sha" "$expected_bytes" "$original_device" "$original_inode" \
+         "$original_uid" "$original_gid" "$original_mode" <"$source"
+     }
 
-   write_contents_in_place "${staging_candidate}" "${current}" \
-     "${candidate_sha256}" "${candidate_bytes}"
+     rollback_current_in_place() {
+       rollback_in_progress=true
+       set +e
+       test "$(stat -c '%d' "$current")" = "$original_device" || return 1
+       test "$(stat -c '%i' "$current")" = "$original_inode" || return 1
+       chown "$original_uid:$original_gid" "$current" || return 1
+       chmod "$original_mode" "$current" || return 1
+       rollback_sha="$(sha256sum "$last_known_good" | awk '"'"'{print $1}'"'"')"
+       write_contents_in_place "$last_known_good" "$rollback_sha" "$original_bytes" || return 1
+       test "$(stat -c '%d' "$current")" = "$original_device" || return 1
+       test "$(stat -c '%i' "$current")" = "$original_inode" || return 1
+       test "$(stat -c '%u' "$current")" = "$original_uid" || return 1
+       test "$(stat -c '%g' "$current")" = "$original_gid" || return 1
+       test "$(stat -c '%a' "$current")" = "$original_mode" || return 1
+       test "$(sha256sum "$current" | awk '"'"'{print $1}'"'"')" = "$rollback_sha" || return 1
+       test "$(docker exec "$container" sha256sum "$container_path" | awk '"'"'{print $1}'"'"')" = "$rollback_sha" || return 1
+       docker exec "$container" caddy validate --config "$container_path" --adapter caddyfile || return 1
+       docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile || return 1
+       run_approved_value_free_acceptance_checks || return 1
+     }
 
-   test "$(stat -c '%d' "${current}")" = "${original_device}"
-   test "$(stat -c '%i' "${current}")" = "${original_inode}"
-   test "$(stat -c '%U' "${current}")" = "${original_owner}"
-   test "$(stat -c '%G' "${current}")" = "${original_group}"
-   test "$(stat -c '%a' "${current}")" = "${original_mode}"
+     failure_handler() {
+       status=$?
+       if [ "$mutation_started" != true ] || [ "$rollback_in_progress" = true ]; then return "$status"; fi
+       trap - ERR
+       rollback_current_in_place || echo 'automatic rollback failed; keep SSH and escalate.' >&2
+       exit "$status"
+     }
+     trap failure_handler ERR
 
-   host_caddy_sha="$(sha256sum "${current}" | awk '{print $1}')"
-   container_caddy_sha="$(docker exec "${edge_container}" sha256sum /etc/caddy/Caddyfile | awk '{print $1}')"
-   test "${host_caddy_sha}" = "${candidate_sha256}"
-   test "${container_caddy_sha}" = "${candidate_sha256}"
-   # HOST_CADDY_SHA == CANDIDATE_SHA == CONTAINER_CADDY_SHA is mandatory before reload.
-   ```
+     # Backup is complete. ANY FAILURE from this line invokes rollback.
+     mutation_started=true
+     write_contents_in_place /dev/fd/3 "$candidate_sha256" "$candidate_bytes"
+     test "$(stat -c '%d' "$current")" = "$original_device"
+     test "$(stat -c '%i' "$current")" = "$original_inode"
+     test "$(stat -c '%u' "$current")" = "$original_uid"
+     test "$(stat -c '%g' "$current")" = "$original_gid"
+     test "$(stat -c '%a' "$current")" = "$original_mode"
+     host_sha="$(sha256sum "$current" | awk '"'"'{print $1}'"'"')"
+     container_sha="$(docker exec "$container" sha256sum "$container_path" | awk '"'"'{print $1}'"'"')"
+     test "$host_sha" = "$candidate_sha256"
+     test "$container_sha" = "$candidate_sha256"
+     # HOST_CADDY_SHA == CANDIDATE_SHA == CONTAINER_CADDY_SHA before validate/reload.
+     docker exec "$container" caddy validate --config "$container_path" --adapter caddyfile
+     docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile
+     # Approved no-send checks: /healthz /readyz /api /admin /setup /:8080 /SSH.
+     run_approved_value_free_acceptance_checks
+   '"'"'' -- "$candidate_sha256" "$candidate_bytes"
+   ~~~
 
-   Do not reload until host current and container `/etc/caddy/Caddyfile` have equal SHA-256 bytes
-   matching the candidate. This guard directly confirms visibility through the single-file read-only
-   bind mount.
+   The privileged writer opens the existing current fd for an in-place write, checks device/inode/uid/gid/mode, truncates,
+   exact-writes, flushes, and calls fsync. It never changes the current path to a different inode and does
+   not recreate a container. The container-visible SHA must equal the candidate SHA.
 
-8. **After the container-visible byte guard, validate and use `caddy reload`.** A validation failure is
-   STOP and no reload occurs. This lifecycle does not use `docker restart`, `docker compose restart`,
-   `docker stop/start`, `up -d --force-recreate`, container stop/start, or container recreate.
+8. **Automatic rollback contract.** A validate failure, reload failure, or post-reload acceptance failure
+   is rollback on validate failure / rollback on reload failure; never exit while disk still contains candidate
+   bytes. Restore last-known-good to the original same inode and verify device, inode, uid, gid, owner, group,
+   mode, HOST_SHA == ORIGINAL_SHA == CONTAINER_SHA. Then validate old config, reload old config when needed,
+   and repeat /healthz, /readyz, /api regression, /admin, /setup, :8080 unreachable, and SSH checks. If
+   rollback, validation, reload, or regression fails, keep SSH open, STOP, and escalate. Never replace a path
+   after inode drift.
 
-   ```bash
-   if ! docker exec "${edge_container}" \
-     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; then
-     echo 'STOP: mounted candidate validation failed; do not reload.' >&2
-     exit 1
-   fi
-   docker exec "${edge_container}" \
-     caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
-   ```
-
-9. **Run all post-reload acceptance checks.** Record each result in the existing value-free acceptance
-   record. From a JP source, `/admin` and `/setup` must cover the Caddy Basic Auth fail/success boundary
-   and Mailer's own authentication boundary; a non-JP source must receive a 404 before the challenge.
-   The `/api` regression must be an approved no-send regression check.
-
-   - `/healthz`
-   - `/readyz`
-   - `/api` regression
-   - `/admin`
-   - `/setup`
-   - public host `:8080` is unreachable (the Mailer backend port is not published)
-   - SSH login / rollback session
-
-10. **On failure, restore the old Caddyfile in the same inode → validate → reload → regression
-    verification.** For a reload failure, acceptance failure, JP allow-list misgeneration, or ownership /
-    mode drift, do not skip steps or edit around the failure. From the pre-established SSH session,
-    restore last-known-good bytes into current in-place and restore the original owner / group / mode on
-    the same inode. If current device / inode differs from original, do not replace the path; STOP and
-    escalate.
-
-    After restore, verify `device unchanged`, `inode unchanged`, `owner restored`, `group restored`,
-    `mode restored`, and `HOST_CADDY_SHA == BACKUP_SHA == CONTAINER_CADDY_SHA`. Then validate with the
-    same pinned Caddy 2.10.2, run `caddy reload`, and repeat every step-9 acceptance check plus the
-    `/api` regression. If restore, validation, reload, or regression verification fails, keep SSH
-    available, STOP, and escalate.
-
-    ```bash
-    # Confirm the current path remains the same regular file and original inode first.
-    test -f "${current}" && test ! -L "${current}"
-    test "$(stat -c '%d' "${current}")" = "${original_device}"
-    test "$(stat -c '%i' "${current}")" = "${original_inode}"
-
-    # Restore original metadata on the same inode, then restore bytes in place.
-    chown "${original_uid}:${original_gid}" "${current}"
-    chmod "${original_mode}" "${current}"
-    write_contents_in_place "${last_known_good}" "${current}" \
-      "${original_sha256}" "${original_bytes}"
-
-    test "$(stat -c '%d' "${current}")" = "${original_device}"
-    test "$(stat -c '%i' "${current}")" = "${original_inode}"
-    test "$(stat -c '%U' "${current}")" = "${original_owner}"
-    test "$(stat -c '%G' "${current}")" = "${original_group}"
-    test "$(stat -c '%a' "${current}")" = "${original_mode}"
-    backup_sha="$(sha256sum "${last_known_good}" | awk '{print $1}')"
-    host_caddy_sha="$(sha256sum "${current}" | awk '{print $1}')"
-    container_caddy_sha="$(docker exec "${edge_container}" sha256sum /etc/caddy/Caddyfile | awk '{print $1}')"
-    test "${host_caddy_sha}" = "${backup_sha}"
-    test "${container_caddy_sha}" = "${backup_sha}"
-
-    docker exec "${edge_container}" \
-      caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
-    docker exec "${edge_container}" \
-      caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
-    # Repeat every step-9 acceptance check and the /api regression here.
-    ```
-
-    If a bad JP allow-list rejects every request from Japan, do not attempt a public-path fix. Use the
-    pre-established SSH session to restore last-known-good in-place in the same inode, validate, reload, and
-    verify the regression. Do not begin an apply until SSH rollback has been confirmed.
-
-11. **Fail closed on GeoLite download/render/validate/update failure.** GeoLite acquisition is operator-
-    side only. On any failure, keep the current last-known-good production Caddyfile in place. Do not
-    put raw CSV or the bcrypt input hash file on the VPS, and never fall back to an empty candidate,
-    empty CIDRs, default routes, or allow-all (`0.0.0.0/0` / `::/0`). Record the failure and STOP.
-
+9. **Fail closed and preserve the existing security contract.** GeoLite download/render/validate/update is
+   operator-side only. Keep last-known-good on failure; never put raw CSV, MaxMind credentials, bcrypt input
+   hash file, or plaintext password on the VPS; never fall back to empty CIDRs, default routes, or allow-all
+   (0.0.0.0/0 / ::/0). Preserve /admin and /setup as JP CIDR + Caddy Basic Auth + Mailer own auth, non-JP
+   404 before Basic challenge, /metrics MAILER_MANAGEMENT_ALLOWED_CIDRS, public /api/* /healthz /readyz,
+   removal of Caddy Basic Authorization before Mailer upstream, and unpublished Mailer :8080. #744 remains
+   edge hardening; do not start #745 fresh setup, real ACS send, or UX dogfood.
 For SSH-tunnel-only access, bind Caddy's host ports to `127.0.0.1` and do not
 publish the remote host's 80/443. This makes the public API tunnel-only too.
 For a public API with private management, operate public 80/443 through the

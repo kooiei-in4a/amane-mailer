@@ -319,38 +319,25 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
         {
             foreach (var required in new[]
                      {
-                         "amane-platform-edge",
+                         "OPERATOR / agent-dev01",
+                         "REMOTE VPS READ-ONLY",
+                         "REMOTE VPS PRIVILEGED LIVE MUTATION",
+                         "operator-side candidate",
+                         "SSH stdin",
                          "com.docker.compose.project",
                          "com.docker.compose.service",
+                         "Config.Image",
                          "single-file",
                          "bind mount",
-                         "0644",
-                         "owner",
-                         "group",
-                         "mode",
-                         "inode",
-                         "device",
-                         "current",
-                         "container-visible",
-                         "HOST_CADDY_SHA",
-                         "CANDIDATE_SHA",
-                         "CONTAINER_CADDY_SHA",
-                         "in-place",
-                         "fsync",
-                         "caddy validate --config -",
-                         "caddy reload",
-                         "operator",
-                         "staging",
-                         "last-known-good",
-                         "same inode",
-                         "exactly one",
-                         "/etc/caddy/Caddyfile",
                          "RW=false",
-                         "real GeoLite",
+                         "exactly one",
+                         "Caddy 2.10.2",
+                         "/etc/caddy/Caddyfile",
                          "/srv/platform/edge/Caddyfile",
                          "IPv4 CIDR count",
                          "IPv6 CIDR count",
                          "SHA-256",
+                         "real GeoLite",
                          "Caddy Basic Auth password",
                          "Mailer Admin",
                          "Setup bootstrap token",
@@ -358,10 +345,40 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
                          "plaintext password",
                          "MaxMind",
                          "--basic-auth-hash-file",
-                         "Caddy 2.10.2",
-                         "caddy validate",
                          "Human approval",
-                         "install -o",
+                         "root",
+                         "sudo -n sh -c",
+                         "owner",
+                         "group",
+                         "mode",
+                         "device",
+                         "inode",
+                         "current",
+                         "last-known-good",
+                         "last-known-good backup",
+                         "same-inode",
+                         "same inode",
+                         "in-place",
+                         "fsync",
+                         "container-visible",
+                         "HOST_CADDY_SHA",
+                         "CANDIDATE_SHA",
+                         "CONTAINER_CADDY_SHA",
+                         "caddy validate --config -",
+                         "caddy reload",
+                         "transaction",
+                         "failure handler",
+                         "mutation_started=false",
+                         "rollback_in_progress=false",
+                         "automatic rollback",
+                         "rollback_current_in_place",
+                         "rollback on validate failure",
+                         "rollback on reload failure",
+                         "preserve",
+                         "0644 is Fresh baseline only",
+                         "candidate file persisted on VPS=false",
+                         "GeoLite raw data transferred=false",
+                         "bcrypt input file transferred=false",
                          "/healthz",
                          "/readyz",
                          "/api",
@@ -375,10 +392,19 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
                 Assert.Contains(required, runbook, StringComparison.Ordinal);
             }
 
-            Assert.True(
-                runbook.Contains("preserve", StringComparison.OrdinalIgnoreCase)
-                    || runbook.Contains("その値をそのまま維持", StringComparison.Ordinal),
-                "The runbook must preserve the freshly observed current owner/mode.");
+            foreach (Match codeBlock in Regex.Matches(
+                         runbook,
+                         @"(?ms)^~~~[^\n]*\n(?<body>.*?)^~~~\s*$"))
+            {
+                var body = codeBlock.Groups["body"].Value;
+                if (!Regex.IsMatch(body, @"\bdocker (?:ps|inspect|exec)\b", RegexOptions.CultureInvariant))
+                {
+                    continue;
+                }
+
+                Assert.Contains("ssh", body, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("# Run on VPS", body, StringComparison.Ordinal);
+            }
 
             foreach (var forbidden in new[]
                      {
@@ -390,21 +416,26 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
                          "atomic rename",
                          "atomic replace",
                          "mv -f",
-                         "\"${candidate}\" \"${current}\"",
-                         "\"${rollback_candidate}\" \"${current}\"",
-                         "--mount \"type=bind,src=${candidate}",
+                         "rename current",
+                         "install directly over live current",
+                         "/srv/platform/edge/staging/",
+                         "staging_candidate",
+                         "--mount",
                          "/secure/geolite",
-                         "/secure/operator-secrets"
+                         "/secure/operator-secrets",
+                         "scp --"
                      })
             {
                 Assert.DoesNotContain(forbidden, runbook, StringComparison.OrdinalIgnoreCase);
             }
 
-            Assert.Contains(
-                "install -o \"${original_owner}\" -g \"${original_group}\" -m \"${original_mode}\"",
-                runbook,
-                StringComparison.Ordinal);
-            Assert.Contains("last-known-good backup", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("deploy", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("read-only", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("root-owned", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("install -o", runbook, StringComparison.Ordinal);
+            Assert.Contains("same inode", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("caddy validate", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("rollback", runbook, StringComparison.OrdinalIgnoreCase);
         }
 
         var smokeRunbooks = new[]
