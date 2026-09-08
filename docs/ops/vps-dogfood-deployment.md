@@ -443,6 +443,8 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
    ~~~bash
    # Run in the already-open remote deploy shell. No HEREDOC is used for authentication.
    set -Eeuo pipefail
+   acceptance_origin="https://${MAILER_PUBLIC_HOSTNAME:?MAILER_PUBLIC_HOSTNAME must be set to the approved public hostname}"
+   # The privileged helper uses this public HTTPS origin; never point it at mailer:8080.
    cleanup_temporary_candidate() {
      rm -f -- "$candidate_remote"
      test ! -e "$candidate_remote"
@@ -483,7 +485,8 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
    if sudo -n bash -s -- \
      "$candidate_remote" \
      "$candidate_sha256" \
-     "$candidate_bytes" <<'ROOT_BASH'
+     "$candidate_bytes" \
+     "$acceptance_origin" <<'ROOT_BASH'
      # Run on VPS via approved privileged explicit Bash transaction
      # stdin is ROOT_BASH, while candidate bytes are read from candidate_remote.
      set -Eeuo pipefail
@@ -494,6 +497,11 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
      candidate_remote=$1
      candidate_sha256=$2
      candidate_bytes=$3
+     acceptance_origin=$4
+     case "$acceptance_origin" in
+       https://?*) ;;
+       *) echo 'acceptance_origin must be an approved HTTPS origin' >&2; exit 1 ;;
+     esac
 
      # Resolve project=amane-platform-edge / service=proxy here; exactly one or STOP.
      project=amane-platform-edge
@@ -525,7 +533,151 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
      install -d -o root -g root -m 0700 /srv/platform/edge/last-known-good
      install -o "$original_owner" -g "$original_group" -m "$original_mode" \
        -- "$current" "$last_known_good"
-     test "$(sha256sum "$last_known_good" | awk '"'"'{print $1}'"'"')" = "$original_sha256"
+     test "$(sha256sum "$last_known_good" | awk '{print $1}')" = "$original_sha256"
+
+     capture_http_state() {
+       local path=$1 body_file http_status body_sha256
+       body_file="$(mktemp)"
+       if ! http_status="$(curl --silent --show-error --connect-timeout 5 --max-time 10 \
+         --output "$body_file" --write-out '%{http_code}' --request GET "$acceptance_origin$path")"; then
+         rm -f -- "$body_file"
+         return 1
+       fi
+       body_sha256="$(sha256sum "$body_file" | awk '{print $1}')"
+       rm -f -- "$body_file"
+       printf '%s|%s\n' "$http_status" "$body_sha256"
+     }
+
+     assert_http_status() {
+       local path=$1 expected_status=$2 body_file http_status
+       body_file="$(mktemp)"
+       if ! http_status="$(curl --silent --show-error --connect-timeout 5 --max-time 10 \
+         --output "$body_file" --write-out '%{http_code}' --request GET "$acceptance_origin$path")"; then
+         rm -f -- "$body_file"
+         return 1
+       fi
+       if [ "$http_status" != "$expected_status" ]; then
+         rm -f -- "$body_file"
+         return 1
+       fi
+       rm -f -- "$body_file"
+     }
+
+     assert_http_state() {
+       local path=$1 expected_state=$2 actual_state
+       actual_state="$(capture_http_state "$path")" || return 1
+       test "$actual_state" = "$expected_state"
+     }
+
+     assert_api_no_send() {
+       local expected_status=$1 body_file headers_file http_status
+       body_file="$(mktemp)"
+       headers_file="$(mktemp)"
+       if ! http_status="$(curl --silent --show-error --connect-timeout 5 --max-time 10 \
+         --dump-header "$headers_file" --output "$body_file" --write-out '%{http_code}' \
+         --request GET --header 'Accept: application/json' \
+         "$acceptance_origin$api_status_path")"; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if [ "$http_status" != "$expected_status" ]; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if ! grep -F '"code":"UNAUTHORIZED"' "$body_file" >/dev/null; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if grep -Eiq '^www-authenticate:[[:space:]]*basic' "$headers_file"; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       rm -f -- "$body_file" "$headers_file"
+     }
+
+     assert_non_jp_management_boundary() {
+       local path=$1 body_file headers_file http_status
+       body_file="$(mktemp)"
+       headers_file="$(mktemp)"
+       if ! http_status="$(curl --silent --show-error --connect-timeout 5 --max-time 10 \
+         --dump-header "$headers_file" --output "$body_file" --write-out '%{http_code}' \
+         --request GET "$acceptance_origin$path")"; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if [ "$http_status" != 404 ]; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if grep -Eiq '^www-authenticate:[[:space:]]*basic' "$headers_file"; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       rm -f -- "$body_file" "$headers_file"
+     }
+
+     assert_mailer_8080_unpublished() {
+       local mailer_ids mailer_count mailer_container port_bindings
+       mailer_ids="$(docker ps --quiet --filter label=com.docker.compose.project=$project \
+         --filter label=com.docker.compose.service=mailer --filter status=running)"
+       mailer_count="$(printf '%s\n' "$mailer_ids" | awk 'NF {n++} END {print n+0}')"
+       test "$mailer_count" -eq 1
+       mailer_container="$(printf '%s\n' "$mailer_ids" | awk 'NF {print; exit}')"
+       port_bindings="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$mailer_container")"
+       case "$port_bindings" in
+         null|'{}') ;;
+         *)
+           if printf '%s\n' "$port_bindings" | grep -F '"8080/tcp"' >/dev/null; then
+             return 1
+           fi
+           ;;
+       esac
+     }
+
+     api_status_path=/api/mail-requests/00000000-0000-0000-0000-000000000000
+     baseline_healthz_state="$(capture_http_state /healthz)"
+     baseline_readyz_state="$(capture_http_state /readyz)"
+     assert_api_no_send 401
+     baseline_api_state="$(capture_http_state "$api_status_path")"
+     baseline_admin_state="$(capture_http_state /admin)"
+     baseline_setup_state="$(capture_http_state /setup)"
+     test "${baseline_healthz_state%%|*}" = 200
+     test "${baseline_readyz_state%%|*}" = 200
+     test "${baseline_api_state%%|*}" = 401
+     test "${baseline_admin_state%%|*}" = 404
+     test "${baseline_setup_state%%|*}" = 404
+
+     run_approved_value_free_acceptance_checks() {
+       local acceptance_mode=${1:-}
+       case "$acceptance_mode" in
+         candidate)
+           test "$#" -eq 1
+           assert_http_status /healthz 200
+           assert_http_status /readyz 200
+           assert_api_no_send 401
+           # A VPS self-request is non-JP/unknown evidence: 404 must precede Basic challenge.
+           assert_non_jp_management_boundary /admin
+           assert_non_jp_management_boundary /setup
+           assert_mailer_8080_unpublished
+           ;;
+         rollback)
+           test "$#" -eq 6
+           local baseline_healthz_state=$2 baseline_readyz_state=$3
+           local baseline_api_state=$4 baseline_admin_state=$5 baseline_setup_state=$6
+           assert_http_state /healthz "$baseline_healthz_state"
+           assert_http_state /readyz "$baseline_readyz_state"
+           assert_api_no_send "${baseline_api_state%%|*}"
+           assert_http_state "$api_status_path" "$baseline_api_state"
+           assert_http_state /admin "$baseline_admin_state"
+           assert_http_state /setup "$baseline_setup_state"
+           assert_mailer_8080_unpublished
+           ;;
+         *)
+           echo 'unknown acceptance mode; fail closed' >&2
+           return 1
+           ;;
+       esac
+     }
 
      write_contents_in_place() {
        source=$1
@@ -558,7 +710,7 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
    finally:
        os.close(fd)
    PY
-       ) "$current" "$expected_sha" "$expected_bytes" "$original_device" "$original_inode" \
+       )" "$current" "$expected_sha" "$expected_bytes" "$original_device" "$original_inode" \
          "$original_uid" "$original_gid" "$original_mode" <"$source"
      }
 
@@ -569,18 +721,20 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
        test "$(stat -c '%i' "$current")" = "$original_inode" || return 1
        chown "$original_uid:$original_gid" "$current" || return 1
        chmod "$original_mode" "$current" || return 1
-       rollback_sha="$(sha256sum "$last_known_good" | awk '"'"'{print $1}'"'"')"
+       rollback_sha="$(sha256sum "$last_known_good" | awk '{print $1}')"
        write_contents_in_place "$last_known_good" "$rollback_sha" "$original_bytes" || return 1
        test "$(stat -c '%d' "$current")" = "$original_device" || return 1
        test "$(stat -c '%i' "$current")" = "$original_inode" || return 1
        test "$(stat -c '%u' "$current")" = "$original_uid" || return 1
        test "$(stat -c '%g' "$current")" = "$original_gid" || return 1
        test "$(stat -c '%a' "$current")" = "$original_mode" || return 1
-       test "$(sha256sum "$current" | awk '"'"'{print $1}'"'"')" = "$rollback_sha" || return 1
-       test "$(docker exec "$container" sha256sum "$container_path" | awk '"'"'{print $1}'"'"')" = "$rollback_sha" || return 1
+       test "$(sha256sum "$current" | awk '{print $1}')" = "$rollback_sha" || return 1
+       test "$(docker exec "$container" sha256sum "$container_path" | awk '{print $1}')" = "$rollback_sha" || return 1
        docker exec "$container" caddy validate --config "$container_path" --adapter caddyfile || return 1
        docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile || return 1
-       run_approved_value_free_acceptance_checks || return 1
+       run_approved_value_free_acceptance_checks rollback \
+         "$baseline_healthz_state" "$baseline_readyz_state" "$baseline_api_state" \
+         "$baseline_admin_state" "$baseline_setup_state" || return 1
      }
 
      failure_handler() {
@@ -592,6 +746,7 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
      }
      trap failure_handler ERR
 
+     # Backup is complete. ANY FAILURE from this line invokes rollback.
      mutation_started=true
      write_contents_in_place "$candidate_remote" "$candidate_sha256" "$candidate_bytes"
      test "$(stat -c '%d' "$current")" = "$original_device"
@@ -607,8 +762,8 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
      # HOST_CADDY_SHA == CANDIDATE_SHA == CONTAINER_CADDY_SHA is the recorded equality.
      docker exec "$container" caddy validate --config "$container_path" --adapter caddyfile
      docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile
-     # Approved no-send checks: /healthz /readyz /api /admin /setup /:8080 /SSH.
-     run_approved_value_free_acceptance_checks
+     # Candidate-mode no-send checks: /healthz /readyz /api /admin /setup /:8080.
+     run_approved_value_free_acceptance_checks candidate
    ROOT_BASH
    then
      cleanup_temporary_candidate
@@ -626,6 +781,31 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
    production current は same inode の in-place write として fd に truncate、exact write、fsync します。path replacement や
    live current を別 inode にする操作、container recreate は使いません。container-visible SHA は
    candidate SHA と一致しなければなりません。
+
+   **Approved value-free acceptance contract / acceptance responsibility.** `run_approved_value_free_acceptance_checks`
+   は定義後にだけ呼び出し、`candidate` と `rollback` の2つの明示的な mode を受け付けます。`candidate` mode は
+   `/healthz=200`、`/readyz=200`、固定 nonexistent UUID への `GET /api/mail-requests/<uuid>` が Mailer の
+   `401` と `"code":"UNAUTHORIZED"` を返し、Basic challenge ではないこと、VPS self-request の non-JP/unknown
+   `/admin` と `/setup` が Basic challenge 前の `404` であること、Mailer host-published `8080/tcp` が
+   `none/null` であることを確認します。メール送信を起こす `POST`、secret、API key は使いません。
+
+   `rollback` mode は固定した candidate status を再利用しません。mutation 前に取得した
+   `baseline_healthz_state`、`baseline_readyz_state`、`baseline_api_state`、`baseline_admin_state`、
+   `baseline_setup_state`（status と response-body SHA-256）を引数として受け、old config reload 後に同じ
+   state を復元できたことを確認します。未知の mode は fail closed します。したがって
+   `candidate mode` と `rollback mode` の `/admin` / `/setup` の責務は混同されません。
+
+   REMOTE VPS transaction が証明するのは、VPS から Caddy を通った public HTTPS の liveness/readiness、Mailer
+   API の no-send unauthorized contract、VPS self-request に対する non-JP/unknown management boundary、および
+   Docker runtime の `Mailer :8080` host-publish 不在だけです。root helper は SSH、Windows/browser、外部 JP client
+   または Internet からの `:8080` 到達不能を実行・確認したとは表示しません。
+
+   Candidate acceptance の外部責務は Windows/operator 側にあります。JP source から `/admin` と `/setup` を確認し、
+   Caddy Basic Auth boundary が先に存在し、認証されていない request が Mailer へ素通りしないことを確認します。
+   non-JP/unknown source は Basic challenge 前に `404` であること、外部から Mailer `:8080` に到達できないことも
+   Windows/operator 側で確認します。rollback failure の entry point は ERR trap の
+   `rollback_current_in_place` です。SSH recovery は、現在開いている standalone SSH TTY を維持し、必要なら
+   operator/Windows から別 SSH を確認する責務であり、root transaction 内部の helper が確認済みと偽装しません。
 
 9. **temporary candidate の cleanup。** Phase 2 で定義した cleanup function を、同じ remote interactive
    TTY/session 内で acceptance 成功後、または automatic rollback 成功後に呼び出します。deploy user として

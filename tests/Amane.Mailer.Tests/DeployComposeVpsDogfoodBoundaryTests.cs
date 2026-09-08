@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 
 namespace Amane.Mailer.Tests;
@@ -606,6 +607,82 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
         }
     }
 
+    [Fact]
+    public void Vps_runbook_transaction_defines_and_directly_exercises_value_free_acceptance_contract()
+    {
+        var deploymentRunbooks = new[]
+        {
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.md"),
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.en.md")
+        };
+
+        foreach (var runbook in deploymentRunbooks)
+        {
+            var transaction = ExtractRootBash(runbook);
+            var definition = "run_approved_value_free_acceptance_checks() {";
+            var definitionIndex = transaction.IndexOf(definition, StringComparison.Ordinal);
+            Assert.True(definitionIndex >= 0, "The privileged transaction must define the acceptance helper.");
+
+            var invocations = Regex.Matches(
+                    transaction,
+                    @"(?m)^\s*run_approved_value_free_acceptance_checks(?<arguments>[^\r\n]*)$")
+                .Select(match => (Match: match, Arguments: match.Groups["arguments"].Value.Trim()))
+                .Where(item => !item.Arguments.StartsWith("()", StringComparison.Ordinal))
+                .ToArray();
+
+            Assert.Equal(2, invocations.Length);
+            Assert.Contains(invocations, item => item.Arguments.StartsWith("candidate", StringComparison.Ordinal));
+            Assert.Contains(invocations, item => item.Arguments.StartsWith("rollback", StringComparison.Ordinal));
+            Assert.All(
+                invocations,
+                invocation => Assert.True(
+                    transaction.IndexOf(invocation.Match.Value, StringComparison.Ordinal) > definitionIndex,
+                    "Every acceptance helper invocation must occur after its definition."));
+
+            var helper = ExtractAcceptanceHelper(transaction);
+            Assert.Contains("candidate)", helper, StringComparison.Ordinal);
+            Assert.Contains("rollback)", helper, StringComparison.Ordinal);
+            Assert.Contains("unknown acceptance mode; fail closed", helper, StringComparison.Ordinal);
+            Assert.Contains("return 1", helper, StringComparison.Ordinal);
+            Assert.Contains("/healthz", helper, StringComparison.Ordinal);
+            Assert.Contains("/readyz", helper, StringComparison.Ordinal);
+            Assert.Contains("/api/mail-requests/00000000-0000-0000-0000-000000000000", transaction, StringComparison.Ordinal);
+            Assert.Contains("--request GET", transaction, StringComparison.Ordinal);
+            Assert.Contains("\"code\":\"UNAUTHORIZED\"", transaction, StringComparison.Ordinal);
+            Assert.DoesNotContain("--request POST", transaction, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("curl -X POST", transaction, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("/admin", helper, StringComparison.Ordinal);
+            Assert.Contains("/setup", helper, StringComparison.Ordinal);
+            Assert.Contains("www-authenticate", transaction, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("HostConfig.PortBindings", transaction, StringComparison.Ordinal);
+            Assert.Contains("8080/tcp", transaction, StringComparison.Ordinal);
+
+            var rollbackIndex = transaction.IndexOf("rollback_current_in_place()", StringComparison.Ordinal);
+            var oldReloadIndex = transaction.IndexOf(
+                "docker exec \"$container\" caddy reload --config \"$container_path\" --adapter caddyfile || return 1",
+                rollbackIndex,
+                StringComparison.Ordinal);
+            var rollbackAcceptanceIndex = transaction.IndexOf(
+                "run_approved_value_free_acceptance_checks rollback",
+                oldReloadIndex,
+                StringComparison.Ordinal);
+            Assert.True(rollbackIndex >= 0);
+            Assert.True(oldReloadIndex > rollbackIndex);
+            Assert.True(rollbackAcceptanceIndex > oldReloadIndex);
+
+            Assert.Contains("baseline_admin_state", transaction, StringComparison.Ordinal);
+            Assert.Contains("baseline_setup_state", transaction, StringComparison.Ordinal);
+            Assert.Contains("assert_http_state /admin \"$baseline_admin_state\"", transaction, StringComparison.Ordinal);
+            Assert.Contains("assert_http_state /setup \"$baseline_setup_state\"", transaction, StringComparison.Ordinal);
+            Assert.Contains("SSH recovery", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("standalone SSH TTY", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("ssh ", helper, StringComparison.OrdinalIgnoreCase);
+
+            AssertShellSyntax(transaction);
+            AssertUnknownAcceptanceModeFailsClosed(helper);
+        }
+    }
+
     private static string ServiceBlock(string compose, string serviceName)
     {
         var lines = compose.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
@@ -632,6 +709,78 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
         }
 
         return string.Join('\n', lines[startIndex..endIndex]);
+    }
+
+    private static string ExtractRootBash(string runbook)
+    {
+        var match = Regex.Match(
+            runbook,
+            @"(?ms)^[ \t]*if sudo -n bash -s -- .*?<<'ROOT_BASH'\n(?<body>.*?)^[ \t]*ROOT_BASH\s*$");
+        Assert.True(match.Success, "Could not locate the privileged ROOT_BASH transaction.");
+        return string.Join(
+            "\n",
+            match.Groups["body"].Value
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split('\n')
+                .Select(line => line.StartsWith("   ", StringComparison.Ordinal) ? line[3..] : line));
+    }
+
+    private static string ExtractAcceptanceHelper(string transaction)
+    {
+        var start = transaction.IndexOf(
+            "run_approved_value_free_acceptance_checks() {",
+            StringComparison.Ordinal);
+        var end = transaction.IndexOf(
+            "\n  write_contents_in_place() {",
+            start,
+            StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, "Could not isolate the acceptance helper.");
+        return transaction[start..end];
+    }
+
+    private static void AssertShellSyntax(string transaction)
+    {
+        using var process = StartBash("-n");
+        process.StandardInput.Write(transaction);
+        process.StandardInput.Close();
+
+        var standardError = process.StandardError.ReadToEnd();
+        Assert.True(process.WaitForExit(5000), "bash -n did not finish promptly.");
+        Assert.True(
+            process.ExitCode == 0,
+            $"Extracted ROOT_BASH failed bash -n: {standardError}");
+    }
+
+    private static void AssertUnknownAcceptanceModeFailsClosed(string helper)
+    {
+        using var process = StartBash(string.Empty);
+        process.StandardInput.Write(helper);
+        process.StandardInput.WriteLine();
+        process.StandardInput.WriteLine(
+            "if run_approved_value_free_acceptance_checks unexpected-mode; then exit 1; else exit 0; fi");
+        process.StandardInput.Close();
+
+        var standardError = process.StandardError.ReadToEnd();
+        Assert.True(process.WaitForExit(5000), "Acceptance helper self-test did not finish promptly.");
+        Assert.True(
+            process.ExitCode == 0,
+            $"Unknown acceptance mode was not rejected: {standardError}");
+    }
+
+    private static Process StartBash(string arguments)
+    {
+        var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "bash",
+            Arguments = arguments,
+            RedirectStandardInput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
+
+        Assert.NotNull(process);
+        return process!;
     }
 
     private static string ReadRepositoryFile(params string[] segments)
