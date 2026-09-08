@@ -62,18 +62,21 @@ delete the Mailer database and Caddy certificate state.
 
 1. Use `infra/deploy/.env.vps-dogfood.example` and the Caddy template to create
    uncommitted deploy-host configuration. Verify the image, hostname, metrics
-   operator CIDR, data path, and protected secret paths. Obtain the GeoLite2
-   IPv4/IPv6 blocks, locations-en CSV, and already-generated bcrypt hash file
-   through the operator's secure path.
-2. Render the ignored runtime artifact. The renderer does not download data,
-   handle a MaxMind license/account credential, or request a plaintext password.
-   Do not paste the hash into output or logs.
+   operator CIDR, data path, and protected secret paths. Obtain the IPdeny
+   aggregated JP IPv4/IPv6 zones and already-generated bcrypt hash file through a
+   secure operator runtime workspace. The canonical sources are
+   `https://www.ipdeny.com/ipblocks/data/aggregated/jp-aggregated.zone` and
+   `https://www.ipdeny.com/ipv6/ipaddresses/aggregated/jp-aggregated.zone`.
+   Record the download timestamp, each zone's bytes and SHA-256, and, when
+   available, HTTP `Last-Modified` as provenance metadata.
+2. Render the ignored runtime artifact. The renderer performs no download and no
+   plaintext-password handling; it parses, validates, normalizes, and collapses
+   the supplied zones offline. Do not paste the hash into output or logs.
 
 ```bash
 python3 infra/deploy/render-vps-management-edge.py \
-  --ipv4-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv4.csv \
-  --ipv6-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv6.csv \
-  --locations /secure/geolite/GeoLite2-Country-Locations-en.csv \
+  --ipv4-zone /secure/ipdeny/jp-ipv4.zone \
+  --ipv6-zone /secure/ipdeny/jp-ipv6.zone \
   --basic-auth-username caddy-admin \
   --basic-auth-hash-file /secure/operator-secrets/caddy-admin.bcrypt \
   --template infra/deploy/Caddyfile.vps-dogfood.example \

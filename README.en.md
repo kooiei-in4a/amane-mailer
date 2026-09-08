@@ -126,13 +126,13 @@ reference path does not need tenant JSON:
 - Tenant schema: `config/mailer/tenants.schema.json`
 
 For the #744 VPS reference profile with Caddy HTTPS, no public Mailer backend
-port, and GeoLite2 JP CIDR plus Caddy Basic Auth operator-only Admin / Setup edge
+port, and IPdeny JP CIDR plus Caddy Basic Auth operator-only Admin / Setup edge
 restrictions, see [VPS dogfood deployment](docs/ops/vps-dogfood-deployment.en.md)
 and the [Caddyfile template](infra/deploy/Caddyfile.vps-dogfood.example). The
 profile overlays `compose.vps-dogfood.yml` and publishes only Caddy's 80/443 listeners.
 `/metrics` keeps the existing `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator boundary.
 Use [`render-vps-management-edge.py`](infra/deploy/render-vps-management-edge.py) to render the
-ignored Caddy artifact from operator-provided GeoLite2 CSVs and an already-generated bcrypt hash.
+ignored Caddy artifact from operator-provided IPdeny aggregated JP zone files and an already-generated bcrypt hash.
 Its first migration/setup does not require `tenants.json` or `MAIL_SERVICE_TOKEN*`.
 For managed-v2 disaster recovery, use the [`backup operations`](docs/ops/backup-operations.en.md)
 `backup-instance-state.sh` path to preserve the `MAILER_DATA_PATH` database, canonical ACS secret,
