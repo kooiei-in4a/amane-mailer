@@ -184,10 +184,14 @@ license key とも無関係です。
 | --- | --- | --- |
 | A. OPERATOR / agent-dev01 | GeoLite inputs、bcrypt hash input、renderer、operator-side candidate、CIDR counts、bytes、SHA-256 | raw GeoLite CSV と bcrypt input hash はここにだけ残す。VPSへ送らない。 |
 | B. REMOTE VPS READ-ONLY | deploy user の SSH 内で Compose label resolution、container inspect、image/version/mount確認、read-only stat、stdin pre-validation | remote VPS read-only body の docker ps、docker inspect、docker exec だけ。production mutation はしない。 |
-| C. REMOTE VPS PRIVILEGED LIVE MUTATION | Human approval 後の backup、same-inode write、SHA guards、validate、reload、rollback | 既存 approved sudo / root path の sudo -n sh -c boundary 内だけ。sudoers、SSH、root login は変更しない。 |
+| C. REMOTE VPS PRIVILEGED LIVE MUTATION | Human approval 後の backup、same-inode write、SHA guards、validate、reload、rollback | interactive sudo approval 後の explicit Bash transaction 内だけ。sudoers、SSH、root login は変更しない。 |
 
-Candidate は operator に保持し、VPS には candidate の persistent file を作りません。candidate bytes は
-SSH stdin stream で remote process が消費します。PERSISTENT_VPS_STAGING_REQUIRED=false、candidate file persisted on VPS=false、GeoLite raw data transferred=false、bcrypt input file transferred=false です。
+Pre-validation までは candidate は operator に保持し、candidate bytes を SSH stdin stream で remote process に渡します。
+この段階は production mutation=false、candidate file persisted on VPS=false、sudo不要です。Human approval 後の
+live mutation では、generated Caddyfile candidate only を deploy user の temporary location へ転送します。
+PERSISTENT_VPS_STAGING_REQUIRED=false、TEMPORARY_VPS_CANDIDATE_REQUIRED=true です。raw GeoLite data、MaxMind
+credential、bcrypt input hash file、plaintext password は VPS へ転送しません。GeoLite raw data transferred=false、
+bcrypt input file transferred=false です。
 
 Fresh topology は Compose project=amane-platform-edge、service=proxy、current
 /srv/platform/edge/Caddyfile、container path=/etc/caddy/Caddyfile、single-file read-only bind mount、
@@ -258,7 +262,8 @@ resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 i
 
 4. **OPERATOR → SSH stdin で pre-validation する。** candidate bytes だけを stdin で渡し、remote 側で
    label resolution を再実行して、同じ running container に caddy validate --config - を実行します。
-   candidate file は VPS に保存しません。
+   これは production mutation=false、candidate file persisted on VPS=false、sudo不要の read-only 操作です。
+   pre-validation 中は candidate file を VPS に保存しません。
 
    ~~~bash
    # Run on operator / agent-dev01; only candidate bytes cross SSH stdin.
@@ -277,21 +282,104 @@ resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 i
    ~~~
 
    pre-validation failure は STOP、production Caddyfile mutation=false、candidate file persisted on VPS=false
-   です。allow-all CIDR fallback はしません。
+   です。allow-all CIDR fallback はしません。live approval 前なので sudo は要求しません。
 
-5. **Human approval 後にだけ privileged mutation を開始する。** Source Stage approval、renderer
-   self-test、CI、stdin validation PASS は live approval ではありません。digest、counts、bytes、
-   hostname、executor、rollback owner、SSH rollback session を確認し、欠落や digest 変更なら STOP
-   します。
+5. **Human approval 後にだけ temporary candidate を VPS へ転送する。** Source Stage approval、renderer
+   self-test、CI、stdin validation PASS は live approval ではありません。digest、counts、bytes、hostname、
+   executor、rollback owner、SSH rollback session を確認し、欠落や digest 変更なら STOP します。VPS へ
+   転送してよいのは generated Caddyfile candidate only です。GeoLite raw CSV、MaxMind account ID / license
+   key、bcrypt input hash file、plaintext Basic Auth password、Mailer Admin password、Setup bootstrap token
+   は転送しません。candidate には bcrypt hash が含まれるため protected file として扱います。
 
-6. **REMOTE VPS PRIVILEGED LIVE MUTATION で preflight / backup を行う。** deploy は read-only user
+   temporary location は deploy user が安全に書ける `$HOME/.amane-caddy-744.XXXXXX` を使います。`umask 077`
+   と `mktemp` で作成し、owner=deploy、mode=0600、regular file、not symlink を確認します。この path は
+   not Git managed file、Compose configuration、`/srv/platform/edge` production path ではありません。persistent
+   VPS staging は作らず、PERSISTENT_VPS_STAGING_REQUIRED=false、TEMPORARY_VPS_CANDIDATE_REQUIRED=true です。
+
+   ~~~bash
+   # Run on operator workstation after separate Human live approval.
+   set -Eeuo pipefail
+   candidate_remote="$(ssh "$VPS_ALIAS" 'umask 077; mktemp "$HOME/.amane-caddy-744.XXXXXX"')"
+   remove_temporary_candidate() {
+     ssh "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" <<'REMOTE_CANDIDATE_REMOVE'
+   set -Eeuo pipefail
+   candidate_remote=$1
+   rm -f -- "$candidate_remote"
+   test ! -e "$candidate_remote"
+   REMOTE_CANDIDATE_REMOVE
+   }
+   if ! scp -- "$candidate" "${VPS_ALIAS}:${candidate_remote}"; then
+     remove_temporary_candidate
+     exit 1
+   fi
+   if ! ssh "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" "$candidate_bytes" "$candidate_sha256" <<'REMOTE_CANDIDATE_VERIFY'
+   set -Eeuo pipefail
+   candidate_remote=$1
+   expected_bytes=$2
+   expected_sha256=$3
+   case "$candidate_remote" in
+     "$HOME"/.amane-caddy-744.*) ;;
+     *) echo 'candidate is outside the deploy-owned temporary location' >&2; exit 1 ;;
+   esac
+   case "$candidate_remote" in
+     /srv/platform/edge/*|*/compose*.yml|*/docker-compose*.yml)
+       echo 'candidate path is a production or Compose path' >&2
+       exit 1
+       ;;
+   esac
+   test -f "$candidate_remote"
+   test ! -L "$candidate_remote"
+   test "$(stat -c '%F' "$candidate_remote")" = 'regular file'
+   test "$(stat -c '%a' "$candidate_remote")" = '600'
+   test "$(stat -c '%u' "$candidate_remote")" = "$(id -u)"
+   test "$(stat -c '%g' "$candidate_remote")" = "$(id -g)"
+   if [ -d "$HOME/.git" ] && git -C "$HOME" ls-files --error-unmatch -- "$candidate_remote" >/dev/null 2>&1; then
+     echo 'candidate must not be Git managed' >&2
+     exit 1
+   fi
+   remote_bytes="$(stat -c '%s' "$candidate_remote")"
+   remote_sha256="$(sha256sum "$candidate_remote" | awk '{print $1}')"
+   test "$remote_bytes" = "$expected_bytes"
+   test "$remote_sha256" = "$expected_sha256"
+   printf 'candidate bytes: %s\ncandidate SHA-256: %s\n' "$remote_bytes" "$remote_sha256"
+   REMOTE_CANDIDATE_VERIFY
+   then
+     remove_temporary_candidate
+     exit 1
+   fi
+   ~~~
+
+   candidate transfer / regular-file / owner / mode / bytes / SHA-256 verification failure is STOP. In that case
+   run `rm -f -- "$candidate_remote"` as deploy and do not perform production mutation. The temporary candidate
+   is not a persistent VPS staging area.
+
+6. **candidate transfer / SHA確認後に interactive sudo を取得する。** live mutation 開始前に、operator
+   workstation から `ssh -t` で deploy user の interactive TTY shell を開きます。その remote shell で `sudo -v`
+   を実行し、Human が VPS terminal の sudo prompt に password を直接入力します。sudo credential cache を
+   取得できなければ STOP、sudoers は変更しません。sudo password is entered only at the interactive sudo prompt and is never supplied by script/stdin. sudo password は interactive sudo prompt にだけ Human が直接
+   入力し、script/stdin から決して供給しません。password は chat、Issue、log、script、environment variable、
+   candidate stream のいずれにも載せません。sudo -v が失敗した場合も live mutation を開始せず、temporary
+   candidate cleanup を実施します。
+
+#### Privilege boundary / 権限境界
+
+| context | 許可される操作 |
+| --- | --- |
+| deploy / non-privileged | temporary candidate receive、candidate の size / SHA-256 / regular-file / owner / mode verification、現在許可されている Docker read/inspect、public/read-only checks、`sudo -v` invocation |
+| root / sudo Bash | Human approval 後だけの last-known-good backup、production Caddyfile same-inode write、metadata restoration、host/container SHA guards、Caddy validate/reload、rollback |
+
+sudoers、SSH config、root login、Docker topology、Caddy container recreation、firewall は変更しません。
+
+7. **REMOTE VPS PRIVILEGED LIVE MUTATION で preflight / backup を行う。** deploy は read-only user
    なので、root-owned Caddyfile への unprivileged write は禁止です。backup directory、root-owned
-   last-known-good backup、current write、chown、chmod restoration、reload、rollback は approved
-   sudo -n sh -c 内だけで行います。Fresh の root:root / 0644 を再設定せず、live に再取得した owner、
-   group、mode、device、inode、uid、gid、bytes、SHA-256 を preserve します。#744 は mode hardening
-   をしません。candidate は remote に永続化せず、remote temporary candidate path も作りません。
+   last-known-good backup、current write、chown、chmod restoration、reload、rollback は `sudo bash` で
+   起動した explicit Bash transaction 内だけで行います。transaction uses Bash ERR trap / pipefail semantics;
+   do not execute it through /bin/sh. Fresh の root:root / 0644 を再設定せず、live に再取得した owner、
+   group、mode、device、inode、uid、gid、bytes、SHA-256 を preserve します。#744 は mode hardening を
+   しません。candidate は `$candidate_remote` から読み、transaction script の stdin や sudo password の
+   stdin には載せません。
 
-7. **transaction / failure handler を先に準備する。** backup と original SHA の検証後にだけ
+8. **transaction / failure handler を先に準備する。** backup と original SHA の検証後にだけ
    mutation_started=true とし、初期値は mutation_started=false、rollback_in_progress=false とします。
    candidate short read / short write、Python exception、fsync failure、host SHA mismatch、
    container SHA mismatch、inode drift、owner/mode drift、post-write caddy validate failure、
@@ -299,17 +387,26 @@ resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 i
    trap ERR は rollback_in_progress guard で再帰を防ぎ、rollback_current_in_place を一度だけ呼びます。
 
    ~~~bash
-   # Run on operator / agent-dev01; candidate stays here and is SSH stdin only.
-   cat "$candidate" | ssh "$VPS_ALIAS" 'sudo -n sh -c '"'"'
-     # Run on VPS via approved privileged sudo/root shell
+   # Run from operator workstation after candidate transfer and read-only SHA verification.
+   ssh -t "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" "$candidate_sha256" "$candidate_bytes" <<'REMOTE_LIVE'
+   set -Eeuo pipefail
+   candidate_remote=$1
+   candidate_sha256=$2
+   candidate_bytes=$3
+
+   # Human enters the password only at this interactive sudo prompt on the VPS.
+   sudo -v
+   sudo bash -s -- _ "$candidate_remote" "$candidate_sha256" "$candidate_bytes" <<'ROOT_BASH'
+     # Run on VPS via approved privileged explicit Bash transaction
+     # stdin is ROOT_BASH, while candidate bytes are read from candidate_remote.
      set -Eeuo pipefail
-     exec 3<&0
      mutation_started=false
      rollback_in_progress=false
      current=/srv/platform/edge/Caddyfile
      container_path=/etc/caddy/Caddyfile
-     candidate_sha256=$1
-     candidate_bytes=$2
+     candidate_remote=$1
+     candidate_sha256=$2
+     candidate_bytes=$3
 
      # Resolve project=amane-platform-edge / service=proxy here; exactly one or STOP.
      project=amane-platform-edge
@@ -409,7 +506,7 @@ resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 i
      trap failure_handler ERR
 
      mutation_started=true
-     write_contents_in_place /dev/fd/3 "$candidate_sha256" "$candidate_bytes"
+     write_contents_in_place "$candidate_remote" "$candidate_sha256" "$candidate_bytes"
      test "$(stat -c '%d' "$current")" = "$original_device"
      test "$(stat -c '%i' "$current")" = "$original_inode"
      test "$(stat -c '%u' "$current")" = "$original_uid"
@@ -425,23 +522,46 @@ resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 i
      docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile
      # Approved no-send checks: /healthz /readyz /api /admin /setup /:8080 /SSH.
      run_approved_value_free_acceptance_checks
-   '"'"'' -- "$candidate_sha256" "$candidate_bytes"
+   ROOT_BASH
+   REMOTE_LIVE
    ~~~
 
    production current は same inode の in-place write として fd に truncate、exact write、fsync します。path replacement や
    live current を別 inode にする操作、container recreate は使いません。container-visible SHA は
    candidate SHA と一致しなければなりません。
 
-8. **automatic rollback の完了条件。** validate failure、reload failure、post-reload acceptance failure
+9. **temporary candidate の cleanup。** acceptance 成功後は deploy user で temporary candidate を `rm` し、
+   その後 `存在しない` ことを確認します。automatic rollback が成功した場合も同じ cleanup を rollback 完了後に
+   実施します。
+
+   ~~~bash
+   # Define/run on the operator workstation; the remote cleanup command runs as deploy.
+   cleanup_temporary_candidate() {
+     ssh "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" <<'REMOTE_CANDIDATE_CLEANUP'
+   set -Eeuo pipefail
+   candidate_remote=$1
+   rm -f -- "$candidate_remote"
+   test ! -e "$candidate_remote"
+   test ! -L "$candidate_remote"
+   REMOTE_CANDIDATE_CLEANUP
+   }
+   cleanup_temporary_candidate
+   ~~~
+
+   rollback 自体が失敗した場合は SSH recovery を優先し、candidate cleanup で rollback evidence や復旧を
+   妨げません。incident 対応終了後には protected candidate を残さず、上記の `rm` と不存在確認を実施します。
+   secure-delete / shred 保証は要求せず、通常の `rm` で十分です。
+
+10. **automatic rollback の完了条件。** validate failure、reload failure、post-reload acceptance failure
    を含む ANY FAILURE は rollback on validate failure / rollback on reload failure として扱います。
    disk 上の candidate を戻さず exit してはいけません。rollback は last-known-good を同じ inode に
    restore し、device、inode、uid、gid、owner、group、mode、HOST_SHA == ORIGINAL_SHA ==
    CONTAINER_SHA を確認します。その後 old config の caddy validate、必要な caddy reload、/healthz、
    /readyz、/api regression、/admin、/setup、:8080 unreachable、SSH を再確認します。rollback 自体が
    failure なら SSH を維持して STOP し、operator に escalate します。inode drift は path を置換せず
-   STOP します。
+   STOP します。rollback success を確認してから temporary candidate cleanup を行います。
 
-9. **fail-closed と既存 security contract。** GeoLite download / render / validate / update は operator
+11. **fail-closed と既存 security contract。** GeoLite download / render / validate / update は operator
    側だけで行い、raw CSV、MaxMind credential、bcrypt input hash file、plaintext password を VPS に
    置きません。空 CIDR、default route、allow-all (0.0.0.0/0 / ::/0) へ fallback しません。
    /admin /setup は JP CIDR + Caddy Basic Auth + Mailer own auth、non-JP/unknown は challenge 前の

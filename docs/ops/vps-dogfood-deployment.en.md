@@ -199,11 +199,14 @@ The live procedure has exactly three separate execution contexts:
 | --- | --- | --- |
 | A. OPERATOR / agent-dev01 | GeoLite inputs, bcrypt hash input, renderer, operator-side candidate, CIDR counts, bytes, and SHA-256 | Raw GeoLite CSV and the bcrypt input hash remain here and never go to the VPS. |
 | B. REMOTE VPS READ-ONLY | Compose label resolution, container inspect, image/version/mount checks, read-only stat, and candidate stdin pre-validation as deploy | docker ps, docker inspect, and docker exec occur only inside SSH remote command bodies. No production mutation. |
-| C. REMOTE VPS PRIVILEGED LIVE MUTATION | Human-approved backup, same-inode write, SHA guards, Caddy validate, reload, and rollback | Only inside the existing approved sudo/root path, using sudo -n sh -c. No sudoers, SSH, or root-login change. |
+| C. REMOTE VPS PRIVILEGED LIVE MUTATION | Human-approved backup, same-inode write, SHA guards, Caddy validate, reload, and rollback | Only inside an explicit Bash transaction after interactive sudo approval. No sudoers, SSH, or root-login change. |
 
-The candidate remains on the operator. No persistent candidate file is created on the VPS; candidate bytes are
-consumed by the remote process from SSH stdin. PERSISTENT_VPS_STAGING_REQUIRED=false, candidate file persisted on VPS=false,
-GeoLite raw data transferred=false, and bcrypt input file transferred=false.
+Until pre-validation, the candidate remains on the operator and candidate bytes are consumed by the remote process
+from SSH stdin. That stage is production mutation=false, candidate file persisted on VPS=false, and does not require
+sudo. After Human approval, live mutation transfers only the generated Caddyfile candidate to a deploy-owned temporary
+location. PERSISTENT_VPS_STAGING_REQUIRED=false and TEMPORARY_VPS_CANDIDATE_REQUIRED=true. Raw GeoLite data, MaxMind
+credentials, the bcrypt input hash file, and plaintext passwords are not transferred to the VPS. GeoLite raw data transferred=false
+and bcrypt input file transferred=false.
 
 Fresh topology is Compose project=amane-platform-edge, service=proxy, current
 /srv/platform/edge/Caddyfile, container path=/etc/caddy/Caddyfile, single-file read-only bind mount,
@@ -274,8 +277,9 @@ The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline on
    ~~~
 
 4. **OPERATOR → SSH stdin: pre-validate candidate bytes remotely.** Stream only the operator candidate to
-   the actual running container after resolving labels again on the VPS. The candidate is never persisted on
-   the VPS.
+   the actual running container after resolving labels again on the VPS. This is a read-only operation with
+   production mutation=false, candidate file persisted on VPS=false, and no sudo. The candidate is never persisted
+   on the VPS during pre-validation.
 
    ~~~bash
    # Run on operator / agent-dev01; only candidate bytes cross SSH stdin.
@@ -295,21 +299,102 @@ The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline on
 
    A caddy validate --config - failure is STOP: do not persist the candidate, mutate production, or fall
    back to allow-all CIDRs. This proves production Caddyfile mutation=false and candidate file persisted on
-   VPS=false.
+   VPS=false. No sudo is requested before live approval.
 
-5. **Start REMOTE VPS PRIVILEGED LIVE MUTATION only after separate Human approval.** Source Stage approval,
-   renderer self-test, CI, and stdin validation PASS are not live approval. Confirm digest, counts, bytes,
-   hostname, executor, rollback owner, and an SSH rollback session; missing approval or changed digest is STOP.
+5. **Transfer a temporary candidate to the VPS only after separate Human approval.** Source Stage approval,
+   renderer self-test, CI, and stdin validation PASS are not live approval. Confirm digest, counts, bytes, hostname,
+   executor, rollback owner, and an SSH rollback session; missing approval or changed digest is STOP. The only item
+   allowed to cross to the VPS is the generated Caddyfile candidate. Do not transfer GeoLite raw CSV, MaxMind account
+   ID / license key, the bcrypt input hash file, plaintext Basic Auth password, Mailer Admin password, or Setup
+   bootstrap token. Transfer allowlist: generated Caddyfile candidate only. The candidate contains a bcrypt hash and
+   must be handled as a protected file.
 
-6. **Privileged preflight and last-known-good backup.** deploy is a read-only user; an unprivileged deploy
+   Use a deploy-owned temporary location such as `$HOME/.amane-caddy-744.XXXXXX`. Create it with `umask 077` and
+   `mktemp`, and verify owner=deploy, mode=0600, regular file, and not symlink. The path is not Git managed, not
+   Compose configuration, and not under the `/srv/platform/edge` production path. Do not create persistent VPS
+   staging: PERSISTENT_VPS_STAGING_REQUIRED=false and TEMPORARY_VPS_CANDIDATE_REQUIRED=true.
+
+   ~~~bash
+   # Run on the operator workstation after separate Human live approval.
+   set -Eeuo pipefail
+   candidate_remote="$(ssh "$VPS_ALIAS" 'umask 077; mktemp "$HOME/.amane-caddy-744.XXXXXX"')"
+   remove_temporary_candidate() {
+     ssh "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" <<'REMOTE_CANDIDATE_REMOVE'
+   set -Eeuo pipefail
+   candidate_remote=$1
+   rm -f -- "$candidate_remote"
+   test ! -e "$candidate_remote"
+   REMOTE_CANDIDATE_REMOVE
+   }
+   if ! scp -- "$candidate" "${VPS_ALIAS}:${candidate_remote}"; then
+     remove_temporary_candidate
+     exit 1
+   fi
+   if ! ssh "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" "$candidate_bytes" "$candidate_sha256" <<'REMOTE_CANDIDATE_VERIFY'
+   set -Eeuo pipefail
+   candidate_remote=$1
+   expected_bytes=$2
+   expected_sha256=$3
+   case "$candidate_remote" in
+     "$HOME"/.amane-caddy-744.*) ;;
+     *) echo 'candidate is outside the deploy-owned temporary location' >&2; exit 1 ;;
+   esac
+   case "$candidate_remote" in
+     /srv/platform/edge/*|*/compose*.yml|*/docker-compose*.yml)
+       echo 'candidate path is a production or Compose path' >&2
+       exit 1
+       ;;
+   esac
+   test -f "$candidate_remote"
+   test ! -L "$candidate_remote"
+   test "$(stat -c '%F' "$candidate_remote")" = 'regular file'
+   test "$(stat -c '%a' "$candidate_remote")" = '600'
+   test "$(stat -c '%u' "$candidate_remote")" = "$(id -u)"
+   test "$(stat -c '%g' "$candidate_remote")" = "$(id -g)"
+   if [ -d "$HOME/.git" ] && git -C "$HOME" ls-files --error-unmatch -- "$candidate_remote" >/dev/null 2>&1; then
+     echo 'candidate must not be Git managed' >&2
+     exit 1
+   fi
+   remote_bytes="$(stat -c '%s' "$candidate_remote")"
+   remote_sha256="$(sha256sum "$candidate_remote" | awk '{print $1}')"
+   test "$remote_bytes" = "$expected_bytes"
+   test "$remote_sha256" = "$expected_sha256"
+   printf 'candidate bytes: %s\ncandidate SHA-256: %s\n' "$remote_bytes" "$remote_sha256"
+   REMOTE_CANDIDATE_VERIFY
+   then
+     remove_temporary_candidate
+     exit 1
+   fi
+   ~~~
+
+   A candidate transfer, regular-file, owner, mode, bytes, or SHA-256 verification failure is STOP. In that case,
+   run `rm -f -- "$candidate_remote"` as deploy and do not perform production mutation. The temporary candidate is
+   not a persistent VPS staging area.
+
+6. **Acquire interactive sudo after candidate transfer and SHA verification.** Before live mutation starts, open an
+   interactive TTY deploy-user shell from the operator workstation with `ssh -t`. In that remote shell run `sudo -v`;
+   the Human enters the sudo password directly at the VPS terminal prompt. If the sudo credential cache cannot be
+   acquired, STOP; do not change sudoers. sudo password is entered only at the interactive sudo prompt and is never supplied by script/stdin. Never place the password in chat, an issue, a log, a script, an environment variable, or a candidate stream. If `sudo -v` fails, do not start live mutation; perform temporary candidate cleanup.
+
+#### Privilege boundary
+
+| context | permitted work |
+| --- | --- |
+| deploy / non-privileged | receive the temporary candidate, verify candidate size / SHA-256 / regular-file / owner / mode, perform currently-permitted Docker read/inspect, public/read-only checks, and invoke `sudo -v` |
+| root / sudo Bash | only after Human approval: last-known-good backup, production Caddyfile same-inode write, metadata restoration, host/container SHA guards, Caddy validate/reload, and rollback |
+
+Do not change sudoers, SSH config, root login, Docker topology, Caddy container recreation, or the firewall.
+
+7. **Privileged preflight and last-known-good backup.** deploy is a read-only user; an unprivileged deploy
    write to the root-owned production Caddyfile is forbidden. Backup-directory creation, root-owned
-   last-known-good backup, current write, chown, chmod restoration, reload, and rollback run only inside
-   approved sudo -n sh -c. Do not change sudoers, SSH settings, or root login. Re-read and preserve current
+   last-known-good backup, current write, chown, chmod restoration, reload, and rollback run only inside an
+   explicit Bash transaction started with `sudo bash`. Transaction uses Bash ERR trap / pipefail semantics; do not
+   execute it through /bin/sh. Do not change sudoers, SSH settings, or root login. Re-read and preserve current
    device, inode, uid, gid, owner, group, mode, bytes, and SHA-256. Do not reset the Fresh root:root / 0644
-   baseline; 0644 is Fresh baseline only. Candidate is not persisted remotely and no remote temporary
-   candidate path is created.
+   baseline; 0644 is Fresh baseline only. Read the candidate from `$candidate_remote`; candidate bytes are not
+   placed on the transaction script's stdin or on the sudo password's stdin.
 
-7. **Enable the transaction and failure handler before same-inode write.** Initialize mutation_started=false
+8. **Enable the transaction and failure handler before same-inode write.** Initialize mutation_started=false
    and rollback_in_progress=false. Set mutation_started=true only after backup and original SHA verification.
    Candidate short read/write, Python exception, fsync failure, host SHA mismatch, container SHA mismatch,
    inode drift, owner/mode drift, post-write caddy validate failure, caddy reload failure, and post-reload
@@ -317,17 +402,26 @@ The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline on
    handling with rollback_in_progress and call rollback_current_in_place exactly once.
 
    ~~~bash
-   # Run on operator / agent-dev01; candidate stays here and is SSH stdin only.
-   cat "$candidate" | ssh "$VPS_ALIAS" 'sudo -n sh -c '"'"'
-     # Run on VPS via approved privileged sudo/root shell
+   # Run from the operator workstation after candidate transfer and read-only SHA verification.
+   ssh -t "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" "$candidate_sha256" "$candidate_bytes" <<'REMOTE_LIVE'
+   set -Eeuo pipefail
+   candidate_remote=$1
+   candidate_sha256=$2
+   candidate_bytes=$3
+
+   # Human enters the password only at this interactive sudo prompt on the VPS.
+   sudo -v
+   sudo bash -s -- _ "$candidate_remote" "$candidate_sha256" "$candidate_bytes" <<'ROOT_BASH'
+     # Run on VPS via approved privileged explicit Bash transaction
+     # stdin is ROOT_BASH, while candidate bytes are read from candidate_remote.
      set -Eeuo pipefail
-     exec 3<&0
      mutation_started=false
      rollback_in_progress=false
      current=/srv/platform/edge/Caddyfile
      container_path=/etc/caddy/Caddyfile
-     candidate_sha256=$1
-     candidate_bytes=$2
+     candidate_remote=$1
+     candidate_sha256=$2
+     candidate_bytes=$3
 
      # Resolve project=amane-platform-edge / service=proxy here; exactly one or STOP.
      project=amane-platform-edge
@@ -428,7 +522,7 @@ The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline on
 
      # Backup is complete. ANY FAILURE from this line invokes rollback.
      mutation_started=true
-     write_contents_in_place /dev/fd/3 "$candidate_sha256" "$candidate_bytes"
+     write_contents_in_place "$candidate_remote" "$candidate_sha256" "$candidate_bytes"
      test "$(stat -c '%d' "$current")" = "$original_device"
      test "$(stat -c '%i' "$current")" = "$original_inode"
      test "$(stat -c '%u' "$current")" = "$original_uid"
@@ -443,22 +537,44 @@ The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline on
      docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile
      # Approved no-send checks: /healthz /readyz /api /admin /setup /:8080 /SSH.
      run_approved_value_free_acceptance_checks
-   '"'"'' -- "$candidate_sha256" "$candidate_bytes"
+   ROOT_BASH
+   REMOTE_LIVE
    ~~~
 
    The privileged writer opens the existing current fd for an in-place write, checks device/inode/uid/gid/mode, truncates,
    exact-writes, flushes, and calls fsync. It never changes the current path to a different inode and does
    not recreate a container. The container-visible SHA must equal the candidate SHA.
 
-8. **Automatic rollback contract.** A validate failure, reload failure, or post-reload acceptance failure
+9. **Temporary candidate cleanup.** After acceptance succeeds, use deploy to `rm` the temporary candidate and verify
+   that it no longer exists. Do the same after automatic rollback completes successfully.
+
+   ~~~bash
+   # Define/run on the operator workstation; the remote cleanup command runs as deploy.
+   cleanup_temporary_candidate() {
+     ssh "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" <<'REMOTE_CANDIDATE_CLEANUP'
+   set -Eeuo pipefail
+   candidate_remote=$1
+   rm -f -- "$candidate_remote"
+   test ! -e "$candidate_remote"
+   test ! -L "$candidate_remote"
+   REMOTE_CANDIDATE_CLEANUP
+   }
+   cleanup_temporary_candidate
+   ~~~
+
+   If rollback itself fails, prioritize SSH recovery and do not let candidate cleanup interfere with rollback
+   evidence or recovery. After incident handling ends, leave no protected candidate behind: run the same `rm` and
+   absence checks. Secure-delete / shred guarantees are not required; ordinary `rm` is sufficient.
+
+10. **Automatic rollback contract.** A validate failure, reload failure, or post-reload acceptance failure
    is rollback on validate failure / rollback on reload failure; never exit while disk still contains candidate
    bytes. Restore last-known-good to the original same inode and verify device, inode, uid, gid, owner, group,
    mode, HOST_SHA == ORIGINAL_SHA == CONTAINER_SHA. Then validate old config, reload old config when needed,
    and repeat /healthz, /readyz, /api regression, /admin, /setup, :8080 unreachable, and SSH checks. If
    rollback, validation, reload, or regression fails, keep SSH open, STOP, and escalate. Never replace a path
-   after inode drift.
+   after inode drift. Confirm rollback success before temporary candidate cleanup.
 
-9. **Fail closed and preserve the existing security contract.** GeoLite download/render/validate/update is
+11. **Fail closed and preserve the existing security contract.** GeoLite download/render/validate/update is
    operator-side only. Keep last-known-good on failure; never put raw CSV, MaxMind credentials, bcrypt input
    hash file, or plaintext password on the VPS; never fall back to empty CIDRs, default routes, or allow-all
    (0.0.0.0/0 / ::/0). Preserve /admin and /setup as JP CIDR + Caddy Basic Auth + Mailer own auth, non-JP
