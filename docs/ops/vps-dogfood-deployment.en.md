@@ -371,10 +371,49 @@ The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline on
    run `rm -f -- "$candidate_remote"` as deploy and do not perform production mutation. The temporary candidate is
    not a persistent VPS staging area.
 
-6. **Acquire interactive sudo after candidate transfer and SHA verification.** Before live mutation starts, open an
-   interactive TTY deploy-user shell from the operator workstation with `ssh -t`. In that remote shell run `sudo -v`;
-   the Human enters the sudo password directly at the VPS terminal prompt. If the sudo credential cache cannot be
-   acquired, STOP; do not change sudoers. sudo password is entered only at the interactive sudo prompt and is never supplied by script/stdin. Never place the password in chat, an issue, a log, a script, an environment variable, or a candidate stream. If `sudo -v` fails, do not start live mutation; perform temporary candidate cleanup.
+6. **PHASE 2 — open a standalone interactive SSH TTY after candidate transfer and SHA verification.** Before live
+   mutation starts, open a TTY for the remote deploy shell without connecting a transaction HEREDOC to SSH stdin. This
+   is a separate interactive SSH phase.
+
+   ~~~bash
+   # Run on the operator workstation after Phase 1 candidate transfer and verification.
+   # This is a standalone TTY; do not append a HEREDOC to this ssh command.
+   ssh -t "$VPS_ALIAS"
+   ~~~
+
+   The Human enters the remote deploy shell here. Before entering the interactive shell, the non-secret
+   `candidate_remote`, `candidate_sha256`, and `candidate_bytes` metadata must be handled safely. On the operator
+   workstation, use Bash `%q` to print shell-quoted assignments, then paste only those three lines unchanged at the
+   remote Bash prompt. Do not paste candidate bytes, the sudo password, or any secret.
+
+   ~~~bash
+   # Run on the operator workstation before opening the TTY; metadata only.
+   case "$candidate_sha256" in
+     ''|*[!0-9a-fA-F]*) echo 'invalid candidate SHA-256' >&2; exit 1 ;;
+   esac
+   case "$candidate_bytes" in
+     ''|*[!0-9]*) echo 'invalid candidate byte count' >&2; exit 1 ;;
+   esac
+   printf 'candidate_remote=%q\ncandidate_sha256=%q\ncandidate_bytes=%q\n' \
+     "$candidate_remote" "$candidate_sha256" "$candidate_bytes"
+   ~~~
+
+   Paste the `%q` output at the remote Bash prompt without editing it. Re-check `candidate_remote` there as the
+   deploy-owned `$HOME/.amane-caddy-744.*` regular file, not a symlink, with mode 0600. Never treat these values as a
+   sudo password or as candidate stdin. The Phase 2 TTY is not transaction stdin.
+
+   In the remote shell, the command meanings are:
+
+   ~~~text
+   sudo -v = interactive authentication
+   sudo -n true = post-authentication credential-cache verification only
+   sudo -n bash = already-authenticated transaction execution only
+   ~~~
+
+   `sudo -v` is interactive authentication. The Human enters the password directly at the VPS terminal's sudo prompt.
+   sudo password is entered only at the interactive sudo prompt and is never supplied by script/stdin. Never put the
+   password in chat, an issue, a log, a script, an environment variable, or a candidate stream. Use `sudo -n` only
+   after `sudo -v` succeeds; never use it for initial authentication.
 
 #### Privilege boundary
 
@@ -385,14 +424,47 @@ The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline on
 
 Do not change sudoers, SSH config, root login, Docker topology, Caddy container recreation, or the firewall.
 
-7. **Privileged preflight and last-known-good backup.** deploy is a read-only user; an unprivileged deploy
-   write to the root-owned production Caddyfile is forbidden. Backup-directory creation, root-owned
-   last-known-good backup, current write, chown, chmod restoration, reload, and rollback run only inside an
-   explicit Bash transaction started with `sudo bash`. Transaction uses Bash ERR trap / pipefail semantics; do not
-   execute it through /bin/sh. Do not change sudoers, SSH settings, or root login. Re-read and preserve current
-   device, inode, uid, gid, owner, group, mode, bytes, and SHA-256. Do not reset the Fresh root:root / 0644
-   baseline; 0644 is Fresh baseline only. Read the candidate from `$candidate_remote`; candidate bytes are not
-   placed on the transaction script's stdin or on the sudo password's stdin.
+7. **PHASE 3 / PHASE 4 — privileged preflight and last-known-good backup.** Start the transaction only after `sudo -v`
+   and `sudo -n true` have both succeeded in the same remote TTY/session. Phase 3 `sudo -n true` is only a fail-closed
+   credential cache validity check, not authentication. `sudo -n bash` is already-authenticated transaction execution
+   only. deploy is a read-only user; an unprivileged deploy write to the root-owned production Caddyfile is forbidden.
+   Backup-directory creation, root-owned last-known-good backup, current write, chown, chmod restoration, reload, and
+   rollback run only inside an explicit Bash transaction. Transaction uses Bash ERR trap / pipefail semantics; do not
+   execute it through /bin/sh. Do not change sudoers, SSH settings, or root login. Re-read and preserve current device,
+   inode, uid, gid, owner, group, mode, bytes, and SHA-256. Do not reset the Fresh root:root / 0644 baseline; 0644 is
+   Fresh baseline only. Read the candidate from `$candidate_remote`; candidate bytes are not placed on the transaction
+   script's stdin or on the sudo password's stdin.
+
+   From the Phase 2 remote shell, run the Phase 3 check below. If it fails, do not start production mutation; clean up
+   the temporary candidate, verify that it is absent, and STOP.
+
+   ~~~bash
+   # Run in the already-open remote deploy shell. No HEREDOC is used for authentication.
+   set -Eeuo pipefail
+   cleanup_temporary_candidate() {
+     rm -f -- "$candidate_remote"
+     test ! -e "$candidate_remote"
+     test ! -L "$candidate_remote"
+   }
+   case "$candidate_remote" in
+     "$HOME"/.amane-caddy-744.*) ;;
+     *) echo 'candidate is outside the deploy-owned temporary location' >&2; cleanup_temporary_candidate; exit 1 ;;
+   esac
+   if ! sudo -v; then
+     echo 'sudo -v failed; no production mutation; cleaning temporary candidate' >&2
+     cleanup_temporary_candidate
+     exit 1
+   fi
+   if ! sudo -n true; then
+     echo 'sudo -n true failed after sudo -v; no production mutation; cleaning temporary candidate' >&2
+     cleanup_temporary_candidate
+     exit 1
+   fi
+   ~~~
+
+   A `sudo -v` failure, `sudo -n true` failure, or `sudo -n bash` start failure before production mutation needs no
+   rollback. In each case remove the temporary candidate with `rm -f -- "$candidate_remote"`, verify it with `test
+   ! -e` and `test ! -L`, and STOP. Because `sudo -n` never prompts, never send a password on stdin to retry it.
 
 8. **Enable the transaction and failure handler before same-inode write.** Initialize mutation_started=false
    and rollback_in_progress=false. Set mutation_started=true only after backup and original SHA verification.
@@ -402,16 +474,13 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
    handling with rollback_in_progress and call rollback_current_in_place exactly once.
 
    ~~~bash
-   # Run from the operator workstation after candidate transfer and read-only SHA verification.
-   ssh -t "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" "$candidate_sha256" "$candidate_bytes" <<'REMOTE_LIVE'
+   # Type/paste this entire block in the already-open remote interactive TTY,
+   # after interactive sudo authentication and the post-authentication cache check have succeeded.
    set -Eeuo pipefail
-   candidate_remote=$1
-   candidate_sha256=$2
-   candidate_bytes=$3
-
-   # Human enters the password only at this interactive sudo prompt on the VPS.
-   sudo -v
-   sudo bash -s -- _ "$candidate_remote" "$candidate_sha256" "$candidate_bytes" <<'ROOT_BASH'
+   if sudo -n bash -s -- \
+     "$candidate_remote" \
+     "$candidate_sha256" \
+     "$candidate_bytes" <<'ROOT_BASH'
      # Run on VPS via approved privileged explicit Bash transaction
      # stdin is ROOT_BASH, while candidate bytes are read from candidate_remote.
      set -Eeuo pipefail
@@ -538,27 +607,29 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
      # Approved no-send checks: /healthz /readyz /api /admin /setup /:8080 /SSH.
      run_approved_value_free_acceptance_checks
    ROOT_BASH
-   REMOTE_LIVE
+   then
+     cleanup_temporary_candidate
+   else
+     transaction_status=$?
+     echo 'sudo -n bash or transaction failed; STOP and inspect rollback state' >&2
+     # A sudo -n start failure cannot prompt and has not started mutation.
+     # If ROOT_BASH started, its ERR trap owns automatic rollback; cleanup follows
+     # successful rollback, while a rollback failure keeps SSH recovery in priority.
+     cleanup_temporary_candidate
+     exit "$transaction_status"
+   fi
    ~~~
 
    The privileged writer opens the existing current fd for an in-place write, checks device/inode/uid/gid/mode, truncates,
    exact-writes, flushes, and calls fsync. It never changes the current path to a different inode and does
    not recreate a container. The container-visible SHA must equal the candidate SHA.
 
-9. **Temporary candidate cleanup.** After acceptance succeeds, use deploy to `rm` the temporary candidate and verify
-   that it no longer exists. Do the same after automatic rollback completes successfully.
+9. **Temporary candidate cleanup.** Invoke the cleanup function defined in Phase 2 from the same remote interactive
+   TTY/session after acceptance succeeds or after automatic rollback succeeds. As deploy, `rm` the temporary candidate
+   and verify that it no longer exists. Do the same before production mutation on any sudo failure.
 
    ~~~bash
-   # Define/run on the operator workstation; the remote cleanup command runs as deploy.
-   cleanup_temporary_candidate() {
-     ssh "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" <<'REMOTE_CANDIDATE_CLEANUP'
-   set -Eeuo pipefail
-   candidate_remote=$1
-   rm -f -- "$candidate_remote"
-   test ! -e "$candidate_remote"
-   test ! -L "$candidate_remote"
-   REMOTE_CANDIDATE_CLEANUP
-   }
+   # Run in the same remote interactive shell after transaction success or rollback success.
    cleanup_temporary_candidate
    ~~~
 

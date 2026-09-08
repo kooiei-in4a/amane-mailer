@@ -353,13 +353,49 @@ resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 i
    run `rm -f -- "$candidate_remote"` as deploy and do not perform production mutation. The temporary candidate
    is not a persistent VPS staging area.
 
-6. **candidate transfer / SHA確認後に interactive sudo を取得する。** live mutation 開始前に、operator
-   workstation から `ssh -t` で deploy user の interactive TTY shell を開きます。その remote shell で `sudo -v`
-   を実行し、Human が VPS terminal の sudo prompt に password を直接入力します。sudo credential cache を
-   取得できなければ STOP、sudoers は変更しません。sudo password is entered only at the interactive sudo prompt and is never supplied by script/stdin. sudo password は interactive sudo prompt にだけ Human が直接
-   入力し、script/stdin から決して供給しません。password は chat、Issue、log、script、environment variable、
-   candidate stream のいずれにも載せません。sudo -v が失敗した場合も live mutation を開始せず、temporary
-   candidate cleanup を実施します。
+6. **PHASE 2 — candidate transfer / SHA確認後に standalone interactive SSH TTY を開く。** live mutation 開始前に、
+   operator workstation で transaction HEREDOC を SSH の stdin に接続せず、remote deploy shell 用の TTY を
+   開きます。これは独立した interactive SSH phase です。
+
+   ~~~bash
+   # Run on operator workstation after Phase 1 candidate transfer and verification.
+   # This is a standalone TTY; do not append a HEREDOC to this ssh command.
+   ssh -t "$VPS_ALIAS"
+   ~~~
+
+   ここで Human は remote deploy shell に入ります。interactive shell に入る前に必要な
+   `candidate_remote`、`candidate_sha256`、`candidate_bytes` は non-secret path / metadata です。shell injection を
+   起こさないよう、operator workstation で Bash の `%q` を使って shell-quoted assignment として出力し、remote
+   Bash prompt へその3行だけをそのまま貼り付けます。candidate bytes、sudo password、secret は貼り付けません。
+
+   ~~~bash
+   # Run on operator workstation before opening the TTY; metadata only.
+   case "$candidate_sha256" in
+     ''|*[!0-9a-fA-F]*) echo 'invalid candidate SHA-256' >&2; exit 1 ;;
+   esac
+   case "$candidate_bytes" in
+     ''|*[!0-9]*) echo 'invalid candidate byte count' >&2; exit 1 ;;
+   esac
+   printf 'candidate_remote=%q\ncandidate_sha256=%q\ncandidate_bytes=%q\n' \
+     "$candidate_remote" "$candidate_sha256" "$candidate_bytes"
+   ~~~
+
+   `%q` の出力は remote の Bash prompt で編集せずに貼り付けます。remote shell では `candidate_remote` を
+   `$HOME/.amane-caddy-744.*` の deploy-owned regular file、not symlink、mode 0600 として再確認し、値を
+   `sudo` の password や stdin として扱いません。Phase 2 の TTY は transaction stdin ではありません。
+
+   remote shell 内で次を実行します。
+
+   ~~~text
+   sudo -v = interactive authentication
+   sudo -n true = post-authentication credential-cache verification only
+   sudo -n bash = already-authenticated transaction execution only
+   ~~~
+
+   `sudo -v` は interactive authentication です。Human は VPS terminal の sudo prompt に password を直接入力
+   します。sudo password is entered only at the interactive sudo prompt and is never supplied by script/stdin. sudo
+   password は chat、Issue、log、script、environment variable、candidate stream のいずれにも載せません。
+   `sudo -n` は `sudo -v` 成功後だけに使用し、最初の認証には使いません。
 
 #### Privilege boundary / 権限境界
 
@@ -370,14 +406,48 @@ resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 i
 
 sudoers、SSH config、root login、Docker topology、Caddy container recreation、firewall は変更しません。
 
-7. **REMOTE VPS PRIVILEGED LIVE MUTATION で preflight / backup を行う。** deploy は read-only user
-   なので、root-owned Caddyfile への unprivileged write は禁止です。backup directory、root-owned
-   last-known-good backup、current write、chown、chmod restoration、reload、rollback は `sudo bash` で
-   起動した explicit Bash transaction 内だけで行います。transaction uses Bash ERR trap / pipefail semantics;
-   do not execute it through /bin/sh. Fresh の root:root / 0644 を再設定せず、live に再取得した owner、
-   group、mode、device、inode、uid、gid、bytes、SHA-256 を preserve します。#744 は mode hardening を
-   しません。candidate は `$candidate_remote` から読み、transaction script の stdin や sudo password の
-   stdin には載せません。
+7. **PHASE 3 / PHASE 4 — REMOTE VPS PRIVILEGED LIVE MUTATION で preflight / backup を行う。** Phase 2 の
+   `sudo -v` と Phase 3 の `sudo -n true` が同じ remote TTY/session で成功した後にだけ transaction を開始します。
+   Phase 3 の `sudo -n true` は credential cache の有効性を fail-closed に確認するだけで、認証用途ではありません。
+   `sudo -n bash` は already-authenticated transaction execution only です。deploy は read-only user なので、
+   root-owned Caddyfile への unprivileged write は禁止です。backup directory、root-owned last-known-good backup、
+   current write、chown、chmod restoration、reload、rollback は explicit Bash transaction 内だけで行います。
+   transaction uses Bash ERR trap / pipefail semantics; do not execute it through /bin/sh. Fresh の root:root / 0644 を
+   再設定せず、live に再取得した owner、group、mode、device、inode、uid、gid、bytes、SHA-256 を preserve します。
+   #744 は mode hardening をしません。candidate は `$candidate_remote` から読み、transaction script の stdin や
+   sudo password の stdin には載せません。
+
+   Phase 2 の remote shell で、次の Phase 3 check を実行します。失敗したら production mutation は開始せず、
+   temporary candidate を cleanup して不存在を確認し、STOP します。
+
+   ~~~bash
+   # Run in the already-open remote deploy shell. No HEREDOC is used for authentication.
+   set -Eeuo pipefail
+   cleanup_temporary_candidate() {
+     rm -f -- "$candidate_remote"
+     test ! -e "$candidate_remote"
+     test ! -L "$candidate_remote"
+   }
+   case "$candidate_remote" in
+     "$HOME"/.amane-caddy-744.*) ;;
+     *) echo 'candidate is outside the deploy-owned temporary location' >&2; cleanup_temporary_candidate; exit 1 ;;
+   esac
+   if ! sudo -v; then
+     echo 'sudo -v failed; no production mutation; cleaning temporary candidate' >&2
+     cleanup_temporary_candidate
+     exit 1
+   fi
+   if ! sudo -n true; then
+     echo 'sudo -n true failed after sudo -v; no production mutation; cleaning temporary candidate' >&2
+     cleanup_temporary_candidate
+     exit 1
+   fi
+   ~~~
+
+   `sudo -v` failure、`sudo -n true` failure、または後続の `sudo -n bash` start failure は、production mutation
+   開始前なら rollback 不要です。いずれも temporary candidate を `rm -f -- "$candidate_remote"` で cleanup し、
+   `test ! -e` と `test ! -L` で不存在を確認して STOP します。`sudo -n` は prompt を出さないため、失敗時に
+   password を stdin へ流して再試行してはいけません。
 
 8. **transaction / failure handler を先に準備する。** backup と original SHA の検証後にだけ
    mutation_started=true とし、初期値は mutation_started=false、rollback_in_progress=false とします。
@@ -387,16 +457,13 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
    trap ERR は rollback_in_progress guard で再帰を防ぎ、rollback_current_in_place を一度だけ呼びます。
 
    ~~~bash
-   # Run from operator workstation after candidate transfer and read-only SHA verification.
-   ssh -t "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" "$candidate_sha256" "$candidate_bytes" <<'REMOTE_LIVE'
+   # Type/paste this entire block in the already-open remote interactive TTY,
+   # after interactive sudo authentication and the post-authentication cache check have succeeded.
    set -Eeuo pipefail
-   candidate_remote=$1
-   candidate_sha256=$2
-   candidate_bytes=$3
-
-   # Human enters the password only at this interactive sudo prompt on the VPS.
-   sudo -v
-   sudo bash -s -- _ "$candidate_remote" "$candidate_sha256" "$candidate_bytes" <<'ROOT_BASH'
+   if sudo -n bash -s -- \
+     "$candidate_remote" \
+     "$candidate_sha256" \
+     "$candidate_bytes" <<'ROOT_BASH'
      # Run on VPS via approved privileged explicit Bash transaction
      # stdin is ROOT_BASH, while candidate bytes are read from candidate_remote.
      set -Eeuo pipefail
@@ -523,28 +590,30 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
      # Approved no-send checks: /healthz /readyz /api /admin /setup /:8080 /SSH.
      run_approved_value_free_acceptance_checks
    ROOT_BASH
-   REMOTE_LIVE
+   then
+     cleanup_temporary_candidate
+   else
+     transaction_status=$?
+     echo 'sudo -n bash or transaction failed; STOP and inspect rollback state' >&2
+     # A sudo -n start failure cannot prompt and has not started mutation.
+     # If ROOT_BASH started, its ERR trap owns automatic rollback; cleanup follows
+     # successful rollback, while a rollback failure keeps SSH recovery in priority.
+     cleanup_temporary_candidate
+     exit "$transaction_status"
+   fi
    ~~~
 
    production current は same inode の in-place write として fd に truncate、exact write、fsync します。path replacement や
    live current を別 inode にする操作、container recreate は使いません。container-visible SHA は
    candidate SHA と一致しなければなりません。
 
-9. **temporary candidate の cleanup。** acceptance 成功後は deploy user で temporary candidate を `rm` し、
-   その後 `存在しない` ことを確認します。automatic rollback が成功した場合も同じ cleanup を rollback 完了後に
-   実施します。
+9. **temporary candidate の cleanup。** Phase 2 で定義した cleanup function を、同じ remote interactive
+   TTY/session 内で acceptance 成功後、または automatic rollback 成功後に呼び出します。deploy user として
+   temporary candidate を `rm` し、その後 `存在しない` ことを確認します。sudo failure の場合も production
+   mutation 開始前に同じ cleanup を実施します。
 
    ~~~bash
-   # Define/run on the operator workstation; the remote cleanup command runs as deploy.
-   cleanup_temporary_candidate() {
-     ssh "$VPS_ALIAS" 'bash -s' -- _ "$candidate_remote" <<'REMOTE_CANDIDATE_CLEANUP'
-   set -Eeuo pipefail
-   candidate_remote=$1
-   rm -f -- "$candidate_remote"
-   test ! -e "$candidate_remote"
-   test ! -L "$candidate_remote"
-   REMOTE_CANDIDATE_CLEANUP
-   }
+   # Run in the same remote interactive shell after transaction success or rollback success.
    cleanup_temporary_candidate
    ~~~
 

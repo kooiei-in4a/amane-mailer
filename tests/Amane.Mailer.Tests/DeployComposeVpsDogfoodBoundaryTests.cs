@@ -350,10 +350,15 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
                          "Human approval",
                          "root",
                          "Bash",
-                         "sudo bash",
+                         "ssh -t",
                          "sudo -v",
+                         "sudo -n true",
+                         "sudo -n bash",
                          "interactive sudo",
+                         "interactive sudo authentication",
                          "TTY",
+                         "credential cache",
+                         "ROOT_BASH",
                          "sudo password",
                          "scp --",
                          "generated Caddyfile candidate only",
@@ -419,11 +424,14 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
                 Assert.Contains(required, runbook, StringComparison.Ordinal);
             }
 
-            foreach (Match codeBlock in Regex.Matches(
-                         runbook,
-                         @"(?ms)^[ \t]*~~~[^\n]*\n(?<body>.*?)^[ \t]*~~~\s*$"))
+            var codeBlocks = Regex.Matches(
+                    runbook,
+                    @"(?ms)^[ \t]*~~~[^\n]*\n(?<body>.*?)^[ \t]*~~~\s*$")
+                .Select(match => match.Groups["body"].Value)
+                .ToArray();
+
+            foreach (var body in codeBlocks)
             {
-                var body = codeBlock.Groups["body"].Value;
                 if (!Regex.IsMatch(body, @"\bdocker (?:ps|inspect|exec)\b", RegexOptions.CultureInvariant))
                 {
                     continue;
@@ -435,7 +443,6 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
 
             foreach (var forbidden in new[]
                      {
-                         "sudo -n",
                          "sudo sh -c",
                          "sudo -S",
                          "sudo --stdin",
@@ -467,19 +474,42 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             Assert.DoesNotMatch(
                 new Regex(@"(?is)\bsh\b[^\n]*set\s+-Eeuo\s+pipefail|set\s+-Eeuo\s+pipefail[^\n]*\bsh\b"),
                 runbook);
-            Assert.Matches(
-                new Regex(@"(?is)ssh\s+-t\b.*?sudo\s+-v\b.*?sudo\s+bash\b", RegexOptions.CultureInvariant),
+            Assert.DoesNotMatch(
+                new Regex(@"(?im)^\s*ssh\s+-t\b[^\n]*<<"),
                 runbook);
+            Assert.Matches(
+                new Regex(@"(?is)ssh\s+-t\b.*?sudo\s+-v\b.*?sudo\s+-n\s+true\b.*?sudo\s+-n\s+bash\b.*?<<'ROOT_BASH'", RegexOptions.CultureInvariant),
+                runbook);
+            Assert.Contains("sudo -v = interactive authentication", runbook, StringComparison.Ordinal);
+            Assert.Contains("sudo -n true = post-authentication credential-cache verification only", runbook, StringComparison.Ordinal);
+            Assert.Contains("sudo -n bash = already-authenticated transaction execution only", runbook, StringComparison.Ordinal);
+            Assert.True(
+                runbook.IndexOf("sudo -v = interactive authentication", StringComparison.Ordinal)
+                    < runbook.IndexOf("sudo -n true = post-authentication credential-cache verification only", StringComparison.Ordinal));
+            Assert.True(
+                runbook.IndexOf("sudo -n true = post-authentication credential-cache verification only", StringComparison.Ordinal)
+                    < runbook.IndexOf("sudo -n bash = already-authenticated transaction execution only", StringComparison.Ordinal));
             Assert.Contains("sudo password is entered only at the interactive sudo prompt and is never supplied by script/stdin.", runbook, StringComparison.Ordinal);
             Assert.Contains("transaction uses Bash ERR trap / pipefail semantics;", runbook, StringComparison.OrdinalIgnoreCase);
 
-            var privilegedTransaction = Regex.Matches(
-                    runbook,
-                    @"(?ms)^[ \t]*~~~[^\n]*\n(?<body>.*?)^[ \t]*~~~\s*$")
-                .Select(match => match.Groups["body"].Value)
-                .Single(body => body.Contains("sudo bash", StringComparison.Ordinal));
-            Assert.Contains("sudo -v", privilegedTransaction, StringComparison.Ordinal);
-            Assert.Contains("sudo bash", privilegedTransaction, StringComparison.Ordinal);
+            var standaloneInteractiveSsh = codeBlocks.Single(body =>
+                body.Contains("ssh -t \"$VPS_ALIAS\"", StringComparison.Ordinal));
+            Assert.DoesNotContain("<<", standaloneInteractiveSsh, StringComparison.Ordinal);
+            Assert.DoesNotContain("sudo -v", standaloneInteractiveSsh, StringComparison.Ordinal);
+
+            var interactiveSudoPhase = codeBlocks.Single(body =>
+                body.Contains("cleanup_temporary_candidate", StringComparison.Ordinal)
+                && body.Contains("sudo -v", StringComparison.Ordinal)
+                && body.Contains("sudo -n true", StringComparison.Ordinal));
+            Assert.DoesNotContain("<<", interactiveSudoPhase, StringComparison.Ordinal);
+            Assert.DoesNotContain("sudo -n bash", interactiveSudoPhase, StringComparison.Ordinal);
+
+            var privilegedTransaction = codeBlocks.Single(body =>
+                body.Contains("sudo -n bash", StringComparison.Ordinal)
+                && body.Contains("<<'ROOT_BASH'", StringComparison.Ordinal));
+            Assert.DoesNotContain("sudo -v", privilegedTransaction, StringComparison.Ordinal);
+            Assert.Contains("sudo -n bash -s", privilegedTransaction, StringComparison.Ordinal);
+            Assert.Contains("<<'ROOT_BASH'", privilegedTransaction, StringComparison.Ordinal);
             Assert.Contains("candidate_remote=$1", privilegedTransaction, StringComparison.Ordinal);
             Assert.Contains("write_contents_in_place \"$candidate_remote\"", privilegedTransaction, StringComparison.Ordinal);
             Assert.DoesNotContain("cat \"$candidate\" | ssh", privilegedTransaction, StringComparison.Ordinal);
@@ -490,11 +520,8 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             Assert.Contains("test \"$remote_sha256\" = \"$expected_sha256\"", runbook, StringComparison.Ordinal);
             Assert.Contains("rm -f -- \"$candidate_remote\"", runbook, StringComparison.Ordinal);
 
-            foreach (Match codeBlock in Regex.Matches(
-                         runbook,
-                         @"(?ms)^[ \t]*~~~[^\n]*\n(?<body>.*?)^[ \t]*~~~\s*$"))
+            foreach (var body in codeBlocks)
             {
-                var body = codeBlock.Groups["body"].Value;
                 Assert.DoesNotMatch(
                     new Regex(@"(?is)cat\s+""\$candidate""\s*\|\s*ssh\b.*?\bsudo\b"),
                     body);
