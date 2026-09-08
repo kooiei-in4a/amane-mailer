@@ -29,7 +29,7 @@ The edge path contract is:
 | Path | Caddy edge boundary | Authentication sent to Mailer |
 |---|---|---|
 | `/api/*`, `/healthz`, `/readyz` | public | Existing path-specific authentication |
-| `/admin`, `/admin/*`, `/setup`, `/setup/*` | GeoLite2 JP CIDR **and** Caddy Basic Auth | Caddy `Authorization` is removed; Mailer's own Admin/Setup authentication remains |
+| `/admin`, `/admin/*`, `/setup`, `/setup/*` | IPdeny aggregated JP CIDR **and** Caddy Basic Auth | Caddy `Authorization` is removed; Mailer's own Admin/Setup authentication remains |
 | `/metrics` | `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator CIDR | Existing Mailer metrics bearer |
 | Everything else | 404 | Not sent upstream |
 
@@ -48,7 +48,7 @@ Basic Auth challenge. Only a JP source that passes Caddy Basic Auth is reverse-p
   needs outbound ACS access and Caddy needs outbound ACME access. Only `proxy`
   and `mailer` join it, and only `proxy` publishes host ports.
 - Caddy requires `/admin` and `/setup` to match the JP IPv4/IPv6 CIDRs derived by
-  the renderer from GeoLite2 Country CSVs and to pass Caddy Basic Auth. Non-JP
+  the renderer from IPdeny aggregated JP zones and to pass Caddy Basic Auth. Non-JP
   requests get a 404 before the challenge, and the successful Caddy Basic
   credential is removed with `header_up -Authorization` before Mailer receives it.
 - `/metrics` keeps the existing `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator
@@ -74,7 +74,7 @@ DNS, and host firewall policy first. Mailer does not install Docker or configure
 firewall, DNS, or a TLS account.
 
 From `infra/deploy`, create `.env`. Do not simply copy the Caddyfile: render it
-from GeoLite2 and the hash input.
+from the IPdeny zones and the hash input.
 
 ```bash
 cp .env.vps-dogfood.example .env
@@ -127,55 +127,79 @@ need to be configured.
 
 ### Generate the Caddy edge artifact
 
-Generate the real GeoLite2 Country candidate only on the operator side or on
-`agent-dev01`. The renderer does not connect to MaxMind, download data, or handle
-a license key/account ID. Keep the following inputs only in a secure operator /
-`agent-dev01` input path; do not place them on the VPS.
+Obtain the IPdeny aggregated JP zones over HTTPS only on the operator side or on
+`agent-dev01`. The renderer itself is offline: it performs no download and only
+parses, validates, normalizes, collapses, and renders the supplied inputs. The
+canonical sources are:
 
-- GeoLite raw CSVs (IPv4 blocks, IPv6 blocks, and locations-en)
-- MaxMind account ID / license key
-- bcrypt input hash file
-- plaintext Basic Auth password
+- IPv4: `https://www.ipdeny.com/ipblocks/data/aggregated/jp-aggregated.zone`
+- IPv6: `https://www.ipdeny.com/ipv6/ipaddresses/aggregated/jp-aggregated.zone`
 
-The only items that may be transferred to the VPS are a generated Caddy candidate
-after separate approval and value-free IPv4/IPv6 CIDR counts, bytes, and SHA-256
-metadata. Generating the real password or hash is outside this source stage. The
-`operator_input_dir` and `caddy_hash_file` below are paths on the operator /
-`agent-dev01`, never `/srv/platform/edge`.
+Keep the zone files only in a secure operator / `agent-dev01` runtime workspace; do
+not commit or transfer them to the VPS. Record the source URLs, download timestamp,
+input bytes, and input SHA-256 as provenance metadata. Record HTTP `Last-Modified`
+when present if useful; its absence alone is not a failure. The `operator_input_dir`
+and `caddy_hash_file` below are paths on the operator / `agent-dev01`, never
+`/srv/platform/edge`.
 
 ```bash
 # Run on operator / agent-dev01
-operator_input_dir='/path/on/operator-or-agent-dev01/geolite/current'
+set -Eeuo pipefail
+umask 077
+operator_input_dir='/path/on/operator-or-agent-dev01/ipdeny/current'
 caddy_hash_file='/path/on/operator-or-agent-dev01/caddy-admin.bcrypt'
+mkdir -p "$operator_input_dir"
+ipv4_url='https://www.ipdeny.com/ipblocks/data/aggregated/jp-aggregated.zone'
+ipv6_url='https://www.ipdeny.com/ipv6/ipaddresses/aggregated/jp-aggregated.zone'
+ipv4_headers="$operator_input_dir/jp-ipv4.headers"
+ipv6_headers="$operator_input_dir/jp-ipv6.headers"
+
+curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+  --output "$operator_input_dir/jp-ipv4.zone" --dump-header "$ipv4_headers" "$ipv4_url"
+curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+  --output "$operator_input_dir/jp-ipv6.zone" --dump-header "$ipv6_headers" "$ipv6_url"
+
+download_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+{
+  printf 'ipv4_url: %s\nipv6_url: %s\ndownload_timestamp: %s\n' "$ipv4_url" "$ipv6_url" "$download_timestamp"
+  printf 'ipv4_bytes: '; stat -c '%s' "$operator_input_dir/jp-ipv4.zone"
+  printf 'ipv4_sha256: '; sha256sum "$operator_input_dir/jp-ipv4.zone" | awk '{print $1}'
+  printf 'ipv6_bytes: '; stat -c '%s' "$operator_input_dir/jp-ipv6.zone"
+  printf 'ipv6_sha256: '; sha256sum "$operator_input_dir/jp-ipv6.zone" | awk '{print $1}'
+  printf 'ipv4_last_modified: '; awk 'BEGIN {IGNORECASE=1} /^Last-Modified:/ {sub(/^[^:]*:[[:space:]]*/, ""); print; exit}' "$ipv4_headers"
+  printf 'ipv6_last_modified: '; awk 'BEGIN {IGNORECASE=1} /^Last-Modified:/ {sub(/^[^:]*:[[:space:]]*/, ""); print; exit}' "$ipv6_headers"
+} > "$operator_input_dir/provenance.txt"
 
 python3 render-vps-management-edge.py \
-  --ipv4-blocks "${operator_input_dir}/GeoLite2-Country-Blocks-IPv4.csv" \
-  --ipv6-blocks "${operator_input_dir}/GeoLite2-Country-Blocks-IPv6.csv" \
-  --locations "${operator_input_dir}/GeoLite2-Country-Locations-en.csv" \
+  --ipv4-zone "$operator_input_dir/jp-ipv4.zone" \
+  --ipv6-zone "$operator_input_dir/jp-ipv6.zone" \
   --basic-auth-username caddy-admin \
-  --basic-auth-hash-file "${caddy_hash_file}" \
+  --basic-auth-hash-file "$caddy_hash_file" \
   --template Caddyfile.vps-dogfood.example \
   --output ./Caddyfile.vps-dogfood.candidate
 ```
 
-`caddy-admin` is a non-secret example. Choose and pass a deployment-specific username;
-the renderer rejects empty, whitespace, newline, and Caddyfile-token-injection values.
+`caddy-admin` is a non-secret example. Choose a deployment-specific username; the
+renderer rejects empty, whitespace, newline, and Caddyfile-token-injection values.
+Each zone must contain one CIDR per line; only whitespace-only lines may be ignored.
+Comments, extra tokens, invalid CIDRs, a wrong address family, either IPv4/IPv6 `/0`,
+a missing or empty zone, or zero CIDRs on either side stop the render fail-closed.
+Duplicate removal, adjacent CIDR collapse, and deterministic numeric ordering are
+performed offline. Zone contents and the hash value are not printed in logs or the
+summary.
 
-`Caddyfile.vps-dogfood` is an ignored runtime artifact. The renderer uses only
-`network.geoname_id → locations.geoname_id → country_iso_code == JP`; it never
-falls back to `registered_country_geoname_id` or `represented_country_geoname_id`.
-Empty/unknown network geonames are not JP. Zero JP CIDRs, invalid/default CIDRs,
-missing required columns, conflicting mappings, and an empty/invalid hash stop the
-render fail-closed. Raw GeoLite CSV data is not copied to the output, and the hash
-value is not printed in logs or the summary.
+`Caddyfile.vps-dogfood` is an ignored runtime artifact. The only item that may cross
+to the VPS after separate approval is the generated Caddy candidate, plus value-free
+IPv4/IPv6 CIDR counts, bytes, and SHA-256 metadata. This source stage does not
+generate a real password or a real hash.
 
 ### Caddy Basic Auth credential boundary
 
 For live operations, generate a new, sufficiently strong random Caddy Basic Auth password
 with an approved password manager or CSPRNG. This rework does not generate a real password
 or real hash. The Caddy Basic Auth password is a separate credential from the Mailer Admin
-password and from the Setup bootstrap token; never reuse any of them. It is also unrelated
-to MaxMind / GeoLite download credentials, account IDs, or license keys.
+password and from the Setup bootstrap token; never reuse any of them. Keep it separate
+from the IPdeny zone acquisition workspace and provenance metadata.
 
 - For the Basic Auth credential material, only the bcrypt hash belongs in the `Caddyfile`. Never
   store the plaintext password in the repository, production `Caddyfile`, `.env`, an issue, or a log.
@@ -197,15 +221,15 @@ The live procedure has exactly three separate execution contexts:
 
 | context | work | boundary |
 | --- | --- | --- |
-| A. OPERATOR / agent-dev01 | GeoLite inputs, bcrypt hash input, renderer, operator-side candidate, CIDR counts, bytes, and SHA-256 | Raw GeoLite CSV and the bcrypt input hash remain here and never go to the VPS. |
+| A. OPERATOR / agent-dev01 | IPdeny zone inputs, provenance metadata, bcrypt hash input, renderer, operator-side candidate, CIDR counts, bytes, and SHA-256 | Raw IPdeny zones and the bcrypt input hash remain here and never go to the VPS. |
 | B. REMOTE VPS READ-ONLY | Compose label resolution, container inspect, image/version/mount checks, read-only stat, and candidate stdin pre-validation as deploy | docker ps, docker inspect, and docker exec occur only inside SSH remote command bodies. No production mutation. |
 | C. REMOTE VPS PRIVILEGED LIVE MUTATION | Human-approved backup, same-inode write, SHA guards, Caddy validate, reload, and rollback | Only inside an explicit Bash transaction after interactive sudo approval. No sudoers, SSH, or root-login change. |
 
 Until pre-validation, the candidate remains on the operator and candidate bytes are consumed by the remote process
 from SSH stdin. That stage is production mutation=false, candidate file persisted on VPS=false, and does not require
 sudo. After Human approval, live mutation transfers only the generated Caddyfile candidate to a deploy-owned temporary
-location. PERSISTENT_VPS_STAGING_REQUIRED=false and TEMPORARY_VPS_CANDIDATE_REQUIRED=true. Raw GeoLite data, MaxMind
-credentials, the bcrypt input hash file, and plaintext passwords are not transferred to the VPS. GeoLite raw data transferred=false
+location. PERSISTENT_VPS_STAGING_REQUIRED=false and TEMPORARY_VPS_CANDIDATE_REQUIRED=true. Raw IPdeny zone data,
+the bcrypt input hash file, and plaintext passwords are not transferred to the VPS. IPdeny raw data transferred=false
 and bcrypt input file transferred=false.
 
 Fresh topology is Compose project=amane-platform-edge, service=proxy, current
@@ -214,22 +238,21 @@ mount source=/srv/platform/edge/Caddyfile, destination=/etc/caddy/Caddyfile, RW=
 The observed container name is reference-only; resolve by labels every time and require exactly one.
 The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline only.
 
-1. **OPERATOR / agent-dev01: generate the real GeoLite candidate.** Do not put raw GeoLite CSV, MaxMind
-   credentials, the bcrypt input hash file, or the plaintext password on the VPS. Production Caddyfile is
+1. **OPERATOR / agent-dev01: generate the real IPdeny candidate.** Do not put raw IPdeny zones,
+   provenance metadata, the bcrypt input hash file, or the plaintext password on the VPS. Production Caddyfile is
    unchanged at this stage.
 
    ~~~bash
    # Run on operator / agent-dev01
    set -Eeuo pipefail
    umask 077
-   operator_input_dir=/path/on/operator-or-agent-dev01/geolite/current
+   operator_input_dir=/path/on/operator-or-agent-dev01/ipdeny/current
    caddy_hash_file=/path/on/operator-or-agent-dev01/caddy-admin.bcrypt
    candidate=$PWD/infra/deploy/Caddyfile.vps-dogfood
    render_record=$PWD/caddy-render.txt
    python3 infra/deploy/render-vps-management-edge.py \
-     --ipv4-blocks "$operator_input_dir/GeoLite2-Country-Blocks-IPv4.csv" \
-     --ipv6-blocks "$operator_input_dir/GeoLite2-Country-Blocks-IPv6.csv" \
-     --locations "$operator_input_dir/GeoLite2-Country-Locations-en.csv" \
+     --ipv4-zone "$operator_input_dir/jp-ipv4.zone" \
+     --ipv6-zone "$operator_input_dir/jp-ipv6.zone" \
      --basic-auth-username caddy-admin \
      --basic-auth-hash-file "$caddy_hash_file" \
      --template infra/deploy/Caddyfile.vps-dogfood.example \
@@ -304,8 +327,8 @@ The Fresh baseline root:root / 0644 is reference data: 0644 is Fresh baseline on
 5. **Transfer a temporary candidate to the VPS only after separate Human approval.** Source Stage approval,
    renderer self-test, CI, and stdin validation PASS are not live approval. Confirm digest, counts, bytes, hostname,
    executor, rollback owner, and an SSH rollback session; missing approval or changed digest is STOP. The only item
-   allowed to cross to the VPS is the generated Caddyfile candidate. Do not transfer GeoLite raw CSV, MaxMind account
-   ID / license key, the bcrypt input hash file, plaintext Basic Auth password, Mailer Admin password, or Setup
+   allowed to cross to the VPS is the generated Caddyfile candidate. Do not transfer IPdeny raw zones, provenance
+   metadata, the bcrypt input hash file, plaintext Basic Auth password, Mailer Admin password, or Setup
    bootstrap token. Transfer allowlist: generated Caddyfile candidate only. The candidate contains a bcrypt hash and
    must be handled as a protected file.
 
@@ -645,9 +668,9 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
    rollback, validation, reload, or regression fails, keep SSH open, STOP, and escalate. Never replace a path
    after inode drift. Confirm rollback success before temporary candidate cleanup.
 
-11. **Fail closed and preserve the existing security contract.** GeoLite download/render/validate/update is
-   operator-side only. Keep last-known-good on failure; never put raw CSV, MaxMind credentials, bcrypt input
-   hash file, or plaintext password on the VPS; never fall back to empty CIDRs, default routes, or allow-all
+11. **Fail closed and preserve the existing security contract.** IPdeny download/render/validate/update is
+  operator-side only. Keep last-known-good on failure; never put raw IPdeny zones, provenance metadata, bcrypt input
+  hash file, or plaintext password on the VPS; never fall back to empty CIDRs, default routes, or allow-all
    (0.0.0.0/0 / ::/0). Preserve /admin and /setup as JP CIDR + Caddy Basic Auth + Mailer own auth, non-JP
    404 before Basic challenge, /metrics MAILER_MANAGEMENT_ALLOWED_CIDRS, public /api/* /healthz /readyz,
    removal of Caddy Basic Authorization before Mailer upstream, and unpublished Mailer :8080. #744 remains
@@ -724,7 +747,7 @@ management route.
 
 - Public consumer requests use `https://MAILER_PUBLIC_HOSTNAME/api/...`. The
   backend Docker name/port is not the consumer's public contract.
-- `/admin` and `/setup` require both a GeoLite2-derived JP CIDR and Caddy Basic
+- `/admin` and `/setup` require both an IPdeny-derived JP CIDR and Caddy Basic
   Auth. Non-JP sources get a 404 before the Basic challenge. Combine this with a
   VPN/firewall/SSH tunnel and instance-owner authentication; this profile does not
   make a public Admin safe through the Mailer application alone.

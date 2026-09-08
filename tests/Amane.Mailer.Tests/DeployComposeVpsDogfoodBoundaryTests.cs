@@ -240,11 +240,22 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
         Assert.Contains("{{CADDY_BASIC_AUTH_BCRYPT_HASH}}", caddyfile, StringComparison.Ordinal);
         Assert.Contains("ipaddress", renderer, StringComparison.Ordinal);
         Assert.Contains("--self-test", renderer, StringComparison.Ordinal);
+        Assert.Contains("--ipv4-zone", renderer, StringComparison.Ordinal);
+        Assert.Contains("--ipv6-zone", renderer, StringComparison.Ordinal);
         Assert.Contains("--basic-auth-username", renderer, StringComparison.Ordinal);
+        Assert.Contains("--basic-auth-hash-file", renderer, StringComparison.Ordinal);
         Assert.Contains("validate_basic_auth_username", renderer, StringComparison.Ordinal);
-        Assert.DoesNotContain("maxmind.com", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("GeoLite", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("MaxMind", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("geoname_id", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("--ipv4-blocks", renderer, StringComparison.Ordinal);
+        Assert.DoesNotContain("--ipv6-blocks", renderer, StringComparison.Ordinal);
+        Assert.DoesNotContain("--locations", renderer, StringComparison.Ordinal);
         Assert.DoesNotContain("urllib", renderer, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("urlopen", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("urlretrieve", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("requests", renderer, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("curl", renderer, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("--password", renderer, StringComparison.Ordinal);
     }
 
@@ -339,13 +350,23 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
                          "SHA-256",
                          "candidate bytes",
                          "candidate SHA-256",
-                         "real GeoLite",
+                         "IPdeny zone",
                          "Caddy Basic Auth password",
                          "Mailer Admin",
                          "Setup bootstrap token",
                          "bcrypt hash",
                          "plaintext password",
-                         "MaxMind",
+                         "https://www.ipdeny.com/ipblocks/data/aggregated/jp-aggregated.zone",
+                         "https://www.ipdeny.com/ipv6/ipaddresses/aggregated/jp-aggregated.zone",
+                         "download timestamp",
+                         "input bytes",
+                         "input SHA-256",
+                         "Last-Modified",
+                         "one CIDR per line",
+                         "extra token",
+                         "wrong address family",
+                         "--ipv4-zone",
+                         "--ipv6-zone",
                          "--basic-auth-hash-file",
                          "Human approval",
                          "root",
@@ -409,7 +430,7 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
                          "preserve",
                          "0644 is Fresh baseline only",
                          "candidate file persisted on VPS=false",
-                         "GeoLite raw data transferred=false",
+                         "IPdeny raw data transferred=false",
                          "bcrypt input file transferred=false",
                          "/healthz",
                          "/readyz",
@@ -537,6 +558,23 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             Assert.Contains("same inode", runbook, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("caddy validate", runbook, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("rollback", runbook, StringComparison.OrdinalIgnoreCase);
+
+            foreach (var staleSourceReference in new[]
+                     {
+                         "GeoLite",
+                         "GeoLite2",
+                         "MaxMind",
+                         "geoname_id",
+                         "registered_country_geoname_id",
+                         "represented_country_geoname_id",
+                         "Country CSV",
+                         "--ipv4-blocks",
+                         "--ipv6-blocks",
+                         "--locations"
+                     })
+            {
+                Assert.DoesNotContain(staleSourceReference, runbook, StringComparison.OrdinalIgnoreCase);
+            }
         }
 
         var smokeRunbooks = new[]

@@ -74,7 +74,7 @@ services:
     environment:
       # These values are required so an unconfigured profile fails before Caddy starts. The
       # management CIDR is retained for /metrics; browser Admin/Setup CIDRs are rendered from
-      # GeoLite2 into the ignored Caddyfile artifact.
+      # IPdeny JP zones into the ignored Caddyfile artifact.
       MAILER_PUBLIC_HOSTNAME: ${MAILER_PUBLIC_HOSTNAME:?Set MAILER_PUBLIC_HOSTNAME to the public DNS name}
       MAILER_MANAGEMENT_ALLOWED_CIDRS: ${MAILER_MANAGEMENT_ALLOWED_CIDRS:?Set MAILER_MANAGEMENT_ALLOWED_CIDRS to operator CIDRs}
     ports:

@@ -1,17 +1,17 @@
 # Caddy reference edge template for the VPS dogfood deployment (Issue #744 / Source Stage).
 #
 # The renderer fills the JP CIDR and bcrypt markers into the ignored runtime artifact
-# Caddyfile.vps-dogfood. It consumes operator-provided GeoLite2 Country CSV files only; it does
-# not download MaxMind data or handle a MaxMind account/license key. Caddy enables automatic HTTPS
+# Caddyfile.vps-dogfood. It consumes operator-provided IPdeny aggregated JP zone files only; it does
+# not download source data. Caddy enables automatic HTTPS
 # for a real hostname. DNS, firewall rules, and the public TLS account remain operator-owned.
 #
 # MAILER_MANAGEMENT_ALLOWED_CIDRS remains the operator-only boundary for /metrics. It is not the
-# browser Admin/Setup allow-list; that list is derived from GeoLite2 and rendered below.
+# browser Admin/Setup allow-list; that list is derived from IPdeny JP zones and rendered below.
 
 {$MAILER_PUBLIC_HOSTNAME} {
 	# Caddy's automatic HTTPS redirects HTTP to HTTPS for this named site.
 
-	# The renderer replaces the two CIDR markers with deterministic, collapsed GeoLite2 ranges.
+	# The renderer replaces the two CIDR markers with deterministic, collapsed IPdeny ranges.
 	# Each range becomes its own remote_ip line so the Caddyfile has no unbounded line.
 	# This matcher intentionally excludes /metrics: its existing operator restriction is separate.
 	@browser_jp {

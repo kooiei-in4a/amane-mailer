@@ -51,23 +51,25 @@ fresh reset/setup、real ACS send、UX dogfood は #745 の ownership であり�
 - [ ] `MAILER_DATA_PATH` は永続 directory、ACS / bounce secret directory は mode `0700` である。
 - [ ] fresh state で `tenants.json`、`MAIL_SERVICE_TOKEN*`、legacy `MAILER_PROVIDER` を作成していない。
 
-#744 の security boundary、固定 proxy network、Mailer port 非公開、GeoLite2-derived JP CIDR、
+#744 の security boundary、固定 proxy network、Mailer port 非公開、IPdeny-derived JP CIDR、
 Caddy Basic Auth、metrics operator CIDR の設定は [VPS dogfood deployment](vps-dogfood-deployment.md)
 を正本とします。`down -v` は Mailer DB と Caddy certificate state を削除し得るため、この手順でも使いません。
 
 ## 2. Deploy / migration / bootstrap setup
 
 1. `infra/deploy/.env.vps-dogfood.example` と Caddy template から deploy host 用の未コミット設定を作り、
-   image、hostname、metrics operator CIDR、data path、protected secret path を確認する。GeoLite2 の
-   blocks IPv4/IPv6、locations-en CSV と既生成 bcrypt hash file を operator の安全な場所から用意する。
-2. renderer を実行して ignored runtime artifact を作る。renderer は download、MaxMind license/account
-   credential、plaintext password を要求しない。hash の値を出力へ貼ったり log に表示したりしない。
+   image、hostname、metrics operator CIDR、data path、protected secret path を確認する。IPdeny の
+   aggregated JP IPv4/IPv6 zone と既生成 bcrypt hash file を operator の安全な runtime workspace から用意する。
+   canonical source は `https://www.ipdeny.com/ipblocks/data/aggregated/jp-aggregated.zone` と
+   `https://www.ipdeny.com/ipv6/ipaddresses/aggregated/jp-aggregated.zone` です。取得時刻、各 zone の
+   bytes、SHA-256、可能なら HTTP `Last-Modified` を provenance metadata に記録します。
+2. renderer を実行して ignored runtime artifact を作る。renderer は download や plaintext password を要求せず、
+   supplied zone を offline で parse / validate / normalize / collapse します。hash の値を出力へ貼ったり log に表示したりしないでください。
 
 ```bash
 python3 infra/deploy/render-vps-management-edge.py \
-  --ipv4-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv4.csv \
-  --ipv6-blocks /secure/geolite/GeoLite2-Country-Blocks-IPv6.csv \
-  --locations /secure/geolite/GeoLite2-Country-Locations-en.csv \
+  --ipv4-zone /secure/ipdeny/jp-ipv4.zone \
+  --ipv6-zone /secure/ipdeny/jp-ipv6.zone \
   --basic-auth-username caddy-admin \
   --basic-auth-hash-file /secure/operator-secrets/caddy-admin.bcrypt \
   --template infra/deploy/Caddyfile.vps-dogfood.example \

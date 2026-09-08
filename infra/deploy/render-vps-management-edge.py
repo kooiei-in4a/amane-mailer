@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Render the VPS Caddy edge from operator-provided GeoLite2 Country CSV files.
+"""Render the VPS Caddy edge from operator-provided IPdeny JP zone files.
 
-The renderer is deliberately stdlib-only and offline.  It consumes already downloaded
-GeoLite2 CSV files and an already generated bcrypt hash; it never contacts MaxMind and
-never accepts a plaintext password.  Only the derived Japan CIDRs and the bcrypt hash
-are written to the generated Caddyfile.
+The renderer is deliberately stdlib-only and offline. It consumes already downloaded
+IPv4/IPv6 zone files and an already generated bcrypt hash; it never downloads the zones
+and never accepts a plaintext password. Only normalized JP CIDRs and the bcrypt hash are
+written to the generated Caddyfile.
 
 Typical invocation::
 
     python3 infra/deploy/render-vps-management-edge.py \
-        --ipv4-blocks GeoLite2-Country-Blocks-IPv4.csv \
-        --ipv6-blocks GeoLite2-Country-Blocks-IPv6.csv \
-        --locations GeoLite2-Country-Locations-en.csv \
+        --ipv4-zone jp-aggregated-ipv4.zone \
+        --ipv6-zone jp-aggregated-ipv6.zone \
         --basic-auth-username caddy-admin \
         --basic-auth-hash-file /run/operator-secrets/caddy-admin.bcrypt \
         --template infra/deploy/Caddyfile.vps-dogfood.example \
@@ -23,7 +22,6 @@ Use ``--self-test`` for the offline renderer contract tests.
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
 import ipaddress
 import os
@@ -32,7 +30,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Sequence
 
 
 class RenderError(ValueError):
@@ -41,8 +39,6 @@ class RenderError(ValueError):
 
 _BCRYPT_RE = re.compile(r"\$2[aby]\$(?:0[4-9]|[12][0-9]|3[01])\$[./A-Za-z0-9]{53}\Z")
 _BASIC_AUTH_USERNAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
-_COUNTRY_CODE_RE = re.compile(r"[A-Z]{2}\Z")
-_UNKNOWN_GEONAME_VALUES = frozenset({"", "unknown", "null", "none", "-"})
 
 _IPV4_MARKER = "{{JP_IPV4_CIDRS}}"
 _IPV6_MARKER = "{{JP_IPV6_CIDRS}}"
@@ -77,131 +73,45 @@ class RenderedEdge:
         return hashlib.sha256(self.content_bytes).hexdigest()
 
 
-def _read_csv_rows(
-    path: Path,
-    required_columns: Iterable[str],
-    description: str,
-) -> Iterable[tuple[int, Mapping[str, str]]]:
-    """Yield normalized CSV rows without ever including row contents in errors."""
-
-    try:
-        handle = path.open("r", encoding="utf-8-sig", newline="")
-    except OSError as exc:
-        raise RenderError(f"unable to read {description} CSV") from exc
-
-    with handle:
-        try:
-            reader = csv.DictReader(handle, strict=True)
-            raw_fieldnames = reader.fieldnames
-        except (csv.Error, UnicodeError) as exc:
-            raise RenderError(f"malformed {description} CSV header") from exc
-
-        if not raw_fieldnames:
-            raise RenderError(f"{description} CSV header is missing")
-
-        normalized_fieldnames = [
-            field.strip() if field is not None else "" for field in raw_fieldnames
-        ]
-        if any(not field for field in normalized_fieldnames):
-            raise RenderError(f"{description} CSV header contains an empty column")
-        if len(set(normalized_fieldnames)) != len(normalized_fieldnames):
-            raise RenderError(f"{description} CSV header contains duplicate columns")
-
-        required = frozenset(required_columns)
-        missing = sorted(required.difference(normalized_fieldnames))
-        if missing:
-            raise RenderError(f"{description} CSV is missing a required column")
-
-        try:
-            for row_number, raw_row in enumerate(reader, start=2):
-                if None in raw_row:
-                    raise RenderError(f"malformed {description} CSV row")
-                if any(
-                    normalized in required and raw_row.get(original) is None
-                    for original, normalized in zip(raw_fieldnames, normalized_fieldnames)
-                ):
-                    raise RenderError(f"malformed {description} CSV row")
-                row = {
-                    normalized: (raw_row.get(original) or "").strip()
-                    for original, normalized in zip(raw_fieldnames, normalized_fieldnames)
-                }
-                yield row_number, row
-        except (csv.Error, UnicodeError) as exc:
-            raise RenderError(f"malformed {description} CSV row") from exc
-
-
-def _parse_location_id(value: str) -> int:
-    if not re.fullmatch(r"[0-9]+", value):
-        raise RenderError("malformed locations geoname mapping")
-    try:
-        parsed = int(value, 10)
-    except ValueError as exc:
-        raise RenderError("malformed locations geoname mapping") from exc
-    if parsed < 0:
-        raise RenderError("malformed locations geoname mapping")
-    return parsed
-
-
-def _parse_block_geoname_id(value: str) -> int | None:
-    """Return a usable block ID; empty/unknown block IDs are deliberately excluded."""
-
-    if value.casefold() in _UNKNOWN_GEONAME_VALUES or not re.fullmatch(r"[0-9]+", value):
-        return None
-    try:
-        parsed = int(value, 10)
-    except ValueError:
-        return None
-    return parsed if parsed >= 0 else None
-
-
-def load_country_mapping(path: Path | str) -> dict[int, str | None]:
-    """Load geoname_id -> country_iso_code, rejecting ambiguous mappings."""
-
-    mapping: dict[int, str | None] = {}
-    for _, row in _read_csv_rows(
-        Path(path),
-        ("geoname_id", "country_iso_code"),
-        "locations",
-    ):
-        geoname_id = _parse_location_id(row["geoname_id"])
-        country = row["country_iso_code"]
-        # GeoLite locations also contains continent/other aggregate rows with no country.
-        # Such rows are known but not JP; they remain fail-closed for block matching.
-        if country and not _COUNTRY_CODE_RE.fullmatch(country):
-            raise RenderError("malformed locations country mapping")
-
-        if geoname_id in mapping and mapping[geoname_id] != (country or None):
-            raise RenderError("conflicting geoname mapping")
-        mapping[geoname_id] = country or None
-    return mapping
-
-
-def _read_japan_networks(
+def _read_zone_networks(
     path: Path | str,
     expected_version: int,
-    country_mapping: Mapping[int, str | None],
 ) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Read a strict one-CIDR-per-line zone file for one address family."""
+
+    try:
+        contents = Path(path).read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        raise RenderError(f"unable to read IPv{expected_version} zone file") from exc
+
     networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
-    description = f"IPv{expected_version} blocks"
-    for _, row in _read_csv_rows(Path(path), ("network", "geoname_id"), description):
-        network_text = row["network"]
+    for line in contents.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        fields = stripped.split()
+        if len(fields) != 1:
+            raise RenderError(f"malformed IPv{expected_version} zone line")
+        network_text = fields[0]
         if (
             network_text.count("/") != 1
             or not re.fullmatch(r"[0-9]+", network_text.rsplit("/", 1)[1])
         ):
             raise RenderError(f"invalid IPv{expected_version} CIDR")
+
         try:
             network = ipaddress.ip_network(network_text, strict=True)
         except ValueError as exc:
             raise RenderError(f"invalid IPv{expected_version} CIDR") from exc
         if network.version != expected_version:
-            raise RenderError(f"IPv{expected_version} blocks contain the wrong address family")
+            raise RenderError(f"IPv{expected_version} zone contains the wrong address family")
         if network.prefixlen == 0:
             raise RenderError(f"IPv{expected_version} default route is not allowed")
+        networks.append(network)
 
-        geoname_id = _parse_block_geoname_id(row["geoname_id"])
-        if geoname_id is not None and country_mapping.get(geoname_id) == "JP":
-            networks.append(network)
+    if not networks:
+        raise RenderError(f"IPv{expected_version} zone contains no CIDRs")
     return networks
 
 
@@ -266,24 +176,24 @@ def _cidr_marker_replacement(template_text: str, marker: str, cidrs: Sequence[st
 
 
 def render_caddyfile(
-    ipv4_blocks: Path | str,
-    ipv6_blocks: Path | str,
-    locations: Path | str,
+    ipv4_zone: Path | str,
+    ipv6_zone: Path | str,
     template: Path | str,
     basic_auth_username: str,
     basic_auth_hash: str,
 ) -> RenderedEdge:
-    """Render a Caddy template from GeoLite-derived JP CIDRs and a bcrypt hash."""
+    """Render a Caddy template from IPdeny-derived JP CIDRs and a bcrypt hash."""
 
     validated_username = validate_basic_auth_username(basic_auth_username)
     validated_hash = validate_bcrypt_hash(basic_auth_hash)
-    country_mapping = load_country_mapping(locations)
-    ipv4_networks = _read_japan_networks(ipv4_blocks, 4, country_mapping)
-    ipv6_networks = _read_japan_networks(ipv6_blocks, 6, country_mapping)
+    ipv4_networks = _read_zone_networks(ipv4_zone, 4)
+    ipv6_networks = _read_zone_networks(ipv6_zone, 6)
     ipv4_cidrs = _collapse_networks(ipv4_networks, 4)
     ipv6_cidrs = _collapse_networks(ipv6_networks, 6)
-    if not ipv4_cidrs and not ipv6_cidrs:
-        raise RenderError("no JP CIDRs were found")
+    if not ipv4_cidrs:
+        raise RenderError("no IPv4 CIDRs were found")
+    if not ipv6_cidrs:
+        raise RenderError("no IPv6 CIDRs were found")
 
     try:
         template_text = Path(template).read_text(encoding="utf-8")
@@ -304,8 +214,8 @@ def render_caddyfile(
     for marker, value in replacements.items():
         rendered = rendered.replace(marker, value)
 
-    if any(marker in rendered for marker in _REQUIRED_MARKERS):
-        raise RenderError("Caddy template renderer markers remain after rendering")
+    if "{{" in rendered or "}}" in rendered:
+        raise RenderError("Caddy template contains an unresolved marker")
     return RenderedEdge(rendered, len(ipv4_cidrs), len(ipv6_cidrs))
 
 
@@ -343,60 +253,34 @@ def write_rendered_edge(output: Path | str, rendered: RenderedEdge) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--ipv4-blocks",
-        "--blocks-ipv4",
-        "--ipv4-csv",
-        "--ipv4-blocks-csv",
-        dest="ipv4_blocks",
-        help="GeoLite2 Country IPv4 blocks CSV",
+        "--ipv4-zone",
+        "--ipdeny-ipv4-zone",
+        dest="ipv4_zone",
+        help="IPdeny aggregated IPv4 zone file (one CIDR per line)",
     )
     parser.add_argument(
-        "--ipv6-blocks",
-        "--blocks-ipv6",
-        "--ipv6-csv",
-        "--ipv6-blocks-csv",
-        dest="ipv6_blocks",
-        help="GeoLite2 Country IPv6 blocks CSV",
+        "--ipv6-zone",
+        "--ipdeny-ipv6-zone",
+        dest="ipv6_zone",
+        help="IPdeny aggregated IPv6 zone file (one CIDR per line)",
     )
     parser.add_argument(
-        "--locations",
-        "--locations-csv",
-        "--locations-en-csv",
-        dest="locations",
-        help="GeoLite2 Country locations-en CSV",
-    )
-    hash_group = parser.add_mutually_exclusive_group()
-    hash_group.add_argument(
         "--basic-auth-hash-file",
-        "--basic-hash-file",
-        "--bcrypt-hash-file",
         dest="basic_auth_hash_file",
         help="file containing an already-generated bcrypt hash",
     )
-    hash_group.add_argument(
-        "--basic-auth-hash",
-        "--basic-auth-bcrypt-hash",
-        dest="basic_auth_hash",
-        help="already-generated bcrypt hash (a hash file is preferred)",
-    )
     parser.add_argument(
         "--basic-auth-username",
-        "--basic-username",
-        "--caddy-basic-auth-username",
         dest="basic_auth_username",
         help="non-secret username for the Caddy Basic Auth entry",
     )
     parser.add_argument(
         "--template",
-        "--caddy-template",
-        "--caddyfile-template",
         dest="template",
         help="Caddyfile template containing renderer markers",
     )
     parser.add_argument(
         "--output",
-        "--caddyfile",
-        "--output-caddyfile",
         dest="output",
         help="ignored generated Caddyfile path",
     )
@@ -450,32 +334,26 @@ def run_self_test(generated_output: Path | str | None = None) -> None:
 
     with tempfile.TemporaryDirectory(prefix="render-vps-management-edge-self-test-") as root:
         directory = Path(root)
-        ipv4 = directory / "GeoLite2-Country-Blocks-IPv4.csv"
-        ipv6 = directory / "GeoLite2-Country-Blocks-IPv6.csv"
-        locations = directory / "GeoLite2-Country-Locations-en.csv"
+        ipv4 = directory / "jp-ipv4.zone"
+        ipv6 = directory / "jp-ipv6.zone"
         template = directory / "Caddyfile.template"
         hash_file = directory / "caddy-admin.bcrypt"
 
-        _write_fixture(
-            locations,
-            "geoname_id,country_iso_code\n"
-            "1,JP\n"
-            "2,US\n"
-            "3,JP\n",
-        )
         ipv4_content = (
-            "network,geoname_id\n"
-            "198.51.100.0/25,1\n"
-            "198.51.100.0/25,1\n"
-            "198.51.100.128/25,1\n"
-            "203.0.113.0/24,2\n"
-            "203.0.114.0/24,999999\n"
+            "\n"
+            "  \n"
+            "203.0.113.128/25\n"
+            "198.51.100.128/25\n"
+            "198.51.100.0/25\n"
+            "198.51.100.0/25\n"
+            "203.0.113.0/25\n"
         )
         ipv6_content = (
-            "network,geoname_id\n"
-            "2001:db8:1::/65,1\n"
-            "2001:db8:1:0:8000::/65,1\n"
-            "2001:db8:2::/64,3\n"
+            "\n"
+            "2001:db8:2::/64\n"
+            "2001:db8:1:0:8000::/65\n"
+            "2001:db8:1::/65\n"
+            "2001:db8:1::/65\n"
         )
         _write_fixture(ipv4, ipv4_content)
         _write_fixture(ipv6, ipv6_content)
@@ -483,57 +361,27 @@ def run_self_test(generated_output: Path | str | None = None) -> None:
         _write_fixture(hash_file, bcrypt_hash + "\n")
         assert _read_bcrypt_hash_file(hash_file) == bcrypt_hash, "bcrypt hash file read failed"
 
-        first = render_caddyfile(
-            ipv4,
-            ipv6,
-            locations,
-            template,
-            basic_auth_username,
-            bcrypt_hash,
-        )
-        _write_fixture(ipv4, "network,geoname_id\n" + "".join(reversed(ipv4_content.splitlines(True)[1:])))
-        _write_fixture(ipv6, "network,geoname_id\n" + "".join(reversed(ipv6_content.splitlines(True)[1:])))
-        second = render_caddyfile(
-            ipv4,
-            ipv6,
-            locations,
-            template,
-            basic_auth_username,
-            bcrypt_hash,
-        )
+        first = render_caddyfile(ipv4, ipv6, template, basic_auth_username, bcrypt_hash)
+        _write_fixture(ipv4, "\n".join(reversed(ipv4_content.splitlines())) + "\n")
+        _write_fixture(ipv6, "\n".join(reversed(ipv6_content.splitlines())) + "\n")
+        second = render_caddyfile(ipv4, ipv6, template, basic_auth_username, bcrypt_hash)
 
         assert first.content == second.content, "output is not deterministic"
-        assert first.ipv4_count == 1, "duplicate/collapse did not produce one IPv4 CIDR"
-        assert first.ipv6_count == 2, "IPv6 JP CIDR count is incorrect"
-        assert "198.51.100.0/24" in first.content, "IPv4 collapse is missing"
-        assert "203.0.113.0/24" not in first.content, "non-JP range was included"
-        assert "203.0.114.0/24" not in first.content, "unknown geoname range was included"
+        assert first.ipv4_count == 2, "duplicate/adjacent collapse did not produce two IPv4 CIDRs"
+        assert first.ipv6_count == 2, "IPv6 duplicate/adjacent collapse did not produce two CIDRs"
+        assert first.content.count("198.51.100.0/24") == 1, "IPv4 duplicate was retained"
+        assert first.content.count("2001:db8:1::/64") == 1, "IPv6 duplicate was retained"
+        assert "203.0.113.0/24" in first.content, "IPv4 adjacent collapse is missing"
+        assert "2001:db8:2::/64" in first.content, "IPv6 CIDR is missing"
+        assert first.content.index("198.51.100.0/24") < first.content.index("203.0.113.0/24")
         assert bcrypt_hash in first.content, "bcrypt hash is missing from output"
         assert plaintext_secret not in first.content, "plaintext fixture secret was rendered"
-        assert "geoname_id" not in first.content, "raw GeoLite column was rendered"
-        assert "country_iso_code" not in first.content, "raw GeoLite column was rendered"
-
-        fallback_blocks = directory / "fallback-blocks.csv"
-        _write_fixture(
-            fallback_blocks,
-            "network,geoname_id,registered_country_geoname_id,represented_country_geoname_id\n"
-            "203.0.115.0/24,,1,1\n",
-        )
-        fallback_rendered = render_caddyfile(
-            fallback_blocks,
-            ipv6,
-            locations,
-            template,
-            basic_auth_username,
-            bcrypt_hash,
-        )
-        assert "203.0.115.0/24" not in fallback_rendered.content, "fallback geonames were used"
+        assert "{{" not in first.content and "}}" not in first.content
 
         repository_template = Path(__file__).with_name("Caddyfile.vps-dogfood.example")
         repository_rendered = render_caddyfile(
             ipv4,
             ipv6,
-            locations,
             repository_template,
             basic_auth_username,
             bcrypt_hash,
@@ -542,12 +390,8 @@ def run_self_test(generated_output: Path | str | None = None) -> None:
         assert "remote_ip 2001:db8:1::/64" in repository_rendered.content
         assert "remote_ip 2001:db8:2::/64" in repository_rendered.content
         assert "header_up -Authorization" in repository_rendered.content
-        assert basic_auth_username in repository_rendered.content
         assert basic_auth_username + " " + bcrypt_hash in repository_rendered.content
-        assert "{{JP_IPV4_CIDRS}}" not in repository_rendered.content
-        assert "{{JP_IPV6_CIDRS}}" not in repository_rendered.content
-        assert "{{CADDY_BASIC_AUTH_USERNAME}}" not in repository_rendered.content
-        assert "{{CADDY_BASIC_AUTH_BCRYPT_HASH}}" not in repository_rendered.content
+        assert "{{" not in repository_rendered.content and "}}" not in repository_rendered.content
 
         for invalid_username in ("", " ", "caddy admin", "caddy\nadmin", "caddy{admin}"):
             _expect_render_error(
@@ -555,140 +399,172 @@ def run_self_test(generated_output: Path | str | None = None) -> None:
                 lambda invalid_username=invalid_username: render_caddyfile(
                     ipv4,
                     ipv6,
-                    locations,
                     template,
                     invalid_username,
                     bcrypt_hash,
                 ),
             )
 
-        locations_us = directory / "locations-us.csv"
-        _write_fixture(locations_us, "geoname_id,country_iso_code\n2,US\n")
+        missing_zone = directory / "missing.zone"
         _expect_render_error(
-            "zero JP ranges",
+            "missing IPv4 zone",
             lambda: render_caddyfile(
-                ipv4,
+                missing_zone,
                 ipv6,
-                locations_us,
                 template,
                 basic_auth_username,
                 bcrypt_hash,
             ),
         )
-
-        invalid_cidr = directory / "invalid-cidr.csv"
-        _write_fixture(invalid_cidr, "network,geoname_id\nnot-a-cidr,1\n")
+        invalid_cidr = directory / "invalid-cidr.zone"
+        _write_fixture(invalid_cidr, "not-a-cidr\n")
         _expect_render_error(
             "invalid CIDR",
             lambda: render_caddyfile(
                 invalid_cidr,
                 ipv6,
-                locations,
                 template,
                 basic_auth_username,
                 bcrypt_hash,
             ),
         )
-        default_ipv4 = directory / "default-ipv4.csv"
-        _write_fixture(default_ipv4, "network,geoname_id\n0.0.0.0/0,1\n")
+        default_ipv4 = directory / "default-ipv4.zone"
+        _write_fixture(default_ipv4, "0.0.0.0/0\n")
         _expect_render_error(
             "IPv4 default route",
             lambda: render_caddyfile(
                 default_ipv4,
                 ipv6,
-                locations,
                 template,
                 basic_auth_username,
                 bcrypt_hash,
             ),
         )
-        default_ipv6 = directory / "default-ipv6.csv"
-        _write_fixture(default_ipv6, "network,geoname_id\n::/0,1\n")
+        default_ipv6 = directory / "default-ipv6.zone"
+        _write_fixture(default_ipv6, "::/0\n")
         _expect_render_error(
             "IPv6 default route",
             lambda: render_caddyfile(
                 ipv4,
                 default_ipv6,
-                locations,
                 template,
                 basic_auth_username,
                 bcrypt_hash,
             ),
         )
 
-        missing_blocks_column = directory / "missing-block-column.csv"
-        _write_fixture(missing_blocks_column, "network\n198.51.100.0/24\n")
+        empty_ipv4 = directory / "empty-ipv4.zone"
+        _write_fixture(empty_ipv4, "\n \t\n")
         _expect_render_error(
-            "missing blocks column",
+            "empty IPv4 zone",
             lambda: render_caddyfile(
-                missing_blocks_column,
+                empty_ipv4,
                 ipv6,
-                locations,
                 template,
                 basic_auth_username,
                 bcrypt_hash,
             ),
         )
-        missing_locations_column = directory / "missing-locations-column.csv"
-        _write_fixture(missing_locations_column, "geoname_id\n1\n")
+        empty_ipv6 = directory / "empty-ipv6.zone"
+        _write_fixture(empty_ipv6, "\n \t\n")
         _expect_render_error(
-            "missing locations column",
+            "empty IPv6 zone",
+            lambda: render_caddyfile(
+                ipv4,
+                empty_ipv6,
+                template,
+                basic_auth_username,
+                bcrypt_hash,
+            ),
+        )
+        wrong_family_ipv4 = directory / "wrong-family-ipv4.zone"
+        _write_fixture(wrong_family_ipv4, "2001:db8::/64\n")
+        _expect_render_error(
+            "wrong IPv4 family",
+            lambda: render_caddyfile(
+                wrong_family_ipv4,
+                ipv6,
+                template,
+                basic_auth_username,
+                bcrypt_hash,
+            ),
+        )
+        wrong_family_ipv6 = directory / "wrong-family-ipv6.zone"
+        _write_fixture(wrong_family_ipv6, "198.51.100.0/24\n")
+        _expect_render_error(
+            "wrong IPv6 family",
+            lambda: render_caddyfile(
+                ipv4,
+                wrong_family_ipv6,
+                template,
+                basic_auth_username,
+                bcrypt_hash,
+            ),
+        )
+        extra_token = directory / "extra-token.zone"
+        _write_fixture(extra_token, "198.51.100.0/24 # comment\n")
+        _expect_render_error(
+            "extra token or comment",
+            lambda: render_caddyfile(
+                extra_token,
+                ipv6,
+                template,
+                basic_auth_username,
+                bcrypt_hash,
+            ),
+        )
+
+        missing_marker_template = directory / "missing-marker.template"
+        _write_fixture(missing_marker_template, template_text.replace(_IPV4_MARKER, ""))
+        _expect_render_error(
+            "missing template marker",
             lambda: render_caddyfile(
                 ipv4,
                 ipv6,
-                missing_locations_column,
-                template,
+                missing_marker_template,
+                basic_auth_username,
+                bcrypt_hash,
+            ),
+        )
+        duplicate_marker_template = directory / "duplicate-marker.template"
+        _write_fixture(
+            duplicate_marker_template,
+            template_text.replace(_IPV4_MARKER, _IPV4_MARKER + "\n        " + _IPV4_MARKER),
+        )
+        _expect_render_error(
+            "duplicate template marker",
+            lambda: render_caddyfile(
+                ipv4,
+                ipv6,
+                duplicate_marker_template,
+                basic_auth_username,
+                bcrypt_hash,
+            ),
+        )
+        unresolved_marker_template = directory / "unresolved-marker.template"
+        _write_fixture(unresolved_marker_template, template_text + "\n{{UNRESOLVED_MARKER}}\n")
+        _expect_render_error(
+            "unresolved template marker",
+            lambda: render_caddyfile(
+                ipv4,
+                ipv6,
+                unresolved_marker_template,
                 basic_auth_username,
                 bcrypt_hash,
             ),
         )
         _expect_render_error(
             "missing Basic Auth hash",
-            lambda: render_caddyfile(
-                ipv4,
-                ipv6,
-                locations,
-                template,
-                basic_auth_username,
-                "",
-            ),
+            lambda: render_caddyfile(ipv4, ipv6, template, basic_auth_username, ""),
         )
         _expect_render_error(
             "invalid Basic Auth hash",
             lambda: render_caddyfile(
                 ipv4,
                 ipv6,
-                locations,
                 template,
                 basic_auth_username,
                 "plain-password",
-            ),
-        )
-
-        malformed_locations = directory / "malformed-locations.csv"
-        _write_fixture(malformed_locations, "geoname_id,country_iso_code\nnot-an-id,JP\n")
-        _expect_render_error(
-            "malformed locations mapping",
-            lambda: render_caddyfile(
-                ipv4,
-                ipv6,
-                malformed_locations,
-                template,
-                basic_auth_username,
-                bcrypt_hash,
-            ),
-        )
-        conflicting_locations = directory / "conflicting-locations.csv"
-        _write_fixture(conflicting_locations, "geoname_id,country_iso_code\n1,JP\n1,US\n")
-        _expect_render_error(
-            "conflicting geoname mapping",
-            lambda: render_caddyfile(
-                ipv4,
-                ipv6,
-                conflicting_locations,
-                template,
-                basic_auth_username,
-                bcrypt_hash,
             ),
         )
 
@@ -705,12 +581,10 @@ def run_self_test(generated_output: Path | str | None = None) -> None:
         with contextlib.redirect_stdout(summary):
             exit_code = _run(
                 [
-                    "--ipv4-blocks",
+                    "--ipv4-zone",
                     str(ipv4),
-                    "--ipv6-blocks",
+                    "--ipv6-zone",
                     str(ipv6),
-                    "--locations",
-                    str(locations),
                     "--basic-auth-username",
                     basic_auth_username,
                     "--basic-auth-hash-file",
@@ -744,28 +618,21 @@ def _run(argv: Sequence[str] | None = None) -> int:
         parser.error("--self-test-output requires --self-test")
 
     required = {
-        "--ipv4-blocks": args.ipv4_blocks,
-        "--ipv6-blocks": args.ipv6_blocks,
-        "--locations": args.locations,
+        "--ipv4-zone": args.ipv4_zone,
+        "--ipv6-zone": args.ipv6_zone,
+        "--basic-auth-hash-file": args.basic_auth_hash_file,
         "--basic-auth-username": args.basic_auth_username,
         "--template": args.template,
         "--output": args.output,
     }
     missing = [name for name, value in required.items() if not value]
-    if not args.basic_auth_hash_file and not args.basic_auth_hash:
-        missing.append("--basic-auth-hash-file or --basic-auth-hash")
     if missing:
         parser.error("missing required argument(s): " + ", ".join(missing))
 
-    basic_hash = (
-        _read_bcrypt_hash_file(args.basic_auth_hash_file)
-        if args.basic_auth_hash_file
-        else validate_bcrypt_hash(args.basic_auth_hash)
-    )
+    basic_hash = _read_bcrypt_hash_file(args.basic_auth_hash_file)
     rendered = render_caddyfile(
-        args.ipv4_blocks,
-        args.ipv6_blocks,
-        args.locations,
+        args.ipv4_zone,
+        args.ipv6_zone,
         args.template,
         args.basic_auth_username,
         basic_hash,

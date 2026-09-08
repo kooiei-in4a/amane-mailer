@@ -28,7 +28,7 @@ edge の path contract は次の通りです。
 | Path | Caddy edge boundary | Mailer へ渡す認証 |
 |---|---|---|
 | `/api/*`、`/healthz`、`/readyz` | public | path に応じた既存の認証 |
-| `/admin`、`/admin/*`、`/setup`、`/setup/*` | GeoLite2 の JP CIDR **かつ** Caddy Basic Auth | Caddy の `Authorization` は除去し、Mailer 自身の Admin/Setup 認証を維持 |
+| `/admin`、`/admin/*`、`/setup`、`/setup/*` | IPdeny aggregated JP CIDR **かつ** Caddy Basic Auth | Caddy の `Authorization` は除去し、Mailer 自身の Admin/Setup 認証を維持 |
 | `/metrics` | `MAILER_MANAGEMENT_ALLOWED_CIDRS` の operator CIDR | 既存の Mailer metrics bearer |
 | その他 | 404 | upstream へ渡さない |
 
@@ -45,7 +45,7 @@ Admin/Setup は、JP CIDR に一致しない場合は Basic Auth challenge を�
 - 専用 network は ACS と Caddy ACME の outbound 通信が必要なため Docker の
   `internal: true` にはしていません。参加 service は `proxy` と `mailer` に限定し、
   host port は proxy だけにします。
-- Caddy の `/admin` と `/setup` は、renderer が GeoLite2 Country CSV から導出した JP
+- Caddy の `/admin` と `/setup` は、renderer が IPdeny aggregated JP zone から導出した JP
   IPv4/IPv6 CIDR と Caddy Basic Auth の両方を要求します。JP 以外には challenge 前に 404
   を返し、成功した Caddy Basic credential は `header_up -Authorization` で Mailer に渡しません。
 - `/metrics` は既存の `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator restriction と Mailer の
@@ -67,7 +67,7 @@ proxy から受ける request の `Connection.LocalIpAddress`（この profile �
 Docker Engine と Compose plugin（`!override` と `!reset` をサポートするバージョン）、公開 DNS、host firewall の設定は事前に用意します。
 Mailer は Docker や firewall、DNS、TLS account を自動設定しません。
 
-`infra/deploy` で `.env` を作成します。Caddyfile は単純にコピーせず、GeoLite2 と hash を
+`infra/deploy` で `.env` を作成します。Caddyfile は単純にコピーせず、IPdeny zone と hash を
 入力に renderer で生成します。
 
 ```bash
@@ -117,52 +117,73 @@ placeholder を設定する必要はありません。
 
 ### Caddy edge artifact の生成
 
-real GeoLite2 Country CSV からの candidate 生成は operator または `agent-dev01` 側だけで行います。
-renderer は MaxMind へ接続せず、download、license key、account ID を扱いません。次の入力は
-operator / `agent-dev01` の secure input path にだけ置き、VPS へ置きません。
+IPdeny の aggregated JP zone は operator または `agent-dev01` 側で HTTPS 取得します。
+renderer 自身は download を行わず、zone の入力・parse・validate・normalize・collapse と
+Caddy candidate の生成だけを offline で行います。canonical source は次の2つです。
 
-- GeoLite raw CSV（IPv4 blocks、IPv6 blocks、locations-en）
-- MaxMind account ID / license key
-- bcrypt input hash file
-- plaintext Basic Auth password
+- IPv4: `https://www.ipdeny.com/ipblocks/data/aggregated/jp-aggregated.zone`
+- IPv6: `https://www.ipdeny.com/ipv6/ipaddresses/aggregated/jp-aggregated.zone`
 
-VPS へ渡してよいのは、別途承認された後の generated Caddy candidate と、値を含まない
-IPv4/IPv6 CIDR count、bytes、SHA-256 だけです。実 password の生成や実 hash の作成はこの
-source stage では行いません。以下の `operator_input_dir` と `caddy_hash_file` は operator /
-`agent-dev01` 側だけの path であり、`/srv/platform/edge` ではありません。
+zone は operator / `agent-dev01` の secure runtime workspace にだけ置き、VPS や Git へ
+転送・commit しません。取得時は source URL、download timestamp、input bytes、input SHA-256 を
+provenance metadata として記録します。HTTP `Last-Modified` が返る場合は
+記録してよいものとし、header がないことだけでは fail にしません。
 
 ```bash
 # Run on operator / agent-dev01
-operator_input_dir='/path/on/operator-or-agent-dev01/geolite/current'
+set -Eeuo pipefail
+umask 077
+operator_input_dir='/path/on/operator-or-agent-dev01/ipdeny/current'
 caddy_hash_file='/path/on/operator-or-agent-dev01/caddy-admin.bcrypt'
+mkdir -p "$operator_input_dir"
+ipv4_url='https://www.ipdeny.com/ipblocks/data/aggregated/jp-aggregated.zone'
+ipv6_url='https://www.ipdeny.com/ipv6/ipaddresses/aggregated/jp-aggregated.zone'
+ipv4_headers="$operator_input_dir/jp-ipv4.headers"
+ipv6_headers="$operator_input_dir/jp-ipv6.headers"
+
+curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+  --output "$operator_input_dir/jp-ipv4.zone" --dump-header "$ipv4_headers" "$ipv4_url"
+curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+  --output "$operator_input_dir/jp-ipv6.zone" --dump-header "$ipv6_headers" "$ipv6_url"
+
+download_timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+{
+  printf 'ipv4_url: %s\nipv6_url: %s\ndownload_timestamp: %s\n' "$ipv4_url" "$ipv6_url" "$download_timestamp"
+  printf 'ipv4_bytes: '; stat -c '%s' "$operator_input_dir/jp-ipv4.zone"
+  printf 'ipv4_sha256: '; sha256sum "$operator_input_dir/jp-ipv4.zone" | awk '{print $1}'
+  printf 'ipv6_bytes: '; stat -c '%s' "$operator_input_dir/jp-ipv6.zone"
+  printf 'ipv6_sha256: '; sha256sum "$operator_input_dir/jp-ipv6.zone" | awk '{print $1}'
+  printf 'ipv4_last_modified: '; awk 'BEGIN {IGNORECASE=1} /^Last-Modified:/ {sub(/^[^:]*:[[:space:]]*/, ""); print; exit}' "$ipv4_headers"
+  printf 'ipv6_last_modified: '; awk 'BEGIN {IGNORECASE=1} /^Last-Modified:/ {sub(/^[^:]*:[[:space:]]*/, ""); print; exit}' "$ipv6_headers"
+} > "$operator_input_dir/provenance.txt"
 
 python3 render-vps-management-edge.py \
-  --ipv4-blocks "${operator_input_dir}/GeoLite2-Country-Blocks-IPv4.csv" \
-  --ipv6-blocks "${operator_input_dir}/GeoLite2-Country-Blocks-IPv6.csv" \
-  --locations "${operator_input_dir}/GeoLite2-Country-Locations-en.csv" \
+  --ipv4-zone "$operator_input_dir/jp-ipv4.zone" \
+  --ipv6-zone "$operator_input_dir/jp-ipv6.zone" \
   --basic-auth-username caddy-admin \
-  --basic-auth-hash-file "${caddy_hash_file}" \
+  --basic-auth-hash-file "$caddy_hash_file" \
   --template Caddyfile.vps-dogfood.example \
   --output ./Caddyfile.vps-dogfood.candidate
 ```
 
 `caddy-admin` は非秘密の例です。deploymentごとに選んだ username を渡します。空白、改行、
-Caddyfile token injection になる文字を含む username は renderer が拒否します。
+Caddyfile token injection になる文字を含む username は renderer が拒否します。各 zone は one CIDR per line
+(1行1 CIDR) とし、空白だけの行だけを無視します。コメント、extra token、invalid CIDR、wrong address family、
+IPv4/IPv6 の `/0`、missing/empty zone、または片方の CIDR 0件は fail-closed
+で停止します。重複削除・隣接 CIDR collapse と数値順の deterministic output を行い、hash の
+値や zone contents はログ・summary に表示しません。
 
-`Caddyfile.vps-dogfood` は `.gitignore` 済みの runtime artifact です。renderer は
-`network.geoname_id → locations.geoname_id → country_iso_code == JP` の経路だけを使い、
-`registered_country_geoname_id` と `represented_country_geoname_id` へ fallback しません。
-empty/unknown geoname は JP とせず、CIDR 0件、invalid/default CIDR、必須列欠落、conflicting
-mapping、空/invalid hash は fail-closed で停止します。出力へ GeoLite raw CSV は保存せず、
-hash の値もログや summary に表示しません。
+`Caddyfile.vps-dogfood` は `.gitignore` 済みの runtime artifact です。VPS へ渡してよいのは、
+別途承認された generated Caddy candidate と、値を含まない IPv4/IPv6 CIDR count、bytes、
+SHA-256 だけです。実 password の生成や実 hash の作成はこの source stage では行いません。
 
 ### Caddy Basic Auth の credential boundary
 
 実運用では、Caddy Basic Auth password は password manager または承認済みの CSPRNG で十分に
 強いランダム値を新規生成します。この rework では実 password や実 hash を生成しません。
 生成した Caddy Basic Auth password は Mailer Admin password、Setup bootstrap token と別の
-資格情報にし、どの値も再利用しません。MaxMind / GeoLite の download credential、account ID、
-license key とも無関係です。
+資格情報にし、どの値も再利用しません。IPdeny zone の取得環境・provenance metadata とも
+分離して扱います。
 
 - `Caddyfile` の Basic Auth credential material は bcrypt hash のみです。plaintext password を
   repository、production `Caddyfile`、`.env`、Issue、log のいずれにも保存しません。
@@ -182,15 +203,15 @@ license key とも無関係です。
 
 | context | 実行内容 | boundary |
 | --- | --- | --- |
-| A. OPERATOR / agent-dev01 | GeoLite inputs、bcrypt hash input、renderer、operator-side candidate、CIDR counts、bytes、SHA-256 | raw GeoLite CSV と bcrypt input hash はここにだけ残す。VPSへ送らない。 |
+| A. OPERATOR / agent-dev01 | IPdeny zone inputs、provenance metadata、bcrypt hash input、renderer、operator-side candidate、CIDR counts、bytes、SHA-256 | raw IPdeny zone と bcrypt input hash はここにだけ残す。VPSへ送らない。 |
 | B. REMOTE VPS READ-ONLY | deploy user の SSH 内で Compose label resolution、container inspect、image/version/mount確認、read-only stat、stdin pre-validation | remote VPS read-only body の docker ps、docker inspect、docker exec だけ。production mutation はしない。 |
 | C. REMOTE VPS PRIVILEGED LIVE MUTATION | Human approval 後の backup、same-inode write、SHA guards、validate、reload、rollback | interactive sudo approval 後の explicit Bash transaction 内だけ。sudoers、SSH、root login は変更しない。 |
 
 Pre-validation までは candidate は operator に保持し、candidate bytes を SSH stdin stream で remote process に渡します。
 この段階は production mutation=false、candidate file persisted on VPS=false、sudo不要です。Human approval 後の
 live mutation では、generated Caddyfile candidate only を deploy user の temporary location へ転送します。
-PERSISTENT_VPS_STAGING_REQUIRED=false、TEMPORARY_VPS_CANDIDATE_REQUIRED=true です。raw GeoLite data、MaxMind
-credential、bcrypt input hash file、plaintext password は VPS へ転送しません。GeoLite raw data transferred=false、
+PERSISTENT_VPS_STAGING_REQUIRED=false、TEMPORARY_VPS_CANDIDATE_REQUIRED=true です。raw IPdeny zone data、
+bcrypt input hash file、plaintext password は VPS へ転送しません。IPdeny raw data transferred=false、
 bcrypt input file transferred=false です。
 
 Fresh topology は Compose project=amane-platform-edge、service=proxy、current
@@ -199,22 +220,21 @@ mount source=/srv/platform/edge/Caddyfile、destination=/etc/caddy/Caddyfile、R
 pinned Caddy 2.10.2 です。observed container name は参考値で、毎回 label から exactly one に
 resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 is Fresh baseline only です。
 
-1. **OPERATOR / agent-dev01 で candidate を生成する。** raw GeoLite CSV、MaxMind credential、
-   bcrypt input hash file、plaintext password は VPS に置きません。production Caddyfile はこの段階で
+1. **OPERATOR / agent-dev01 で candidate を生成する。** raw IPdeny zone、bcrypt input hash file、
+   plaintext password は VPS に置きません。production Caddyfile はこの段階で
    変更しません。
 
    ~~~bash
    # Run on operator / agent-dev01
    set -Eeuo pipefail
    umask 077
-   operator_input_dir=/path/on/operator-or-agent-dev01/geolite/current
+   operator_input_dir=/path/on/operator-or-agent-dev01/ipdeny/current
    caddy_hash_file=/path/on/operator-or-agent-dev01/caddy-admin.bcrypt
    candidate=$PWD/infra/deploy/Caddyfile.vps-dogfood
    render_record=$PWD/caddy-render.txt
    python3 infra/deploy/render-vps-management-edge.py \
-     --ipv4-blocks "$operator_input_dir/GeoLite2-Country-Blocks-IPv4.csv" \
-     --ipv6-blocks "$operator_input_dir/GeoLite2-Country-Blocks-IPv6.csv" \
-     --locations "$operator_input_dir/GeoLite2-Country-Locations-en.csv" \
+     --ipv4-zone "$operator_input_dir/jp-ipv4.zone" \
+     --ipv6-zone "$operator_input_dir/jp-ipv6.zone" \
      --basic-auth-username caddy-admin \
      --basic-auth-hash-file "$caddy_hash_file" \
      --template infra/deploy/Caddyfile.vps-dogfood.example \
@@ -287,8 +307,8 @@ resolve します。Fresh baseline の root:root / 0644 は参考値で、0644 i
 5. **Human approval 後にだけ temporary candidate を VPS へ転送する。** Source Stage approval、renderer
    self-test、CI、stdin validation PASS は live approval ではありません。digest、counts、bytes、hostname、
    executor、rollback owner、SSH rollback session を確認し、欠落や digest 変更なら STOP します。VPS へ
-   転送してよいのは generated Caddyfile candidate only です。GeoLite raw CSV、MaxMind account ID / license
-   key、bcrypt input hash file、plaintext Basic Auth password、Mailer Admin password、Setup bootstrap token
+   転送してよいのは generated Caddyfile candidate only です。IPdeny raw zone、provenance metadata、
+   bcrypt input hash file、plaintext Basic Auth password、Mailer Admin password、Setup bootstrap token
    は転送しません。candidate には bcrypt hash が含まれるため protected file として扱います。
 
    temporary location は deploy user が安全に書ける `$HOME/.amane-caddy-744.XXXXXX` を使います。`umask 077`
@@ -630,8 +650,8 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
    failure なら SSH を維持して STOP し、operator に escalate します。inode drift は path を置換せず
    STOP します。rollback success を確認してから temporary candidate cleanup を行います。
 
-11. **fail-closed と既存 security contract。** GeoLite download / render / validate / update は operator
-   側だけで行い、raw CSV、MaxMind credential、bcrypt input hash file、plaintext password を VPS に
+11. **fail-closed と既存 security contract。** IPdeny download / render / validate / update は operator
+   側だけで行い、raw IPdeny zone、provenance metadata、bcrypt input hash file、plaintext password を VPS に
    置きません。空 CIDR、default route、allow-all (0.0.0.0/0 / ::/0) へ fallback しません。
    /admin /setup は JP CIDR + Caddy Basic Auth + Mailer own auth、non-JP/unknown は challenge 前の
    404、/metrics は MAILER_MANAGEMENT_ALLOWED_CIDRS、/api/* /healthz /readyz は public、Caddy
@@ -707,7 +727,7 @@ management route の `/admin` から利用します。
 
 - public consumer request は `https://MAILER_PUBLIC_HOSTNAME/api/...` を使います。
   backend の Docker name/port を consumer の public contract にしません。
-- `/admin` と `/setup` は GeoLite2-derived JP CIDR と Caddy Basic Auth の両方を要求します。
+- `/admin` と `/setup` は IPdeny-derived JP CIDR と Caddy Basic Auth の両方を要求します。
   non-JP には Basic challenge 前に 404 を返します。これだけに依存せず、VPN/firewall/SSH
   tunnel と instance owner の認証も組み合わせます。Mailer application 単体で public Admin
   を安全にする構成ではありません。

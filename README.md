@@ -119,13 +119,13 @@ manual / compatibility path では、実 tenant JSON を deploy-time input と�
 - VPS managed-v2 env template: `infra/deploy/.env.vps-dogfood.example`
 - Tenant schema: `config/mailer/tenants.schema.json`
 
-VPS で Caddy 配下の HTTPS、Mailer backend 非公開、GeoLite2 JP CIDR と Caddy Basic Auth による
+VPS で Caddy 配下の HTTPS、Mailer backend 非公開、IPdeny JP CIDR と Caddy Basic Auth による
 Admin / Setup の operator-only edge restriction を使う #744 profile は
 [`vps-dogfood-deployment.md`](docs/ops/vps-dogfood-deployment.md) と
 [`Caddyfile.vps-dogfood.example`](infra/deploy/Caddyfile.vps-dogfood.example) を参照してください。
 profile は `compose.vps-dogfood.yml` を overlay し、Caddy の 80/443 だけを host に publish します。
 `/metrics` は `MAILER_MANAGEMENT_ALLOWED_CIDRS` の既存 operator boundary を維持します。
-GeoLite2 CSV と既生成 bcrypt hash から ignored Caddy artifact を作る renderer は
+IPdeny aggregated JP zone files と既生成 bcrypt hash から ignored Caddy artifact を作る renderer は
 [`render-vps-management-edge.py`](infra/deploy/render-vps-management-edge.py) です。
 この profile の初回 migration / setup では `tenants.json` と `MAIL_SERVICE_TOKEN*` を設定しません。
 managed-v2 の障害復旧では [`バックアップ運用`](docs/ops/backup-operations.md) の
