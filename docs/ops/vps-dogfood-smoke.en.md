@@ -36,7 +36,9 @@ these edge and regression checks:
 - JP / non-JP edge (the JP allow-list and the pre-challenge non-JP 404)
 - Caddy Basic Auth fail/success boundary
 - Mailer's own authentication boundary
-- `/api` regression
+- `/api` regression (from Issue #753 on, `/api` is JP allow-list only too: a JP source
+  forwards its Bearer / API key to Mailer unchanged, and non-JP / undecidable sources
+  get a 404 with no Basic challenge)
 - backend `:8080` unreachable from the host/public network
 - SSH login and the SSH rollback path
 

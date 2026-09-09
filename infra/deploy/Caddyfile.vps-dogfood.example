@@ -1,4 +1,4 @@
-# Caddy reference edge template for the VPS dogfood deployment (Issue #744 / Source Stage).
+# Caddy reference edge template for the VPS dogfood deployment (Issue #744 / Issue #753).
 #
 # The renderer fills the JP CIDR and bcrypt markers into the ignored runtime artifact
 # Caddyfile.vps-dogfood. It consumes operator-provided IPdeny aggregated JP zone files only; it does
@@ -6,21 +6,26 @@
 # for a real hostname. DNS, firewall rules, and the public TLS account remain operator-owned.
 #
 # MAILER_MANAGEMENT_ALLOWED_CIDRS remains the operator-only boundary for /metrics. It is not the
-# browser Admin/Setup allow-list; that list is derived from IPdeny JP zones and rendered below.
+# Japan allow-list; that list is derived from IPdeny JP zones and rendered into @jp below.
 
 {$MAILER_PUBLIC_HOSTNAME} {
 	# Caddy's automatic HTTPS redirects HTTP to HTTPS for this named site.
 
 	# The renderer replaces the two CIDR markers with deterministic, collapsed IPdeny ranges.
 	# Each range becomes its own remote_ip line so the Caddyfile has no unbounded line.
-	# This matcher intentionally excludes /metrics: its existing operator restriction is separate.
-	@browser_jp {
-		path /admin /admin/* /setup /setup/*
+	# @jp is the single Japan allow-list. It is IP-only and is reused by the browser
+	# management surface (/admin, /setup) and by the consumer API (/api). Defining it once keeps
+	# the JP CIDR data from being duplicated. It intentionally does not cover /metrics: that
+	# operator restriction is separate and must not be widened to Japan as a whole.
+	@jp {
 		{{JP_IPV4_CIDRS}}
 		{{JP_IPV6_CIDRS}}
 	}
 	@browser_family {
 		path /admin /admin/* /setup /setup/*
+	}
+	@api_family {
+		path /api /api/*
 	}
 	@metrics_operator {
 		path /metrics
@@ -29,35 +34,53 @@
 	@metrics {
 		path /metrics
 	}
-	@public path /api/* /healthz /readyz
+	@public path /healthz /readyz
 
-	# Keep route order explicit: the JP+Basic route must be selected before the path-only 404,
-	# and all of these handlers must remain mutually exclusive.
+	# Keep route order explicit and every handler mutually exclusive. Each path family is claimed
+	# by exactly one outer handle, so a non-JP or undecidable request can never fall through to a
+	# later handler, reach the upstream, or change the fallback response.
 	route {
-		# The edge Basic Auth is an additional gate. A successful edge login is not Mailer's own
-		# Admin/Setup authentication; both layers remain enabled.
-		handle @browser_jp {
-			basic_auth {
-				{{CADDY_BASIC_AUTH_USERNAME}} {{CADDY_BASIC_AUTH_BCRYPT_HASH}}
-			}
-			reverse_proxy mailer:8080 {
-				# Never pass Caddy's Basic Authorization header to Mailer. Mailer retains its own
-				# Admin/Setup authentication and session boundary.
-				header_up -Authorization
-				# Caddy is the only trusted forwarded-header source on vps_proxy. Set the scheme
-				# from the actual TLS connection so client-supplied X-Forwarded-Proto is ignored.
-				header_up X-Forwarded-Proto {scheme}
-			}
-		}
-
-		# Non-JP requests receive 404 before Caddy can issue a Basic Auth challenge. Keep this
-		# path-family handler immediately after the JP+Basic route.
+		# Browser management: Japan IPs only, then an additional Caddy Basic Auth gate, then
+		# Mailer's own Admin/Setup authentication. A non-JP or undecidable source is answered 404
+		# here, before Caddy can issue a Basic Auth challenge.
 		handle @browser_family {
-			respond 404
+			handle @jp {
+				basic_auth {
+					{{CADDY_BASIC_AUTH_USERNAME}} {{CADDY_BASIC_AUTH_BCRYPT_HASH}}
+				}
+				reverse_proxy mailer:8080 {
+					# Never pass Caddy's Basic Authorization header to Mailer. Mailer retains its
+					# own Admin/Setup authentication and session boundary.
+					header_up -Authorization
+					# Caddy is the only trusted forwarded-header source on vps_proxy. Set the scheme
+					# from the actual TLS connection so client-supplied X-Forwarded-Proto is ignored.
+					header_up X-Forwarded-Proto {scheme}
+				}
+			}
+			handle {
+				respond 404
+			}
 		}
 
-		# Metrics keeps the current operator CIDR boundary and Mailer's bearer authentication. Do not
-		# replace this with the JP list or expose it to Japan as a whole.
+		# Consumer API: Japan IPs only. No Caddy Basic Auth is added here. The client Authorization
+		# header (Bearer / API key) is forwarded unchanged, so Mailer's own API authentication
+		# still applies and an unauthenticated JP request still receives Mailer's own 401. A
+		# non-JP or undecidable source is answered 404 here, never reaches the upstream, and is
+		# never issued a Basic Auth challenge.
+		handle @api_family {
+			handle @jp {
+				reverse_proxy mailer:8080 {
+					# Do not strip Authorization: Mailer's Bearer / API key contract depends on it.
+					header_up X-Forwarded-Proto {scheme}
+				}
+			}
+			handle {
+				respond 404
+			}
+		}
+
+		# Metrics keeps the current operator CIDR boundary and Mailer's bearer authentication. Do
+		# not replace this with the JP list or expose it to Japan as a whole.
 		handle @metrics_operator {
 			reverse_proxy mailer:8080 {
 				header_up X-Forwarded-Proto {scheme}
@@ -67,7 +90,7 @@
 			respond 404
 		}
 
-		# Consumer API and liveness/readiness are the only public paths in this reference profile.
+		# Liveness and readiness are the only unauthenticated, country-unrestricted public paths.
 		handle @public {
 			reverse_proxy mailer:8080 {
 				header_up X-Forwarded-Proto {scheme}
