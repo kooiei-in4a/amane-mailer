@@ -784,6 +784,8 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         var html = await response.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("再試行や処理の継続ができず", html, StringComparison.Ordinal);
+        Assert.Contains("<code>Dead Letter</code>", html, StringComparison.Ordinal);
         Assert.Contains("DeadLetter はありません", html, StringComparison.Ordinal);
         Assert.DoesNotContain("nav-badge", html, StringComparison.Ordinal);
     }

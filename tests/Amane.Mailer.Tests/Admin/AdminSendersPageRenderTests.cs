@@ -27,6 +27,8 @@ public sealed class AdminSendersPageRenderTests
         Assert.DoesNotContain("<img src=x", html, StringComparison.Ordinal);
         Assert.Contains("<td>2</td>", html, StringComparison.Ordinal);
         Assert.Contains("/admin/senders/00000000-0000-0000-0000-000000000732", html, StringComparison.Ordinal);
+        Assert.Contains("Sender identityと、そのAPI Keyを管理する画面です", html, StringComparison.Ordinal);
+        Assert.Contains("<code>enabled</code>", html, StringComparison.Ordinal);
     }
 
     [Fact]

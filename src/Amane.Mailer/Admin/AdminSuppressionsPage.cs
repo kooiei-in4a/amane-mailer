@@ -161,6 +161,12 @@ public static class AdminSuppressionsPage
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(html, "抑制リスト - Amane Admin", AdminNavItem.Suppressions, deadLetterCount);
 
+        html.AppendLine("                <section class=\"ops-section\" aria-label=\"抑制リストの説明\">");
+        html.AppendLine("                  <h1 class=\"ops-heading\">抑制リスト</h1>");
+        html.AppendLine("                  <p class=\"ops-description\">バウンスなどの理由で、送信対象から抑制している宛先を確認する画面です。表示は閲覧のみで、解除はここから行いません。</p>");
+        html.AppendLine("                  <p class=\"ops-meta\">宛先は設定に応じてマスクされます。誤登録の確認や解除が必要な場合は、表示されるCLIの手順とbounce ingestion runbookを参照してください。</p>");
+        html.AppendLine("                </section>");
+
         html.AppendLine("""
                 <section class="filter-region" aria-label="抑制リスト絞り込み">
                   <form method="get" action="/admin/suppressions" class="filter-form">

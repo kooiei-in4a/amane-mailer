@@ -84,6 +84,7 @@ public static class AdminSendersPage
         AdminLayout.AppendDocumentStart(html, "Senders - Amane Admin", AdminNavItem.Senders, deadLetterCount);
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Sender作成\">");
         html.AppendLine("                  <h1 class=\"ops-heading\">Senders</h1>");
+        html.AppendLine("                  <p class=\"ops-description\">Mailerが送信元として使うSender identityと、そのAPI Keyを管理する画面です。<code>enabled</code> は送信に利用でき、<code>disabled</code> は利用停止中です。</p>");
         html.AppendLine("                  <form method=\"post\" action=\"/admin/senders\" class=\"ops-form\">");
         AppendCsrfInput(html, csrfToken);
         AppendTextInput(html, "email", "Email", "email", required: true, maxLength: 320);
@@ -145,6 +146,7 @@ public static class AdminSendersPage
         html.AppendLine("                <p class=\"ops-meta\"><a href=\"/admin/senders\">← Senders</a></p>");
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Sender詳細\">");
         html.AppendLine("                  <h1 class=\"ops-heading\">Sender detail</h1>");
+        html.AppendLine("                  <p class=\"ops-description\">このSenderの送信可否とAPI Keyの状態を確認・変更します。無効化すると、このSenderを使う新しい送信を止めます。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "sender_id", sender.SenderId.ToString("D"));
         AppendDefinition(html, "email", sender.Email);
