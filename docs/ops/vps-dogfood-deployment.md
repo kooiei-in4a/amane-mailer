@@ -28,16 +28,21 @@ edge の path contract は次の通りです。
 | Path | Caddy edge boundary | Mailer へ渡す認証 |
 |---|---|---|
 | `/healthz`、`/readyz` | public（国制限なし） | なし |
-| `/api`、`/api/*` | IPdeny aggregated JP CIDR のみ（Caddy Basic Auth は追加しない） | client の `Authorization`（Bearer / API Key）をそのまま転送。JP からの未認証 request は従来どおり Mailer 自身の `401` |
+| `/api`、`/api/*` | IPdeny aggregated JP CIDR のみ（Caddy Basic Auth は追加しない） | client の `Authorization`（Bearer / API Key）をそのまま転送。JP source の未認証 request は従来どおり Mailer 自身の `401` |
 | `/admin`、`/admin/*`、`/setup`、`/setup/*` | IPdeny aggregated JP CIDR **かつ** Caddy Basic Auth | Caddy の `Authorization` は除去し、Mailer 自身の Admin/Setup 認証を維持 |
 | `/metrics` | `MAILER_MANAGEMENT_ALLOWED_CIDRS` の operator CIDR | 既存の Mailer metrics bearer |
 | その他 | 404 | upstream へ渡さない |
 
-`/api` と Admin/Setup は、いずれも JP CIDR に一致しない、または判定不能な source の場合、
-Caddy で `404`（fail-closed）になり upstream へ到達しません。Admin/Setup は加えて Basic Auth
-challenge を返す前に `404` になります。`/api` には Basic Auth challenge を付けません（Issue #753）。
-JP source の `/api` は `Authorization` header をそのまま Mailer へ渡し、Mailer 自身の Bearer /
-API Key 認証で判定されます。
+Admin/Setup は、JP CIDR に一致しない場合は Basic Auth challenge を返す前に edge で 404
+になります。JP から Caddy Basic Auth に成功した場合だけ Mailer へ reverse proxy されます。
+
+`/api` も同じ IPdeny JP allow-list を再利用し（Issue #753）、JP source のみ Mailer へ
+reverse proxy します。`/api` には Caddy Basic Auth を追加せず、`Authorization` header は
+そのまま Mailer へ渡すため、既存の Bearer / API Key 認証がそのまま効きます。非JP または
+判定不能 source の `/api` は Caddy で `404`（fail-closed、Basic challenge なし、upstream 未到達）
+です。この非JP 404 は source-level test（matcher/handle 構造、synthetic non-JP CIDR、
+`caddy adapt`）で証明し、live では実在の非JP 経路から確認します。VPS 自身の egress IP は
+JP allow-list に含まれるため、VPS self-request では非JP 404 を再現できません。
 
 `compose.vps-dogfood.yml` は base の `mailer` service を次のように overlay します。
 
@@ -54,10 +59,10 @@ API Key 認証で判定されます。
   を返し、成功した Caddy Basic credential は `header_up -Authorization` で Mailer に渡しません。
 - `/metrics` は既存の `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator restriction と Mailer の
   metrics bearer を維持します。Japan 全体へ公開するためにこの値を使い回しません。
-- `/api` と `/api/*` は Admin/Setup と同じ IPdeny JP allow-list を再利用し、JP source のみ
-  upstream へ proxy します。Caddy Basic Auth は追加せず、client の `Authorization` header は
-  `header_up -Authorization` せずそのまま Mailer へ渡します。non-JP / 判定不能 source は
-  Basic challenge を返さず `404` です（Issue #753）。
+- `/api` と `/api/*` は Admin/Setup と同じ IPdeny JP allow-list（`@jp` matcher）を再利用し、
+  JP source のみ Mailer へ proxy します。Caddy Basic Auth は追加せず、client の `Authorization`
+  header は `header_up -Authorization` せずそのまま Mailer へ渡します。非JP / 判定不能 source は
+  Basic challenge なしの `404` です（Issue #753）。
 - `/healthz`、`/readyz` だけが国制限なしの public path で、それ以外は 404 です。
 - base compose に残る legacy tenant JSON bind と
   `MAILER_TENANTS_PATH`、`MAIL_SERVICE_TOKEN*`、`MAILER_PROVIDER` は、この overlay の
@@ -579,10 +584,33 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
        test "$actual_state" = "$expected_state"
      }
 
-     # Shared fail-closed edge boundary check. A VPS self-request is non-JP/unknown, so every
-     # JP-gated path (/api, /admin, /setup) must return 404 without ever issuing a Basic Auth
-     # challenge, and /api must not reach the upstream. Issue #753 reuses this for /api.
-     assert_non_jp_edge_boundary() {
+     assert_api_no_send() {
+       local expected_status=$1 body_file headers_file http_status
+       body_file="$(mktemp)"
+       headers_file="$(mktemp)"
+       if ! http_status="$(curl --silent --show-error --connect-timeout 5 --max-time 10 \
+         --dump-header "$headers_file" --output "$body_file" --write-out '%{http_code}' \
+         --request GET --header 'Accept: application/json' \
+         "$acceptance_origin$api_status_path")"; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if [ "$http_status" != "$expected_status" ]; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if ! grep -F '"code":"UNAUTHORIZED"' "$body_file" >/dev/null; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if grep -Eiq '^www-authenticate:[[:space:]]*basic' "$headers_file"; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       rm -f -- "$body_file" "$headers_file"
+     }
+
+     assert_non_jp_management_boundary() {
        local path=$1 body_file headers_file http_status
        body_file="$(mktemp)"
        headers_file="$(mktemp)"
@@ -627,13 +655,13 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
      api_status_path=/api/mail-requests/00000000-0000-0000-0000-000000000000
      baseline_healthz_state="$(capture_http_state /healthz)"
      baseline_readyz_state="$(capture_http_state /readyz)"
-     assert_non_jp_edge_boundary "$api_status_path"
+     assert_api_no_send 401
      baseline_api_state="$(capture_http_state "$api_status_path")"
      baseline_admin_state="$(capture_http_state /admin)"
      baseline_setup_state="$(capture_http_state /setup)"
      test "${baseline_healthz_state%%|*}" = 200
      test "${baseline_readyz_state%%|*}" = 200
-     test "${baseline_api_state%%|*}" = 404
+     test "${baseline_api_state%%|*}" = 401
      test "${baseline_admin_state%%|*}" = 404
      test "${baseline_setup_state%%|*}" = 404
 
@@ -644,13 +672,10 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
            test "$#" -eq 1
            assert_http_status /healthz 200
            assert_http_status /readyz 200
-           # A VPS self-request is non-JP/unknown evidence: /api, /admin and /setup must all be
-           # 404 before any Basic challenge. For /api this also proves the upstream is not
-           # reached; the fixed nonexistent-UUID GET /api/mail-requests/<uuid> path never gets
-           # Mailer's own 401 from here (Issue #753). JP-source /api auth is checked externally.
-           assert_non_jp_edge_boundary "$api_status_path"
-           assert_non_jp_edge_boundary /admin
-           assert_non_jp_edge_boundary /setup
+           assert_api_no_send 401
+           # A VPS self-request is non-JP/unknown evidence: 404 must precede Basic challenge.
+           assert_non_jp_management_boundary /admin
+           assert_non_jp_management_boundary /setup
            assert_mailer_8080_unpublished
            ;;
          rollback)
@@ -659,7 +684,7 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
            local baseline_api_state=$4 baseline_admin_state=$5 baseline_setup_state=$6
            assert_http_state /healthz "$baseline_healthz_state"
            assert_http_state /readyz "$baseline_readyz_state"
-           assert_non_jp_edge_boundary "$api_status_path"
+           assert_api_no_send "${baseline_api_state%%|*}"
            assert_http_state "$api_status_path" "$baseline_api_state"
            assert_http_state /admin "$baseline_admin_state"
            assert_http_state /setup "$baseline_setup_state"
@@ -755,7 +780,7 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
      # HOST_CADDY_SHA == CANDIDATE_SHA == CONTAINER_CADDY_SHA is the recorded equality.
      docker exec "$container" caddy validate --config "$container_path" --adapter caddyfile
      docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile
-     # Candidate-mode fail-closed checks: /healthz /readyz /api /admin /setup /:8080.
+     # Candidate-mode no-send checks: /healthz /readyz /api /admin /setup /:8080.
      run_approved_value_free_acceptance_checks candidate
    ROOT_BASH
    then
@@ -777,11 +802,10 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
 
    **Approved value-free acceptance contract / acceptance responsibility.** `run_approved_value_free_acceptance_checks`
    は定義後にだけ呼び出し、`candidate` と `rollback` の2つの明示的な mode を受け付けます。`candidate` mode は
-   `/healthz=200`、`/readyz=200`、VPS self-request（non-JP/unknown）に対して固定 nonexistent UUID への
-   `GET /api/mail-requests/<uuid>`、`/admin`、`/setup` がいずれも Basic challenge 前の `404`（fail-closed）
-   であること、`/api` はこの source では upstream へ到達せず Mailer 自身の 401 を返さないこと（Issue #753）、
-   Mailer host-published `8080/tcp` が `none/null` であることを確認します。メール送信を起こす `POST`、secret、
-   API key は使いません。Proxy は
+   `/healthz=200`、`/readyz=200`、固定 nonexistent UUID への `GET /api/mail-requests/<uuid>` が Mailer の
+   `401` と `"code":"UNAUTHORIZED"` を返し、Basic challenge ではないこと、VPS self-request の non-JP/unknown
+   `/admin` と `/setup` が Basic challenge 前の `404` であること、Mailer host-published `8080/tcp` が
+   `none/null` であることを確認します。メール送信を起こす `POST`、secret、API key は使いません。Proxy は
    edge の Compose project (`amane-platform-edge`) から、Mailer はそれとは別の Compose project
    (`amane-mailer-vps`) から Compose label で解決します。どちらも container 数は exactly one で、
    0 件・複数件は fail closed です。
@@ -792,17 +816,14 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
    state を復元できたことを確認します。未知の mode は fail closed します。したがって
    `candidate mode` と `rollback mode` の `/admin` / `/setup` の責務は混同されません。
 
-   REMOTE VPS transaction が証明するのは、VPS から Caddy を通った public HTTPS の liveness/readiness、
-   VPS self-request（non-JP/unknown）に対する `/api` / `/admin` / `/setup` の fail-closed boundary
-   （`404`、Basic challenge なし、`/api` は upstream 未到達）、および Docker runtime の `Mailer :8080`
-   host-publish 不在だけです。root helper は SSH、Windows/browser、外部 JP client または Internet からの
-   `:8080` 到達不能を実行・確認したとは表示しません。
+   REMOTE VPS transaction が証明するのは、VPS から Caddy を通った public HTTPS の liveness/readiness、Mailer
+   API の no-send unauthorized contract、VPS self-request に対する non-JP/unknown management boundary、および
+   Docker runtime の `Mailer :8080` host-publish 不在だけです。root helper は SSH、Windows/browser、外部 JP client
+   または Internet からの `:8080` 到達不能を実行・確認したとは表示しません。
 
    Candidate acceptance の外部責務は Windows/operator 側にあります。JP source から `/admin` と `/setup` を確認し、
    Caddy Basic Auth boundary が先に存在し、認証されていない request が Mailer へ素通りしないことを確認します。
-   JP source からの `/api` は Caddy を通過し、`Authorization` なし / 誤り なら Mailer 自身の `401` になること、
-   正しい Bearer / API Key で既存 API が使えることも Windows/operator 側で確認します。non-JP/unknown source は
-   `/api` `/admin` `/setup` が Basic challenge 前に `404` であること、外部から Mailer `:8080` に到達できないことも
+   non-JP/unknown source は Basic challenge 前に `404` であること、外部から Mailer `:8080` に到達できないことも
    Windows/operator 側で確認します。rollback failure の entry point は ERR trap の
    `rollback_current_in_place` です。SSH recovery は、現在開いている standalone SSH TTY を維持し、必要なら
    operator/Windows から別 SSH を確認する責務であり、root transaction 内部の helper が確認済みと偽装しません。

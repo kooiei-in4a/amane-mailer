@@ -708,29 +708,50 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             Assert.Contains("/readyz", helper, StringComparison.Ordinal);
             Assert.Contains("/api/mail-requests/00000000-0000-0000-0000-000000000000", transaction, StringComparison.Ordinal);
             Assert.Contains("--request GET", transaction, StringComparison.Ordinal);
+            Assert.Contains("\"code\":\"UNAUTHORIZED\"", transaction, StringComparison.Ordinal);
             Assert.DoesNotContain("--request POST", transaction, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("curl -X POST", transaction, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("/admin", helper, StringComparison.Ordinal);
             Assert.Contains("/setup", helper, StringComparison.Ordinal);
             Assert.Contains("www-authenticate", transaction, StringComparison.OrdinalIgnoreCase);
-
-            // Issue #753: a VPS self-request is non-JP/unknown, so the candidate contract proves
-            // /api is fail-closed here (404, no Basic challenge, upstream not reached) with the
-            // same helper it uses for /admin and /setup. The old assert_api_no_send helper, which
-            // expected Mailer's own 401 + "code":"UNAUTHORIZED" body for /api, is gone.
-            Assert.DoesNotContain("assert_api_no_send", transaction, StringComparison.Ordinal);
-            Assert.DoesNotContain("\"code\":\"UNAUTHORIZED\"", transaction, StringComparison.Ordinal);
-            Assert.Contains(
-                "assert_non_jp_edge_boundary \"$api_status_path\"",
-                helper,
-                StringComparison.Ordinal);
-            Assert.Contains("assert_non_jp_edge_boundary /admin", helper, StringComparison.Ordinal);
-            Assert.Contains("assert_non_jp_edge_boundary /setup", helper, StringComparison.Ordinal);
-            Assert.Matches(
-                new Regex(@"test\s+""\$\{baseline_api_state%%\|\*\}""\s*=\s*404"),
-                transaction);
             Assert.Contains("HostConfig.PortBindings", transaction, StringComparison.Ordinal);
             Assert.Contains("8080/tcp", transaction, StringComparison.Ordinal);
+
+            // Issue #753 transition semantics. The live VPS self-request source is on the JP
+            // allow-list (proven by #744 live acceptance: a VPS self-request to /admin gets a
+            // Caddy Basic Auth challenge). So restricting /api to Japan does NOT change what a
+            // VPS self-request to /api sees: before, during candidate, and after rollback it is
+            // still Mailer's own 401 (JP source -> @jp match -> upstream -> unauthenticated).
+            // The transaction must never expect a Caddy 404 for the /api self-request path, and
+            // must not treat that path as a non-JP boundary. The real non-JP /api 404 is proven
+            // structurally by Caddyfile_requires_japan_basic_auth_..., not by this transaction.
+            var preamble = transaction[..transaction.IndexOf(
+                "run_approved_value_free_acceptance_checks() {",
+                StringComparison.Ordinal)];
+            Assert.Contains("assert_api_no_send 401", preamble, StringComparison.Ordinal);
+            Assert.Contains(
+                "test \"${baseline_api_state%%|*}\" = 401",
+                preamble,
+                StringComparison.Ordinal);
+            Assert.DoesNotMatch(
+                new Regex(@"baseline_api_state%%\|\*\}""\s*=\s*404"),
+                transaction);
+
+            var candidateStart = helper.IndexOf("candidate)", StringComparison.Ordinal);
+            var rollbackStart = helper.IndexOf("rollback)", StringComparison.Ordinal);
+            var candidateMode = helper[candidateStart..rollbackStart];
+            var rollbackMode = helper[rollbackStart..];
+            Assert.Contains("assert_api_no_send 401", candidateMode, StringComparison.Ordinal);
+            Assert.Contains(
+                "assert_api_no_send \"${baseline_api_state%%|*}\"",
+                rollbackMode,
+                StringComparison.Ordinal);
+
+            // The /api status path is only ever checked with assert_api_no_send (Mailer 401),
+            // never routed through a non-JP / fail-closed 404 boundary helper.
+            Assert.DoesNotMatch(
+                new Regex(@"assert_non_jp[a-z_]*\s+""\$api_status_path"""),
+                transaction);
 
             var rollbackIndex = transaction.IndexOf("rollback_current_in_place()", StringComparison.Ordinal);
             var oldReloadIndex = transaction.IndexOf(

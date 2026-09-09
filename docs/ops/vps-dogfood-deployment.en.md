@@ -29,16 +29,22 @@ The edge path contract is:
 | Path | Caddy edge boundary | Authentication sent to Mailer |
 |---|---|---|
 | `/healthz`, `/readyz` | public (no country restriction) | none |
-| `/api`, `/api/*` | IPdeny aggregated JP CIDR only (no Caddy Basic Auth) | client `Authorization` (Bearer / API key) forwarded unchanged; an unauthenticated JP request still gets Mailer's own `401` |
+| `/api`, `/api/*` | IPdeny aggregated JP CIDR only (no Caddy Basic Auth) | client `Authorization` (Bearer / API key) forwarded unchanged; an unauthenticated JP source still gets Mailer's own `401` |
 | `/admin`, `/admin/*`, `/setup`, `/setup/*` | IPdeny aggregated JP CIDR **and** Caddy Basic Auth | Caddy `Authorization` is removed; Mailer's own Admin/Setup authentication remains |
 | `/metrics` | `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator CIDR | Existing Mailer metrics bearer |
 | Everything else | 404 | Not sent upstream |
 
-Both `/api` and Admin/Setup return a Caddy `404` (fail-closed) and never reach the upstream when
-the source is outside the JP CIDRs or undecidable. Admin/Setup additionally returns that `404`
-before Caddy can issue a Basic Auth challenge. `/api` is never given a Basic Auth challenge
-(Issue #753). A JP-source `/api` request keeps its `Authorization` header on the way to Mailer,
-where Mailer's own Bearer / API key authentication decides the outcome.
+For Admin/Setup, a source outside the JP CIDRs receives an edge 404 before Caddy can issue a
+Basic Auth challenge. Only a JP source that passes Caddy Basic Auth is reverse-proxied to Mailer.
+
+`/api` reuses the same IPdeny JP allow-list (Issue #753): only JP sources are reverse-proxied to
+Mailer. No Caddy Basic Auth is added and the `Authorization` header is passed through unchanged,
+so Mailer's existing Bearer / API key authentication still decides the outcome. A non-JP or
+undecidable `/api` source gets a Caddy `404` (fail-closed, no Basic challenge, upstream not
+reached). That non-JP 404 is proven by source-level tests (matcher/handle structure, synthetic
+non-JP CIDR render, `caddy adapt`) and is verified from a real non-JP path during live
+acceptance; the VPS's own egress IP is on the JP allow-list, so a VPS self-request cannot
+reproduce the non-JP 404.
 
 `compose.vps-dogfood.yml` overlays the base `mailer` service as follows:
 
@@ -58,11 +64,11 @@ where Mailer's own Bearer / API key authentication decides the outcome.
 - `/metrics` keeps the existing `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator
   restriction and Mailer metrics bearer. The JP list must not be reused to expose
   metrics to all of Japan.
-- `/api` and `/api/*` reuse the same IPdeny JP allow-list as Admin/Setup and are
-  proxied to the upstream for JP sources only. No Caddy Basic Auth is added, and
-  the client `Authorization` header is passed to Mailer unchanged (no
-  `header_up -Authorization`). Non-JP / undecidable sources get a `404` with no
-  Basic challenge (Issue #753).
+- `/api` and `/api/*` reuse the same IPdeny JP allow-list (`@jp` matcher) as
+  Admin/Setup and are proxied to the upstream for JP sources only. No Caddy Basic
+  Auth is added, and the client `Authorization` header is passed to Mailer
+  unchanged (no `header_up -Authorization`). Non-JP / undecidable sources get a
+  `404` with no Basic challenge (Issue #753).
 - Only `/healthz` and `/readyz` are country-unrestricted public proxy paths;
   everything else gets a 404.
 - The legacy tenant JSON bind and `MAILER_TENANTS_PATH`, `MAIL_SERVICE_TOKEN*`,
@@ -600,10 +606,33 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
        test "$actual_state" = "$expected_state"
      }
 
-     # Shared fail-closed edge boundary check. A VPS self-request is non-JP/unknown, so every
-     # JP-gated path (/api, /admin, /setup) must return 404 without ever issuing a Basic Auth
-     # challenge, and /api must not reach the upstream. Issue #753 reuses this for /api.
-     assert_non_jp_edge_boundary() {
+     assert_api_no_send() {
+       local expected_status=$1 body_file headers_file http_status
+       body_file="$(mktemp)"
+       headers_file="$(mktemp)"
+       if ! http_status="$(curl --silent --show-error --connect-timeout 5 --max-time 10 \
+         --dump-header "$headers_file" --output "$body_file" --write-out '%{http_code}' \
+         --request GET --header 'Accept: application/json' \
+         "$acceptance_origin$api_status_path")"; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if [ "$http_status" != "$expected_status" ]; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if ! grep -F '"code":"UNAUTHORIZED"' "$body_file" >/dev/null; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       if grep -Eiq '^www-authenticate:[[:space:]]*basic' "$headers_file"; then
+         rm -f -- "$body_file" "$headers_file"
+         return 1
+       fi
+       rm -f -- "$body_file" "$headers_file"
+     }
+
+     assert_non_jp_management_boundary() {
        local path=$1 body_file headers_file http_status
        body_file="$(mktemp)"
        headers_file="$(mktemp)"
@@ -648,13 +677,13 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
      api_status_path=/api/mail-requests/00000000-0000-0000-0000-000000000000
      baseline_healthz_state="$(capture_http_state /healthz)"
      baseline_readyz_state="$(capture_http_state /readyz)"
-     assert_non_jp_edge_boundary "$api_status_path"
+     assert_api_no_send 401
      baseline_api_state="$(capture_http_state "$api_status_path")"
      baseline_admin_state="$(capture_http_state /admin)"
      baseline_setup_state="$(capture_http_state /setup)"
      test "${baseline_healthz_state%%|*}" = 200
      test "${baseline_readyz_state%%|*}" = 200
-     test "${baseline_api_state%%|*}" = 404
+     test "${baseline_api_state%%|*}" = 401
      test "${baseline_admin_state%%|*}" = 404
      test "${baseline_setup_state%%|*}" = 404
 
@@ -665,13 +694,10 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
            test "$#" -eq 1
            assert_http_status /healthz 200
            assert_http_status /readyz 200
-           # A VPS self-request is non-JP/unknown evidence: /api, /admin and /setup must all be
-           # 404 before any Basic challenge. For /api this also proves the upstream is not
-           # reached; the fixed nonexistent-UUID GET /api/mail-requests/<uuid> path never gets
-           # Mailer's own 401 from here (Issue #753). JP-source /api auth is checked externally.
-           assert_non_jp_edge_boundary "$api_status_path"
-           assert_non_jp_edge_boundary /admin
-           assert_non_jp_edge_boundary /setup
+           assert_api_no_send 401
+           # A VPS self-request is non-JP/unknown evidence: 404 must precede Basic challenge.
+           assert_non_jp_management_boundary /admin
+           assert_non_jp_management_boundary /setup
            assert_mailer_8080_unpublished
            ;;
          rollback)
@@ -680,7 +706,7 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
            local baseline_api_state=$4 baseline_admin_state=$5 baseline_setup_state=$6
            assert_http_state /healthz "$baseline_healthz_state"
            assert_http_state /readyz "$baseline_readyz_state"
-           assert_non_jp_edge_boundary "$api_status_path"
+           assert_api_no_send "${baseline_api_state%%|*}"
            assert_http_state "$api_status_path" "$baseline_api_state"
            assert_http_state /admin "$baseline_admin_state"
            assert_http_state /setup "$baseline_setup_state"
@@ -776,7 +802,7 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
      # HOST_CADDY_SHA == CANDIDATE_SHA == CONTAINER_CADDY_SHA is the recorded equality.
      docker exec "$container" caddy validate --config "$container_path" --adapter caddyfile
      docker exec "$container" caddy reload --config "$container_path" --adapter caddyfile
-     # Candidate-mode fail-closed checks: /healthz /readyz /api /admin /setup /:8080.
+     # Candidate-mode no-send checks: /healthz /readyz /api /admin /setup /:8080.
      run_approved_value_free_acceptance_checks candidate
    ROOT_BASH
    then
@@ -798,11 +824,10 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
 
    **Approved value-free acceptance contract / acceptance responsibility.** Define
    `run_approved_value_free_acceptance_checks` before its first use and call it only with one of two explicit modes:
-   `candidate` or `rollback`. `candidate` mode checks `/healthz=200`, `/readyz=200`, and that VPS self-requests
-   (non-JP/unknown) to a fixed nonexistent UUID `GET /api/mail-requests/<uuid>`, `/admin`, and `/setup` all return
-   `404` (fail-closed) before any Basic challenge, that `/api` does not reach the upstream from this source and so
-   never returns Mailer's own `401` here (Issue #753), and that Mailer host-published `8080/tcp` is `none/null`.
-   It never sends mail: no `POST`, secret, or API key is used.
+   `candidate` or `rollback`. `candidate` mode checks `/healthz=200`, `/readyz=200`, and a fixed nonexistent UUID
+   `GET /api/mail-requests/<uuid>` returning Mailer's `401` with `"code":"UNAUTHORIZED"`, without a Basic challenge.
+   It also checks that VPS self-requests to non-JP/unknown `/admin` and `/setup` receive `404` before a Basic challenge,
+   and that Mailer host-published `8080/tcp` is `none/null`. It never sends mail: no `POST`, secret, or API key is used.
    The proxy is resolved by Compose label from the edge Compose project (`amane-platform-edge`) and the mailer from its
    own separate Compose project (`amane-mailer-vps`); each must resolve to exactly one container, and zero or multiple
    matches fail closed.
@@ -813,18 +838,15 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
    state is restored after old-config reload. An unknown mode fails closed. Thus the `/admin` and `/setup`
    responsibilities of `candidate mode` and `rollback mode` cannot be conflated.
 
-   The REMOTE VPS transaction proves only public HTTPS liveness/readiness through Caddy from the VPS, the fail-closed
-   boundary for VPS self-requests (non-JP/unknown) to `/api` / `/admin` / `/setup` (`404`, no Basic challenge, and no
-   upstream reach for `/api`), and the Docker runtime absence of a Mailer `:8080` host publish. The root helper does
-   not run SSH, Windows/browser, external JP-client, or Internet `:8080` reachability checks and must not print them
-   as confirmed.
+   The REMOTE VPS transaction proves only public HTTPS liveness/readiness through Caddy from the VPS, the Mailer API
+   no-send unauthorized contract, the non-JP/unknown management boundary for the VPS self-request, and the Docker
+   runtime absence of a Mailer `:8080` host publish. The root helper does not run SSH, Windows/browser, external JP-client,
+   or Internet `:8080` reachability checks and must not print them as confirmed.
 
    Candidate acceptance for the external path is owned by Windows/operator acceptance. From a JP source, check `/admin`
    and `/setup` to prove that the Caddy Basic Auth boundary exists first and an unauthenticated request does not pass
-   through to Mailer, and check that a JP-source `/api` request passes through Caddy so that a missing/incorrect
-   `Authorization` yields Mailer's own `401` while a correct Bearer / API key still works. From non-JP/unknown sources,
-   check `404` before a Basic challenge for `/api`, `/admin` and `/setup`; also check from outside that Mailer `:8080`
-   is unreachable. The rollback failure entry point is `rollback_current_in_place` from the ERR trap.
+   through to Mailer. From non-JP/unknown sources, check `404` before a Basic challenge; also check from outside that
+   Mailer `:8080` is unreachable. The rollback failure entry point is `rollback_current_in_place` from the ERR trap.
    SSH recovery means keeping the current standalone SSH TTY open and, when needed, checking a separate SSH session
    from the operator/Windows side; the root transaction helper must never claim to have performed that check.
 
