@@ -779,8 +779,8 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
      test "$(stat -c '%u' "$current")" = "$original_uid"
      test "$(stat -c '%g' "$current")" = "$original_gid"
      test "$(stat -c '%a' "$current")" = "$original_mode"
-     host_sha="$(sha256sum "$current" | awk '"'"'{print $1}'"'"')"
-     container_sha="$(docker exec "$container" sha256sum "$container_path" | awk '"'"'{print $1}'"'"')"
+     host_sha="$(sha256sum "$current" | awk '{print $1}')"
+     container_sha="$(docker exec "$container" sha256sum "$container_path" | awk '{print $1}')"
      test "$host_sha" = "$candidate_sha256"
      test "$container_sha" = "$candidate_sha256"
      # HOST_SHA == CANDIDATE_SHA == CONTAINER_SHA before validate/reload.

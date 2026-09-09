@@ -684,6 +684,71 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
     }
 
     [Fact]
+    public void Sha256sum_field_selection_yields_the_digest_only_for_the_shipped_awk_form()
+    {
+        const string record = "deadbeef  /srv/platform/edge/Caddyfile";
+
+        // The shipped form reads field 1, which is what the host/container SHA guards compare.
+        var shipped = RunBashCapturingStandardOutput(
+            @"printf '%s\n' 'deadbeef  /srv/platform/edge/Caddyfile' | awk '{print $1}'");
+        Assert.Equal("deadbeef", shipped);
+
+        // The pre-fix `'"'"'` escaping is meaningless inside the quoted <<'ROOT_BASH' heredoc:
+        // awk receives a truthy string constant as its pattern and prints the whole record, so
+        // `test "$host_sha" = "$candidate_sha256"` fails against a byte-identical candidate.
+        var overEscaped = RunBashCapturingStandardOutput(
+            @"printf '%s\n' 'deadbeef  /srv/platform/edge/Caddyfile' | awk '""'""'{print $1}'""'""'");
+        Assert.NotEqual("deadbeef", overEscaped);
+        Assert.Equal(record, overEscaped);
+
+        // ROOT_BASH runs as `bash -s -- <candidate_remote> ...`, so $1 is a real path there.
+        // The over-escaped form is broken in that shape too.
+        var overEscapedWithPositionalArguments = RunBashCapturingStandardOutput(
+            "set -- /srv/platform/edge/Caddyfile.candidate\n"
+            + @"printf '%s\n' 'deadbeef  /srv/platform/edge/Caddyfile' | awk '""'""'{print $1}'""'""'");
+        Assert.NotEqual("deadbeef", overEscapedWithPositionalArguments);
+    }
+
+    [Fact]
+    public void Vps_runbook_transaction_selects_the_sha_field_without_shell_escaping()
+    {
+        var deploymentRunbooks = new[]
+        {
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.md"),
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.en.md")
+        };
+
+        foreach (var runbook in deploymentRunbooks)
+        {
+            var transaction = ExtractRootBash(runbook);
+
+            Assert.Contains(
+                @"host_sha=""$(sha256sum ""$current"" | awk '{print $1}')""",
+                transaction,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                @"container_sha=""$(docker exec ""$container"" sha256sum ""$container_path"" "
+                + @"| awk '{print $1}')""",
+                transaction,
+                StringComparison.Ordinal);
+
+            // A quoted heredoc performs no expansion, so the `'"'"'` single-quote bridge must
+            // never reappear anywhere in the privileged transaction.
+            Assert.DoesNotContain(@"'""'""'", transaction, StringComparison.Ordinal);
+
+            // The guards these two assignments feed are unchanged.
+            Assert.Contains(
+                @"test ""$host_sha"" = ""$candidate_sha256""",
+                transaction,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                @"test ""$container_sha"" = ""$candidate_sha256""",
+                transaction,
+                StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void Vps_runbook_resolves_mailer_from_its_own_compose_project_on_the_live_split_topology()
     {
         var deploymentRunbooks = new[]
@@ -917,6 +982,30 @@ PB_m1='{""8080/tcp"":[{""HostIp"":""0.0.0.0"",""HostPort"":""8080""}]}'
         Assert.True(
             process.ExitCode == 0,
             $"Unknown acceptance mode was not rejected: {standardError}");
+    }
+
+    private static string RunBashCapturingStandardOutput(string script)
+    {
+        var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "bash",
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
+
+        Assert.NotNull(process);
+        using var bash = process!;
+        bash.StandardInput.Write(script);
+        bash.StandardInput.Close();
+
+        var standardOutput = bash.StandardOutput.ReadToEnd();
+        var standardError = bash.StandardError.ReadToEnd();
+        Assert.True(bash.WaitForExit(5000), "bash did not finish promptly.");
+        Assert.True(bash.ExitCode == 0, $"bash exited {bash.ExitCode}: {standardError}");
+        return standardOutput.TrimEnd('\n');
     }
 
     private static Process StartBash(string arguments)
