@@ -50,6 +50,7 @@ public sealed class AdminAuditLogPageTests(MailerAdminFixture fixture)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("no-store", response.Headers.CacheControl?.ToString() ?? string.Empty, StringComparison.Ordinal);
         Assert.Contains("/admin/audit-log", html, StringComparison.Ordinal);
+        Assert.Contains("Adminで行われた認証・設定・送信操作", html, StringComparison.Ordinal);
         Assert.Contains("MAILER_ADMIN_AUDIT_RETENTION_DAYS", html, StringComparison.Ordinal);
         Assert.Contains(AdminAuditLogPage.RetentionRunbookUrl, html, StringComparison.Ordinal);
         Assert.Contains("append-only", html, StringComparison.Ordinal);

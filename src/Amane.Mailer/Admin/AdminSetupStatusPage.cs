@@ -17,6 +17,9 @@ public static class AdminSetupStatusPage
     public const string OperationalVerificationMessageJa =
         "Easy Setupでは記録していません。通常Mailer経路によるManual verificationが必要です。";
 
+    internal const string SetupGuideUrl =
+        "https://github.com/kooiei-in4a/amane-mailer/blob/main/docs/ops/setup-guide.md";
+
     internal const string InvalidMetadataValue = "n/a (invalid metadata)";
 
     public static async Task<IResult> RenderAsync(
@@ -64,6 +67,8 @@ public static class AdminSetupStatusPage
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Setup status\">");
         html.AppendLine("                  <h1 class=\"ops-heading\">Setup status</h1>");
+        html.AppendLine("                  <p class=\"ops-description\">現在の配備方式と設定状態を確認する画面です。Easy Setup / Manual Deployment のどちらで管理されているか、設定・credential・verificationの状態を表示します。</p>");
+        html.AppendLine("                  <p class=\"ops-meta\">表示値: <code>match</code> は記録済み設定と実効設定が一致、<code>mismatch</code> は不一致、<code>n/a</code> は対象外または現在の実行環境から値を確認できない、<code>not-managed</code> はEasy Setupの管理対象外を示します。<code>missing</code> は項目に必要な記録や値がない状態、<code>credential-missing</code> は必要なcredentialが見つからない理由コードです。<code>stale</code> や <code>not-ready</code> は要確認です。</p>");
         html.AppendLine("                  <p class=\"ops-meta\">");
         html.Append("                    As of ");
         html.Append(Html(FormatUtc(asOfUtc)));
@@ -90,6 +95,7 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Deployment mode\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Deployment mode</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">現在どの方式でMailerが配備されているかを示します。Managed DeploymentはEasy Setupの管理対象、Manual DeploymentはEasy Setupの管理対象外です。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "Deployment", FormatDeploymentKind(model.DeploymentKind));
         AppendDefinition(html, "Mailer version", NullAsNa(model.MailerVersion));
@@ -127,6 +133,7 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Recorded configuration\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Recorded configuration</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">Setup側に記録されている構成情報です。現在runtimeで使われている値そのものではありません。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         if (model.DeploymentKind == AdminSetupDeploymentKind.Manual)
         {
@@ -155,6 +162,7 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Effective configuration\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Effective configuration</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">現在runtimeで実際に使われている構成情報です。Provider、credential、live sendingなど、稼働中の設定を確認します。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "Effective fingerprint", NullAsNa(model.EffectiveFingerprint));
         AppendDefinition(html, "Provider summary", NullAsNa(model.ProviderSummary));
@@ -171,6 +179,7 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Fingerprint comparison\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Fingerprint comparison</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">Setupに記録された設定と実効設定の整合性を確認します。<code>match</code> は一致、<code>mismatch</code> は差分があるため要確認です。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         if (model.DeploymentKind == AdminSetupDeploymentKind.Manual)
         {
@@ -207,6 +216,7 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Bundle integrity\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Bundle integrity</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">Managed bundleの整合性状態を示します。fingerprintが一致していてもbundle integrityの確認結果とは別なので、両方を確認してください。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "Observed bundle integrity", NullAsNa(model.BundleIntegrityResult));
         if (!string.IsNullOrWhiteSpace(model.BundleIntegrityReason))
@@ -233,6 +243,7 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Deployment verification\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Deployment verification</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">Setup適用後の検証状態を示します。<code>current</code> は現在のACTIVEに結び付いた結果、<code>stale</code> は過去の結果で現在の状態を証明しないため要確認です。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "Verification freshness", FormatVerificationFreshness(model.VerificationFreshness));
         AppendDefinition(html, "Verification status", NullAsNa(model.VerificationStatus));
@@ -260,6 +271,7 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Deployment state\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Deployment state</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">設定が適用されているか、送信を開始できる状態かを示します。<code>configuration applied</code> と <code>send-ready</code> は別の確認項目です。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "Configuration applied", FormatConfigurationApplied(model.ConfigurationApplied));
         AppendDefinition(html, "Production send-ready", FormatSendReady(model.SendReady));
@@ -273,6 +285,7 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Staging verification summary\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Staging verification summary</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">Staging verificationを使う配備で、その検証結果を示します。対象外の配備では <code>n/a</code> になります。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
 
         if (!model.StagingSummaryApplicable
@@ -315,6 +328,7 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Deployment operational verification\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Deployment operational verification</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">実運用経路でMailerが動作することを確認する状態です。Setup statusは結果を自動で記録しないため、必要に応じて既存のManual verification手順を実施してください。</p>");
         html.AppendLine("                  <p class=\"ops-meta\">");
         html.Append(Html(OperationalVerificationMessageJa));
         html.AppendLine("</p>");
@@ -325,16 +339,21 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Next steps\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Next steps</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">現在の状態に応じて、次に確認する場所や手順を示します。この画面から設定変更や秘密情報の操作は行いません。</p>");
         html.AppendLine("                  <ul class=\"ops-list\">");
         html.AppendLine("                    <li>このページは状態確認のみです。doctor / test send / Docker / secret 変更は実行しません。</li>");
         if (model.DeploymentKind == AdminSetupDeploymentKind.Manual)
         {
-            html.AppendLine("                    <li>Manual Deployment の更新は docs/ops/setup-guide.md の Manual 導線に従ってください。</li>");
+            html.Append("                    <li>Manual Deployment の更新は <a href=\"");
+            html.Append(Html(SetupGuideUrl));
+            html.AppendLine("\">docs/ops/setup-guide.md</a> の Manual 導線に従ってください。</li>");
         }
         else
         {
             html.AppendLine("                    <li>Easy Setup の更新・再適用は host 上の Easy Setup assistant から行ってください。</li>");
-            html.AppendLine("                    <li>Manual 経路へ切り替える場合も docs/ops/setup-guide.md を参照してください。</li>");
+            html.Append("                    <li>Manual 経路へ切り替える場合も <a href=\"");
+            html.Append(Html(SetupGuideUrl));
+            html.AppendLine("\">docs/ops/setup-guide.md</a> を参照してください。</li>");
         }
 
         html.Append("                    <li>関連する運用観測: <a href=\"");

@@ -679,6 +679,7 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         var html = await response.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("<code>Cancelled</code> はキャンセルされた送信依頼の終端状態", html, StringComparison.Ordinal);
         Assert.Contains(visibleId.ToString("D"), html, StringComparison.Ordinal);
         Assert.Contains(MailerWebApplicationFixtureBase.TenantId.ToString("D"), html, StringComparison.Ordinal);
         Assert.Contains(MailerWebApplicationFixtureBase.SourceService, html, StringComparison.Ordinal);
@@ -784,6 +785,8 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         var html = await response.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("再試行や処理の継続ができず", html, StringComparison.Ordinal);
+        Assert.Contains("<code>Dead Letter</code>", html, StringComparison.Ordinal);
         Assert.Contains("DeadLetter はありません", html, StringComparison.Ordinal);
         Assert.DoesNotContain("nav-badge", html, StringComparison.Ordinal);
     }

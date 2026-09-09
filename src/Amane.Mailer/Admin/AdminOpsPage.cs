@@ -133,8 +133,15 @@ public static class AdminOpsPage
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(html, "運用状況 - Amane Admin", AdminNavItem.Ops, deadLetterCount);
 
+        html.AppendLine("                <section class=\"ops-section\" aria-label=\"運用状況の説明\">");
+        html.AppendLine("                  <h1 class=\"ops-heading\">運用状況</h1>");
+        html.AppendLine("                  <p class=\"ops-description\">Amane Mailerが現在正常に稼働しているか、キュー処理・Worker・送信機能・Webhook・DBの状態を確認する画面です。</p>");
+        html.AppendLine("                  <p class=\"ops-meta\">表示値: <code>Ready</code> は基本的な稼働条件を満たしています。<code>yes</code> / <code>no</code> は条件を満たす / 満たさない、<code>enabled</code> / <code>disabled</code> は機能の有効 / 無効、<code>n/a</code> は対象外または取得できないことを示します。</p>");
+        html.AppendLine("                </section>");
+
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Readiness\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Readiness</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">Mailerが処理を開始できる状態かを確認します。<code>Overall</code> が <code>Ready</code> なら基本条件を満たし、<code>Not ready</code> または <code>no</code> がある場合はDB・migration・Worker・Sweepを確認してください。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "Overall", readiness.IsReady ? "Ready" : "Not ready");
         AppendDefinition(html, "Schema migrated", FormatBool(storageInfo.SchemaMigrated));
@@ -154,6 +161,7 @@ public static class AdminOpsPage
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Tenant scope\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Tenant scope</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">現在のAdminが集計・閲覧できるテナントの範囲を示します。テナント単位で集計される件数はこの範囲に従い、<code>service-wide</code> の値やProvider queue・DB情報は全体の状態を示します。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         if (access.IsInstanceOwner)
         {
@@ -177,6 +185,7 @@ public static class AdminOpsPage
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Queue metrics\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Queue metrics</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">送信待ち、処理中、失敗、Dead Letterなどの件数と滞留状況を示します。件数の増加や古い待機が続く場合は、WorkerやProviderの状態を確認してください。</p>");
         html.AppendLine("                  <p class=\"ops-meta\">");
         html.Append("                    As of ");
         html.Append(Html(FormatUtc(asOfUtc)));
@@ -215,6 +224,7 @@ public static class AdminOpsPage
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Webhook delivery\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Webhook delivery</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">Webhook配信の未処理件数とDead Letter状況を示します。メール配送とは別に通知経路の滞留を確認できます。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "Pending webhook events", FormatCount(webhookCounts.PendingCount));
         AppendDefinition(html, "Webhook dead letters (scoped)", FormatCount(webhookDeadLetterCount));
@@ -225,6 +235,7 @@ public static class AdminOpsPage
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Provider queue\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Provider queue</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">外部メールProviderへ渡す処理のキューとDead Letter件数を示します。値が増え続ける場合はProvider側を含めて確認してください。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "Queue envelope dead letters", FormatCount(providerQueueDeadLettersCount));
         html.AppendLine("                  </dl>");
@@ -232,6 +243,7 @@ public static class AdminOpsPage
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Provider attempts\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Provider attempts</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">外部メールProviderごとの送信試行結果を集計します。<code>failed</code> や <code>dead_lettered</code> は要確認の送信結果です。</p>");
         if (providerStats.Count == 0)
         {
             html.AppendLine("                  <p class=\"ops-empty\">No provider attempts in scope.</p>");
@@ -266,6 +278,7 @@ public static class AdminOpsPage
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Database storage\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Database storage</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">Mailer DBの状態・サイズ・WAL・migration適用状況を示します。<code>n/a</code> は現在の構成や権限では取得対象外または取得できない値です。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(html, "Database file", storageInfo.DatabaseFileName ?? "n/a");
         AppendDefinition(html, "Database size", FormatBytes(storageInfo.DatabaseFileSizeBytes));
@@ -317,6 +330,7 @@ public static class AdminOpsPage
         {
             html.AppendLine("                <section class=\"ops-section\" aria-label=\"Database operations\">");
             html.AppendLine("                  <h2 class=\"ops-heading\">Database operations</h2>");
+            html.AppendLine("                  <p class=\"ops-description\">WAL checkpointやonline backupなど、DBの保守操作を行うセクションです。表示される操作は現在の権限範囲に応じて変わります。</p>");
             if (canRunServiceWideDbOps && csrfToken is not null)
             {
                 html.AppendLine("                  <p class=\"ops-meta\">");
@@ -448,6 +462,7 @@ public static class AdminOpsPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Live sending\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Live sending</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">実際のメール送信が有効か、Providerを利用できる状態かを示します。<code>enabled</code> は実送信を許可し、<code>disabled</code> は実送信を止めています。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(
             html,

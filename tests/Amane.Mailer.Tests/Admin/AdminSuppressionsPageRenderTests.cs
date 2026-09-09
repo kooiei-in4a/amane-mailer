@@ -89,6 +89,7 @@ public sealed class AdminSuppressionsPageRenderTests
             options: new MailerAdminOptions { ListPiiVisible = false });
 
         Assert.Contains("閲覧のみ", html, StringComparison.Ordinal);
+        Assert.Contains("送信対象から抑制している宛先を確認する画面です", html, StringComparison.Ordinal);
         Assert.Contains("db suppressions remove", html, StringComparison.Ordinal);
         Assert.Contains("bounce ingestion runbook", html, StringComparison.Ordinal);
         Assert.Contains("すべて", html, StringComparison.Ordinal);
