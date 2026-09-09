@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Encodings.Web;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
@@ -151,6 +152,20 @@ public sealed class FirstRunSetupTests
             using var setup = await client.GetAsync("/setup", TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.OK, setup.StatusCode);
             Assert.Equal("no-store", setup.Headers.CacheControl?.NoStore == true ? "no-store" : null);
+            var setupHtml = await setup.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+            Assert.Contains("初回セットアップ用のBootstrap tokenを入力してください。", setupHtml, StringComparison.Ordinal);
+            Assert.Contains(
+                "docker compose --env-file .env -f compose.yml exec mailer /app/Amane.Mailer setup bootstrap show",
+                setupHtml,
+                StringComparison.Ordinal);
+            Assert.Contains("Amane Mailerを起動しているサーバー上", setupHtml, StringComparison.Ordinal);
+            Assert.Contains("Bootstrap tokenは秘密情報です。", setupHtml, StringComparison.Ordinal);
+            Assert.Contains("初回セットアップが完了すると利用できなくなり", setupHtml, StringComparison.Ordinal);
+            Assert.Contains("セットアップ状況", setupHtml, StringComparison.Ordinal);
+            Assert.Contains("ACS接続設定", setupHtml, StringComparison.Ordinal);
+            Assert.Contains("管理者アカウント", setupHtml, StringComparison.Ordinal);
+            Assert.Contains("送信元", setupHtml, StringComparison.Ordinal);
+            Assert.Contains("セットアップ完了", setupHtml, StringComparison.Ordinal);
 
             using var health = await client.GetAsync("/healthz", TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.OK, health.StatusCode);
@@ -341,6 +356,172 @@ public sealed class FirstRunSetupTests
                 CreateSetupAuthRequest(requestToken, csrfCookie, bootstrapToken),
                 TestContext.Current.CancellationToken);
             Assert.Equal(HttpStatusCode.TooManyRequests, correctAfterLimit.StatusCode);
+        }
+        finally
+        {
+            if (factory is not null)
+                await factory.DisposeAsync();
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task Authenticated_setup_page_explains_each_setup_input_and_finalize_state()
+    {
+        var root = CreateRoot("setup-guidance");
+        WebApplicationFactory<global::Program>? factory = null;
+        try
+        {
+            var databasePath = Path.Combine(root, "mailer.db");
+            var tokenPath = Path.Combine(root, "bootstrap", "setup_token");
+            var configuration = CreateConfiguration(databasePath, tokenPath);
+            await new SqlMigrationRunner(new SqliteConnectionFactory(configuration))
+                .ApplyPendingAsync(TestContext.Current.CancellationToken);
+            var bootstrapToken = new BootstrapTokenStore(configuration).EnsureExists();
+
+            factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Testing");
+                builder.UseSetting("ConnectionStrings:Mailer", $"Data Source={databasePath}");
+                builder.UseSetting("MAILER_BOOTSTRAP_TOKEN_PATH", tokenPath);
+                builder.ConfigureServices(services => services.RemoveAll<IHostedService>());
+            });
+
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+                BaseAddress = new Uri("https://localhost"),
+            });
+            var authCookie = await AuthenticateSetupAsync(client, bootstrapToken);
+            var html = await ReadAuthenticatedSetupAsync(client, authCookie);
+
+            Assert.Contains("Azure Communication Services（ACS）の接続設定", html, StringComparison.Ordinal);
+            Assert.Contains(
+                "Amane MailerがAzure Communication Servicesを使ってメールを送信するための接続情報です。",
+                html,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                "endpoint=https://xxxxx.communication.azure.com/;accesskey=xxxxxxxx",
+                html,
+                StringComparison.Ordinal);
+            Assert.Contains("Azure Portal", html, StringComparison.Ordinal);
+            Assert.Contains("→ Communication Services", html, StringComparison.Ordinal);
+            Assert.Contains("→ Primary key の Connection string", html, StringComparison.Ordinal);
+            Assert.Contains("accesskey</code>は秘密情報です。", html, StringComparison.Ordinal);
+
+            Assert.Contains("管理画面へログインするための最初の管理者アカウント", html, StringComparison.Ordinal);
+            Assert.Contains("Admin username", html, StringComparison.Ordinal);
+            Assert.Contains("管理画面へのログインに使うユーザー名", html, StringComparison.Ordinal);
+            Assert.Contains("Password", html, StringComparison.Ordinal);
+            Assert.Contains("管理画面へのログインに使うパスワード", html, StringComparison.Ordinal);
+            Assert.Contains("Confirm password", html, StringComparison.Ordinal);
+            Assert.Contains("確認のため同じパスワードを再入力", html, StringComparison.Ordinal);
+
+            Assert.Contains("送信元メールアドレス", html, StringComparison.Ordinal);
+            Assert.Contains("Amane Mailerからメールを送信するときに使用する送信元を登録します。", html, StringComparison.Ordinal);
+            Assert.Contains("Azure Communication Services Emailで利用可能な送信元メールアドレス", html, StringComparison.Ordinal);
+            Assert.Contains("受信者に表示される送信者名", html, StringComparison.Ordinal);
+            Assert.Contains("Sender email: noreply@example.com", html, StringComparison.Ordinal);
+            Assert.Contains("Display name: Amane System", html, StringComparison.Ordinal);
+
+            Assert.Contains("action=\"/setup/finalize\"", html, StringComparison.Ordinal);
+            Assert.Contains("未設定の項目を入力してから、セットアップを完了してください。", html, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (factory is not null)
+                await factory.DisposeAsync();
+            DeleteRoot(root);
+        }
+    }
+
+    [Fact]
+    public async Task Setup_page_uses_existing_state_for_progress_and_registered_summaries()
+    {
+        var root = CreateRoot("setup-progress-and-summaries");
+        WebApplicationFactory<global::Program>? factory = null;
+        try
+        {
+            var ct = TestContext.Current.CancellationToken;
+            var databasePath = Path.Combine(root, "mailer.db");
+            var tokenPath = Path.Combine(root, "bootstrap", "setup_token");
+            var configuration = CreateConfiguration(databasePath, tokenPath);
+            var connections = new SqliteConnectionFactory(configuration);
+            await new SqlMigrationRunner(connections).ApplyPendingAsync(ct);
+            var bootstrapToken = new BootstrapTokenStore(configuration).EnsureExists();
+
+            factory = new WebApplicationFactory<global::Program>().WithWebHostBuilder(builder =>
+            {
+                builder.UseEnvironment("Testing");
+                builder.UseSetting("ConnectionStrings:Mailer", $"Data Source={databasePath}");
+                builder.UseSetting("MAILER_BOOTSTRAP_TOKEN_PATH", tokenPath);
+                builder.ConfigureServices(services => services.RemoveAll<IHostedService>());
+            });
+
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+                BaseAddress = new Uri("https://localhost"),
+            });
+            var authCookie = await AuthenticateSetupAsync(client, bootstrapToken);
+
+            const string acsSecret =
+                "Endpoint=https://fixture.communication.azure.com/;AccessKey=synthetic-acs-secret";
+            var secretPath = Path.Combine(root, "secrets", "acs", "acs_connection_string");
+            var instance = new InstanceConfigurationRepository(connections, TimeProvider.System);
+            Assert.True(await instance.ConfigureAcsAsync(secretPath, ct));
+
+            var unreadableSecretHtml = await ReadAuthenticatedSetupAsync(client, authCookie);
+            Assert.Contains("action=\"/setup/provider\"", unreadableSecretHtml, StringComparison.Ordinal);
+            Assert.DoesNotContain("ACS接続情報:</strong> 設定済み", unreadableSecretHtml, StringComparison.Ordinal);
+
+            Assert.True(FirstRunSetupStorage.WriteAcsSecretCreateOnly(secretPath, acsSecret));
+            Assert.True(await instance.ConfigureAcsAsync(secretPath, ct));
+            var partialHtml = await ReadAuthenticatedSetupAsync(client, authCookie);
+            Assert.Contains("ACS接続情報:</strong> 設定済み（秘密情報のため詳細は表示しません）", partialHtml, StringComparison.Ordinal);
+            Assert.Contains("ACS接続設定", partialHtml, StringComparison.Ordinal);
+            Assert.Contains("設定済み", partialHtml, StringComparison.Ordinal);
+            Assert.Contains("管理者アカウント", partialHtml, StringComparison.Ordinal);
+            Assert.Contains("送信元", partialHtml, StringComparison.Ordinal);
+            Assert.Contains("未設定", partialHtml, StringComparison.Ordinal);
+            Assert.DoesNotContain("action=\"/setup/provider\"", partialHtml, StringComparison.Ordinal);
+            Assert.DoesNotContain(acsSecret, partialHtml, StringComparison.Ordinal);
+            Assert.DoesNotContain("synthetic-acs-secret", partialHtml, StringComparison.Ordinal);
+
+            const string adminUsername = "admin<owner>";
+            const string adminPassword = "synthetic-admin-password";
+            var users = new AdminUserRepository(connections, TimeProvider.System);
+            Assert.True(await users.EnsureInstanceOwnerAsync(
+                adminUsername,
+                AdminPasswordHasher.Hash(adminPassword),
+                ct));
+
+            const string senderDisplayName = "Amane <System> & Mail";
+            var senders = new SenderRepository(connections, TimeProvider.System);
+            await senders.CreateAsync("noreply@example.com", senderDisplayName, ct);
+
+            var html = await ReadAuthenticatedSetupAsync(client, authCookie);
+            Assert.DoesNotContain("未設定", html, StringComparison.Ordinal);
+            Assert.Contains("必要な設定がすべて完了しました。", html, StringComparison.Ordinal);
+            Assert.Contains(
+                $"<dd>{HtmlEncoder.Default.Encode(adminUsername)}</dd>",
+                html,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                $"<dd>{HtmlEncoder.Default.Encode(senderDisplayName)}</dd>",
+                html,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("<owner>", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("<System>", html, StringComparison.Ordinal);
+            Assert.DoesNotContain(acsSecret, html, StringComparison.Ordinal);
+            Assert.DoesNotContain("synthetic-acs-secret", html, StringComparison.Ordinal);
+            Assert.DoesNotContain(adminPassword, html, StringComparison.Ordinal);
+            Assert.DoesNotContain(secretPath, html, StringComparison.Ordinal);
+            Assert.Contains("Password</dt><dd>設定済み（表示しません）</dd>", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("type=\"password\"", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("action=\"/setup/provider\"", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("action=\"/setup/admin\"", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("action=\"/setup/sender\"", html, StringComparison.Ordinal);
         }
         finally
         {
@@ -666,6 +847,39 @@ public sealed class FirstRunSetupTests
         var end = html.IndexOf('"', start);
         Assert.True(end > start);
         return html[start..end];
+    }
+
+    private static async Task<string> AuthenticateSetupAsync(
+        HttpClient client,
+        string bootstrapToken)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var page = await client.GetAsync("/setup", ct);
+        var html = await page.Content.ReadAsStringAsync(ct);
+        var requestToken = ReadRequestToken(html);
+        var csrfCookie = page.Headers.GetValues("Set-Cookie")
+            .Single(value => value.StartsWith("__Host-amane-setup-csrf=", StringComparison.Ordinal))
+            .Split(';', 2)[0];
+
+        using var response = await client.SendAsync(
+            CreateSetupAuthRequest(requestToken, csrfCookie, bootstrapToken),
+            ct);
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal("/setup", response.Headers.Location?.OriginalString);
+        return response.Headers.GetValues("Set-Cookie")
+            .Single(value => value.StartsWith("__Host-amane-setup-auth=", StringComparison.Ordinal))
+            .Split(';', 2)[0];
+    }
+
+    private static async Task<string> ReadAuthenticatedSetupAsync(
+        HttpClient client,
+        string authCookie)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/setup");
+        request.Headers.TryAddWithoutValidation("Cookie", authCookie);
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
     }
 
     private static HttpRequestMessage CreateSetupAuthRequest(
