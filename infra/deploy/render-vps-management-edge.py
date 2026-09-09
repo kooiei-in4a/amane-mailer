@@ -393,6 +393,36 @@ def run_self_test(generated_output: Path | str | None = None) -> None:
         assert basic_auth_username + " " + bcrypt_hash in repository_rendered.content
         assert "{{" not in repository_rendered.content and "}}" not in repository_rendered.content
 
+        # The single Japan allow-list is one IP-only matcher shared by the browser management
+        # surface and /api. Both markers land inside it and nowhere else.
+        assert repository_rendered.content.count("remote_ip 198.51.100.0/24") == 1
+        jp_open = repository_rendered.content.index("\t@jp {")
+        jp_close = repository_rendered.content.index("\n\t}", jp_open)
+        jp_block = repository_rendered.content[jp_open:jp_close]
+        assert "remote_ip 198.51.100.0/24" in jp_block
+        assert "remote_ip 2001:db8:1::/64" in jp_block
+        assert "path" not in jp_block
+
+        # /api is Japan-only, has no Caddy Basic Auth, and does not strip the client Authorization
+        # header. A non-JP source falls to the sibling 404 handler, never the upstream.
+        api_open = repository_rendered.content.index("handle @api_family {")
+        api_block = repository_rendered.content[api_open:]
+        api_block = api_block[: api_block.index("\n\t\thandle @metrics_operator {")]
+        assert "handle @jp {" in api_block
+        assert "reverse_proxy mailer:8080" in api_block
+        assert "respond 404" in api_block
+        assert "basic_auth" not in api_block
+        assert "-Authorization" not in api_block
+        api_jp_open = api_block.index("handle @jp {")
+        api_jp_close = api_block.index("\n\t\t\t}", api_jp_open)
+        assert "reverse_proxy mailer:8080" not in api_block[api_jp_close:]
+
+        # Liveness/readiness stay country-unrestricted; /api is no longer a public path.
+        assert "@public path /healthz /readyz" in repository_rendered.content
+        assert "/api" not in repository_rendered.content[
+            repository_rendered.content.index("@public path") :
+        ].split("\n", 1)[0]
+
         for invalid_username in ("", " ", "caddy admin", "caddy\nadmin", "caddy{admin}"):
             _expect_render_error(
                 "invalid Basic Auth username",

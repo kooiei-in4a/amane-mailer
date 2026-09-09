@@ -34,7 +34,8 @@ delivery status などの value-free な情報に限定します。宛先や mes
 - JP / non-JP edge（JP allow-list と non-JP の challenge 前 404）
 - Caddy Basic Auth の fail / success boundary
 - Mailer 自身の auth boundary
-- `/api` regression
+- `/api` regression（Issue #753 以降は `/api` も JP allow-list のみ。JP source は Bearer / API Key を
+  そのまま Mailer へ渡し、non-JP / 判定不能 source は Basic challenge なしの 404）
 - backend `:8080` が host/public から到達不能であること
 - SSH login と SSH からの rollback 経路
 

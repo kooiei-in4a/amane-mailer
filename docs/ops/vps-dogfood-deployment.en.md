@@ -28,13 +28,20 @@ The edge path contract is:
 
 | Path | Caddy edge boundary | Authentication sent to Mailer |
 |---|---|---|
-| `/api/*`, `/healthz`, `/readyz` | public | Existing path-specific authentication |
+| `/healthz`, `/readyz` | public (no country restriction) | none |
+| `/api`, `/api/*` | IPdeny aggregated JP CIDR only (no Caddy Basic Auth) | client `Authorization` (Bearer / API key) forwarded unchanged; an unauthenticated JP source still gets Mailer's own `401` |
 | `/admin`, `/admin/*`, `/setup`, `/setup/*` | IPdeny aggregated JP CIDR **and** Caddy Basic Auth | Caddy `Authorization` is removed; Mailer's own Admin/Setup authentication remains |
 | `/metrics` | `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator CIDR | Existing Mailer metrics bearer |
 | Everything else | 404 | Not sent upstream |
 
 For Admin/Setup, a source outside the JP CIDRs receives an edge 404 before Caddy can issue a
 Basic Auth challenge. Only a JP source that passes Caddy Basic Auth is reverse-proxied to Mailer.
+
+`/api` reuses the same IPdeny JP allow-list (Issue #753): only JP sources are reverse-proxied to
+Mailer. No Caddy Basic Auth is added and the `Authorization` header is passed through unchanged,
+so Mailer's existing Bearer / API key authentication still decides the outcome. A non-JP or
+undecidable `/api` source gets a Caddy `404` (fail-closed, no Basic challenge, upstream not
+reached).
 
 `compose.vps-dogfood.yml` overlays the base `mailer` service as follows:
 
@@ -54,8 +61,13 @@ Basic Auth challenge. Only a JP source that passes Caddy Basic Auth is reverse-p
 - `/metrics` keeps the existing `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator
   restriction and Mailer metrics bearer. The JP list must not be reused to expose
   metrics to all of Japan.
-- Only `/api/*`, `/healthz`, and `/readyz` are public proxy paths; everything else
-  gets a 404.
+- `/api` and `/api/*` reuse the same IPdeny JP allow-list (`@jp` matcher) as
+  Admin/Setup and are proxied to the upstream for JP sources only. No Caddy Basic
+  Auth is added, and the client `Authorization` header is passed to Mailer
+  unchanged (no `header_up -Authorization`). Non-JP / undecidable sources get a
+  `404` with no Basic challenge (Issue #753).
+- Only `/healthz` and `/readyz` are country-unrestricted public proxy paths;
+  everything else gets a 404.
 - The legacy tenant JSON bind and `MAILER_TENANTS_PATH`, `MAIL_SERVICE_TOKEN*`,
   and `MAILER_PROVIDER` kept by the base compose are removed from the effective
   `mailer` and `mailer-migrate` services by this overlay's Compose merge
@@ -860,9 +872,11 @@ Do not change sudoers, SSH config, root login, Docker topology, Caddy container 
   operator-side only. Keep last-known-good on failure; never put raw IPdeny zones, provenance metadata, bcrypt input
   hash file, or plaintext password on the VPS; never fall back to empty CIDRs, default routes, or allow-all
    (0.0.0.0/0 / ::/0). Preserve /admin and /setup as JP CIDR + Caddy Basic Auth + Mailer own auth, non-JP
-   404 before Basic challenge, /metrics MAILER_MANAGEMENT_ALLOWED_CIDRS, public /api/* /healthz /readyz,
-   removal of Caddy Basic Authorization before Mailer upstream, and unpublished Mailer :8080. #744 remains
-   edge hardening; do not start #745 fresh setup, real ACS send, or UX dogfood.
+   404 before Basic challenge; keep /api and /api/* on the same JP CIDR only (no Caddy Basic Auth, client
+   Authorization forwarded to Mailer) with non-JP/unknown getting a 404 and no Basic challenge; keep /metrics
+   on MAILER_MANAGEMENT_ALLOWED_CIDRS, /healthz /readyz country-unrestricted public, removal of the Caddy
+   Basic Authorization before the Mailer upstream, and unpublished Mailer :8080. #744 remains the management
+   edge and #753 restricts /api to Japan; do not start #745 fresh setup, real ACS send, or UX dogfood.
 For SSH-tunnel-only access, bind Caddy's host ports to `127.0.0.1` and do not
 publish the remote host's 80/443. This makes the public API tunnel-only too.
 For a public API with private management, operate public 80/443 through the
@@ -933,8 +947,12 @@ management route.
 
 ## Operational boundaries
 
-- Public consumer requests use `https://MAILER_PUBLIC_HOSTNAME/api/...`. The
-  backend Docker name/port is not the consumer's public contract.
+- Consumer requests use `https://MAILER_PUBLIC_HOSTNAME/api/...`. `/api` is
+  reachable from Japanese IPs only (Issue #753); non-JP / undecidable sources get
+  a Caddy `404` (fail-closed). No Caddy Basic Auth is added, and the
+  `Authorization` header (Bearer / API key) reaches Mailer unchanged, where
+  Mailer's existing authentication applies. The backend Docker name/port is not
+  the consumer's public contract.
 - `/admin` and `/setup` require both an IPdeny-derived JP CIDR and Caddy Basic
   Auth. Non-JP sources get a 404 before the Basic challenge. Combine this with a
   VPN/firewall/SSH tunnel and instance-owner authentication; this profile does not

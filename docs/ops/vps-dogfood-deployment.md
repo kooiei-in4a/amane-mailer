@@ -27,13 +27,20 @@ edge の path contract は次の通りです。
 
 | Path | Caddy edge boundary | Mailer へ渡す認証 |
 |---|---|---|
-| `/api/*`、`/healthz`、`/readyz` | public | path に応じた既存の認証 |
+| `/healthz`、`/readyz` | public（国制限なし） | なし |
+| `/api`、`/api/*` | IPdeny aggregated JP CIDR のみ（Caddy Basic Auth は追加しない） | client の `Authorization`（Bearer / API Key）をそのまま転送。JP source の未認証 request は従来どおり Mailer 自身の `401` |
 | `/admin`、`/admin/*`、`/setup`、`/setup/*` | IPdeny aggregated JP CIDR **かつ** Caddy Basic Auth | Caddy の `Authorization` は除去し、Mailer 自身の Admin/Setup 認証を維持 |
 | `/metrics` | `MAILER_MANAGEMENT_ALLOWED_CIDRS` の operator CIDR | 既存の Mailer metrics bearer |
 | その他 | 404 | upstream へ渡さない |
 
 Admin/Setup は、JP CIDR に一致しない場合は Basic Auth challenge を返す前に edge で 404
 になります。JP から Caddy Basic Auth に成功した場合だけ Mailer へ reverse proxy されます。
+
+`/api` も同じ IPdeny JP allow-list を再利用し（Issue #753）、JP source のみ Mailer へ
+reverse proxy します。`/api` には Caddy Basic Auth を追加せず、`Authorization` header は
+そのまま Mailer へ渡すため、既存の Bearer / API Key 認証がそのまま効きます。非JP または
+判定不能 source の `/api` は Caddy で `404`（fail-closed、Basic challenge なし、upstream 未到達）
+です。
 
 `compose.vps-dogfood.yml` は base の `mailer` service を次のように overlay します。
 
@@ -50,7 +57,11 @@ Admin/Setup は、JP CIDR に一致しない場合は Basic Auth challenge を�
   を返し、成功した Caddy Basic credential は `header_up -Authorization` で Mailer に渡しません。
 - `/metrics` は既存の `MAILER_MANAGEMENT_ALLOWED_CIDRS` operator restriction と Mailer の
   metrics bearer を維持します。Japan 全体へ公開するためにこの値を使い回しません。
-- `/api/*`、`/healthz`、`/readyz` だけを public path として proxy し、それ以外は 404 です。
+- `/api` と `/api/*` は Admin/Setup と同じ IPdeny JP allow-list（`@jp` matcher）を再利用し、
+  JP source のみ Mailer へ proxy します。Caddy Basic Auth は追加せず、client の `Authorization`
+  header は `header_up -Authorization` せずそのまま Mailer へ渡します。非JP / 判定不能 source は
+  Basic challenge なしの `404` です（Issue #753）。
+- `/healthz`、`/readyz` だけが国制限なしの public path で、それ以外は 404 です。
 - base compose に残る legacy tenant JSON bind と
   `MAILER_TENANTS_PATH`、`MAIL_SERVICE_TOKEN*`、`MAILER_PROVIDER` は、この overlay の
   Compose merge (`!override` / `!reset`) で `mailer` と `mailer-migrate` の実効設定から
@@ -842,9 +853,11 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
    側だけで行い、raw IPdeny zone、provenance metadata、bcrypt input hash file、plaintext password を VPS に
    置きません。空 CIDR、default route、allow-all (0.0.0.0/0 / ::/0) へ fallback しません。
    /admin /setup は JP CIDR + Caddy Basic Auth + Mailer own auth、non-JP/unknown は challenge 前の
-   404、/metrics は MAILER_MANAGEMENT_ALLOWED_CIDRS、/api/* /healthz /readyz は public、Caddy
-   Authorization は Mailer upstream へ forwardしない、Mailer :8080 は host unpublished を維持します。
-   #744 は edge hardening、#745 の fresh setup / real ACS send / UX dogfood は開始しません。
+   404、/api /api/* は同じ JP CIDR のみ（Caddy Basic Auth なし、client Authorization は Mailer へ転送）で
+   non-JP/unknown は challenge なしの 404、/metrics は MAILER_MANAGEMENT_ALLOWED_CIDRS、/healthz /readyz は
+   国制限なしの public、Caddy Basic Auth の Authorization は Mailer upstream へ forwardしない、Mailer :8080 は
+   host unpublished を維持します。#744 は management edge、#753 は /api の JP 限定、#745 の fresh setup /
+   real ACS send / UX dogfood は開始しません。
 管理経路を SSH tunnel のみにする場合は、Caddy の host bind を `127.0.0.1` に変更し、
 remote host の 80/443 を公開しません。public API も tunnel 経由だけになります。通常の
 public API + private management 構成では、public 80/443 を firewall で運用し、management
@@ -913,8 +926,11 @@ management route の `/admin` から利用します。
 
 ## 運用上の境界
 
-- public consumer request は `https://MAILER_PUBLIC_HOSTNAME/api/...` を使います。
-  backend の Docker name/port を consumer の public contract にしません。
+- consumer request は `https://MAILER_PUBLIC_HOSTNAME/api/...` を使います。`/api` は日本国内 IP
+  からのみ利用でき（Issue #753）、非JP / 判定不能 source は Caddy で `404`（fail-closed）です。
+  Caddy Basic Auth は追加されず、`Authorization`（Bearer / API Key）は Mailer へそのまま渡り、
+  Mailer 既存の認証で判定されます。backend の Docker name/port を consumer の public contract に
+  しません。
 - `/admin` と `/setup` は IPdeny-derived JP CIDR と Caddy Basic Auth の両方を要求します。
   non-JP には Basic challenge 前に 404 を返します。これだけに依存せず、VPN/firewall/SSH
   tunnel と instance owner の認証も組み合わせます。Mailer application 単体で public Admin

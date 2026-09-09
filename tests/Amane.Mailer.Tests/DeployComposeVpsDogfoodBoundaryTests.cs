@@ -124,18 +124,6 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             "Caddyfile.vps-dogfood.example");
 
         Assert.Contains("{$MAILER_PUBLIC_HOSTNAME}", caddyfile, StringComparison.Ordinal);
-        Assert.Contains(
-            "path /admin /admin/* /setup /setup/*",
-            caddyfile,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "{{JP_IPV4_CIDRS}}",
-            caddyfile,
-            StringComparison.Ordinal);
-        Assert.Contains(
-            "{{JP_IPV6_CIDRS}}",
-            caddyfile,
-            StringComparison.Ordinal);
         Assert.Contains("basic_auth", caddyfile, StringComparison.Ordinal);
         Assert.Contains(
             "{{CADDY_BASIC_AUTH_USERNAME}} {{CADDY_BASIC_AUTH_BCRYPT_HASH}}",
@@ -147,67 +135,110 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             StringComparison.Ordinal);
         Assert.Contains("header_up -Authorization", caddyfile, StringComparison.Ordinal);
         Assert.Contains("\troute {", caddyfile, StringComparison.Ordinal);
-        Assert.Matches(
-            new Regex(@"handle @browser_family \{\s+respond 404\s+\}", RegexOptions.Multiline),
-            caddyfile);
 
-        var browserMatcherIndex = caddyfile.IndexOf("@browser_jp {", StringComparison.Ordinal);
-        var metricsMatcherIndex = caddyfile.IndexOf("@metrics_operator {", StringComparison.Ordinal);
-        var metricsMatcherEndIndex = metricsMatcherIndex >= 0
-            ? caddyfile.IndexOf("@metrics {", metricsMatcherIndex, StringComparison.Ordinal)
-            : -1;
-        Assert.True(browserMatcherIndex >= 0);
-        Assert.True(metricsMatcherIndex >= 0 && metricsMatcherEndIndex > metricsMatcherIndex);
-        var browserMatcher = caddyfile[browserMatcherIndex..metricsMatcherIndex];
-        var metricsMatcher = caddyfile[metricsMatcherIndex..metricsMatcherEndIndex];
-        Assert.Contains("{{JP_IPV4_CIDRS}}", browserMatcher, StringComparison.Ordinal);
-        Assert.Contains("{{JP_IPV6_CIDRS}}", browserMatcher, StringComparison.Ordinal);
-        Assert.DoesNotContain("/metrics", browserMatcher, StringComparison.Ordinal);
+        // The renderer requires each CIDR marker exactly once. The Japan allow-list is therefore a
+        // single IP-only matcher shared by the browser management surface and /api.
+        Assert.Single(Regex.Matches(caddyfile, Regex.Escape("{{JP_IPV4_CIDRS}}")));
+        Assert.Single(Regex.Matches(caddyfile, Regex.Escape("{{JP_IPV6_CIDRS}}")));
+
+        var jpMatcher = ExtractBraceBlock(caddyfile, "@jp {");
+        Assert.Contains("{{JP_IPV4_CIDRS}}", jpMatcher, StringComparison.Ordinal);
+        Assert.Contains("{{JP_IPV6_CIDRS}}", jpMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("path ", jpMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("/metrics", jpMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("basic_auth", jpMatcher, StringComparison.Ordinal);
+
+        var browserFamilyMatcher = ExtractBraceBlock(caddyfile, "@browser_family {");
+        Assert.Contains(
+            "path /admin /admin/* /setup /setup/*",
+            browserFamilyMatcher,
+            StringComparison.Ordinal);
+        var apiFamilyMatcher = ExtractBraceBlock(caddyfile, "@api_family {");
+        Assert.Contains("path /api /api/*", apiFamilyMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("remote_ip", apiFamilyMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("JP_IPV", apiFamilyMatcher, StringComparison.Ordinal);
+
+        var metricsMatcher = ExtractBraceBlock(caddyfile, "@metrics_operator {");
         Assert.Contains(
             "remote_ip {$MAILER_MANAGEMENT_ALLOWED_CIDRS}",
             metricsMatcher,
             StringComparison.Ordinal);
-        Assert.DoesNotContain("{{JP_IPV4_CIDRS}}", metricsMatcher, StringComparison.Ordinal);
-        Assert.DoesNotContain("{{JP_IPV6_CIDRS}}", metricsMatcher, StringComparison.Ordinal);
+        Assert.DoesNotContain("JP_IPV", metricsMatcher, StringComparison.Ordinal);
 
-        var browserHandlerIndex = caddyfile.IndexOf("handle @browser_jp {", StringComparison.Ordinal);
-        var nonJapanHandlerIndex = caddyfile.IndexOf("handle @browser_family {", StringComparison.Ordinal);
-        var metricsHandlerIndex = caddyfile.IndexOf("handle @metrics_operator {", StringComparison.Ordinal);
-        var metricsFallbackIndex = caddyfile.IndexOf("handle @metrics {", StringComparison.Ordinal);
-        var publicHandlerIndex = caddyfile.IndexOf("handle @public {", StringComparison.Ordinal);
-        var fallbackHandlerIndex = publicHandlerIndex >= 0
-            ? caddyfile.IndexOf("handle {", publicHandlerIndex, StringComparison.Ordinal)
-            : -1;
-        Assert.True(browserHandlerIndex >= 0 && browserHandlerIndex < nonJapanHandlerIndex);
-        Assert.True(nonJapanHandlerIndex < metricsHandlerIndex);
+        Assert.Contains("@public path /healthz /readyz", caddyfile, StringComparison.Ordinal);
+        Assert.DoesNotMatch(
+            new Regex(@"@public path[^\n]*/api", RegexOptions.Multiline),
+            caddyfile);
+
+        // Route order: browser management, then /api, then the two /metrics handlers, then the
+        // country-unrestricted public paths, then the closed fallback. Each family is claimed by
+        // exactly one outer handle so a non-JP request cannot fall through to a later handler.
+        var route = ExtractBraceBlock(caddyfile, "\troute {");
+        var browserHandlerIndex = route.IndexOf("handle @browser_family {", StringComparison.Ordinal);
+        var apiHandlerIndex = route.IndexOf("handle @api_family {", StringComparison.Ordinal);
+        var metricsHandlerIndex = route.IndexOf("handle @metrics_operator {", StringComparison.Ordinal);
+        var metricsFallbackIndex = route.IndexOf("handle @metrics {", StringComparison.Ordinal);
+        var publicHandlerIndex = route.IndexOf("handle @public {", StringComparison.Ordinal);
+        Assert.True(browserHandlerIndex >= 0);
+        Assert.True(browserHandlerIndex < apiHandlerIndex);
+        Assert.True(apiHandlerIndex < metricsHandlerIndex);
         Assert.True(metricsHandlerIndex < metricsFallbackIndex);
         Assert.True(metricsFallbackIndex < publicHandlerIndex);
-        Assert.True(publicHandlerIndex < fallbackHandlerIndex);
+        var fallbackHandlerIndex = route.IndexOf(
+            "\n\t\thandle {",
+            publicHandlerIndex,
+            StringComparison.Ordinal);
+        Assert.True(fallbackHandlerIndex > publicHandlerIndex);
 
-        var browserHandler = caddyfile[browserHandlerIndex..nonJapanHandlerIndex];
-        var nonJapanHandler = caddyfile[nonJapanHandlerIndex..metricsHandlerIndex];
-        var metricsHandler = caddyfile[metricsHandlerIndex..metricsFallbackIndex];
-        var publicHandler = caddyfile[publicHandlerIndex..fallbackHandlerIndex];
-        var fallbackHandler = caddyfile[fallbackHandlerIndex..];
+        // Browser management: JP gate -> Basic Auth -> upstream with Caddy Authorization stripped;
+        // non-JP / undecidable -> 404 before any Basic Auth challenge.
+        var browserHandler = ExtractBraceBlock(caddyfile, "handle @browser_family {");
+        var browserJpBlock = ExtractBraceBlock(browserHandler, "handle @jp {");
+        var browserBasicAuthIndex = browserJpBlock.IndexOf("basic_auth", StringComparison.Ordinal);
+        var browserProxyIndex = browserJpBlock.IndexOf(
+            "reverse_proxy mailer:8080",
+            StringComparison.Ordinal);
+        Assert.True(browserBasicAuthIndex >= 0 && browserBasicAuthIndex < browserProxyIndex);
+        Assert.Contains("header_up -Authorization", browserJpBlock, StringComparison.Ordinal);
+        var browserOutsideJp = browserHandler.Replace(browserJpBlock, string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("basic_auth", browserOutsideJp, StringComparison.Ordinal);
+        Assert.DoesNotContain("reverse_proxy", browserOutsideJp, StringComparison.Ordinal);
+        Assert.Contains("respond 404", browserOutsideJp, StringComparison.Ordinal);
 
-        var basicAuthIndex = browserHandler.IndexOf("basic_auth", StringComparison.Ordinal);
-        var browserProxyIndex = browserHandler.IndexOf("reverse_proxy mailer:8080", StringComparison.Ordinal);
-        Assert.True(basicAuthIndex >= 0 && basicAuthIndex < browserProxyIndex);
-        Assert.Contains("header_up -Authorization", browserHandler, StringComparison.Ordinal);
-        Assert.DoesNotContain("basic_auth", nonJapanHandler, StringComparison.Ordinal);
-        Assert.Contains("respond 404", nonJapanHandler, StringComparison.Ordinal);
+        // Consumer API: JP gate -> upstream, with the client Authorization header forwarded
+        // unchanged and no Caddy Basic Auth anywhere; non-JP / undecidable -> 404, upstream never
+        // reached, no Basic Auth challenge.
+        var apiHandler = ExtractBraceBlock(caddyfile, "handle @api_family {");
+        Assert.DoesNotContain("basic_auth", apiHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("-Authorization", apiHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("header_down", apiHandler, StringComparison.Ordinal);
+        Assert.DoesNotMatch(
+            new Regex("www-authenticate", RegexOptions.IgnoreCase),
+            apiHandler);
+        var apiJpBlock = ExtractBraceBlock(apiHandler, "handle @jp {");
+        Assert.Contains("reverse_proxy mailer:8080", apiJpBlock, StringComparison.Ordinal);
+        var apiOutsideJp = apiHandler.Replace(apiJpBlock, string.Empty, StringComparison.Ordinal);
+        Assert.DoesNotContain("reverse_proxy", apiOutsideJp, StringComparison.Ordinal);
+        Assert.Contains("respond 404", apiOutsideJp, StringComparison.Ordinal);
+
+        // Metrics keeps its own operator CIDR boundary and Mailer's bearer auth, unchanged.
+        var metricsHandler = ExtractBraceBlock(caddyfile, "handle @metrics_operator {");
         Assert.Contains("reverse_proxy mailer:8080", metricsHandler, StringComparison.Ordinal);
         Assert.DoesNotContain("basic_auth", metricsHandler, StringComparison.Ordinal);
         Assert.DoesNotContain("header_up -Authorization", metricsHandler, StringComparison.Ordinal);
         Assert.DoesNotContain("JP_IPV", metricsHandler, StringComparison.Ordinal);
+
+        // Liveness / readiness stay public and country-unrestricted.
+        var publicHandler = ExtractBraceBlock(caddyfile, "handle @public {");
         Assert.Contains("reverse_proxy mailer:8080", publicHandler, StringComparison.Ordinal);
         Assert.DoesNotContain("basic_auth", publicHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("remote_ip", publicHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("JP_IPV", publicHandler, StringComparison.Ordinal);
+        Assert.DoesNotContain("/api", publicHandler, StringComparison.Ordinal);
+
+        var fallbackHandler = route[fallbackHandlerIndex..];
         Assert.Contains("respond 404", fallbackHandler, StringComparison.Ordinal);
 
-        Assert.Contains(
-            "@public path /api/* /healthz /readyz",
-            caddyfile,
-            StringComparison.Ordinal);
         Assert.Contains("reverse_proxy mailer:8080", caddyfile, StringComparison.Ordinal);
         Assert.Contains("header_up X-Forwarded-Proto {scheme}", caddyfile, StringComparison.Ordinal);
         Assert.DoesNotMatch(
@@ -222,6 +253,35 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             "infra/deploy/Caddyfile.vps-dogfood",
             gitignore,
             StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Return <paramref name="opener"/> (which must end with <c>{</c>) plus everything through its
+    /// matching close brace. Used to reason about one Caddyfile matcher/handler block in isolation.
+    /// </summary>
+    private static string ExtractBraceBlock(string text, string opener)
+    {
+        var start = text.IndexOf(opener, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"Could not find block '{opener}'.");
+        var depth = 0;
+        for (var i = start + opener.Length - 1; i < text.Length; i++)
+        {
+            if (text[i] == '{')
+            {
+                depth++;
+            }
+            else if (text[i] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return text[start..(i + 1)];
+                }
+            }
+        }
+
+        Assert.Fail($"Unbalanced braces after '{opener}'.");
+        return string.Empty;
     }
 
     [Fact]
