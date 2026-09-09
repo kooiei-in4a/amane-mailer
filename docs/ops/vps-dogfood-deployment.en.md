@@ -41,10 +41,7 @@ Basic Auth challenge. Only a JP source that passes Caddy Basic Auth is reverse-p
 Mailer. No Caddy Basic Auth is added and the `Authorization` header is passed through unchanged,
 so Mailer's existing Bearer / API key authentication still decides the outcome. A non-JP or
 undecidable `/api` source gets a Caddy `404` (fail-closed, no Basic challenge, upstream not
-reached). That non-JP 404 is proven by source-level tests (matcher/handle structure, synthetic
-non-JP CIDR render, `caddy adapt`) and is verified from a real non-JP path during live
-acceptance; the VPS's own egress IP is on the JP allow-list, so a VPS self-request cannot
-reproduce the non-JP 404.
+reached).
 
 `compose.vps-dogfood.yml` overlays the base `mailer` service as follows:
 
@@ -955,8 +952,7 @@ management route.
   a Caddy `404` (fail-closed). No Caddy Basic Auth is added, and the
   `Authorization` header (Bearer / API key) reaches Mailer unchanged, where
   Mailer's existing authentication applies. The backend Docker name/port is not
-  the consumer's public contract. If a future external egress (Azure/AWS, etc.)
-  must call `/api`, its egress IP has to be in the JP allow-list.
+  the consumer's public contract.
 - `/admin` and `/setup` require both an IPdeny-derived JP CIDR and Caddy Basic
   Auth. Non-JP sources get a 404 before the Basic challenge. Combine this with a
   VPN/firewall/SSH tunnel and instance-owner authentication; this profile does not

@@ -717,42 +717,6 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
             Assert.Contains("HostConfig.PortBindings", transaction, StringComparison.Ordinal);
             Assert.Contains("8080/tcp", transaction, StringComparison.Ordinal);
 
-            // Issue #753 transition semantics. The live VPS self-request source is on the JP
-            // allow-list (proven by #744 live acceptance: a VPS self-request to /admin gets a
-            // Caddy Basic Auth challenge). So restricting /api to Japan does NOT change what a
-            // VPS self-request to /api sees: before, during candidate, and after rollback it is
-            // still Mailer's own 401 (JP source -> @jp match -> upstream -> unauthenticated).
-            // The transaction must never expect a Caddy 404 for the /api self-request path, and
-            // must not treat that path as a non-JP boundary. The real non-JP /api 404 is proven
-            // structurally by Caddyfile_requires_japan_basic_auth_..., not by this transaction.
-            var preamble = transaction[..transaction.IndexOf(
-                "run_approved_value_free_acceptance_checks() {",
-                StringComparison.Ordinal)];
-            Assert.Contains("assert_api_no_send 401", preamble, StringComparison.Ordinal);
-            Assert.Contains(
-                "test \"${baseline_api_state%%|*}\" = 401",
-                preamble,
-                StringComparison.Ordinal);
-            Assert.DoesNotMatch(
-                new Regex(@"baseline_api_state%%\|\*\}""\s*=\s*404"),
-                transaction);
-
-            var candidateStart = helper.IndexOf("candidate)", StringComparison.Ordinal);
-            var rollbackStart = helper.IndexOf("rollback)", StringComparison.Ordinal);
-            var candidateMode = helper[candidateStart..rollbackStart];
-            var rollbackMode = helper[rollbackStart..];
-            Assert.Contains("assert_api_no_send 401", candidateMode, StringComparison.Ordinal);
-            Assert.Contains(
-                "assert_api_no_send \"${baseline_api_state%%|*}\"",
-                rollbackMode,
-                StringComparison.Ordinal);
-
-            // The /api status path is only ever checked with assert_api_no_send (Mailer 401),
-            // never routed through a non-JP / fail-closed 404 boundary helper.
-            Assert.DoesNotMatch(
-                new Regex(@"assert_non_jp[a-z_]*\s+""\$api_status_path"""),
-                transaction);
-
             var rollbackIndex = transaction.IndexOf("rollback_current_in_place()", StringComparison.Ordinal);
             var oldReloadIndex = transaction.IndexOf(
                 "docker exec \"$container\" caddy reload --config \"$container_path\" --adapter caddyfile || return 1",

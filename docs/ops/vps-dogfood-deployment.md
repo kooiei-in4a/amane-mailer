@@ -40,9 +40,7 @@ Admin/Setup は、JP CIDR に一致しない場合は Basic Auth challenge を�
 reverse proxy します。`/api` には Caddy Basic Auth を追加せず、`Authorization` header は
 そのまま Mailer へ渡すため、既存の Bearer / API Key 認証がそのまま効きます。非JP または
 判定不能 source の `/api` は Caddy で `404`（fail-closed、Basic challenge なし、upstream 未到達）
-です。この非JP 404 は source-level test（matcher/handle 構造、synthetic non-JP CIDR、
-`caddy adapt`）で証明し、live では実在の非JP 経路から確認します。VPS 自身の egress IP は
-JP allow-list に含まれるため、VPS self-request では非JP 404 を再現できません。
+です。
 
 `compose.vps-dogfood.yml` は base の `mailer` service を次のように overlay します。
 
@@ -932,8 +930,7 @@ management route の `/admin` から利用します。
   からのみ利用でき（Issue #753）、非JP / 判定不能 source は Caddy で `404`（fail-closed）です。
   Caddy Basic Auth は追加されず、`Authorization`（Bearer / API Key）は Mailer へそのまま渡り、
   Mailer 既存の認証で判定されます。backend の Docker name/port を consumer の public contract に
-  しません。将来 Azure/AWS 等の外部 egress から `/api` を呼ぶ場合は、その egress IP が JP
-  allow-list に含まれる必要があります。
+  しません。
 - `/admin` と `/setup` は IPdeny-derived JP CIDR と Caddy Basic Auth の両方を要求します。
   non-JP には Basic challenge 前に 404 を返します。これだけに依存せず、VPN/firewall/SSH
   tunnel と instance owner の認証も組み合わせます。Mailer application 単体で public Admin
