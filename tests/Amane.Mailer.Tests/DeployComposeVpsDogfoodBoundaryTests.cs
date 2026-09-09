@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 
 namespace Amane.Mailer.Tests;
@@ -606,6 +607,299 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
         }
     }
 
+    [Fact]
+    public void Vps_runbook_transaction_defines_and_directly_exercises_value_free_acceptance_contract()
+    {
+        var deploymentRunbooks = new[]
+        {
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.md"),
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.en.md")
+        };
+
+        foreach (var runbook in deploymentRunbooks)
+        {
+            var transaction = ExtractRootBash(runbook);
+            var definition = "run_approved_value_free_acceptance_checks() {";
+            var definitionIndex = transaction.IndexOf(definition, StringComparison.Ordinal);
+            Assert.True(definitionIndex >= 0, "The privileged transaction must define the acceptance helper.");
+
+            var invocations = Regex.Matches(
+                    transaction,
+                    @"(?m)^\s*run_approved_value_free_acceptance_checks(?<arguments>[^\r\n]*)$")
+                .Select(match => (Match: match, Arguments: match.Groups["arguments"].Value.Trim()))
+                .Where(item => !item.Arguments.StartsWith("()", StringComparison.Ordinal))
+                .ToArray();
+
+            Assert.Equal(2, invocations.Length);
+            Assert.Contains(invocations, item => item.Arguments.StartsWith("candidate", StringComparison.Ordinal));
+            Assert.Contains(invocations, item => item.Arguments.StartsWith("rollback", StringComparison.Ordinal));
+            Assert.All(
+                invocations,
+                invocation => Assert.True(
+                    transaction.IndexOf(invocation.Match.Value, StringComparison.Ordinal) > definitionIndex,
+                    "Every acceptance helper invocation must occur after its definition."));
+
+            var helper = ExtractAcceptanceHelper(transaction);
+            Assert.Contains("candidate)", helper, StringComparison.Ordinal);
+            Assert.Contains("rollback)", helper, StringComparison.Ordinal);
+            Assert.Contains("unknown acceptance mode; fail closed", helper, StringComparison.Ordinal);
+            Assert.Contains("return 1", helper, StringComparison.Ordinal);
+            Assert.Contains("/healthz", helper, StringComparison.Ordinal);
+            Assert.Contains("/readyz", helper, StringComparison.Ordinal);
+            Assert.Contains("/api/mail-requests/00000000-0000-0000-0000-000000000000", transaction, StringComparison.Ordinal);
+            Assert.Contains("--request GET", transaction, StringComparison.Ordinal);
+            Assert.Contains("\"code\":\"UNAUTHORIZED\"", transaction, StringComparison.Ordinal);
+            Assert.DoesNotContain("--request POST", transaction, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("curl -X POST", transaction, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("/admin", helper, StringComparison.Ordinal);
+            Assert.Contains("/setup", helper, StringComparison.Ordinal);
+            Assert.Contains("www-authenticate", transaction, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("HostConfig.PortBindings", transaction, StringComparison.Ordinal);
+            Assert.Contains("8080/tcp", transaction, StringComparison.Ordinal);
+
+            var rollbackIndex = transaction.IndexOf("rollback_current_in_place()", StringComparison.Ordinal);
+            var oldReloadIndex = transaction.IndexOf(
+                "docker exec \"$container\" caddy reload --config \"$container_path\" --adapter caddyfile || return 1",
+                rollbackIndex,
+                StringComparison.Ordinal);
+            var rollbackAcceptanceIndex = transaction.IndexOf(
+                "run_approved_value_free_acceptance_checks rollback",
+                oldReloadIndex,
+                StringComparison.Ordinal);
+            Assert.True(rollbackIndex >= 0);
+            Assert.True(oldReloadIndex > rollbackIndex);
+            Assert.True(rollbackAcceptanceIndex > oldReloadIndex);
+
+            Assert.Contains("baseline_admin_state", transaction, StringComparison.Ordinal);
+            Assert.Contains("baseline_setup_state", transaction, StringComparison.Ordinal);
+            Assert.Contains("assert_http_state /admin \"$baseline_admin_state\"", transaction, StringComparison.Ordinal);
+            Assert.Contains("assert_http_state /setup \"$baseline_setup_state\"", transaction, StringComparison.Ordinal);
+            Assert.Contains("SSH recovery", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("standalone SSH TTY", runbook, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("ssh ", helper, StringComparison.OrdinalIgnoreCase);
+
+            AssertShellSyntax(transaction);
+            AssertUnknownAcceptanceModeFailsClosed(helper);
+        }
+    }
+
+    [Fact]
+    public void Sha256sum_field_selection_yields_the_digest_only_for_the_shipped_awk_form()
+    {
+        const string record = "deadbeef  /srv/platform/edge/Caddyfile";
+
+        // The shipped form reads field 1, which is what the host/container SHA guards compare.
+        var shipped = RunBashCapturingStandardOutput(
+            @"printf '%s\n' 'deadbeef  /srv/platform/edge/Caddyfile' | awk '{print $1}'");
+        Assert.Equal("deadbeef", shipped);
+
+        // The pre-fix `'"'"'` escaping is meaningless inside the quoted <<'ROOT_BASH' heredoc:
+        // awk receives a truthy string constant as its pattern and prints the whole record, so
+        // `test "$host_sha" = "$candidate_sha256"` fails against a byte-identical candidate.
+        var overEscaped = RunBashCapturingStandardOutput(
+            @"printf '%s\n' 'deadbeef  /srv/platform/edge/Caddyfile' | awk '""'""'{print $1}'""'""'");
+        Assert.NotEqual("deadbeef", overEscaped);
+        Assert.Equal(record, overEscaped);
+
+        // ROOT_BASH runs as `bash -s -- <candidate_remote> ...`, so $1 is a real path there.
+        // The over-escaped form is broken in that shape too.
+        var overEscapedWithPositionalArguments = RunBashCapturingStandardOutput(
+            "set -- /srv/platform/edge/Caddyfile.candidate\n"
+            + @"printf '%s\n' 'deadbeef  /srv/platform/edge/Caddyfile' | awk '""'""'{print $1}'""'""'");
+        Assert.NotEqual("deadbeef", overEscapedWithPositionalArguments);
+    }
+
+    [Fact]
+    public void Vps_runbook_transaction_selects_the_sha_field_without_shell_escaping()
+    {
+        var deploymentRunbooks = new[]
+        {
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.md"),
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.en.md")
+        };
+
+        foreach (var runbook in deploymentRunbooks)
+        {
+            var transaction = ExtractRootBash(runbook);
+
+            Assert.Contains(
+                @"host_sha=""$(sha256sum ""$current"" | awk '{print $1}')""",
+                transaction,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                @"container_sha=""$(docker exec ""$container"" sha256sum ""$container_path"" "
+                + @"| awk '{print $1}')""",
+                transaction,
+                StringComparison.Ordinal);
+
+            // A quoted heredoc performs no expansion, so the `'"'"'` single-quote bridge must
+            // never reappear anywhere in the privileged transaction.
+            Assert.DoesNotContain(@"'""'""'", transaction, StringComparison.Ordinal);
+
+            // The guards these two assignments feed are unchanged.
+            Assert.Contains(
+                @"test ""$host_sha"" = ""$candidate_sha256""",
+                transaction,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                @"test ""$container_sha"" = ""$candidate_sha256""",
+                transaction,
+                StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Vps_runbook_resolves_mailer_from_its_own_compose_project_on_the_live_split_topology()
+    {
+        var deploymentRunbooks = new[]
+        {
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.md"),
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.en.md")
+        };
+
+        foreach (var runbook in deploymentRunbooks)
+        {
+            var transaction = ExtractRootBash(runbook);
+
+            // The live VPS runs the edge proxy and the mailer in two distinct Compose
+            // projects (stg-mailer-01: amane-platform-edge / amane-mailer-vps). Both must be
+            // named and resolved separately.
+            Assert.Contains("edge_project=amane-platform-edge", transaction, StringComparison.Ordinal);
+            Assert.Contains("mailer_project=amane-mailer-vps", transaction, StringComparison.Ordinal);
+
+            // Proxy resolution stays on the edge project.
+            Assert.Contains(
+                "docker ps --quiet --filter label=com.docker.compose.project=$edge_project "
+                + "--filter label=com.docker.compose.service=$service --filter status=running",
+                transaction,
+                StringComparison.Ordinal);
+
+            var mailerProbe = ExtractShellFunction(transaction, "assert_mailer_8080_unpublished");
+
+            // Mailer backend exposure verification resolves from the mailer project, by
+            // Compose labels, never by a hard-coded container name.
+            Assert.Contains("com.docker.compose.project=$mailer_project", mailerProbe, StringComparison.Ordinal);
+            Assert.Contains("com.docker.compose.service=mailer", mailerProbe, StringComparison.Ordinal);
+            Assert.DoesNotContain("com.docker.compose.project=$project", mailerProbe, StringComparison.Ordinal);
+            Assert.DoesNotContain("amane-mailer-vps-mailer-1", transaction, StringComparison.Ordinal);
+            Assert.DoesNotContain("amane-platform-edge-proxy-1", transaction, StringComparison.Ordinal);
+
+            // exactly-one / fail-closed semantics retained.
+            Assert.Contains("test \"$mailer_count\" -eq 1", mailerProbe, StringComparison.Ordinal);
+
+            // Functional teeth against a Docker stub mirroring the live split topology.
+            Assert.Equal(0, RunMailerProbeScenario(mailerProbe, SplitProjectHealthyScenario));
+            Assert.NotEqual(0, RunMailerProbeScenario(mailerProbe, MailerLookedUpInEdgeProjectScenario));
+            Assert.NotEqual(0, RunMailerProbeScenario(mailerProbe, ZeroMailerContainersScenario));
+            Assert.NotEqual(0, RunMailerProbeScenario(mailerProbe, MultipleMailerContainersScenario));
+            Assert.NotEqual(0, RunMailerProbeScenario(mailerProbe, MailerPort8080PublishedScenario));
+        }
+    }
+
+    // A minimal `docker` shim: `docker ps` returns ids from PS_<project>_<service> shell
+    // variables, `docker inspect` returns labels/port-bindings from LP_/LS_/PB_ variables.
+    private const string DockerStub = @"
+docker() {
+  if [ ""$1"" = ps ]; then
+    local a proj='' svc='' key
+    for a in ""$@""; do
+      case ""$a"" in
+        label=com.docker.compose.project=*) proj=""${a##*=}"" ;;
+        label=com.docker.compose.service=*) svc=""${a##*=}"" ;;
+      esac
+    done
+    key=""PS_${proj//[!A-Za-z0-9]/_}_${svc}""
+    if [ -n ""${!key:-}"" ]; then printf '%s\n' ""${!key}""; fi
+    return 0
+  fi
+  if [ ""$1"" = inspect ]; then
+    local fmt=""$3"" id=""$4"" key
+    case ""$fmt"" in
+      *PortBindings*) key=""PB_${id}""; if [ -n ""${!key:-}"" ]; then printf '%s\n' ""${!key}""; else printf '{}\n'; fi ;;
+      *com.docker.compose.project*) key=""LP_${id}""; printf '%s\n' ""${!key:-}"" ;;
+      *com.docker.compose.service*) key=""LS_${id}""; printf '%s\n' ""${!key:-}"" ;;
+    esac
+    return 0
+  fi
+  return 0
+}
+";
+
+    // proxy in amane-platform-edge, exactly one mailer in amane-mailer-vps, no host port.
+    private const string SplitProjectHealthyScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-mailer-vps
+PS_amane_platform_edge_proxy='p1'
+PS_amane_mailer_vps_mailer='m1'
+LP_m1='amane-mailer-vps'
+LS_m1='mailer'
+PB_m1='{}'
+";
+
+    // Same topology, but the mailer lookup is wrongly pointed at the edge project.
+    private const string MailerLookedUpInEdgeProjectScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-platform-edge
+PS_amane_platform_edge_proxy='p1'
+PS_amane_mailer_vps_mailer='m1'
+LP_m1='amane-mailer-vps'
+LS_m1='mailer'
+PB_m1='{}'
+";
+
+    private const string ZeroMailerContainersScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-mailer-vps
+PS_amane_platform_edge_proxy='p1'
+";
+
+    private const string MultipleMailerContainersScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-mailer-vps
+PS_amane_mailer_vps_mailer=$'m1\nm2'
+LP_m1='amane-mailer-vps'
+LS_m1='mailer'
+PB_m1='{}'
+LP_m2='amane-mailer-vps'
+LS_m2='mailer'
+PB_m2='{}'
+";
+
+    private const string MailerPort8080PublishedScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-mailer-vps
+PS_amane_mailer_vps_mailer='m1'
+LP_m1='amane-mailer-vps'
+LS_m1='mailer'
+PB_m1='{""8080/tcp"":[{""HostIp"":""0.0.0.0"",""HostPort"":""8080""}]}'
+";
+
+    private static int RunMailerProbeScenario(string mailerProbe, string scenario)
+    {
+        var script = "set -Eeuo pipefail\n"
+            + DockerStub + "\n"
+            + scenario + "\n"
+            + mailerProbe + "\n"
+            + "assert_mailer_8080_unpublished\n";
+
+        using var process = StartBash(string.Empty);
+        process.StandardInput.Write(script);
+        process.StandardInput.Close();
+
+        var standardError = process.StandardError.ReadToEnd();
+        Assert.True(process.WaitForExit(5000), $"Mailer probe scenario did not finish promptly: {standardError}");
+        return process.ExitCode;
+    }
+
+    private static string ExtractShellFunction(string transaction, string name)
+    {
+        var match = Regex.Match(
+            transaction,
+            @"(?ms)^(?<indent>[ \t]*)" + Regex.Escape(name) + @"\(\) \{\r?\n(?<body>.*?)^\k<indent>\}$");
+        Assert.True(match.Success, $"Could not isolate shell function '{name}'.");
+        return match.Value.Replace("\r\n", "\n", StringComparison.Ordinal);
+    }
+
     private static string ServiceBlock(string compose, string serviceName)
     {
         var lines = compose.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
@@ -632,6 +926,102 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
         }
 
         return string.Join('\n', lines[startIndex..endIndex]);
+    }
+
+    private static string ExtractRootBash(string runbook)
+    {
+        var match = Regex.Match(
+            runbook,
+            @"(?ms)^[ \t]*if sudo -n bash -s -- .*?<<'ROOT_BASH'\n(?<body>.*?)^[ \t]*ROOT_BASH\s*$");
+        Assert.True(match.Success, "Could not locate the privileged ROOT_BASH transaction.");
+        return string.Join(
+            "\n",
+            match.Groups["body"].Value
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Split('\n')
+                .Select(line => line.StartsWith("   ", StringComparison.Ordinal) ? line[3..] : line));
+    }
+
+    private static string ExtractAcceptanceHelper(string transaction)
+    {
+        var start = transaction.IndexOf(
+            "run_approved_value_free_acceptance_checks() {",
+            StringComparison.Ordinal);
+        var end = transaction.IndexOf(
+            "\n  write_contents_in_place() {",
+            start,
+            StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, "Could not isolate the acceptance helper.");
+        return transaction[start..end];
+    }
+
+    private static void AssertShellSyntax(string transaction)
+    {
+        using var process = StartBash("-n");
+        process.StandardInput.Write(transaction);
+        process.StandardInput.Close();
+
+        var standardError = process.StandardError.ReadToEnd();
+        Assert.True(process.WaitForExit(5000), "bash -n did not finish promptly.");
+        Assert.True(
+            process.ExitCode == 0,
+            $"Extracted ROOT_BASH failed bash -n: {standardError}");
+    }
+
+    private static void AssertUnknownAcceptanceModeFailsClosed(string helper)
+    {
+        using var process = StartBash(string.Empty);
+        process.StandardInput.Write(helper);
+        process.StandardInput.WriteLine();
+        process.StandardInput.WriteLine(
+            "if run_approved_value_free_acceptance_checks unexpected-mode; then exit 1; else exit 0; fi");
+        process.StandardInput.Close();
+
+        var standardError = process.StandardError.ReadToEnd();
+        Assert.True(process.WaitForExit(5000), "Acceptance helper self-test did not finish promptly.");
+        Assert.True(
+            process.ExitCode == 0,
+            $"Unknown acceptance mode was not rejected: {standardError}");
+    }
+
+    private static string RunBashCapturingStandardOutput(string script)
+    {
+        var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "bash",
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
+
+        Assert.NotNull(process);
+        using var bash = process!;
+        bash.StandardInput.Write(script);
+        bash.StandardInput.Close();
+
+        var standardOutput = bash.StandardOutput.ReadToEnd();
+        var standardError = bash.StandardError.ReadToEnd();
+        Assert.True(bash.WaitForExit(5000), "bash did not finish promptly.");
+        Assert.True(bash.ExitCode == 0, $"bash exited {bash.ExitCode}: {standardError}");
+        return standardOutput.TrimEnd('\n');
+    }
+
+    private static Process StartBash(string arguments)
+    {
+        var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = "bash",
+            Arguments = arguments,
+            RedirectStandardInput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        });
+
+        Assert.NotNull(process);
+        return process!;
     }
 
     private static string ReadRepositoryFile(params string[] segments)
