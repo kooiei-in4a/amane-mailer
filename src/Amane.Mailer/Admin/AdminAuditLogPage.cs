@@ -118,6 +118,12 @@ public static class AdminAuditLogPage
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(html, "監査ログ - Amane Admin", AdminNavItem.AuditLog, deadLetterCount);
 
+        html.AppendLine("                <section class=\"ops-section\" aria-label=\"監査ログの説明\">");
+        html.AppendLine("                  <h1 class=\"ops-heading\">監査ログ</h1>");
+        html.AppendLine("                  <p class=\"ops-description\">Adminで行われた認証・設定・送信操作などの記録を確認する画面です。問題調査や、誰がいつ何を行ったかの確認に使います。</p>");
+        html.AppendLine("                  <p class=\"ops-meta\">監査ログはappend-onlyで、表示範囲は現在のAdminの権限とテナント範囲に従います。</p>");
+        html.AppendLine("                </section>");
+
         AppendScopeNote(html, access);
         AppendRetentionNote(html, retentionOptions);
 

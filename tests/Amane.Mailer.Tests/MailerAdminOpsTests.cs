@@ -53,8 +53,18 @@ public sealed class MailerAdminOpsTests(MailerAdminFixture fixture)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("no-store", response.Headers.CacheControl?.ToString() ?? string.Empty, StringComparison.Ordinal);
         Assert.Contains("/admin/ops", html, StringComparison.Ordinal);
+        Assert.Contains("現在正常に稼働しているか", html, StringComparison.Ordinal);
+        Assert.Contains("処理を開始できる状態か", html, StringComparison.Ordinal);
+        Assert.Contains("テナント単位で集計される件数はこの範囲に従い", html, StringComparison.Ordinal);
+        Assert.Contains("<code>service-wide</code> の値やProvider queue・DB情報", html, StringComparison.Ordinal);
+        Assert.Contains("<code>Ready</code>", html, StringComparison.Ordinal);
         Assert.Contains("Queue metrics", html, StringComparison.Ordinal);
+        Assert.Contains("送信待ち、処理中、失敗、Dead Letter", html, StringComparison.Ordinal);
+        Assert.Contains("<code>enabled</code> / <code>disabled</code>", html, StringComparison.Ordinal);
+        Assert.Contains("Webhook配信の未処理件数", html, StringComparison.Ordinal);
+        Assert.Contains("外部メールProviderへ渡す処理", html, StringComparison.Ordinal);
         Assert.Contains("Database storage", html, StringComparison.Ordinal);
+        Assert.Contains("Mailer DBの状態・サイズ・WAL", html, StringComparison.Ordinal);
     }
 
     [Fact]

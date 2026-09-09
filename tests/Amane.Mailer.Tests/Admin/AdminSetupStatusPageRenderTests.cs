@@ -10,6 +10,28 @@ public sealed class AdminSetupStatusPageRenderTests
     private static readonly DateTimeOffset AsOf = DateTimeOffset.Parse("2026-07-29T15:00:00Z");
 
     [Fact]
+    public void Page_explains_setup_purpose_sections_status_values_and_next_steps()
+    {
+        var html = Render(ManagedUnavailableModel());
+
+        Assert.Contains("現在の配備方式と設定状態を確認する画面です", html, StringComparison.Ordinal);
+        Assert.Contains("<code>match</code>", html, StringComparison.Ordinal);
+        Assert.Contains("<code>not-managed</code>", html, StringComparison.Ordinal);
+        Assert.Contains("<code>credential-missing</code>", html, StringComparison.Ordinal);
+        Assert.Contains("Deployment mode", html, StringComparison.Ordinal);
+        Assert.Contains("Recorded configuration", html, StringComparison.Ordinal);
+        Assert.Contains("Effective configuration", html, StringComparison.Ordinal);
+        Assert.Contains("Fingerprint comparison", html, StringComparison.Ordinal);
+        Assert.Contains("Bundle integrity", html, StringComparison.Ordinal);
+        Assert.Contains("Deployment verification", html, StringComparison.Ordinal);
+        Assert.Contains("Deployment state", html, StringComparison.Ordinal);
+        Assert.Contains("Staging verification summary", html, StringComparison.Ordinal);
+        Assert.Contains("Deployment operational verification", html, StringComparison.Ordinal);
+        Assert.Contains("Next steps", html, StringComparison.Ordinal);
+        Assert.Contains(AdminSetupStatusPage.SetupGuideUrl, html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Manual_deployment_renders_easy_setup_unmanaged_without_bundle_guesses()
     {
         var html = Render(ManualModel());
