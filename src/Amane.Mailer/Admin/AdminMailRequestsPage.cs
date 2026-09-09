@@ -108,7 +108,7 @@ public static class AdminMailRequestsPage
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"送信依頼の説明\">");
         html.AppendLine("                  <h1 class=\"ops-heading\">送信依頼</h1>");
         html.AppendLine("                  <p class=\"ops-description\">受け付けたメール送信依頼の状態、試行回数、更新日時を確認する画面です。行を選ぶと依頼の詳細と配送履歴を確認できます。</p>");
-        html.AppendLine("                  <p class=\"ops-meta\"><code>Queued</code> は送信待ち、<code>Processing</code> は処理中、<code>Delivered</code> は配送完了、<code>Failed</code> は失敗、<code>DeadLettered</code> は自動処理が終了した終端状態、<code>DeliveryUnknown</code> はProviderの結果を確定できない状態です。</p>");
+        html.AppendLine("                  <p class=\"ops-meta\"><code>Queued</code> は送信待ち、<code>Processing</code> は処理中、<code>Delivered</code> は配送完了、<code>Failed</code> は失敗、<code>DeadLettered</code> は自動処理が終了した終端状態、<code>Cancelled</code> はキャンセルされた送信依頼の終端状態、<code>DeliveryUnknown</code> はProviderの結果を確定できない状態です。</p>");
         html.AppendLine("                </section>");
 
         html.AppendLine("""
