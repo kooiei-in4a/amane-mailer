@@ -683,6 +683,158 @@ public sealed class DeployComposeVpsDogfoodBoundaryTests
         }
     }
 
+    [Fact]
+    public void Vps_runbook_resolves_mailer_from_its_own_compose_project_on_the_live_split_topology()
+    {
+        var deploymentRunbooks = new[]
+        {
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.md"),
+            ReadRepositoryFile("docs", "ops", "vps-dogfood-deployment.en.md")
+        };
+
+        foreach (var runbook in deploymentRunbooks)
+        {
+            var transaction = ExtractRootBash(runbook);
+
+            // The live VPS runs the edge proxy and the mailer in two distinct Compose
+            // projects (stg-mailer-01: amane-platform-edge / amane-mailer-vps). Both must be
+            // named and resolved separately.
+            Assert.Contains("edge_project=amane-platform-edge", transaction, StringComparison.Ordinal);
+            Assert.Contains("mailer_project=amane-mailer-vps", transaction, StringComparison.Ordinal);
+
+            // Proxy resolution stays on the edge project.
+            Assert.Contains(
+                "docker ps --quiet --filter label=com.docker.compose.project=$edge_project "
+                + "--filter label=com.docker.compose.service=$service --filter status=running",
+                transaction,
+                StringComparison.Ordinal);
+
+            var mailerProbe = ExtractShellFunction(transaction, "assert_mailer_8080_unpublished");
+
+            // Mailer backend exposure verification resolves from the mailer project, by
+            // Compose labels, never by a hard-coded container name.
+            Assert.Contains("com.docker.compose.project=$mailer_project", mailerProbe, StringComparison.Ordinal);
+            Assert.Contains("com.docker.compose.service=mailer", mailerProbe, StringComparison.Ordinal);
+            Assert.DoesNotContain("com.docker.compose.project=$project", mailerProbe, StringComparison.Ordinal);
+            Assert.DoesNotContain("amane-mailer-vps-mailer-1", transaction, StringComparison.Ordinal);
+            Assert.DoesNotContain("amane-platform-edge-proxy-1", transaction, StringComparison.Ordinal);
+
+            // exactly-one / fail-closed semantics retained.
+            Assert.Contains("test \"$mailer_count\" -eq 1", mailerProbe, StringComparison.Ordinal);
+
+            // Functional teeth against a Docker stub mirroring the live split topology.
+            Assert.Equal(0, RunMailerProbeScenario(mailerProbe, SplitProjectHealthyScenario));
+            Assert.NotEqual(0, RunMailerProbeScenario(mailerProbe, MailerLookedUpInEdgeProjectScenario));
+            Assert.NotEqual(0, RunMailerProbeScenario(mailerProbe, ZeroMailerContainersScenario));
+            Assert.NotEqual(0, RunMailerProbeScenario(mailerProbe, MultipleMailerContainersScenario));
+            Assert.NotEqual(0, RunMailerProbeScenario(mailerProbe, MailerPort8080PublishedScenario));
+        }
+    }
+
+    // A minimal `docker` shim: `docker ps` returns ids from PS_<project>_<service> shell
+    // variables, `docker inspect` returns labels/port-bindings from LP_/LS_/PB_ variables.
+    private const string DockerStub = @"
+docker() {
+  if [ ""$1"" = ps ]; then
+    local a proj='' svc='' key
+    for a in ""$@""; do
+      case ""$a"" in
+        label=com.docker.compose.project=*) proj=""${a##*=}"" ;;
+        label=com.docker.compose.service=*) svc=""${a##*=}"" ;;
+      esac
+    done
+    key=""PS_${proj//[!A-Za-z0-9]/_}_${svc}""
+    if [ -n ""${!key:-}"" ]; then printf '%s\n' ""${!key}""; fi
+    return 0
+  fi
+  if [ ""$1"" = inspect ]; then
+    local fmt=""$3"" id=""$4"" key
+    case ""$fmt"" in
+      *PortBindings*) key=""PB_${id}""; if [ -n ""${!key:-}"" ]; then printf '%s\n' ""${!key}""; else printf '{}\n'; fi ;;
+      *com.docker.compose.project*) key=""LP_${id}""; printf '%s\n' ""${!key:-}"" ;;
+      *com.docker.compose.service*) key=""LS_${id}""; printf '%s\n' ""${!key:-}"" ;;
+    esac
+    return 0
+  fi
+  return 0
+}
+";
+
+    // proxy in amane-platform-edge, exactly one mailer in amane-mailer-vps, no host port.
+    private const string SplitProjectHealthyScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-mailer-vps
+PS_amane_platform_edge_proxy='p1'
+PS_amane_mailer_vps_mailer='m1'
+LP_m1='amane-mailer-vps'
+LS_m1='mailer'
+PB_m1='{}'
+";
+
+    // Same topology, but the mailer lookup is wrongly pointed at the edge project.
+    private const string MailerLookedUpInEdgeProjectScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-platform-edge
+PS_amane_platform_edge_proxy='p1'
+PS_amane_mailer_vps_mailer='m1'
+LP_m1='amane-mailer-vps'
+LS_m1='mailer'
+PB_m1='{}'
+";
+
+    private const string ZeroMailerContainersScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-mailer-vps
+PS_amane_platform_edge_proxy='p1'
+";
+
+    private const string MultipleMailerContainersScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-mailer-vps
+PS_amane_mailer_vps_mailer=$'m1\nm2'
+LP_m1='amane-mailer-vps'
+LS_m1='mailer'
+PB_m1='{}'
+LP_m2='amane-mailer-vps'
+LS_m2='mailer'
+PB_m2='{}'
+";
+
+    private const string MailerPort8080PublishedScenario = @"
+edge_project=amane-platform-edge
+mailer_project=amane-mailer-vps
+PS_amane_mailer_vps_mailer='m1'
+LP_m1='amane-mailer-vps'
+LS_m1='mailer'
+PB_m1='{""8080/tcp"":[{""HostIp"":""0.0.0.0"",""HostPort"":""8080""}]}'
+";
+
+    private static int RunMailerProbeScenario(string mailerProbe, string scenario)
+    {
+        var script = "set -Eeuo pipefail\n"
+            + DockerStub + "\n"
+            + scenario + "\n"
+            + mailerProbe + "\n"
+            + "assert_mailer_8080_unpublished\n";
+
+        using var process = StartBash(string.Empty);
+        process.StandardInput.Write(script);
+        process.StandardInput.Close();
+
+        var standardError = process.StandardError.ReadToEnd();
+        Assert.True(process.WaitForExit(5000), $"Mailer probe scenario did not finish promptly: {standardError}");
+        return process.ExitCode;
+    }
+
+    private static string ExtractShellFunction(string transaction, string name)
+    {
+        var match = Regex.Match(
+            transaction,
+            @"(?ms)^(?<indent>[ \t]*)" + Regex.Escape(name) + @"\(\) \{\r?\n(?<body>.*?)^\k<indent>\}$");
+        Assert.True(match.Success, $"Could not isolate shell function '{name}'.");
+        return match.Value.Replace("\r\n", "\n", StringComparison.Ordinal);
+    }
+
     private static string ServiceBlock(string compose, string serviceName)
     {
         var lines = compose.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');

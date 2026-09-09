@@ -503,14 +503,16 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
        *) echo 'acceptance_origin must be an approved HTTPS origin' >&2; exit 1 ;;
      esac
 
-     # Resolve project=amane-platform-edge / service=proxy here; exactly one or STOP.
-     project=amane-platform-edge
+     # The edge proxy and the mailer run in two distinct Compose projects on the VPS.
+     # Resolve the proxy from edge_project / service=proxy here; exactly one or STOP.
+     edge_project=amane-platform-edge
+     mailer_project=amane-mailer-vps
      service=proxy
      image=caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
-     ids="$(docker ps --quiet --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=$service --filter status=running)"
+     ids="$(docker ps --quiet --filter label=com.docker.compose.project=$edge_project --filter label=com.docker.compose.service=$service --filter status=running)"
      test "$(printf '%s\n' "$ids" | awk 'NF {n++} END {print n+0}')" -eq 1
      container="$(printf '%s\n' "$ids" | awk 'NF {print; exit}')"
-     test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")" = "$project"
+     test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")" = "$edge_project"
      test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")" = "$service"
      test "$(docker inspect --format '{{.Config.Image}}' "$container")" = "$image"
      mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/Caddyfile"}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{end}}{{end}}' "$container")"
@@ -618,11 +620,14 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
 
      assert_mailer_8080_unpublished() {
        local mailer_ids mailer_count mailer_container port_bindings
-       mailer_ids="$(docker ps --quiet --filter label=com.docker.compose.project=$project \
+       # The mailer lives in mailer_project (amane-mailer-vps), not the edge project.
+       mailer_ids="$(docker ps --quiet --filter label=com.docker.compose.project=$mailer_project \
          --filter label=com.docker.compose.service=mailer --filter status=running)"
        mailer_count="$(printf '%s\n' "$mailer_ids" | awk 'NF {n++} END {print n+0}')"
        test "$mailer_count" -eq 1
        mailer_container="$(printf '%s\n' "$mailer_ids" | awk 'NF {print; exit}')"
+       test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$mailer_container")" = "$mailer_project"
+       test "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$mailer_container")" = mailer
        port_bindings="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$mailer_container")"
        case "$port_bindings" in
          null|'{}') ;;
@@ -787,7 +792,10 @@ sudoers、SSH config、root login、Docker topology、Caddy container recreation
    `/healthz=200`、`/readyz=200`、固定 nonexistent UUID への `GET /api/mail-requests/<uuid>` が Mailer の
    `401` と `"code":"UNAUTHORIZED"` を返し、Basic challenge ではないこと、VPS self-request の non-JP/unknown
    `/admin` と `/setup` が Basic challenge 前の `404` であること、Mailer host-published `8080/tcp` が
-   `none/null` であることを確認します。メール送信を起こす `POST`、secret、API key は使いません。
+   `none/null` であることを確認します。メール送信を起こす `POST`、secret、API key は使いません。Proxy は
+   edge の Compose project (`amane-platform-edge`) から、Mailer はそれとは別の Compose project
+   (`amane-mailer-vps`) から Compose label で解決します。どちらも container 数は exactly one で、
+   0 件・複数件は fail closed です。
 
    `rollback` mode は固定した candidate status を再利用しません。mutation 前に取得した
    `baseline_healthz_state`、`baseline_readyz_state`、`baseline_api_state`、`baseline_admin_state`、
