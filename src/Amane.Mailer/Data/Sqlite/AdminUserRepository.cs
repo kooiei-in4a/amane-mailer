@@ -217,6 +217,23 @@ public sealed class AdminUserRepository(
         return user is null || user.Disabled ? null : user;
     }
 
+    public async Task<string?> GetActiveInstanceOwnerUsernameAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT username
+            FROM admin_users
+            WHERE disabled = 0
+              AND is_instance_owner = 1
+            ORDER BY id
+            LIMIT 1;
+            """;
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is string username ? username : null;
+    }
+
     public async Task<AdminTenantAccess?> GetTenantAccessAsync(
         string username,
         CancellationToken cancellationToken = default)

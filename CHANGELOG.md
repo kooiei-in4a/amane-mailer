@@ -15,6 +15,17 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [2.0.1]
+Patch release containing the focused Setup and Admin UI usability improvements:
+
+- Clarifies Admin operational status, setup status, senders, dead letters, audit
+  logs, suppressions, and cancelled mail request screens.
+- Adds Setup guidance and progress/configured-state summaries for ACS, Admin, and
+  Sender setup without re-displaying secrets.
+
+No database schema, authentication/authorization boundary, API behavior, or
+deployment contract changes are included.
+
 ## [2.0.0]
 Major breaking release. Replaces the v1 tenant credential model with managed
 Sender + API Key identity, moves the public Consumer API to `/api/mail-requests`,

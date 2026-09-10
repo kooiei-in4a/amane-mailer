@@ -82,6 +82,22 @@ public sealed class SenderRepository(
         return await reader.ReadAsync(cancellationToken) ? ReadSender(reader) : null;
     }
 
+    public async Task<SenderIdentity?> FindFirstEnabledAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT sender_id, email, display_name, enabled, created_at, disabled_at
+            FROM senders
+            WHERE enabled = 1
+            ORDER BY created_at, sender_id
+            LIMIT 1;
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadSender(reader) : null;
+    }
+
     public async Task<IReadOnlyList<SenderSummary>> ListAsync(
         CancellationToken cancellationToken = default)
     {

@@ -25,6 +25,8 @@ internal static class FirstRunSetupConstants
     public const string BootstrapTokenPathConfigurationKey = "Mailer:Setup:BootstrapTokenPath";
     public const string DefaultBootstrapTokenPath = "/app/data/bootstrap/setup_token";
     public const string DefaultAcsSecretDirectory = "/app/data/secrets/acs";
+    public const string BootstrapShowCommand =
+        "docker compose --env-file .env -f compose.yml exec mailer /app/Amane.Mailer setup bootstrap show";
     public static string DefaultAcsSecretPath =>
         Path.Combine(DefaultAcsSecretDirectory, AcsSecretFileNames.CanonicalFileName);
 }
@@ -460,52 +462,80 @@ internal static class FirstRunSetupEndpoints
         HttpContext context,
         IAntiforgery antiforgery,
         InstanceConfigurationRepository configurationRepository,
+        AdminUserRepository userRepository,
+        SenderRepository senderRepository,
         CancellationToken cancellationToken)
     {
         SetNoStore(context);
-        if (!IsHttps(context) || !await IsUninitializedAsync(configurationRepository, cancellationToken))
+        if (!IsHttps(context))
+        {
+            return Results.NotFound();
+        }
+
+        var configuration = await configurationRepository.GetAsync(cancellationToken);
+        if (configuration is null || configuration.InitializedAt is not null)
         {
             return Results.NotFound();
         }
 
         var tokens = antiforgery.GetAndStoreTokens(context);
         var requestToken = HtmlEncoder.Default.Encode(tokens.RequestToken ?? string.Empty);
+        var progress = new SetupProgress(
+            IsAcsConfigured(configuration),
+            await userRepository.GetActiveInstanceOwnerUsernameAsync(cancellationToken),
+            await senderRepository.FindFirstEnabledAsync(cancellationToken));
         var authenticated = context.User.Identity?.IsAuthenticated == true;
-        var forms = authenticated
-            ? $$"""
-              <p>セットアップ認証済みです。</p>
-              <form method="post" action="/setup/provider">
-                <input type="hidden" name="__RequestVerificationToken" value="{{requestToken}}">
-                <label>ACS connection string（既存の保護済みファイルを復旧する場合は空欄） <input name="connection_string" type="password" autocomplete="off"></label>
-                <button type="submit">ACSを登録</button>
-              </form>
-              <form method="post" action="/setup/admin">
-                <input type="hidden" name="__RequestVerificationToken" value="{{requestToken}}">
-                <label>Admin username <input name="username" autocomplete="username" required></label>
-                <label>Password <input name="password" type="password" autocomplete="new-password" required></label>
-                <label>Confirm password <input name="confirmation" type="password" autocomplete="new-password" required></label>
-                <button type="submit">Adminを登録</button>
-              </form>
-              <form method="post" action="/setup/sender">
-                <input type="hidden" name="__RequestVerificationToken" value="{{requestToken}}">
-                <label>Sender email <input name="email" type="email" autocomplete="email" required></label>
-                <label>Display name <input name="display_name" autocomplete="organization" required></label>
-                <button type="submit">Senderを登録</button>
-              </form>
-              <form method="post" action="/setup/finalize">
-                <input type="hidden" name="__RequestVerificationToken" value="{{requestToken}}">
-                <button type="submit">セットアップを完了</button>
-              </form>
-              """
-            : """
-              <form method="post" action="/setup/auth">
-                <input type="hidden" name="__RequestVerificationToken" value="TOKEN_PLACEHOLDER">
-                <label>Bootstrap token <input name="bootstrap_token" type="password" autocomplete="off" required></label>
-                <button type="submit">認証</button>
-              </form>
-              """;
-        forms = forms.Replace("TOKEN_PLACEHOLDER", requestToken, StringComparison.Ordinal);
-        const string style = "body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem}form{display:grid;gap:.6rem;margin:1.2rem 0;padding:1rem;border:1px solid #ccd;border-radius:.4rem}input,button{font:inherit;padding:.5rem}h1{font-size:1.5rem}";
+        var body = new StringBuilder();
+        AppendSetupProgress(body, progress);
+        if (authenticated)
+        {
+            body.AppendLine("<p class=\"setup-authenticated\">セットアップ認証済みです。</p>");
+            AppendAcsSection(body, requestToken, progress);
+            AppendAdminSection(body, requestToken, progress);
+            AppendSenderSection(body, requestToken, progress);
+            AppendFinalizeSection(body, requestToken, progress);
+        }
+        else
+        {
+            AppendBootstrapSection(body, requestToken);
+        }
+
+        const string style = """
+            :root { color-scheme: light; }
+            body { background: #f6f7fb; color: #20242b; font-family: system-ui, sans-serif; line-height: 1.55; margin: 0; }
+            main { box-sizing: border-box; max-width: 48rem; margin: 0 auto; padding: 2rem 1rem 3rem; }
+            h1 { font-size: 1.6rem; line-height: 1.25; margin: 0 0 1.5rem; }
+            h2 { align-items: center; display: flex; flex-wrap: wrap; font-size: 1.15rem; gap: .5rem; line-height: 1.35; margin: 0 0 .75rem; }
+            p { margin: .65rem 0; }
+            .setup-section { background: #fff; border: 1px solid #d6dbe5; border-radius: .6rem; margin: 1rem 0; padding: 1rem; }
+            .setup-progress ol, .setup-summary-list { list-style: none; margin: .5rem 0 0; padding: 0; }
+            .setup-progress li, .setup-summary-list li { align-items: center; display: flex; flex-wrap: wrap; gap: .5rem 1rem; justify-content: space-between; padding: .35rem 0; }
+            .step-number { color: #4a5568; font-variant-numeric: tabular-nums; }
+            .setup-status { border-radius: 999px; font-size: .9rem; font-weight: 700; padding: .1rem .55rem; white-space: nowrap; }
+            .setup-status.is-configured { background: #e3f5e9; color: #146c36; }
+            .setup-status.is-pending { background: #fff1d6; color: #7a4b00; }
+            .setup-help, .setup-note { color: #4a5568; font-size: .95rem; }
+            .setup-summary { background: #f3f6fa; border-left: .25rem solid #718096; padding: .65rem .75rem; }
+            .setup-summary dl { margin: .5rem 0 0; }
+            .setup-summary dl > div { display: grid; gap: .25rem 1rem; grid-template-columns: minmax(8rem, 12rem) 1fr; padding: .25rem 0; }
+            .setup-summary dt { font-weight: 700; }
+            .setup-summary dd { margin: 0; overflow-wrap: anywhere; }
+            form { background: #fafbfe; border: 1px solid #e0e4ec; border-radius: .45rem; display: grid; gap: .65rem; margin: 1rem 0 0; padding: .85rem; }
+            label { display: grid; gap: .25rem; font-weight: 650; }
+            label small { color: #4a5568; font-size: .9rem; font-weight: 400; }
+            input, button { box-sizing: border-box; font: inherit; min-height: 2.5rem; padding: .5rem .65rem; width: 100%; }
+            button { background: #2457a6; border: 0; border-radius: .35rem; color: #fff; cursor: pointer; font-weight: 700; }
+            code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+            code { background: #eef1f6; border-radius: .2rem; padding: .08rem .25rem; }
+            pre { background: #20242b; border-radius: .4rem; color: #f7f8fa; margin: .6rem 0; overflow-x: auto; padding: .75rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+            pre code { background: transparent; padding: 0; }
+            .setup-authenticated { color: #146c36; font-weight: 700; }
+            @media (max-width: 34rem) {
+              main { padding-top: 1.25rem; }
+              .setup-summary dl > div { display: block; }
+              .setup-summary dd { margin-top: .15rem; }
+            }
+            """;
         var html = $$"""
             <!doctype html>
             <html lang="ja">
@@ -517,12 +547,256 @@ internal static class FirstRunSetupEndpoints
               <style>{{style}}</style>
             </head>
             <body>
-              <h1>Amane Mailer 初回セットアップ</h1>
-              {{forms}}
+              <main>
+                <h1>Amane Mailer 初回セットアップ</h1>
+                {{body}}
+              </main>
             </body>
             </html>
             """;
         return Results.Content(html, "text/html; charset=utf-8");
+    }
+
+    private static void AppendSetupProgress(StringBuilder html, SetupProgress progress)
+    {
+        html.AppendLine("<section class=\"setup-section setup-progress\" aria-labelledby=\"setup-progress-heading\">");
+        html.AppendLine("  <h2 id=\"setup-progress-heading\">セットアップ状況</h2>");
+        html.AppendLine("  <ol>");
+        AppendProgressItem(html, "ACS接続設定", progress.AcsConfigured);
+        AppendProgressItem(html, "管理者アカウント", progress.AdminConfigured);
+        AppendProgressItem(html, "送信元", progress.SenderConfigured);
+        AppendProgressItem(html, "セットアップ完了", false, "未完了");
+        html.AppendLine("  </ol>");
+        html.AppendLine("</section>");
+    }
+
+    private static void AppendProgressItem(
+        StringBuilder html,
+        string label,
+        bool configured,
+        string pendingLabel = "未設定")
+    {
+        html.Append("    <li><span>").Append(label).Append("</span>");
+        AppendStatus(html, configured, pendingLabel);
+        html.AppendLine("</li>");
+    }
+
+    private static void AppendStatus(
+        StringBuilder html,
+        bool configured,
+        string pendingLabel = "未設定")
+    {
+        if (configured)
+        {
+            html.Append("<span class=\"setup-status is-configured\">設定済み</span>");
+            return;
+        }
+
+        html.Append("<span class=\"setup-status is-pending\">")
+            .Append(pendingLabel)
+            .Append("</span>");
+    }
+
+    private static void AppendBootstrapSection(StringBuilder html, string requestToken)
+    {
+        html.AppendLine("<section class=\"setup-section\" aria-labelledby=\"bootstrap-heading\">");
+        html.AppendLine("  <h2 id=\"bootstrap-heading\">Bootstrap token</h2>");
+        html.AppendLine("  <p>初回セットアップ用のBootstrap tokenを入力してください。</p>");
+        html.AppendLine("  <p class=\"setup-help\">分からない場合は、Amane Mailerを起動しているサーバー上で次のコマンドを実行して確認できます。</p>");
+        html.Append("  <pre><code>")
+            .Append(HtmlEncoder.Default.Encode(FirstRunSetupConstants.BootstrapShowCommand))
+            .AppendLine("</code></pre>");
+        html.AppendLine("  <p class=\"setup-note\">Bootstrap tokenは秘密情報です。初回セットアップが完了すると利用できなくなり、画面にも再表示されません。</p>");
+        html.AppendLine("  <form method=\"post\" action=\"/setup/auth\">");
+        AppendCsrfInput(html, requestToken);
+        html.AppendLine("    <label for=\"bootstrap-token\">Bootstrap token</label>");
+        html.AppendLine("    <input id=\"bootstrap-token\" name=\"bootstrap_token\" type=\"password\" autocomplete=\"off\" required>");
+        html.AppendLine("    <button type=\"submit\">認証</button>");
+        html.AppendLine("  </form>");
+        html.AppendLine("</section>");
+    }
+
+    private static void AppendAcsSection(
+        StringBuilder html,
+        string requestToken,
+        SetupProgress progress)
+    {
+        html.AppendLine("<section class=\"setup-section\" aria-labelledby=\"acs-heading\">");
+        AppendSectionHeading(html, "acs-heading", "1.", "Azure Communication Services（ACS）の接続設定", progress.AcsConfigured);
+        html.AppendLine("  <p>Amane MailerがAzure Communication Servicesを使ってメールを送信するための接続情報です。</p>");
+        html.AppendLine("  <p class=\"setup-help\">入力例: <code>endpoint=https://xxxxx.communication.azure.com/;accesskey=xxxxxxxx</code></p>");
+        html.AppendLine("  <p class=\"setup-help\">Azure Portalでの確認場所:</p>");
+        html.AppendLine("  <pre><code>Azure Portal");
+        html.AppendLine("→ Communication Services");
+        html.AppendLine("→ 使用するリソース");
+        html.AppendLine("→ 設定");
+        html.AppendLine("→ キー");
+        html.AppendLine("→ Primary key の Connection string</code></pre>");
+        html.AppendLine("  <p class=\"setup-note\"><code>accesskey</code>は秘密情報です。入力したconnection stringやaccesskeyは、登録後も画面に再表示されません。</p>");
+
+        if (progress.AcsConfigured)
+        {
+            html.AppendLine("  <p class=\"setup-summary\"><strong>ACS接続情報:</strong> 設定済み（秘密情報のため詳細は表示しません）</p>");
+        }
+        else
+        {
+            html.AppendLine("  <p class=\"setup-help\">新しい接続情報を登録します。既存の保護済みファイルから再開する場合は空欄で送信できます。</p>");
+            html.AppendLine("  <form method=\"post\" action=\"/setup/provider\">");
+            AppendCsrfInput(html, requestToken);
+            html.AppendLine("    <label for=\"acs-connection-string\">ACS connection string（既存の保護済みファイルを復旧する場合は空欄）</label>");
+            html.AppendLine("    <input id=\"acs-connection-string\" name=\"connection_string\" type=\"password\" autocomplete=\"off\">");
+            html.AppendLine("    <button type=\"submit\">ACSを登録</button>");
+            html.AppendLine("  </form>");
+        }
+
+        html.AppendLine("</section>");
+    }
+
+    private static void AppendAdminSection(
+        StringBuilder html,
+        string requestToken,
+        SetupProgress progress)
+    {
+        html.AppendLine("<section class=\"setup-section\" aria-labelledby=\"admin-heading\">");
+        AppendSectionHeading(html, "admin-heading", "2.", "管理者アカウント", progress.AdminConfigured);
+        html.AppendLine("  <p>Amane Mailerの管理画面へログインするための最初の管理者アカウントを作成します。</p>");
+
+        if (progress.AdminUsername is not null)
+        {
+            html.AppendLine("  <div class=\"setup-summary\">");
+            html.AppendLine("    <dl>");
+            html.Append("      <div><dt>Username</dt><dd>")
+                .Append(HtmlEncoder.Default.Encode(progress.AdminUsername))
+                .AppendLine("</dd></div>");
+            html.AppendLine("      <div><dt>Password</dt><dd>設定済み（表示しません）</dd></div>");
+            html.AppendLine("    </dl>");
+            html.AppendLine("  </div>");
+        }
+        else
+        {
+            html.AppendLine("  <form method=\"post\" action=\"/setup/admin\">");
+            AppendCsrfInput(html, requestToken);
+            html.AppendLine("    <label for=\"admin-username\">Admin username<small>管理画面へのログインに使うユーザー名</small></label>");
+            html.AppendLine("    <input id=\"admin-username\" name=\"username\" autocomplete=\"username\" required>");
+            html.AppendLine("    <label for=\"admin-password\">Password<small>管理画面へのログインに使うパスワード</small></label>");
+            html.AppendLine("    <input id=\"admin-password\" name=\"password\" type=\"password\" autocomplete=\"new-password\" required>");
+            html.AppendLine("    <label for=\"admin-password-confirmation\">Confirm password<small>確認のため同じパスワードを再入力</small></label>");
+            html.AppendLine("    <input id=\"admin-password-confirmation\" name=\"confirmation\" type=\"password\" autocomplete=\"new-password\" required>");
+            html.AppendLine("    <button type=\"submit\">Adminを登録</button>");
+            html.AppendLine("  </form>");
+        }
+
+        html.AppendLine("</section>");
+    }
+
+    private static void AppendSenderSection(
+        StringBuilder html,
+        string requestToken,
+        SetupProgress progress)
+    {
+        html.AppendLine("<section class=\"setup-section\" aria-labelledby=\"sender-heading\">");
+        AppendSectionHeading(html, "sender-heading", "3.", "送信元メールアドレス", progress.SenderConfigured);
+        html.AppendLine("  <p>Amane Mailerからメールを送信するときに使用する送信元を登録します。</p>");
+        html.AppendLine("  <p class=\"setup-help\"><strong>Sender email:</strong> Azure Communication Services Emailで利用可能な送信元メールアドレス</p>");
+        html.AppendLine("  <p class=\"setup-help\"><strong>Display name:</strong> 受信者に表示される送信者名</p>");
+        html.AppendLine("  <p class=\"setup-help\">入力例: <code>Sender email: noreply@example.com</code> / <code>Display name: Amane System</code></p>");
+
+        if (progress.Sender is not null)
+        {
+            html.AppendLine("  <div class=\"setup-summary\">");
+            html.AppendLine("    <dl>");
+            html.Append("      <div><dt>Sender email</dt><dd>")
+                .Append(HtmlEncoder.Default.Encode(progress.Sender.Email))
+                .AppendLine("</dd></div>");
+            html.Append("      <div><dt>Display name</dt><dd>")
+                .Append(HtmlEncoder.Default.Encode(progress.Sender.DisplayName ?? "（表示名なし）"))
+                .AppendLine("</dd></div>");
+            html.AppendLine("    </dl>");
+            html.AppendLine("  </div>");
+        }
+        else
+        {
+            html.AppendLine("  <form method=\"post\" action=\"/setup/sender\">");
+            AppendCsrfInput(html, requestToken);
+            html.AppendLine("    <label for=\"sender-email\">Sender email</label>");
+            html.AppendLine("    <input id=\"sender-email\" name=\"email\" type=\"email\" autocomplete=\"email\" required>");
+            html.AppendLine("    <label for=\"sender-display-name\">Display name</label>");
+            html.AppendLine("    <input id=\"sender-display-name\" name=\"display_name\" autocomplete=\"organization\" required>");
+            html.AppendLine("    <button type=\"submit\">Senderを登録</button>");
+            html.AppendLine("  </form>");
+        }
+
+        html.AppendLine("</section>");
+    }
+
+    private static void AppendFinalizeSection(
+        StringBuilder html,
+        string requestToken,
+        SetupProgress progress)
+    {
+        html.AppendLine("<section class=\"setup-section\" aria-labelledby=\"finalize-heading\">");
+        AppendSectionHeading(html, "finalize-heading", "4.", "セットアップ完了", configured: false, pendingStatus: "未完了");
+        html.AppendLine("  <p>セットアップを完了する前に、現在の状態を確認してください。</p>");
+        html.AppendLine("  <ul class=\"setup-summary-list\">");
+        AppendProgressItem(html, "ACS接続設定", progress.AcsConfigured);
+        AppendProgressItem(html, "管理者アカウント", progress.AdminConfigured);
+        AppendProgressItem(html, "送信元", progress.SenderConfigured);
+        html.AppendLine("  </ul>");
+        html.AppendLine(progress.IsReadyToFinalize
+            ? "  <p class=\"setup-authenticated\">必要な設定がすべて完了しました。</p>"
+            : "  <p class=\"setup-note\">未設定の項目を入力してから、セットアップを完了してください。</p>");
+        html.AppendLine("  <form method=\"post\" action=\"/setup/finalize\">");
+        AppendCsrfInput(html, requestToken);
+        html.AppendLine("    <button type=\"submit\">セットアップを完了</button>");
+        html.AppendLine("  </form>");
+        html.AppendLine("</section>");
+    }
+
+    private static void AppendSectionHeading(
+        StringBuilder html,
+        string id,
+        string step,
+        string title,
+        bool configured,
+        string pendingStatus = "未設定")
+    {
+        html.Append("  <h2 id=\"").Append(id).Append("\"><span class=\"step-number\">")
+            .Append(step)
+            .Append("</span> ")
+            .Append(title)
+            .Append(' ');
+        AppendStatus(html, configured, pendingStatus);
+        html.AppendLine("</h2>");
+    }
+
+    private static void AppendCsrfInput(StringBuilder html, string requestToken) =>
+        html.Append("    <input type=\"hidden\" name=\"__RequestVerificationToken\" value=\"")
+            .Append(requestToken)
+            .AppendLine("\">");
+
+    private static bool IsAcsConfigured(InstanceConfigurationRow configuration)
+    {
+        var secretPath = configuration.ProviderSecretRef;
+        if (!string.Equals(configuration.ProviderType, "acs", StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(secretPath)
+            || string.IsNullOrWhiteSpace(configuration.ProviderConfiguredAt))
+        {
+            return false;
+        }
+
+        // Match the existing finalization gate without exposing or retaining the protected value
+        // in the page model. No endpoint extraction or secret value is added to the page.
+        return FirstRunSetupStorage.TryReadValidAcsSecret(secretPath, out _);
+    }
+
+    private sealed record SetupProgress(
+        bool AcsConfigured,
+        string? AdminUsername,
+        SenderIdentity? Sender)
+    {
+        public bool AdminConfigured => AdminUsername is not null;
+        public bool SenderConfigured => Sender is not null;
+        public bool IsReadyToFinalize => AcsConfigured && AdminConfigured && SenderConfigured;
     }
 
     private static async Task<IResult> AuthenticateAsync(

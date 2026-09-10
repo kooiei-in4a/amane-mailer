@@ -68,6 +68,12 @@ public static class AdminDeadLettersPage
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(html, "Dead Letters - Amane Admin", AdminNavItem.DeadLetters, deadLetterCount);
 
+        html.AppendLine("                <section class=\"ops-section\" aria-label=\"Dead Lettersの説明\">");
+        html.AppendLine("                  <h1 class=\"ops-heading\">Dead Letters</h1>");
+        html.AppendLine("                  <p class=\"ops-description\">再試行や処理の継続ができず、通常の送信キューから切り離された送信依頼を確認する画面です。詳細を確認してから、必要な場合だけ再送します。</p>");
+        html.AppendLine("                  <p class=\"ops-meta\"><code>Dead Letter</code> は自動処理が終了した終端状態です。再送前にProviderの状態と試行履歴を確認してください。</p>");
+        html.AppendLine("                </section>");
+
         html.AppendLine("""
                 <section class="table-region" aria-label="Dead Letter 一覧">
                   <table class="admin-table">
