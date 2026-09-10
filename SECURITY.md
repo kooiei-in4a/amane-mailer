@@ -13,7 +13,7 @@ release.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 2.0.0   | Yes (latest release) |
+| 2.0.2   | Yes (latest release) |
 | 1.2.0   | No                   |
 | 1.1.0   | No                 |
 | 1.0.1   | No                 |
