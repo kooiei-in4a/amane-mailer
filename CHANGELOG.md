@@ -15,6 +15,14 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [2.0.2]
+Security and maintenance patch for the Contracts package publication path:
+
+- Pins the transitive `Microsoft.Build.Tasks.Git` dependency to patched
+  version `10.0.303`.
+- No runtime behavior, HTTP contract, database schema, or authentication/
+  authorization boundary changes are included.
+
 ## [2.0.1]
 Patch release containing the focused Setup and Admin UI usability improvements:
 
