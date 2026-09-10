@@ -13,14 +13,6 @@
           "System.IO.Hashing": "10.0.10"
         }
       },
-      "Microsoft.Build.Tasks.Git": {
-        "type": "Transitive",
-        "resolved": "10.0.301",
-        "contentHash": "9Tah8f2BYuXlff9nIsJAeQJcqnijJTXNraIcTOF2f/f9kLmg0HNWPlMemnD6FBLd/UQcE0s9Vze2zCkA6nrZAA==",
-        "dependencies": {
-          "System.IO.Hashing": "10.0.10"
-        }
-      },
       "Microsoft.SourceLink.Common": {
         "type": "Transitive",
         "resolved": "10.0.301",
@@ -28,8 +20,17 @@
       },
       "System.IO.Hashing": {
         "type": "Transitive",
-        "resolved": "10.0.10",
-        "contentHash": "eE839zyWZD/UBZYzP2lu9fhHX6RWe63/jz3Jxf+JumzO/db+Vc2s7CMiDwxk9ti2NTUft2tdRx31Rw2OjKbecA=="
+        "resolved": "10.0.11",
+        "contentHash": "OzKDcIRkeNJeC8qAsbn8yJXnfTLP1dtkWILe+T56Gf/z+IkAASi7sMqLqJQat08j5z/mRN5xVtoAwbkMNMoBUQ=="
+      },
+      "Microsoft.Build.Tasks.Git": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.303, )",
+        "resolved": "10.0.303",
+        "contentHash": "tUblJMHhGAg4WKq3fzfJqXpV8o01WmQnWvgopNBnbhVQB6qwW2c8guCTCFMILD9Dekhe8MROBJ4lEk8AtXKisQ==",
+        "dependencies": {
+          "System.IO.Hashing": "10.0.11"
+        }
       }
     }
   }

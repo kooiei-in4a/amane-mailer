@@ -1,15 +1,15 @@
 # Native AOT publish + chiseled runtime — Phase A single-container mailer.
 FROM mcr.microsoft.com/dotnet/sdk:10.0-noble-aot@sha256:977c117b98abe301eeb4c2ed3f8deebf8b8f11e65549ee7886581d2b41641adb AS build
 ARG TARGETARCH
-ARG DOTNET_SDK_VERSION=10.0.303
+ARG DOTNET_SDK_VERSION=10.0.401
 RUN case "${TARGETARCH}" in \
         amd64) \
             sdk_arch="x64"; \
-            sdk_sha512="538df11ceb9d86bdda061bab6ede3d1f6d46bb9ba087ae905643f3d456afe982949d1b952bceb305a5d22d2d6e69cc0e5100216ffcc709aaa86e867f2d9cdf9a" \
+            sdk_sha512="51c8b999af9e8dd9998c9edc5944e19a90788862068acd38694e098889054ce8c23d4f0c5cccfa16bf187d044562359e5ee69a9f8ad0bbe913ba90311fbce25b" \
             ;; \
         arm64) \
             sdk_arch="arm64"; \
-            sdk_sha512="622e059198058ee5f92d7817bdd83885480a979628348f878201cb8dba52d168c1a324f9943a0e7a03ad547d85332aa82f16aced29da599ef02422b5378452de" \
+            sdk_sha512="58ace73ced6b4360754689a686bdfb8a317f4da6cb8bb416dbc7d0ba9f47e43e3c09f5eb1f1a1cfaacbd10df9558da4882bf2a5e195d6ab56a02c1f9f76102ed" \
             ;; \
         *) echo "Unsupported Docker target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
