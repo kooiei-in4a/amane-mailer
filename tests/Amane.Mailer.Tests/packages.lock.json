@@ -558,9 +558,9 @@
           "Amane.Mailer.Contracts": "[2.0.2, )",
           "Azure.Communication.Email": "[1.1.0, )",
           "Azure.Storage.Queues": "[12.27.1, )",
-          "MailKitLite": "[4.17.0, )",
+          "MailKitLite": "[4.18.0, )",
           "Microsoft.Data.Sqlite": "[10.0.11, )",
-          "MimeKitLite": "[4.17.0, )",
+          "MimeKitLite": "[4.18.0, )",
           "SQLitePCLRaw.bundle_e_sqlite3": "[3.0.3, )"
         }
       },
@@ -588,18 +588,18 @@
       },
       "MailKitLite": {
         "type": "CentralTransitive",
-        "requested": "[4.17.0, )",
-        "resolved": "4.17.0",
-        "contentHash": "kw9SJGUyYSPD9FekxV9cZ00vvkEvhvNXopLfAW1dKx7E3L+AsdhpUSn6fbSblXIMJ1WXoKL3iFBLILU8j59Q2A==",
+        "requested": "[4.18.0, )",
+        "resolved": "4.18.0",
+        "contentHash": "15qIeCrjiBlmlsmDqta2x/ClqTeTA2XTjm2n5fDbshKk5riXJDEYuO/ESrq9q3ORsLNh8X48UIjfWblEqIVh1w==",
         "dependencies": {
-          "MimeKitLite": "4.17.0"
+          "MimeKitLite": "4.18.0"
         }
       },
       "MimeKitLite": {
         "type": "CentralTransitive",
-        "requested": "[4.17.0, )",
-        "resolved": "4.17.0",
-        "contentHash": "HfFqCsD0+91ARQ6U9zDVwFw+PwngPvQoZRILZdPb8JYIeDsaBSw3ET3AwoQn3XQE1W/FFOZQ/tUT0DZU+i87RA=="
+        "requested": "[4.18.0, )",
+        "resolved": "4.18.0",
+        "contentHash": "zo/BAscwcl6pdgBIAN+QEKV53TWtyNTFLusaNrXhLZaSlD7FLPXVx4m/nyr99k4CLzazt+r8/2b7Z9Y2hHbh8g=="
       },
       "SourceGear.sqlite3": {
         "type": "CentralTransitive",
