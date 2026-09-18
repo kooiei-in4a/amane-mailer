@@ -1,4 +1,5 @@
 using Amane.Mailer.Admin;
+using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Identity;
 
 namespace Amane.Mailer.Tests.Admin;
@@ -29,6 +30,35 @@ public sealed class AdminSendersPageRenderTests
         Assert.Contains("/admin/senders/00000000-0000-0000-0000-000000000732", html, StringComparison.Ordinal);
         Assert.Contains("Sender identityと、そのAPI Keyを管理する画面です", html, StringComparison.Ordinal);
         Assert.Contains("<code>enabled</code>", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Instance-wide Admin", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Break-glass Admin", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Sender_list_shows_instance_owner_scope_in_topbar_when_access_is_provided()
+    {
+        var html = AdminSendersPage.RenderListHtml(
+            [],
+            deadLetterCount: 0,
+            csrfToken: "csrf",
+            new AdminTenantAccess("admin", IsBreakGlass: false, new HashSet<Guid>(), IsInstanceOwner: true));
+
+        Assert.Contains("Instance-wide Admin", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Break-glass Admin", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Tenant-scoped Admin", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Sender_list_distinguishes_break_glass_scope_from_instance_owner()
+    {
+        var html = AdminSendersPage.RenderListHtml(
+            [],
+            deadLetterCount: 0,
+            csrfToken: "csrf",
+            new AdminTenantAccess("break-glass", IsBreakGlass: true, new HashSet<Guid>(), IsInstanceOwner: false));
+
+        Assert.Contains("Break-glass Admin", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Instance-wide Admin", html, StringComparison.Ordinal);
     }
 
     [Fact]

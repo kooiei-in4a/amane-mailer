@@ -129,6 +129,7 @@ public static class AdminMailRequestsPage
         html.AppendLine("                <section class=\"admin-card\" aria-label=\"送信依頼一覧\">");
 
         AppendStatusLegend(html, counts, selectedStatus, selectedTenantId, selectedSourceService);
+        AppendDeliveryUnknownOmissionNote(html, counts, selectedStatus, selectedTenantId, selectedSourceService);
 
         html.AppendLine("""
                   <div class="admin-toolbar">
@@ -159,15 +160,6 @@ public static class AdminMailRequestsPage
                       </thead>
                       <tbody>
             """);
-
-        var showDeliveryUnknownHint =
-            string.IsNullOrWhiteSpace(selectedStatus)
-            && string.IsNullOrWhiteSpace(currentCursor)
-            && page.Items.Count > 0
-            && counts.DeliveryUnknown == 0;
-
-        if (showDeliveryUnknownHint)
-            AppendDeliveryUnknownHintRow(html);
 
         if (page.Items.Count == 0)
         {
@@ -259,7 +251,7 @@ public static class AdminMailRequestsPage
                         <select name="status">
             """);
 
-        AppendOption(html, string.Empty, "全", selectedStatus);
+        AppendOption(html, string.Empty, "通常", selectedStatus);
         AppendOption(html, "queued", "Queued", selectedStatus);
         AppendOption(html, "processing", "Processing", selectedStatus);
         AppendOption(html, "delivered", "Delivered", selectedStatus);
@@ -346,14 +338,21 @@ public static class AdminMailRequestsPage
         html.AppendLine("</option>");
     }
 
-    private static void AppendDeliveryUnknownHintRow(StringBuilder html)
+    private static void AppendDeliveryUnknownOmissionNote(
+        StringBuilder html,
+        AdminMailRequestStatusCounts counts,
+        string selectedStatus,
+        string selectedTenantId,
+        string? selectedSourceService)
     {
-        html.AppendLine("                        <tr class=\"empty-status-row\">");
-        html.AppendLine("                          <td><span class=\"status-badge status-deliveryunknown\">—</span></td>");
-        html.AppendLine("                          <td></td><td></td><td></td>");
-        html.AppendLine("                          <td class=\"empty-hint\">DeliveryUnknown は現在 0 件です</td>");
-        html.AppendLine("                          <td></td><td></td>");
-        html.AppendLine("                        </tr>");
+        if (!string.IsNullOrWhiteSpace(selectedStatus) || counts.DeliveryUnknown <= 0)
+            return;
+
+        html.Append("                  <p class=\"status-omission-note\"><a href=\"");
+        html.Append(Html(BuildListUrl("deliveryunknown", selectedTenantId, selectedSourceService, cursor: null)));
+        html.Append("\">DeliveryUnknown が ");
+        html.Append(counts.DeliveryUnknown.ToString(CultureInfo.InvariantCulture));
+        html.AppendLine(" 件あります</a>。通常一覧には含まれません。</p>");
     }
 
     private static void AppendRow(StringBuilder html, AdminMailRequestListRow item, MailerAdminOptions options)
@@ -450,15 +449,15 @@ public static class AdminMailRequestsPage
     private static string BuildPagerSummary(string? currentCursor, int itemCount, int totalCount)
     {
         if (totalCount == 0)
-            return "全 0 件";
+            return "0 件";
 
         if (string.IsNullOrWhiteSpace(currentCursor))
         {
             var end = Math.Max(itemCount, 0);
-            return $"全 {totalCount.ToString(CultureInfo.InvariantCulture)} 件中 1-{end.ToString(CultureInfo.InvariantCulture)} 件を表示";
+            return $"{totalCount.ToString(CultureInfo.InvariantCulture)} 件中 1-{end.ToString(CultureInfo.InvariantCulture)} 件を表示";
         }
 
-        return $"全 {totalCount.ToString(CultureInfo.InvariantCulture)} 件";
+        return $"{totalCount.ToString(CultureInfo.InvariantCulture)} 件";
     }
 
     private static int FilteredTotal(AdminMailRequestStatusCounts counts, string selectedStatus)

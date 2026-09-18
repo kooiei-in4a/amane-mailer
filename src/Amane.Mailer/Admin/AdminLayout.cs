@@ -68,9 +68,11 @@ public static class AdminLayout
         html.AppendLine("    <div class=\"admin-topbar-end\">");
         if (access is not null)
         {
-            var scope = access.IsInstanceOwner || access.IsBreakGlass
+            var scope = access.IsInstanceOwner
                 ? "Instance-wide Admin"
-                : "Tenant-scoped Admin";
+                : access.IsBreakGlass
+                    ? "Break-glass Admin"
+                    : "Tenant-scoped Admin";
             html.Append("      <span class=\"scope-chip\">");
             html.Append(Html(scope));
             html.AppendLine("</span>");

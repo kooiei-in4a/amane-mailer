@@ -98,7 +98,7 @@ body {
   width: 18px;
   height: 18px;
   flex: 0 0 18px;
-  color: #7b8493;
+  color: #667085;
 }
 
 .admin-sidenav-icon svg {
@@ -179,7 +179,7 @@ body {
 }
 
 .brand-sub {
-  color: #7b8493;
+  color: #667085;
   font-size: 0.72rem;
   font-weight: 600;
 }
@@ -271,6 +271,18 @@ body {
   color: #1d4f9c;
 }
 
+.status-omission-note {
+  margin: 4px 20px 8px;
+  color: #667085;
+  font-size: 0.82rem;
+}
+
+.status-omission-note a {
+  color: #2458a6;
+  font-weight: 700;
+  text-decoration: none;
+}
+
 .status-dot {
   flex: 0 0 8px;
   width: 8px;
@@ -311,7 +323,7 @@ body {
   gap: 6px;
   width: 200px;
   min-width: 0;
-  color: #7b8493;
+  color: #667085;
   font-size: 0.75rem;
   font-weight: 700;
 }
@@ -345,7 +357,7 @@ body {
 .filter-clear {
   flex: 0 0 auto;
   margin-bottom: 8px;
-  color: #7b8493;
+  color: #667085;
   font-size: 0.82rem;
   font-weight: 650;
   text-decoration: none;
@@ -390,7 +402,7 @@ body {
 
 .admin-table th {
   background: #f7f8fb;
-  color: #8a93a3;
+  color: #667085;
   font-size: 0.72rem;
   font-weight: 750;
   letter-spacing: 0.02em;
@@ -415,7 +427,7 @@ body {
 .mail-request-table .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.78rem;
-  color: #8a93a3;
+  color: #667085;
 }
 
 .mail-request-row td {
@@ -460,7 +472,7 @@ body {
 }
 
 .empty-hint {
-  color: #8a93a3;
+  color: #667085;
   font-size: 0.82rem;
   white-space: normal;
 }
@@ -508,7 +520,7 @@ body {
 
 .status-failed {
   background: #ffe4e6;
-  color: #e11d48;
+  color: #9f1239;
 }
 
 .status-deadlettered {
@@ -540,7 +552,7 @@ body {
 }
 
 .pager-summary {
-  color: #8a93a3;
+  color: #667085;
   font-size: 0.8rem;
 }
 
@@ -695,7 +707,7 @@ body {
 
 .admin-breadcrumb {
   margin: 0 0 8px;
-  color: #8a93a3;
+  color: #667085;
   font-size: 0.82rem;
 }
 
@@ -733,7 +745,7 @@ body {
 }
 
 .summary-metrics dt {
-  color: #8a93a3;
+  color: #667085;
   font-size: 0.72rem;
   font-weight: 750;
 }

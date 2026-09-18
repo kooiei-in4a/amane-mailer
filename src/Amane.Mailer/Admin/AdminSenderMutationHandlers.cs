@@ -177,10 +177,13 @@ public static class AdminSenderMutationHandlers
             cancellationToken);
         var csrfToken = HtmlEncoder.Default.Encode(
             antiforgery.GetAndStoreTokens(context).RequestToken ?? string.Empty);
+        var access = await userRepository.GetTenantAccessAsync(
+            AdminAuditLog.ResolveActor(context),
+            cancellationToken);
         context.Response.Headers.CacheControl = "no-store";
         context.Response.Headers.Pragma = "no-cache";
         return Results.Content(
-            AdminSendersPage.RenderDetailHtml(sender, keys, deadLetterCount, csrfToken, created),
+            AdminSendersPage.RenderDetailHtml(sender, keys, deadLetterCount, csrfToken, created, access),
             "text/html; charset=utf-8");
     }
 

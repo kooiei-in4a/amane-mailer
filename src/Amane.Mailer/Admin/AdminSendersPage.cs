@@ -36,7 +36,7 @@ public static class AdminSendersPage
 
         SetNoStore(context);
         return Results.Content(
-            RenderListHtml(senders, deadLetterCount, csrfToken),
+            RenderListHtml(senders, deadLetterCount, csrfToken, accessResult.Access),
             "text/html; charset=utf-8");
     }
 
@@ -71,17 +71,18 @@ public static class AdminSendersPage
 
         SetNoStore(context);
         return Results.Content(
-            RenderDetailHtml(sender, keys, deadLetterCount, csrfToken, createdApiKey: null),
+            RenderDetailHtml(sender, keys, deadLetterCount, csrfToken, createdApiKey: null, accessResult.Access),
             "text/html; charset=utf-8");
     }
 
     internal static string RenderListHtml(
         IReadOnlyList<SenderSummary> senders,
         int deadLetterCount,
-        string csrfToken)
+        string csrfToken,
+        AdminTenantAccess? access = null)
     {
         var html = new StringBuilder();
-        AdminLayout.AppendDocumentStart(html, "Senders - Amane Admin", AdminNavItem.Senders, deadLetterCount);
+        AdminLayout.AppendDocumentStart(html, "Senders - Amane Admin", AdminNavItem.Senders, deadLetterCount, access);
         html.AppendLine("                <div class=\"page-intro-row\">");
         html.AppendLine("                  <header class=\"page-intro\">");
         html.AppendLine("                    <h1>Senders</h1>");
@@ -144,14 +145,16 @@ public static class AdminSendersPage
         IReadOnlyList<ApiKeyMetadata> keys,
         int deadLetterCount,
         string csrfToken,
-        CreatedApiKey? createdApiKey)
+        CreatedApiKey? createdApiKey,
+        AdminTenantAccess? access = null)
     {
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(
             html,
             $"Sender {sender.Email} - Amane Admin",
             AdminNavItem.Senders,
-            deadLetterCount);
+            deadLetterCount,
+            access);
 
         html.AppendLine("                <p class=\"ops-meta\"><a href=\"/admin/senders\">← Senders</a></p>");
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Sender詳細\">");

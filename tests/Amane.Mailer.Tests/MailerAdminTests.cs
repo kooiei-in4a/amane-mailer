@@ -729,6 +729,43 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("送信依頼がありません", html, StringComparison.Ordinal);
+        Assert.Contains("<option value=\"\" selected>&#x901A;&#x5E38;</option>", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("通常一覧には含まれません", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Mail_requests_default_list_points_to_omitted_delivery_unknown()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var now = new DateTimeOffset(2026, 6, 24, 12, 0, 0, TimeSpan.Zero);
+        var queuedId = await SeedMailRequestAsync(
+            sourceService: MailerWebApplicationFixtureBase.SourceService,
+            status: MailRequestState.Queued,
+            updatedAt: now,
+            recipientEmail: "queued@example.com",
+            subject: "Queued Subject",
+            ct);
+        var unknownId = await SeedMailRequestAsync(
+            sourceService: MailerWebApplicationFixtureBase.SourceService,
+            status: MailRequestState.DeliveryUnknown,
+            updatedAt: now.AddMinutes(-1),
+            recipientEmail: "unknown@example.com",
+            subject: "Unknown Subject",
+            ct);
+
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync("/admin/mail-requests", ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("<option value=\"\" selected>&#x901A;&#x5E38;</option>", html, StringComparison.Ordinal);
+        Assert.Contains("DeliveryUnknown が 1 件あります", html, StringComparison.Ordinal);
+        Assert.Contains("通常一覧には含まれません", html, StringComparison.Ordinal);
+        Assert.Contains(queuedId.ToString("D"), html, StringComparison.Ordinal);
+        Assert.DoesNotContain(unknownId.ToString("D"), html, StringComparison.Ordinal);
+        Assert.Contains("status=deliveryunknown", html, StringComparison.Ordinal);
     }
 
     [Fact]
