@@ -679,14 +679,15 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         var html = await response.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("<code>Cancelled</code> はキャンセルされた送信依頼の終端状態", html, StringComparison.Ordinal);
+        Assert.Contains("Cancelled はキャンセルされた送信依頼の終端状態", html, StringComparison.Ordinal);
+        Assert.Contains("Cancelled (0)", html, StringComparison.Ordinal);
         Assert.Contains(visibleId.ToString("D"), html, StringComparison.Ordinal);
         Assert.Contains(MailerWebApplicationFixtureBase.TenantId.ToString("D"), html, StringComparison.Ordinal);
         Assert.Contains(MailerWebApplicationFixtureBase.SourceService, html, StringComparison.Ordinal);
         Assert.Contains("u***@example.com", html, StringComparison.Ordinal);
-        Assert.Contains("Sensitive Su...", html, StringComparison.Ordinal);
         Assert.DoesNotContain("user@example.com", html, StringComparison.Ordinal);
         Assert.DoesNotContain("Sensitive Subject ABC", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Sensitive Su...", html, StringComparison.Ordinal);
         Assert.DoesNotContain(wrongStatusId.ToString("D"), html, StringComparison.Ordinal);
         Assert.DoesNotContain(wrongSourceId.ToString("D"), html, StringComparison.Ordinal);
     }
@@ -711,7 +712,8 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         var html = await response.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains("S***", html, StringComparison.Ordinal);
+        Assert.Contains("s***@example.com", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("short@example.com", html, StringComparison.Ordinal);
         Assert.DoesNotContain(">Secret<", html, StringComparison.Ordinal);
     }
 
@@ -727,6 +729,43 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("送信依頼がありません", html, StringComparison.Ordinal);
+        Assert.Contains("<option value=\"\" selected>&#x901A;&#x5E38;</option>", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("通常一覧には含まれません", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Mail_requests_default_list_points_to_omitted_delivery_unknown()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var now = new DateTimeOffset(2026, 6, 24, 12, 0, 0, TimeSpan.Zero);
+        var queuedId = await SeedMailRequestAsync(
+            sourceService: MailerWebApplicationFixtureBase.SourceService,
+            status: MailRequestState.Queued,
+            updatedAt: now,
+            recipientEmail: "queued@example.com",
+            subject: "Queued Subject",
+            ct);
+        var unknownId = await SeedMailRequestAsync(
+            sourceService: MailerWebApplicationFixtureBase.SourceService,
+            status: MailRequestState.DeliveryUnknown,
+            updatedAt: now.AddMinutes(-1),
+            recipientEmail: "unknown@example.com",
+            subject: "Unknown Subject",
+            ct);
+
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync("/admin/mail-requests", ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("<option value=\"\" selected>&#x901A;&#x5E38;</option>", html, StringComparison.Ordinal);
+        Assert.Contains("DeliveryUnknown が 1 件あります", html, StringComparison.Ordinal);
+        Assert.Contains("通常一覧には含まれません", html, StringComparison.Ordinal);
+        Assert.Contains(queuedId.ToString("D"), html, StringComparison.Ordinal);
+        Assert.DoesNotContain(unknownId.ToString("D"), html, StringComparison.Ordinal);
+        Assert.Contains("status=deliveryunknown", html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -734,15 +773,16 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
     {
         var ct = TestContext.Current.CancellationToken;
         var now = new DateTimeOffset(2026, 6, 24, 12, 0, 0, TimeSpan.Zero);
+        var ids = new List<Guid>(55);
         for (var i = 0; i < 55; i++)
         {
-            await SeedMailRequestAsync(
+            ids.Add(await SeedMailRequestAsync(
                 sourceService: MailerWebApplicationFixtureBase.SourceService,
                 status: MailRequestState.Queued,
                 updatedAt: now.AddMinutes(-i),
                 recipientEmail: $"page-{i:D2}@example.com",
                 subject: $"Page {i:D2} Subject",
-                ct);
+                ct));
         }
 
         using var client = CreateClient(fixture.Factory);
@@ -755,10 +795,10 @@ public sealed class MailerAdminTests(MailerAdminFixture fixture)
         var secondHtml = await second.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
-        Assert.Contains("Page 00 Subj...", firstHtml, StringComparison.Ordinal);
-        Assert.DoesNotContain("Page 54 Subj...", firstHtml, StringComparison.Ordinal);
+        Assert.Contains(ids[0].ToString("D"), firstHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain(ids[50].ToString("D"), firstHtml, StringComparison.Ordinal);
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
-        Assert.Contains("Page 50 Subj...", secondHtml, StringComparison.Ordinal);
+        Assert.Contains(ids[50].ToString("D"), secondHtml, StringComparison.Ordinal);
         Assert.Contains("history.back()", secondHtml, StringComparison.Ordinal);
     }
 

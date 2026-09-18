@@ -60,6 +60,57 @@ public sealed class MailRequestAdminQueries(SqliteConnectionFactory connections)
         return new AdminMailRequestListPage(rows, nextCursor);
     }
 
+    public async Task<AdminMailRequestStatusCounts> CountByStatusForAdminAsync(
+        AdminMailRequestListQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        var where = new StringBuilder("WHERE 1 = 1");
+
+        if (query.TenantId is not null)
+        {
+            where.AppendLine();
+            where.Append("  AND tenant_id = @TenantId");
+            command.Parameters.AddWithValue("@TenantId", query.TenantId.Value.ToString("D"));
+        }
+
+        MailRequestRepositorySql.AppendTenantScopeFilter(where, command, query.AllowedTenantIds);
+
+        if (!string.IsNullOrWhiteSpace(query.SourceService))
+        {
+            where.AppendLine();
+            where.Append("  AND source_service = @SourceService");
+            command.Parameters.AddWithValue("@SourceService", query.SourceService);
+        }
+
+        command.CommandText = $$"""
+            SELECT status, COUNT(*)
+            FROM mail_requests
+            {{where}}
+            GROUP BY status;
+            """;
+
+        var counts = new Dictionary<int, int>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            counts[reader.GetInt32(0)] = reader.GetInt32(1);
+        }
+
+        return new AdminMailRequestStatusCounts(
+            Queued: Count(MailRequestState.Queued),
+            Processing: Count(MailRequestState.Processing),
+            Delivered: Count(MailRequestState.Delivered),
+            Failed: Count(MailRequestState.Failed),
+            DeadLettered: Count(MailRequestState.DeadLettered),
+            Cancelled: Count(MailRequestState.Cancelled),
+            DeliveryUnknown: Count(MailRequestState.DeliveryUnknown));
+
+        int Count(MailRequestState status) =>
+            counts.TryGetValue((int)status, out var value) ? value : 0;
+    }
+
     public async Task<AdminDeadLetterListPage> ListDeadLettersForAdminAsync(
         AdminDeadLetterListQuery query,
         CancellationToken cancellationToken = default)
