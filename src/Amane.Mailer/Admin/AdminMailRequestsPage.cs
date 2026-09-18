@@ -57,16 +57,24 @@ public static class AdminMailRequestsPage
             cursor = decodedCursor;
         }
 
-        var page = await repository.ListForAdminAsync(
+        var listQuery = new AdminMailRequestListQuery
+        {
+            Status = status,
+            TenantId = tenantId,
+            AllowedTenantIds = access.AllowedTenantIdsForQuery,
+            SourceService = sourceService,
+            CursorUpdatedAt = cursor?.UpdatedAt,
+            CursorId = cursor?.Id,
+            PageSize = PageSize,
+        };
+
+        var page = await repository.ListForAdminAsync(listQuery, cancellationToken);
+        var counts = await repository.CountByStatusForAdminAsync(
             new AdminMailRequestListQuery
             {
-                Status = status,
                 TenantId = tenantId,
                 AllowedTenantIds = access.AllowedTenantIdsForQuery,
                 SourceService = sourceService,
-                CursorUpdatedAt = cursor?.UpdatedAt,
-                CursorId = cursor?.Id,
-                PageSize = PageSize,
             },
             cancellationToken);
 
@@ -82,38 +90,49 @@ public static class AdminMailRequestsPage
         return Results.Content(
             RenderHtml(
                 page,
+                counts,
                 visibleTenants,
                 selectedStatus,
                 selectedTenantId,
                 sourceService,
                 cursorValue,
                 deadLetterCount,
+                access,
                 options),
             "text/html; charset=utf-8");
     }
 
     private static string RenderHtml(
         AdminMailRequestListPage page,
+        AdminMailRequestStatusCounts counts,
         IReadOnlyList<MailerTenant> tenants,
         string selectedStatus,
         string selectedTenantId,
         string? selectedSourceService,
         string? currentCursor,
         int deadLetterCount,
+        AdminTenantAccess access,
         MailerAdminOptions options)
     {
         var html = new StringBuilder();
-        AdminLayout.AppendDocumentStart(html, "送信依頼 - Amane Admin", AdminNavItem.MailRequests, deadLetterCount);
+        AdminLayout.AppendDocumentStart(
+            html,
+            "送信依頼 - Amane Admin",
+            AdminNavItem.MailRequests,
+            deadLetterCount,
+            access);
 
-        html.AppendLine("                <section class=\"ops-section\" aria-label=\"送信依頼の説明\">");
-        html.AppendLine("                  <h1 class=\"ops-heading\">送信依頼</h1>");
-        html.AppendLine("                  <p class=\"ops-description\">受け付けたメール送信依頼の状態、試行回数、更新日時を確認する画面です。行を選ぶと依頼の詳細と配送履歴を確認できます。</p>");
-        html.AppendLine("                  <p class=\"ops-meta\"><code>Queued</code> は送信待ち、<code>Processing</code> は処理中、<code>Delivered</code> は配送完了、<code>Failed</code> は失敗、<code>DeadLettered</code> は自動処理が終了した終端状態、<code>Cancelled</code> はキャンセルされた送信依頼の終端状態、<code>DeliveryUnknown</code> はProviderの結果を確定できない状態です。</p>");
-        html.AppendLine("                </section>");
+        html.AppendLine("                <header class=\"page-intro\">");
+        html.AppendLine("                  <h1>送信依頼</h1>");
+        html.AppendLine("                  <p>受け付けたメール送信依頼の状態を確認します。行を選ぶと詳細と配送履歴を確認できます。</p>");
+        html.AppendLine("                </header>");
+        html.AppendLine("                <section class=\"admin-card\" aria-label=\"送信依頼一覧\">");
+
+        AppendStatusLegend(html, counts, selectedStatus, selectedTenantId, selectedSourceService);
 
         html.AppendLine("""
-                <section class="admin-toolbar" aria-label="送信依頼フィルタ">
-                  <form method="get" action="/admin/mail-requests" class="filters">
+                  <div class="admin-toolbar">
+                    <form method="get" action="/admin/mail-requests" class="filters">
             """);
 
         AppendStatusFilter(html, selectedStatus);
@@ -121,46 +140,53 @@ public static class AdminMailRequestsPage
         AppendSourceServiceFilter(html, tenants, selectedSourceService);
 
         html.AppendLine("""
-                    <button type="submit">適用</button>
-                  </form>
-                </section>
-                <section class="table-region" aria-label="送信依頼一覧">
-                  <table class="admin-table">
-                    <thead>
-                      <tr>
-                        <th>ID</th>
-                        <th>テナント</th>
-                        <th>source_service</th>
-                        <th>宛先</th>
-                        <th>件名</th>
-                        <th>ステータス</th>
-                        <th>試行回数</th>
-                        <th>更新日時</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                      <button type="submit">適用</button>
+                    </form>
+                    <a class="filter-clear" href="/admin/mail-requests">条件をクリア</a>
+                  </div>
+                  <div class="table-region">
+                    <table class="admin-table mail-request-table">
+                      <thead>
+                        <tr>
+                          <th>ステータス</th>
+                          <th>ID</th>
+                          <th>テナント</th>
+                          <th>SOURCE_SERVICE</th>
+                          <th>宛先</th>
+                          <th>更新日時</th>
+                          <th><span class="visually-hidden">詳細</span></th>
+                        </tr>
+                      </thead>
+                      <tbody>
             """);
+
+        var showDeliveryUnknownHint =
+            string.IsNullOrWhiteSpace(selectedStatus)
+            && string.IsNullOrWhiteSpace(currentCursor)
+            && page.Items.Count > 0
+            && counts.DeliveryUnknown == 0;
+
+        if (showDeliveryUnknownHint)
+            AppendDeliveryUnknownHintRow(html);
 
         if (page.Items.Count == 0)
         {
             html.AppendLine("""
-                      <tr>
-                        <td class="empty-row" colspan="8">送信依頼がありません</td>
-                      </tr>
+                        <tr>
+                          <td class="empty-row" colspan="7">送信依頼がありません</td>
+                        </tr>
                 """);
         }
         else
         {
             foreach (var item in page.Items)
-            {
                 AppendRow(html, item, options);
-            }
         }
 
         html.AppendLine("""
-                    </tbody>
-                  </table>
-                </section>
+                      </tbody>
+                    </table>
+                  </div>
             """);
 
         AppendPager(
@@ -169,19 +195,68 @@ public static class AdminMailRequestsPage
             selectedTenantId,
             selectedSourceService,
             currentCursor,
-            page.NextCursor);
+            page.NextCursor,
+            page.Items.Count,
+            FilteredTotal(counts, selectedStatus));
 
+        html.AppendLine("                </section>");
         AdminLayout.AppendDocumentEnd(html);
 
         return html.ToString();
     }
 
+    private static void AppendStatusLegend(
+        StringBuilder html,
+        AdminMailRequestStatusCounts counts,
+        string selectedStatus,
+        string selectedTenantId,
+        string? selectedSourceService)
+    {
+        html.AppendLine("                  <div class=\"status-legend\" aria-label=\"ステータス件数\">");
+        AppendStatusChip(html, "queued", "Queued", "queued", counts.Queued, "Queued は送信待ち", selectedStatus, selectedTenantId, selectedSourceService);
+        AppendStatusChip(html, "processing", "Processing", "processing", counts.Processing, "Processing は処理中", selectedStatus, selectedTenantId, selectedSourceService);
+        AppendStatusChip(html, "delivered", "Delivered", "delivered", counts.Delivered, "Delivered は配送完了", selectedStatus, selectedTenantId, selectedSourceService);
+        AppendStatusChip(html, "failed", "Failed", "failed", counts.Failed, "Failed は失敗", selectedStatus, selectedTenantId, selectedSourceService);
+        AppendStatusChip(html, "deadlettered", "DeadLettered", "deadlettered", counts.DeadLettered, "DeadLettered は自動処理が終了した終端状態", selectedStatus, selectedTenantId, selectedSourceService);
+        AppendStatusChip(html, "cancelled", "Cancelled", "cancelled", counts.Cancelled, "Cancelled はキャンセルされた送信依頼の終端状態", selectedStatus, selectedTenantId, selectedSourceService);
+        AppendStatusChip(html, "deliveryunknown", "DeliveryUnknown", "deliveryunknown", counts.DeliveryUnknown, "DeliveryUnknown はProviderの結果を確定できない状態", selectedStatus, selectedTenantId, selectedSourceService);
+        html.AppendLine("                  </div>");
+    }
+
+    private static void AppendStatusChip(
+        StringBuilder html,
+        string statusKey,
+        string label,
+        string dotClass,
+        int count,
+        string title,
+        string selectedStatus,
+        string selectedTenantId,
+        string? selectedSourceService)
+    {
+        var active = string.Equals(selectedStatus, statusKey, StringComparison.Ordinal);
+        html.Append("                    <a class=\"status-chip");
+        if (active)
+            html.Append(" is-active");
+        html.Append("\" title=\"");
+        html.Append(title);
+        html.Append("\" href=\"");
+        html.Append(Html(BuildListUrl(statusKey, selectedTenantId, selectedSourceService, cursor: null)));
+        html.Append("\"><span class=\"status-dot ");
+        html.Append(Html(dotClass));
+        html.Append("\" aria-hidden=\"true\"></span>");
+        html.Append(Html(label));
+        html.Append(" (");
+        html.Append(count.ToString(CultureInfo.InvariantCulture));
+        html.AppendLine(")</a>");
+    }
+
     private static void AppendStatusFilter(StringBuilder html, string selectedStatus)
     {
         html.AppendLine("""
-                    <label>
-                      <span>ステータス</span>
-                      <select name="status">
+                      <label>
+                        <span>ステータス</span>
+                        <select name="status">
             """);
 
         AppendOption(html, string.Empty, "全", selectedStatus);
@@ -194,8 +269,8 @@ public static class AdminMailRequestsPage
         AppendOption(html, "deliveryunknown", "DeliveryUnknown", selectedStatus);
 
         html.AppendLine("""
-                      </select>
-                    </label>
+                        </select>
+                      </label>
             """);
     }
 
@@ -205,9 +280,9 @@ public static class AdminMailRequestsPage
         string selectedTenantId)
     {
         html.AppendLine("""
-                    <label>
-                      <span>テナント</span>
-                      <select name="tenant_id">
+                      <label>
+                        <span>テナント</span>
+                        <select name="tenant_id">
             """);
 
         AppendOption(html, string.Empty, "全", selectedTenantId);
@@ -218,8 +293,8 @@ public static class AdminMailRequestsPage
         }
 
         html.AppendLine("""
-                      </select>
-                    </label>
+                        </select>
+                      </label>
             """);
     }
 
@@ -229,9 +304,9 @@ public static class AdminMailRequestsPage
         string? selectedSourceService)
     {
         html.AppendLine("""
-                    <label>
-                      <span>source_service</span>
-                      <select name="source_service">
+                      <label>
+                        <span>source_service</span>
+                        <select name="source_service">
             """);
 
         AppendOption(html, string.Empty, "全", selectedSourceService ?? string.Empty);
@@ -252,8 +327,8 @@ public static class AdminMailRequestsPage
         }
 
         html.AppendLine("""
-                      </select>
-                    </label>
+                        </select>
+                      </label>
             """);
     }
 
@@ -271,34 +346,64 @@ public static class AdminMailRequestsPage
         html.AppendLine("</option>");
     }
 
+    private static void AppendDeliveryUnknownHintRow(StringBuilder html)
+    {
+        html.AppendLine("                        <tr class=\"empty-status-row\">");
+        html.AppendLine("                          <td><span class=\"status-badge status-deliveryunknown\">—</span></td>");
+        html.AppendLine("                          <td></td><td></td><td></td>");
+        html.AppendLine("                          <td class=\"empty-hint\">DeliveryUnknown は現在 0 件です</td>");
+        html.AppendLine("                          <td></td><td></td>");
+        html.AppendLine("                        </tr>");
+    }
+
     private static void AppendRow(StringBuilder html, AdminMailRequestListRow item, MailerAdminOptions options)
     {
         var statusText = StatusText((int)item.Status);
         var statusClass = StatusClass((int)item.Status);
+        var href = "/admin/mail-requests/" + item.Id.ToString("D");
+        var idN = item.Id.ToString("N");
+        var tenantN = item.TenantId.ToString("N");
 
-        html.AppendLine("                  <tr>");
-        html.Append("                    <td><a href=\"/admin/mail-requests/");
-        html.Append(Html(item.Id.ToString("D")));
-        html.Append("\">");
-        html.Append(Html(item.Id.ToString("D")));
-        html.AppendLine("</a></td>");
-        AppendCell(html, item.TenantId.ToString("D"));
-        AppendCell(html, item.SourceService);
-        AppendCell(html, AdminRecipientSummaryRenderer.RenderList(item.Recipients, options.MaskRecipients));
-        AppendCell(html, options.MaskSubjects ? MaskSubject(item.Subject) : item.Subject);
-        html.Append("                    <td><span class=\"status-badge ");
+        html.Append("                        <tr class=\"mail-request-row\" onclick=\"window.location.href='");
+        html.Append(Html(href));
+        html.AppendLine("'\">");
+        html.Append("                          <td><span class=\"status-badge ");
         html.Append(statusClass);
         html.Append("\">");
         html.Append(statusText);
         html.AppendLine("</span></td>");
-        AppendCell(html, $"{item.AttemptCount} / {item.MaxAttempts}");
+        html.Append("                          <td><a class=\"mono\" href=\"");
+        html.Append(Html(href));
+        html.Append("\" title=\"");
+        html.Append(Html(item.Id.ToString("D")));
+        html.Append("\">");
+        html.Append(Html(idN[..8] + "…"));
+        html.AppendLine("</a></td>");
+        html.Append("                          <td><span class=\"mono\" title=\"");
+        html.Append(Html(item.TenantId.ToString("D")));
+        html.Append("\">…");
+        html.Append(Html(tenantN[^7..]));
+        html.AppendLine("</span></td>");
+        html.Append("                          <td><span class=\"source-chip\" title=\"");
+        html.Append(Html(item.SourceService));
+        html.Append("\">");
+        html.Append(Html(item.SourceService));
+        html.AppendLine("</span></td>");
+        html.Append("                          <td class=\"col-recipients\" title=\"");
+        html.Append(Html(AdminRecipientSummaryRenderer.RenderList(item.Recipients, options.MaskRecipients)));
+        html.Append("\">");
+        html.Append(Html(AdminRecipientSummaryRenderer.RenderCompact(item.Recipients, options.MaskRecipients)));
+        html.AppendLine("</td>");
         AppendCell(html, FormatLocalTime(item.UpdatedAt));
-        html.AppendLine("                  </tr>");
+        html.Append("                          <td class=\"row-chevron\"><a href=\"");
+        html.Append(Html(href));
+        html.AppendLine("\" aria-label=\"詳細\">›</a></td>");
+        html.AppendLine("                        </tr>");
     }
 
     private static void AppendCell(StringBuilder html, string value)
     {
-        html.Append("                    <td>");
+        html.Append("                          <td>");
         html.Append(Html(value));
         html.AppendLine("</td>");
     }
@@ -309,30 +414,69 @@ public static class AdminMailRequestsPage
         string selectedTenantId,
         string? selectedSourceService,
         string? currentCursor,
-        string? nextCursor)
+        string? nextCursor,
+        int itemCount,
+        int totalCount)
     {
-        html.AppendLine("                <nav class=\"pager\" aria-label=\"ページング\">");
+        html.AppendLine("                  <nav class=\"pager\" aria-label=\"ページング\">");
+        html.Append("                    <p class=\"pager-summary\">");
+        html.Append(Html(BuildPagerSummary(currentCursor, itemCount, totalCount)));
+        html.AppendLine("</p>");
+        html.AppendLine("                    <div class=\"pager-actions\">");
         if (string.IsNullOrWhiteSpace(currentCursor))
         {
-            html.AppendLine("                  <span class=\"pager-disabled\">前へ</span>");
+            html.AppendLine("                      <span class=\"pager-disabled\">前へ</span>");
         }
         else
         {
-            html.AppendLine("                  <button type=\"button\" class=\"pager-button\" onclick=\"history.back()\">前へ</button>");
+            html.AppendLine("                      <button type=\"button\" class=\"pager-button\" onclick=\"history.back()\">前へ</button>");
         }
 
         if (string.IsNullOrWhiteSpace(nextCursor))
         {
-            html.AppendLine("                  <span class=\"pager-disabled\">次へ</span>");
+            html.AppendLine("                      <span class=\"pager-disabled\">次へ</span>");
         }
         else
         {
-            html.Append("                  <a class=\"pager-link\" href=\"");
+            html.Append("                      <a class=\"pager-link\" href=\"");
             html.Append(Html(BuildListUrl(selectedStatus, selectedTenantId, selectedSourceService, nextCursor)));
             html.AppendLine("\">次へ</a>");
         }
 
-        html.AppendLine("                </nav>");
+        html.AppendLine("                    </div>");
+        html.AppendLine("                  </nav>");
+    }
+
+    private static string BuildPagerSummary(string? currentCursor, int itemCount, int totalCount)
+    {
+        if (totalCount == 0)
+            return "全 0 件";
+
+        if (string.IsNullOrWhiteSpace(currentCursor))
+        {
+            var end = Math.Max(itemCount, 0);
+            return $"全 {totalCount.ToString(CultureInfo.InvariantCulture)} 件中 1-{end.ToString(CultureInfo.InvariantCulture)} 件を表示";
+        }
+
+        return $"全 {totalCount.ToString(CultureInfo.InvariantCulture)} 件";
+    }
+
+    private static int FilteredTotal(AdminMailRequestStatusCounts counts, string selectedStatus)
+    {
+        if (string.IsNullOrWhiteSpace(selectedStatus))
+            return counts.Total - counts.DeliveryUnknown;
+
+        return selectedStatus switch
+        {
+            "queued" => counts.Queued,
+            "processing" => counts.Processing,
+            "delivered" => counts.Delivered,
+            "failed" => counts.Failed,
+            "deadlettered" => counts.DeadLettered,
+            "cancelled" => counts.Cancelled,
+            "deliveryunknown" => counts.DeliveryUnknown,
+            _ => counts.Total,
+        };
     }
 
     private static string BuildListUrl(
@@ -413,19 +557,8 @@ public static class AdminMailRequestsPage
             _ => "status-unknown",
         };
 
-    private static string MaskSubject(string subject)
-    {
-        if (string.IsNullOrEmpty(subject))
-            return "***";
-
-        if (subject.Length <= 12)
-            return $"{subject[0]}***";
-
-        return subject[..12] + "...";
-    }
-
     private static string FormatLocalTime(DateTimeOffset updatedAt) =>
-        updatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);
+        updatedAt.ToLocalTime().ToString("MM/dd HH:mm", CultureInfo.InvariantCulture);
 
     private static string Html(string value) =>
         HtmlEncoder.Default.Encode(value);

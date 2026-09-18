@@ -72,7 +72,8 @@ public static class AdminMailRequestDetailPage
                 deadLetterCount,
                 csrfToken,
                 timeProvider.GetUtcNow(),
-                canRevealBcc),
+                canRevealBcc,
+                access),
             "text/html; charset=utf-8");
     }
 
@@ -83,7 +84,7 @@ public static class AdminMailRequestDetailPage
         int deadLetterCount = 0,
         string csrfToken = "",
         DateTimeOffset? now = null) =>
-        RenderHtml(detail, attempts, [], [], options, deadLetterCount, csrfToken, now, false);
+        RenderHtml(detail, attempts, [], [], options, deadLetterCount, csrfToken, now, false, null);
 
     internal static string RenderHtml(
         AdminMailRequestDetail detail,
@@ -94,7 +95,8 @@ public static class AdminMailRequestDetailPage
         int deadLetterCount = 0,
         string csrfToken = "",
         DateTimeOffset? now = null,
-        bool canRevealBcc = false)
+        bool canRevealBcc = false,
+        AdminTenantAccess? access = null)
     {
         var html = new StringBuilder();
 
@@ -102,106 +104,157 @@ public static class AdminMailRequestDetailPage
             html,
             "送信依頼詳細 - Amane Admin",
             AdminNavItem.MailRequests,
-            deadLetterCount);
+            deadLetterCount,
+            access);
 
         html.AppendLine("""
-                <nav class="admin-breadcrumb">
-                  <a href="/admin/mail-requests">送信依頼一覧</a> &rsaquo; 詳細
-                </nav>
+                <header class="page-intro">
+                  <nav class="admin-breadcrumb">
+                    <a href="/admin/mail-requests">送信依頼</a> &rsaquo; 詳細
+                  </nav>
+                  <h1>送信依頼詳細</h1>
+                </header>
             """);
 
-        AppendDetailSection(html, detail, options, canRevealBcc);
-        AppendMutationActions(html, detail, csrfToken, now ?? DateTimeOffset.UtcNow);
-        AppendAttemptsSection(html, attempts);
-        AppendAttachmentsSection(html, detail.Id, attachments);
-        AppendBounceEventsSection(html, bounceEvents);
-
-        AdminLayout.AppendDocumentEnd(html);
-
-        return html.ToString();
-    }
-
-    private static void AppendDetailSection(
-        StringBuilder html,
-        AdminMailRequestDetail detail,
-        MailerAdminOptions options,
-        bool canRevealBcc)
-    {
-        var subject = options.MaskSubjects
-            ? MaskSubject(detail.Subject)
-            : detail.Subject;
-
-        html.AppendLine("""
-              <section class="detail-section" aria-label="送信依頼詳細">
-                <table class="admin-table detail-table">
-                  <tbody>
-            """);
-
-        AppendDetailRow(html, "ID", detail.Id.ToString("D"));
-        AppendDetailRow(html, "テナント", detail.TenantId.ToString("D"));
-        AppendDetailRow(html, "source_service", detail.SourceService);
-        AppendDetailRow(html, "mail_request_id", detail.MailRequestId.ToString("D"));
-        AppendDetailRow(html, "purpose", detail.Purpose);
-        AppendDetailRow(html, "payload_hash", detail.PayloadHash);
-
-        html.Append("                  <tr><th>ステータス</th><td><span class=\"status-badge ");
-        html.Append(StatusClass(detail.Status));
-        html.Append("\">");
-        html.Append(StatusText(detail.Status));
-        html.AppendLine("</span></td></tr>");
-
-        if (detail.Status == MailRequestState.Processing && detail.LockExpiresAt.HasValue)
-            AppendDetailRow(html, "lock_expires_at", FormatLocalTime(detail.LockExpiresAt.Value));
-
-        AppendDetailRow(html, "件名", subject);
-        if (detail.ReplyTo is not null)
-        {
-            var replyTo = options.MaskRecipients
-                ? MaskRecipient(detail.ReplyTo)
-                : detail.ReplyTo;
-            AppendDetailRow(html, "reply_to", replyTo);
-        }
-        AppendDetailRow(html, "試行回数", $"{detail.AttemptCount} / {detail.MaxAttempts}");
-        if (detail.NextAttemptAt.HasValue)
-            AppendDetailRow(html, "next_attempt_at", FormatLocalTime(detail.NextAttemptAt.Value));
-        if (detail.LastErrorMessage is not null)
-        {
-            html.Append("                  <tr><th>");
-            html.Append(Html("last_error_message"));
-            html.Append("</th><td><pre class=\"inline-pre\">");
-            html.Append(Html(detail.LastErrorMessage));
-            html.AppendLine("</pre></td></tr>");
-        }
-
-        AppendDetailRow(html, "accepted_at", FormatLocalTime(detail.AcceptedAt));
-        AppendDetailRow(html, "created_at", FormatLocalTime(detail.CreatedAt));
-        AppendDetailRow(html, "updated_at", FormatLocalTime(detail.UpdatedAt));
-        if (detail.DeliveredAt.HasValue)
-            AppendDetailRow(html, "delivered_at", FormatLocalTime(detail.DeliveredAt.Value));
-        if (detail.FailedAt.HasValue)
-            AppendDetailRow(html, "failed_at", FormatLocalTime(detail.FailedAt.Value));
-        if (detail.DeliveryUnknownAt.HasValue)
-            AppendDetailRow(html, "delivery_unknown_at", FormatLocalTime(detail.DeliveryUnknownAt.Value));
-        if (detail.CompletedAt.HasValue)
-            AppendDetailRow(html, "completed_at", FormatLocalTime(detail.CompletedAt.Value));
-
-        html.AppendLine("""
-                  </tbody>
-                </table>
-            """);
-
+        AppendSummaryCard(html, detail, options, csrfToken, now ?? DateTimeOffset.UtcNow);
         AdminRecipientSummaryRenderer.AppendDetailTable(
             html,
             detail.Id,
             detail.Recipients,
             options.MaskRecipients,
             canRevealBcc);
+        AppendBodySection(html, detail);
+        AppendAttachmentsSection(html, detail.Id, attachments);
+        AppendAttemptsSection(html, attempts);
+        AppendBounceEventsSection(html, bounceEvents);
+        AppendTechnicalSection(html, detail);
 
-        AppendBodyLink(html, detail.Id, "html_body", detail.HtmlBody);
-        AppendBodyLink(html, detail.Id, "text_body", detail.TextBody);
-        AppendBodyLink(html, detail.Id, "metadata_json", detail.MetadataJson);
+        AdminLayout.AppendDocumentEnd(html);
 
+        return html.ToString();
+    }
+
+    private static void AppendSummaryCard(
+        StringBuilder html,
+        AdminMailRequestDetail detail,
+        MailerAdminOptions options,
+        string csrfToken,
+        DateTimeOffset now)
+    {
+        var subject = options.MaskSubjects
+            ? MaskSubject(detail.Subject)
+            : detail.Subject;
+
+        html.AppendLine("              <section class=\"admin-card summary-card\" aria-label=\"送信依頼概要\">");
+        html.Append("                <span class=\"status-badge ");
+        html.Append(StatusClass(detail.Status));
+        html.Append("\">");
+        html.Append(StatusText(detail.Status));
+        html.AppendLine("</span>");
+        html.Append("                <h2 class=\"summary-subject\">");
+        html.Append(Html(subject));
+        html.AppendLine("</h2>");
+        html.AppendLine("                <dl class=\"summary-metrics\">");
+        AppendMetric(html, "宛先", detail.Recipients.Count.ToString(CultureInfo.InvariantCulture));
+        AppendMetric(html, "試行回数", $"{detail.AttemptCount} / {detail.MaxAttempts}");
+        AppendMetric(html, "受付日時", FormatSummaryTime(detail.AcceptedAt));
+        if (detail.DeliveredAt.HasValue)
+            AppendMetric(html, "配送日時", FormatSummaryTime(detail.DeliveredAt.Value));
+        else if (detail.FailedAt.HasValue)
+            AppendMetric(html, "失敗日時", FormatSummaryTime(detail.FailedAt.Value));
+        else if (detail.DeliveryUnknownAt.HasValue)
+            AppendMetric(html, "不明確定日時", FormatSummaryTime(detail.DeliveryUnknownAt.Value));
+        if (detail.NextAttemptAt.HasValue)
+            AppendMetric(html, "次回試行", FormatSummaryTime(detail.NextAttemptAt.Value));
+        if (detail.Status == MailRequestState.Processing && detail.LockExpiresAt.HasValue)
+            AppendMetric(html, "lock_expires_at", FormatSummaryTime(detail.LockExpiresAt.Value));
+        if (detail.ReplyTo is not null)
+        {
+            var replyTo = options.MaskRecipients
+                ? MaskRecipient(detail.ReplyTo)
+                : detail.ReplyTo;
+            AppendMetric(html, "reply_to", replyTo);
+        }
+
+        html.AppendLine("                </dl>");
+
+        if (detail.LastErrorMessage is not null)
+        {
+            html.AppendLine("                <div class=\"summary-error\">");
+            html.Append("                  <pre class=\"inline-pre\">");
+            html.Append(Html(detail.LastErrorMessage));
+            html.AppendLine("</pre>");
+            html.AppendLine("                </div>");
+        }
+
+        AppendMutationActions(html, detail, csrfToken, now);
         html.AppendLine("              </section>");
+    }
+
+    private static void AppendMetric(StringBuilder html, string label, string value)
+    {
+        html.Append("                  <div><dt>");
+        html.Append(Html(label));
+        html.Append("</dt><dd>");
+        html.Append(Html(value));
+        html.AppendLine("</dd></div>");
+    }
+
+    private static void AppendBodySection(StringBuilder html, AdminMailRequestDetail detail)
+    {
+        if (detail.HtmlBody is null && detail.TextBody is null && detail.MetadataJson is null)
+            return;
+
+        html.AppendLine("              <section class=\"admin-card detail-card\" aria-label=\"本文\">");
+        html.AppendLine("                <h2 class=\"section-heading\">本文</h2>");
+        html.AppendLine("                <div class=\"body-actions\">");
+        AppendBodyLink(html, detail.Id, "html_body", "HTML本文を表示", detail.HtmlBody);
+        AppendBodyLink(html, detail.Id, "text_body", "テキスト本文を表示", detail.TextBody);
+        AppendBodyLink(html, detail.Id, "metadata_json", "metadata を表示", detail.MetadataJson);
+        html.AppendLine("                </div>");
+        html.AppendLine("              </section>");
+    }
+
+    private static void AppendTechnicalSection(
+        StringBuilder html,
+        AdminMailRequestDetail detail)
+    {
+        html.AppendLine("              <details class=\"admin-card tech-details\">");
+        html.AppendLine("                <summary>技術情報</summary>");
+        html.AppendLine("                <dl class=\"ops-dl\">");
+        AppendDefinition(html, "ID", detail.Id.ToString("D"));
+        AppendDefinition(html, "テナント", detail.TenantId.ToString("D"));
+        AppendDefinition(html, "source_service", detail.SourceService);
+        AppendDefinition(html, "mail_request_id", detail.MailRequestId.ToString("D"));
+        AppendDefinition(html, "purpose", detail.Purpose);
+        AppendDefinition(html, "payload_hash", detail.PayloadHash);
+        if (detail.Status == MailRequestState.Processing && detail.LockExpiresAt.HasValue)
+            AppendDefinition(html, "lock_expires_at", FormatLocalTime(detail.LockExpiresAt.Value));
+        if (detail.NextAttemptAt.HasValue)
+            AppendDefinition(html, "next_attempt_at", FormatLocalTime(detail.NextAttemptAt.Value));
+        AppendDefinition(html, "accepted_at", FormatLocalTime(detail.AcceptedAt));
+        AppendDefinition(html, "created_at", FormatLocalTime(detail.CreatedAt));
+        AppendDefinition(html, "updated_at", FormatLocalTime(detail.UpdatedAt));
+        if (detail.DeliveredAt.HasValue)
+            AppendDefinition(html, "delivered_at", FormatLocalTime(detail.DeliveredAt.Value));
+        if (detail.FailedAt.HasValue)
+            AppendDefinition(html, "failed_at", FormatLocalTime(detail.FailedAt.Value));
+        if (detail.DeliveryUnknownAt.HasValue)
+            AppendDefinition(html, "delivery_unknown_at", FormatLocalTime(detail.DeliveryUnknownAt.Value));
+        if (detail.CompletedAt.HasValue)
+            AppendDefinition(html, "completed_at", FormatLocalTime(detail.CompletedAt.Value));
+        html.AppendLine("                </dl>");
+        html.AppendLine("              </details>");
+    }
+
+    private static void AppendDefinition(StringBuilder html, string term, string value)
+    {
+        html.Append("                  <dt>");
+        html.Append(Html(term));
+        html.AppendLine("</dt>");
+        html.Append("                  <dd>");
+        html.Append(Html(value));
+        html.AppendLine("</dd>");
     }
 
     private static void AppendMutationActions(
@@ -264,26 +317,27 @@ public static class AdminMailRequestDetailPage
         html.AppendLine("              </section>");
     }
 
-    private static void AppendBodyLink(StringBuilder html, Guid requestId, string field, string? body)
+    private static void AppendBodyLink(StringBuilder html, Guid requestId, string field, string label, string? body)
     {
         if (body is null)
             return;
 
         var idStr = requestId.ToString("D");
-        html.Append("              <p><a href=\"/admin/mail-requests/");
+        html.Append("                  <a class=\"secondary-button\" href=\"/admin/mail-requests/");
         html.Append(idStr);
         html.Append("/body?field=");
         html.Append(Html(field));
         html.Append("\">");
-        html.Append(Html(field));
-        html.AppendLine(" を表示</a></p>");
+        html.Append(Html(label));
+        html.AppendLine("</a>");
     }
 
     private static void AppendAttemptsSection(StringBuilder html, IReadOnlyList<AdminMailAttemptRow> attempts)
     {
         html.AppendLine("""
-              <section class="detail-section" aria-label="試行履歴">
-                <h2 class="section-heading">試行履歴</h2>
+              <section class="admin-card detail-card" aria-label="配送・試行履歴">
+                <h2 class="section-heading">配送・試行履歴</h2>
+                <div class="table-region">
                 <table class="admin-table">
                   <thead>
                     <tr>
@@ -317,6 +371,7 @@ public static class AdminMailRequestDetailPage
         html.AppendLine("""
                   </tbody>
                 </table>
+                </div>
               </section>
             """);
     }
@@ -348,8 +403,9 @@ public static class AdminMailRequestDetailPage
             return;
 
         html.AppendLine("""
-              <section class="detail-section" aria-label="添付ファイル">
+              <section class="admin-card detail-card" aria-label="添付ファイル">
                 <h2 class="section-heading">添付ファイル</h2>
+                <div class="table-region">
                 <table class="admin-table">
                   <thead>
                     <tr>
@@ -369,6 +425,7 @@ public static class AdminMailRequestDetailPage
         html.AppendLine("""
                   </tbody>
                 </table>
+                </div>
               </section>
             """);
     }
@@ -383,7 +440,7 @@ public static class AdminMailRequestDetailPage
         // revealed (audited) -- never rendered unmasked inline in this table.
         html.Append("                    <td>");
         html.Append(Html(MaskFileName(attachment.FileName)));
-        html.Append(" <a href=\"/admin/mail-requests/");
+        html.Append(" <a class=\"secondary-button\" href=\"/admin/mail-requests/");
         html.Append(idStr);
         html.Append("/attachments/");
         html.Append(attachment.Order.ToString(CultureInfo.InvariantCulture));
@@ -401,8 +458,9 @@ public static class AdminMailRequestDetailPage
         IReadOnlyList<AdminBounceEventRow> bounceEvents)
     {
         html.AppendLine("""
-              <section class="detail-section" aria-label="バウンス履歴">
-                <h2 class="section-heading">バウンス履歴</h2>
+              <section class="admin-card detail-card" aria-label="バウンス">
+                <h2 class="section-heading">バウンス</h2>
+                <div class="table-region">
                 <table class="admin-table">
                   <thead>
                     <tr>
@@ -434,6 +492,7 @@ public static class AdminMailRequestDetailPage
         html.AppendLine("""
                   </tbody>
                 </table>
+                </div>
               </section>
             """);
     }
@@ -448,15 +507,6 @@ public static class AdminMailRequestDetailPage
         AppendCell(html, bounce.StatusMessage ?? string.Empty);
         AppendCell(html, FormatLocalTime(bounce.OccurredAt));
         html.AppendLine("                  </tr>");
-    }
-
-    private static void AppendDetailRow(StringBuilder html, string label, string value)
-    {
-        html.Append("                  <tr><th>");
-        html.Append(Html(label));
-        html.Append("</th><td>");
-        html.Append(Html(value));
-        html.AppendLine("</td></tr>");
     }
 
     private static void AppendCell(StringBuilder html, string value)
@@ -553,6 +603,9 @@ public static class AdminMailRequestDetailPage
 
         return $"{fileName[0]}***{fileName[dot..]}";
     }
+
+    private static string FormatSummaryTime(DateTimeOffset value) =>
+        value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
 
     private static string FormatLocalTime(DateTimeOffset value) =>
         value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture);

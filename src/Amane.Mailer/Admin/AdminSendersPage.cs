@@ -82,25 +82,22 @@ public static class AdminSendersPage
     {
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(html, "Senders - Amane Admin", AdminNavItem.Senders, deadLetterCount);
-        html.AppendLine("                <section class=\"ops-section\" aria-label=\"Sender作成\">");
-        html.AppendLine("                  <h1 class=\"ops-heading\">Senders</h1>");
-        html.AppendLine("                  <p class=\"ops-description\">Mailerが送信元として使うSender identityと、そのAPI Keyを管理する画面です。<code>enabled</code> は送信に利用でき、<code>disabled</code> は利用停止中です。</p>");
-        html.AppendLine("                  <form method=\"post\" action=\"/admin/senders\" class=\"ops-form\">");
-        AppendCsrfInput(html, csrfToken);
-        AppendTextInput(html, "email", "Email", "email", required: true, maxLength: 320);
-        AppendTextInput(html, "display_name", "Display name", "organization", required: false, maxLength: 200);
-        html.AppendLine("                    <label><input type=\"checkbox\" name=\"confirmation\" value=\"confirm\" required> Senderを作成することを確認します。</label>");
-        html.AppendLine("                    <button type=\"submit\">Senderを作成</button>");
-        html.AppendLine("                  </form>");
-        html.AppendLine("                </section>");
+        html.AppendLine("                <div class=\"page-intro-row\">");
+        html.AppendLine("                  <header class=\"page-intro\">");
+        html.AppendLine("                    <h1>Senders</h1>");
+        html.AppendLine("                    <p>Mailerが送信元として使うSender identityと、そのAPI Keyを管理する画面です。<code>enabled</code> は送信に利用でき、<code>disabled</code> は利用停止中です。</p>");
+        html.AppendLine("                  </header>");
+        html.AppendLine("                  <a class=\"primary-button\" href=\"#sender-create\">Senderを追加</a>");
+        html.AppendLine("                </div>");
 
-        html.AppendLine("                <section class=\"table-region\" aria-label=\"Sender一覧\">");
+        html.AppendLine("                <section class=\"admin-card\" aria-label=\"Sender一覧\">");
+        html.AppendLine("                  <div class=\"table-region\">");
         html.AppendLine("                  <table class=\"admin-table\">");
-        html.AppendLine("                    <thead><tr><th>sender_id</th><th>email</th><th>display_name</th><th>status</th><th>created_at</th><th>disabled_at</th><th>API Keys</th></tr></thead>");
+        html.AppendLine("                    <thead><tr><th>Email</th><th>Display name</th><th>Status</th><th>API Keys</th></tr></thead>");
         html.AppendLine("                    <tbody>");
         if (senders.Count == 0)
         {
-            html.AppendLine("                      <tr><td class=\"empty-row\" colspan=\"7\">Senderがありません</td></tr>");
+            html.AppendLine("                      <tr><td class=\"empty-row\" colspan=\"4\">Senderがありません</td></tr>");
         }
         else
         {
@@ -110,13 +107,14 @@ public static class AdminSendersPage
                 html.Append("                        <td><a href=\"/admin/senders/");
                 html.Append(Html(sender.SenderId.ToString("D")));
                 html.Append("\">");
-                html.Append(Html(sender.SenderId.ToString("D")));
+                html.Append(Html(sender.Email));
                 html.AppendLine("</a></td>");
-                AppendTableCell(html, sender.Email);
                 AppendTableCell(html, sender.DisplayName ?? string.Empty);
-                AppendTableCell(html, sender.Enabled ? "enabled" : "disabled");
-                AppendTableCell(html, FormatUtc(sender.CreatedAt));
-                AppendTableCell(html, sender.DisabledAt is null ? string.Empty : FormatUtc(sender.DisabledAt.Value));
+                html.Append("                        <td><span class=\"status-badge ");
+                html.Append(sender.Enabled ? "sender-status-enabled" : "sender-status-disabled");
+                html.Append("\">");
+                html.Append(sender.Enabled ? "Enabled" : "Disabled");
+                html.AppendLine("</span></td>");
                 AppendTableCell(html, sender.ApiKeyCount.ToString(CultureInfo.InvariantCulture));
                 html.AppendLine("                      </tr>");
             }
@@ -124,6 +122,18 @@ public static class AdminSendersPage
 
         html.AppendLine("                    </tbody>");
         html.AppendLine("                  </table>");
+        html.AppendLine("                  </div>");
+        html.AppendLine("                </section>");
+
+        html.AppendLine("                <section class=\"admin-card detail-card\" id=\"sender-create\" aria-label=\"Sender作成\">");
+        html.AppendLine("                  <h2 class=\"section-heading\">Senderを追加</h2>");
+        html.AppendLine("                  <form method=\"post\" action=\"/admin/senders\" class=\"stack-form\">");
+        AppendCsrfInput(html, csrfToken);
+        AppendTextInput(html, "email", "Email", "email", required: true, maxLength: 320);
+        AppendTextInput(html, "display_name", "Display name", "organization", required: false, maxLength: 200);
+        html.AppendLine("                    <label class=\"confirm-label\"><input type=\"checkbox\" name=\"confirmation\" value=\"confirm\" required> Senderを作成することを確認します。</label>");
+        html.AppendLine("                    <button type=\"submit\">Senderを作成</button>");
+        html.AppendLine("                  </form>");
         html.AppendLine("                </section>");
         AdminLayout.AppendDocumentEnd(html);
         return html.ToString();

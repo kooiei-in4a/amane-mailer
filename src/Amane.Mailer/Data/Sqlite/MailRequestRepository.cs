@@ -72,6 +72,11 @@ public class MailRequestRepository
         CancellationToken cancellationToken = default) =>
         _adminQueries.ListForAdminAsync(query, cancellationToken);
 
+    public Task<AdminMailRequestStatusCounts> CountByStatusForAdminAsync(
+        AdminMailRequestListQuery query,
+        CancellationToken cancellationToken = default) =>
+        _adminQueries.CountByStatusForAdminAsync(query, cancellationToken);
+
     public Task<AdminDeadLetterListPage> ListDeadLettersForAdminAsync(
         AdminDeadLetterListQuery query,
         CancellationToken cancellationToken = default) =>
