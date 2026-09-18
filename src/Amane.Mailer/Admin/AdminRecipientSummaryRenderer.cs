@@ -26,6 +26,29 @@ internal static class AdminRecipientSummaryRenderer
         return string.Join(" | ", parts);
     }
 
+    public static string RenderCompact(
+        IReadOnlyList<AdminRecipientSummary> recipients,
+        bool maskRecipients)
+    {
+        var visible = recipients
+            .Where(recipient => recipient.Role is MailRecipientRole.To or MailRecipientRole.Cc)
+            .OrderBy(recipient => recipient.Role)
+            .ThenBy(recipient => recipient.Ordinal)
+            .Select(recipient => MaskRecipient(recipient.Address ?? string.Empty, maskRecipients))
+            .ToArray();
+
+        if (visible.Length == 0)
+        {
+            var bccCount = recipients.Count(recipient => recipient.Role == MailRecipientRole.Bcc);
+            return bccCount > 0 ? "***" : "宛先情報なし";
+        }
+
+        if (visible.Length == 1)
+            return visible[0];
+
+        return $"{visible[0]} +{visible.Length - 1}名";
+    }
+
     public static void AppendDetailTable(
         StringBuilder html,
         Guid requestId,
@@ -33,8 +56,9 @@ internal static class AdminRecipientSummaryRenderer
         bool maskRecipients,
         bool canRevealBcc)
     {
-        html.AppendLine("              <section class=\"detail-section\" aria-label=\"宛先\">");
+        html.AppendLine("              <section class=\"admin-card detail-card\" aria-label=\"宛先\">");
         html.AppendLine("                <h2 class=\"section-heading\">宛先</h2>");
+        html.AppendLine("                <div class=\"table-region\">");
         html.AppendLine("                <table class=\"admin-table\">");
         html.AppendLine("                  <thead><tr><th>Role</th><th>#</th><th>Recipient</th><th>Display name</th><th>Delivery state</th></tr></thead>");
         html.AppendLine("                  <tbody>");
@@ -62,7 +86,7 @@ internal static class AdminRecipientSummaryRenderer
                 html.Append(Html(address));
                 if (isBcc && canRevealBcc)
                 {
-                    html.Append(" <a href=\"/admin/mail-requests/");
+                    html.Append(" <a class=\"secondary-button\" href=\"/admin/mail-requests/");
                     html.Append(Html(requestId.ToString("D")));
                     html.Append("/recipients/bcc/");
                     html.Append(recipient.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -81,6 +105,7 @@ internal static class AdminRecipientSummaryRenderer
 
         html.AppendLine("                  </tbody>");
         html.AppendLine("                </table>");
+        html.AppendLine("                </div>");
         html.AppendLine("              </section>");
     }
 

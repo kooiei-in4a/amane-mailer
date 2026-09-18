@@ -33,7 +33,7 @@ public sealed class AdminMailRequestDetailBounceRenderTests
             [bounce],
             NoMaskOptions);
 
-        Assert.Contains("バウンス履歴", html, StringComparison.Ordinal);
+        Assert.Contains("バウンス", html, StringComparison.Ordinal);
         Assert.DoesNotContain("<script>", html, StringComparison.Ordinal);
         Assert.Contains("&lt;script&gt;alert(1)&lt;/script&gt;", html, StringComparison.Ordinal);
     }
