@@ -72,8 +72,6 @@ In the browser, complete the forms in this order: bootstrap authentication → A
 
 After initialization, `/setup` and the bootstrap token are intentionally unavailable, including when an old token file remains. Managed v2 Admin state is SQLite-authoritative: the Admin surface stays enabled even when `AMANE_ADMIN_ENABLED=false`, and the legacy environment password hash is ignored. Reset a managed password interactively with `docker compose ... exec mailer /app/Amane.Mailer admin reset-password --username <db-admin-name>`.
 
-### Candidate consumption (verify methods)
-
 #### VPS shared HTTPS edge (Managed v2)
 
 The host **Easy Setup Assistant** loopback Web UI and Mailer's runtime **first-run
@@ -101,6 +99,8 @@ If an existing staging host still uses historical `compose.shared-staging.yml`, 
 routine image-only update must not silently replace it with `compose.shared-edge.yml`.
 Use the repository-owned profile as authority only for a new deployment or an explicit
 topology reconciliation. See [Staging VPS deployment](staging-deployment.md).
+
+### Candidate consumption (verify methods)
 
 When consuming an Easy Setup **release-candidate** host bundle (not a published GitHub Release):
 
