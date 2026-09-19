@@ -32,6 +32,37 @@ Mailer:
   data: /srv/apps/amane-mailer-staging/data
 ```
 
+## Repository-owned shared-edge profile
+
+Issue #771 以降、shared platform edge に Mailer を接続するRepository側の標準overlayは
+[`infra/deploy/compose.shared-edge.yml`](../../infra/deploy/compose.shared-edge.yml) です。
+host用の非secret設定例は
+[`infra/deploy/.env.shared-edge.example`](../../infra/deploy/.env.shared-edge.example) を参照します。
+
+このprofileが所有するのはMailer側の接続境界だけです。
+
+- Mailerはhost portをpublishしない。
+- Mailerは `internal` と既存external shared-edge networkだけへ参加する。
+- `mailer-migrate` は `internal` のみ。
+- managed-v2ではlegacy tenant/token/provider inputsをoverlayで除去する。
+- forwarded headersは設定したshared-edge proxy IPv4 addressだけをtrustする。
+- Admin/Setupの `Connection.LocalIpAddress` 判定を維持するため、shared edge上のMailer IPv4 addressを固定する。
+- Caddy/TLS/DNS/Basic Auth/JP allow-listはplatform edge側の責任であり、このprofileでは作成しない。
+
+必要なshared-edge固有値は次の4つです。
+
+```text
+MAILER_SHARED_EDGE_NETWORK_NAME=<existing external Docker network>
+MAILER_SHARED_EDGE_ALIAS=mailer
+MAILER_SHARED_EDGE_PROXY_IPV4_ADDRESS=<platform edge proxy IPv4>
+MAILER_SHARED_EDGE_MAILER_IPV4_ADDRESS=<reserved Mailer IPv4 on that network>
+```
+
+2026-09-19に構築済みのstaging hostは、このRepository profile追加前に作成された
+`compose.shared-staging.yml` を使用しています。このIssueではlive VPSを変更しません。
+通常のimage-only deploymentでCompose topologyを暗黙に差し替えず、将来の再構築または
+明示的なprofile reconciliation時にRepository-owned profileをauthorityとして比較・採用します。
+
 image authority は `.env` の次の値です。
 
 ```text
@@ -73,8 +104,9 @@ MAILER_PULL_POLICY=never
 - effective Compose の target service image / pull policy / ports / networks
 
 `MAIL_SERVICE_TOKEN` 未設定 warning は、base Compose の interpolation により表示される場合があります。
-warning だけで fail とせず、`compose.shared-staging.yml` の `!reset null` が effective Compose で
-legacy token / provider 値を除去していることを確認します。
+warning だけで fail とせず、shared-edge overlay の `!reset null` が effective Compose で
+legacy token / provider 値を除去していることを確認します。現在の2026-09-19 hostでは
+historical `compose.shared-staging.yml`、Repository標準では `compose.shared-edge.yml` が該当します。
 
 ## 2. Target image を downtime 前に pull
 
@@ -167,7 +199,8 @@ MAILER_IMAGE_TAG=sha-<approved source revision>
 変更しないもの:
 
 - `compose.yml`
-- `compose.shared-staging.yml`
+- current hostの `compose.shared-staging.yml`（明示reconciliationまでは変更しない）
+- Repository標準の `compose.shared-edge.yml`（新規構築・明示reconciliation時のauthority）
 - `compose.image-digest.yml`
 - Caddyfile
 - shared edge
@@ -217,6 +250,7 @@ public:
 - JP operator sourceの `/admin` = expected Basic Auth boundary
 - JP operator sourceの `/setup` = expected Basic Auth boundary
 - unauthenticated `/api` = Mailer 401、Basic challengeなし
+- initialized Browser managed-v2 の `/admin/setup-status` = canonical managed stateと整合し、configured providerを `credential-missing` と誤表示しない
 
 さらに、Compose files / Caddyfile SHA と shared edge container identity が preflight から変わっていないことを確認します。
 

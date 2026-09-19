@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Identity;
 using Amane.Mailer.Setup;
 using Microsoft.Extensions.Hosting;
 
@@ -29,6 +30,8 @@ public static class AdminSetupStatusPage
         AdminUserRepository userRepository,
         AdminDeadLetterCountCache deadLetterCountCache,
         MailRequestRepository mailRequestRepository,
+        InstanceConfigurationRepository instanceConfigurationRepository,
+        SenderRepository senderRepository,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
@@ -44,7 +47,25 @@ public static class AdminSetupStatusPage
             cancellationToken);
 
         var environmentName = context.RequestServices.GetRequiredService<IHostEnvironment>().EnvironmentName;
-        var model = AdminSetupStatusReadModel.CreateFromConfiguration(configuration, environmentName);
+        var instanceConfiguration = await instanceConfigurationRepository.GetAsync(cancellationToken);
+        var sender = instanceConfiguration?.InitializedAt is null
+            ? null
+            : await senderRepository.FindFirstEnabledAsync(cancellationToken);
+        var managedInstance = instanceConfiguration?.InitializedAt is null
+            ? null
+            : new AdminSetupManagedInstanceObservation
+            {
+                Initialized = true,
+                LiveSendingEnabled = instanceConfiguration.LiveSending,
+                ProviderType = instanceConfiguration.ProviderType,
+                ProviderPreflightSafe = AdminManagedProviderPreflight.IsSafe(instanceConfiguration),
+                SenderEmail = sender?.Email,
+                SenderPresent = sender is not null,
+            };
+        var model = AdminSetupStatusReadModel.CreateFromConfiguration(
+            configuration,
+            environmentName,
+            managedInstance);
         var asOfUtc = timeProvider.GetUtcNow();
 
         context.Response.Headers.CacheControl = "no-store";
@@ -95,9 +116,9 @@ public static class AdminSetupStatusPage
     {
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Deployment mode\">");
         html.AppendLine("                  <h2 class=\"ops-heading\">Deployment mode</h2>");
-        html.AppendLine("                  <p class=\"ops-description\">現在どの方式でMailerが配備されているかを示します。Managed DeploymentはEasy Setupの管理対象、Manual DeploymentはEasy Setupの管理対象外です。</p>");
+        html.AppendLine("                  <p class=\"ops-description\">現在どの方式でMailerが配備されているかを示します。Managed DeploymentはEasy Setupの管理対象、Manual DeploymentはEasy Setupの管理対象外、Browser SetupはBrowser managed instanceです。</p>");
         html.AppendLine("                  <dl class=\"ops-dl\">");
-        AppendDefinition(html, "Deployment", FormatDeploymentKind(model.DeploymentKind));
+        AppendDefinition(html, "Deployment", FormatDeploymentKind(model));
         AppendDefinition(html, "Mailer version", NullAsNa(model.MailerVersion));
         if (model.DeploymentKind == AdminSetupDeploymentKind.Manual)
         {
@@ -342,7 +363,13 @@ public static class AdminSetupStatusPage
         html.AppendLine("                  <p class=\"ops-description\">現在の状態に応じて、次に確認する場所や手順を示します。この画面から設定変更や秘密情報の操作は行いません。</p>");
         html.AppendLine("                  <ul class=\"ops-list\">");
         html.AppendLine("                    <li>このページは状態確認のみです。doctor / test send / Docker / secret 変更は実行しません。</li>");
-        if (model.DeploymentKind == AdminSetupDeploymentKind.Manual)
+        if (model.BrowserManagedInstance)
+        {
+            html.Append("                    <li>Browser Setup済みのinstanceです。運用状態は <a href=\"");
+            html.Append(Html("/admin/ops"));
+            html.AppendLine("\">運用状況</a> で確認してください。</li>");
+        }
+        else if (model.DeploymentKind == AdminSetupDeploymentKind.Manual)
         {
             html.Append("                    <li>Manual Deployment の更新は <a href=\"");
             html.Append(Html(SetupGuideUrl));
@@ -363,14 +390,19 @@ public static class AdminSetupStatusPage
         html.AppendLine("                </section>");
     }
 
-    private static string FormatDeploymentKind(AdminSetupDeploymentKind kind) =>
-        kind switch
+    private static string FormatDeploymentKind(AdminSetupStatusReadModel model)
+    {
+        if (model.BrowserManagedInstance)
+            return "Browser Setup";
+
+        return model.DeploymentKind switch
         {
             AdminSetupDeploymentKind.Managed => "Managed Deployment",
             AdminSetupDeploymentKind.Manual => "Manual Deployment",
             AdminSetupDeploymentKind.InvalidManagedMetadata => "Managed metadata invalid",
             _ => "unknown",
         };
+    }
 
     private static string FormatImageReference(AdminSetupStatusReadModel model)
     {

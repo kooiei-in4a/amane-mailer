@@ -43,7 +43,7 @@ Easy Setup は既存の `.env` / `tenants.json` / file secret / deploy compose �
 | Windows Docker Desktop | `Amane.Mailer.exe setup assistant` |
 | Linux GUI + Docker Engine | `./Amane.Mailer setup assistant` |
 | headless Linux / VPS | `./Amane.Mailer setup assistant --no-browser` または `./Amane.Mailer setup assistant --terminal` |
-| VPS への SSH | `--terminal` を推奨。または assistant の loopback port へ SSH tunnel してローカルブラウザを使う。**VPS 上のブラウザーだけでは完結しない** |
+| VPS への SSH | host の Easy Setup Assistant は `--terminal` または loopback port の SSH tunnel を使う。Managed v2 runtime 自身の `/setup` は、承認済み HTTPS reverse proxy / shared edge がある場合は別経路としてブラウザ利用できる |
 | Offline / GitHub 不可 | `Amane.Mailer setup assistant --help` のあと `--terminal`（Windows は `Amane.Mailer.exe`） |
 | non-interactive（Main のみ） | `Amane.Mailer setup apply --config <absolute-path> --non-interactive` |
 
@@ -71,6 +71,31 @@ token は secret として扱い、ログや Issue に貼らないでくださ�
 ブラウザでは、bootstrap 認証 → ACS provider secret → 最初の Admin ユーザー → 最初の Sender → finalize の順に入力します。finalize は durable な初期化済みビットを書き込み、サービスを停止します。`mailer` を再度起動し、`/readyz` を確認してください。この bootstrap 確認に実メール送信は不要です。
 
 初期化後は、古い token file が残っていても `/setup` と bootstrap token は利用できません。Managed v2 の Admin は SQLite が正本で、`AMANE_ADMIN_ENABLED=false` でも Admin 面は有効です。legacy の環境 password hash は無視されます。managed password の変更は、対話式に `docker compose ... exec mailer /app/Amane.Mailer admin reset-password --username <db-admin-name>` を実行します。
+
+#### VPS shared HTTPS edge（Managed v2）
+
+host 上で動く **Easy Setup Assistant** の loopback Web UI と、Mailer runtime 自身が提供する
+**初回 `/setup`** は別の経路です。VPS で assistant を使う場合は上記どおり terminal または
+SSH tunnel を使います。一方、既存の shared HTTPS edge がある managed-v2 配備では、
+Repository標準の [`compose.shared-edge.yml`](../../infra/deploy/compose.shared-edge.yml) を
+Mailer側の接続境界として利用できます。
+
+この shared-edge profile は Caddy/TLS/DNSを所有しません。platform edge側で次を満たします。
+
+- `/api`: JP allow-listのみ。Caddy Basic Authは追加せず、ConsumerのBearer/API KeyをMailerへ渡す
+- `/admin` / `/setup`: JP allow-list + Caddy Basic Auth + Mailer自身のAdmin/Setup認証
+- non-JP / 判定不能source: upstreamへ渡さずfail-closed
+- Mailer backend port: hostへpublishしない
+
+Setup finalize後はMailer側の初期化gateにより `/setup` は利用できません。
+初期化済みBrowser managed-v2 instanceの `/admin/setup-status` は、
+`instance_configuration`、protected ACS secret、Sender、`live_sending` という既存canonical
+stateを表示に使います。secret値やprovider secret reference自体は表示しません。
+
+既存staging hostがhistorical `compose.shared-staging.yml` を使用している場合、通常の
+image-only updateで暗黙に `compose.shared-edge.yml` へ差し替えません。新規構築または
+明示的なreconciliation時だけRepository標準profileをauthorityとして扱います。
+詳細は [Staging VPS deployment](staging-deployment.md) を参照してください。
 
 ### 候補の消費（検証方法）
 

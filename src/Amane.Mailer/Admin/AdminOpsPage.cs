@@ -5,7 +5,6 @@ using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Operations;
-using Amane.Mailer.Setup;
 using Amane.Mailer.Webhooks;
 using Amane.Mailer.Worker;
 using Microsoft.AspNetCore.Antiforgery;
@@ -66,7 +65,7 @@ public static class AdminOpsPage
             ? await instanceConfigurationRepository.GetAsync(cancellationToken)
             : null;
         var providerPreflightSafe = access.IsInstanceOwner
-            && IsProviderPreflightSafe(instanceConfiguration);
+            && AdminManagedProviderPreflight.IsSafe(instanceConfiguration);
 
         var workerEnabled = MailerWorkerOptions.IsEnabled(configuration);
         var readiness = BuildReadiness(storageInfo, serviceStatus, workerEnabled);
@@ -410,7 +409,7 @@ public static class AdminOpsPage
         if (current?.InitializedAt is null)
             return Results.Conflict();
 
-        if (enabled.Value && !IsProviderPreflightSafe(current))
+        if (enabled.Value && !AdminManagedProviderPreflight.IsSafe(current))
         {
             await WriteLiveSendingAuditAsync(
                 context,
@@ -523,12 +522,6 @@ public static class AdminOpsPage
         html.AppendLine("</button>");
         html.AppendLine("                    </form>");
     }
-
-    private static bool IsProviderPreflightSafe(InstanceConfigurationRow? configuration) =>
-        configuration is not null
-        && string.Equals(configuration.ProviderType, "acs", StringComparison.Ordinal)
-        && !string.IsNullOrWhiteSpace(configuration.ProviderSecretRef)
-        && FirstRunSetupStorage.TryReadValidAcsSecret(configuration.ProviderSecretRef, out _);
 
     private sealed class SeeOtherRedirectResult(string url) : IResult
     {

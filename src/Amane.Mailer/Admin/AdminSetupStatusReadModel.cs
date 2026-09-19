@@ -47,6 +47,13 @@ public sealed record AdminSetupStatusReadModel
     public string? ComposeIdentity { get; init; }
     public string? InspectReason { get; init; }
 
+    /// <summary>
+    /// Display-only: Browser Setup finalized this instance via
+    /// <c>instance_configuration.initialized_at</c>. Does not change Easy Setup
+    /// Manual / Managed classification.
+    /// </summary>
+    public bool BrowserManagedInstance { get; init; }
+
     public required AdminSetupVerificationFreshness VerificationFreshness { get; init; }
     public string? VerificationStatus { get; init; }
     public string? VerificationReason { get; init; }
@@ -74,11 +81,17 @@ public sealed record AdminSetupStatusReadModel
     /// </summary>
     public static AdminSetupStatusReadModel CreateFromConfiguration(
         IConfiguration configuration,
-        string environmentName)
+        string environmentName,
+        AdminSetupManagedInstanceObservation? managedInstance = null)
     {
         var inspection = SetupInspectEffectiveEngine.Inspect(configuration, environmentName);
         TryLoadRecordedExtras(configuration, environmentName, out var recordedExtra, out var senderEmail);
-        return FromInspection(inspection, recordedExtra, senderEmail, hostObservation: null);
+        return FromInspection(
+            inspection,
+            recordedExtra,
+            senderEmail,
+            hostObservation: null,
+            managedInstance);
     }
 
     /// <summary>
@@ -88,7 +101,8 @@ public sealed record AdminSetupStatusReadModel
         SetupInspectEffectiveResult inspection,
         SetupRecordedMetadata? recordedExtra = null,
         string? senderEmail = null,
-        AdminSetupHostObservation? hostObservation = null)
+        AdminSetupHostObservation? hostObservation = null,
+        AdminSetupManagedInstanceObservation? managedInstance = null)
     {
         ArgumentNullException.ThrowIfNull(inspection);
 
@@ -122,7 +136,7 @@ public sealed record AdminSetupStatusReadModel
             inspection,
             recordedExtra);
 
-        return new AdminSetupStatusReadModel
+        var model = new AdminSetupStatusReadModel
         {
             DeploymentKind = deploymentKind,
             MailerVersion = inspection.MailerVersion,
@@ -170,6 +184,8 @@ public sealed record AdminSetupStatusReadModel
             StagingSendRequestAccepted = staging.SendRequestAccepted,
             StagingOperationCompleted = staging.OperationCompleted,
         };
+
+        return ApplyBrowserManagedInstanceOverlay(model, managedInstance);
     }
 
     public static AdminSetupDeploymentKind ClassifyDeployment(SetupInspectEffectiveResult inspection)
@@ -796,6 +812,68 @@ public sealed record AdminSetupStatusReadModel
             senderEmail = null;
         }
     }
+
+    private static bool ShouldSuppressBrowserManagedInspectReason(
+        string? inspectReason,
+        bool providerPreflightSafe) =>
+        inspectReason == SetupInspectReason.TenantsMissing
+        || (providerPreflightSafe
+            && (inspectReason is SetupInspectReason.CredentialMissing
+                or SetupInspectReason.CredentialInvalid
+                or SetupInspectReason.MetadataMissing));
+
+    private static AdminSetupStatusReadModel ApplyBrowserManagedInstanceOverlay(
+        AdminSetupStatusReadModel model,
+        AdminSetupManagedInstanceObservation? managedInstance)
+    {
+        if (managedInstance is not { Initialized: true })
+            return model;
+
+        // Easy Setup recorded metadata remains the Managed / invalid-metadata authority.
+        if (model.DeploymentKind != AdminSetupDeploymentKind.Manual)
+            return model;
+
+        var credentialStatus = managedInstance.ProviderPreflightSafe
+            ? SetupInspectCredentialStatus.Loaded
+            : SetupInspectCredentialStatus.Missing;
+
+        var providerSummary = string.Equals(managedInstance.ProviderType, "acs", StringComparison.Ordinal)
+            ? "acs"
+            : model.ProviderSummary;
+
+        var inspectReason = ShouldSuppressBrowserManagedInspectReason(
+            model.InspectReason,
+            managedInstance.ProviderPreflightSafe)
+            ? null
+            : model.InspectReason;
+
+        return model with
+        {
+            BrowserManagedInstance = true,
+            CredentialStatus = credentialStatus,
+            LiveSendingEnabled = managedInstance.LiveSendingEnabled,
+            SenderEmail = managedInstance.SenderPresent
+                ? managedInstance.SenderEmail
+                : null,
+            PlatformSenderPresent = managedInstance.SenderPresent,
+            ProviderSummary = providerSummary,
+            InspectReason = inspectReason,
+        };
+    }
+}
+
+/// <summary>
+/// Browser managed-v2 instance observation used only by Setup status display.
+/// Secret values and <c>ProviderSecretRef</c> paths are never carried.
+/// </summary>
+public sealed record AdminSetupManagedInstanceObservation
+{
+    public required bool Initialized { get; init; }
+    public required bool LiveSendingEnabled { get; init; }
+    public string? ProviderType { get; init; }
+    public required bool ProviderPreflightSafe { get; init; }
+    public string? SenderEmail { get; init; }
+    public required bool SenderPresent { get; init; }
 }
 
 public enum AdminSetupDeploymentKind
