@@ -64,6 +64,22 @@ function Get-PostSyncJaPatternTokens {
     $kekkka = ([char]0x7D50).ToString() + [char]0x679C
     $genzaiKokaiChu = ([char]0x73FE).ToString() + [char]0x5728 + [char]0x516C + [char]0x958B + [char]0x4E2D
     $rei = [char]0x4F8B
+    $genzai = ([char]0x73FE).ToString() + [char]0x884C
+    $kokai = ([char]0x516C).ToString() + [char]0x958B
+    $zumi = ([char]0x6E08).ToString() + [char]0x307F
+    $suisho = ([char]0x63A8).ToString() + [char]0x5968
+    $image = ([char]0x30A4).ToString() + [char]0x30E1 + [char]0x30FC + [char]0x30B8
+    $fukumarenai = ([char]0x306B).ToString() + [char]0x542B + [char]0x307E + [char]0x308C + [char]0x306A + [char]0x3044
+    $fwOpen = [char]0xFF08
+    $fwClose = [char]0xFF09
+    $tagKatakana = ([char]0x30BF).ToString() + [char]0x30B0
+    $miken = ([char]0x672A).ToString() + [char]0x691C + [char]0x8A3C
+    $seiToSuru = ([char]0x6B63).ToString() + [char]0x3068 + [char]0x3059 + [char]0x308B
+    $kako = ([char]0x904E).ToString() + [char]0x53BB
+    $izen = ([char]0x4EE5).ToString() + [char]0x524D
+    $maeNo = ([char]0x524D).ToString() + $no
+    $donyuRireki = ([char]0x5C0E).ToString() + [char]0x5165 + [char]0x5C65 + [char]0x6B74
+    $rekishiteki = ([char]0x6B74).ToString() + [char]0x53F2 + [char]0x7684
     return [pscustomobject]@{
         No             = $no
         Ha             = $ha
@@ -71,6 +87,22 @@ function Get-PostSyncJaPatternTokens {
         Kekkka         = $kekkka
         GenzaiKokaiChu = $genzaiKokaiChu
         Rei            = $rei
+        Genzai         = $genzai
+        Kokai          = $kokai
+        Zumi           = $zumi
+        Suisho         = $suisho
+        Image          = $image
+        Fukumarenai    = $fukumarenai
+        FwOpen         = $fwOpen
+        FwClose        = $fwClose
+        TagKatakana    = $tagKatakana
+        Miken          = $miken
+        SeiToSuru      = $seiToSuru
+        Kako           = $kako
+        Izen           = $izen
+        MaeNo          = $maeNo
+        DonyuRireki    = $donyuRireki
+        Rekishiteki    = $rekishiteki
     }
 }
 
@@ -86,10 +118,11 @@ function Get-PostSyncFollowerReplacementRules {
         param([string]$Path, [string[]]$FromTemplates, [string[]]$ToTemplates, [int[]]$ExpectedCounts)
         for ($i = 0; $i -lt $FromTemplates.Count; $i++) {
             [void]$rules.Add(@{
-                    Path     = $Path
-                    From     = (Expand-PostSyncTokens -Template $FromTemplates[$i] -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
-                    To       = (Expand-PostSyncTokens -Template $ToTemplates[$i] -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
-                    Expected = $ExpectedCounts[$i]
+                    Path          = $Path
+                    From          = (Expand-PostSyncTokens -Template $FromTemplates[$i] -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
+                    To            = (Expand-PostSyncTokens -Template $ToTemplates[$i] -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
+                    Expected      = $ExpectedCounts[$i]
+                    TargetVersion = $TargetVersion
                 })
         }
     }
@@ -163,6 +196,84 @@ function Get-PostSyncFollowerReplacementRules {
         '[docs/releases/v{targetVersion}.md]'
         '../releases/v{targetVersion}.md'
     ) @(1, 1, 1, 1, 1)
+
+    Add-Rules 'docs/ops/setup-guide.md' @(
+        '[{prevTag} release record](../releases/{prevTag}.md)'
+        ($ja.Genzai + $ja.Kokai + $ja.Image + $ja.Ha + ' **{prevTag}**')
+        ($ja.Kokai + $ja.Zumi + ' **{prevTag}**')
+        '[release record](../releases/{prevTag}.md)'
+        'releases/tag/{prevTag}'
+        ($ja.Genzai + ' {prevTag} ' + $ja.Fukumarenai)
+        '[docs/releases/{prevTag}.md](../releases/{prevTag}.md)'
+        ('**' + $ja.Genzai + $ja.No + $ja.Suisho + $ja.Kokai + $ja.Image + $ja.Ha + ' {prevTag}**')
+        ($ja.Genzai + $ja.Rei + $ja.Ha + ' `{prevTag}`')
+        ($ja.FwOpen + $ja.Genzai + ' {prevTag}' + $ja.FwClose)
+        ('**' + $ja.Genzai + $ja.Suisho + ':** ' + $ja.Kokai + ' GitHub release / GHCR ' + $ja.TagKatakana + ' `{prevTag}`')
+        ($ja.Kokai + $ja.Zumi + ' release' + $ja.FwOpen + '`{prevTag}`' + $ja.FwClose)
+        ($ja.Kokai + ' {prevTag} ' + $ja.Image + $ja.Miken)
+        ($ja.Kokai + $ja.Image + $ja.Ha + ' `{prevTag}`')
+        ($ja.Genzai + $ja.Rei + ' `{prevTag}`')
+    ) @(
+        '[{targetTag} release record](../releases/{targetTag}.md)'
+        ($ja.Genzai + $ja.Kokai + $ja.Image + $ja.Ha + ' **{targetTag}**')
+        ($ja.Kokai + $ja.Zumi + ' **{targetTag}**')
+        '[release record](../releases/{targetTag}.md)'
+        'releases/tag/{targetTag}'
+        ($ja.Genzai + ' {targetTag} ' + $ja.Fukumarenai)
+        '[docs/releases/{targetTag}.md](../releases/{targetTag}.md)'
+        ('**' + $ja.Genzai + $ja.No + $ja.Suisho + $ja.Kokai + $ja.Image + $ja.Ha + ' {targetTag}**')
+        ($ja.Genzai + $ja.Rei + $ja.Ha + ' `{targetTag}`')
+        ($ja.FwOpen + $ja.Genzai + ' {targetTag}' + $ja.FwClose)
+        ('**' + $ja.Genzai + $ja.Suisho + ':** ' + $ja.Kokai + ' GitHub release / GHCR ' + $ja.TagKatakana + ' `{targetTag}`')
+        ($ja.Kokai + $ja.Zumi + ' release' + $ja.FwOpen + '`{targetTag}`' + $ja.FwClose)
+        ($ja.Kokai + ' {targetTag} ' + $ja.Image + $ja.Miken)
+        ($ja.Kokai + $ja.Image + $ja.Ha + ' `{targetTag}`')
+        ($ja.Genzai + $ja.Rei + ' `{targetTag}`')
+    ) @(3, 1, 1, 5, 2, 2, 2, 1, 1, 1, 1, 1, 1, 4, 1)
+
+    Add-Rules 'docs/ops/setup-guide.en.md' @(
+        '[{prevTag} release record](../releases/{prevTag}.md)'
+        'Current published image is **{prevTag}**'
+        'For published **{prevTag}**'
+        '[release record](../releases/{prevTag}.md)'
+        'releases/tag/{prevTag}'
+        'Not in current {prevTag}'
+        '[docs/releases/{prevTag}.md](../releases/{prevTag}.md)'
+        '**The current recommended published image is {prevTag}.**'
+        'current example is `{prevTag}`'
+        '(current {prevTag})'
+        '**Current recommendation:** public GitHub release / GHCR tag `{prevTag}`'
+        'uses `{prevTag}` as its current example'
+        'Published {prevTag} image not verified'
+        'Treat published image `{prevTag}` as canonical'
+        'Published image is `{prevTag}`'
+        'current example `{prevTag}`'
+        'not included in current {prevTag}'
+    ) @(
+        '[{targetTag} release record](../releases/{targetTag}.md)'
+        'Current published image is **{targetTag}**'
+        'For published **{targetTag}**'
+        '[release record](../releases/{targetTag}.md)'
+        'releases/tag/{targetTag}'
+        'Not in current {targetTag}'
+        '[docs/releases/{targetTag}.md](../releases/{targetTag}.md)'
+        '**The current recommended published image is {targetTag}.**'
+        'current example is `{targetTag}`'
+        '(current {targetTag})'
+        '**Current recommendation:** public GitHub release / GHCR tag `{targetTag}`'
+        'uses `{targetTag}` as its current example'
+        'Published {targetTag} image not verified'
+        'Treat published image `{targetTag}` as canonical'
+        'Published image is `{targetTag}`'
+        'current example `{targetTag}`'
+        'not included in current {targetTag}'
+    ) @(3, 1, 1, 5, 2, 1, 2, 1, 1, 1, 1, 1, 1, 1, 3, 1, 1)
+
+    Add-Rules 'ROADMAP.md' @(
+        'The current public stable line is **{prevTag}**'
+    ) @(
+        'The current public stable line is **{targetTag}**'
+    ) @(1)
 
     return @($rules)
 }
@@ -335,6 +446,83 @@ function Get-PostSyncReplacementMatchCounts {
     }
 }
 
+function Get-PostSyncCurrentPublicFollowerPaths {
+    return @(
+        'docs/ops/setup-guide.md'
+        'docs/ops/setup-guide.en.md'
+        'ROADMAP.md'
+    )
+}
+
+function Get-PostSyncCurrentVersionLinePatterns {
+    $ja = Get-PostSyncJaPatternTokens
+    $current = @(
+        'current'
+        $ja.Genzai
+        'recommended'
+        $ja.Suisho
+        'canonical'
+        $ja.SeiToSuru
+        'default tag'
+        ($ja.Kitei + $ja.TagKatakana)
+        'published image'
+        ($ja.Kokai + $ja.Image)
+    ) -join '|'
+    $historical = @(
+        'historical'
+        'history'
+        $ja.Kako
+        $ja.Izen
+        $ja.MaeNo
+        'prior'
+        'then-current'
+        $ja.DonyuRireki
+        $ja.Rekishiteki
+    ) -join '|'
+    return [pscustomobject]@{
+        CurrentLine    = ('(?i)(' + $current + ')')
+        HistoricalLine = ('(?i)(' + $historical + ')')
+        Version        = '\bv([0-9]+\.[0-9]+\.[0-9]+)\b'
+    }
+}
+
+function Get-PostSyncRuleMetadataValue {
+    param(
+        [hashtable[]]$Rules,
+        [string]$Key
+    )
+    foreach ($rule in @($Rules)) {
+        if ($null -eq $rule) { continue }
+        if ($rule.ContainsKey($Key) -and -not [string]::IsNullOrWhiteSpace([string]$rule[$Key])) {
+            return [string]$rule[$Key]
+        }
+    }
+    return ''
+}
+
+function Test-PostSyncHasStaleCurrentVersionLine {
+    param(
+        [string]$Content,
+        [string]$TargetVersion
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Content) -or [string]::IsNullOrWhiteSpace($TargetVersion)) {
+        return $false
+    }
+
+    $patterns = Get-PostSyncCurrentVersionLinePatterns
+    foreach ($line in ($Content -split '\r?\n')) {
+        if ($line -notmatch $patterns.CurrentLine) { continue }
+        if ($line -match $patterns.HistoricalLine) { continue }
+        foreach ($match in [regex]::Matches($line, $patterns.Version)) {
+            if ($match.Groups[1].Value -ne $TargetVersion) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 function Get-PostSyncFollowerFileState {
     param(
         [string]$Content,
@@ -358,6 +546,20 @@ function Get-PostSyncFollowerFileState {
         else {
             if ($counts.FromCount -gt 0) { $conflict = $true }
             if ($counts.ToCount -ne $rule.Expected) { $conflict = $true }
+        }
+    }
+
+    if (-not $conflict -and $Mode -eq 'TARGET') {
+        $relativePath = Get-PostSyncRuleMetadataValue -Rules $Rules -Key 'Path'
+        $targetVersion = Get-PostSyncRuleMetadataValue -Rules $Rules -Key 'TargetVersion'
+        $followerPaths = @(Get-PostSyncCurrentPublicFollowerPaths)
+        if ($followerPaths -contains $relativePath) {
+            if ([string]::IsNullOrWhiteSpace($targetVersion)) {
+                $conflict = $true
+            }
+            elseif (Test-PostSyncHasStaleCurrentVersionLine -Content $Content -TargetVersion $targetVersion) {
+                $conflict = $true
+            }
         }
     }
 
@@ -2044,6 +2246,9 @@ function Get-ReleasePreparePostSyncPlan {
         'SECURITY.md'
         'docs/ops/release-image-smoke.md'
         'docs/ops/release-image-smoke.en.md'
+        'docs/ops/setup-guide.md'
+        'docs/ops/setup-guide.en.md'
+        'ROADMAP.md'
         $targetRecord
     )
 

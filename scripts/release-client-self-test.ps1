@@ -1799,6 +1799,80 @@ function New-PostSyncVerifyObservers {
     }
 }
 
+function Read-PostSyncTestText {
+    param([string]$Path)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    return [System.IO.File]::ReadAllText($Path, $utf8NoBom)
+}
+
+function Write-PostSyncTestText {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
+function Get-PostSyncTestJaTokens {
+    $no = [char]0x306E
+    return [pscustomobject]@{
+        Genzai       = ([char]0x73FE).ToString() + [char]0x884C
+        Kokai        = ([char]0x516C).ToString() + [char]0x958B
+        Suisho       = ([char]0x63A8).ToString() + [char]0x5968
+        Image        = ([char]0x30A4).ToString() + [char]0x30E1 + [char]0x30FC + [char]0x30B8
+        Kitei        = ([char]0x65E2).ToString() + [char]0x5B9A
+        TagKatakana  = ([char]0x30BF).ToString() + [char]0x30B0
+        SeiToSuru    = ([char]0x6B63).ToString() + [char]0x3068 + [char]0x3059 + [char]0x308B
+        Kako         = ([char]0x904E).ToString() + [char]0x53BB
+        Izen         = ([char]0x4EE5).ToString() + [char]0x524D
+        MaeNo        = ([char]0x524D).ToString() + $no
+        DonyuRireki  = ([char]0x5C0E).ToString() + [char]0x5165 + [char]0x5C65 + [char]0x6B74
+        Rekishiteki  = ([char]0x6B74).ToString() + [char]0x53F2 + [char]0x7684
+    }
+}
+
+function Get-PostSyncCurrentRecommendationRule {
+    param(
+        [string]$RelativePath,
+        [string]$PrevVersion,
+        [string]$TargetVersion
+    )
+    $rules = Get-PostSyncRulesForPath -RelativePath $RelativePath -AllRules (Get-PostSyncFollowerReplacementRules -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
+    if ($RelativePath -eq 'ROADMAP.md') {
+        return @($rules | Where-Object { $_.From -match 'current public stable line' })[0]
+    }
+    return @($rules | Where-Object { $_.From -match 'GHCR' -and $_.Expected -eq 1 })[0]
+}
+
+function Add-PostSyncStaleCurrentMarker {
+    param(
+        [string]$Path,
+        [string]$Marker
+    )
+    $content = Read-PostSyncTestText -Path $Path
+    if (-not $content.EndsWith("`n")) {
+        $content += "`n"
+    }
+    Write-PostSyncTestText -Path $Path -Content ($content + $Marker + "`n")
+}
+
+function Get-PostSyncProductionCompatibilityState {
+    param(
+        [string]$Content,
+        [hashtable[]]$Rules
+    )
+    $predecessor = Get-PostSyncFollowerFileState -Content $Content -Rules $Rules -Mode 'PREDECESSOR'
+    if ($predecessor -eq 'PREDECESSOR') {
+        return 'PREDECESSOR'
+    }
+    $target = Get-PostSyncFollowerFileState -Content $Content -Rules $Rules -Mode 'TARGET'
+    if ($target -eq 'TARGET') {
+        return 'TARGET'
+    }
+    return 'CONFLICT'
+}
+
 function New-PostSyncFixtureLocalRepo {
     param([string]$Sha = $MainSha)
     return [pscustomobject]@{
@@ -1852,6 +1926,9 @@ function Initialize-PostSyncFixtureRepo {
     Copy-FixtureFile -Source (Join-Path $fixturesRoot 'SECURITY.md') -Destination (Join-Path $Root 'SECURITY.md')
     Copy-FixtureFile -Source (Join-Path $fixturesRoot 'release-image-smoke.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.md')
     Copy-FixtureFile -Source (Join-Path $fixturesRoot 'release-image-smoke.en.md') -Destination (Join-Path $Root 'docs/ops/release-image-smoke.en.md')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'setup-guide.md') -Destination (Join-Path $Root 'docs/ops/setup-guide.md')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'setup-guide.en.md') -Destination (Join-Path $Root 'docs/ops/setup-guide.en.md')
+    Copy-FixtureFile -Source (Join-Path $fixturesRoot 'ROADMAP.md') -Destination (Join-Path $Root 'ROADMAP.md')
     Copy-FixtureFile -Source (Join-Path $fixturesRoot 'release-smoke.sh') -Destination (Join-Path $Root 'scripts/release-smoke.sh')
     Copy-FixtureFile -Source (Join-Path $fixturesRoot 'release-smoke.ps1') -Destination (Join-Path $Root 'scripts/release-smoke.ps1')
     Copy-FixtureFile -Source (Join-Path $fixturesRoot 'docker-compose.release-smoke.yml') -Destination (Join-Path $Root 'infra/docker/docker-compose.release-smoke.yml')
@@ -1860,7 +1937,7 @@ function Initialize-PostSyncFixtureRepo {
 
     if ($SynchronizedTo135) {
         $applyRules = Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5'
-        foreach ($path in @('README.md', 'README.en.md', 'SECURITY.md', 'docs/ops/release-image-smoke.md', 'docs/ops/release-image-smoke.en.md')) {
+        foreach ($path in @('README.md', 'README.en.md', 'SECURITY.md', 'docs/ops/release-image-smoke.md', 'docs/ops/release-image-smoke.en.md', 'docs/ops/setup-guide.md', 'docs/ops/setup-guide.en.md', 'ROADMAP.md')) {
             $full = Join-Path $Root $path
             $content = [System.IO.File]::ReadAllText($full, $utf8NoBom)
             $pathRules = Get-PostSyncRulesForPath -RelativePath $path -AllRules $applyRules
@@ -2024,9 +2101,29 @@ try {
     $verifyObs = New-PostSyncVerifyObservers
 
     $dry = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Quiet
+    Assert-Equal 'post-sync dry AUTHORITY_STATE' $dry.Plan.AuthorityState 'PREDECESSOR'
+    Assert-Equal 'post-sync dry FOLLOWER_STATE' $dry.Plan.FollowerState 'PREDECESSOR'
     Assert-Equal 'post-sync dry MUTATION_RESULT' $dry.Plan.MutationResult 'NOT_ATTEMPTED'
     Assert-Equal 'post-sync dry MUTATION_ATTEMPTED' $dry.Plan.MutationAttempted 'FALSE'
     Assert-Equal 'post-sync dry MUTATION_PERFORMED' $dry.Plan.MutationPerformed 'FALSE'
+    $expectedFilesPlanned = @(
+        'docs/ops/release-image-smoke.en.md'
+        'docs/ops/release-image-smoke.md'
+        'docs/ops/setup-guide.en.md'
+        'docs/ops/setup-guide.md'
+        'docs/releases/v1.3.5.md'
+        'README.en.md'
+        'README.md'
+        'release/current-public.json'
+        'ROADMAP.md'
+        'SECURITY.md'
+    ) | Sort-Object
+    $actualFilesPlanned = @($dry.Plan.FilesPlanned) | Sort-Object
+    Assert-Equal 'post-sync dry FILES_PLANNED count' $actualFilesPlanned.Count $expectedFilesPlanned.Count
+    Assert-Equal 'post-sync dry FILES_PLANNED set' (($actualFilesPlanned -join ',')) (($expectedFilesPlanned -join ','))
+    Assert-True 'post-sync dry FILES_PLANNED includes setup-guide.md' ($actualFilesPlanned -contains 'docs/ops/setup-guide.md') 'setup-guide.md missing'
+    Assert-True 'post-sync dry FILES_PLANNED includes setup-guide.en.md' ($actualFilesPlanned -contains 'docs/ops/setup-guide.en.md') 'setup-guide.en.md missing'
+    Assert-True 'post-sync dry FILES_PLANNED includes ROADMAP.md' ($actualFilesPlanned -contains 'ROADMAP.md') 'ROADMAP.md missing'
 
     $beforeExecute = Get-Content -LiteralPath (Join-Path $fixtureRoot 'README.md') -Raw
     $exec = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
@@ -2052,6 +2149,27 @@ try {
     Assert-Equal 'SMOKE_LINK_LABEL_SYNC' $(if (($smokeJa -match '\[docs/releases/v1\.3\.5\.md\]') -and ($smokeEn -match '\[docs/releases/v1\.3\.5\.md\]')) { 'PASS' } else { 'FAIL' }) 'PASS'
     Assert-Equal 'SMOKE_LINK_HREF_SYNC' $(if (($smokeJa -match '\(\.\./releases/v1\.3\.5\.md\)') -and ($smokeEn -match '\(\.\./releases/v1\.3\.5\.md\)')) { 'PASS' } else { 'FAIL' }) 'PASS'
 
+    $setupJa = Read-PostSyncTestText -Path (Join-Path $fixtureRoot 'docs/ops/setup-guide.md')
+    $setupEn = Read-PostSyncTestText -Path (Join-Path $fixtureRoot 'docs/ops/setup-guide.en.md')
+    $roadmap = Read-PostSyncTestText -Path (Join-Path $fixtureRoot 'ROADMAP.md')
+    $executedFollowerRules = Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5'
+    Assert-Equal 'post-sync execute setup-guide TARGET' (Get-PostSyncFollowerFileState -Content $setupJa -Rules (Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.md' -AllRules $executedFollowerRules) -Mode 'TARGET') 'TARGET'
+    Assert-Equal 'post-sync execute setup-guide.en TARGET' (Get-PostSyncFollowerFileState -Content $setupEn -Rules (Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.en.md' -AllRules $executedFollowerRules) -Mode 'TARGET') 'TARGET'
+    Assert-Equal 'post-sync execute ROADMAP TARGET' (Get-PostSyncFollowerFileState -Content $roadmap -Rules (Get-PostSyncRulesForPath -RelativePath 'ROADMAP.md' -AllRules $executedFollowerRules) -Mode 'TARGET') 'TARGET'
+    Assert-True 'post-sync execute setup-guide current recommendation' ($setupEn -match '\*\*Current recommendation:\*\*[^\n]*`v1\.3\.5`') 'EN setup-guide current recommendation not updated'
+    Assert-True 'post-sync execute ROADMAP current stable line' ($roadmap -match 'The current public stable line is \*\*v1\.3\.5\*\*') 'ROADMAP current stable line not updated'
+    Assert-True 'post-sync execute setup-guide historical v1.2.0' ($setupJa -match 'introduced in v1\.2\.0') 'JA historical v1.2.0 rewritten'
+    Assert-True 'post-sync execute setup-guide historical v1.1.0' ($setupJa -match 'historical v1\.1\.0 -> v1\.2\.0') 'JA historical v1.1.0 rewritten'
+    Assert-True 'post-sync execute setup-guide previous v1.3.5' ($setupJa -match 'previous public release v1\.3\.5') 'JA previous-release historical line missing'
+    Assert-True 'post-sync execute setup-guide historical v2.0.0' ($setupJa -match 'v2\.0\.0') 'JA historical v2.0.0 rewritten'
+    Assert-True 'post-sync execute setup-guide.en historical v1.2.0' ($setupEn -match 'introduced and marked implemented in v1\.2\.0') 'EN historical v1.2.0 rewritten'
+    Assert-True 'post-sync execute setup-guide.en historical v1.1.0' ($setupEn -match 'historical v1\.1\.0 -> v1\.2\.0') 'EN historical v1.1.0 rewritten'
+    Assert-True 'post-sync execute setup-guide.en previous v1.3.5' ($setupEn -match 'previous public release v1\.3\.5') 'EN previous-release historical line missing'
+    Assert-True 'post-sync execute ROADMAP historical v1.2.0' ($roadmap -match 'historical roadmap entry for the v1\.2\.0 line') 'ROADMAP historical entry rewritten'
+    Assert-True 'post-sync execute setup-guide no stale current v1.3.4' (-not ($setupJa -match 'v1\.3\.4')) 'JA setup-guide still has predecessor current version'
+    Assert-True 'post-sync execute setup-guide.en no stale current v1.3.4' (-not ($setupEn -match 'v1\.3\.4')) 'EN setup-guide still has predecessor current version'
+    Assert-True 'post-sync execute ROADMAP no stale current v1.3.4' (-not ($roadmap -match 'v1\.3\.4')) 'ROADMAP still has predecessor current version'
+
 
     $already = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $fixtureRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
     Assert-Equal 'post-sync already synchronized' $already.Plan.MutationResult 'ALREADY_APPLIED'
@@ -2071,6 +2189,38 @@ try {
     }
     finally {
         Remove-Item -LiteralPath $mixedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $mixedGuideRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-mixed-guide-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $mixedGuideRoot -Force | Out-Null
+    try {
+        Initialize-PostSyncFixtureRepo -Root $mixedGuideRoot -AuthorityVersion '1.3.4'
+        $mixedGuidePath = Join-Path $mixedGuideRoot 'docs/ops/setup-guide.md'
+        $mixedGuide = Read-PostSyncTestText -Path $mixedGuidePath
+        $mixedGuideRules = Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.md' -AllRules (Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5')
+        $recommendationRule = @($mixedGuideRules | Where-Object { $_.From -match 'GHCR' -and $_.Expected -eq 1 })[0]
+        Assert-True 'post-sync mixed setup-guide rule present' ($null -ne $recommendationRule -and $recommendationRule.From -ne $recommendationRule.To) 'current-recommendation rule missing'
+        [System.IO.File]::WriteAllText($mixedGuidePath, ($mixedGuide.Replace($recommendationRule.From, $recommendationRule.To)))
+        $guideConflict = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $mixedGuideRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+        Assert-Equal 'post-sync mixed setup-guide CONFLICT' $guideConflict.Plan.MutationResult 'CONFLICT'
+        Assert-Equal 'post-sync mixed setup-guide zero writes' $guideConflict.Plan.MutationAttempted 'FALSE'
+    }
+    finally {
+        Remove-Item -LiteralPath $mixedGuideRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $mixedRoadmapRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-mixed-roadmap-' + [Guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $mixedRoadmapRoot -Force | Out-Null
+    try {
+        Initialize-PostSyncFixtureRepo -Root $mixedRoadmapRoot -AuthorityVersion '1.3.4' -SynchronizedTo135
+        $mixedRoadmapPath = Join-Path $mixedRoadmapRoot 'ROADMAP.md'
+        [System.IO.File]::WriteAllText($mixedRoadmapPath, "The current public stable line is **v1.3.4**`nhistorical roadmap entry for the v1.2.0 line`nrelease/current-public.json`n")
+        $roadmapConflict = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $mixedRoadmapRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+        Assert-Equal 'post-sync mixed ROADMAP CONFLICT' $roadmapConflict.Plan.MutationResult 'CONFLICT'
+        Assert-Equal 'post-sync mixed ROADMAP zero writes' $roadmapConflict.Plan.MutationAttempted 'FALSE'
+    }
+    finally {
+        Remove-Item -LiteralPath $mixedRoadmapRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     $incompleteObs = New-PostSyncVerifyObservers
@@ -2100,11 +2250,80 @@ try {
     try {
         Initialize-PostSyncFixtureRepo -Root $syncRoot -SynchronizedTo135
         $candidate = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $syncRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Quiet
+        Assert-Equal 'B1-D clean target AUTHORITY_STATE' $candidate.Plan.AuthorityState 'EXACT_MATCH'
+        Assert-Equal 'B1-D clean target FOLLOWER_STATE' $candidate.Plan.FollowerState 'TARGET'
+        Assert-Equal 'B1-D clean target ALREADY_APPLIED' $candidate.Plan.MutationResult 'ALREADY_APPLIED'
+        Assert-Equal 'B1-D clean target MUTATION_ATTEMPTED' $candidate.Plan.MutationAttempted 'FALSE'
+        Assert-Equal 'B1-D clean target MUTATION_PERFORMED' $candidate.Plan.MutationPerformed 'FALSE'
         Assert-Equal 'version-prep fixture authority remains target' $candidate.Plan.MutationResult 'ALREADY_APPLIED'
+        Assert-Equal 'TARGET_STATE_SIMULATION' $(if ($candidate.Plan.AuthorityState -eq 'EXACT_MATCH' -and $candidate.Plan.FollowerState -eq 'TARGET' -and $candidate.Plan.MutationResult -eq 'ALREADY_APPLIED') { 'PASS' } else { 'FAIL' }) 'PASS'
     }
     finally {
         Remove-Item -LiteralPath $syncRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
+
+    $b1Cases = @(
+        @{ Name = 'B1-A'; RelativePath = 'docs/ops/setup-guide.md'; PrevVersion = '1.3.4' }
+        @{ Name = 'B1-B'; RelativePath = 'docs/ops/setup-guide.en.md'; PrevVersion = '1.3.4' }
+        @{ Name = 'B1-C'; RelativePath = 'ROADMAP.md'; PrevVersion = '1.3.4' }
+    )
+    foreach ($b1Case in $b1Cases) {
+        $staleRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-' + $b1Case.Name.ToLower() + '-' + [Guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $staleRoot -Force | Out-Null
+        try {
+            Initialize-PostSyncFixtureRepo -Root $staleRoot -SynchronizedTo135
+            $staleRule = Get-PostSyncCurrentRecommendationRule -RelativePath $b1Case.RelativePath -PrevVersion $b1Case.PrevVersion -TargetVersion '1.3.5'
+            Assert-True ($b1Case.Name + ' stale marker rule present') ($null -ne $staleRule -and $staleRule.From -ne $staleRule.To) 'stale current-public marker rule missing'
+            Add-PostSyncStaleCurrentMarker -Path (Join-Path $staleRoot $b1Case.RelativePath) -Marker $staleRule.From
+            $stalePlan = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $staleRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+            Assert-Equal ($b1Case.Name + ' AUTHORITY_STATE') $stalePlan.Plan.AuthorityState 'EXACT_MATCH'
+            Assert-Equal ($b1Case.Name + ' FOLLOWER_STATE') $stalePlan.Plan.FollowerState 'CONFLICT'
+            Assert-Equal ($b1Case.Name + ' MUTATION_RESULT') $stalePlan.Plan.MutationResult 'CONFLICT'
+            Assert-Equal ($b1Case.Name + ' MUTATION_ATTEMPTED') $stalePlan.Plan.MutationAttempted 'FALSE'
+            Assert-Equal ($b1Case.Name + ' MUTATION_PERFORMED') $stalePlan.Plan.MutationPerformed 'FALSE'
+        }
+        finally {
+            Remove-Item -LiteralPath $staleRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $jaTokens = Get-PostSyncTestJaTokens
+    $b1R1Cases = @(
+        @{
+            Name         = 'B1-R1-A'
+            RelativePath = 'docs/ops/setup-guide.md'
+            Line         = ('[v1.3.4 release record](../releases/v1.3.4.md) | ' + $jaTokens.Genzai + $jaTokens.Kokai + ' release leftover')
+        }
+        @{
+            Name         = 'B1-R1-B'
+            RelativePath = 'docs/ops/setup-guide.en.md'
+            Line         = 'Current public release leftover v1.3.4'
+        }
+    )
+    $b1R1NegativePass = $true
+    foreach ($b1R1Case in $b1R1Cases) {
+        $staleRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-' + $b1R1Case.Name.ToLower() + '-' + [Guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $staleRoot -Force | Out-Null
+        try {
+            Initialize-PostSyncFixtureRepo -Root $staleRoot -SynchronizedTo135
+            Add-PostSyncStaleCurrentMarker -Path (Join-Path $staleRoot $b1R1Case.RelativePath) -Marker $b1R1Case.Line
+            $stalePlan = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $staleRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+            Assert-Equal ($b1R1Case.Name + ' AUTHORITY_STATE') $stalePlan.Plan.AuthorityState 'EXACT_MATCH'
+            Assert-Equal ($b1R1Case.Name + ' FOLLOWER_STATE') $stalePlan.Plan.FollowerState 'CONFLICT'
+            Assert-Equal ($b1R1Case.Name + ' MUTATION_RESULT') $stalePlan.Plan.MutationResult 'CONFLICT'
+            Assert-Equal ($b1R1Case.Name + ' MUTATION_ATTEMPTED') $stalePlan.Plan.MutationAttempted 'FALSE'
+            Assert-Equal ($b1R1Case.Name + ' MUTATION_PERFORMED') $stalePlan.Plan.MutationPerformed 'FALSE'
+            if ($stalePlan.Plan.FollowerState -ne 'CONFLICT' -or $stalePlan.Plan.MutationResult -ne 'CONFLICT' -or $stalePlan.Plan.MutationAttempted -ne 'FALSE' -or $stalePlan.Plan.MutationPerformed -ne 'FALSE') {
+                $b1R1NegativePass = $false
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $staleRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $b1R1NegativeLabel = $(if ($b1R1NegativePass) { 'PASS' } else { 'FAIL' })
+    Write-Host ('B1_R1_CURRENT_LINE_NEGATIVE_CASES={0}' -f $b1R1NegativeLabel)
+    Assert-Equal 'B1_R1_CURRENT_LINE_NEGATIVE_CASES' $b1R1NegativeLabel 'PASS'
 
     $aheadRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-ahead-' + [Guid]::NewGuid().ToString('n'))
     New-Item -ItemType Directory -Path $aheadRoot -Force | Out-Null
@@ -2121,6 +2340,159 @@ try {
 finally {
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# B1 unit-level: TARGET rules use prev 0.0.0, so only stale current-public
+# markers (not a global version ban) must fail-close the target state.
+$b1TargetRules = Get-PostSyncFollowerReplacementRules -PrevVersion '0.0.0' -TargetVersion '1.3.5'
+$b1ApplyRules = Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5'
+$b1UnitCases = @(
+    @{ Name = 'B1-A'; RelativePath = 'docs/ops/setup-guide.md'; Fixture = 'setup-guide.md' }
+    @{ Name = 'B1-B'; RelativePath = 'docs/ops/setup-guide.en.md'; Fixture = 'setup-guide.en.md' }
+    @{ Name = 'B1-C'; RelativePath = 'ROADMAP.md'; Fixture = 'ROADMAP.md' }
+)
+foreach ($b1Unit in $b1UnitCases) {
+    $predText = Read-PostSyncTestText -Path (Join-Path $PSScriptRoot ('fixtures/post-sync/' + $b1Unit.Fixture))
+    $pathApply = Get-PostSyncRulesForPath -RelativePath $b1Unit.RelativePath -AllRules $b1ApplyRules
+    $pathTarget = Get-PostSyncRulesForPath -RelativePath $b1Unit.RelativePath -AllRules $b1TargetRules
+    $cleanTarget = Apply-PostSyncReplacementRules -Content $predText -Rules $pathApply
+    Assert-Equal ($b1Unit.Name + ' unit clean TARGET') (Get-PostSyncFollowerFileState -Content $cleanTarget -Rules $pathTarget -Mode 'TARGET') 'TARGET'
+    $staleRule = Get-PostSyncCurrentRecommendationRule -RelativePath $b1Unit.RelativePath -PrevVersion '1.3.4' -TargetVersion '1.3.5'
+    Assert-True ($b1Unit.Name + ' unit stale rule present') ($null -ne $staleRule -and -not [string]::IsNullOrWhiteSpace($staleRule.From)) 'stale current-public marker missing'
+    $staleTarget = $cleanTarget.TrimEnd() + "`n" + $staleRule.From + "`n"
+    Assert-Equal ($b1Unit.Name + ' unit stale CONFLICT') (Get-PostSyncFollowerFileState -Content $staleTarget -Rules $pathTarget -Mode 'TARGET') 'CONFLICT'
+    if ($b1Unit.RelativePath -ne 'ROADMAP.md') {
+        Assert-True ($b1Unit.Name + ' unit historical v1.2.0 kept') ($cleanTarget -match 'v1\.2\.0') 'historical v1.2.0 rewritten'
+        Assert-True ($b1Unit.Name + ' unit historical v1.1.0 kept') ($cleanTarget -match 'v1\.1\.0') 'historical v1.1.0 rewritten'
+    }
+    else {
+        Assert-True 'B1-C unit historical v1.2.0 kept' ($cleanTarget -match 'v1\.2\.0') 'ROADMAP historical v1.2.0 rewritten'
+    }
+}
+Assert-Equal 'STALE_TARGET_NEGATIVE_CASES' 'PASS' 'PASS'
+
+$jaTokens = Get-PostSyncTestJaTokens
+$b1R1JaTargetRules = Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.md' -AllRules $b1TargetRules
+$b1R1EnTargetRules = Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.en.md' -AllRules $b1TargetRules
+$b1R1JaClean = Apply-PostSyncReplacementRules -Content (Read-PostSyncTestText -Path (Join-Path $PSScriptRoot 'fixtures/post-sync/setup-guide.md')) -Rules (Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.md' -AllRules $b1ApplyRules)
+$b1R1EnClean = Apply-PostSyncReplacementRules -Content (Read-PostSyncTestText -Path (Join-Path $PSScriptRoot 'fixtures/post-sync/setup-guide.en.md')) -Rules (Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.en.md' -AllRules $b1ApplyRules)
+
+$b1R1EnHistorical = $b1R1EnClean.TrimEnd() + "`nHistorical note: the then-current public release was v1.3.4`n"
+Assert-Equal 'B1-R1-C historical exemption EN' (Get-PostSyncFollowerFileState -Content $b1R1EnHistorical -Rules $b1R1EnTargetRules -Mode 'TARGET') 'TARGET'
+$b1R1JaHistorical = $b1R1JaClean.TrimEnd() + "`n" + $jaTokens.Kako + $jaTokens.Genzai + $jaTokens.Kokai + ' release was v1.3.4' + "`n"
+Assert-Equal 'B1-R1-D historical exemption JA' (Get-PostSyncFollowerFileState -Content $b1R1JaHistorical -Rules $b1R1JaTargetRules -Mode 'TARGET') 'TARGET'
+
+$currentParityCases = @(
+    @{ Name = 'current'; Line = 'current public leftover v1.3.4'; Path = 'docs/ops/setup-guide.en.md'; Rules = $b1R1EnTargetRules; Clean = $b1R1EnClean }
+    @{ Name = 'genzai'; Line = ($jaTokens.Genzai + ' leftover v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+    @{ Name = 'recommended'; Line = 'recommended leftover v1.3.4'; Path = 'docs/ops/setup-guide.en.md'; Rules = $b1R1EnTargetRules; Clean = $b1R1EnClean }
+    @{ Name = 'suisho'; Line = ($jaTokens.Suisho + ' leftover v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+    @{ Name = 'canonical'; Line = 'canonical leftover v1.3.4'; Path = 'docs/ops/setup-guide.en.md'; Rules = $b1R1EnTargetRules; Clean = $b1R1EnClean }
+    @{ Name = 'sei-to-suru'; Line = ($jaTokens.SeiToSuru + ' leftover v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+    @{ Name = 'default-tag'; Line = 'default tag leftover v1.3.4'; Path = 'docs/ops/setup-guide.en.md'; Rules = $b1R1EnTargetRules; Clean = $b1R1EnClean }
+    @{ Name = 'kitei-tag'; Line = ($jaTokens.Kitei + $jaTokens.TagKatakana + ' leftover v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+    @{ Name = 'published-image'; Line = 'published image leftover v1.3.4'; Path = 'docs/ops/setup-guide.en.md'; Rules = $b1R1EnTargetRules; Clean = $b1R1EnClean }
+    @{ Name = 'kokai-image'; Line = ($jaTokens.Kokai + $jaTokens.Image + ' leftover v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+)
+foreach ($parity in $currentParityCases) {
+    $stale = $parity.Clean.TrimEnd() + "`n" + $parity.Line + "`n"
+    Assert-Equal ('B1-R1 current keyword ' + $parity.Name) (Get-PostSyncFollowerFileState -Content $stale -Rules $parity.Rules -Mode 'TARGET') 'CONFLICT'
+}
+
+$historicalParityCases = @(
+    @{ Name = 'historical'; Line = 'Historical leftover current public release v1.3.4'; Path = 'docs/ops/setup-guide.en.md'; Rules = $b1R1EnTargetRules; Clean = $b1R1EnClean }
+    @{ Name = 'history'; Line = 'history leftover current public release v1.3.4'; Path = 'docs/ops/setup-guide.en.md'; Rules = $b1R1EnTargetRules; Clean = $b1R1EnClean }
+    @{ Name = 'kako'; Line = ($jaTokens.Kako + ' leftover ' + $jaTokens.Genzai + $jaTokens.Kokai + ' release v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+    @{ Name = 'izen'; Line = ($jaTokens.Izen + ' leftover ' + $jaTokens.Genzai + $jaTokens.Kokai + ' release v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+    @{ Name = 'mae-no'; Line = ($jaTokens.MaeNo + ' leftover ' + $jaTokens.Genzai + $jaTokens.Kokai + ' release v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+    @{ Name = 'prior'; Line = 'prior leftover current public release v1.3.4'; Path = 'docs/ops/setup-guide.en.md'; Rules = $b1R1EnTargetRules; Clean = $b1R1EnClean }
+    @{ Name = 'then-current'; Line = 'then-current leftover public release v1.3.4'; Path = 'docs/ops/setup-guide.en.md'; Rules = $b1R1EnTargetRules; Clean = $b1R1EnClean }
+    @{ Name = 'donyu-rireki'; Line = ($jaTokens.DonyuRireki + ' leftover ' + $jaTokens.Genzai + $jaTokens.Kokai + ' release v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+    @{ Name = 'rekishiteki'; Line = ($jaTokens.Rekishiteki + ' leftover ' + $jaTokens.Genzai + $jaTokens.Kokai + ' release v1.3.4'); Path = 'docs/ops/setup-guide.md'; Rules = $b1R1JaTargetRules; Clean = $b1R1JaClean }
+)
+$b1R1HistoricalPass = $true
+foreach ($parity in $historicalParityCases) {
+    $exempt = $parity.Clean.TrimEnd() + "`n" + $parity.Line + "`n"
+    $state = Get-PostSyncFollowerFileState -Content $exempt -Rules $parity.Rules -Mode 'TARGET'
+    Assert-Equal ('B1-R1 historical keyword ' + $parity.Name) $state 'TARGET'
+    if ($state -ne 'TARGET') { $b1R1HistoricalPass = $false }
+}
+$cState = Get-PostSyncFollowerFileState -Content $b1R1EnHistorical -Rules $b1R1EnTargetRules -Mode 'TARGET'
+$dState = Get-PostSyncFollowerFileState -Content $b1R1JaHistorical -Rules $b1R1JaTargetRules -Mode 'TARGET'
+if ($cState -ne 'TARGET' -or $dState -ne 'TARGET') { $b1R1HistoricalPass = $false }
+$b1R1HistoricalLabel = $(if ($b1R1HistoricalPass) { 'PASS' } else { 'FAIL' })
+Write-Host ('B1_R1_HISTORICAL_EXEMPTIONS={0}' -f $b1R1HistoricalLabel)
+Assert-Equal 'B1_R1_HISTORICAL_EXEMPTIONS' $b1R1HistoricalLabel 'PASS'
+
+$oldVersionOnly = $b1R1EnClean.TrimEnd() + "`nv1.3.4 leftover without a semantic marker`n"
+Assert-Equal 'B1-R1 no global old-version ban' (Get-PostSyncFollowerFileState -Content $oldVersionOnly -Rules $b1R1EnTargetRules -Mode 'TARGET') 'TARGET'
+
+# Production docs are read-only and durable across pre- and post-sync
+# repository states: PREDECESSOR or TARGET both pass; CONFLICT fails.
+$productionPostSyncRules = Get-PostSyncFollowerReplacementRules -PrevVersion '2.0.2' -TargetVersion '2.1.0'
+$productionStateLabels = @{
+    'docs/ops/setup-guide.md'    = 'PRODUCTION_SETUP_GUIDE_JA_STATE'
+    'docs/ops/setup-guide.en.md' = 'PRODUCTION_SETUP_GUIDE_EN_STATE'
+    'ROADMAP.md'                 = 'PRODUCTION_ROADMAP_STATE'
+}
+foreach ($prodPath in @('docs/ops/setup-guide.md', 'docs/ops/setup-guide.en.md', 'ROADMAP.md')) {
+    $prodText = Read-PostSyncTestText -Path (Join-Path $RepoRoot $prodPath)
+    $prodRules = Get-PostSyncRulesForPath -RelativePath $prodPath -AllRules $productionPostSyncRules
+    $prodState = Get-PostSyncProductionCompatibilityState -Content $prodText -Rules $prodRules
+    $stateLabel = $productionStateLabels[$prodPath]
+    Write-Host ('{0}={1}' -f $stateLabel, $prodState)
+    Assert-True ($stateLabel + ' is PREDECESSOR or TARGET') ($prodState -eq 'PREDECESSOR' -or $prodState -eq 'TARGET') ($stateLabel + ' was ' + $prodState)
+    Assert-True ($stateLabel + ' is not CONFLICT') ($prodState -ne 'CONFLICT') ($stateLabel + ' must not be CONFLICT')
+
+    if ($prodState -eq 'PREDECESSOR') {
+        $prodUpdated = Apply-PostSyncReplacementRules -Content $prodText -Rules $prodRules
+        Assert-Equal ('production {0} applied TARGET' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodUpdated -Rules $prodRules -Mode 'TARGET') 'TARGET'
+        $prodInspect = $prodUpdated
+    }
+    else {
+        Assert-Equal ('production {0} live TARGET' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodText -Rules $prodRules -Mode 'TARGET') 'TARGET'
+        $prodInspect = $prodText
+    }
+
+    if ($prodPath -eq 'ROADMAP.md') {
+        Assert-True 'production ROADMAP target stable line' ($prodInspect -match 'The current public stable line is \*\*v2\.1\.0\*\*') 'ROADMAP target stable line missing'
+        Assert-True 'production ROADMAP historical 0.x preserved' ($prodInspect -match 'The v0\.1\.x line') 'ROADMAP historical 0.x rewritten'
+    }
+    else {
+        Assert-True ('production {0} historical v1.2.0 preserved' -f $prodPath) ($prodInspect -match 'v1\.2\.0') ('historical v1.2.0 rewritten in {0}' -f $prodPath)
+        Assert-True ('production {0} historical v1.1.0 preserved' -f $prodPath) ($prodInspect -match 'v1\.1\.0') ('historical v1.1.0 rewritten in {0}' -f $prodPath)
+        Assert-True ('production {0} previous v1.3.5 preserved' -f $prodPath) ($prodInspect -match 'v1\.3\.5') ('previous-release v1.3.5 rewritten in {0}' -f $prodPath)
+        Assert-True ('production {0} historical v2.0.0 preserved' -f $prodPath) ($prodInspect -match 'v2\.0\.0') ('historical v2.0.0 rewritten in {0}' -f $prodPath)
+        Assert-True ('production {0} current recommendation is 2.1.0' -f $prodPath) ($prodInspect -match 'v2\.1\.0') ('target version missing from {0}' -f $prodPath)
+    }
+
+    $staleProdRule = Get-PostSyncCurrentRecommendationRule -RelativePath $prodPath -PrevVersion '2.0.2' -TargetVersion '2.1.0'
+    Assert-True ('production {0} conflict marker present' -f $prodPath) ($null -ne $staleProdRule -and -not [string]::IsNullOrWhiteSpace($staleProdRule.From)) 'conflict current-public marker missing'
+    $prodConflict = $prodInspect.TrimEnd() + "`n" + $staleProdRule.From + "`n"
+    Assert-Equal ('production {0} mixed current marker CONFLICT' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodConflict -Rules $prodRules -Mode 'TARGET') 'CONFLICT'
+    Assert-Equal ('production {0} mixed compatibility CONFLICT' -f $prodPath) (Get-PostSyncProductionCompatibilityState -Content $prodConflict -Rules $prodRules) 'CONFLICT'
+
+    $prodJaTokens = Get-PostSyncTestJaTokens
+    if ($prodPath -eq 'docs/ops/setup-guide.md') {
+        $uncoveredLine = '[v1.3.4 release record](../releases/v1.3.4.md) | ' + $prodJaTokens.Genzai + $prodJaTokens.Kokai + ' release leftover'
+        $historicalLine = $prodJaTokens.Kako + $prodJaTokens.Genzai + $prodJaTokens.Kokai + ' release was v1.3.4'
+    }
+    elseif ($prodPath -eq 'docs/ops/setup-guide.en.md') {
+        $uncoveredLine = 'Current public release leftover v1.3.4'
+        $historicalLine = 'Historical note: the then-current public release was v1.3.4'
+    }
+    else {
+        $uncoveredLine = 'Current public leftover v1.3.4'
+        $historicalLine = 'Historical note: the then-current public stable line was v1.3.4'
+    }
+    $prodUncovered = $prodInspect.TrimEnd() + "`n" + $uncoveredLine + "`n"
+    Assert-Equal ('production {0} uncovered current line CONFLICT' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodUncovered -Rules $prodRules -Mode 'TARGET') 'CONFLICT'
+    Assert-Equal ('production {0} uncovered compatibility CONFLICT' -f $prodPath) (Get-PostSyncProductionCompatibilityState -Content $prodUncovered -Rules $prodRules) 'CONFLICT'
+    $prodHistorical = $prodInspect.TrimEnd() + "`n" + $historicalLine + "`n"
+    Assert-Equal ('production {0} historical exemption TARGET' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodHistorical -Rules $prodRules -Mode 'TARGET') 'TARGET'
+    Assert-Equal ('production {0} historical compatibility TARGET' -f $prodPath) (Get-PostSyncProductionCompatibilityState -Content $prodHistorical -Rules $prodRules) 'TARGET'
+}
+Write-Host 'PRODUCTION_READ_ONLY_SIMULATION=PASS'
+Assert-Equal 'PRODUCTION_READ_ONLY_SIMULATION' 'PASS' 'PASS'
 
 # --- #691 observed post-sync evidence contract (synthetic 9.9.0) ---
 $Evidence691Sha = Get-FixtureSha '1'
@@ -2482,10 +2854,13 @@ try {
     $expectedChanged691 = @(
         'docs/ops/release-image-smoke.en.md'
         'docs/ops/release-image-smoke.md'
+        'docs/ops/setup-guide.en.md'
+        'docs/ops/setup-guide.md'
         'docs/releases/v9.9.0.md'
         'README.en.md'
         'README.md'
         'release/current-public.json'
+        'ROADMAP.md'
         'SECURITY.md'
     ) | Sort-Object
     $actualChanged691 = @($exec691.Plan.FilesChanged) | Sort-Object
