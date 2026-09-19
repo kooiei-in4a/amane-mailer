@@ -1,4 +1,5 @@
 using System.Net;
+using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Identity;
 using Amane.Mailer.Operations;
