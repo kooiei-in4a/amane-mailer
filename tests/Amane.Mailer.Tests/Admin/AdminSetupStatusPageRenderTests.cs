@@ -62,6 +62,19 @@ public sealed class AdminSetupStatusPageRenderTests
     }
 
     [Fact]
+    public void Browser_managed_instance_without_enabled_sender_renders_na()
+    {
+        var html = Render(BrowserManagedModel() with
+        {
+            SenderEmail = null,
+            PlatformSenderPresent = false,
+        });
+
+        Assert.Contains("Sender</dt>\n                    <dd>n/a", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("legacy@example.com", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Managed_unavailable_verification_does_not_display_current_pass()
     {
         var html = Render(ManagedUnavailableModel());

@@ -54,6 +54,47 @@ public sealed class AdminSetupStatusReadModelTests
     }
 
     [Fact]
+    public void Browser_managed_v2_suppresses_legacy_tenants_missing_reason()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            CredentialMissingManualInspection(SetupInspectReason.TenantsMissing),
+            managedInstance: new AdminSetupManagedInstanceObservation
+            {
+                Initialized = true,
+                LiveSendingEnabled = false,
+                ProviderType = "acs",
+                ProviderPreflightSafe = true,
+                SenderEmail = "first@example.com",
+                SenderPresent = true,
+            });
+
+        Assert.True(model.BrowserManagedInstance);
+        Assert.Equal(SetupInspectCredentialStatus.Loaded, model.CredentialStatus);
+        Assert.Null(model.InspectReason);
+    }
+
+    [Fact]
+    public void Browser_managed_v2_without_enabled_sender_does_not_fallback_to_legacy_sender()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManualInspection(),
+            senderEmail: "legacy@example.com",
+            managedInstance: new AdminSetupManagedInstanceObservation
+            {
+                Initialized = true,
+                LiveSendingEnabled = false,
+                ProviderType = "acs",
+                ProviderPreflightSafe = true,
+                SenderEmail = null,
+                SenderPresent = false,
+            });
+
+        Assert.True(model.BrowserManagedInstance);
+        Assert.Null(model.SenderEmail);
+        Assert.False(model.PlatformSenderPresent);
+    }
+
+    [Fact]
     public void Browser_managed_v2_overlay_does_not_rewrite_easy_setup_managed_classification()
     {
         var model = AdminSetupStatusReadModel.FromInspection(
@@ -507,7 +548,8 @@ public sealed class AdminSetupStatusReadModelTests
             CredentialSource = SetupInspectSourceIds.NotApplicable,
         };
 
-    private static SetupInspectEffectiveResult CredentialMissingManualInspection() =>
+    private static SetupInspectEffectiveResult CredentialMissingManualInspection(
+        string inspectReason = SetupInspectReason.CredentialMissing) =>
         new()
         {
             MailerVersion = "1.2.0-test",
@@ -521,7 +563,7 @@ public sealed class AdminSetupStatusReadModelTests
                 CredentialStatus = SetupInspectCredentialStatus.Missing,
                 FingerprintsMatchRecorded = null,
             },
-            Reason = SetupInspectReason.CredentialMissing,
+            Reason = inspectReason,
             MountAttestation = new SetupInspectAttestationSummary
             {
                 Result = SetupInspectIntegrityResult.NotManaged,

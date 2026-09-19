@@ -813,6 +813,15 @@ public sealed record AdminSetupStatusReadModel
         }
     }
 
+    private static bool ShouldSuppressBrowserManagedInspectReason(
+        string? inspectReason,
+        bool providerPreflightSafe) =>
+        inspectReason == SetupInspectReason.TenantsMissing
+        || (providerPreflightSafe
+            && (inspectReason is SetupInspectReason.CredentialMissing
+                or SetupInspectReason.CredentialInvalid
+                or SetupInspectReason.MetadataMissing));
+
     private static AdminSetupStatusReadModel ApplyBrowserManagedInstanceOverlay(
         AdminSetupStatusReadModel model,
         AdminSetupManagedInstanceObservation? managedInstance)
@@ -832,14 +841,11 @@ public sealed record AdminSetupStatusReadModel
             ? "acs"
             : model.ProviderSummary;
 
-        var inspectReason = model.InspectReason;
-        if (managedInstance.ProviderPreflightSafe
-            && inspectReason is SetupInspectReason.CredentialMissing
-                or SetupInspectReason.CredentialInvalid
-                or SetupInspectReason.MetadataMissing)
-        {
-            inspectReason = null;
-        }
+        var inspectReason = ShouldSuppressBrowserManagedInspectReason(
+            model.InspectReason,
+            managedInstance.ProviderPreflightSafe)
+            ? null
+            : model.InspectReason;
 
         return model with
         {
@@ -848,10 +854,8 @@ public sealed record AdminSetupStatusReadModel
             LiveSendingEnabled = managedInstance.LiveSendingEnabled,
             SenderEmail = managedInstance.SenderPresent
                 ? managedInstance.SenderEmail
-                : model.SenderEmail,
-            PlatformSenderPresent = managedInstance.SenderPresent
-                ? true
-                : model.PlatformSenderPresent,
+                : null,
+            PlatformSenderPresent = managedInstance.SenderPresent,
             ProviderSummary = providerSummary,
             InspectReason = inspectReason,
         };

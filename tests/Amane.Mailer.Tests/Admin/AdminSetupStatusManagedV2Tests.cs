@@ -22,7 +22,6 @@ public sealed class AdminSetupStatusManagedV2Tests
         var databasePath = Path.Combine(root, "mailer.db");
         var connectionString = $"Data Source={databasePath}";
         var tenantConfigPath = Path.Combine(root, "tenants.json");
-        await File.WriteAllTextAsync(tenantConfigPath, AcsTenantConfigJson(), ct);
         var secretPath = Path.Combine(root, "secrets", "acs_connection_string");
         const string ownerUsername = "managed-owner";
         const string ownerPassword = "managed-owner-password";
@@ -51,6 +50,8 @@ public sealed class AdminSetupStatusManagedV2Tests
             await senders.CreateAsync("first@example.com", "First", ct);
             Assert.True(await instance.FinalizeAsync(ct));
             Assert.False((await instance.GetAsync(ct))!.LiveSending);
+
+            Assert.False(File.Exists(tenantConfigPath));
 
             await using var factory = MailerAdminFixtureHelpers.CreateFactory(
                 connectionString,
@@ -81,6 +82,8 @@ public sealed class AdminSetupStatusManagedV2Tests
             Assert.Contains("f***@e***.com", html, StringComparison.Ordinal);
             Assert.DoesNotContain("Sender</dt>\n                    <dd>n/a", html, StringComparison.Ordinal);
             Assert.DoesNotContain("Inspect reason", html, StringComparison.Ordinal);
+            Assert.DoesNotContain(SetupInspectReason.TenantsMissing, html, StringComparison.Ordinal);
+            Assert.DoesNotContain(SetupInspectReason.CredentialMissing, html, StringComparison.Ordinal);
             Assert.DoesNotContain("Deployment</dt>\n                    <dd>Manual Deployment", html, StringComparison.Ordinal);
             Assert.DoesNotContain("AccessKey=", html, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(secretPath, html, StringComparison.Ordinal);
@@ -95,34 +98,6 @@ public sealed class AdminSetupStatusManagedV2Tests
                 Directory.Delete(root, recursive: true);
         }
     }
-
-    private static string AcsTenantConfigJson() =>
-        $$"""
-        {
-          "version": 1,
-          "environment": "develop",
-          "tenants": [
-            {
-              "tenant_id": "{{MailerWebApplicationFixtureBase.TenantId}}",
-              "name": "example-develop",
-              "source_services": ["{{MailerWebApplicationFixtureBase.SourceService}}"],
-              "default_from": {
-                "email": "noreply@example.com",
-                "display_name": "Example Service"
-              },
-              "token_env": "MAIL_SERVICE_TOKEN",
-              "provider": "acs",
-              "live_sending": false,
-              "metadata_max_bytes": 4096,
-              "retry": {
-                "max_attempts": 3,
-                "initial_delay_seconds": 1,
-                "max_delay_seconds": 2
-              }
-            }
-          ]
-        }
-        """;
 
     private static HttpClient CreateClient(WebApplicationFactory<global::Program> factory) =>
         factory.CreateClient(new WebApplicationFactoryClientOptions
