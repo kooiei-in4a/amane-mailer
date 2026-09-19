@@ -4,6 +4,16 @@ Use this workflow for maintainer-authorized Amane Mailer releases. The default r
 
 Partial publication such as OCI-only is allowed only when the maintainer explicitly requests it in the current session. Do not silently narrow a full release into an image-only release.
 
+## Staging-only image release
+
+For an explicitly approved staging-only prerelease such as `X.Y.Z-staging.N`, do **not** force the
+full-service `X.Y.Z` workflow or patch its version guards ad hoc. Use
+[`docs/ops/staging-release.md`](../ops/staging-release.md) for Development VM Build Once / GHCR
+publication and [`docs/ops/staging-deployment.md`](../ops/staging-deployment.md) for the VPS
+image-only deployment contract. The staging path does not create a Git tag, GitHub Release,
+Contracts NuGet, `latest`, or update `release/current-public.json` unless the maintainer separately
+authorizes a formal public release.
+
 ## Inputs
 
 Required before any release mutation:
