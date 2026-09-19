@@ -23,6 +23,81 @@ public sealed class AdminSetupStatusReadModelTests
     }
 
     [Fact]
+    public void Browser_managed_v2_instance_overlays_canonical_state_without_easy_setup_metadata()
+    {
+        var inspection = CredentialMissingManualInspection();
+
+        var model = AdminSetupStatusReadModel.FromInspection(
+            inspection,
+            managedInstance: new AdminSetupManagedInstanceObservation
+            {
+                Initialized = true,
+                LiveSendingEnabled = false,
+                ProviderType = "acs",
+                ProviderPreflightSafe = true,
+                SenderEmail = "first@example.com",
+                SenderPresent = true,
+            });
+
+        Assert.Equal(AdminSetupDeploymentKind.Manual, model.DeploymentKind);
+        Assert.True(model.BrowserManagedInstance);
+        Assert.Equal(SetupInspectCredentialStatus.Loaded, model.CredentialStatus);
+        Assert.False(model.LiveSendingEnabled);
+        Assert.Equal("first@example.com", model.SenderEmail);
+        Assert.True(model.PlatformSenderPresent);
+        Assert.Equal("acs", model.ProviderSummary);
+        Assert.Null(model.InspectReason);
+        Assert.Null(model.SetupBundleId);
+        Assert.Equal(AdminSetupVerificationFreshness.NotManaged, model.VerificationFreshness);
+        Assert.Equal(AdminSetupConfigurationAppliedDisplay.NotManaged, model.ConfigurationApplied);
+        Assert.Equal(AdminSetupSendReadyDisplay.NotManaged, model.SendReady);
+    }
+
+    [Fact]
+    public void Browser_managed_v2_overlay_does_not_rewrite_easy_setup_managed_classification()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            ManagedInspection(credentialStatus: SetupInspectCredentialStatus.Loaded),
+            managedInstance: new AdminSetupManagedInstanceObservation
+            {
+                Initialized = true,
+                LiveSendingEnabled = true,
+                ProviderType = "acs",
+                ProviderPreflightSafe = true,
+                SenderEmail = "overlay@example.com",
+                SenderPresent = true,
+            });
+
+        Assert.Equal(AdminSetupDeploymentKind.Managed, model.DeploymentKind);
+        Assert.False(model.BrowserManagedInstance);
+        Assert.Equal(BundleId, model.SetupBundleId);
+        Assert.Null(model.SenderEmail);
+        Assert.False(model.LiveSendingEnabled);
+    }
+
+    [Fact]
+    public void Browser_managed_v2_without_preflight_keeps_credential_missing()
+    {
+        var model = AdminSetupStatusReadModel.FromInspection(
+            CredentialMissingManualInspection(),
+            managedInstance: new AdminSetupManagedInstanceObservation
+            {
+                Initialized = true,
+                LiveSendingEnabled = false,
+                ProviderType = "acs",
+                ProviderPreflightSafe = false,
+                SenderEmail = "first@example.com",
+                SenderPresent = true,
+            });
+
+        Assert.True(model.BrowserManagedInstance);
+        Assert.Equal(SetupInspectCredentialStatus.Missing, model.CredentialStatus);
+        Assert.Equal(SetupInspectReason.CredentialMissing, model.InspectReason);
+        Assert.Equal("first@example.com", model.SenderEmail);
+        Assert.False(model.LiveSendingEnabled);
+    }
+
+    [Fact]
     public void Invalid_managed_metadata_is_not_classified_as_manual_deployment()
     {
         var inspection = InvalidMetadataInspection();
@@ -430,6 +505,35 @@ public sealed class AdminSetupStatusReadModelTests
             },
             TenantConfigurationSource = SetupInspectSourceIds.ContainerTenants,
             CredentialSource = SetupInspectSourceIds.NotApplicable,
+        };
+
+    private static SetupInspectEffectiveResult CredentialMissingManualInspection() =>
+        new()
+        {
+            MailerVersion = "1.2.0-test",
+            Managed = false,
+            Recorded = null,
+            Effective = new SetupInspectEffectiveSummary
+            {
+                ConfigurationFingerprint = Fingerprint,
+                ProviderSummary = "acs",
+                LiveSendingEnabled = null,
+                CredentialStatus = SetupInspectCredentialStatus.Missing,
+                FingerprintsMatchRecorded = null,
+            },
+            Reason = SetupInspectReason.CredentialMissing,
+            MountAttestation = new SetupInspectAttestationSummary
+            {
+                Result = SetupInspectIntegrityResult.NotManaged,
+                Reason = SetupInspectReason.MetadataMissing,
+            },
+            BundleIntegrity = new SetupInspectAttestationSummary
+            {
+                Result = SetupInspectIntegrityResult.NotManaged,
+                Reason = SetupInspectReason.MetadataMissing,
+            },
+            TenantConfigurationSource = SetupInspectSourceIds.ContainerTenants,
+            CredentialSource = SetupInspectSourceIds.ContainerAcsFile,
         };
 
     private static SetupInspectEffectiveResult ManagedInspection(

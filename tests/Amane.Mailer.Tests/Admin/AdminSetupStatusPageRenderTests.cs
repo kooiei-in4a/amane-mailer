@@ -45,6 +45,23 @@ public sealed class AdminSetupStatusPageRenderTests
     }
 
     [Fact]
+    public void Browser_managed_instance_renders_effective_state_without_credential_missing_warning()
+    {
+        var html = Render(BrowserManagedModel());
+
+        Assert.Contains("Deployment</dt>\n                    <dd>Browser Setup", html, StringComparison.Ordinal);
+        Assert.Contains(Html("Easy Setup管理外"), html, StringComparison.Ordinal);
+        Assert.Contains("Credential loaded</dt>\n                    <dd>yes", html, StringComparison.Ordinal);
+        Assert.Contains("Live sending</dt>\n                    <dd>no", html, StringComparison.Ordinal);
+        Assert.Contains("f***@e***.com", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Deployment</dt>\n                    <dd>Manual Deployment", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Inspect reason", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("first@example.com", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("AccessKey=", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("method=\"post\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Managed_unavailable_verification_does_not_display_current_pass()
     {
         var html = Render(ManagedUnavailableModel());
@@ -267,6 +284,18 @@ public sealed class AdminSetupStatusPageRenderTests
             EffectiveFingerprint = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ProviderSummary = "mailpit",
             LiveSendingEnabled = false,
+        };
+
+    private static AdminSetupStatusReadModel BrowserManagedModel() =>
+        ManualModel() with
+        {
+            BrowserManagedInstance = true,
+            CredentialStatus = SetupInspectCredentialStatus.Loaded,
+            ProviderSummary = "acs",
+            LiveSendingEnabled = false,
+            SenderEmail = "first@example.com",
+            PlatformSenderPresent = true,
+            InspectReason = null,
         };
 
     private static AdminSetupStatusReadModel ManagedUnavailableModel() =>
