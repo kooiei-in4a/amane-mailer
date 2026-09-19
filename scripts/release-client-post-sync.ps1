@@ -106,10 +106,11 @@ function Get-PostSyncFollowerReplacementRules {
         param([string]$Path, [string[]]$FromTemplates, [string[]]$ToTemplates, [int[]]$ExpectedCounts)
         for ($i = 0; $i -lt $FromTemplates.Count; $i++) {
             [void]$rules.Add(@{
-                    Path     = $Path
-                    From     = (Expand-PostSyncTokens -Template $FromTemplates[$i] -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
-                    To       = (Expand-PostSyncTokens -Template $ToTemplates[$i] -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
-                    Expected = $ExpectedCounts[$i]
+                    Path          = $Path
+                    From          = (Expand-PostSyncTokens -Template $FromTemplates[$i] -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
+                    To            = (Expand-PostSyncTokens -Template $ToTemplates[$i] -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
+                    Expected      = $ExpectedCounts[$i]
+                    TargetVersion = $TargetVersion
                 })
         }
     }
@@ -433,6 +434,83 @@ function Get-PostSyncReplacementMatchCounts {
     }
 }
 
+function Get-PostSyncCurrentPublicMarkerTemplates {
+    $ja = Get-PostSyncJaPatternTokens
+    $templates = New-Object System.Collections.Generic.List[hashtable]
+    [void]$templates.Add(@{
+            Path     = 'docs/ops/setup-guide.md'
+            Template = ('**' + $ja.Genzai + $ja.No + $ja.Suisho + $ja.Kokai + $ja.Image + $ja.Ha + ' {tag}**')
+        })
+    [void]$templates.Add(@{
+            Path     = 'docs/ops/setup-guide.md'
+            Template = ('**' + $ja.Genzai + $ja.Suisho + ':** ' + $ja.Kokai + ' GitHub release / GHCR ' + $ja.TagKatakana + ' `{tag}`')
+        })
+    [void]$templates.Add(@{
+            Path     = 'docs/ops/setup-guide.md'
+            Template = ($ja.Genzai + $ja.Kokai + $ja.Image + $ja.Ha + ' **{tag}**')
+        })
+    [void]$templates.Add(@{
+            Path     = 'docs/ops/setup-guide.en.md'
+            Template = '**The current recommended published image is {tag}.**'
+        })
+    [void]$templates.Add(@{
+            Path     = 'docs/ops/setup-guide.en.md'
+            Template = '**Current recommendation:** public GitHub release / GHCR tag `{tag}`'
+        })
+    [void]$templates.Add(@{
+            Path     = 'docs/ops/setup-guide.en.md'
+            Template = 'Current published image is **{tag}**'
+        })
+    [void]$templates.Add(@{
+            Path     = 'docs/ops/setup-guide.en.md'
+            Template = 'Treat published image `{tag}` as canonical'
+        })
+    [void]$templates.Add(@{
+            Path     = 'ROADMAP.md'
+            Template = 'The current public stable line is **{tag}**'
+        })
+    return @($templates)
+}
+
+function Get-PostSyncRuleMetadataValue {
+    param(
+        [hashtable[]]$Rules,
+        [string]$Key
+    )
+    foreach ($rule in @($Rules)) {
+        if ($null -eq $rule) { continue }
+        if ($rule.ContainsKey($Key) -and -not [string]::IsNullOrWhiteSpace([string]$rule[$Key])) {
+            return [string]$rule[$Key]
+        }
+    }
+    return ''
+}
+
+function Test-PostSyncHasStaleCurrentPublicMarker {
+    param(
+        [string]$Content,
+        [string]$RelativePath,
+        [string]$TargetVersion
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Content) -or [string]::IsNullOrWhiteSpace($RelativePath) -or [string]::IsNullOrWhiteSpace($TargetVersion)) {
+        return $false
+    }
+
+    $targetTag = 'v' + $TargetVersion
+    $versionGroup = '(?<tag>v[0-9]+\.[0-9]+\.[0-9]+)'
+    foreach ($entry in Get-PostSyncCurrentPublicMarkerTemplates) {
+        if ($entry.Path -ne $RelativePath) { continue }
+        $pattern = ([regex]::Escape($entry.Template)).Replace([regex]::Escape('{tag}'), $versionGroup)
+        foreach ($match in [regex]::Matches($Content, $pattern)) {
+            if ($match.Groups['tag'].Value -ne $targetTag) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 function Get-PostSyncFollowerFileState {
     param(
         [string]$Content,
@@ -456,6 +534,20 @@ function Get-PostSyncFollowerFileState {
         else {
             if ($counts.FromCount -gt 0) { $conflict = $true }
             if ($counts.ToCount -ne $rule.Expected) { $conflict = $true }
+        }
+    }
+
+    if (-not $conflict -and $Mode -eq 'TARGET') {
+        $relativePath = Get-PostSyncRuleMetadataValue -Rules $Rules -Key 'Path'
+        $targetVersion = Get-PostSyncRuleMetadataValue -Rules $Rules -Key 'TargetVersion'
+        $templates = @(Get-PostSyncCurrentPublicMarkerTemplates | Where-Object { $_.Path -eq $relativePath })
+        if ($templates.Count -gt 0) {
+            if ([string]::IsNullOrWhiteSpace($targetVersion)) {
+                $conflict = $true
+            }
+            elseif (Test-PostSyncHasStaleCurrentPublicMarker -Content $Content -RelativePath $relativePath -TargetVersion $targetVersion) {
+                $conflict = $true
+            }
         }
     }
 

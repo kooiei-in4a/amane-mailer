@@ -1805,6 +1805,56 @@ function Read-PostSyncTestText {
     return [System.IO.File]::ReadAllText($Path, $utf8NoBom)
 }
 
+function Write-PostSyncTestText {
+    param(
+        [string]$Path,
+        [string]$Content
+    )
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
+function Get-PostSyncCurrentRecommendationRule {
+    param(
+        [string]$RelativePath,
+        [string]$PrevVersion,
+        [string]$TargetVersion
+    )
+    $rules = Get-PostSyncRulesForPath -RelativePath $RelativePath -AllRules (Get-PostSyncFollowerReplacementRules -PrevVersion $PrevVersion -TargetVersion $TargetVersion)
+    if ($RelativePath -eq 'ROADMAP.md') {
+        return @($rules | Where-Object { $_.From -match 'current public stable line' })[0]
+    }
+    return @($rules | Where-Object { $_.From -match 'GHCR' -and $_.Expected -eq 1 })[0]
+}
+
+function Add-PostSyncStaleCurrentMarker {
+    param(
+        [string]$Path,
+        [string]$Marker
+    )
+    $content = Read-PostSyncTestText -Path $Path
+    if (-not $content.EndsWith("`n")) {
+        $content += "`n"
+    }
+    Write-PostSyncTestText -Path $Path -Content ($content + $Marker + "`n")
+}
+
+function Get-PostSyncProductionCompatibilityState {
+    param(
+        [string]$Content,
+        [hashtable[]]$Rules
+    )
+    $predecessor = Get-PostSyncFollowerFileState -Content $Content -Rules $Rules -Mode 'PREDECESSOR'
+    if ($predecessor -eq 'PREDECESSOR') {
+        return 'PREDECESSOR'
+    }
+    $target = Get-PostSyncFollowerFileState -Content $Content -Rules $Rules -Mode 'TARGET'
+    if ($target -eq 'TARGET') {
+        return 'TARGET'
+    }
+    return 'CONFLICT'
+}
+
 function New-PostSyncFixtureLocalRepo {
     param([string]$Sha = $MainSha)
     return [pscustomobject]@{
@@ -2182,10 +2232,41 @@ try {
     try {
         Initialize-PostSyncFixtureRepo -Root $syncRoot -SynchronizedTo135
         $candidate = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $syncRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Quiet
+        Assert-Equal 'B1-D clean target AUTHORITY_STATE' $candidate.Plan.AuthorityState 'EXACT_MATCH'
+        Assert-Equal 'B1-D clean target FOLLOWER_STATE' $candidate.Plan.FollowerState 'TARGET'
+        Assert-Equal 'B1-D clean target ALREADY_APPLIED' $candidate.Plan.MutationResult 'ALREADY_APPLIED'
+        Assert-Equal 'B1-D clean target MUTATION_ATTEMPTED' $candidate.Plan.MutationAttempted 'FALSE'
+        Assert-Equal 'B1-D clean target MUTATION_PERFORMED' $candidate.Plan.MutationPerformed 'FALSE'
         Assert-Equal 'version-prep fixture authority remains target' $candidate.Plan.MutationResult 'ALREADY_APPLIED'
+        Assert-Equal 'TARGET_STATE_SIMULATION' $(if ($candidate.Plan.AuthorityState -eq 'EXACT_MATCH' -and $candidate.Plan.FollowerState -eq 'TARGET' -and $candidate.Plan.MutationResult -eq 'ALREADY_APPLIED') { 'PASS' } else { 'FAIL' }) 'PASS'
     }
     finally {
         Remove-Item -LiteralPath $syncRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $b1Cases = @(
+        @{ Name = 'B1-A'; RelativePath = 'docs/ops/setup-guide.md'; PrevVersion = '1.3.4' }
+        @{ Name = 'B1-B'; RelativePath = 'docs/ops/setup-guide.en.md'; PrevVersion = '1.3.4' }
+        @{ Name = 'B1-C'; RelativePath = 'ROADMAP.md'; PrevVersion = '1.3.4' }
+    )
+    foreach ($b1Case in $b1Cases) {
+        $staleRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-' + $b1Case.Name.ToLower() + '-' + [Guid]::NewGuid().ToString('n'))
+        New-Item -ItemType Directory -Path $staleRoot -Force | Out-Null
+        try {
+            Initialize-PostSyncFixtureRepo -Root $staleRoot -SynchronizedTo135
+            $staleRule = Get-PostSyncCurrentRecommendationRule -RelativePath $b1Case.RelativePath -PrevVersion $b1Case.PrevVersion -TargetVersion '1.3.5'
+            Assert-True ($b1Case.Name + ' stale marker rule present') ($null -ne $staleRule -and $staleRule.From -ne $staleRule.To) 'stale current-public marker rule missing'
+            Add-PostSyncStaleCurrentMarker -Path (Join-Path $staleRoot $b1Case.RelativePath) -Marker $staleRule.From
+            $stalePlan = Invoke-ReleasePreparePostSync -Version '1.3.5' -ReleaseCommitSha $PostSyncSha135 -RepoRoot $staleRoot -ObservedEvidencePath $PostSyncEvidence135Path -Observers $verifyObs -LocalRepoOverride $localPass -Execute -Quiet
+            Assert-Equal ($b1Case.Name + ' AUTHORITY_STATE') $stalePlan.Plan.AuthorityState 'EXACT_MATCH'
+            Assert-Equal ($b1Case.Name + ' FOLLOWER_STATE') $stalePlan.Plan.FollowerState 'CONFLICT'
+            Assert-Equal ($b1Case.Name + ' MUTATION_RESULT') $stalePlan.Plan.MutationResult 'CONFLICT'
+            Assert-Equal ($b1Case.Name + ' MUTATION_ATTEMPTED') $stalePlan.Plan.MutationAttempted 'FALSE'
+            Assert-Equal ($b1Case.Name + ' MUTATION_PERFORMED') $stalePlan.Plan.MutationPerformed 'FALSE'
+        }
+        finally {
+            Remove-Item -LiteralPath $staleRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     $aheadRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('amane-mailer-postsync-ahead-' + [Guid]::NewGuid().ToString('n'))
@@ -2204,27 +2285,79 @@ finally {
     Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Production docs are read-only here: prove 2.0.2 -> 2.1.0 current-public follower
-# replacement without writing current-public.json or mutating the worktree.
+# B1 unit-level: TARGET rules use prev 0.0.0, so only stale current-public
+# markers (not a global version ban) must fail-close the target state.
+$b1TargetRules = Get-PostSyncFollowerReplacementRules -PrevVersion '0.0.0' -TargetVersion '1.3.5'
+$b1ApplyRules = Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5'
+$b1UnitCases = @(
+    @{ Name = 'B1-A'; RelativePath = 'docs/ops/setup-guide.md'; Fixture = 'setup-guide.md' }
+    @{ Name = 'B1-B'; RelativePath = 'docs/ops/setup-guide.en.md'; Fixture = 'setup-guide.en.md' }
+    @{ Name = 'B1-C'; RelativePath = 'ROADMAP.md'; Fixture = 'ROADMAP.md' }
+)
+foreach ($b1Unit in $b1UnitCases) {
+    $predText = Read-PostSyncTestText -Path (Join-Path $PSScriptRoot ('fixtures/post-sync/' + $b1Unit.Fixture))
+    $pathApply = Get-PostSyncRulesForPath -RelativePath $b1Unit.RelativePath -AllRules $b1ApplyRules
+    $pathTarget = Get-PostSyncRulesForPath -RelativePath $b1Unit.RelativePath -AllRules $b1TargetRules
+    $cleanTarget = Apply-PostSyncReplacementRules -Content $predText -Rules $pathApply
+    Assert-Equal ($b1Unit.Name + ' unit clean TARGET') (Get-PostSyncFollowerFileState -Content $cleanTarget -Rules $pathTarget -Mode 'TARGET') 'TARGET'
+    $staleRule = Get-PostSyncCurrentRecommendationRule -RelativePath $b1Unit.RelativePath -PrevVersion '1.3.4' -TargetVersion '1.3.5'
+    Assert-True ($b1Unit.Name + ' unit stale rule present') ($null -ne $staleRule -and -not [string]::IsNullOrWhiteSpace($staleRule.From)) 'stale current-public marker missing'
+    $staleTarget = $cleanTarget.TrimEnd() + "`n" + $staleRule.From + "`n"
+    Assert-Equal ($b1Unit.Name + ' unit stale CONFLICT') (Get-PostSyncFollowerFileState -Content $staleTarget -Rules $pathTarget -Mode 'TARGET') 'CONFLICT'
+    if ($b1Unit.RelativePath -ne 'ROADMAP.md') {
+        Assert-True ($b1Unit.Name + ' unit historical v1.2.0 kept') ($cleanTarget -match 'v1\.2\.0') 'historical v1.2.0 rewritten'
+        Assert-True ($b1Unit.Name + ' unit historical v1.1.0 kept') ($cleanTarget -match 'v1\.1\.0') 'historical v1.1.0 rewritten'
+    }
+    else {
+        Assert-True 'B1-C unit historical v1.2.0 kept' ($cleanTarget -match 'v1\.2\.0') 'ROADMAP historical v1.2.0 rewritten'
+    }
+}
+Assert-Equal 'STALE_TARGET_NEGATIVE_CASES' 'PASS' 'PASS'
+
+# Production docs are read-only and durable across pre- and post-sync
+# repository states: PREDECESSOR or TARGET both pass; CONFLICT fails.
 $productionPostSyncRules = Get-PostSyncFollowerReplacementRules -PrevVersion '2.0.2' -TargetVersion '2.1.0'
+$productionStateLabels = @{
+    'docs/ops/setup-guide.md'    = 'PRODUCTION_SETUP_GUIDE_JA_STATE'
+    'docs/ops/setup-guide.en.md' = 'PRODUCTION_SETUP_GUIDE_EN_STATE'
+    'ROADMAP.md'                 = 'PRODUCTION_ROADMAP_STATE'
+}
 foreach ($prodPath in @('docs/ops/setup-guide.md', 'docs/ops/setup-guide.en.md', 'ROADMAP.md')) {
     $prodText = Read-PostSyncTestText -Path (Join-Path $RepoRoot $prodPath)
     $prodRules = Get-PostSyncRulesForPath -RelativePath $prodPath -AllRules $productionPostSyncRules
-    Assert-Equal ('production {0} predecessor state' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodText -Rules $prodRules -Mode 'PREDECESSOR') 'PREDECESSOR'
-    $prodUpdated = Apply-PostSyncReplacementRules -Content $prodText -Rules $prodRules
-    Assert-Equal ('production {0} target state' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodUpdated -Rules $prodRules -Mode 'TARGET') 'TARGET'
-    Assert-True ('production {0} no leftover v2.0.2' -f $prodPath) (-not ($prodUpdated -match 'v2\.0\.2')) ('stale current-public v2.0.2 remains in {0}' -f $prodPath)
-    if ($prodPath -eq 'ROADMAP.md') {
-        Assert-True 'production ROADMAP target stable line' ($prodUpdated -match 'The current public stable line is \*\*v2\.1\.0\*\*') 'ROADMAP target stable line missing'
-        Assert-True 'production ROADMAP historical 0.x preserved' ($prodUpdated -match 'The v0\.1\.x line') 'ROADMAP historical 0.x rewritten'
+    $prodState = Get-PostSyncProductionCompatibilityState -Content $prodText -Rules $prodRules
+    $stateLabel = $productionStateLabels[$prodPath]
+    Write-Host ('{0}={1}' -f $stateLabel, $prodState)
+    Assert-True ($stateLabel + ' is PREDECESSOR or TARGET') ($prodState -eq 'PREDECESSOR' -or $prodState -eq 'TARGET') ($stateLabel + ' was ' + $prodState)
+    Assert-True ($stateLabel + ' is not CONFLICT') ($prodState -ne 'CONFLICT') ($stateLabel + ' must not be CONFLICT')
+
+    if ($prodState -eq 'PREDECESSOR') {
+        $prodUpdated = Apply-PostSyncReplacementRules -Content $prodText -Rules $prodRules
+        Assert-Equal ('production {0} applied TARGET' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodUpdated -Rules $prodRules -Mode 'TARGET') 'TARGET'
+        $prodInspect = $prodUpdated
     }
     else {
-        Assert-True ('production {0} historical v1.2.0 preserved' -f $prodPath) ($prodUpdated -match 'v1\.2\.0') ('historical v1.2.0 rewritten in {0}' -f $prodPath)
-        Assert-True ('production {0} historical v1.1.0 preserved' -f $prodPath) ($prodUpdated -match 'v1\.1\.0') ('historical v1.1.0 rewritten in {0}' -f $prodPath)
-        Assert-True ('production {0} previous v1.3.5 preserved' -f $prodPath) ($prodUpdated -match 'v1\.3\.5') ('previous-release v1.3.5 rewritten in {0}' -f $prodPath)
-        Assert-True ('production {0} historical v2.0.0 preserved' -f $prodPath) ($prodUpdated -match 'v2\.0\.0') ('historical v2.0.0 rewritten in {0}' -f $prodPath)
-        Assert-True ('production {0} current recommendation is 2.1.0' -f $prodPath) ($prodUpdated -match 'v2\.1\.0') ('target version missing from {0}' -f $prodPath)
+        Assert-Equal ('production {0} live TARGET' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodText -Rules $prodRules -Mode 'TARGET') 'TARGET'
+        $prodInspect = $prodText
     }
+
+    if ($prodPath -eq 'ROADMAP.md') {
+        Assert-True 'production ROADMAP target stable line' ($prodInspect -match 'The current public stable line is \*\*v2\.1\.0\*\*') 'ROADMAP target stable line missing'
+        Assert-True 'production ROADMAP historical 0.x preserved' ($prodInspect -match 'The v0\.1\.x line') 'ROADMAP historical 0.x rewritten'
+    }
+    else {
+        Assert-True ('production {0} historical v1.2.0 preserved' -f $prodPath) ($prodInspect -match 'v1\.2\.0') ('historical v1.2.0 rewritten in {0}' -f $prodPath)
+        Assert-True ('production {0} historical v1.1.0 preserved' -f $prodPath) ($prodInspect -match 'v1\.1\.0') ('historical v1.1.0 rewritten in {0}' -f $prodPath)
+        Assert-True ('production {0} previous v1.3.5 preserved' -f $prodPath) ($prodInspect -match 'v1\.3\.5') ('previous-release v1.3.5 rewritten in {0}' -f $prodPath)
+        Assert-True ('production {0} historical v2.0.0 preserved' -f $prodPath) ($prodInspect -match 'v2\.0\.0') ('historical v2.0.0 rewritten in {0}' -f $prodPath)
+        Assert-True ('production {0} current recommendation is 2.1.0' -f $prodPath) ($prodInspect -match 'v2\.1\.0') ('target version missing from {0}' -f $prodPath)
+    }
+
+    $staleProdRule = Get-PostSyncCurrentRecommendationRule -RelativePath $prodPath -PrevVersion '2.0.2' -TargetVersion '2.1.0'
+    Assert-True ('production {0} conflict marker present' -f $prodPath) ($null -ne $staleProdRule -and -not [string]::IsNullOrWhiteSpace($staleProdRule.From)) 'conflict current-public marker missing'
+    $prodConflict = $prodInspect.TrimEnd() + "`n" + $staleProdRule.From + "`n"
+    Assert-Equal ('production {0} mixed current marker CONFLICT' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodConflict -Rules $prodRules -Mode 'TARGET') 'CONFLICT'
+    Assert-Equal ('production {0} mixed compatibility CONFLICT' -f $prodPath) (Get-PostSyncProductionCompatibilityState -Content $prodConflict -Rules $prodRules) 'CONFLICT'
 }
 
 # --- #691 observed post-sync evidence contract (synthetic 9.9.0) ---
