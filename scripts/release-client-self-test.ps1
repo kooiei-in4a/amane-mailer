@@ -1799,6 +1799,12 @@ function New-PostSyncVerifyObservers {
     }
 }
 
+function Read-PostSyncTestText {
+    param([string]$Path)
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    return [System.IO.File]::ReadAllText($Path, $utf8NoBom)
+}
+
 function New-PostSyncFixtureLocalRepo {
     param([string]$Sha = $MainSha)
     return [pscustomobject]@{
@@ -2075,9 +2081,9 @@ try {
     Assert-Equal 'SMOKE_LINK_LABEL_SYNC' $(if (($smokeJa -match '\[docs/releases/v1\.3\.5\.md\]') -and ($smokeEn -match '\[docs/releases/v1\.3\.5\.md\]')) { 'PASS' } else { 'FAIL' }) 'PASS'
     Assert-Equal 'SMOKE_LINK_HREF_SYNC' $(if (($smokeJa -match '\(\.\./releases/v1\.3\.5\.md\)') -and ($smokeEn -match '\(\.\./releases/v1\.3\.5\.md\)')) { 'PASS' } else { 'FAIL' }) 'PASS'
 
-    $setupJa = Get-Content -LiteralPath (Join-Path $fixtureRoot 'docs/ops/setup-guide.md') -Raw
-    $setupEn = Get-Content -LiteralPath (Join-Path $fixtureRoot 'docs/ops/setup-guide.en.md') -Raw
-    $roadmap = Get-Content -LiteralPath (Join-Path $fixtureRoot 'ROADMAP.md') -Raw
+    $setupJa = Read-PostSyncTestText -Path (Join-Path $fixtureRoot 'docs/ops/setup-guide.md')
+    $setupEn = Read-PostSyncTestText -Path (Join-Path $fixtureRoot 'docs/ops/setup-guide.en.md')
+    $roadmap = Read-PostSyncTestText -Path (Join-Path $fixtureRoot 'ROADMAP.md')
     $executedFollowerRules = Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5'
     Assert-Equal 'post-sync execute setup-guide TARGET' (Get-PostSyncFollowerFileState -Content $setupJa -Rules (Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.md' -AllRules $executedFollowerRules) -Mode 'TARGET') 'TARGET'
     Assert-Equal 'post-sync execute setup-guide.en TARGET' (Get-PostSyncFollowerFileState -Content $setupEn -Rules (Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.en.md' -AllRules $executedFollowerRules) -Mode 'TARGET') 'TARGET'
@@ -2122,7 +2128,7 @@ try {
     try {
         Initialize-PostSyncFixtureRepo -Root $mixedGuideRoot -AuthorityVersion '1.3.4'
         $mixedGuidePath = Join-Path $mixedGuideRoot 'docs/ops/setup-guide.md'
-        $mixedGuide = Get-Content -LiteralPath $mixedGuidePath -Raw
+        $mixedGuide = Read-PostSyncTestText -Path $mixedGuidePath
         $mixedGuideRules = Get-PostSyncRulesForPath -RelativePath 'docs/ops/setup-guide.md' -AllRules (Get-PostSyncFollowerReplacementRules -PrevVersion '1.3.4' -TargetVersion '1.3.5')
         $recommendationRule = @($mixedGuideRules | Where-Object { $_.From -match 'GHCR' -and $_.Expected -eq 1 })[0]
         Assert-True 'post-sync mixed setup-guide rule present' ($null -ne $recommendationRule -and $recommendationRule.From -ne $recommendationRule.To) 'current-recommendation rule missing'
@@ -2202,7 +2208,7 @@ finally {
 # replacement without writing current-public.json or mutating the worktree.
 $productionPostSyncRules = Get-PostSyncFollowerReplacementRules -PrevVersion '2.0.2' -TargetVersion '2.1.0'
 foreach ($prodPath in @('docs/ops/setup-guide.md', 'docs/ops/setup-guide.en.md', 'ROADMAP.md')) {
-    $prodText = Get-Content -LiteralPath (Join-Path $RepoRoot $prodPath) -Raw
+    $prodText = Read-PostSyncTestText -Path (Join-Path $RepoRoot $prodPath)
     $prodRules = Get-PostSyncRulesForPath -RelativePath $prodPath -AllRules $productionPostSyncRules
     Assert-Equal ('production {0} predecessor state' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodText -Rules $prodRules -Mode 'PREDECESSOR') 'PREDECESSOR'
     $prodUpdated = Apply-PostSyncReplacementRules -Content $prodText -Rules $prodRules
