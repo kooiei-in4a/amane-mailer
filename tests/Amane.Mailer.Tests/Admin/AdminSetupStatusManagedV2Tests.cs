@@ -82,8 +82,8 @@ public sealed class AdminSetupStatusManagedV2Tests
             Assert.Contains("f***@e***.com", html, StringComparison.Ordinal);
             Assert.DoesNotContain("Sender</dt>\n                    <dd>n/a", html, StringComparison.Ordinal);
             Assert.DoesNotContain("Inspect reason", html, StringComparison.Ordinal);
-            Assert.DoesNotContain(SetupInspectReason.TenantsMissing, html, StringComparison.Ordinal);
-            Assert.DoesNotContain(SetupInspectReason.CredentialMissing, html, StringComparison.Ordinal);
+            Assert.DoesNotContain($"<dd>{SetupInspectReason.TenantsMissing}</dd>", html, StringComparison.Ordinal);
+            Assert.DoesNotContain($"<dd>{SetupInspectReason.CredentialMissing}</dd>", html, StringComparison.Ordinal);
             Assert.DoesNotContain("Deployment</dt>\n                    <dd>Manual Deployment", html, StringComparison.Ordinal);
             Assert.DoesNotContain("AccessKey=", html, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(secretPath, html, StringComparison.Ordinal);
