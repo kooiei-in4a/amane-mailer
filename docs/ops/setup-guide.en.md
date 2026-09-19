@@ -43,7 +43,7 @@ Easy Setup wraps existing `.env` / `tenants.json` / file-secret / deploy compose
 | Windows Docker Desktop | `Amane.Mailer.exe setup assistant` |
 | Linux GUI + Docker Engine | `./Amane.Mailer setup assistant` |
 | Headless Linux / VPS | `./Amane.Mailer setup assistant --no-browser` or `./Amane.Mailer setup assistant --terminal` |
-| SSH to VPS | Prefer `--terminal`, or open an SSH tunnel to the assistant loopback port and use a local browser. **A browser alone on the VPS does not complete setup.** |
+| SSH to VPS | For the host Easy Setup Assistant, use `--terminal` or SSH-tunnel its loopback port. The managed-v2 runtime `/setup` endpoint is a separate path and may be used from a browser when an approved HTTPS reverse proxy / shared edge already exists. |
 | Offline / GitHub unavailable | `Amane.Mailer setup assistant --help` then `--terminal` (Windows: `Amane.Mailer.exe`) |
 | Non-interactive Main only | `Amane.Mailer setup apply --config <absolute-path> --non-interactive` |
 
@@ -73,6 +73,34 @@ In the browser, complete the forms in this order: bootstrap authentication → A
 After initialization, `/setup` and the bootstrap token are intentionally unavailable, including when an old token file remains. Managed v2 Admin state is SQLite-authoritative: the Admin surface stays enabled even when `AMANE_ADMIN_ENABLED=false`, and the legacy environment password hash is ignored. Reset a managed password interactively with `docker compose ... exec mailer /app/Amane.Mailer admin reset-password --username <db-admin-name>`.
 
 ### Candidate consumption (verify methods)
+
+#### VPS shared HTTPS edge (Managed v2)
+
+The host **Easy Setup Assistant** loopback Web UI and Mailer's runtime **first-run
+`/setup`** endpoint are separate paths. On a VPS, use the terminal or an SSH tunnel
+for the assistant as described above. For a managed-v2 deployment behind an existing
+shared HTTPS edge, the repository-owned
+[`compose.shared-edge.yml`](../../infra/deploy/compose.shared-edge.yml) can be used
+as the Mailer-side attachment boundary.
+
+The shared-edge profile does not own Caddy, TLS, or DNS. The platform edge is expected
+to enforce:
+
+- `/api`: JP allow-list only; no Caddy Basic Auth; pass the Consumer Bearer/API Key to Mailer
+- `/admin` and `/setup`: JP allow-list + Caddy Basic Auth + Mailer's own Admin/Setup authentication
+- non-JP or undecidable sources: fail closed before the upstream
+- Mailer backend port: never host-published
+
+After Setup finalize, Mailer's initialized gate disables `/setup`.
+For an initialized Browser managed-v2 instance, `/admin/setup-status` derives its
+display from the existing canonical `instance_configuration`, protected ACS secret,
+Sender, and `live_sending` state. It does not expose secret values or the provider
+secret reference itself.
+
+If an existing staging host still uses historical `compose.shared-staging.yml`, a
+routine image-only update must not silently replace it with `compose.shared-edge.yml`.
+Use the repository-owned profile as authority only for a new deployment or an explicit
+topology reconciliation. See [Staging VPS deployment](staging-deployment.md).
 
 When consuming an Easy Setup **release-candidate** host bundle (not a published GitHub Release):
 
