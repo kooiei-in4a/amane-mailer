@@ -74,6 +74,12 @@ function Get-PostSyncJaPatternTokens {
     $fwClose = [char]0xFF09
     $tagKatakana = ([char]0x30BF).ToString() + [char]0x30B0
     $miken = ([char]0x672A).ToString() + [char]0x691C + [char]0x8A3C
+    $seiToSuru = ([char]0x6B63).ToString() + [char]0x3068 + [char]0x3059 + [char]0x308B
+    $kako = ([char]0x904E).ToString() + [char]0x53BB
+    $izen = ([char]0x4EE5).ToString() + [char]0x524D
+    $maeNo = ([char]0x524D).ToString() + $no
+    $donyuRireki = ([char]0x5C0E).ToString() + [char]0x5165 + [char]0x5C65 + [char]0x6B74
+    $rekishiteki = ([char]0x6B74).ToString() + [char]0x53F2 + [char]0x7684
     return [pscustomobject]@{
         No             = $no
         Ha             = $ha
@@ -91,6 +97,12 @@ function Get-PostSyncJaPatternTokens {
         FwClose        = $fwClose
         TagKatakana    = $tagKatakana
         Miken          = $miken
+        SeiToSuru      = $seiToSuru
+        Kako           = $kako
+        Izen           = $izen
+        MaeNo          = $maeNo
+        DonyuRireki    = $donyuRireki
+        Rekishiteki    = $rekishiteki
     }
 }
 
@@ -434,42 +446,44 @@ function Get-PostSyncReplacementMatchCounts {
     }
 }
 
-function Get-PostSyncCurrentPublicMarkerTemplates {
+function Get-PostSyncCurrentPublicFollowerPaths {
+    return @(
+        'docs/ops/setup-guide.md'
+        'docs/ops/setup-guide.en.md'
+        'ROADMAP.md'
+    )
+}
+
+function Get-PostSyncCurrentVersionLinePatterns {
     $ja = Get-PostSyncJaPatternTokens
-    $templates = New-Object System.Collections.Generic.List[hashtable]
-    [void]$templates.Add(@{
-            Path     = 'docs/ops/setup-guide.md'
-            Template = ('**' + $ja.Genzai + $ja.No + $ja.Suisho + $ja.Kokai + $ja.Image + $ja.Ha + ' {tag}**')
-        })
-    [void]$templates.Add(@{
-            Path     = 'docs/ops/setup-guide.md'
-            Template = ('**' + $ja.Genzai + $ja.Suisho + ':** ' + $ja.Kokai + ' GitHub release / GHCR ' + $ja.TagKatakana + ' `{tag}`')
-        })
-    [void]$templates.Add(@{
-            Path     = 'docs/ops/setup-guide.md'
-            Template = ($ja.Genzai + $ja.Kokai + $ja.Image + $ja.Ha + ' **{tag}**')
-        })
-    [void]$templates.Add(@{
-            Path     = 'docs/ops/setup-guide.en.md'
-            Template = '**The current recommended published image is {tag}.**'
-        })
-    [void]$templates.Add(@{
-            Path     = 'docs/ops/setup-guide.en.md'
-            Template = '**Current recommendation:** public GitHub release / GHCR tag `{tag}`'
-        })
-    [void]$templates.Add(@{
-            Path     = 'docs/ops/setup-guide.en.md'
-            Template = 'Current published image is **{tag}**'
-        })
-    [void]$templates.Add(@{
-            Path     = 'docs/ops/setup-guide.en.md'
-            Template = 'Treat published image `{tag}` as canonical'
-        })
-    [void]$templates.Add(@{
-            Path     = 'ROADMAP.md'
-            Template = 'The current public stable line is **{tag}**'
-        })
-    return @($templates)
+    $current = @(
+        'current'
+        $ja.Genzai
+        'recommended'
+        $ja.Suisho
+        'canonical'
+        $ja.SeiToSuru
+        'default tag'
+        ($ja.Kitei + $ja.TagKatakana)
+        'published image'
+        ($ja.Kokai + $ja.Image)
+    ) -join '|'
+    $historical = @(
+        'historical'
+        'history'
+        $ja.Kako
+        $ja.Izen
+        $ja.MaeNo
+        'prior'
+        'then-current'
+        $ja.DonyuRireki
+        $ja.Rekishiteki
+    ) -join '|'
+    return [pscustomobject]@{
+        CurrentLine    = ('(?i)(' + $current + ')')
+        HistoricalLine = ('(?i)(' + $historical + ')')
+        Version        = '\bv([0-9]+\.[0-9]+\.[0-9]+)\b'
+    }
 }
 
 function Get-PostSyncRuleMetadataValue {
@@ -486,24 +500,22 @@ function Get-PostSyncRuleMetadataValue {
     return ''
 }
 
-function Test-PostSyncHasStaleCurrentPublicMarker {
+function Test-PostSyncHasStaleCurrentVersionLine {
     param(
         [string]$Content,
-        [string]$RelativePath,
         [string]$TargetVersion
     )
 
-    if ([string]::IsNullOrWhiteSpace($Content) -or [string]::IsNullOrWhiteSpace($RelativePath) -or [string]::IsNullOrWhiteSpace($TargetVersion)) {
+    if ([string]::IsNullOrWhiteSpace($Content) -or [string]::IsNullOrWhiteSpace($TargetVersion)) {
         return $false
     }
 
-    $targetTag = 'v' + $TargetVersion
-    $versionGroup = '(?<tag>v[0-9]+\.[0-9]+\.[0-9]+)'
-    foreach ($entry in Get-PostSyncCurrentPublicMarkerTemplates) {
-        if ($entry.Path -ne $RelativePath) { continue }
-        $pattern = ([regex]::Escape($entry.Template)).Replace([regex]::Escape('{tag}'), $versionGroup)
-        foreach ($match in [regex]::Matches($Content, $pattern)) {
-            if ($match.Groups['tag'].Value -ne $targetTag) {
+    $patterns = Get-PostSyncCurrentVersionLinePatterns
+    foreach ($line in ($Content -split '\r?\n')) {
+        if ($line -notmatch $patterns.CurrentLine) { continue }
+        if ($line -match $patterns.HistoricalLine) { continue }
+        foreach ($match in [regex]::Matches($line, $patterns.Version)) {
+            if ($match.Groups[1].Value -ne $TargetVersion) {
                 return $true
             }
         }
@@ -540,12 +552,12 @@ function Get-PostSyncFollowerFileState {
     if (-not $conflict -and $Mode -eq 'TARGET') {
         $relativePath = Get-PostSyncRuleMetadataValue -Rules $Rules -Key 'Path'
         $targetVersion = Get-PostSyncRuleMetadataValue -Rules $Rules -Key 'TargetVersion'
-        $templates = @(Get-PostSyncCurrentPublicMarkerTemplates | Where-Object { $_.Path -eq $relativePath })
-        if ($templates.Count -gt 0) {
+        $followerPaths = @(Get-PostSyncCurrentPublicFollowerPaths)
+        if ($followerPaths -contains $relativePath) {
             if ([string]::IsNullOrWhiteSpace($targetVersion)) {
                 $conflict = $true
             }
-            elseif (Test-PostSyncHasStaleCurrentPublicMarker -Content $Content -RelativePath $relativePath -TargetVersion $targetVersion) {
+            elseif (Test-PostSyncHasStaleCurrentVersionLine -Content $Content -TargetVersion $targetVersion) {
                 $conflict = $true
             }
         }
