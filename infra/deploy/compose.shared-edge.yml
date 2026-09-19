@@ -1,0 +1,59 @@
+# Shared-edge managed-v2 profile for Issue #771.
+#
+# Usage:
+#   docker compose --env-file .env \
+#     -f compose.yml -f compose.shared-edge.yml config
+#
+# The reverse proxy / TLS edge is platform-owned and already exists on the external
+# network named by MAILER_SHARED_EDGE_NETWORK_NAME. This overlay does not publish
+# host ports and does not create or configure the edge service.
+#
+# The fixed Mailer address is required because Admin/Setup compares
+# Connection.LocalIpAddress with AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS. The proxy address
+# is fixed separately so forwarded headers are trusted from exactly that proxy only.
+
+services:
+  mailer:
+    environment:
+      # The generic base compose keeps compatibility inputs for manual/v1 deployments.
+      # Managed-v2 shared-edge deployments use SQLite-managed identity/configuration instead.
+      MAILER_TENANTS_PATH: !reset null
+      MAIL_SERVICE_TOKEN: !reset null
+      MAIL_SERVICE_TOKEN_DEVELOP: !reset null
+      MAIL_SERVICE_TOKEN_STAGING: !reset null
+      MAIL_SERVICE_TOKEN_PRODUCTION: !reset null
+      MAILER_PROVIDER: !reset null
+      ASPNETCORE_URLS: http://+:8080
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+      MAILER_FORWARDED_HEADERS_TRUSTED_PROXIES: ${MAILER_SHARED_EDGE_PROXY_IPV4_ADDRESS:?Set MAILER_SHARED_EDGE_PROXY_IPV4_ADDRESS}
+      MAILER_FORWARDED_HEADERS_TRUSTED_NETWORKS: ""
+      AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS: ${MAILER_SHARED_EDGE_MAILER_IPV4_ADDRESS:?Set MAILER_SHARED_EDGE_MAILER_IPV4_ADDRESS}
+      AMANE_ADMIN_ALLOW_HTTP: "false"
+    volumes: !override
+      - ${MAILER_DATA_PATH:-./data}:/app/data
+      - ${MAILER_ACS_SECRET_HOST_PATH:-./secrets/acs}:/run/secrets/acs:ro
+      - ${MAILER_BOUNCE_QUEUE_SECRET_HOST_PATH:-./secrets/bounce-queue}:/run/secrets/bounce-queue:ro
+    networks: !override
+      internal: {}
+      shared_edge:
+        aliases:
+          - ${MAILER_SHARED_EDGE_ALIAS:-mailer}
+        ipv4_address: ${MAILER_SHARED_EDGE_MAILER_IPV4_ADDRESS:?Set MAILER_SHARED_EDGE_MAILER_IPV4_ADDRESS}
+
+  mailer-migrate:
+    environment:
+      MAILER_TENANTS_PATH: !reset null
+      MAIL_SERVICE_TOKEN: !reset null
+      MAIL_SERVICE_TOKEN_DEVELOP: !reset null
+      MAIL_SERVICE_TOKEN_STAGING: !reset null
+      MAIL_SERVICE_TOKEN_PRODUCTION: !reset null
+      MAILER_PROVIDER: !reset null
+    volumes: !override
+      - ${MAILER_DATA_PATH:-./data}:/app/data
+    networks: !override
+      internal: {}
+
+networks:
+  shared_edge:
+    external: true
+    name: ${MAILER_SHARED_EDGE_NETWORK_NAME:?Set MAILER_SHARED_EDGE_NETWORK_NAME}
