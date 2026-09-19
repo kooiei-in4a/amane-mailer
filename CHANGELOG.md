@@ -15,6 +15,55 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [2.1.0]
+
+Minor release focused on browser-accessible operations, Admin/Setup usability, and
+shared-edge VPS deployment hardening. There is no database migration and no
+breaking change to the public Consumer HTTP contract relative to v2.0.2.
+
+### Added
+
+- Repository-owned shared-edge managed-v2 Compose profile and non-secret example
+  configuration for running Mailer behind an existing platform reverse proxy
+  without publishing the Mailer backend port (#771).
+- Staging-only Build Once / GHCR publication and exact-digest VPS image deployment
+  runbooks, with the first `2.1.0-staging.1` deployment recorded as historical
+  evidence (#779).
+
+### Changed
+
+- Browser management edge now restricts `/admin` and `/setup` to the JP
+  allow-list, adds a separate Caddy Basic Auth gate, and preserves Mailer's own
+  Admin/Setup authentication. Non-JP and undecidable sources fail closed (#744).
+- `/api` now reuses the JP allow-list while keeping Caddy Basic Auth disabled and
+  preserving the existing Sender-scoped Bearer/API Key authentication contract
+  (#753).
+- First-run Setup UI now explains bootstrap, ACS, Admin, Sender, configured state,
+  and completion progress more clearly (#755).
+- Admin operational pages now provide clearer purpose, status explanations,
+  navigation, list/detail presentation, and safer PII summaries (#756 and the
+  subsequent Admin UI refresh).
+- `/admin/setup-status` now recognizes initialized Browser managed-v2 state from
+  the canonical instance configuration, protected ACS secret, Sender state, and
+  `live_sending` value instead of incorrectly reporting a healthy Fresh Setup as
+  credential-missing / Sender n/a / Live sending n/a (#782).
+
+### Operations / validation
+
+- Fresh managed-v2 dogfood completed Browser Setup through ACS, first Admin,
+  first Sender, API Key creation, live-sending enablement, real ACS delivery, and
+  restart persistence (#745).
+- The pre-dogfood managed state was restored without changing the shared edge or
+  unrelated services; an existing Consumer using its pre-dogfood API Key
+  successfully delivered mail both before and after a Mailer restart (#745).
+- The live host may continue using its historical `compose.shared-staging.yml`
+  until an explicit topology reconciliation. Routine image-only deployment must
+  not silently replace it with the repository-owned shared-edge profile.
+- Dependency maintenance after v2.0.2 includes .NET 10.0.12 servicing,
+  Microsoft.NET.Test.Sdk 18.10.1, MailKitLite/MimeKitLite 4.18.0, and
+  docker/setup-qemu-action 4.3.0.
+
+
 ## [2.0.2]
 Security and maintenance patch for the Contracts package publication path:
 

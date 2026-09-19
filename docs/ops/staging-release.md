@@ -43,12 +43,15 @@ staging release のためにこれらを一時的に書き換えてはいけま�
 Human が staging version と source revision を明示します。
 
 ```text
-version=2.1.0-staging.1
+version=X.Y.Z-staging.N
 revision=<40-hex origin/main SHA>
 repository=ghcr.io/kooiei-in4a/amane-mailer
-version_ref=ghcr.io/kooiei-in4a/amane-mailer:v2.1.0-staging.1
+version_ref=ghcr.io/kooiei-in4a/amane-mailer:vX.Y.Z-staging.N
 sha_ref=ghcr.io/kooiei-in4a/amane-mailer:sha-<revision>
 ```
+
+staging versionは毎回新しい識別子を使います。既に公開済みの `X.Y.Z-staging.N` を
+別revisionへ付け替えたり、同じversionでrebuild / republishしません。
 
 release 開始時に `git fetch origin main` し、`origin/main == revision` を要求します。
 異なる場合は最新へ読み替えず停止します。

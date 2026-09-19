@@ -250,6 +250,7 @@ public:
 - JP operator sourceの `/admin` = expected Basic Auth boundary
 - JP operator sourceの `/setup` = expected Basic Auth boundary
 - unauthenticated `/api` = Mailer 401、Basic challengeなし
+- initialized Browser managed-v2 の `/admin/setup-status` = canonical managed stateと整合し、configured providerを `credential-missing` と誤表示しない
 
 さらに、Compose files / Caddyfile SHA と shared edge container identity が preflight から変わっていないことを確認します。
 
