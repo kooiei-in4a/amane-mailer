@@ -2428,33 +2428,35 @@ Assert-Equal 'B1-R1 no global old-version ban' (Get-PostSyncFollowerFileState -C
 
 # Production docs are read-only and durable across pre- and post-sync
 # repository states: PREDECESSOR or TARGET both pass; CONFLICT fails.
-$productionPostSyncRules = Get-PostSyncFollowerReplacementRules -PrevVersion '2.0.2' -TargetVersion '2.1.0'
+$productionAuthorityObs = Get-CurrentPublicAuthorityObservation -RepoRoot $RepoRoot
+Assert-Equal 'PRODUCTION_CURRENT_AUTHORITY_STATE' $productionAuthorityObs.State 'PRESENT'
+$productionCurrentVersion = if ($productionAuthorityObs.State -eq 'PRESENT') { [string]$productionAuthorityObs.Authority.Version } else { '' }
+Assert-True 'PRODUCTION_CURRENT_AUTHORITY_VERSION' (Test-ReleaseVersion $productionCurrentVersion) 'current-public authority version invalid'
+
+# Production docs must always describe the current machine-readable authority.
+# Use target-mode rules derived from the live authority instead of pinning this
+# self-test to one historical release transition.
+$productionTargetRules = Get-PostSyncFollowerReplacementRules -PrevVersion '0.0.0' -TargetVersion $productionCurrentVersion
 $productionStateLabels = @{
     'docs/ops/setup-guide.md'    = 'PRODUCTION_SETUP_GUIDE_JA_STATE'
     'docs/ops/setup-guide.en.md' = 'PRODUCTION_SETUP_GUIDE_EN_STATE'
     'ROADMAP.md'                 = 'PRODUCTION_ROADMAP_STATE'
 }
+$productionStaleVersion = if ($productionCurrentVersion -eq '0.0.1') { '0.0.2' } else { '0.0.1' }
+$productionFutureVersion = if ($productionCurrentVersion -eq '99.99.99') { '99.99.98' } else { '99.99.99' }
+
 foreach ($prodPath in @('docs/ops/setup-guide.md', 'docs/ops/setup-guide.en.md', 'ROADMAP.md')) {
     $prodText = Read-PostSyncTestText -Path (Join-Path $RepoRoot $prodPath)
-    $prodRules = Get-PostSyncRulesForPath -RelativePath $prodPath -AllRules $productionPostSyncRules
-    $prodState = Get-PostSyncProductionCompatibilityState -Content $prodText -Rules $prodRules
+    $prodRules = Get-PostSyncRulesForPath -RelativePath $prodPath -AllRules $productionTargetRules
+    $prodState = Get-PostSyncFollowerFileState -Content $prodText -Rules $prodRules -Mode 'TARGET'
     $stateLabel = $productionStateLabels[$prodPath]
     Write-Host ('{0}={1}' -f $stateLabel, $prodState)
-    Assert-True ($stateLabel + ' is PREDECESSOR or TARGET') ($prodState -eq 'PREDECESSOR' -or $prodState -eq 'TARGET') ($stateLabel + ' was ' + $prodState)
-    Assert-True ($stateLabel + ' is not CONFLICT') ($prodState -ne 'CONFLICT') ($stateLabel + ' must not be CONFLICT')
-
-    if ($prodState -eq 'PREDECESSOR') {
-        $prodUpdated = Apply-PostSyncReplacementRules -Content $prodText -Rules $prodRules
-        Assert-Equal ('production {0} applied TARGET' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodUpdated -Rules $prodRules -Mode 'TARGET') 'TARGET'
-        $prodInspect = $prodUpdated
-    }
-    else {
-        Assert-Equal ('production {0} live TARGET' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodText -Rules $prodRules -Mode 'TARGET') 'TARGET'
-        $prodInspect = $prodText
-    }
+    Assert-Equal ($stateLabel + ' matches current authority') $prodState 'TARGET'
+    $prodInspect = $prodText
 
     if ($prodPath -eq 'ROADMAP.md') {
-        Assert-True 'production ROADMAP target stable line' ($prodInspect -match 'The current public stable line is \*\*v2\.1\.0\*\*') 'ROADMAP target stable line missing'
+        $escapedCurrentVersion = [regex]::Escape($productionCurrentVersion)
+        Assert-True 'production ROADMAP target stable line' ($prodInspect -match ('The current public stable line is \*\*v' + $escapedCurrentVersion + '\*\*')) 'ROADMAP target stable line missing'
         Assert-True 'production ROADMAP historical 0.x preserved' ($prodInspect -match 'The v0\.1\.x line') 'ROADMAP historical 0.x rewritten'
     }
     else {
@@ -2462,36 +2464,40 @@ foreach ($prodPath in @('docs/ops/setup-guide.md', 'docs/ops/setup-guide.en.md',
         Assert-True ('production {0} historical v1.1.0 preserved' -f $prodPath) ($prodInspect -match 'v1\.1\.0') ('historical v1.1.0 rewritten in {0}' -f $prodPath)
         Assert-True ('production {0} previous v1.3.5 preserved' -f $prodPath) ($prodInspect -match 'v1\.3\.5') ('previous-release v1.3.5 rewritten in {0}' -f $prodPath)
         Assert-True ('production {0} historical v2.0.0 preserved' -f $prodPath) ($prodInspect -match 'v2\.0\.0') ('historical v2.0.0 rewritten in {0}' -f $prodPath)
-        Assert-True ('production {0} current recommendation is 2.1.0' -f $prodPath) ($prodInspect -match 'v2\.1\.0') ('target version missing from {0}' -f $prodPath)
     }
+    Assert-True ('production {0} no stale current version' -f $prodPath) (-not (Test-PostSyncHasStaleCurrentVersionLine -Content $prodInspect -TargetVersion $productionCurrentVersion)) ('stale current version detected in {0}' -f $prodPath)
 
-    $staleProdRule = Get-PostSyncCurrentRecommendationRule -RelativePath $prodPath -PrevVersion '2.0.2' -TargetVersion '2.1.0'
+    $staleProdRule = Get-PostSyncCurrentRecommendationRule -RelativePath $prodPath -PrevVersion $productionStaleVersion -TargetVersion $productionCurrentVersion
     Assert-True ('production {0} conflict marker present' -f $prodPath) ($null -ne $staleProdRule -and -not [string]::IsNullOrWhiteSpace($staleProdRule.From)) 'conflict current-public marker missing'
     $prodConflict = $prodInspect.TrimEnd() + "`n" + $staleProdRule.From + "`n"
     Assert-Equal ('production {0} mixed current marker CONFLICT' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodConflict -Rules $prodRules -Mode 'TARGET') 'CONFLICT'
-    Assert-Equal ('production {0} mixed compatibility CONFLICT' -f $prodPath) (Get-PostSyncProductionCompatibilityState -Content $prodConflict -Rules $prodRules) 'CONFLICT'
 
     $prodJaTokens = Get-PostSyncTestJaTokens
     if ($prodPath -eq 'docs/ops/setup-guide.md') {
-        $uncoveredLine = '[v1.3.4 release record](../releases/v1.3.4.md) | ' + $prodJaTokens.Genzai + $prodJaTokens.Kokai + ' release leftover'
-        $historicalLine = $prodJaTokens.Kako + $prodJaTokens.Genzai + $prodJaTokens.Kokai + ' release was v1.3.4'
+        $uncoveredLine = ('[v{0} release record](../releases/v{0}.md) | ' -f $productionStaleVersion) + $prodJaTokens.Genzai + $prodJaTokens.Kokai + ' release leftover'
+        $historicalLine = $prodJaTokens.Kako + $prodJaTokens.Genzai + $prodJaTokens.Kokai + (' release was v{0}' -f $productionStaleVersion)
     }
     elseif ($prodPath -eq 'docs/ops/setup-guide.en.md') {
-        $uncoveredLine = 'Current public release leftover v1.3.4'
-        $historicalLine = 'Historical note: the then-current public release was v1.3.4'
+        $uncoveredLine = 'Current public release leftover v' + $productionStaleVersion
+        $historicalLine = 'Historical note: the then-current public release was v' + $productionStaleVersion
     }
     else {
-        $uncoveredLine = 'Current public leftover v1.3.4'
-        $historicalLine = 'Historical note: the then-current public stable line was v1.3.4'
+        $uncoveredLine = 'Current public leftover v' + $productionStaleVersion
+        $historicalLine = 'Historical note: the then-current public stable line was v' + $productionStaleVersion
     }
     $prodUncovered = $prodInspect.TrimEnd() + "`n" + $uncoveredLine + "`n"
     Assert-Equal ('production {0} uncovered current line CONFLICT' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodUncovered -Rules $prodRules -Mode 'TARGET') 'CONFLICT'
-    Assert-Equal ('production {0} uncovered compatibility CONFLICT' -f $prodPath) (Get-PostSyncProductionCompatibilityState -Content $prodUncovered -Rules $prodRules) 'CONFLICT'
     $prodHistorical = $prodInspect.TrimEnd() + "`n" + $historicalLine + "`n"
     Assert-Equal ('production {0} historical exemption TARGET' -f $prodPath) (Get-PostSyncFollowerFileState -Content $prodHistorical -Rules $prodRules -Mode 'TARGET') 'TARGET'
-    Assert-Equal ('production {0} historical compatibility TARGET' -f $prodPath) (Get-PostSyncProductionCompatibilityState -Content $prodHistorical -Rules $prodRules) 'TARGET'
+
+    # Regression: the same production document must remain classifiable after a
+    # future post-sync without editing this self-test.
+    $futureApplyRules = Get-PostSyncRulesForPath -RelativePath $prodPath -AllRules (Get-PostSyncFollowerReplacementRules -PrevVersion $productionCurrentVersion -TargetVersion $productionFutureVersion)
+    $futureTargetRules = Get-PostSyncRulesForPath -RelativePath $prodPath -AllRules (Get-PostSyncFollowerReplacementRules -PrevVersion '0.0.0' -TargetVersion $productionFutureVersion)
+    $futureText = Apply-PostSyncReplacementRules -Content $prodInspect -Rules $futureApplyRules
+    Assert-Equal ('production {0} future target simulation' -f $prodPath) (Get-PostSyncFollowerFileState -Content $futureText -Rules $futureTargetRules -Mode 'TARGET') 'TARGET'
 }
-Write-Host 'PRODUCTION_READ_ONLY_SIMULATION=PASS'
+Write-Host ('PRODUCTION_READ_ONLY_SIMULATION=PASS current={0} future={1}' -f $productionCurrentVersion, $productionFutureVersion)
 Assert-Equal 'PRODUCTION_READ_ONLY_SIMULATION' 'PASS' 'PASS'
 
 # --- #691 observed post-sync evidence contract (synthetic 9.9.0) ---
