@@ -129,6 +129,7 @@ function Get-PostSyncFollowerReplacementRules {
 
     Add-Rules 'README.md' @(
         'ghcr.io/kooiei-in4a/amane-mailer:{prevTag}'
+        'MAILER_IMAGE_TAG={prevTag}'
         'v{prevVersion} release record'
         'docs/releases/v{prevVersion}.md'
         'releases/tag/v{prevVersion}'
@@ -136,15 +137,17 @@ function Get-PostSyncFollowerReplacementRules {
         ($ja.GenzaiKokaiChu + $ja.No + ' release tag ' + $ja.Ha + ' `{prevTag}`')
     ) @(
         'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
+        'MAILER_IMAGE_TAG={targetTag}'
         'v{targetVersion} release record'
         'docs/releases/v{targetVersion}.md'
         'releases/tag/v{targetVersion}'
         ('v{targetVersion} release ' + $ja.No + ' GHCR runtime image')
         ($ja.GenzaiKokaiChu + $ja.No + ' release tag ' + $ja.Ha + ' `{targetTag}`')
-    ) @(1, 1, 1, 1, 1, 1)
+    ) @(1, 1, 1, 1, 1, 1, 1)
 
     Add-Rules 'README.en.md' @(
         'ghcr.io/kooiei-in4a/amane-mailer:{prevTag}'
+        'MAILER_IMAGE_TAG={prevTag}'
         'v{prevVersion} release record'
         'docs/releases/v{prevVersion}.md'
         'releases/tag/v{prevVersion}'
@@ -152,12 +155,13 @@ function Get-PostSyncFollowerReplacementRules {
         'current public release tag is `{prevTag}`'
     ) @(
         'ghcr.io/kooiei-in4a/amane-mailer:{targetTag}'
+        'MAILER_IMAGE_TAG={targetTag}'
         'v{targetVersion} release record'
         'docs/releases/v{targetVersion}.md'
         'releases/tag/v{targetVersion}'
         'The v{targetVersion} GHCR'
         'current public release tag is `{targetTag}`'
-    ) @(1, 1, 1, 1, 1, 1)
+    ) @(1, 1, 1, 1, 1, 1, 1)
 
     Add-Rules 'SECURITY.md' @(
         '| {prevVersion}   | Yes (latest release) |'
@@ -166,28 +170,32 @@ function Get-PostSyncFollowerReplacementRules {
     ) @(1)
 
     Add-Rules 'docs/ops/release-image-smoke.md' @(
+        'MAILER_IMAGE_TAG={prevTag}'
         ($ja.GenzaiKokaiChu + $ja.No + $ja.Rei + ': `ghcr.io/kooiei-in4a/amane-mailer:{prevTag}`')
         ('`{prevTag}` ' + $ja.No + ' value-free smoke ' + $ja.Kekkka)
         '[docs/releases/v{prevVersion}.md]'
         '../releases/v{prevVersion}.md'
     ) @(
+        'MAILER_IMAGE_TAG={targetTag}'
         ($ja.GenzaiKokaiChu + $ja.No + $ja.Rei + ': `ghcr.io/kooiei-in4a/amane-mailer:{targetTag}`')
         ('`{targetTag}` ' + $ja.No + ' value-free smoke ' + $ja.Kekkka)
         '[docs/releases/v{targetVersion}.md]'
         '../releases/v{targetVersion}.md'
-    ) @(1, 1, 1, 1)
+    ) @(1, 1, 1, 1, 1)
 
     Add-Rules 'docs/ops/release-image-smoke.en.md' @(
+        'MAILER_IMAGE_TAG={prevTag}'
         ('current public example: `ghcr.io/kooiei-in4a/amane-mailer:{prevTag}`')
         'Value-free smoke results for `v{prevVersion}`'
         '[docs/releases/v{prevVersion}.md]'
         '../releases/v{prevVersion}.md'
     ) @(
+        'MAILER_IMAGE_TAG={targetTag}'
         ('current public example: `ghcr.io/kooiei-in4a/amane-mailer:{targetTag}`')
         'Value-free smoke results for `v{targetVersion}`'
         '[docs/releases/v{targetVersion}.md]'
         '../releases/v{targetVersion}.md'
-    ) @(1, 1, 1, 1)
+    ) @(1, 1, 1, 1, 1)
 
     Add-Rules 'docs/ops/setup-guide.md' @(
         '[{prevTag} release record](../releases/{prevTag}.md)'
