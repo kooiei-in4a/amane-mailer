@@ -70,7 +70,9 @@ formatter / 段階 analyzer の詳細は
 ## Mailpit で起動する
 
 v2 の送信には、事前に作成された Sender と managed API Key が必要です。
-Sender/API Key の Setup UI は #732 の対象で、この変更には含まれません。
+Managed v2 では Browser Setup で first Sender を作成し、その後 Admin で
+Sender / API Key の lifecycle（作成・一覧・revoke など）を管理します。
+手順の入口は [セットアップガイド](docs/ops/setup-guide.md) [(en)](docs/ops/setup-guide.en.md) です。
 
 local compose は Mailer イメージを build し、Mailpit を起動します。
 
@@ -93,10 +95,11 @@ Linux / macOS の bash と curl で Mailpit 到着、冪等再送、conflict ま
 
 ## Admin UI
 
-`AMANE_ADMIN_ENABLED=true` を設定すると `/admin` が有効になります（既定は無効）。
-管理画面は **内部ネットワーク向け・experimental** な運用補助ツールです。公開インターネットへの
-直接公開は想定していません。production では reverse proxy、firewall、または Docker port publish
-制限をネットワーク境界として設定してください。
+Fresh / legacy / unmanaged では `AMANE_ADMIN_ENABLED=true` で `/admin` を有効化します（既定は無効）。
+Managed v2 初期化後は SQLite が Admin surface / credential の正本となり、
+`AMANE_ADMIN_ENABLED=false` でも Admin surface は無効化されません。
+Mailer backend port を Internet へ直接 publish しないでください。Browser 管理は
+documented shared HTTPS edge（JP allow-list + Caddy Basic Auth + Mailer Admin/Setup 認証）経由をサポートします。
 
 **現時点の制約（[ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md) / [ADR 0014](docs/adr/0014-admin-session-tenant-throttle-audit-design.md)）**
 
@@ -145,7 +148,7 @@ commit しないでください。
 - [リストア手順](docs/ops/restore-procedure.md) [(en)](docs/ops/restore-procedure.en.md)
 - [リストア検証](docs/ops/restore-verification.md) [(en)](docs/ops/restore-verification.en.md)
 
-v2.1.0 publish 後の GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v2.1.0`）を clean state から
+公開済み GHCR イメージ（既定 `ghcr.io/kooiei-in4a/amane-mailer:v2.1.0`）を clean state から
 pull して Mailer + Mailpit を起動し、`/healthz`・`/readyz`・正常 POST・Mailpit 到着・冪等再送・
 conflict・401・403 を自動 smoke するには **Linux local Docker 上** で
 `scripts/release-smoke.sh`（サポート対象の canonical entrypoint）を使います。
@@ -163,7 +166,7 @@ release notes または Docker manifest で platform を確認し、必要に応
 `MAILER_IMAGE_PLATFORM=linux/amd64` を明示してください。
 
 ```bash
-MAILER_IMAGE_TAG=v1.3.8 bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v2.1.0 bash scripts/release-smoke.sh
 ```
 
 `infra/deploy/drills/` 配下の no-send / ACS deploy drill helper script（`mail-05a-*`）は、

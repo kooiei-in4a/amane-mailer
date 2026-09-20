@@ -72,8 +72,10 @@ See [Code quality gates](docs/ops/code-quality-gates.en.md)
 
 ## Run With Mailpit
 
-v2 delivery requires a pre-provisioned Sender and managed API key. Sender/API
-key Setup UI is tracked by #732 and is not part of this change.
+v2 delivery requires a pre-provisioned Sender and managed API key. On Managed
+v2, Browser Setup creates the first Sender; Admin then manages the Sender /
+API Key lifecycle (create, list, revoke, and related operations). Start from
+the [setup guide](docs/ops/setup-guide.en.md) [(ja)](docs/ops/setup-guide.md).
 
 The local compose file builds the Mailer image and starts Mailpit:
 
@@ -98,10 +100,12 @@ repost, and conflict, see
 
 ## Admin UI
 
-Setting `AMANE_ADMIN_ENABLED=true` enables `/admin` (disabled by default).
-The admin UI is an **internal-network-only, experimental** operational aid.
-Direct exposure to the public internet is not a supported configuration.
-In production, use a reverse proxy, firewall, or Docker port publish restriction as the network boundary.
+On fresh / legacy / unmanaged runtimes, set `AMANE_ADMIN_ENABLED=true` to enable
+`/admin` (disabled by default). After Managed v2 initialization, SQLite owns the
+Admin surface and credentials; `AMANE_ADMIN_ENABLED=false` does not disable that
+surface. Do not publish the Mailer backend port directly to the Internet.
+Browser management through the documented shared HTTPS edge (JP allow-list +
+Caddy Basic Auth + Mailer Admin/Setup authentication) is supported.
 
 **Current limitations ([ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md) / [ADR 0014](docs/adr/0014-admin-session-tenant-throttle-audit-design.md))**
 
@@ -151,7 +155,7 @@ Operational runbooks:
 - [Restore procedure](docs/ops/restore-procedure.en.md) [(ja)](docs/ops/restore-procedure.md)
 - [Restore verification](docs/ops/restore-verification.en.md) [(ja)](docs/ops/restore-verification.md)
 
-After v2.1.0 is published, smoke the GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v2.1.0`)
+Smoke the published GHCR image (default `ghcr.io/kooiei-in4a/amane-mailer:v2.1.0`)
 from a clean state — pulling it, starting Mailer + Mailpit, and checking `/healthz`,
 `/readyz`, a valid POST, Mailpit delivery, idempotent repost, conflict, 401, and 403 —
 run `scripts/release-smoke.sh` on **Linux local Docker** (supported canonical entrypoint).
@@ -170,7 +174,7 @@ Confirm the platform in the release notes or Docker manifest and pin
 `MAILER_IMAGE_PLATFORM=linux/amd64` when needed.
 
 ```bash
-MAILER_IMAGE_TAG=v1.3.8 bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v2.1.0 bash scripts/release-smoke.sh
 ```
 
 No-send / ACS deploy drill helper scripts under `infra/deploy/drills/`

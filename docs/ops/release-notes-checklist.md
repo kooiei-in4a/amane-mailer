@@ -38,8 +38,12 @@ GitHub Release notes は OSS consumer が release page だけで artifact と主
   （着手条件と非目標は [ADR 0019](../adr/0019-sqlite-single-process-boundaries.md)）。
 - Docker image の対応 platform を Docker manifest と同じ表記で明記する。single-platform release では
   `linux/amd64 only` のように制約を明記し、multi-arch release では platform ごとの digest / smoke 結果を記録する。
-- Admin UI は disabled by default、内部ネットワーク向け、experimental。現時点の
-  limitation（durable session/throttle/audit、tenant scope 運用境界、retention sweep など）を明記する。
+- Admin UI は experimental。Fresh / legacy / unmanaged では env enablement path
+  で default disabled。Managed v2 初期化後は SQLite が Admin surface の正本。
+  Mailer backend port の Internet 直接 publish は不可。documented shared HTTPS
+  edge（JP allow-list + Caddy Basic Auth + Mailer Admin/Setup 認証）経由の
+  Browser 管理はサポート対象。現時点の limitation（durable session/throttle/audit、
+  tenant scope 運用境界、retention sweep など）を明記する。
 - upgrade / migration 前に SQLite DB と tenant config の backup を取得し、
   production では restore 手順も確認する。
 - GHCR image publish 時は `promote-qualified-oci.yml` の pre-login identity
