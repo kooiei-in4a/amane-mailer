@@ -11,7 +11,7 @@
         "0013",
         "0014"
       ],
-      "notes": "Optional Google Admin login beside password login. Explicit password re-proof linking to admin_google_identities (migration 021). Break-glass remains password-only. Google handler never signs into AmaneAdmin; existing admin_sessions remain the session authority."
+      "notes": "Optional Google Admin login beside password login. Explicit password re-proof linking to admin_google_identities (migration 021). Identity authority is Google issuer + userinfo sub only; missing sub fails closed. Operator recovery is admin google unlink --username, which deletes that Admin mapping and revokes their active sessions. Break-glass remains password-only. Google handler never signs into AmaneAdmin; existing admin_sessions remain the session authority."
     },
     {
       "id": "admin-audit-retention-sweep",

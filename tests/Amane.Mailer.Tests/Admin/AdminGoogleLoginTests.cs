@@ -1,6 +1,7 @@
 using System.Net;
 using Amane.Mailer.Admin;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Operations;
 using Amane.Mailer.Tests.Fixtures;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.WebUtilities;
@@ -20,9 +21,7 @@ public sealed class AdminGoogleLoginTests(AdminGoogleLoginFixture fixture)
         await RestoreDefaultAdminAsync(TestContext.Current.CancellationToken);
         fixture.Factory.Services.GetRequiredService<AdminLoginThrottle>().Clear();
         fixture.Factory.Services.GetRequiredService<AdminSessionExpiredDedupe>().Clear();
-        fixture.Backchannel.Subject = AdminGoogleLoginFixture.DefaultSubject;
-        fixture.Backchannel.Email = AdminGoogleLoginFixture.DefaultEmail;
-        fixture.Backchannel.FailTokenExchange = false;
+        fixture.Backchannel.ResetUserinfo();
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -168,6 +167,47 @@ public sealed class AdminGoogleLoginTests(AdminGoogleLoginFixture fixture)
             await ReadAuditAsync(AdminAuditLog.EventTypes.GoogleIdentityLinked, ct),
             row => row.Actor == MailerAdminFixture.Username);
         AssertNoSecretLeak(html, await ReadAuditAsync(null, ct));
+    }
+
+    [Fact]
+    public async Task Userinfo_without_sub_is_rejected_even_when_id_is_present()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        fixture.Backchannel.IncludeSub = false;
+        fixture.Backchannel.IncludeId = true;
+        fixture.Backchannel.Id = AdminGoogleLoginFixture.DefaultLegacyId;
+
+        using var client = CreateClient();
+        using var complete = await CompleteGoogleAsync(client, ct);
+        var html = await complete.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, complete.StatusCode);
+        Assert.Contains("Google login was rejected.", html, StringComparison.Ordinal);
+        Assert.Equal(0, await CountActiveSessionsAsync(ct));
+        Assert.Equal(0, await CountMappingsAsync(ct));
+        Assert.False(HasAdminAuthCookie(complete));
+        Assert.Contains(
+            await ReadAuditAsync(AdminAuditLog.EventTypes.GoogleLoginFailed, ct),
+            row => row.ErrorCode == AdminAuditLog.ErrorCodes.MissingSubject);
+        AssertNoSecretLeak(html, await ReadAuditAsync(null, ct));
+    }
+
+    [Fact]
+    public async Task Google_identity_uses_sub_not_legacy_id()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        fixture.Backchannel.IncludeSub = true;
+        fixture.Backchannel.IncludeId = true;
+        fixture.Backchannel.Id = AdminGoogleLoginFixture.DefaultLegacyId;
+        await LinkCurrentAdminAsync(AdminGoogleLoginFixture.DefaultSubject, ct);
+
+        using var client = CreateClient();
+        using var complete = await CompleteGoogleAsync(client, ct);
+
+        Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
+        Assert.Equal(1, await CountActiveSessionsAsync(ct));
+        Assert.NotNull(await FindMappingAsync(AdminGoogleLoginFixture.DefaultSubject, ct));
+        Assert.Null(await FindMappingAsync(AdminGoogleLoginFixture.DefaultLegacyId, ct));
     }
 
     [Fact]
@@ -343,6 +383,138 @@ public sealed class AdminGoogleLoginTests(AdminGoogleLoginFixture fixture)
     }
 
     [Fact]
+    public async Task Unlink_cli_deletes_mapping_and_revokes_active_sessions()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await LinkCurrentAdminAsync(AdminGoogleLoginFixture.DefaultSubject, ct);
+        using var client = CreateClient();
+        using var complete = await CompleteGoogleAsync(client, ct);
+        Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
+        Assert.Equal(1, await CountActiveSessionsAsync(ct));
+
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var exitCode = await RunUnlinkAsync(MailerAdminFixture.Username, output, error, ct);
+
+        Assert.Equal(AdminGoogleUnlinkCommand.SuccessExitCode, exitCode);
+        Assert.Contains("Unlinked Google identity", output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(AdminGoogleLoginFixture.DefaultSubject, output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(AdminGoogleLoginFixture.DefaultEmail, output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(AdminGoogleLoginFixture.DefaultSubject, error.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(AdminGoogleLoginFixture.DefaultEmail, error.ToString(), StringComparison.Ordinal);
+        Assert.Null(await FindMappingAsync(AdminGoogleLoginFixture.DefaultSubject, ct));
+        Assert.Equal(0, await CountActiveSessionsAsync(ct));
+
+        using var rejected = await client.GetAsync("/admin/mail-requests", ct);
+        Assert.Equal(HttpStatusCode.Redirect, rejected.StatusCode);
+        Assert.Contains("/admin/login", rejected.Headers.Location?.OriginalString, StringComparison.Ordinal);
+        Assert.Equal(
+            AdminSessionRevokeReasons.GoogleIdentityUnlinked,
+            await GetLatestRevokeReasonAsync(ct));
+    }
+
+    [Fact]
+    public async Task Unlink_cli_returns_unknown_identity_for_the_same_google_account()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await LinkCurrentAdminAsync(AdminGoogleLoginFixture.DefaultSubject, ct);
+        var unlink = await RunUnlinkAsync(
+            MailerAdminFixture.Username,
+            new StringWriter(),
+            new StringWriter(),
+            ct);
+        Assert.Equal(AdminGoogleUnlinkCommand.SuccessExitCode, unlink);
+
+        using var client = CreateClient();
+        using var complete = await CompleteGoogleAsync(client, ct);
+        var html = await complete.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
+        Assert.Contains("Googleアカウントはまだ管理者に紐付いていません。", html, StringComparison.Ordinal);
+        Assert.Equal(0, await CountActiveSessionsAsync(ct));
+        Assert.Null(await FindMappingAsync(AdminGoogleLoginFixture.DefaultSubject, ct));
+    }
+
+    [Fact]
+    public async Task Unlink_cli_allows_a_different_google_account_to_be_linked()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await LinkCurrentAdminAsync(AdminGoogleLoginFixture.DefaultSubject, ct);
+        Assert.Equal(
+            AdminGoogleUnlinkCommand.SuccessExitCode,
+            await RunUnlinkAsync(
+                MailerAdminFixture.Username,
+                new StringWriter(),
+                new StringWriter(),
+                ct));
+
+        fixture.Backchannel.Subject = "google-subject-test-002";
+        using var client = CreateClient();
+        using var complete = await CompleteGoogleAsync(client, ct);
+        var csrf = ReadCsrfToken(await complete.Content.ReadAsStringAsync(ct));
+        using var linked = await client.PostAsync(
+            AdminGoogleAuthenticationConstants.LinkPath,
+            CreateLinkContent(csrf, MailerAdminFixture.Username, MailerAdminFixture.Password),
+            ct);
+
+        Assert.Equal(HttpStatusCode.OK, linked.StatusCode);
+        Assert.Null(await FindMappingAsync(AdminGoogleLoginFixture.DefaultSubject, ct));
+        Assert.NotNull(await FindMappingAsync("google-subject-test-002", ct));
+        Assert.Equal(1, await CountActiveSessionsAsync(ct));
+    }
+
+    [Fact]
+    public async Task Unlink_cli_is_deterministic_when_admin_has_no_mapping()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var error = new StringWriter();
+        var exitCode = await RunUnlinkAsync(
+            MailerAdminFixture.Username,
+            new StringWriter(),
+            error,
+            ct);
+
+        Assert.Equal(AdminGoogleUnlinkCommand.NotFoundExitCode, exitCode);
+        Assert.Contains("No Google identity mapping found", error.ToString(), StringComparison.Ordinal);
+        Assert.Equal(0, await CountMappingsAsync(ct));
+        Assert.Equal(0, await CountActiveSessionsAsync(ct));
+    }
+
+    [Fact]
+    public async Task Unlink_cli_does_not_change_another_admin_mapping()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var other = "other-google-admin-" + Guid.NewGuid().ToString("N");
+        var users = fixture.Factory.Services.GetRequiredService<AdminUserRepository>();
+        var otherId = await users.CreateOrUpdateScopedUserAsync(
+            other,
+            AdminPasswordHasher.Hash("other-google-password-not-real"),
+            [MailerWebApplicationFixtureBase.TenantId],
+            ct);
+        await fixture.Factory.Services.GetRequiredService<AdminGoogleIdentityRepository>()
+            .TryLinkAsync(
+                otherId,
+                AdminGoogleAuthenticationConstants.Issuer,
+                "google-subject-other-admin",
+                DateTimeOffset.UtcNow,
+                ct);
+        await LinkCurrentAdminAsync(AdminGoogleLoginFixture.DefaultSubject, ct);
+
+        Assert.Equal(
+            AdminGoogleUnlinkCommand.SuccessExitCode,
+            await RunUnlinkAsync(
+                MailerAdminFixture.Username,
+                new StringWriter(),
+                new StringWriter(),
+                ct));
+
+        Assert.Null(await FindMappingAsync(AdminGoogleLoginFixture.DefaultSubject, ct));
+        var otherMapping = await FindMappingAsync("google-subject-other-admin", ct);
+        Assert.NotNull(otherMapping);
+        Assert.Equal(otherId, otherMapping.AdminUserId);
+    }
+
+    [Fact]
     public async Task Invalid_state_fails_closed_without_session()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -506,6 +678,26 @@ public sealed class AdminGoogleLoginTests(AdminGoogleLoginFixture fixture)
         return await client.GetAsync(completeUri, cancellationToken);
     }
 
+    private Task<int> RunUnlinkAsync(
+        string username,
+        TextWriter output,
+        TextWriter error,
+        CancellationToken cancellationToken)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:Mailer"] = fixture.ConnectionString,
+            })
+            .Build();
+        return MailerCliHost.RunAdminGoogleUnlinkAsync(
+            configuration,
+            ["admin", "google", "unlink", "--username", username],
+            output,
+            error,
+            cancellationToken);
+    }
+
     private async Task LinkCurrentAdminAsync(string subject, CancellationToken cancellationToken)
     {
         var user = await fixture.Factory.Services.GetRequiredService<AdminUserRepository>()
@@ -596,6 +788,32 @@ public sealed class AdminGoogleLoginTests(AdminGoogleLoginFixture fixture)
         CancellationToken cancellationToken) =>
         await fixture.Factory.Services.GetRequiredService<AdminGoogleIdentityRepository>()
             .FindByIssuerSubjectAsync(AdminGoogleAuthenticationConstants.Issuer, subject, cancellationToken);
+
+    private async Task<int> CountMappingsAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM admin_google_identities;";
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private async Task<string?> GetLatestRevokeReasonAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT revoke_reason
+            FROM admin_sessions
+            WHERE revoked_at IS NOT NULL
+            ORDER BY revoked_at DESC
+            LIMIT 1;
+            """;
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result as string;
+    }
 
     private async Task<List<AdminAuditRow>> ReadAuditAsync(string? eventType, CancellationToken cancellationToken)
     {

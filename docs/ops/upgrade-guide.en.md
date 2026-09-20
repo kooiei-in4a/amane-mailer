@@ -209,7 +209,17 @@ A v2.1.0-era database started on a binary that includes
 `021_admin_google_identities.sql` (the v2.2.0 line) applies 021 through the normal
 startup / `db migrate` path. The migration stores only an explicit mapping from a
 Google issuer+subject onto an existing `admin_users` row. That table lives in the
-same SQLite database and is included in the existing whole-DB backup.
+same SQLite database and is included in the existing whole-DB backup. The identity
+authority is the Google issuer (`https://accounts.google.com`) plus userinfo `sub`.
+Email and the legacy `id` field are not used for identity resolution.
+
+To unlink a mapping, do not edit SQLite directly. Use the CLI below. It deletes
+that Admin's mapping and revokes their active `admin_sessions`. It does not print
+Google subject or email. A missing mapping exits as not-found.
+
+```bash
+Amane.Mailer admin google unlink --username <name>
+```
 
 Take a pre-upgrade whole-DB backup first. Rollback is a **pre-021 backup plus the
 previous image**. Do not treat a post-021 database as a safe in-place rollback

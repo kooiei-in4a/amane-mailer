@@ -120,7 +120,8 @@ internal static class AdminServiceRegistration
                 google.CorrelationCookie.HttpOnly = true;
                 google.CorrelationCookie.SameSite = SameSiteMode.Lax;
                 google.ClaimActions.Clear();
-                google.ClaimActions.MapJsonKey(ClaimTypes.NameIdentifier, "id");
+                // Google OpenID userinfo v3 authority is issuer + sub. Do not map
+                // the legacy Google+ "id" field or email onto NameIdentifier.
                 google.ClaimActions.MapJsonKey(ClaimTypes.NameIdentifier, "sub");
                 google.Events.OnRemoteFailure = AdminGoogleAuthenticationHandlers.HandleRemoteFailureAsync;
             });

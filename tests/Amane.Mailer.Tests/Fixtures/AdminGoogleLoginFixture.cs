@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -14,6 +15,7 @@ public sealed class AdminGoogleLoginFixture() : MailerWebApplicationFixtureBase(
     public const string ClientSecret = "amane-mailer-test-google-client-secret-not-real";
     public const string DefaultSubject = "google-subject-test-001";
     public const string DefaultEmail = "unlinked-google-user@example.invalid";
+    public const string DefaultLegacyId = "google-legacy-id-not-sub";
 
     public GoogleBackchannelStub Backchannel { get; } = new();
 
@@ -66,7 +68,23 @@ public sealed class GoogleBackchannelStub : HttpMessageHandler
 
     public string Email { get; set; } = AdminGoogleLoginFixture.DefaultEmail;
 
+    public string Id { get; set; } = AdminGoogleLoginFixture.DefaultLegacyId;
+
+    public bool IncludeSub { get; set; } = true;
+
+    public bool IncludeId { get; set; }
+
     public bool FailTokenExchange { get; set; }
+
+    public void ResetUserinfo()
+    {
+        Subject = AdminGoogleLoginFixture.DefaultSubject;
+        Email = AdminGoogleLoginFixture.DefaultEmail;
+        Id = AdminGoogleLoginFixture.DefaultLegacyId;
+        IncludeSub = true;
+        IncludeId = false;
+        FailTokenExchange = false;
+    }
 
     protected override Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
@@ -88,13 +106,32 @@ public sealed class GoogleBackchannelStub : HttpMessageHandler
         }
 
         if (uri.Contains("userinfo", StringComparison.OrdinalIgnoreCase))
-        {
-            var payload =
-                "{\"id\":\"" + Subject + "\",\"sub\":\"" + Subject + "\",\"email\":\"" + Email + "\"}";
-            return Task.FromResult(JsonResponse(payload));
-        }
+            return Task.FromResult(JsonResponse(BuildUserinfoJson()));
 
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+    }
+
+    internal string BuildUserinfoJson()
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            if (IncludeId)
+                writer.WriteString("id", Id);
+            if (IncludeSub)
+                writer.WriteString("sub", Subject);
+            writer.WriteString("name", "Amane Test User");
+            writer.WriteString("given_name", "Amane");
+            writer.WriteString("family_name", "Test");
+            writer.WriteString("picture", "https://example.invalid/google-photo.jpg");
+            writer.WriteString("email", Email);
+            writer.WriteBoolean("email_verified", true);
+            writer.WriteString("locale", "en");
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(stream.ToArray());
     }
 
     private static HttpResponseMessage JsonResponse(string json) =>

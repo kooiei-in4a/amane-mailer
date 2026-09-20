@@ -93,6 +93,16 @@ docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps ma
 
 Mailer コンテナは `ConnectionStrings__Mailer` で同一 SQLite DB を参照する必要があります。scoped 管理者の再作成（同一 username）は tenant scope を更新し、対象管理者の全 session を即時失効します（ADR 0013 D-04）。
 
+### Google identity の unlink（operator recovery）
+
+Google mapping を外すときは SQLite を直接編集せず、username を明示して CLI を使います。対象 Admin の mapping を削除し、その Admin の active session を revoke します。Google subject / email は出力しません。
+
+```powershell
+docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer `
+  admin google unlink `
+  --username tenant-admin-example
+```
+
 ## Admin boolean / numeric environment values
 
 Admin UI の boolean / 正の数値 env は **strict parse** です。ただし **Admin UI 用の値は `AMANE_ADMIN_ENABLED=true` のときだけ** 検証します（`Validate()` と同様）。Admin が無効のとき、mask / login limit などの typo は配送本体の起動を止めません。

@@ -477,6 +477,7 @@ public static class AdminSessionRevokeReasons
     public const string Invalid = "invalid";
     public const string SetupVerificationComplete = "setup_verification_complete";
     public const string SetupVerificationRecovery = "setup_verification_recovery";
+    public const string GoogleIdentityUnlinked = "google_identity_unlinked";
 }
 
 internal enum AdminWorkflowSessionCreateResult

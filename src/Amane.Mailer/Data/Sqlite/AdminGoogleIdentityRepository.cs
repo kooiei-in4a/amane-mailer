@@ -10,6 +10,13 @@ public enum AdminGoogleLinkResult
     AdminAlreadyLinked,
 }
 
+public enum AdminGoogleUnlinkResult
+{
+    Unlinked,
+    UserNotFound,
+    MappingNotFound,
+}
+
 /// <summary>
 /// Persists the explicit Google issuer+subject mapping onto an existing admin user.
 /// Overwrite and remapping are never automatic.
@@ -86,6 +93,95 @@ public sealed class AdminGoogleIdentityRepository(SqliteConnectionFactory connec
                 return AdminGoogleLinkResult.IdentityAlreadyLinked;
 
             return AdminGoogleLinkResult.AdminAlreadyLinked;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    public async Task<AdminGoogleUnlinkResult> TryUnlinkByUsernameAsync(
+        string username,
+        DateTimeOffset now,
+        string revokeReason,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+            throw new ArgumentException("Admin username is required.", nameof(username));
+
+        var normalizedUsername = username.Trim();
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            long? adminUserId;
+            await using (var lookup = connection.CreateCommand())
+            {
+                lookup.CommandText = """
+                    SELECT id
+                    FROM admin_users
+                    WHERE username = @Username
+                    LIMIT 1;
+                    """;
+                lookup.Parameters.AddWithValue("@Username", normalizedUsername);
+                var result = await lookup.ExecuteScalarAsync(cancellationToken);
+                adminUserId = result is long id
+                    ? id
+                    : result is null
+                        ? null
+                        : Convert.ToInt64(result, System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            if (adminUserId is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return AdminGoogleUnlinkResult.UserNotFound;
+            }
+
+            await using (var mapping = connection.CreateCommand())
+            {
+                mapping.CommandText = """
+                    SELECT 1
+                    FROM admin_google_identities
+                    WHERE admin_user_id = @AdminUserId
+                    LIMIT 1;
+                    """;
+                mapping.Parameters.AddWithValue("@AdminUserId", adminUserId.Value);
+                if (await mapping.ExecuteScalarAsync(cancellationToken) is null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return AdminGoogleUnlinkResult.MappingNotFound;
+                }
+            }
+
+            await using (var delete = connection.CreateCommand())
+            {
+                delete.CommandText = """
+                    DELETE FROM admin_google_identities
+                    WHERE admin_user_id = @AdminUserId;
+                    """;
+                delete.Parameters.AddWithValue("@AdminUserId", adminUserId.Value);
+                await delete.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var revoke = connection.CreateCommand())
+            {
+                revoke.CommandText = """
+                    UPDATE admin_sessions
+                    SET revoked_at = @RevokedAt,
+                        revoke_reason = @RevokeReason
+                    WHERE actor = @Actor
+                      AND revoked_at IS NULL;
+                    """;
+                revoke.Parameters.AddWithValue("@Actor", normalizedUsername);
+                revoke.Parameters.AddWithValue("@RevokedAt", SqliteTime.ToStorageUtc(now));
+                revoke.Parameters.AddWithValue("@RevokeReason", revokeReason);
+                await revoke.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return AdminGoogleUnlinkResult.Unlinked;
         }
         catch
         {
