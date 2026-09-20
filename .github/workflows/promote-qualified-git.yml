@@ -1,18 +1,18 @@
 name: Promote Qualified Git Source
 
-# Issue #504 control-plane only: merge an exact qualified source through a PR
+# Qualified Git promotion control-plane: merge an exact qualified source through a PR
 # with a dedicated GitHub App, then create an annotated tag on that source SHA.
+# Synthetic Issue #504 rehearsal mode is retired (#795).
 # This workflow never builds or publishes OCI, NuGet, or GitHub Release assets.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Rehearsal uses only release-rehearsal/* and a synthetic tag
+        description: Production release promotion only (rehearsal mode retired)
         required: true
         type: choice
         options:
-          - rehearsal
           - release
       release_version:
         description: Qualified release version (major.minor.patch)
@@ -47,7 +47,7 @@ on:
         required: true
         type: string
       sealed_event_id:
-        description: Exact sealed event ID (32-hex release; 64-hex rehearsal fixture)
+        description: Exact sealed event ID (32-hex)
         required: true
         type: string
       oci_index_digest:
@@ -74,7 +74,7 @@ on:
         required: true
         type: string
       promotion_target_branch:
-        description: main for release; release-rehearsal/* for rehearsal
+        description: Must be main
         required: true
         type: string
       promotion_base_sha:
@@ -86,7 +86,7 @@ on:
         required: true
         type: string
       tag_name:
-        description: v<version> for release; rehearsal/issue-504/* for rehearsal
+        description: Must be v<version>
         required: true
         type: string
       merge_freeze_confirmation:
@@ -134,129 +134,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  rehearsal-fixture:
-    if: inputs.mode == 'rehearsal'
-    name: Build synthetic sealed handoff fixture
-    runs-on: ubuntu-24.04
-    outputs:
-      artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      artifact_name: issue-504-synthetic-qualification-${{ github.run_id }}
-      workflow_run_id: ${{ github.run_id }}
-      workflow_run_attempt: 1
-      candidate_artifact_id: ${{ steps.upload.outputs.artifact-id }}
-      candidate_artifact_name: issue-504-synthetic-qualification-${{ github.run_id }}
-      candidate_artifact_run_id: ${{ github.run_id }}
-    steps:
-      - name: Create synthetic qualification handoff
-        shell: bash
-        env:
-          RELEASE_VERSION: ${{ inputs.release_version }}
-          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
-          RELEASE_BRANCH: ${{ inputs.release_branch }}
-          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
-          CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
-          OCI_INDEX_DIGEST: ${{ inputs.oci_index_digest }}
-          CANDIDATE_ID: ${{ inputs.candidate_id }}
-          BINDING_ID: ${{ inputs.binding_id }}
-          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
-          SEALED_EVENT_ID: ${{ inputs.sealed_event_id }}
-          MACHINE_VERDICT: ${{ inputs.machine_verdict }}
-          HUMAN_DECISION: ${{ inputs.human_decision }}
-          SYNTHETIC_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -Eeuo pipefail
-          mkdir -p fixture/decision fixture/run-status-events
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          identity = {
-              "candidateId": os.environ["CANDIDATE_ID"],
-              "candidateRunId": int(os.environ["CANDIDATE_RUN_ID"]),
-              "candidateAttempt": int(os.environ["CANDIDATE_ATTEMPT"]),
-              "bindingId": os.environ["BINDING_ID"],
-              "qualificationRunId": os.environ["QUALIFICATION_RUN_ID"],
-              "releaseCommitSha": os.environ["RELEASE_COMMIT_SHA"],
-              "releaseVersion": os.environ["RELEASE_VERSION"],
-          }
-          candidate_provenance = {
-              "schemaVersion": 1,
-              "sourceCommitSha": os.environ["RELEASE_COMMIT_SHA"],
-              "releaseVersion": os.environ["RELEASE_VERSION"],
-              "workflowRunId": os.environ["CANDIDATE_RUN_ID"],
-              "workflowRunAttempt": os.environ["CANDIDATE_ATTEMPT"],
-              "workflowRef": "kooiei-in4a/amane-mailer/.github/workflows/generate-setup-release-candidate.yml@refs/heads/" + os.environ["RELEASE_BRANCH"],
-              "ociIndexDigest": os.environ["OCI_INDEX_DIGEST"],
-          }
-          image_identity = {
-              "imageDigest": os.environ["OCI_INDEX_DIGEST"],
-              "sourceCommitSha": os.environ["RELEASE_COMMIT_SHA"],
-              "mailerVersion": os.environ["RELEASE_VERSION"],
-          }
-          qualification_producer = {
-              "repository": "kooiei-in4a/amane-mailer",
-              "workflowPath": ".github/workflows/promote-qualified-git.yml",
-              "workflowId": 1,
-              "event": "workflow_dispatch",
-              "headBranch": "main",
-              "headSha": os.environ["RELEASE_COMMIT_SHA"],
-              "runId": int(os.environ["SYNTHETIC_RUN_ID"]),
-              "runAttempt": 1,
-          }
-          documents = {
-              Path("fixture/binding.json"): identity,
-              Path("fixture/decision/go-no-go.json"): {
-                  **identity,
-                  "machineVerdict": os.environ["MACHINE_VERDICT"],
-                  "humanDecision": os.environ["HUMAN_DECISION"],
-                  "runSealed": True,
-              },
-              Path("fixture/run-status-events/sealed.json"): {
-                  **identity,
-                  "sealedEventId": os.environ["SEALED_EVENT_ID"],
-                  "status": "sealed",
-                  "runStatusEventSequence": 1,
-              },
-              Path("fixture/candidate-provenance.json"): candidate_provenance,
-              Path("fixture/image-identity.json"): image_identity,
-              Path("fixture/qualification-producer.json"): qualification_producer,
-          }
-          for path, document in documents.items():
-              path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          PY
-
-      - name: Upload synthetic qualification handoff
-        id: upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: issue-504-synthetic-qualification-${{ github.run_id }}
-          path: fixture
-          if-no-files-found: error
-          retention-days: 7
-
   promote:
-    if: >-
-      always() &&
-      (needs.rehearsal-fixture.result == 'success' || needs.rehearsal-fixture.result == 'skipped')
-    needs: rehearsal-fixture
     name: Validate and promote exact source
     runs-on: ubuntu-24.04
     environment: release
     env:
-      QUALIFICATION_WORKFLOW_RUN_ID: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.workflow_run_id || inputs.qualification_workflow_run_id }}
-      QUALIFICATION_WORKFLOW_RUN_ATTEMPT: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.workflow_run_attempt || inputs.qualification_workflow_run_attempt }}
-      QUALIFICATION_ARTIFACT_ID: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.artifact_id || inputs.qualification_artifact_id }}
-      QUALIFICATION_ARTIFACT_NAME: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.artifact_name || inputs.qualification_artifact_name }}
-      CANDIDATE_ARTIFACT_RUN_ID: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.candidate_artifact_run_id || inputs.candidate_run_id }}
-      CANDIDATE_ARTIFACT_ID: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.candidate_artifact_id || inputs.candidate_artifact_id }}
-      CANDIDATE_ARTIFACT_NAME: ${{ inputs.mode == 'rehearsal' && needs.rehearsal-fixture.outputs.candidate_artifact_name || inputs.candidate_artifact_name }}
-      QUALIFICATION_PRODUCER_REPOSITORY: ${{ inputs.mode == 'rehearsal' && github.repository || vars.RELEASE_PROMOTION_QUALIFICATION_REPOSITORY }}
-      QUALIFICATION_PRODUCER_WORKFLOW_ID: ${{ inputs.mode == 'rehearsal' && '1' || vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_ID }}
-      QUALIFICATION_PRODUCER_WORKFLOW_PATH: ${{ inputs.mode == 'rehearsal' && '.github/workflows/promote-qualified-git.yml' || vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_PATH }}
-      QUALIFICATION_PRODUCER_EVENT: ${{ inputs.mode == 'rehearsal' && 'workflow_dispatch' || vars.RELEASE_PROMOTION_QUALIFICATION_EVENT }}
-      QUALIFICATION_PRODUCER_HEAD_BRANCH: ${{ inputs.mode == 'rehearsal' && 'main' || vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_BRANCH }}
-      QUALIFICATION_PRODUCER_HEAD_SHA: ${{ inputs.mode == 'rehearsal' && inputs.release_commit_sha || vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_SHA }}
+      QUALIFICATION_WORKFLOW_RUN_ID: ${{ inputs.qualification_workflow_run_id }}
+      QUALIFICATION_WORKFLOW_RUN_ATTEMPT: ${{ inputs.qualification_workflow_run_attempt }}
+      QUALIFICATION_ARTIFACT_ID: ${{ inputs.qualification_artifact_id }}
+      QUALIFICATION_ARTIFACT_NAME: ${{ inputs.qualification_artifact_name }}
+      CANDIDATE_ARTIFACT_RUN_ID: ${{ inputs.candidate_run_id }}
+      CANDIDATE_ARTIFACT_ID: ${{ inputs.candidate_artifact_id }}
+      CANDIDATE_ARTIFACT_NAME: ${{ inputs.candidate_artifact_name }}
+      QUALIFICATION_PRODUCER_REPOSITORY: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_REPOSITORY }}
+      QUALIFICATION_PRODUCER_WORKFLOW_ID: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_ID }}
+      QUALIFICATION_PRODUCER_WORKFLOW_PATH: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_WORKFLOW_PATH }}
+      QUALIFICATION_PRODUCER_EVENT: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_EVENT }}
+      QUALIFICATION_PRODUCER_HEAD_BRANCH: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_BRANCH }}
+      QUALIFICATION_PRODUCER_HEAD_SHA: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_HEAD_SHA }}
     steps:
       - name: Checkout trusted control plane
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -288,9 +183,7 @@ jobs:
           APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           APP_SLUG: ${{ vars.RELEASE_PROMOTION_APP_SLUG }}
           MAIN_RULESET_ID: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_ID }}
-          REHEARSAL_RULESET_ID: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_ID }}
           MAIN_FINGERPRINT: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_FINGERPRINT }}
-          REHEARSAL_FINGERPRINT: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_FINGERPRINT }}
           POLICY_FINGERPRINT: ${{ vars.RELEASE_PROMOTION_POLICY_FINGERPRINT }}
           PRIVATE_KEY_PRESENT: ${{ secrets.RELEASE_PROMOTION_APP_PRIVATE_KEY != '' }}
         run: |
@@ -307,27 +200,20 @@ jobs:
             || { echo "::error::OCI index digest is invalid"; exit 1; }
           [[ "${FREEZE_CONFIRMATION}" == "CONFIRM_TARGET_MERGE_FREEZE" ]] \
             || { echo "::error::maintainer merge-freeze confirmation is required"; exit 1; }
-          [[ "${MAIN_RULESET_ID}" == "18124512" && "${REHEARSAL_RULESET_ID}" =~ ^[1-9][0-9]*$ ]] \
+          [[ "${MODE}" == "release" ]] \
+            || { echo "::error::only mode=release is supported; rehearsal mode is retired"; exit 1; }
+          [[ "${MAIN_RULESET_ID}" == "18124512" ]] \
             || { echo "::error::ruleset authority configuration is invalid"; exit 1; }
           [[ "${POLICY_FINGERPRINT}" =~ ^[0-9a-f]{64}$ ]] \
             || { echo "::error::ruleset policy fingerprint is invalid"; exit 1; }
           [[ "${PRIVATE_KEY_PRESENT}" == "true" ]] \
             || { echo "::error::release promotion App credential is missing"; exit 1; }
-          if [[ "${MODE}" == "rehearsal" ]]; then
-            [[ "${TARGET_BRANCH}" == "release-rehearsal/504-main-equivalent" ]] \
-              || { echo "::error::rehearsal target branch is invalid"; exit 1; }
-            [[ "${TAG_NAME}" =~ ^rehearsal/issue-504/[A-Za-z0-9._-]+$ ]] \
-              || { echo "::error::rehearsal tag is invalid"; exit 1; }
-            [[ "${EXPECTED_FINGERPRINT}" == "${REHEARSAL_FINGERPRINT}" ]] \
-              || { echo "::error::expected rehearsal ruleset fingerprint mismatch"; exit 1; }
-          else
-            [[ "${TARGET_BRANCH}" == "main" ]] \
-              || { echo "::error::release target branch must be main"; exit 1; }
-            [[ "${EXPECTED_FINGERPRINT}" == "${MAIN_FINGERPRINT}" ]] \
-              || { echo "::error::expected main ruleset fingerprint mismatch"; exit 1; }
-            [[ "${TAG_NAME}" == "v${{ inputs.release_version }}" ]] \
-              || { echo "::error::release tag does not match release version"; exit 1; }
-          fi
+          [[ "${TARGET_BRANCH}" == "main" ]] \
+            || { echo "::error::release target branch must be main"; exit 1; }
+          [[ "${EXPECTED_FINGERPRINT}" == "${MAIN_FINGERPRINT}" ]] \
+            || { echo "::error::expected main ruleset fingerprint mismatch"; exit 1; }
+          [[ "${TAG_NAME}" == "v${{ inputs.release_version }}" ]] \
+            || { echo "::error::release tag does not match release version"; exit 1; }
           [[ "${QUALIFICATION_WORKFLOW_RUN_ID}" =~ ^[1-9][0-9]*$ ]] \
             || { echo "::error::qualification workflow run ID is invalid"; exit 1; }
           [[ "${QUALIFICATION_RUN_ATTEMPT}" =~ ^[1-9][0-9]*$ ]] \
@@ -336,34 +222,31 @@ jobs:
             || { echo "::error::qualification artifact identity is invalid"; exit 1; }
           [[ "${CANDIDATE_ARTIFACT_ID}" =~ ^[1-9][0-9]*$ && -n "${CANDIDATE_ARTIFACT_NAME}" ]] \
             || { echo "::error::candidate artifact identity is invalid"; exit 1; }
-          if [[ "${MODE}" == "release" ]]; then
-            [[ -n "${QUALIFICATION_PRODUCER_REPOSITORY}" && "${QUALIFICATION_PRODUCER_WORKFLOW_PATH}" == .github/workflows/* ]] \
-              || { echo "::error::trusted qualification producer configuration is missing"; exit 1; }
-            [[ "${QUALIFICATION_PRODUCER_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ && "${QUALIFICATION_PRODUCER_EVENT}" == workflow_dispatch ]] \
-              || { echo "::error::qualification producer workflow identity is invalid"; exit 1; }
-            # The qualified candidate may be produced from release/* or
-            # release-prep/*. The sealed documents are transported separately
-            # from a release-specific immutable handoff branch and protected
-            # producer SHA; never accept an arbitrary producer branch.
-            release_ref="${RELEASE_BRANCH#*/}"
-            [[ "${release_ref%%-rc*}" == "v${RELEASE_VERSION}" ]] \
-              || { echo "::error::release branch/version mismatch"; exit 1; }
-            handoff_suffix="${release_ref#v${RELEASE_VERSION}}"
-            expected_handoff_branch="qualification-handoff/v${RELEASE_VERSION}"
-            if [[ "${handoff_suffix}" != "-rc" ]]; then
-              expected_handoff_branch+="${handoff_suffix}"
-            fi
-            [[ "${QUALIFICATION_PRODUCER_HEAD_BRANCH}" == "${expected_handoff_branch}" ]] \
-              || { echo "::error::qualification producer handoff branch is invalid"; exit 1; }
-            [[ "${QUALIFICATION_PRODUCER_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] \
-              || { echo "::error::qualification producer handoff SHA is invalid"; exit 1; }
+          [[ -n "${QUALIFICATION_PRODUCER_REPOSITORY}" && "${QUALIFICATION_PRODUCER_WORKFLOW_PATH}" == .github/workflows/* ]] \
+            || { echo "::error::trusted qualification producer configuration is missing"; exit 1; }
+          [[ "${QUALIFICATION_PRODUCER_WORKFLOW_ID}" =~ ^[1-9][0-9]*$ && "${QUALIFICATION_PRODUCER_EVENT}" == workflow_dispatch ]] \
+            || { echo "::error::qualification producer workflow identity is invalid"; exit 1; }
+          # The qualified candidate may be produced from release/* or
+          # release-prep/*. The sealed documents are transported separately
+          # from a release-specific immutable handoff branch and protected
+          # producer SHA; never accept an arbitrary producer branch.
+          release_ref="${RELEASE_BRANCH#*/}"
+          [[ "${release_ref%%-rc*}" == "v${RELEASE_VERSION}" ]] \
+            || { echo "::error::release branch/version mismatch"; exit 1; }
+          handoff_suffix="${release_ref#v${RELEASE_VERSION}}"
+          expected_handoff_branch="qualification-handoff/v${RELEASE_VERSION}"
+          if [[ "${handoff_suffix}" != "-rc" ]]; then
+            expected_handoff_branch+="${handoff_suffix}"
           fi
+          [[ "${QUALIFICATION_PRODUCER_HEAD_BRANCH}" == "${expected_handoff_branch}" ]] \
+            || { echo "::error::qualification producer handoff branch is invalid"; exit 1; }
+          [[ "${QUALIFICATION_PRODUCER_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::qualification producer handoff SHA is invalid"; exit 1; }
 
       - name: Run validator positive and negative fixtures
         run: python3 scripts/validate-qualified-git-promotion-self-test.py
 
       - name: Validate candidate producer workflow identity
-        if: inputs.mode == 'release'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -379,7 +262,6 @@ jobs:
         run: bash scripts/validate-candidate-oci-run.sh
 
       - name: Validate qualification artifact identity
-        if: inputs.mode == 'release'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -407,36 +289,35 @@ jobs:
           run = json.loads(os.environ["RUN_JSON"])
           if run.get("status") != "completed" or run.get("conclusion") != "success":
               raise SystemExit("qualificationWorkflowRun: not completed successfully")
-          if os.environ["MODE"] == "release":
-              expected = {
-                  "id": int(os.environ["QUALIFICATION_WORKFLOW_RUN_ID"]),
-                  "run_attempt": int(os.environ["QUALIFICATION_RUN_ATTEMPT"]),
-                  "workflow_id": int(os.environ["QUALIFICATION_PRODUCER_WORKFLOW_ID"]),
-                  "path": os.environ["QUALIFICATION_PRODUCER_WORKFLOW_PATH"],
-                  "event": os.environ["QUALIFICATION_PRODUCER_EVENT"],
-                  "head_branch": os.environ["QUALIFICATION_PRODUCER_HEAD_BRANCH"],
-                  "head_sha": os.environ["QUALIFICATION_PRODUCER_HEAD_SHA"],
-              }
-              for key, value in expected.items():
-                  if run.get(key) != value:
-                      raise SystemExit(f"qualificationProducer.{key}: mismatch")
-              repository = (run.get("repository") or {}).get("full_name")
-              if repository != os.environ["QUALIFICATION_REPOSITORY"]:
-                  raise SystemExit("qualificationProducer.repository: mismatch")
-              expected_producer = {
-                  "repository": repository,
-                  "workflowPath": expected["path"],
-                  "workflowId": expected["workflow_id"],
-                  "event": expected["event"],
-                  "headBranch": expected["head_branch"],
-                  "headSha": expected["head_sha"],
-                  "runId": expected["id"],
-                  "runAttempt": expected["run_attempt"],
-              }
-              Path(os.environ["EXPECTED_PRODUCER_IDENTITY"]).write_text(
-                  json.dumps(expected_producer, indent=2, sort_keys=True) + "\n",
-                  encoding="utf-8",
-              )
+          expected = {
+              "id": int(os.environ["QUALIFICATION_WORKFLOW_RUN_ID"]),
+              "run_attempt": int(os.environ["QUALIFICATION_RUN_ATTEMPT"]),
+              "workflow_id": int(os.environ["QUALIFICATION_PRODUCER_WORKFLOW_ID"]),
+              "path": os.environ["QUALIFICATION_PRODUCER_WORKFLOW_PATH"],
+              "event": os.environ["QUALIFICATION_PRODUCER_EVENT"],
+              "head_branch": os.environ["QUALIFICATION_PRODUCER_HEAD_BRANCH"],
+              "head_sha": os.environ["QUALIFICATION_PRODUCER_HEAD_SHA"],
+          }
+          for key, value in expected.items():
+              if run.get(key) != value:
+                  raise SystemExit(f"qualificationProducer.{key}: mismatch")
+          repository = (run.get("repository") or {}).get("full_name")
+          if repository != os.environ["QUALIFICATION_REPOSITORY"]:
+              raise SystemExit("qualificationProducer.repository: mismatch")
+          expected_producer = {
+              "repository": repository,
+              "workflowPath": expected["path"],
+              "workflowId": expected["workflow_id"],
+              "event": expected["event"],
+              "headBranch": expected["head_branch"],
+              "headSha": expected["head_sha"],
+              "runId": expected["id"],
+              "runAttempt": expected["run_attempt"],
+          }
+          Path(os.environ["EXPECTED_PRODUCER_IDENTITY"]).write_text(
+              json.dumps(expected_producer, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
           artifacts = json.loads(os.environ["ARTIFACTS_JSON"]).get("artifacts") or []
           matches = [item for item in artifacts if item.get("name") == os.environ["QUALIFICATION_ARTIFACT_NAME"]]
           if len(matches) != 1:
@@ -453,7 +334,7 @@ jobs:
           merge-multiple: true
           path: artifacts/qualification
           github-token: ${{ github.token }}
-          repository: ${{ inputs.mode == 'rehearsal' && github.repository || vars.RELEASE_PROMOTION_QUALIFICATION_REPOSITORY }}
+          repository: ${{ vars.RELEASE_PROMOTION_QUALIFICATION_REPOSITORY }}
           run-id: ${{ env.QUALIFICATION_WORKFLOW_RUN_ID }}
 
       - name: Download immutable candidate handoff
@@ -466,7 +347,6 @@ jobs:
           run-id: ${{ env.CANDIDATE_ARTIFACT_RUN_ID }}
 
       - name: Validate qualification producer and prepare sealed-only view
-        if: inputs.mode == 'release'
         id: qualification_view
         shell: bash
         env:
@@ -482,7 +362,6 @@ jobs:
           echo "path=${sealed_root}" >> "${GITHUB_OUTPUT}"
 
       - name: Validate prepared qualification with strict sealed validator
-        if: inputs.mode == 'release'
         shell: bash
         env:
           QUALIFICATION_ROOT: ${{ steps.qualification_view.outputs.path }}
@@ -552,7 +431,6 @@ jobs:
           FREEZE_CONFIRMATION: ${{ inputs.merge_freeze_confirmation }}
           APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           MAIN_RULESET_ID: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_ID }}
-          REHEARSAL_RULESET_ID: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_ID }}
           EXPECTED_MAIN_FINGERPRINT: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_FINGERPRINT }}
           EXPECTED_POLICY_FINGERPRINT: ${{ vars.RELEASE_PROMOTION_POLICY_FINGERPRINT }}
           EXPECTED_RC_FORK_BASE_SHA: ${{ vars.RELEASE_PROMOTION_RC_FORK_BASE_SHA }}
@@ -560,13 +438,12 @@ jobs:
           set -Eeuo pipefail
           mkdir -p artifacts/git-promotion-state
           state=artifacts/git-promotion-state
-          if [[ "${MODE}" == "release" ]]; then
-            [[ "${EXPECTED_RC_FORK_BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] \
-              || { echo "::error::expected RC fork base SHA is missing or invalid"; exit 1; }
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" > "${state}/rc-ref-pre-delta.json"
-            gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TARGET_BRANCH}" > "${state}/base-ref-pre-delta.json"
-            gh api "repos/${GITHUB_REPOSITORY}/compare/${RELEASE_COMMIT_SHA}...${PROMOTION_BASE_SHA}" > "${state}/source-base-compare.json"
-            merge_base_sha="$(python3 - "${state}/source-base-compare.json" <<'PY'
+          [[ "${EXPECTED_RC_FORK_BASE_SHA}" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::expected RC fork base SHA is missing or invalid"; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${RELEASE_BRANCH}" > "${state}/rc-ref-pre-delta.json"
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${TARGET_BRANCH}" > "${state}/base-ref-pre-delta.json"
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${RELEASE_COMMIT_SHA}...${PROMOTION_BASE_SHA}" > "${state}/source-base-compare.json"
+          merge_base_sha="$(python3 - "${state}/source-base-compare.json" <<'PY'
           import json
           import sys
           from pathlib import Path
@@ -574,16 +451,16 @@ jobs:
           document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           value = (document.get("merge_base_commit") or {}).get("sha")
           if not isinstance(value, str):
-              raise SystemExit("merge-base is unavailable")
+            raise SystemExit("merge-base is unavailable")
           print(value)
           PY
-            )"
-            [[ "${merge_base_sha}" == "${EXPECTED_RC_FORK_BASE_SHA}" ]] \
-              || { echo "::error::RC fork base SHA does not match configured authority"; exit 1; }
-            gh api "repos/${GITHUB_REPOSITORY}/compare/${merge_base_sha}...${PROMOTION_BASE_SHA}" > "${state}/main-delta-compare.json"
-            gh api "repos/${GITHUB_REPOSITORY}/contents/global.json?ref=${PROMOTION_BASE_SHA}" > "${state}/global-json-promotion-base.json"
-            gh api "repos/${GITHUB_REPOSITORY}/contents/global.json?ref=${RELEASE_COMMIT_SHA}" > "${state}/global-json-rc-source.json"
-            STATE="${state}" PROMOTION_BASE_SHA="${PROMOTION_BASE_SHA}" EXPECTED_RC_FORK_BASE_SHA="${EXPECTED_RC_FORK_BASE_SHA}" python3 - <<'PY'
+          )"
+          [[ "${merge_base_sha}" == "${EXPECTED_RC_FORK_BASE_SHA}" ]] \
+            || { echo "::error::RC fork base SHA does not match configured authority"; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/compare/${merge_base_sha}...${PROMOTION_BASE_SHA}" > "${state}/main-delta-compare.json"
+          gh api "repos/${GITHUB_REPOSITORY}/contents/global.json?ref=${PROMOTION_BASE_SHA}" > "${state}/global-json-promotion-base.json"
+          gh api "repos/${GITHUB_REPOSITORY}/contents/global.json?ref=${RELEASE_COMMIT_SHA}" > "${state}/global-json-rc-source.json"
+          STATE="${state}" PROMOTION_BASE_SHA="${PROMOTION_BASE_SHA}" EXPECTED_RC_FORK_BASE_SHA="${EXPECTED_RC_FORK_BASE_SHA}" python3 - <<'PY'
           import base64
           import json
           import os
@@ -592,79 +469,74 @@ jobs:
 
           state = Path(os.environ["STATE"])
           allowed = {
-              ".github/workflows/promote-qualified-git.yml",
-              ".github/workflows/publish-sealed-qualification-handoff.yml",
-              "scripts/validate-qualified-git-promotion.py",
-              "scripts/validate-qualified-git-promotion-self-test.py",
-              "docs/ops/qualified-git-promotion.md",
-              "global.json",
+            ".github/workflows/promote-qualified-git.yml",
+            ".github/workflows/publish-sealed-qualification-handoff.yml",
+            "scripts/validate-qualified-git-promotion.py",
+            "scripts/validate-qualified-git-promotion-self-test.py",
+            "docs/ops/qualified-git-promotion.md",
+            "global.json",
           }
 
           def load(name: str) -> dict:
-              value = json.loads((state / name).read_text(encoding="utf-8"))
-              if not isinstance(value, dict):
-                  raise SystemExit(f"{name}: object is required")
-              return value
+            value = json.loads((state / name).read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise SystemExit(f"{name}: object is required")
+            return value
 
           base_ref = load("base-ref-pre-delta.json")
           if (base_ref.get("object") or {}).get("sha") != os.environ["PROMOTION_BASE_SHA"]:
-              raise SystemExit("promotionBaseSha: live target tip drifted before capture")
+            raise SystemExit("promotionBaseSha: live target tip drifted before capture")
           rc_ref = load("rc-ref-pre-delta.json")
           if (rc_ref.get("object") or {}).get("sha") != os.environ.get("RELEASE_COMMIT_SHA"):
-              # RELEASE_COMMIT_SHA is intentionally checked by the shell below;
-              # keep this branch fail-closed if the environment is changed.
-              raise SystemExit("releaseBranch.tip: drift")
+            # RELEASE_COMMIT_SHA is intentionally checked by the shell below;
+            # keep this branch fail-closed if the environment is changed.
+            raise SystemExit("releaseBranch.tip: drift")
 
           compare = load("main-delta-compare.json")
           if compare.get("status") not in {"ahead", "identical"}:
-              raise SystemExit("prePromotionMainDelta: comparison is not forward-only")
+            raise SystemExit("prePromotionMainDelta: comparison is not forward-only")
           entries = compare.get("files")
           if not isinstance(entries, list):
-              raise SystemExit("prePromotionMainDelta: file list is unavailable")
+            raise SystemExit("prePromotionMainDelta: file list is unavailable")
           paths = []
           for entry in entries:
-              if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str):
-                  raise SystemExit("prePromotionMainDelta: malformed file entry")
-              path = entry["filename"]
-              pure = PurePosixPath(path)
-              if not path or pure.is_absolute() or "\\" in path or ".." in pure.parts:
-                  raise SystemExit("prePromotionMainDelta: unsafe path")
-              paths.append(path)
+            if not isinstance(entry, dict) or not isinstance(entry.get("filename"), str):
+                raise SystemExit("prePromotionMainDelta: malformed file entry")
+            path = entry["filename"]
+            pure = PurePosixPath(path)
+            if not path or pure.is_absolute() or "\\" in path or ".." in pure.parts:
+                raise SystemExit("prePromotionMainDelta: unsafe path")
+            paths.append(path)
           if len(paths) != len(set(paths)):
-              raise SystemExit("prePromotionMainDelta: duplicate path")
+            raise SystemExit("prePromotionMainDelta: duplicate path")
           unexpected = sorted(set(paths) - allowed)
           if unexpected:
-              raise SystemExit("prePromotionMainDelta: unexpected path " + ",".join(unexpected))
+            raise SystemExit("prePromotionMainDelta: unexpected path " + ",".join(unexpected))
 
           def content(name: str) -> bytes:
-              document = load(name)
-              encoded = document.get("content")
-              if not isinstance(encoded, str):
-                  raise SystemExit(f"{name}: content is unavailable")
-              try:
-                  return base64.b64decode("".join(encoded.splitlines()), validate=True)
-              except ValueError as exc:
-                  raise SystemExit(f"{name}: invalid base64 content") from exc
+            document = load(name)
+            encoded = document.get("content")
+            if not isinstance(encoded, str):
+                raise SystemExit(f"{name}: content is unavailable")
+            try:
+                return base64.b64decode("".join(encoded.splitlines()), validate=True)
+            except ValueError as exc:
+                raise SystemExit(f"{name}: invalid base64 content") from exc
 
           global_matches = content("global-json-promotion-base.json") == content("global-json-rc-source.json")
           if not global_matches:
-              raise SystemExit("global.json: promotion base bytes differ from RC13 source")
+            raise SystemExit("global.json: promotion base bytes differ from RC13 source")
 
           result = {
-              "expectedRcForkBaseSha": os.environ["EXPECTED_RC_FORK_BASE_SHA"],
-              "rcForkBaseSha": (load("source-base-compare.json").get("merge_base_commit") or {}).get("sha"),
-              "prePromotionMainDeltaPaths": sorted(paths),
-              "prePromotionMainDeltaPolicy": "RELEASE_CONTROL_PLANE_ONLY",
-              "promotionBaseSha": os.environ["PROMOTION_BASE_SHA"],
-              "globalJsonMatchesRc13": global_matches,
+            "expectedRcForkBaseSha": os.environ["EXPECTED_RC_FORK_BASE_SHA"],
+            "rcForkBaseSha": (load("source-base-compare.json").get("merge_base_commit") or {}).get("sha"),
+            "prePromotionMainDeltaPaths": sorted(paths),
+            "prePromotionMainDeltaPolicy": "RELEASE_CONTROL_PLANE_ONLY",
+            "promotionBaseSha": os.environ["PROMOTION_BASE_SHA"],
+            "globalJsonMatchesRc13": global_matches,
           }
           (state / "pre-promotion-main-delta.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          PY
-          else
-            printf '%s\n' '{"prePromotionMainDeltaPolicy":"REHEARSAL_NOT_APPLICABLE","prePromotionMainDeltaPaths":[]}' > "${state}/pre-promotion-main-delta.json"
-          fi
-          target_ruleset_id="${MAIN_RULESET_ID}"
-          if [[ "${MODE}" == "rehearsal" ]]; then target_ruleset_id="${REHEARSAL_RULESET_ID}"; fi
+          PY          target_ruleset_id="${MAIN_RULESET_ID}"
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${MAIN_RULESET_ID}" > "${state}/main-ruleset.json"
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" > "${state}/main-effective-rules.json"
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset.json"
@@ -826,7 +698,7 @@ jobs:
         run: >-
           python3 scripts/validate-qualified-git-promotion.py
           --manifest artifacts/git-promotion-state/promotion-manifest.json
-          --qualification-root ${{ inputs.mode == 'release' && steps.qualification_view.outputs.path || 'artifacts/qualification' }}
+          --qualification-root ${{ steps.qualification_view.outputs.path }}
           --candidate-root artifacts/candidate
 
       - name: Recheck ruleset immediately before mutation
@@ -839,11 +711,9 @@ jobs:
           EXPECTED_FINGERPRINT: ${{ inputs.expected_ruleset_fingerprint }}
           APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           MAIN_RULESET_ID: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_ID }}
-          REHEARSAL_RULESET_ID: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_ID }}
         run: |
           set -Eeuo pipefail
           ruleset_id="${MAIN_RULESET_ID}"
-          if [[ "${MODE}" == "rehearsal" ]]; then ruleset_id="${REHEARSAL_RULESET_ID}"; fi
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-pre-merge.json
           GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-app-pre-merge.json
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > artifacts/git-promotion-state/target-effective-rules-pre-merge.json
@@ -1005,8 +875,7 @@ jobs:
           MODE: ${{ inputs.mode }}
         run: |
           set -Eeuo pipefail
-          tag_message="Issue #504 rehearsal tag for ${RELEASE_VERSION}"
-          if [[ "${MODE}" == "release" ]]; then tag_message="Amane Mailer v${RELEASE_VERSION}"; fi
+          tag_message="Amane Mailer v${RELEASE_VERSION}"
           gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags" -f tag="${TAG_NAME}" -f message="${tag_message}" -f object="${RELEASE_COMMIT_SHA}" -f type=commit > artifacts/git-promotion-state/tag-object-create.json
           tag_object_sha="$(python3 -c 'import json; print(json.load(open("artifacts/git-promotion-state/tag-object-create.json"))["sha"])')"
           gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${TAG_NAME}" -f sha="${tag_object_sha}" > artifacts/git-promotion-state/tag-ref-create.json
@@ -1041,16 +910,6 @@ jobs:
               raise SystemExit("promotionTarget.tip: moved during tag verification")
           PY
 
-      - name: Remove rehearsal tag after verification
-        if: inputs.mode == 'rehearsal'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          TAG_NAME: ${{ inputs.tag_name }}
-        run: |
-          set -Eeuo pipefail
-          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG_NAME}"
-
       - name: Verify ruleset fingerprint after promotion
         shell: bash
         env:
@@ -1061,11 +920,9 @@ jobs:
           EXPECTED_FINGERPRINT: ${{ inputs.expected_ruleset_fingerprint }}
           APP_ID: ${{ vars.RELEASE_PROMOTION_APP_ID }}
           MAIN_RULESET_ID: ${{ vars.RELEASE_PROMOTION_MAIN_RULESET_ID }}
-          REHEARSAL_RULESET_ID: ${{ vars.RELEASE_PROMOTION_REHEARSAL_RULESET_ID }}
         run: |
           set -Eeuo pipefail
           ruleset_id="${MAIN_RULESET_ID}"
-          if [[ "${MODE}" == "rehearsal" ]]; then ruleset_id="${REHEARSAL_RULESET_ID}"; fi
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-after.json
           GH_TOKEN="${RELEASE_APP_TOKEN}" gh api "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" > artifacts/git-promotion-state/target-ruleset-app-after.json
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${TARGET_BRANCH}" > artifacts/git-promotion-state/target-effective-rules-after.json
@@ -1126,7 +983,7 @@ jobs:
               "tagName": os.environ["TAG_NAME"],
               "annotatedTagObjectSha": os.environ["TAG_OBJECT_SHA"],
               "tagTargetCheck": "PASS",
-              "rehearsalTagRemoved": os.environ["MODE"] == "rehearsal",
+              "rehearsalTagRemoved": False,
               "normalActorBypass": "never",
               "rulesetFingerprintBefore": before["fingerprint"],
               "rulesetFingerprintAfter": after["fingerprint"],

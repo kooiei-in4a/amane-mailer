@@ -39,7 +39,7 @@ checks の一時 OFF、ruleset の disable / restore、承認済みfingerprint�
 ## 一回限りの恒久設定
 
 設定変更自体は #504 導入時の一回だけです。設定完了後の fingerprint を baseline とし、
-rehearsal と release 中は main / rehearsal ruleset の値を一切変更しません。
+release 中は main ruleset の値を一切変更しません。
 
 1. personal account 所有の private GitHub App を上記名称で作成する。Webhook は無効、
    install scope は `Only on this account`、repository は `amane-mailer` だけにする。
@@ -50,22 +50,15 @@ rehearsal と release 中は main / rehearsal ruleset の値を一切変更し�
    - `RELEASE_PROMOTION_APP_ID`
    - `RELEASE_PROMOTION_APP_SLUG`
    - `RELEASE_PROMOTION_MAIN_RULESET_ID` (`18124512`)
-   - `RELEASE_PROMOTION_REHEARSAL_RULESET_ID`
    - `RELEASE_PROMOTION_MAIN_RULESET_FINGERPRINT`
-   - `RELEASE_PROMOTION_REHEARSAL_RULESET_FINGERPRINT`
    - `RELEASE_PROMOTION_POLICY_FINGERPRINT`
 
 4. `main protection` の既存 rules / conditions / enforcement を保持したまま、bypass listへ
    Appを `pull_request` modeで1件追加する。signature enforcementの有効/無効を含むexact ruleset
    policy、8 required checks、PR rule、non-fast-forward、deletion ruleは、別途承認したfingerprint
    authorityと一致させる。
-5. `release-rehearsal/**` を対象とする active branch ruleset を作る。rules、enforcement、
-   bypass actorは main と同一にし、ref conditionだけを rehearsal namespaceへ変える。
-6. validation branch `release-rehearsal/504-main-equivalent` を main baselineから作る。
-   default CodeQL setupはprotected branch向けPRを解析し、CI workflowはこのnamespaceを
-   main向けrelease-gateと同じ条件で処理する。
-7. 両rulesetをAPIから再取得し、次のscriptで設定fingerprintとpolicy fingerprintを計算する。
-   `policyFingerprint`がmainとrehearsalで一致しない場合はrehearsalを開始しない。
+5. 導入時に main ruleset を API から再取得し、次の script で設定 fingerprint と policy
+   fingerprint を計算して baseline とする。
 
 ```bash
 python3 scripts/ruleset-fingerprint.py \
@@ -77,6 +70,19 @@ python3 scripts/ruleset-fingerprint.py \
 fingerprint対象はruleset ID / name / target / source / enforcement / ref conditions / rules /
 bypass actors / effective rulesです。timestamp、node ID、URLは除外します。App actor ID、
 `pull_request` bypass mode、signature ruleの有無、required checksは意味のある入力として含まれます。
+
+Issue #504 validation historically used a main-equivalent rehearsal branch
+`release-rehearsal/504-main-equivalent` and a dedicated rehearsal ruleset. That
+synthetic `mode=rehearsal` path is retired (#795). Historical evidence retention
+uses immutable annotated tags (not release tags and not current release authority):
+
+- `evidence/rehearsal/issue-504-main-equivalent`
+- `evidence/qualification/v1.3.0`
+- `evidence/qualification/v1.3.0-rc13`
+
+These tags preserve audit history only. Future releases continue to create fresh
+`qualification-handoff/v<version>` / `qualification-handoff/v<version>-rcN` handoff
+branches; persistent historical evidence branches are not required after migration.
 
 ## Promotion preflight
 
@@ -141,40 +147,21 @@ approvalではありません。workflowの`release` environment承認が別のe
   ruleset / policy fingerprintが変わるため、別途承認したauthorityを更新しない限りpromotionはFAILする。
 - bypass listが専用App 1件 / `Integration` / `pull_request`だけである。
   これにより通常user、repository role、GitHub Actions Appはbypass actorにならない。
-- main / rehearsalのpolicy fingerprintが一致し、target config fingerprintが事前承認値と一致する。
+- target config fingerprintが事前承認値と一致し、main policy fingerprintと整合する。
 - repositoryでmerge commitが許可され、選択methodが`merge`である。
-- release modeではbase=`main`、tag=`v<releaseVersion>`。rehearsal modeではbranch / tagが
-  専用namespaceに限定される。
+- release modeではbase=`main`、tag=`v<releaseVersion>`。`mode` inputは互換のため残すが、
+  有効な選択肢は`release`だけであり、`rehearsal`はfail-closedで拒否する。
 
 unapproved、missing、duplicate、drift、mismatchはすべて非ゼロ終了です。validatorはfield名と
 分類だけをerrorへ出し、入力JSON全体、token、private keyを出力しません。
 
-## Main-equivalent rehearsal
+## Historical main-equivalent rehearsal (retired)
 
-production `main`、`release/v*`、`v*` tagは変更しません。
-
-1. `release-rehearsal/504-main-equivalent`のtipと、main/rehearsal両rulesetのbaseline
-   fingerprintを記録する。
-2. immutable RC branchからvalidation branchへのPRを作る。PR headがexact
-   `releaseCommitSha`であることを確認する。source branchへcommit、merge、rebase、
-   force-pushしない。
-3. required CI / CodeQL checksがすべてgreenになるまで待つ。
-4. 下記negative fixtureを先に実行する。期待FAILが1件でもPASSした場合はSTOPする。
-5. main上のworkflowを`mode=rehearsal`でdispatchする。synthetic qualification handoffは
-   workflow内でartifact化され、production evidence / branchを変更しない。
-6. `release` environmentで、対象がrehearsal PR / branch / tag namespaceであることを確認して
-   承認する。
-7. workflow evidenceで次をmachine-checkする。
-
-   - merge parent 0 = rehearsal直前base SHA
-   - merge parent 1 = exact `releaseCommitSha`
-   - RC tip = exact `releaseCommitSha`（不変）
-   - synthetic annotated tag target = exact `releaseCommitSha`
-   - ruleset fingerprint before = pre-merge = after
-   - normal actor bypass = `never`
-
-rehearsal tagは検証後workflowが削除します。validation branch、ruleset、PRは将来rehearsalと
-監査のため保持します。削除する場合もrehearsal専用resourceだけを対象にします。
+Issue #504 validation historically used `release-rehearsal/504-main-equivalent` and
+`mode=rehearsal` with a synthetic qualification handoff. That path is retired (#795).
+Do not dispatch `mode=rehearsal`. Preserve the historical tip via the immutable evidence
+tag `evidence/rehearsal/issue-504-main-equivalent` (historical evidence retention ref only;
+not a release tag; not current release authority).
 
 ## Negative fixtures
 
@@ -281,5 +268,5 @@ production token、private key、input handoff JSON全文、provider / recipient
 
 RC / candidate / binding / qualification / sealの変更、rulesetの一時緩和、normal actor bypass、
 exact head不一致、merge parent不一致、tag target不一致、required negative fixtureの予期しないPASS、
-positive rehearsal失敗、fingerprint drift、GitHub仕様上の安全な実現不能が1件でもあればSTOPします。
+fingerprint drift、GitHub仕様上の安全な実現不能が1件でもあればSTOPします。
 main promotion、production tag、publishを続行しません。
