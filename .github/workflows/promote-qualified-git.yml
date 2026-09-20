@@ -536,7 +536,8 @@ jobs:
             "globalJsonMatchesRc13": global_matches,
           }
           (state / "pre-promotion-main-delta.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-          PY          target_ruleset_id="${MAIN_RULESET_ID}"
+          PY
+          target_ruleset_id="${MAIN_RULESET_ID}"
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${MAIN_RULESET_ID}" > "${state}/main-ruleset.json"
           gh api "repos/${GITHUB_REPOSITORY}/rules/branches/main" > "${state}/main-effective-rules.json"
           gh api "repos/${GITHUB_REPOSITORY}/rulesets/${target_ruleset_id}" > "${state}/target-ruleset.json"

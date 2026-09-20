@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 VALIDATOR = SCRIPT_DIR / "validate-qualified-git-promotion.py"
 PREPARER = SCRIPT_DIR / "prepare-qualification-handoff.py"
 FINGERPRINTER = SCRIPT_DIR / "ruleset-fingerprint.py"
+PROMOTE_WORKFLOW = SCRIPT_DIR.parent / ".github/workflows/promote-qualified-git.yml"
+MALFORMED_PY_HEREDOC_TERMINATOR = re.compile(r"^\s*PY\s+\S")
 QUALIFICATION_FIXTURE_ROOT = SCRIPT_DIR / "fixtures/qualification-handoff/production-shape"
 PRODUCTION_QUALIFICATION = QUALIFICATION_FIXTURE_ROOT / "artifact"
 EXPECTED_PRODUCER = QUALIFICATION_FIXTURE_ROOT / "expected-producer-identity.json"
@@ -191,7 +194,18 @@ def release_manifest(fingerprint: str, policy_fingerprint: str) -> dict[str, obj
     }
 
 
+def assert_promote_workflow_heredoc_terminators() -> None:
+    """Reject `PY <shell tokens>` lines that leave a <<'PY' heredoc unclosed."""
+    text = PROMOTE_WORKFLOW.read_text(encoding="utf-8")
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if MALFORMED_PY_HEREDOC_TERMINATOR.search(line):
+            raise SystemExit(
+                f"malformed PY heredoc terminator in {PROMOTE_WORKFLOW.name}:{lineno}: {line!r}"
+            )
+
+
 def main() -> None:
+    assert_promote_workflow_heredoc_terminators()
     with tempfile.TemporaryDirectory(prefix="qualified-git-promotion-") as temp:
         root = Path(temp)
         candidate = root / "candidate"
@@ -518,6 +532,7 @@ def main() -> None:
             raise SystemExit("ruleset actor change did not change fingerprint")
 
     print("[info] qualified Git promotion validator self-test passed")
+    print("promoteWorkflowHeredocTerminators=PASS")
     print("releaseModePositive=PASS")
     print("productionShapePositive=PASS")
     print("productionNegativeFixtures=PASS")
