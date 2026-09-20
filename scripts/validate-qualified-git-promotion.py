@@ -68,26 +68,6 @@ def require_equal(field: str, actual: Any, expected: Any) -> None:
         fail(field, "mismatch")
 
 
-def source_sha(document: dict[str, Any], field: str) -> str:
-    values = [document.get("releaseCommitSha"), document.get("sourceCommitSha")]
-    values = [value for value in values if value is not None]
-    if not values or any(not isinstance(value, str) for value in values):
-        fail(field, "source commit is required")
-    if len(set(values)) != 1:
-        fail(field, "ambiguous source commit")
-    return values[0]
-
-
-def document_version(document: dict[str, Any]) -> str | None:
-    values = [document.get("releaseVersion"), document.get("targetVersion")]
-    values = [value for value in values if value is not None]
-    if not values:
-        return None
-    if any(not isinstance(value, str) for value in values) or len(set(values)) != 1:
-        fail("qualification.releaseVersion", "ambiguous or invalid")
-    return values[0]
-
-
 def require_int_equal(field: str, actual: Any, expected: int) -> None:
     if isinstance(actual, bool):
         fail(field, "must be an integer")
@@ -129,81 +109,6 @@ def validate_candidate_provenance(root: Path, promotion: dict[str, Any]) -> None
     require_equal("imageIdentity.imageDigest", image.get("imageDigest"), promotion["ociIndexDigest"])
 
 
-def validate_qualification_producer(producer: dict[str, Any], promotion: dict[str, Any]) -> None:
-    """Bind the sealed handoff to the exact trusted Actions producer identity."""
-    if not isinstance(producer, dict):
-        fail("qualificationProducer", "document must be an object")
-    for field in (
-        "repository",
-        "workflowPath",
-        "workflowId",
-        "event",
-        "headBranch",
-        "headSha",
-        "runId",
-        "runAttempt",
-    ):
-        if field not in producer:
-            fail(f"qualificationProducer.{field}", "is required")
-    require_int_equal("qualificationProducer.runId", producer["runId"], promotion["qualificationProducerRunId"])
-    require_int_equal("qualificationProducer.runAttempt", producer["runAttempt"], promotion["qualificationWorkflowRunAttempt"])
-    require_equal("qualificationProducer.repository", producer["repository"], promotion["qualificationProducerRepository"])
-    require_equal("qualificationProducer.workflowPath", producer["workflowPath"], promotion["qualificationProducerWorkflowPath"])
-    require_int_equal("qualificationProducer.workflowId", producer["workflowId"], promotion["qualificationProducerWorkflowId"])
-    require_equal("qualificationProducer.event", producer["event"], promotion["qualificationProducerEvent"])
-    require_equal("qualificationProducer.headBranch", producer["headBranch"], promotion["qualificationProducerHeadBranch"])
-    require_equal("qualificationProducer.headSha", producer["headSha"], promotion["qualificationProducerHeadSha"])
-
-
-def validate_rehearsal_qualification(root: Path, promotion: dict[str, Any]) -> None:
-    """Preserve the synthetic Issue #504 rehearsal fixture contract."""
-    binding_path = exactly_one(list(root.rglob("binding.json")), "binding.json")
-    decision_path = exactly_one(list(root.rglob("go-no-go.json")), "decision/go-no-go.json")
-    event_path = exactly_one(list(root.rglob("run-status-events/*.json")), "run-status-events")
-    binding = load_json(binding_path, "binding.json")
-    decision = load_json(decision_path, "decision/go-no-go.json")
-    event = load_json(event_path, "run-status-event")
-    if not all(isinstance(item, dict) for item in (binding, decision, event)):
-        fail("qualification", "documents must be objects")
-    producer_paths = list(root.rglob("qualification-producer.json"))
-    if producer_paths:
-        producer = load_json(exactly_one(producer_paths, "qualification-producer.json"), "qualification-producer.json")
-        validate_qualification_producer(producer, promotion)
-
-    identities = (
-        ("candidateRunId", "candidateRunId"),
-        ("candidateAttempt", "candidateAttempt"),
-        ("candidateId", "candidateId"),
-        ("bindingId", "bindingId"),
-        ("qualificationRunId", "qualificationRunId"),
-    )
-    for manifest_field, document_field in identities:
-        expected = promotion[manifest_field]
-        for prefix, document in (("binding", binding), ("decision", decision), ("event", event)):
-            require_equal(f"{prefix}.{document_field}", document.get(document_field), expected)
-
-    commit = promotion["releaseCommitSha"]
-    require_equal("binding.sourceCommitSha", source_sha(binding, "binding"), commit)
-    require_equal("decision.sourceCommitSha", source_sha(decision, "decision"), commit)
-    require_equal("event.sourceCommitSha", source_sha(event, "event"), commit)
-
-    versions = [document_version(item) for item in (binding, decision, event)]
-    versions = [value for value in versions if value is not None]
-    if not versions:
-        fail("qualification.releaseVersion", "is required")
-    if any(value != promotion["releaseVersion"] for value in versions):
-        fail("qualification.releaseVersion", "mismatch")
-
-    require_equal("decision.machineVerdict", decision.get("machineVerdict"), "GO_ELIGIBLE")
-    require_equal("decision.humanDecision", decision.get("humanDecision"), "APPROVE")
-    require_equal("decision.runSealed", decision.get("runSealed"), True)
-    require_equal("run-status-event.status", event.get("status"), "sealed")
-    if event.get("runStatusEventSequence") not in (1, "1"):
-        fail("run-status-event.runStatusEventSequence", "must be 1")
-    sealed_event_id = event.get("sealedEventId", event.get("eventId"))
-    require_equal("run-status-event.sealedEventId", sealed_event_id, promotion["sealedEventId"])
-
-
 def validate_release_qualification(root: Path, promotion: dict[str, Any]) -> None:
     """Validate only Git-specific bindings after strict sealed validation."""
     # validate-qualification-handoff.sh owns the common sealed contract and is
@@ -213,6 +118,16 @@ def validate_release_qualification(root: Path, promotion: dict[str, Any]) -> Non
 
     require_equal("handoff-manifest.bindingId", manifest.get("bindingId"), promotion["bindingId"])
     require_equal("handoff-manifest.sealedEventId", manifest.get("sealedEventId"), promotion["sealedEventId"])
+    require_equal(
+        "handoff-manifest.qualificationRunId",
+        manifest.get("qualificationRunId"),
+        promotion["qualificationRunId"],
+    )
+    require_equal(
+        "handoff-manifest.candidateId",
+        manifest.get("candidateId"),
+        promotion["candidateId"],
+    )
     require_equal("binding.releaseVersion", binding.get("releaseVersion"), promotion["releaseVersion"])
     require_int_equal("binding.producerWorkflowRunId", binding.get("producerWorkflowRunId"), promotion["candidateRunId"])
     require_int_equal(
@@ -225,17 +140,11 @@ def validate_release_qualification(root: Path, promotion: dict[str, Any]) -> Non
 def validate_qualification(root: Path, promotion: dict[str, Any]) -> None:
     if not root.is_dir():
         fail("qualificationRoot", "directory is missing")
-    if promotion["mode"] == "release":
-        validate_release_qualification(root, promotion)
-    else:
-        validate_rehearsal_qualification(root, promotion)
+    validate_release_qualification(root, promotion)
 
 
 def validate_pre_promotion_main_delta(promotion: dict[str, Any]) -> None:
     """Allow only the machine-verified RC13 release-control-plane delta."""
-    if promotion["mode"] != "release":
-        return
-
     expected_base = require_string(promotion, "expectedRcForkBaseSha", HEX40)
     actual_base = require_string(promotion, "rcForkBaseSha", HEX40)
     if promotion["releaseCommitSha"] == RC13_SOURCE_SHA:
@@ -293,8 +202,8 @@ def validate_status_checks(promotion: dict[str, Any]) -> None:
 def validate_manifest(promotion: dict[str, Any]) -> None:
     require_equal("schemaVersion", promotion.get("schemaVersion"), 1)
     mode = require_string(promotion, "mode")
-    if mode not in ("rehearsal", "release"):
-        fail("mode", "must be rehearsal or release")
+    if mode != "release":
+        fail("mode", "must be release; rehearsal mode is retired")
 
     version = require_string(promotion, "releaseVersion", VERSION)
     commit = require_string(promotion, "releaseCommitSha", HEX40)
@@ -305,16 +214,15 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
         release_ref.split("-rc", 1)[0],
         f"v{version}",
     )
-    if mode == "release":
-        release_suffix = release_ref[len(f"v{version}") :]
-        expected_handoff_branch = f"qualification-handoff/v{version}"
-        if release_suffix != "-rc":
-            expected_handoff_branch += release_suffix
-        require_equal(
-            "qualificationProducerHeadBranch",
-            promotion.get("qualificationProducerHeadBranch"),
-            expected_handoff_branch,
-        )
+    release_suffix = release_ref[len(f"v{version}") :]
+    expected_handoff_branch = f"qualification-handoff/v{version}"
+    if release_suffix != "-rc":
+        expected_handoff_branch += release_suffix
+    require_equal(
+        "qualificationProducerHeadBranch",
+        promotion.get("qualificationProducerHeadBranch"),
+        expected_handoff_branch,
+    )
     candidate_run_id = promotion.get("candidateRunId")
     if not isinstance(candidate_run_id, int) or candidate_run_id <= 0:
         fail("candidateRunId", "must be a positive integer")
@@ -323,7 +231,7 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
         fail("candidateAttempt", "must be a positive integer")
     for field in ("candidateId", "bindingId", "qualificationRunId"):
         require_string(promotion, field, HEX64)
-    require_string(promotion, "sealedEventId", HEX32 if mode == "release" else HEX64)
+    require_string(promotion, "sealedEventId", HEX32)
 
     require_equal("machineVerdict", promotion.get("machineVerdict"), "GO_ELIGIBLE")
     require_equal("humanDecision", promotion.get("humanDecision"), "APPROVE")
@@ -343,17 +251,8 @@ def validate_manifest(promotion: dict[str, Any]) -> None:
     require_equal("promotionPrDraft", promotion.get("promotionPrDraft"), False)
     require_equal("promotionPrMergeable", promotion.get("promotionPrMergeable"), True)
 
-    if mode == "rehearsal":
-        require_equal(
-            "promotionPrBaseRef",
-            promotion.get("promotionPrBaseRef"),
-            "release-rehearsal/504-main-equivalent",
-        )
-        if not re.fullmatch(r"rehearsal/issue-504/[A-Za-z0-9._-]+", str(promotion.get("tagName", ""))):
-            fail("tagName", "must use the rehearsal namespace and safe characters")
-    else:
-        require_equal("promotionPrBaseRef", promotion.get("promotionPrBaseRef"), "main")
-        require_equal("tagName", promotion.get("tagName"), "v" + version)
+    require_equal("promotionPrBaseRef", promotion.get("promotionPrBaseRef"), "main")
+    require_equal("tagName", promotion.get("tagName"), "v" + version)
 
     require_string(promotion, "rulesetFingerprint", HEX64)
     require_string(promotion, "expectedRulesetFingerprint", HEX64)
