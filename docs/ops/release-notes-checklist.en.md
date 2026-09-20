@@ -44,9 +44,13 @@ after publishing a release, verify and record the following items.
   manifest. For a single-platform release, state a constraint such as
   `linux/amd64 only`; for a multi-arch release, record per-platform digests and
   smoke results.
-- Admin UI is disabled by default, internal-network-only, and experimental.
-  State current limitations such as durable session, durable throttle, durable
-  audit, tenant scope operational boundaries, and retention sweep.
+- Admin UI is experimental. Fresh / legacy / unmanaged Admin remains disabled by
+  default via the env enablement path; after Managed v2 initialization SQLite owns
+  the Admin surface. Do not publish the Mailer backend port directly to the
+  Internet. Browser management through the documented shared HTTPS edge (JP
+  allow-list + Caddy Basic Auth + Mailer Admin/Setup authentication) is
+  supported. State current limitations such as durable session, durable throttle,
+  durable audit, tenant scope operational boundaries, and retention sweep.
 - Take a backup of the SQLite DB and tenant config before upgrade / migration,
   and verify the restore procedure for production.
 - For GHCR image publish, confirm `promote-qualified-oci.yml` pre-login identity
