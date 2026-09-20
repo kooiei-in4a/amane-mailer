@@ -180,11 +180,15 @@ therefore included in `Amane.Mailer db backup` output.
 
 ## Admin UI Security Scope
 
-The Admin UI is an **internal-network-only, experimental** operational tool
+The Admin UI is an **experimental** operational tool
 (see [ADR 0013](docs/adr/0013-admin-threat-model-and-pii-policy.md)).
-Do not expose `/admin` directly to the public internet.
-Restrict access via a reverse proxy, VPN, firewall, or Docker port publish
-limits before enabling the admin UI in any non-local environment.
+Do not publish the Mailer backend port directly to the public internet.
+Fresh / legacy / unmanaged Admin remains controlled by the env enablement path
+(`AMANE_ADMIN_ENABLED`). After Managed v2 initialization, SQLite owns the Admin
+surface and credentials. Browser management through the documented shared HTTPS
+edge is supported when the JP allow-list, Caddy Basic Auth, and Mailer
+Admin/Setup authentication boundary are preserved; non-JP and undecidable
+sources must fail closed.
 
 Current implementation limits:
 

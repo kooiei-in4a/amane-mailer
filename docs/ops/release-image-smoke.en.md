@@ -2,11 +2,11 @@
 
 # Clean-state smoke for the published release image
 
-After v2.1.0 is published, this runbook pulls the GHCR runtime image (current public example: `ghcr.io/kooiei-in4a/amane-mailer:v2.1.0`) from a clean state, starts Mailer +
+This runbook pulls the published GHCR runtime image (current public example: `ghcr.io/kooiei-in4a/amane-mailer:v2.1.0`) from a clean state, starts Mailer +
 Mailpit, and smokes the release runtime path.
 
 Unlike `infra/docker/docker-compose.local.yml` (which builds from source), this smoke
-exercises the **release image itself after publish**. Tenant configuration is the safe example baked
+exercises the **published release image itself**. Tenant configuration is the safe example baked
 into the image (`/app/config/mailer/tenants.example.json`); no host tenant JSON is mounted.
 Mailer state lives in a named volume that `docker compose down -v` removes on exit.
 
@@ -28,7 +28,7 @@ The official clean-state smoke gate for published release images is **Linux loca
 - `bash`, `curl`, and `sha256sum` available.
 - The GHCR image is pullable (run `docker login ghcr.io` first if the package is private;
   see [GHCR image publish guide](ghcr-image-publish.en.md)).
-- For v1.3.8, the runtime image is **`linux/amd64` only**. Confirm the platform in the release notes or Docker
+- For v2.1.0, the runtime image is **`linux/amd64` only**. Confirm the platform in the release notes or Docker
   manifest and pin `MAILER_IMAGE_PLATFORM=linux/amd64` when needed.
 - Default host ports `15280` (Mailer) and `18025` (Mailpit) are free.
 - **The target Mailer image must be supplied explicitly via `MAILER_IMAGE_TAG` or `MAILER_IMAGE_DIGEST` (exactly one; no implicit default).**
@@ -38,7 +38,7 @@ The official clean-state smoke gate for published release images is **Linux loca
 From the repository root (**supported canonical operational entrypoint**):
 
 ```bash
-MAILER_IMAGE_TAG=v1.3.8 bash scripts/release-smoke.sh
+MAILER_IMAGE_TAG=v2.1.0 bash scripts/release-smoke.sh
 ```
 
 Smoke by immutable digest:

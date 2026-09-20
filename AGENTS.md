@@ -123,7 +123,7 @@ Native AOT and full trimming are mandatory (`PublishAot`, `IsTrimmable`, `TrimMo
 
 ### Admin UI
 
-- Admin is experimental, off by default, and not intended for direct internet exposure. See ADR 0013 (`docs/adr/0013-admin-threat-model-and-pii-policy.md`).
+- Admin remains experimental. Fresh / legacy / unmanaged Admin stays off by default via the env enablement path. After Managed v2 initialization, SQLite owns the Admin surface. Do not publish the Mailer backend port directly to the Internet; browser management through the documented shared HTTPS edge (JP allow-list + Caddy Basic Auth + Mailer Admin/Setup authentication) is supported. See ADR 0013 (`docs/adr/0013-admin-threat-model-and-pii-policy.md`).
 - HTML body preview must follow existing XSS-safe rendering patterns in tests under `tests/Amane.Mailer.Tests/Admin/`.
 
 ### Release and CI
