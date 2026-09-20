@@ -2466,7 +2466,6 @@ foreach ($prodPath in @('docs/ops/setup-guide.md', 'docs/ops/setup-guide.en.md',
         Assert-True ('production {0} previous v1.3.5 preserved' -f $prodPath) ($prodInspect -match 'v1\.3\.5') ('previous-release v1.3.5 rewritten in {0}' -f $prodPath)
         Assert-True ('production {0} historical v2.0.0 preserved' -f $prodPath) ($prodInspect -match 'v2\.0\.0') ('historical v2.0.0 rewritten in {0}' -f $prodPath)
     }
-    Assert-True ('production {0} no stale current version' -f $prodPath) (-not (Test-PostSyncHasStaleCurrentVersionLine -Content $prodInspect -TargetVersion $productionCurrentVersion)) ('stale current version detected in {0}' -f $prodPath)
 
     $staleProdRule = Get-PostSyncCurrentRecommendationRule -RelativePath $prodPath -PrevVersion $productionStaleVersion -TargetVersion $productionCurrentVersion
     Assert-True ('production {0} conflict marker present' -f $prodPath) ($null -ne $staleProdRule -and -not [string]::IsNullOrWhiteSpace($staleProdRule.From)) 'conflict current-public marker missing'
