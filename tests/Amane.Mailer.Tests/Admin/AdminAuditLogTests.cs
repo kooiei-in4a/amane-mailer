@@ -116,6 +116,10 @@ public sealed class AdminAuditLogTests
         Assert.Contains(AdminAuditLog.EventTypes.ApiKeyCreated, AdminAuditLog.EventTypes.All);
         Assert.Contains(AdminAuditLog.EventTypes.ApiKeyRevoked, AdminAuditLog.EventTypes.All);
         Assert.Contains(AdminAuditLog.EventTypes.InstanceLiveSendingEnabled, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.GoogleLoginSucceeded, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.GoogleLoginFailed, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.GoogleIdentityLinked, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.GoogleIdentityLinkFailed, AdminAuditLog.EventTypes.All);
         Assert.Contains(AdminAuditLog.EventTypes.InstanceLiveSendingDisabled, AdminAuditLog.EventTypes.All);
         Assert.Contains(AdminAuditLog.TargetTypes.Sender, AdminAuditLog.TargetTypes.ManagedConfiguration);
         Assert.Contains(AdminAuditLog.TargetTypes.ApiKey, AdminAuditLog.TargetTypes.ManagedConfiguration);

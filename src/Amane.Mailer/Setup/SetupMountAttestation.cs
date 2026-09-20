@@ -41,6 +41,7 @@ public static class SetupMountAttestation
         // Managed secret-valued env present in the effective container environment.
         AddPresentSecretEnv(ids, configuration, "MAILER_METRICS_BEARER_TOKEN");
         AddPresentSecretEnv(ids, configuration, "AMANE_ADMIN_PASSWORD_HASH");
+        AddPresentSecretEnv(ids, configuration, "AMANE_ADMIN_GOOGLE_CLIENT_SECRET");
 
         if (tenants.Any(t => string.Equals(options.ResolveProvider(t), "acs", StringComparison.Ordinal)))
         {

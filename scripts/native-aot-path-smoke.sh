@@ -11,6 +11,7 @@
 #   cli:db-backup            — online SQLite backup CLI
 #   http:admin-login-get     — initialized fixture; GET /admin/login
 #   http:admin-login-post    — DB-owned Admin cookie sign-in (CSRF + password hash)
+#   http:admin-google-challenge — dummy Google config; POST challenge 302 + correlation cookie
 #   http:admin-ready         — initialized fixture starts; /readyz 200
 #   cli:setup-core-self-check — Setup Core dry-run fingerprint smoke (#448)
 #   cli:setup-inspect-effective — Manual + Managed mount attestation JSON smoke (#447)
@@ -98,6 +99,7 @@ dump_failure_diagnostics() {
   fi
   local file
   for file in mailer.log migrate.err migrate-host.err backup.err hash.err login-post.out \
+    google-challenge.headers google-challenge.out \
     inspect-effective.out.json inspect-effective.err.txt \
     inspect-effective-managed.out.json inspect-effective-managed.err.txt \
     inspect-effective.meta.txt inspect-effective-managed.meta.txt; do
@@ -256,6 +258,8 @@ start_mailer() { # tenants_path db_path password_hash log_file
     "AMANE_ADMIN_PASSWORD_HASH=${password_hash}" \
     AMANE_ADMIN_ALLOW_HTTP=true \
     AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS=127.0.0.1 \
+    AMANE_ADMIN_GOOGLE_CLIENT_ID=aot-google-client-id-not-real.apps.googleusercontent.com \
+    AMANE_ADMIN_GOOGLE_CLIENT_SECRET=aot-google-client-secret-not-real \
     "$MAILER_BIN" >"$log_file" 2>&1 &
   MAILER_PID=$!
 }
@@ -464,6 +468,7 @@ fi
     fail "cli:db-backup" "skipped; no password hash from admin hash-password"
     fail "http:admin-login-get" "skipped; no password hash from admin hash-password"
     fail "http:admin-login-post" "skipped; no password hash from admin hash-password"
+    fail "http:admin-google-challenge" "skipped; no password hash from admin hash-password"
     fail "http:admin-ready" "skipped; no password hash from admin hash-password"
     finish
   fi
@@ -506,6 +511,7 @@ fi
   if [ ! -f "$db_path" ]; then
     fail "http:admin-login-get" "skipped; no database"
     fail "http:admin-login-post" "skipped; no database"
+    fail "http:admin-google-challenge" "skipped; no database"
     fail "http:admin-ready" "skipped; no database"
     finish
   fi
@@ -520,6 +526,7 @@ fi
     fail "http:admin-ready" "pre-host migrate failed (see $WORK_DIR/migrate-host.err)"
     fail "http:admin-login-get" "skipped; pre-host migrate failed"
     fail "http:admin-login-post" "skipped; pre-host migrate failed"
+    fail "http:admin-google-challenge" "skipped; pre-host migrate failed"
     finish
   fi
 
@@ -527,6 +534,7 @@ fi
     fail "http:admin-ready" "failed to seed disposable initialized fixture"
     fail "http:admin-login-get" "skipped; initialized fixture seed failed"
     fail "http:admin-login-post" "skipped; initialized fixture seed failed"
+    fail "http:admin-google-challenge" "skipped; initialized fixture seed failed"
     finish
   fi
 
@@ -546,7 +554,8 @@ fi
     curl -sS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -o "$login_html" -w '%{http_code}' \
       --max-time 5 "$base_url/admin/login" || true
   )"
-  if [ "$login_code" = "200" ] && grep -q '__RequestVerificationToken' "$login_html"; then
+  if [ "$login_code" = "200" ] && grep -q '__RequestVerificationToken' "$login_html" \
+    && grep -q 'Googleでログイン' "$login_html"; then
     pass "http:admin-login-get"
   else
     fail "http:admin-login-get" "GET /admin/login status=${login_code:-none}"
@@ -555,6 +564,24 @@ fi
   local csrf
   csrf="$(extract_csrf_token "$login_html" || true)"
   if [ -n "$csrf" ]; then
+    local google_code
+    google_code="$(
+      curl -sS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -D "$WORK_DIR/google-challenge.headers" \
+        -o "$WORK_DIR/google-challenge.out" -w '%{http_code}' \
+        --max-time 10 \
+        -X POST "$base_url/admin/api/login-google" \
+        -H 'Content-Type: application/x-www-form-urlencoded' \
+        --data-urlencode "__RequestVerificationToken=${csrf}" \
+        || true
+    )"
+    if { [ "$google_code" = "302" ] || [ "$google_code" = "303" ]; } \
+      && grep -qi 'accounts.google.com' "$WORK_DIR/google-challenge.headers" \
+      && grep -qiE 'Correlation|correlation' "$WORK_DIR/google-challenge.headers" "$COOKIE_JAR"; then
+      pass "http:admin-google-challenge"
+    else
+      fail "http:admin-google-challenge" "POST /admin/api/login-google status=${google_code:-none}"
+    fi
+
     local post_code
     post_code="$(
       curl -sS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -o "$WORK_DIR/login-post.out" -w '%{http_code}' \
@@ -576,6 +603,7 @@ fi
       fail "http:admin-login-post" "POST /admin/api/login status=${post_code:-none}"
     fi
   else
+    fail "http:admin-google-challenge" "CSRF token not found on login page"
     fail "http:admin-login-post" "CSRF token not found on login page"
   fi
 

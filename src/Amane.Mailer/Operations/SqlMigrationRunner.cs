@@ -461,6 +461,12 @@ public sealed class SqlMigrationRunner
             return false;
         }
 
+        if (File.Exists(Path.Combine(_migrationDirectory, "021_admin_google_identities.sql"))
+            && !await HasTableAsync(connection, "admin_google_identities", cancellationToken))
+        {
+            return false;
+        }
+
         await using var columns = connection.CreateCommand();
         columns.CommandText = "PRAGMA table_info(mail_requests);";
         var hasScheduledAt = false;

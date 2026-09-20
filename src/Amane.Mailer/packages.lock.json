@@ -30,6 +30,12 @@
           "MimeKitLite": "4.18.0"
         }
       },
+      "Microsoft.AspNetCore.Authentication.Google": {
+        "type": "Direct",
+        "requested": "[10.0.11, )",
+        "resolved": "10.0.11",
+        "contentHash": "v/OZld8HxGa5hudLWiChuCf5asMrE36n19sR1RK5cC65SGJoYvQAcwnz3yoAOLDSw90PYc3hgFCh1FW83sakUg=="
+      },
       "Microsoft.Data.Sqlite": {
         "type": "Direct",
         "requested": "[10.0.11, )",

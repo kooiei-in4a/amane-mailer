@@ -35,6 +35,10 @@ public static class AdminAuditLog
         public const string LoginSucceeded = "auth.login_succeeded";
         public const string BreakGlassLoginSucceeded = "auth.break_glass_login_succeeded";
         public const string LoginFailed = "auth.login_failed";
+        public const string GoogleLoginSucceeded = "auth.google_login_succeeded";
+        public const string GoogleLoginFailed = "auth.google_login_failed";
+        public const string GoogleIdentityLinked = "auth.google_identity_linked";
+        public const string GoogleIdentityLinkFailed = "auth.google_identity_link_failed";
         public const string Logout = "auth.logout";
         public const string SessionExpired = "auth.session_expired";
         public const string AccountTemporarilyLocked = "auth.account_temporarily_locked";
@@ -65,6 +69,10 @@ public static class AdminAuditLog
             LoginSucceeded,
             BreakGlassLoginSucceeded,
             LoginFailed,
+            GoogleLoginSucceeded,
+            GoogleLoginFailed,
+            GoogleIdentityLinked,
+            GoogleIdentityLinkFailed,
             Logout,
             SessionExpired,
             AccountTemporarilyLocked,
@@ -92,6 +100,12 @@ public static class AdminAuditLog
         public const string InvalidState = "invalid_state";
         public const string LockHeld = "lock_held";
         public const string OperationFailed = "operation_failed";
+        public const string MissingSubject = "missing_subject";
+        public const string UnmappedIdentity = "unmapped_identity";
+        public const string Disabled = "disabled";
+        public const string BreakGlass = "break_glass";
+        public const string InvalidCredentials = "invalid_credentials";
+        public const string Conflict = "conflict";
 
         /// <summary>ADR 0022 D-08/D-12 fixed reason code (kept uppercase to match the ADR verbatim).</summary>
         public const string AttachmentManualRetryNotSupported = "ATTACHMENT_MANUAL_RETRY_NOT_SUPPORTED";

@@ -11,8 +11,10 @@ internal static class AdminCookieTransportPolicy
 {
     internal const string SecureAuthCookieName = "__Host-amane-admin-auth";
     internal const string SecureCsrfCookieName = "__Host-amane-admin-csrf";
+    internal const string SecureExternalCookieName = "__Host-amane-admin-external";
     internal const string HttpAuthCookieName = "amane-admin-auth";
     internal const string HttpCsrfCookieName = "amane-admin-csrf";
+    internal const string HttpExternalCookieName = "amane-admin-external";
 
     /// <summary>
     /// When Admin is disabled, ignore ALLOW_HTTP (including typos) so mail delivery still starts.
@@ -65,17 +67,20 @@ internal static class AdminCookieTransportPolicy
             return new ResolvedCookieTransport(
                 CookieSecurePolicy.SameAsRequest,
                 HttpAuthCookieName,
-                HttpCsrfCookieName);
+                HttpCsrfCookieName,
+                HttpExternalCookieName);
         }
 
         return new ResolvedCookieTransport(
             CookieSecurePolicy.Always,
             SecureAuthCookieName,
-            SecureCsrfCookieName);
+            SecureCsrfCookieName,
+            SecureExternalCookieName);
     }
 
     internal readonly record struct ResolvedCookieTransport(
         CookieSecurePolicy SecurePolicy,
         string AuthCookieName,
-        string CsrfCookieName);
+        string CsrfCookieName,
+        string ExternalCookieName);
 }

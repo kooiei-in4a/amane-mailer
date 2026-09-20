@@ -92,6 +92,16 @@ docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps ma
 
 The Mailer container must reference the same SQLite database via `ConnectionStrings__Mailer`. Re-running scoped admin creation for the same username updates tenant scopes and revokes all active sessions for that admin immediately (ADR 0013 D-04).
 
+### Google identity unlink (operator recovery)
+
+Do not edit SQLite directly to remove a Google mapping. Specify the username and use the CLI. It deletes that Admin's mapping and revokes their active sessions. It does not print Google subject or email.
+
+```powershell
+docker compose -f infra/docker/docker-compose.local.yml run --rm -T --no-deps mailer `
+  admin google unlink `
+  --username tenant-admin-example
+```
+
 ## Admin boolean / numeric environment values
 
 Admin UI boolean and positive-integer environment variables use **strict parse**. Admin UI values are enforced **only when `AMANE_ADMIN_ENABLED=true`** (same gate as `Validate()`). When Admin is disabled, typos in mask / login-limit settings do not abort mail delivery startup.

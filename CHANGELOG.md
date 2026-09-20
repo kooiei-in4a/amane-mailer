@@ -15,6 +15,22 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+### Added
+
+- Admin Google login as an optional path next to the existing username / password
+  login. Google identity is linked only after an explicit Admin password re-proof;
+  break-glass remains password-only; Admin sessions stay on `admin_sessions`
+  (`021_admin_google_identities.sql`, #798).
+- `admin google unlink --username <name>` operator recovery path that deletes that
+  Admin's Google mapping and revokes their active sessions without printing Google
+  subject or email (#798).
+
+### Changed
+
+- Google Admin identity authority is Google userinfo `sub` only. The legacy `id`
+  claim is not mapped, and a missing or empty `sub` fails closed even when `id` is
+  present (#798).
+
 ## [2.1.0]
 
 Minor release focused on browser-accessible operations, Admin/Setup usability, and

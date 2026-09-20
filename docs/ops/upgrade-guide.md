@@ -174,6 +174,27 @@ SQL migration は番号順の forward-only bundle で、適用済み version と
 検証します。既存 migration file の欠落や checksum mismatch を手編集、reformat、DB metadata
 変更で回避しないでください。正しい image / SQL file、または backup restore を選びます。
 
+### Admin Google identity mapping（migration 021）
+
+v2.1.0 相当の DB を、migration `021_admin_google_identities.sql` を含む binary
+（v2.2.0 系）で起動すると、通常の startup / `db migrate` で 021 が適用されます。
+Google identity と既存 `admin_users` の明示 mapping だけが追加され、同じ SQLite DB の
+whole-DB backup に自然に含まれます。identity authority は Google issuer
+(`https://accounts.google.com`) と userinfo `sub` です。email や legacy `id` では
+解決しません。
+
+mapping を外すときは SQLite を直接編集せず、次の CLI を使います。対象 Admin の
+mapping を削除し、その Admin の active `admin_sessions` を revoke します。Google
+subject / email は出力しません。mapping が無い場合は not-found で終了します。
+
+```bash
+Amane.Mailer admin google unlink --username <name>
+```
+
+upgrade 前に現行の whole-DB backup を取得してください。rollback は **pre-021 backup と
+旧 image** の組み合わせです。021 適用後の DB を v2.1.0 image へそのまま戻すことを
+安全とは断定しません。
+
 ## 4. Health / readiness と運用検証
 
 通常 traffic を戻す前に、少なくとも次を確認します。

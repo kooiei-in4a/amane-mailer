@@ -31,6 +31,7 @@ if (ShouldShowHelp(commandArgs))
       dotnet Amane.Mailer.dll admin reset-password
       dotnet Amane.Mailer.dll admin user create --username <name> --password-hash <pbkdf2> [--tenant-id <uuid> ...] [--break-glass]
       dotnet Amane.Mailer.dll admin user capability <grant|revoke> --username <name> --capability bcc_recipient_reveal
+      dotnet Amane.Mailer.dll admin google unlink --username <name>
       dotnet Amane.Mailer.dll admin provider register-acs
       dotnet Amane.Mailer.dll admin provider check-acs-preflight
       dotnet Amane.Mailer.dll admin provider test-acs-send
@@ -204,6 +205,19 @@ if (AdminUserCreateCommand.IsAdminUserCreateCommand(adminUserCommandArgs))
     var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
     return await MailerCliHost.RunCancellableCliAsync(
         ct => MailerCliHost.RunAdminUserCreateAsync(
+            cliConfiguration,
+            commandArgs,
+            Console.Out,
+            Console.Error,
+            ct),
+        Console.Error);
+}
+
+if (AdminGoogleUnlinkCommand.IsAdminGoogleUnlinkCommand(adminUserCommandArgs))
+{
+    var cliConfiguration = MailerCliHost.BuildCliConfiguration(args);
+    return await MailerCliHost.RunCancellableCliAsync(
+        ct => MailerCliHost.RunAdminGoogleUnlinkAsync(
             cliConfiguration,
             commandArgs,
             Console.Out,

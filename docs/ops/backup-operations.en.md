@@ -44,7 +44,7 @@ Back up these Mailer-owned items:
 
 | Item | Default location | Notes |
 | --- | --- | --- |
-| SQLite database | `./data/mailer.db` mounted at `/app/data/mailer.db` | The online database-only path is `backup-mailer.sh`. Use `Amane.Mailer db backup`; do not copy a live WAL database file directly. The admin audit log (`admin_audit_events`) lives in the same database and is preserved by backup/restore together with mail data. |
+| SQLite database | `./data/mailer.db` mounted at `/app/data/mailer.db` | The online database-only path is `backup-mailer.sh`. Use `Amane.Mailer db backup`; do not copy a live WAL database file directly. The admin audit log (`admin_audit_events`) and Admin Google identity mapping (`admin_google_identities`, migration 021) live in the same database and are preserved by backup/restore together with mail data. |
 | Managed provider secret | `MAILER_DATA_PATH/secrets/acs/acs_connection_string` (container: `/app/data/secrets/acs/acs_connection_string`) | The protected file referenced by initialized v2 SQLite state. The full instance archive includes it with the database. The `MAILER_ACS_SECRET_HOST_PATH` `/run/secrets/acs` mount is a read-only compatibility/manual-registration path, not a second authority. |
 | Committed attachment spool | `MAILER_DATA_PATH/attachment-spool/committed` (container: `/app/data/attachment-spool/committed`) | Durable spool required by accepted requests that are still in delivery. The full instance archive includes the opaque request/spool paths. |
 | Transient attachment staging | `MAILER_DATA_PATH/attachment-spool/staging` | Excluded from the full archive. Startup reconciliation cleans orphan staging, so it is not durable restore state. |
