@@ -123,9 +123,14 @@ function assertMarkedVersion(source, pattern, expected, label) {
   assertEqual(label, actual, expected);
 }
 
+// Shared with assertCurrentVersionLines / release-smoke command classification.
+// Same-line historical keywords exempt; same-line current keywords fail closed.
+const currentLinePattern =
+  /(current|現行|recommended|推奨|canonical|正とする|default tag|既定タグ|published image|公開イメージ)/i;
+const historicalLinePattern =
+  /(historical|history|過去|以前|前の|prior|then-current|導入履歴|歴史的)/i;
+
 function assertCurrentVersionLines(source, expected, label) {
-  const currentLinePattern = /(current|現行|recommended|推奨|canonical|正とする|default tag|既定タグ|published image|公開イメージ)/i;
-  const historicalLinePattern = /(historical|history|過去|以前|前の|prior|then-current|導入履歴|歴史的)/i;
   const versionPattern = /\bv([0-9]+\.[0-9]+\.[0-9]+)\b/g;
 
   for (const [index, line] of source.split(/\r?\n/).entries()) {
@@ -141,12 +146,65 @@ function assertCurrentVersionLines(source, expected, label) {
 
 const releaseSmokeCommandTagPattern = /MAILER_IMAGE_TAG=(v[0-9]+\.[0-9]+\.[0-9]+)/g;
 
-function collectReleaseSmokeCommandTags(source) {
-  return [...source.matchAll(releaseSmokeCommandTagPattern)].map((match) => match[1]);
+function lineLooksCurrent(line) {
+  return currentLinePattern.test(line) && !historicalLinePattern.test(line);
+}
+
+function lineLooksHistorical(line) {
+  return historicalLinePattern.test(line);
+}
+
+/**
+ * Classify a MAILER_IMAGE_TAG=vX.Y.Z command line as current vs historical.
+ * Defaults to current (fail closed). Explicit historical context may exempt a
+ * bare command line; an explicit current marker on the command line or nearby
+ * preceding prose always wins so stale "Current command:" instructions cannot
+ * hide behind a distant Historical keyword.
+ */
+function isHistoricalReleaseSmokeCommand(lines, lineIndex) {
+  const line = lines[lineIndex] ?? '';
+  if (lineLooksCurrent(line)) {
+    return false;
+  }
+  if (lineLooksHistorical(line)) {
+    return true;
+  }
+
+  // Look back past fence markers / blanks for a short intro (e.g. "Historical
+  // example for v1.3.8:" above a ```bash block). Stop early on current prose.
+  let examined = 0;
+  for (let i = lineIndex - 1; i >= 0 && examined < 6; i -= 1) {
+    const prev = (lines[i] ?? '').trim();
+    if (prev === '' || prev.startsWith('```')) {
+      continue;
+    }
+    examined += 1;
+    if (lineLooksCurrent(prev)) {
+      return false;
+    }
+    if (lineLooksHistorical(prev)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function collectCurrentReleaseSmokeCommandTags(source) {
+  const lines = source.split(/\r?\n/);
+  const tags = [];
+  for (const [index, line] of lines.entries()) {
+    for (const match of line.matchAll(releaseSmokeCommandTagPattern)) {
+      if (!isHistoricalReleaseSmokeCommand(lines, index)) {
+        tags.push(match[1]);
+      }
+    }
+  }
+  return tags;
 }
 
 function assertReleaseSmokeCommandExamples(source, expectedTag, label) {
-  const tags = collectReleaseSmokeCommandTags(source);
+  const tags = collectCurrentReleaseSmokeCommandTags(source);
   if (tags.length === 0) {
     fail(
       `${label} is missing an explicit MAILER_IMAGE_TAG=vX.Y.Z release-smoke command example.`,
@@ -382,36 +440,60 @@ function runSelfTest() {
   const staleTag = 'v1.3.8';
 
   expectPass(
-    'positive current command',
+    'CURRENT_COMMAND_CURRENT_TAG',
     `MAILER_IMAGE_TAG=${expectedTag} bash scripts/release-smoke.sh\n`,
     expectedTag,
   );
   expectFailure(
-    'stale command',
+    'CURRENT_COMMAND_STALE_TAG',
     `MAILER_IMAGE_TAG=${staleTag} bash scripts/release-smoke.sh\n`,
     expectedTag,
     staleTag,
   );
   expectFailure(
-    'missing command',
+    'MISSING_COMMAND',
     'Use MAILER_IMAGE_DIGEST=sha256:abc when needed.\n',
     expectedTag,
     'missing an explicit MAILER_IMAGE_TAG',
   );
   expectFailure(
-    'contradictory commands',
+    'CONTRADICTORY_CURRENT_COMMANDS',
     `MAILER_IMAGE_TAG=${expectedTag} bash scripts/release-smoke.sh\nMAILER_IMAGE_TAG=${staleTag} bash scripts/release-smoke.sh\n`,
     expectedTag,
     staleTag,
   );
 
-  // Historical release records are outside the governed follower set; a stale
-  // example there must not be treated as a current-command failure by itself.
-  const historical = `# historical\nMAILER_IMAGE_TAG=${staleTag} bash scripts/release-smoke.sh\n`;
-  const historicalTags = collectReleaseSmokeCommandTags(historical);
-  if (historicalTags.length !== 1 || historicalTags[0] !== staleTag) {
-    throw new Error('historical fixture did not retain stale tag for exemption check');
-  }
+  // Explicit historical stale command inside a governed follower must PASS
+  // alongside a current command example (historical-only would be "missing").
+  expectPass(
+    'HISTORICAL_STALE_COMMAND_IN_GOVERNED_FOLLOWER',
+    [
+      `MAILER_IMAGE_TAG=${expectedTag} bash scripts/release-smoke.sh`,
+      '',
+      'Historical example for v1.3.8:',
+      '',
+      '```bash',
+      `MAILER_IMAGE_TAG=${staleTag} bash scripts/release-smoke.sh`,
+      '```',
+      '',
+    ].join('\n'),
+    expectedTag,
+  );
+
+  // A stale current instruction must still FAIL even when Historical appears nearby.
+  expectFailure(
+    'HISTORICAL_NEARBY_BUT_CURRENT_COMMAND_STALE',
+    [
+      'Historical leftover note about v1.3.8.',
+      '',
+      `Current command: MAILER_IMAGE_TAG=${staleTag} bash scripts/release-smoke.sh`,
+      '',
+    ].join('\n'),
+    expectedTag,
+    staleTag,
+  );
+
+  // Historical release records remain outside the governed follower set.
   if (governedReleaseSmokeCommandExamplePaths.includes('docs/releases/v1.3.8.md')) {
     throw new Error('historical release records must not be in governed command followers');
   }
@@ -439,7 +521,8 @@ function runSelfTest() {
   }
 
   console.log(
-    'check-release-smoke-tag-drift self-test passed: positive, stale, missing, contradictory, and historical-exemption cases.',
+    'check-release-smoke-tag-drift self-test passed: current/stale/missing/contradictory, '
+      + 'historical-in-governed-follower, and fail-closed current-near-historical cases.',
   );
 }
 
