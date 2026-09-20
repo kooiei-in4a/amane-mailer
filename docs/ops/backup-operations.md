@@ -39,7 +39,7 @@ Mailer が所有する次の項目をバックアップします:
 
 | 項目 | 既定の場所 | 備考 |
 | --- | --- | --- |
-| SQLite データベース | `/app/data/mailer.db` に mount される `./data/mailer.db` | DB 単体経路では `backup-mailer.sh` の対象。`Amane.Mailer db backup` を使い、稼働中の WAL DB ファイルを直接コピーしない。管理操作監査ログ（`admin_audit_events`）も同一 DB に含まれ、バックアップ・リストアで一緒に保全される |
+| SQLite データベース | `/app/data/mailer.db` に mount される `./data/mailer.db` | DB 単体経路では `backup-mailer.sh` の対象。`Amane.Mailer db backup` を使い、稼働中の WAL DB ファイルを直接コピーしない。管理操作監査ログ（`admin_audit_events`）と Admin Google identity mapping（`admin_google_identities`、migration 021）も同一 DB に含まれ、バックアップ・リストアで一緒に保全される |
 | managed provider secret | `MAILER_DATA_PATH/secrets/acs/acs_connection_string`（コンテナ内 `/app/data/secrets/acs/acs_connection_string`） | initialized v2 の DB が参照する保護済みファイル。full instance backup では DB と同じ archive に含める。`MAILER_ACS_SECRET_HOST_PATH` の `/run/secrets/acs` mount は read-only の互換／手動登録経路であり、二つ目の authority ではない |
 | committed attachment spool | `MAILER_DATA_PATH/attachment-spool/committed`（コンテナ内 `/app/data/attachment-spool/committed`） | accepted request の未完了送信に必要な durable spool。full instance backup で含める。request-id と spool-key の opaque なパスだけを扱う |
 | transient attachment staging | `MAILER_DATA_PATH/attachment-spool/staging` | full archive から除外。起動時に orphan staging が cleanup されるため、復元対象の durable state ではない |

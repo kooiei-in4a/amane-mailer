@@ -97,6 +97,10 @@ services:
       # ALLOW_HTTP=true is Development-only. With ASPNETCORE_ENVIRONMENT=Production
       # (this compose default), true causes Mailer startup failure when Admin is enabled.
       AMANE_ADMIN_PII_LIST_MODE: ${AMANE_ADMIN_PII_LIST_MODE:-masked}
+      # Optional Google Admin login (#798). Enabled only when both values are non-empty.
+      # Password login remains available when unset, partial, or Google is unavailable.
+      AMANE_ADMIN_GOOGLE_CLIENT_ID: ${AMANE_ADMIN_GOOGLE_CLIENT_ID:-}
+      AMANE_ADMIN_GOOGLE_CLIENT_SECRET: ${AMANE_ADMIN_GOOGLE_CLIENT_SECRET:-}
     volumes:
       - ${MAILER_DATA_PATH:-./data}:/app/data
       - ${MAILER_TENANTS_HOST_PATH:-./tenants.json}:${MAILER_TENANTS_CONTAINER_PATH:-/app/config/mailer/tenants.json}:ro

@@ -15,6 +15,13 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+### Added
+
+- Admin Google login as an optional path next to the existing username / password
+  login. Google identity is linked only after an explicit Admin password re-proof;
+  break-glass remains password-only; Admin sessions stay on `admin_sessions`
+  (`021_admin_google_identities.sql`, #798).
+
 ## [2.1.0]
 
 Minor release focused on browser-accessible operations, Admin/Setup usability, and

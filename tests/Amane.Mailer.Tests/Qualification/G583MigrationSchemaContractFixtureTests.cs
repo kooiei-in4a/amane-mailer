@@ -18,6 +18,7 @@ public sealed class G583MigrationSchemaContractFixtureTests
             ["018_admin_user_capabilities.sql"] = "94af8770dec3a0e0ec925ce6a1946ad73f51f564e7137f2d82934b4fffb7f471",
             ["019_sender_api_key_identity.sql"] = "3bc715bed02f186101e8a580a7410198a8ceeed6407a6ed773c7397200ec7d76",
             ["020_instance_configuration.sql"] = "5fe5a19ecf265d4a5d67a7f1c67bc360ac5885bb961c3ef35d92c5f0499a033b",
+            ["021_admin_google_identities.sql"] = "608c53695fcd8163e31e6d62c8416b333bd1818ff06970c8d9f8f3aebf10e89c",
         };
 
     [Fact]
@@ -44,8 +45,8 @@ public sealed class G583MigrationSchemaContractFixtureTests
                     .Build());
             var runner = new SqlMigrationRunner(factory);
             var applied = await runner.ApplyPendingAsync(cancellationToken);
-            Assert.Equal(20, applied.Count);
-            Assert.Equal("020_instance_configuration.sql", applied[^1]);
+            Assert.Equal(21, applied.Count);
+            Assert.Equal("021_admin_google_identities.sql", applied[^1]);
             Assert.True(await runner.IsCurrentSchemaReadyAsync(cancellationToken));
 
             await using var connection = await factory.OpenConnectionAsync(cancellationToken);
@@ -121,6 +122,7 @@ public sealed class G583MigrationSchemaContractFixtureTests
                 "senders",
                 "api_keys",
                 "instance_configuration",
+                "admin_google_identities",
             });
 
         var indexes = await ReadNamesAsync(connection, "index", cancellationToken);

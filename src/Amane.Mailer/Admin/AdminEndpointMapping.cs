@@ -10,6 +10,18 @@ internal static class AdminEndpointMapping
     {
         app.MapGet("/admin", RedirectAdminHome).AllowAnonymous();
         app.MapGet("/admin/login", AdminAuthenticationHandlers.RenderLoginPage).AllowAnonymous();
+        app.MapGet(
+                AdminGoogleAuthenticationConstants.CompletionPath,
+                AdminGoogleAuthenticationHandlers.CompleteAsync)
+            .AllowAnonymous();
+        app.MapPost(
+                AdminGoogleAuthenticationConstants.ChallengePath,
+                AdminGoogleAuthenticationHandlers.ChallengeAsync)
+            .AllowAnonymous();
+        app.MapPost(
+                AdminGoogleAuthenticationConstants.LinkPath,
+                AdminGoogleAuthenticationHandlers.LinkAsync)
+            .AllowAnonymous();
         app.MapGet("/admin/mail-requests", AdminMailRequestsPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/senders", AdminSendersPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/senders/{senderId:guid}", AdminSendersPage.RenderDetailAsync).RequireAuthorization();

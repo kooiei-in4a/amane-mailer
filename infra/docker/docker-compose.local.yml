@@ -88,6 +88,8 @@ services:
       MAILER_ADMIN_BIND: ${MAILER_ADMIN_BIND:-}
       AMANE_ADMIN_ALLOW_HTTP: ${AMANE_ADMIN_ALLOW_HTTP:-false}
       AMANE_ADMIN_PII_LIST_MODE: ${AMANE_ADMIN_PII_LIST_MODE:-masked}
+      AMANE_ADMIN_GOOGLE_CLIENT_ID: ${AMANE_ADMIN_GOOGLE_CLIENT_ID:-}
+      AMANE_ADMIN_GOOGLE_CLIENT_SECRET: ${AMANE_ADMIN_GOOGLE_CLIENT_SECRET:-}
     volumes:
       - ${MAILER_DATA_PATH:-../../data/mailer}:/app/data
       - ${MAILER_CONFIG_PATH:-../../config/mailer}:/app/config/mailer:ro

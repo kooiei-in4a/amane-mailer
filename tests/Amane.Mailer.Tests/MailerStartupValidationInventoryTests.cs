@@ -21,6 +21,7 @@ public sealed class MailerStartupValidationInventoryTests
     [
         typeof(MailerAdminOptions),
         typeof(MailerAdminDbOpsOptions),
+        typeof(AdminGoogleOptions),
         typeof(MailerConfigurationSnapshot),
         typeof(MailerTenantRegistry),
         typeof(MailerOptions),

@@ -3,6 +3,17 @@
   "description": "Canonical current implementation status. ADRs record design rationale; this file records present-day status (#246 / #250). Allowed status values: planned, partial, implemented, deferred, removed. Rollout: Phase 1 (#250) manifest + ADR links; Phase 2 (#252) CI format check; Phase 3+ (GitHub Issue state / evidence) deferred until staleness recurs or maintainer reopens #246.",
   "features": [
     {
+      "id": "admin-google-login",
+      "status": "implemented",
+      "trackingIssue": 798,
+      "lastVerified": "2026-09-20",
+      "relatedAdrs": [
+        "0013",
+        "0014"
+      ],
+      "notes": "Optional Google Admin login beside password login. Explicit password re-proof linking to admin_google_identities (migration 021). Break-glass remains password-only. Google handler never signs into AmaneAdmin; existing admin_sessions remain the session authority."
+    },
+    {
       "id": "admin-audit-retention-sweep",
       "status": "implemented",
       "trackingIssue": 92,

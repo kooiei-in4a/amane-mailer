@@ -19,7 +19,10 @@ public static class AdminAuthenticationHandlers
     internal const string DummyAdminPasswordHash =
         "pbkdf2:sha256:600000:YW1hbmUtZHVtbXktMTI0IQ==:qMTLpvljgavl6UScZshWUdoApY4JFTGZWhLPJ62+Ui0=";
 
-    public static IResult RenderLoginPage(HttpContext context, IAntiforgery antiforgery)
+    public static IResult RenderLoginPage(
+        HttpContext context,
+        IAntiforgery antiforgery,
+        AdminGoogleOptions googleOptions)
     {
         if (context.User.Identity?.IsAuthenticated == true)
             return Results.Redirect("/admin/mail-requests");
@@ -27,6 +30,15 @@ public static class AdminAuthenticationHandlers
         context.Response.Headers.CacheControl = "no-store";
         var tokens = antiforgery.GetAndStoreTokens(context);
         var requestToken = HtmlEncoder.Default.Encode(tokens.RequestToken ?? string.Empty);
+        var googleSection = googleOptions.Enabled
+            ? $$"""
+                <form method="post" action="{{AdminGoogleAuthenticationConstants.ChallengePath}}" class="login-form">
+                  <input type="hidden" name="__RequestVerificationToken" value="{{requestToken}}">
+                  <button type="submit">Googleでログイン</button>
+                </form>
+                <p class="login-divider">または</p>
+                """
+            : string.Empty;
         var html = $$"""
             <!doctype html>
             <html lang="ja">
@@ -38,15 +50,17 @@ public static class AdminAuthenticationHandlers
                 html { color-scheme: light; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
                 body { margin: 0; min-height: 100vh; background: #f6f7f9; color: #1b1f27; }
                 .admin-login-page { display: grid; place-items: center; }
-                .login-shell { width: min(100% - 32px, 360px); }
+                .login-shell { width: min(100% - 32px, 360px); display: grid; gap: 16px; }
                 .login-form { display: grid; gap: 16px; padding: 24px; border: 1px solid #d7dbe3; border-radius: 8px; background: #ffffff; box-shadow: 0 12px 32px rgb(27 31 39 / 8%); }
                 .login-form label { display: grid; gap: 6px; font-size: 0.9rem; font-weight: 600; }
                 .login-form input { min-height: 40px; padding: 0 12px; border: 1px solid #c9ced8; border-radius: 6px; font: inherit; }
                 .login-form button { min-height: 42px; border: 0; border-radius: 6px; background: #2458a6; color: #ffffff; font: inherit; font-weight: 700; }
+                .login-divider { margin: 0; text-align: center; color: #5c6573; font-size: 0.85rem; }
               </style>
             </head>
             <body class="admin-login-page">
               <main class="login-shell">
+                {{googleSection}}
                 <form method="post" action="/admin/api/login" class="login-form">
                   <input type="hidden" name="__RequestVerificationToken" value="{{requestToken}}">
                   <label>
@@ -175,25 +189,23 @@ public static class AdminAuthenticationHandlers
 
         await throttle.ResetAsync(username, remoteAddress, cancellationToken);
 
-        var now = timeProvider.GetUtcNow();
-        var absoluteExpiresAt = now + options.SessionAbsoluteLifetime;
-        var idleExpiresAt = now + options.SessionIdleTimeout;
-        var sessionId = workflowRequested
-            ? workflowSession.Value
-            : AdminSessionIds.CreateNew();
-        var session = new AdminSessionRow(
-            sessionId,
-            user.Username,
-            now,
-            now,
-            absoluteExpiresAt,
-            idleExpiresAt,
-            null,
-            null,
-            user.CredentialEpoch);
-
+        string sessionId;
         if (workflowRequested)
         {
+            var now = timeProvider.GetUtcNow();
+            var absoluteExpiresAt = now + options.SessionAbsoluteLifetime;
+            var idleExpiresAt = now + options.SessionIdleTimeout;
+            sessionId = workflowSession.Value;
+            var session = new AdminSessionRow(
+                sessionId,
+                user.Username,
+                now,
+                now,
+                absoluteExpiresAt,
+                idleExpiresAt,
+                null,
+                null,
+                user.CredentialEpoch);
             var create = await sessionRepository.CreateWorkflowSessionAsync(
                 workflowSession,
                 session,
@@ -223,38 +235,24 @@ public static class AdminAuthenticationHandlers
                         "Setup verification session recovery is required.",
                         statusCode: StatusCodes.Status409Conflict);
             }
+
+            await AdminSessionIssuer.SignInExistingAsync(
+                context,
+                user,
+                sessionId,
+                now,
+                absoluteExpiresAt);
         }
         else
         {
-            await sessionRepository.CreateSessionAsync(
-                session,
-                options.MaxConcurrentSessions,
+            sessionId = await AdminSessionIssuer.SignInAsync(
+                context,
+                user,
+                options,
+                sessionRepository,
+                timeProvider,
                 cancellationToken);
         }
-
-        var claims = new[]
-        {
-            new Claim(ClaimTypes.NameIdentifier, user.Id.ToString(CultureInfo.InvariantCulture)),
-            new Claim(ClaimTypes.Name, user.Username),
-        };
-        var identity = new ClaimsIdentity(claims, AdminAuthenticationConstants.Scheme);
-        var properties = new AuthenticationProperties
-        {
-            AllowRefresh = false,
-            // Absolute lifetime only: idle timeout is enforced from admin_sessions on each
-            // request. Avoids touch-time Set-Cookie races that can regress browser expiry (#391).
-            ExpiresUtc = absoluteExpiresAt,
-            IssuedUtc = now,
-            IsPersistent = false,
-        };
-        properties.Items[AdminAuthenticationConstants.AbsoluteExpiresUtcProperty] =
-            absoluteExpiresAt.ToString("O", CultureInfo.InvariantCulture);
-        properties.Items[AdminAuthenticationConstants.SessionIdProperty] = sessionId;
-
-        await context.SignInAsync(
-            AdminAuthenticationConstants.Scheme,
-            new ClaimsPrincipal(identity),
-            properties);
 
         await AdminAuditLog.WriteBestEffortAsync(
             auditRepository,

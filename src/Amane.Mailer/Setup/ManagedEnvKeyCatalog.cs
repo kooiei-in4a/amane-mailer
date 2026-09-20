@@ -47,6 +47,7 @@ public static class ManagedEnvKeyCatalog
         "MAILER_METRICS_ENABLED",
         "AMANE_ADMIN_ENABLED",
         "AMANE_ADMIN_USERNAME",
+        "AMANE_ADMIN_GOOGLE_CLIENT_ID",
         "AMANE_ADMIN_ALLOWED_LOCAL_ADDRESS",
         "AMANE_ADMIN_ALLOW_HTTP",
         "AMANE_ADMIN_PII_LIST_MODE",
@@ -89,6 +90,7 @@ public static class ManagedEnvKeyCatalog
         "MAIL_SERVICE_TOKEN_PRODUCTION",
         "MAILER_METRICS_BEARER_TOKEN",
         "AMANE_ADMIN_PASSWORD_HASH",
+        "AMANE_ADMIN_GOOGLE_CLIENT_SECRET",
     };
 
     public static IReadOnlySet<string> FileSecretNames { get; } = new HashSet<string>(StringComparer.Ordinal)

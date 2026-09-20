@@ -212,9 +212,16 @@ public sealed class AdminUserRepository(
         long userId,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
-        var user = await ReadUserByIdAsync(connection, userId, cancellationToken);
+        var user = await GetUserByIdAsync(userId, cancellationToken);
         return user is null || user.Disabled ? null : user;
+    }
+
+    public async Task<AdminUserRow?> GetUserByIdAsync(
+        long userId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        return await ReadUserByIdAsync(connection, userId, cancellationToken);
     }
 
     public async Task<string?> GetActiveInstanceOwnerUsernameAsync(
