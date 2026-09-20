@@ -1,4 +1,4 @@
-After v1.3.4 is published
+Smoke the published GHCR image
 ghcr.io/kooiei-in4a/amane-mailer:v1.3.4
 v1.3.4 release record
 docs/releases/v1.3.4.md
