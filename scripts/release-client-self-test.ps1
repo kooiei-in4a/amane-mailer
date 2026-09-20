@@ -2426,8 +2426,9 @@ Assert-Equal 'B1_R1_HISTORICAL_EXEMPTIONS' $b1R1HistoricalLabel 'PASS'
 $oldVersionOnly = $b1R1EnClean.TrimEnd() + "`nv1.3.4 leftover without a semantic marker`n"
 Assert-Equal 'B1-R1 no global old-version ban' (Get-PostSyncFollowerFileState -Content $oldVersionOnly -Rules $b1R1EnTargetRules -Mode 'TARGET') 'TARGET'
 
-# Production docs are read-only and durable across pre- and post-sync
-# repository states: PREDECESSOR or TARGET both pass; CONFLICT fails.
+# Production docs are read-only and must match the current machine-readable
+# authority. Because authority and followers advance together during post-sync,
+# this stays valid before and after future releases without hard-coding a pair.
 $productionAuthorityObs = Get-CurrentPublicAuthorityObservation -RepoRoot $RepoRoot
 Assert-Equal 'PRODUCTION_CURRENT_AUTHORITY_STATE' $productionAuthorityObs.State 'PRESENT'
 $productionCurrentVersion = if ($productionAuthorityObs.State -eq 'PRESENT') { [string]$productionAuthorityObs.Authority.Version } else { '' }
