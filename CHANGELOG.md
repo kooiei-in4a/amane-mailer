@@ -15,6 +15,8 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [2.2.0]
+
 ### Added
 
 - Admin Google login as an optional path next to the existing username / password
