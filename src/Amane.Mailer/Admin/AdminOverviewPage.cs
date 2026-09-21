@@ -42,6 +42,39 @@ internal static class AdminOverviewPage
         if (accessResult.Error is not null)
             return accessResult.Error;
 
+        var presentation = await CreatePresentationAsync(
+            configuration,
+            environment,
+            instanceConfigurationRepository,
+            senderRepository,
+            mailerOptions,
+            googleOptions,
+            migrationRunner,
+            storageInfoReader,
+            readinessProbe,
+            backupStatusReader,
+            timeProvider,
+            cancellationToken);
+
+        return Results.Content(
+            RenderHtml(presentation, accessResult.Access!),
+            "text/html; charset=utf-8");
+    }
+
+    internal static async Task<AdminOverviewPresentation> CreatePresentationAsync(
+        IConfiguration configuration,
+        IHostEnvironment environment,
+        InstanceConfigurationRepository instanceConfigurationRepository,
+        SenderRepository senderRepository,
+        MailerOptions mailerOptions,
+        AdminGoogleOptions googleOptions,
+        SqlMigrationRunner migrationRunner,
+        MailerDbStorageInfoReader storageInfoReader,
+        MailerRuntimeReadinessProbe readinessProbe,
+        AdminBackupStatusReader backupStatusReader,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
         var instanceConfiguration = await instanceConfigurationRepository.GetAsync(cancellationToken);
         var sender = instanceConfiguration?.InitializedAt is null
             ? null
@@ -94,10 +127,7 @@ internal static class AdminOverviewPage
             googleStatus,
             backupStatus,
             ResolveBuildIdentity());
-
-        return Results.Content(
-            RenderHtml(presentation, accessResult.Access!),
-            "text/html; charset=utf-8");
+        return presentation;
     }
 
     internal static AdminOverviewPresentation CreatePresentation(
@@ -338,6 +368,7 @@ internal static class AdminOverviewPage
         AppendDetailLink(html, "/admin/setup-status", "Setup status");
         AppendDetailLink(html, AdminSecretsPage.PagePath, "Secret管理");
         AppendDetailLink(html, AdminGoogleSettingsPage.PagePath, "認証設定");
+        AppendDetailLink(html, AdminDiagnosticReportPage.PagePath, "Sanitized diagnostic report");
         html.AppendLine("                  </ul>");
         html.AppendLine("                </section>");
         AdminLayout.AppendDocumentEnd(html);
