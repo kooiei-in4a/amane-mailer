@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Authentication.OAuth;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 
@@ -149,6 +150,16 @@ internal static class AdminServiceRegistration
                     AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration, adminOptions.Enabled),
                     environment.EnvironmentName);
                 google.CorrelationCookie.SecurePolicy = transport.SecurePolicy;
+            });
+        // Materialize named GoogleOptions on the same startup boundary as AdminGoogleOptions.
+        // Authentication handlers read IOptionsMonitor cache; without this, a same-path
+        // secret rotation before the first Google challenge could load a post-rotation
+        // secret while /admin/auth-settings still reports restart-pending.
+        MailerStartupValidationServiceCollectionExtensions.GetOrAddCatalog(services)
+            .RegisterAction(static services =>
+            {
+                _ = services.GetRequiredService<IOptionsMonitor<GoogleOptions>>()
+                    .Get(AdminGoogleAuthenticationConstants.AuthenticationScheme);
             });
         services.AddAuthorization();
         services.AddAntiforgery(antiforgery =>

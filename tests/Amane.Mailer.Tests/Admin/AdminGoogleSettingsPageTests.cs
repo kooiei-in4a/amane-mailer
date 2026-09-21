@@ -7,11 +7,13 @@ using Amane.Mailer.Identity;
 using Amane.Mailer.Operations;
 using Amane.Mailer.Setup;
 using Amane.Mailer.Tests.Fixtures;
+using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Amane.Mailer.Tests.Admin;
 
@@ -805,6 +807,90 @@ public sealed class AdminGoogleSettingsPageTests
     }
 
     [Fact]
+    public async Task Secret_rotation_before_first_google_challenge_keeps_startup_google_options_until_restart()
+    {
+        // Regression for B1: AdminGoogleOptions pins a startup fingerprint, but the
+        // Google authentication handler previously materialized named GoogleOptions
+        // lazily. Rotating the same secret path before the first challenge could make
+        // the handler pick up the new secret while the Admin UI still said 再起動待ち.
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await ManagedHarness.CreateAsync(ct);
+        AdminGoogleSecretStore.WriteSecret(harness.GoogleSecretPath, FakeClientSecret);
+        Assert.True(await harness.Instance.SetGoogleLoginSettingsAsync(
+            enabled: true,
+            FakeClientId,
+            harness.GoogleSecretPath,
+            ct));
+
+        // Host startup with managed Google Login enabled. Do not issue a Google challenge.
+        await harness.RestartAsync(ct);
+        Assert.Equal(
+            FakeClientSecret,
+            ReadGoogleSchemeClientSecret(harness.Factory));
+
+        using var client = CreateClient(harness.Factory);
+        await LoginAsync(client, OwnerUsername, OwnerPassword, ct);
+        var token = await ReadCsrfTokenAsync(client, AdminGoogleSettingsPage.PagePath, ct);
+        using (var save = await client.PostAsync(
+            AdminGoogleSettingsPage.PagePath,
+            Form(
+                token,
+                ("google_login_enabled", "1"),
+                ("client_id", FakeClientId),
+                ("client_secret", FakeClientSecretRotated),
+                ("confirmation", "confirm")),
+            ct))
+        {
+            Assert.Equal(HttpStatusCode.SeeOther, save.StatusCode);
+        }
+
+        Assert.True(AdminGoogleSecretStore.TryReadSecret(harness.GoogleSecretPath, out var stored));
+        Assert.Equal(FakeClientSecretRotated, stored);
+
+        using (var page = await client.GetAsync(AdminGoogleSettingsPage.PagePath, ct))
+        {
+            var html = await page.Content.ReadAsStringAsync(ct);
+            AssertContainsStatus(
+                html,
+                AdminGoogleSettingsStatus.DisplayOn,
+                AdminGoogleSettingsStatus.DisplayOn,
+                AdminGoogleSettingsStatus.ReflectionRestartPending);
+            AssertNoSecretMaterial(html);
+            AssertFingerprintAbsent(html, FakeClientSecret);
+            AssertFingerprintAbsent(html, FakeClientSecretRotated);
+        }
+
+        // Before restart, the Google scheme must keep the startup credential snapshot
+        // even though the secret file already has the rotated value and no challenge
+        // has run yet.
+        Assert.Equal(
+            FakeClientSecret,
+            ReadGoogleSchemeClientSecret(harness.Factory));
+        Assert.NotEqual(
+            FakeClientSecretRotated,
+            ReadGoogleSchemeClientSecret(harness.Factory));
+
+        await harness.RestartAsync(ct);
+        Assert.Equal(
+            FakeClientSecretRotated,
+            ReadGoogleSchemeClientSecret(harness.Factory));
+
+        using var restarted = CreateClient(harness.Factory);
+        await LoginAsync(restarted, OwnerUsername, OwnerPassword, ct);
+        using (var page = await restarted.GetAsync(AdminGoogleSettingsPage.PagePath, ct))
+        {
+            var html = await page.Content.ReadAsStringAsync(ct);
+            AssertContainsStatus(
+                html,
+                AdminGoogleSettingsStatus.DisplayOn,
+                AdminGoogleSettingsStatus.DisplayOn,
+                AdminGoogleSettingsStatus.ReflectionApplied);
+            AssertNoSecretMaterial(html);
+            AssertFingerprintAbsent(html, FakeClientSecretRotated);
+        }
+    }
+
+    [Fact]
     public async Task Legacy_to_managed_cutover_shows_restart_pending_even_when_effective_stays_on()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -962,6 +1048,12 @@ public sealed class AdminGoogleSettingsPageTests
         Assert.DoesNotContain(FakeClientSecretRotated, text, StringComparison.Ordinal);
         Assert.DoesNotContain(FakeManagedCutoverSecret, text, StringComparison.Ordinal);
     }
+
+    private static string ReadGoogleSchemeClientSecret(WebApplicationFactory<global::Program> factory) =>
+        factory.Services
+            .GetRequiredService<IOptionsMonitor<GoogleOptions>>()
+            .Get(AdminGoogleAuthenticationConstants.AuthenticationScheme)
+            .ClientSecret;
 
     private static Dictionary<string, string?> EnvGoogleConfiguration() =>
         new(StringComparer.Ordinal)
