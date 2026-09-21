@@ -78,6 +78,17 @@
       "notes": "Scoped and break-glass authorization; startup fail-closed when 2+ effective tenants. Env bootstrap admin receives all configured tenant scopes on first seed (not break-glass)."
     },
     {
+      "id": "admin-audit-log-list-filters",
+      "status": "implemented",
+      "trackingIssue": 813,
+      "lastVerified": "2026-09-21",
+      "relatedAdrs": [
+        "0013",
+        "0014"
+      ],
+      "notes": "Admin /admin/audit-log URL filters: event_type, actor, result (success|failure), from/to UTC date bounds, keyset cursor pagination. Scoped admins filter tenant-scoped targets (mail_request, mail_suppressions); Managed configuration targets remain instance-owner only. Tracking: #815."
+    },
+    {
       "id": "admin-audit-event-persistence",
       "status": "implemented",
       "trackingIssue": 6,

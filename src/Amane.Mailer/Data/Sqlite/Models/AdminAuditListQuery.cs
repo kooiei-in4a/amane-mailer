@@ -6,6 +6,8 @@ public sealed record AdminAuditListQuery
 
     public string? Actor { get; init; }
 
+    public string? Result { get; init; }
+
     public DateTimeOffset? OccurredFrom { get; init; }
 
     public DateTimeOffset? OccurredToExclusive { get; init; }
