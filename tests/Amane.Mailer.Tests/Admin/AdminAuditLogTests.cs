@@ -122,9 +122,13 @@ public sealed class AdminAuditLogTests
         Assert.Contains(AdminAuditLog.EventTypes.GoogleIdentityLinkFailed, AdminAuditLog.EventTypes.All);
         Assert.Contains(AdminAuditLog.EventTypes.InstanceLiveSendingDisabled, AdminAuditLog.EventTypes.All);
         Assert.Contains(AdminAuditLog.EventTypes.InstanceGoogleLoginSettingsUpdated, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.AdminUserEnabled, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.AdminUserDisabled, AdminAuditLog.EventTypes.All);
+        Assert.Contains(AdminAuditLog.EventTypes.GoogleIdentityUnlinked, AdminAuditLog.EventTypes.All);
         Assert.Contains(AdminAuditLog.TargetTypes.Sender, AdminAuditLog.TargetTypes.ManagedConfiguration);
         Assert.Contains(AdminAuditLog.TargetTypes.ApiKey, AdminAuditLog.TargetTypes.ManagedConfiguration);
         Assert.Contains(AdminAuditLog.TargetTypes.InstanceConfiguration, AdminAuditLog.TargetTypes.ManagedConfiguration);
+        Assert.Contains(AdminAuditLog.TargetTypes.AdminUser, AdminAuditLog.TargetTypes.ManagedConfiguration);
     }
 
     private sealed class CapturingLogger : ILogger

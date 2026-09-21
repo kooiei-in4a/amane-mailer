@@ -14,6 +14,7 @@ public enum AdminNavItem
     AuditLog,
     Ops,
     AuthSettings,
+    AdminUsers,
     SetupStatus,
 }
 
@@ -124,6 +125,13 @@ public static class AdminLayout
             "認証設定",
             Icons.Settings,
             activeNav == AdminNavItem.AuthSettings,
+            badgeCount: null);
+        AppendNavItem(
+            html,
+            AdminUsersPage.PagePath,
+            "管理者",
+            Icons.Person,
+            activeNav == AdminNavItem.AdminUsers,
             badgeCount: null);
         AppendNavItem(
             html,

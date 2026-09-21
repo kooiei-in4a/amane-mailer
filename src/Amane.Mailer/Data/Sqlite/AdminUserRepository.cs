@@ -224,6 +224,117 @@ public sealed class AdminUserRepository(
         return await ReadUserByIdAsync(connection, userId, cancellationToken);
     }
 
+    /// <summary>
+    /// Lists admin users without selecting password hashes or Google identity values.
+    /// </summary>
+    public async Task<IReadOnlyList<AdminUserSummary>> ListUserSummariesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        var scopesByUserId = await ReadAllTenantScopesAsync(connection, cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT u.id,
+                   u.username,
+                   u.disabled,
+                   u.is_break_glass,
+                   u.is_instance_owner,
+                   EXISTS (
+                       SELECT 1
+                       FROM admin_google_identities g
+                       WHERE g.admin_user_id = u.id
+                       LIMIT 1
+                   ) AS google_linked
+            FROM admin_users u
+            ORDER BY u.id;
+            """;
+
+        var users = new List<AdminUserSummary>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var userId = reader.GetInt64(0);
+            scopesByUserId.TryGetValue(userId, out var scopes);
+            users.Add(new AdminUserSummary(
+                userId,
+                reader.GetString(1),
+                reader.GetInt32(2) != 0,
+                reader.GetInt32(3) != 0,
+                reader.GetInt32(4) != 0,
+                reader.GetInt32(5) != 0,
+                scopes is null ? Array.Empty<Guid>() : scopes));
+        }
+
+        return users;
+    }
+
+    /// <summary>
+    /// Enables or disables an admin user. Instance Owners cannot be disabled.
+    /// Status changes bump credential_epoch and revoke active sessions in the same transaction.
+    /// </summary>
+    public async Task<AdminUserEnabledMutationResult> SetEnabledAsync(
+        long userId,
+        bool enabled,
+        CancellationToken cancellationToken = default)
+    {
+        var now = timeProvider.GetUtcNow();
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            var user = await ReadUserByIdAsync(connection, userId, cancellationToken);
+            if (user is null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return AdminUserEnabledMutationResult.NotFound;
+            }
+
+            if (user.IsInstanceOwner && !enabled)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return AdminUserEnabledMutationResult.InstanceOwnerProtected;
+            }
+
+            var currentlyEnabled = !user.Disabled;
+            if (currentlyEnabled == enabled)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return AdminUserEnabledMutationResult.Unchanged;
+            }
+
+            await using (var update = connection.CreateCommand())
+            {
+                update.CommandText = """
+                    UPDATE admin_users
+                    SET disabled = @Disabled,
+                        credential_epoch = credential_epoch + 1,
+                        updated_at = @UpdatedAt
+                    WHERE id = @Id;
+                    """;
+                update.Parameters.AddWithValue("@Disabled", enabled ? 0 : 1);
+                update.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now));
+                update.Parameters.AddWithValue("@Id", user.Id);
+                await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await RevokeActiveSessionsByActorAsync(
+                connection,
+                user.Username,
+                AdminSessionRevokeReasons.CredentialChanged,
+                now,
+                cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+            return AdminUserEnabledMutationResult.Changed;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
     public async Task<string?> GetActiveInstanceOwnerUsernameAsync(
         CancellationToken cancellationToken = default)
     {
@@ -694,6 +805,35 @@ public sealed class AdminUserRepository(
             reader.GetInt32(6) != 0);
     }
 
+    private static async Task<Dictionary<long, List<Guid>>> ReadAllTenantScopesAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT admin_user_id, tenant_id
+            FROM admin_user_tenant_scopes
+            ORDER BY admin_user_id, tenant_id;
+            """;
+
+        var scopesByUserId = new Dictionary<long, List<Guid>>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var userId = reader.GetInt64(0);
+            var tenantId = Guid.Parse(reader.GetString(1));
+            if (!scopesByUserId.TryGetValue(userId, out var scopes))
+            {
+                scopes = [];
+                scopesByUserId[userId] = scopes;
+            }
+
+            scopes.Add(tenantId);
+        }
+
+        return scopesByUserId;
+    }
+
     private static async Task<HashSet<Guid>> ReadTenantScopesAsync(
         SqliteConnection connection,
         long userId,
@@ -732,4 +872,12 @@ public enum AdminCapabilityMutationResult
 {
     Unchanged,
     Changed,
+}
+
+public enum AdminUserEnabledMutationResult
+{
+    Changed,
+    Unchanged,
+    NotFound,
+    InstanceOwnerProtected,
 }
