@@ -39,6 +39,7 @@ public static class AdminAuditLog
         public const string GoogleLoginFailed = "auth.google_login_failed";
         public const string GoogleIdentityLinked = "auth.google_identity_linked";
         public const string GoogleIdentityLinkFailed = "auth.google_identity_link_failed";
+        public const string GoogleIdentityUnlinked = "auth.google_identity_unlinked";
         public const string Logout = "auth.logout";
         public const string SessionExpired = "auth.session_expired";
         public const string AccountTemporarilyLocked = "auth.account_temporarily_locked";
@@ -58,6 +59,8 @@ public static class AdminAuditLog
         public const string InstanceLiveSendingEnabled = "instance.live_sending_enabled";
         public const string InstanceLiveSendingDisabled = "instance.live_sending_disabled";
         public const string InstanceGoogleLoginSettingsUpdated = "instance.google_login_settings_updated";
+        public const string AdminUserEnabled = "admin_user.enabled";
+        public const string AdminUserDisabled = "admin_user.disabled";
 
         public static IReadOnlyList<string> All { get; } =
         [
@@ -74,6 +77,7 @@ public static class AdminAuditLog
             GoogleLoginFailed,
             GoogleIdentityLinked,
             GoogleIdentityLinkFailed,
+            GoogleIdentityUnlinked,
             Logout,
             SessionExpired,
             AccountTemporarilyLocked,
@@ -93,6 +97,8 @@ public static class AdminAuditLog
             InstanceLiveSendingEnabled,
             InstanceLiveSendingDisabled,
             InstanceGoogleLoginSettingsUpdated,
+            AdminUserEnabled,
+            AdminUserDisabled,
         ];
     }
 
@@ -133,6 +139,7 @@ public static class AdminAuditLog
         public const string Sender = "sender";
         public const string ApiKey = "api_key";
         public const string InstanceConfiguration = "instance_configuration";
+        public const string AdminUser = "admin_user";
 
         /// <summary>
         /// Targets whose rows carry a mail tenant_id and must be filtered for scoped admins.
@@ -154,6 +161,7 @@ public static class AdminAuditLog
             Sender,
             ApiKey,
             InstanceConfiguration,
+            AdminUser,
         ];
     }
 
