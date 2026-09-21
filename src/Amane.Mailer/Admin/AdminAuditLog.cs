@@ -60,6 +60,9 @@ public static class AdminAuditLog
         public const string InstanceLiveSendingDisabled = "instance.live_sending_disabled";
         public const string InstanceGoogleLoginSettingsUpdated = "instance.google_login_settings_updated";
         public const string InstanceProviderSecretRotated = "instance.provider_secret_rotated";
+        public const string SettingsBackupExported = "settings_backup.exported";
+        public const string SettingsBackupImportPreviewed = "settings_backup.import_previewed";
+        public const string SettingsBackupRestored = "settings_backup.restored";
         public const string AdminUserEnabled = "admin_user.enabled";
         public const string AdminUserDisabled = "admin_user.disabled";
 
@@ -99,6 +102,9 @@ public static class AdminAuditLog
             InstanceLiveSendingDisabled,
             InstanceGoogleLoginSettingsUpdated,
             InstanceProviderSecretRotated,
+            SettingsBackupExported,
+            SettingsBackupImportPreviewed,
+            SettingsBackupRestored,
             AdminUserEnabled,
             AdminUserDisabled,
         ];
@@ -142,6 +148,7 @@ public static class AdminAuditLog
         public const string ApiKey = "api_key";
         public const string InstanceConfiguration = "instance_configuration";
         public const string AdminUser = "admin_user";
+        public const string SettingsBackup = "settings_backup";
 
         /// <summary>
         /// Targets whose rows carry a mail tenant_id and must be filtered for scoped admins.
@@ -164,6 +171,7 @@ public static class AdminAuditLog
             ApiKey,
             InstanceConfiguration,
             AdminUser,
+            SettingsBackup,
         ];
     }
 

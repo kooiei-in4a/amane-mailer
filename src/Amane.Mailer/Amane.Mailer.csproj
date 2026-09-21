@@ -21,6 +21,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="AgeSharp" />
     <PackageReference Include="Azure.Communication.Email" />
     <PackageReference Include="Azure.Storage.Queues" />
     <PackageReference Include="MailKitLite" />

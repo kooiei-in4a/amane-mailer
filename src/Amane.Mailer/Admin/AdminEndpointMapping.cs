@@ -35,6 +35,19 @@ internal static class AdminEndpointMapping
         app.MapGet(AdminGoogleSettingsPage.PagePath, AdminGoogleSettingsPage.RenderAsync).RequireAuthorization();
         app.MapPost(AdminGoogleSettingsPage.PagePath, AdminGoogleSettingsPage.SaveAsync).RequireAuthorization();
         app.MapGet(AdminSecretsPage.PagePath, AdminSecretsPage.RenderAsync).RequireAuthorization();
+        app.MapGet(AdminSettingsBackupPage.PagePath, AdminSettingsBackupPage.RenderAsync).RequireAuthorization();
+        app.MapPost(AdminSettingsBackupPage.ExportPath, AdminSettingsBackupPage.ExportAsync)
+            .RequireAuthorization()
+            .WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(
+                AdminSettingsBackupPage.MaxRequestBodyBytes));
+        app.MapPost(AdminSettingsBackupPage.PreviewPath, AdminSettingsBackupPage.PreviewAsync)
+            .RequireAuthorization()
+            .WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(
+                AdminSettingsBackupPage.MaxRequestBodyBytes));
+        app.MapPost(AdminSettingsBackupPage.RestorePath, AdminSettingsBackupPage.RestoreAsync)
+            .RequireAuthorization()
+            .WithMetadata(new Microsoft.AspNetCore.Mvc.RequestSizeLimitAttribute(
+                AdminSettingsBackupPage.MaxRequestBodyBytes));
         app.MapPost(AdminSecretsPage.AcsRotationPath, AdminSecretsPage.RotateAcsAsync).RequireAuthorization();
         app.MapGet(AdminUsersPage.PagePath, AdminUsersPage.RenderAsync).RequireAuthorization();
         app.MapPost(AdminUsersPage.EnablePath, AdminUsersPage.EnableAsync).RequireAuthorization();
