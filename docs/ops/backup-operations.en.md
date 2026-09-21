@@ -46,6 +46,7 @@ Back up these Mailer-owned items:
 | --- | --- | --- |
 | SQLite database | `./data/mailer.db` mounted at `/app/data/mailer.db` | The online database-only path is `backup-mailer.sh`. Use `Amane.Mailer db backup`; do not copy a live WAL database file directly. The admin audit log (`admin_audit_events`) and Admin Google identity mapping (`admin_google_identities`, migration 021) live in the same database and are preserved by backup/restore together with mail data. |
 | Managed provider secret | `MAILER_DATA_PATH/secrets/acs/acs_connection_string` (container: `/app/data/secrets/acs/acs_connection_string`) | The protected file referenced by initialized v2 SQLite state. The full instance archive includes it with the database. The `MAILER_ACS_SECRET_HOST_PATH` `/run/secrets/acs` mount is a read-only compatibility/manual-registration path, not a second authority. |
+| Managed Google Client Secret | `MAILER_DATA_PATH/secrets/admin_google/client_secret` (container: `/app/data/secrets/admin_google/client_secret`) | The Client Secret saved by the Admin UI. Included in the full instance archive only when the file exists. Unset instances, and older archives that omit the file, do not require it. The file mode is 600 and the directory is owner-only. Contents are never written to logs or shell output. No other secret path is added to the archive boundary. |
 | Committed attachment spool | `MAILER_DATA_PATH/attachment-spool/committed` (container: `/app/data/attachment-spool/committed`) | Durable spool required by accepted requests that are still in delivery. The full instance archive includes the opaque request/spool paths. |
 | Transient attachment staging | `MAILER_DATA_PATH/attachment-spool/staging` | Excluded from the full archive. Startup reconciliation cleans orphan staging, so it is not durable restore state. |
 | Bootstrap token / logs / backup staging | `MAILER_DATA_PATH/bootstrap`, `logs`, and `backups` | Excluded from the full archive. The bootstrap token is not the initialized authority; logs and old artifacts are not restore input. |
@@ -68,20 +69,24 @@ fixed minimum restore unit for a v2 managed instance:
 - `mailer.db`
 - `secrets/acs/acs_connection_string`
 - `attachment-spool/committed/` and Mailer-generated opaque spool files below it
+- `secrets/admin_google/client_secret` (optional; only when the file exists. Unset instances omit it. Older archives without it remain restorable)
 
 The input is the `MAILER_DATA_PATH` shared by the stopped service and migration
 container. A legacy/manual deployment whose database `provider_secret_ref`
 points outside that data root must be reconciled before a full backup; this path
 does not silently discover a second secret authority. The script checks the
 canonical data-root ACS secret, owner-only permissions, and the committed spool
-shape before creating the archive.
+shape before creating the archive. When a managed Google Client Secret file is
+present, the script also requires it to be a non-empty owner-only regular file
+under an owner-only directory, and it does not print the contents. Instances
+without that file omit the entry.
 
 The cold point requires the operator to stop `mailer`, `mailer-migrate`, and
 `mailer-acs-admin` first. The script does not stop or start services; it checks
 the Compose running-service list and fails if any of those mutators remain
 running. It also fails when SQLite `-wal`, `-shm`, or `-journal` sidecars remain.
-This keeps the database, provider secret, and committed spool at one stopped
-point in time.
+This keeps the database, provider secret, committed spool, and, when present,
+the managed Google Client Secret at one stopped point in time.
 
 The archive excludes `attachment-spool/staging`, bootstrap tokens, logs, old
 backup artifacts, tenant JSON, `.env`, `platform-sender.json`, and external
@@ -95,7 +100,8 @@ into this archive.
 - Take Mailer database backups through `./Amane.Mailer db backup`, which uses
   SQLite's online backup API from inside the running service container.
 - Take a full instance backup only after the coordinated cold stop and preflight;
-  it contains the database, canonical provider secret, and committed spool.
+  it contains the database, canonical provider secret, committed spool, and, when
+  present, the managed Google Client Secret.
 - The full instance script archives only explicit state paths; it does not scan
   or recursively copy every volume.
 - Encrypt the plaintext `.db` backup before any offsite transfer.
@@ -261,13 +267,16 @@ one-shot service named in the stop command, verify the final `docker compose
 ... ps` state explicitly before invoking the script.
 
 The expected artifact is
-`data/backups/mailer-state-YYYYMMDDTHHmmssZ.tar.age`. It contains only
+`data/backups/mailer-state-YYYYMMDDTHHmmssZ.tar.age`. It contains
 `mailer.db`, `secrets/acs/acs_connection_string`, and
-`attachment-spool/committed` (including opaque committed spool files). It does
+`attachment-spool/committed` (including opaque committed spool files). It also
+contains `secrets/admin_google/client_secret` only when that managed Google
+Client Secret file exists. Unset instances do not require the file. It does
 not contain staging, bootstrap tokens, logs, old backups, age identities, tenant
 JSON, `.env`, `platform-sender.json`, or external bounce-queue secrets. The
 plaintext tar is created only in a private temporary directory and is removed
-after age encryption. With `MAILER_BACKUP_REQUIRE_OFFSITE=true`, missing or
+after age encryption. ACS and Google Client Secret contents are not written to
+logs. With `MAILER_BACKUP_REQUIRE_OFFSITE=true`, missing or
 failed rclone upload is a failure, not a successful local-only backup.
 
 Do not interchange `mailer-*.db.age` and `mailer-state-*.tar.age`. If the full

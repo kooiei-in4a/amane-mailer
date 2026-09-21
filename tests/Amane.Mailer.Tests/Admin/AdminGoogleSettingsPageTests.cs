@@ -24,6 +24,7 @@ public sealed class AdminGoogleSettingsPageTests
     private const string FakeClientId = "amane-mailer-test-google-ui-client-id.apps.googleusercontent.com";
     private const string FakeClientSecret = "amane-mailer-test-google-ui-client-secret-not-real";
     private const string FakeClientSecretRotated = "amane-mailer-test-google-ui-client-secret-rotated-not-real";
+    private const string FakeManagedCutoverSecret = "amane-mailer-test-google-ui-managed-cutover-secret-not-real";
 
     [Fact]
     public async Task Owner_can_save_google_settings_without_secret_readback_while_scoped_admin_is_denied()
@@ -246,6 +247,290 @@ public sealed class AdminGoogleSettingsPageTests
     }
 
     [Fact]
+    public void Secret_ref_update_keeps_a_valid_current_ref_when_no_new_secret_is_written()
+    {
+        var root = Directory.CreateTempSubdirectory("amane-google-ref-");
+        try
+        {
+            var canonical = Path.Combine(root.FullName, "canonical", "client_secret");
+            var current = Path.Combine(root.FullName, "current", "client_secret");
+            var missing = Path.Combine(root.FullName, "missing", "client_secret");
+            AdminGoogleSecretStore.WriteSecret(canonical, FakeClientSecretRotated);
+            AdminGoogleSecretStore.WriteSecret(current, FakeClientSecret);
+
+            Assert.Equal(
+                canonical,
+                AdminGoogleSettingsPage.ResolveSecretRefForUpdate(
+                    secretWasWritten: true,
+                    canonical,
+                    current));
+            Assert.Equal(
+                current,
+                AdminGoogleSettingsPage.ResolveSecretRefForUpdate(
+                    secretWasWritten: false,
+                    canonical,
+                    current));
+            Assert.Equal(
+                canonical,
+                AdminGoogleSettingsPage.ResolveSecretRefForUpdate(
+                    secretWasWritten: false,
+                    canonical,
+                    currentSecretRef: null));
+            Assert.Equal(
+                canonical,
+                AdminGoogleSettingsPage.ResolveSecretRefForUpdate(
+                    secretWasWritten: false,
+                    canonical,
+                    missing));
+            Assert.Null(
+                AdminGoogleSettingsPage.ResolveSecretRefForUpdate(
+                    secretWasWritten: false,
+                    missing,
+                    currentSecretRef: null));
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Legacy_env_page_shows_effective_google_state_without_secret_plaintext()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await ManagedHarness.CreateAsync(ct, EnvGoogleConfiguration());
+
+        using var client = CreateClient(harness.Factory);
+        await LoginAsync(client, OwnerUsername, OwnerPassword, ct);
+        using var page = await client.GetAsync(AdminGoogleSettingsPage.PagePath, ct);
+        var html = await page.Content.ReadAsStringAsync(ct);
+
+        Assert.Contains("enabled (active)", html, StringComparison.Ordinal);
+        Assert.Contains("legacy env (until first save)", html, StringComparison.Ordinal);
+        Assert.Contains("name=\"google_login_enabled\" value=\"1\" checked", html, StringComparison.Ordinal);
+        Assert.Contains($"value=\"{FakeClientId}\"", html, StringComparison.Ordinal);
+        Assert.Contains("managed configuration が authority になります", html, StringComparison.Ordinal);
+        Assert.Contains("managed 未設定", html, StringComparison.Ordinal);
+        Assert.Contains("Password Login", html, StringComparison.Ordinal);
+        AssertNoSecretMaterial(html);
+        AssertSecretAbsentFromInputs(html);
+    }
+
+    [Fact]
+    public async Task First_enabled_save_without_managed_secret_does_not_claim_authority()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await ManagedHarness.CreateAsync(ct, EnvGoogleConfiguration());
+        using var client = CreateClient(harness.Factory);
+        await LoginAsync(client, OwnerUsername, OwnerPassword, ct);
+
+        var token = await ReadCsrfTokenAsync(client, AdminGoogleSettingsPage.PagePath, ct);
+        using var save = await client.PostAsync(
+            AdminGoogleSettingsPage.PagePath,
+            Form(
+                token,
+                ("google_login_enabled", "1"),
+                ("client_id", FakeClientId),
+                ("client_secret", "   "),
+                ("confirmation", "confirm")),
+            ct);
+        Assert.Equal(HttpStatusCode.BadRequest, save.StatusCode);
+        var body = await save.Content.ReadAsStringAsync(ct);
+        Assert.Contains(AdminGoogleSettingsPage.ManagedCutoverSecretRequiredMessage, body, StringComparison.Ordinal);
+        AssertNoSecretMaterial(body);
+
+        var row = await harness.Instance.GetAsync(ct);
+        Assert.NotNull(row);
+        Assert.True(string.IsNullOrWhiteSpace(row.GoogleConfiguredAt));
+        Assert.False(File.Exists(harness.GoogleSecretPath));
+
+        using (var settings = await client.GetAsync(AdminGoogleSettingsPage.PagePath, ct))
+        {
+            var html = await settings.Content.ReadAsStringAsync(ct);
+            Assert.Contains("legacy env (until first save)", html, StringComparison.Ordinal);
+            Assert.Contains("name=\"google_login_enabled\" value=\"1\" checked", html, StringComparison.Ordinal);
+            AssertNoSecretMaterial(html);
+        }
+
+        await harness.RestartAsync(ct);
+        var options = harness.Factory.Services.GetRequiredService<AdminGoogleOptions>();
+        Assert.False(options.UsesManagedConfiguration);
+        Assert.True(options.Enabled);
+
+        using var restarted = CreateClient(harness.Factory);
+        using (var loginPage = await restarted.GetAsync("/admin/login", ct))
+        {
+            var html = await loginPage.Content.ReadAsStringAsync(ct);
+            Assert.Contains("Googleでログイン", html, StringComparison.Ordinal);
+            Assert.Contains("Username", html, StringComparison.Ordinal);
+            AssertNoSecretMaterial(html);
+        }
+
+        await LoginAsync(restarted, OwnerUsername, OwnerPassword, ct);
+        await AssertAuditOmitsSecretsAsync(harness, ct);
+    }
+
+    [Fact]
+    public async Task First_enabled_save_with_new_secret_claims_managed_authority()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await ManagedHarness.CreateAsync(ct, EnvGoogleConfiguration());
+        using var client = CreateClient(harness.Factory);
+        await LoginAsync(client, OwnerUsername, OwnerPassword, ct);
+
+        var token = await ReadCsrfTokenAsync(client, AdminGoogleSettingsPage.PagePath, ct);
+        using (var save = await client.PostAsync(
+            AdminGoogleSettingsPage.PagePath,
+            Form(
+                token,
+                ("google_login_enabled", "1"),
+                ("client_id", FakeClientId),
+                ("client_secret", FakeManagedCutoverSecret),
+                ("confirmation", "confirm")),
+            ct))
+        {
+            Assert.Equal(HttpStatusCode.SeeOther, save.StatusCode);
+        }
+
+        var row = await harness.Instance.GetAsync(ct);
+        Assert.NotNull(row);
+        Assert.False(string.IsNullOrWhiteSpace(row.GoogleConfiguredAt));
+        Assert.True(row.GoogleLoginEnabled);
+        Assert.Equal(FakeClientId, row.GoogleClientId);
+        Assert.Equal(harness.GoogleSecretPath, row.GoogleClientSecretRef);
+        Assert.True(AdminGoogleSecretStore.TryReadSecret(harness.GoogleSecretPath, out var stored));
+        Assert.Equal(FakeManagedCutoverSecret, stored);
+        Assert.NotEqual(FakeClientSecret, stored);
+
+        using (var settings = await client.GetAsync(AdminGoogleSettingsPage.PagePath, ct))
+        {
+            var html = await settings.Content.ReadAsStringAsync(ct);
+            Assert.Contains("Admin UI managed configuration", html, StringComparison.Ordinal);
+            Assert.DoesNotContain("authority になります", html, StringComparison.Ordinal);
+            Assert.Contains(FakeClientId, html, StringComparison.Ordinal);
+            AssertNoSecretMaterial(html);
+            AssertSecretAbsentFromInputs(html);
+        }
+
+        await harness.RestartAsync(ct);
+        var options = harness.Factory.Services.GetRequiredService<AdminGoogleOptions>();
+        Assert.True(options.UsesManagedConfiguration);
+        Assert.True(options.Enabled);
+        Assert.DoesNotContain(FakeClientSecret, options.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(FakeManagedCutoverSecret, options.ToString(), StringComparison.Ordinal);
+
+        using var restarted = CreateClient(harness.Factory);
+        using (var loginPage = await restarted.GetAsync("/admin/login", ct))
+        {
+            var html = await loginPage.Content.ReadAsStringAsync(ct);
+            Assert.Contains("Googleでログイン", html, StringComparison.Ordinal);
+            Assert.Contains("Username", html, StringComparison.Ordinal);
+            AssertNoSecretMaterial(html);
+        }
+
+        await LoginAsync(restarted, OwnerUsername, OwnerPassword, ct);
+        await AssertAuditOmitsSecretsAsync(harness, ct);
+    }
+
+    [Fact]
+    public async Task Explicit_disabled_save_can_cut_over_from_env_without_copying_secret()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await ManagedHarness.CreateAsync(ct, EnvGoogleConfiguration());
+        using var client = CreateClient(harness.Factory);
+        await LoginAsync(client, OwnerUsername, OwnerPassword, ct);
+
+        var token = await ReadCsrfTokenAsync(client, AdminGoogleSettingsPage.PagePath, ct);
+        using (var save = await client.PostAsync(
+            AdminGoogleSettingsPage.PagePath,
+            Form(
+                token,
+                ("client_id", FakeClientId),
+                ("client_secret", string.Empty),
+                ("confirmation", "confirm")),
+            ct))
+        {
+            Assert.Equal(HttpStatusCode.SeeOther, save.StatusCode);
+        }
+
+        var row = await harness.Instance.GetAsync(ct);
+        Assert.NotNull(row);
+        Assert.False(string.IsNullOrWhiteSpace(row.GoogleConfiguredAt));
+        Assert.False(row.GoogleLoginEnabled);
+        Assert.True(string.IsNullOrWhiteSpace(row.GoogleClientSecretRef));
+        Assert.False(File.Exists(harness.GoogleSecretPath));
+
+        await harness.RestartAsync(ct);
+        var options = harness.Factory.Services.GetRequiredService<AdminGoogleOptions>();
+        Assert.True(options.UsesManagedConfiguration);
+        Assert.False(options.Enabled);
+
+        using var restarted = CreateClient(harness.Factory);
+        using (var loginPage = await restarted.GetAsync("/admin/login", ct))
+        {
+            var html = await loginPage.Content.ReadAsStringAsync(ct);
+            Assert.DoesNotContain("Googleでログイン", html, StringComparison.Ordinal);
+            Assert.Contains("Username", html, StringComparison.Ordinal);
+            AssertNoSecretMaterial(html);
+        }
+
+        await LoginAsync(restarted, OwnerUsername, OwnerPassword, ct);
+        await AssertAuditOmitsSecretsAsync(harness, ct);
+    }
+
+    [Fact]
+    public async Task Save_without_new_secret_keeps_a_custom_existing_secret_ref()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await ManagedHarness.CreateAsync(ct);
+        var customPath = Path.Combine(
+            Path.GetDirectoryName(Path.GetDirectoryName(harness.GoogleSecretPath)!)!,
+            "custom_google",
+            "client_secret");
+        AdminGoogleSecretStore.WriteSecret(customPath, FakeClientSecret);
+        AdminGoogleSecretStore.WriteSecret(harness.GoogleSecretPath, FakeClientSecretRotated);
+        Assert.True(await harness.Instance.SetGoogleLoginSettingsAsync(
+            enabled: true,
+            FakeClientId,
+            customPath,
+            ct));
+
+        using var client = CreateClient(harness.Factory);
+        await LoginAsync(client, OwnerUsername, OwnerPassword, ct);
+        var token = await ReadCsrfTokenAsync(client, AdminGoogleSettingsPage.PagePath, ct);
+        using (var save = await client.PostAsync(
+            AdminGoogleSettingsPage.PagePath,
+            Form(
+                token,
+                ("google_login_enabled", "1"),
+                ("client_id", FakeClientId),
+                ("client_secret", string.Empty),
+                ("confirmation", "confirm")),
+            ct))
+        {
+            Assert.Equal(HttpStatusCode.SeeOther, save.StatusCode);
+        }
+
+        var row = await harness.Instance.GetAsync(ct);
+        Assert.NotNull(row);
+        Assert.Equal(customPath, row.GoogleClientSecretRef);
+        Assert.True(AdminGoogleSecretStore.TryReadSecret(customPath, out var customSecret));
+        Assert.Equal(FakeClientSecret, customSecret);
+        Assert.True(AdminGoogleSecretStore.TryReadSecret(harness.GoogleSecretPath, out var canonicalSecret));
+        Assert.Equal(FakeClientSecretRotated, canonicalSecret);
+
+        using (var settings = await client.GetAsync(AdminGoogleSettingsPage.PagePath, ct))
+        {
+            var html = await settings.Content.ReadAsStringAsync(ct);
+            AssertNoSecretMaterial(html);
+            AssertSecretAbsentFromInputs(html);
+        }
+
+        await LoginAsync(CreateClient(harness.Factory), OwnerUsername, OwnerPassword, ct);
+        await AssertAuditOmitsSecretsAsync(harness, ct);
+    }
+
+    [Fact]
     public void Redirect_uri_uses_request_scheme_and_host()
     {
         var context = new DefaultHttpContext();
@@ -266,7 +551,36 @@ public sealed class AdminGoogleSettingsPageTests
         {
             Assert.DoesNotContain(FakeClientSecret, match.Value, StringComparison.Ordinal);
             Assert.DoesNotContain(FakeClientSecretRotated, match.Value, StringComparison.Ordinal);
+            Assert.DoesNotContain(FakeManagedCutoverSecret, match.Value, StringComparison.Ordinal);
             Assert.Contains("value=\"\"", match.Value, StringComparison.Ordinal);
+        }
+    }
+
+    private static void AssertNoSecretMaterial(string text)
+    {
+        Assert.DoesNotContain(FakeClientSecret, text, StringComparison.Ordinal);
+        Assert.DoesNotContain(FakeClientSecretRotated, text, StringComparison.Ordinal);
+        Assert.DoesNotContain(FakeManagedCutoverSecret, text, StringComparison.Ordinal);
+    }
+
+    private static Dictionary<string, string?> EnvGoogleConfiguration() =>
+        new(StringComparer.Ordinal)
+        {
+            [AdminGoogleOptions.ClientIdKey] = FakeClientId,
+            [AdminGoogleOptions.ClientSecretKey] = FakeClientSecret,
+        };
+
+    private static async Task AssertAuditOmitsSecretsAsync(
+        ManagedHarness harness,
+        CancellationToken cancellationToken)
+    {
+        var audits = await harness.Factory.Services.GetRequiredService<AdminAuditRepository>()
+            .ListRecentAsync(20, cancellationToken);
+        foreach (var audit in audits)
+        {
+            AssertNoSecretMaterial(audit.FieldName ?? string.Empty);
+            AssertNoSecretMaterial(audit.ErrorCode ?? string.Empty);
+            AssertNoSecretMaterial(audit.TargetId ?? string.Empty);
         }
     }
 

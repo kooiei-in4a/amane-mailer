@@ -11,6 +11,9 @@ public static class AdminGoogleSettingsPage
 {
     public const string PagePath = "/admin/auth-settings";
 
+    internal const string ManagedCutoverSecretRequiredMessage =
+        "Enabling Google Login while claiming managed configuration requires a new Client Secret.";
+
     public static async Task<IResult> RenderAsync(
         HttpContext context,
         AdminUserRepository userRepository,
@@ -101,6 +104,29 @@ public static class AdminGoogleSettingsPage
         var newSecret = form["client_secret"].ToString();
         var secretPath = AdminGoogleSecretStore.ResolveSecretPath(configuration);
         var secretWasWritten = false;
+        var managedClaimed = !string.IsNullOrWhiteSpace(current.GoogleConfiguredAt);
+
+        if (RequiresNewSecretForManagedCutover(
+                managedClaimed,
+                enabled,
+                newSecret,
+                current.GoogleClientSecretRef,
+                secretPath))
+        {
+            await WriteAuditAsync(
+                context,
+                auditRepository,
+                adminOptions,
+                loggerFactory,
+                timeProvider,
+                enabled,
+                clientId,
+                secretWasWritten,
+                AdminAuditLog.Results.Failure,
+                AdminAuditLog.ErrorCodes.OperationFailed,
+                cancellationToken);
+            return Results.BadRequest(ManagedCutoverSecretRequiredMessage);
+        }
 
         try
         {
@@ -110,11 +136,10 @@ public static class AdminGoogleSettingsPage
                 secretWasWritten = true;
             }
 
-            var secretRefForUpdate = secretWasWritten
-                || AdminGoogleSecretStore.IsSecretConfigured(current.GoogleClientSecretRef)
-                || AdminGoogleSecretStore.IsSecretConfigured(secretPath)
-                ? secretPath
-                : null;
+            var secretRefForUpdate = ResolveSecretRefForUpdate(
+                secretWasWritten,
+                secretPath,
+                current.GoogleClientSecretRef);
 
             if (!await instanceConfigurationRepository.SetGoogleLoginSettingsAsync(
                     enabled,
@@ -229,7 +254,12 @@ public static class AdminGoogleSettingsPage
         var secretConfigured = AdminGoogleSecretStore.IsSecretConfigured(
             instanceConfiguration.GoogleClientSecretRef)
             || AdminGoogleSecretStore.IsSecretConfigured(secretPath);
-        var storedClientId = instanceConfiguration.GoogleClientId ?? string.Empty;
+        var formEnabled = managedClaimed
+            ? instanceConfiguration.GoogleLoginEnabled
+            : runtimeOptions.Enabled;
+        var formClientId = managedClaimed
+            ? instanceConfiguration.GoogleClientId ?? string.Empty
+            : runtimeOptions.ClientId;
 
         html.AppendLine("                  <dl class=\"ops-dl\">");
         AppendDefinition(
@@ -242,9 +272,19 @@ public static class AdminGoogleSettingsPage
             managedClaimed
                 ? "Admin UI managed configuration"
                 : "legacy env (until first save)");
-        AppendDefinition(html, "Client Secret", secretConfigured ? "設定済み" : "未設定");
+        AppendDefinition(
+            html,
+            "Client Secret",
+            secretConfigured
+                ? "設定済み"
+                : managedClaimed ? "未設定" : "managed 未設定");
         AppendDefinition(html, "Redirect URI", redirectUri);
         html.AppendLine("                  </dl>");
+
+        if (!managedClaimed)
+        {
+            html.AppendLine("                  <p class=\"ops-meta\">この保存で managed configuration が authority になります。再起動後は legacy env の Google 設定は使われません。legacy env の Client Secret は表示せず、ファイルへもコピーしません。Google Login を有効なまま切り替えるには新しい Client Secret が必要です。無効への切り替えは Client Secret なしで保存できます。</p>");
+        }
 
         html.AppendLine("                  <form method=\"post\" action=\"/admin/auth-settings\" class=\"stack-form\">");
         html.Append("                    <input type=\"hidden\" name=\"__RequestVerificationToken\" value=\"");
@@ -253,7 +293,7 @@ public static class AdminGoogleSettingsPage
 
         html.AppendLine("                    <label>");
         html.Append("                      <input type=\"checkbox\" name=\"google_login_enabled\" value=\"1\"");
-        if (instanceConfiguration.GoogleLoginEnabled)
+        if (formEnabled)
             html.Append(" checked");
         html.AppendLine("> Google Login を使用する");
         html.AppendLine("                    </label>");
@@ -261,7 +301,7 @@ public static class AdminGoogleSettingsPage
         html.AppendLine("                    <label>");
         html.AppendLine("                      <span>Client ID</span>");
         html.Append("                      <input name=\"client_id\" type=\"text\" autocomplete=\"off\" spellcheck=\"false\" value=\"");
-        html.Append(Html(storedClientId));
+        html.Append(Html(formClientId));
         html.AppendLine("\" placeholder=\"xxxxxxxx.apps.googleusercontent.com\">");
         html.AppendLine("                    </label>");
 
@@ -269,6 +309,8 @@ public static class AdminGoogleSettingsPage
         html.Append("                      <span>Client Secret");
         if (secretConfigured)
             html.Append("（設定済み — 変更時のみ入力）");
+        else if (!managedClaimed)
+            html.Append("（managed 未設定 — 有効なまま切り替える場合は入力）");
         else
             html.Append("（未設定）");
         html.AppendLine("</span>");
@@ -291,6 +333,35 @@ public static class AdminGoogleSettingsPage
         AdminLayout.AppendDocumentEnd(html);
         return html.ToString();
     }
+
+    internal static string? ResolveSecretRefForUpdate(
+        bool secretWasWritten,
+        string secretPath,
+        string? currentSecretRef)
+    {
+        if (secretWasWritten)
+            return secretPath;
+
+        if (AdminGoogleSecretStore.IsSecretConfigured(currentSecretRef))
+            return currentSecretRef;
+
+        if (AdminGoogleSecretStore.IsSecretConfigured(secretPath))
+            return secretPath;
+
+        return null;
+    }
+
+    private static bool RequiresNewSecretForManagedCutover(
+        bool managedClaimed,
+        bool enabled,
+        string newSecret,
+        string? currentSecretRef,
+        string secretPath) =>
+        !managedClaimed
+        && enabled
+        && string.IsNullOrWhiteSpace(newSecret)
+        && !AdminGoogleSecretStore.IsSecretConfigured(currentSecretRef)
+        && !AdminGoogleSecretStore.IsSecretConfigured(secretPath);
 
     internal static string BuildRedirectUri(HttpContext context)
     {

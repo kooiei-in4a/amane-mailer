@@ -41,6 +41,7 @@ Mailer が所有する次の項目をバックアップします:
 | --- | --- | --- |
 | SQLite データベース | `/app/data/mailer.db` に mount される `./data/mailer.db` | DB 単体経路では `backup-mailer.sh` の対象。`Amane.Mailer db backup` を使い、稼働中の WAL DB ファイルを直接コピーしない。管理操作監査ログ（`admin_audit_events`）と Admin Google identity mapping（`admin_google_identities`、migration 021）も同一 DB に含まれ、バックアップ・リストアで一緒に保全される |
 | managed provider secret | `MAILER_DATA_PATH/secrets/acs/acs_connection_string`（コンテナ内 `/app/data/secrets/acs/acs_connection_string`） | initialized v2 の DB が参照する保護済みファイル。full instance backup では DB と同じ archive に含める。`MAILER_ACS_SECRET_HOST_PATH` の `/run/secrets/acs` mount は read-only の互換／手動登録経路であり、二つ目の authority ではない |
+| managed Google Client Secret | `MAILER_DATA_PATH/secrets/admin_google/client_secret`（コンテナ内 `/app/data/secrets/admin_google/client_secret`） | Admin UI が保存した managed Google Client Secret。file が存在する instance だけ full instance archive に含める。未設定の instance と、この file を含まない旧 archive は必須項目にしない。file mode は 600、directory は owner-only。内容はログ・shell 出力に出さない。この path 以外の secret は archive 境界に加えない |
 | committed attachment spool | `MAILER_DATA_PATH/attachment-spool/committed`（コンテナ内 `/app/data/attachment-spool/committed`） | accepted request の未完了送信に必要な durable spool。full instance backup で含める。request-id と spool-key の opaque なパスだけを扱う |
 | transient attachment staging | `MAILER_DATA_PATH/attachment-spool/staging` | full archive から除外。起動時に orphan staging が cleanup されるため、復元対象の durable state ではない |
 | bootstrap token / logs / backup staging | `MAILER_DATA_PATH/bootstrap`、`logs`、`backups` | full archive から除外。bootstrap token は initialized state の authority ではなく、logs と既存 backup 成果物は復元入力にしない |
@@ -61,19 +62,22 @@ instance の固定された最小復元単位だけを、次の archive entry �
 - `mailer.db`
 - `secrets/acs/acs_connection_string`
 - `attachment-spool/committed/` と、その下の Mailer が生成した opaque spool files
+- `secrets/admin_google/client_secret`（任意。file が存在するときだけ。未設定 instance では作らない。旧 archive との restore 互換を壊さない）
 
 実際の入力は、停止したサービス・migration container が共有する
 `MAILER_DATA_PATH` です。DB の `provider_secret_ref` がこの data root 外を指す古い／手動構成は、
 そのまま full backup しません。まず secret の authority と mount を運用メモで reconcile
 し、initialized DB が参照する secret を保護済み data-root 配下にそろえてから取得します。
 script は data-root 配下の canonical ACS secret、owner-only permission、committed spool
-の形を preflight します。
+の形を preflight します。managed Google Client Secret file が存在する場合は、それも
+regular file・非空・owner-only であり、親 directory も owner-only であることを確認します。
+内容は読み出してログに書きません。file が無い instance ではこの項目を省略します。
 
 full backup の cold 条件は次のとおりです。script 自体はサービスを停止・起動しません。
 operator が先に `mailer`、`mailer-migrate`、`mailer-acs-admin` を停止し、script が
 Compose の running service 一覧を再確認します。SQLite の `-wal`、`-shm`、`-journal`
-sidecar が残っている場合も失敗させます。これにより、DB と secret と committed spool
-が同じ停止点の状態になります。
+sidecar が残っている場合も失敗させます。これにより、DB と secret と committed spool、
+および存在する場合の managed Google Client Secret が同じ停止点の状態になります。
 
 `attachment-spool/staging`、bootstrap token、logs、`data/backups`、tenant JSON、
 `.env`、`platform-sender.json`、bounce queue の外部 secret はこの archive に混ぜません。
@@ -84,7 +88,7 @@ Mailer state とは別の backup unit です。
 ## 安全原則
 
 - Mailer DB バックアップは、稼働中サービスコンテナ内から SQLite オンラインバックアップ API を使う `./Amane.Mailer db backup` で取得する。
-- full instance backup は停止確認後にだけ取得し、DB・canonical provider secret・committed spool を同じ cold point から固定する。
+- full instance backup は停止確認後にだけ取得し、DB・canonical provider secret・committed spool と、存在する場合の managed Google Client Secret を同じ cold point から固定する。
 - full instance backup は明示した state path だけを tar に入れる。generic な全 volume 探索や `data/` 全体の再帰コピーは行わない。
 - 平文 `.db` バックアップはオフサイト転送前に必ず暗号化する。
 - full instance の平文 `.tar` も、data volume や backup remote に残さず age の一時入力としてだけ扱う。
@@ -218,8 +222,10 @@ Mailer runtime が止まっていることを確認してから script を実行
 
 期待される成果物は `data/backups/mailer-state-YYYYMMDDTHHmmssZ.tar.age` です。archive
 には `mailer.db`、`secrets/acs/acs_connection_string`、`attachment-spool/committed`
-だけが入り、staging、bootstrap token、logs、既存 backup、age identity は入りません。
-ACS secret はログや shell 出力に表示せず、archive の作成後には平文 tar を削除します。
+が入り、managed Google Client Secret が data root に存在する場合だけ
+`secrets/admin_google/client_secret` も入ります。未設定の instance ではその file を
+必須にしません。staging、bootstrap token、logs、既存 backup、age identity は入りません。
+ACS secret と Google Client Secret はログや shell 出力に表示せず、archive の作成後には平文 tar を削除します。
 暗号化と offsite upload の失敗時はローカルの未完成成果物も cleanup し、
 `MAILER_BACKUP_REQUIRE_OFFSITE=true` では remote 未設定・upload 失敗を成功扱いにしません。
 

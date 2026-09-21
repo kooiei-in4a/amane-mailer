@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Cold backup of the managed Mailer instance state: SQLite, the registered provider
-# secret, and committed attachment spool. This is deliberately separate from
-# backup-mailer.sh, which remains the online SQLite-only backup command.
+# secret, committed attachment spool, and, when present, the managed Google
+# Client Secret file. This is deliberately separate from backup-mailer.sh, which
+# remains the online SQLite-only backup command. The Google secret is optional
+# managed state: instances that have not saved one omit it, and restore still
+# accepts older archives that do not contain it.
 set -Eeuo pipefail
 umask 077
 
@@ -79,6 +82,9 @@ DATA_DIR="$(cd -P -- "$DATA_CANDIDATE" && pwd -P)"
 DB_PATH="$DATA_DIR/mailer.db"
 ACS_SECRET_PATH="$DATA_DIR/secrets/acs/acs_connection_string"
 ACS_SECRET_DIR="$(dirname -- "$ACS_SECRET_PATH")"
+GOOGLE_SECRET_RELATIVE="secrets/admin_google/client_secret"
+GOOGLE_SECRET_PATH="$DATA_DIR/$GOOGLE_SECRET_RELATIVE"
+GOOGLE_SECRET_DIR="$(dirname -- "$GOOGLE_SECRET_PATH")"
 COMMITTED_SPOOL_PATH="$DATA_DIR/attachment-spool/committed"
 BACKUP_DIR="$DATA_DIR/backups"
 
@@ -161,10 +167,10 @@ require_directory() {
 }
 
 require_owner_only() {
-  local path="$1" mode mode_value
+  local path="$1" label="${2:-provider secret state}" mode mode_value
   mode="$(stat -c '%a' -- "$path")" || fail "could not inspect state permissions"
   mode_value=$((8#$mode))
-  (( (mode_value & 077) == 0 )) || fail "provider secret state is not owner-only"
+  (( (mode_value & 077) == 0 )) || fail "$label is not owner-only"
 }
 
 validate_provider_secret() {
@@ -176,6 +182,17 @@ validate_provider_secret() {
   grep -Eiq '(^|[;[:space:]])accesskey=[^;[:space:]]+' "$ACS_SECRET_PATH" \
     || fail "provider secret state does not contain an access key"
   require_owner_only "$ACS_SECRET_DIR"
+}
+
+validate_google_secret() {
+  # Presence is optional. When the file exists it is managed state and must be
+  # owner-only. Do not read or print the secret contents.
+  require_regular_file "$GOOGLE_SECRET_PATH"
+  require_owner_only "$GOOGLE_SECRET_PATH" "Google Client Secret state"
+  [ -s "$GOOGLE_SECRET_PATH" ] || fail "Google Client Secret state is empty"
+  [ ! -L "$GOOGLE_SECRET_DIR" ] && [ -d "$GOOGLE_SECRET_DIR" ] \
+    || fail "Google Client Secret directory is missing or unsafe"
+  require_owner_only "$GOOGLE_SECRET_DIR" "Google Client Secret directory"
 }
 
 validate_committed_spool() {
@@ -210,6 +227,12 @@ require_regular_file "$DB_PATH"
 validate_provider_secret
 validate_committed_spool
 
+archive_members=(mailer.db secrets/acs/acs_connection_string attachment-spool/committed)
+if [ -e "$GOOGLE_SECRET_PATH" ] || [ -L "$GOOGLE_SECRET_PATH" ]; then
+  validate_google_secret
+  archive_members+=("$GOOGLE_SECRET_RELATIVE")
+fi
+
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/amane-mailer-instance-backup.XXXXXX")"
 chmod 700 -- "$TEMP_DIR"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -224,7 +247,7 @@ ENCRYPTED="$BACKUP_DIR/$ENCRYPTED_BASENAME"
 echo "[1/4] Creating cold Mailer instance archive..."
 tar --create --file "$PLAINTEXT" --directory "$DATA_DIR" \
   --format=posix --numeric-owner --owner=0 --group=0 \
-  mailer.db secrets/acs/acs_connection_string attachment-spool/committed
+  "${archive_members[@]}"
 [ -s "$PLAINTEXT" ] || fail "instance archive is missing or empty"
 
 echo "[2/4] Encrypting instance archive with age..."

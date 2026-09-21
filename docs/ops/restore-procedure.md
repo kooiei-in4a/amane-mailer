@@ -35,6 +35,7 @@ full archive の復元単位は次の固定された state です:
 - mailer.db（managed provider、sender、admin credential epoch、request/evidence を含む）
 - secrets/acs/acs_connection_string（コンテナ内 /app/data/secrets/acs/acs_connection_string）
 - attachment-spool/committed/（未完了 accepted request が必要とする opaque files）
+- secrets/admin_google/client_secret（任意。backup 時点で managed Google Client Secret が存在する場合だけ。コンテナ内 /app/data/secrets/admin_google/client_secret。この file を含まない旧 archive も restore できる）
 
 attachment-spool/staging、bootstrap token、logs、data/backups、tenant JSON、.env、
 platform-sender.json、age private key、外部 bounce queue secret、Caddy volume は
@@ -109,7 +110,10 @@ bash /path/to/amane-mailer/infra/deploy/restore-instance-state.sh \
 上の 1654 は説明用の placeholder です。実行時は必ず image/runtime から確認した
 UID/GID に置き換えてください。helper は age で一時領域へ復号し、archive entry を
 固定 boundary と照合してから抽出し、DB と provider secret を 600、secret/spool
-directory を owner-only にします。migration、サービス起動、Caddy 操作は行いません。
+directory を owner-only にします。archive に managed Google Client Secret が含まれる
+場合は、その file を 600、`secrets/admin_google` を owner-only にします。含まれない
+旧 archive は拒否しません。Google Client Secret の内容はログに出しません。
+migration、サービス起動、Caddy 操作は行いません。
 
 ## 復元データの migration と readiness
 
