@@ -176,6 +176,13 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
             command.Parameters.AddWithValue("@Actor", query.Actor);
         }
 
+        if (!string.IsNullOrWhiteSpace(query.Result))
+        {
+            where.AppendLine();
+            where.Append("  AND ae.result = @Result");
+            command.Parameters.AddWithValue("@Result", query.Result);
+        }
+
         if (query.OccurredFrom is not null)
         {
             where.AppendLine();

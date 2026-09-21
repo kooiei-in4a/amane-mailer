@@ -223,6 +223,113 @@ public sealed class AdminAuditLogPageTests(MailerAdminFixture fixture)
     }
 
     [Fact]
+    public async Task Result_filter_returns_matching_rows()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var repository = fixture.Factory.Services.GetRequiredService<AdminAuditRepository>();
+        var occurredAt = new DateTimeOffset(2026, 7, 3, 13, 30, 0, TimeSpan.Zero);
+        await repository.WriteAsync(
+            NewAuthAuditEvent(
+                AdminAuditLog.EventTypes.LoginSucceeded,
+                "result-success-user",
+                occurredAt,
+                AdminAuditLog.Results.Success),
+            ct);
+        await repository.WriteAsync(
+            NewAuthAuditEvent(
+                AdminAuditLog.EventTypes.LoginFailed,
+                "result-failure-user",
+                occurredAt.AddMinutes(1),
+                AdminAuditLog.Results.Failure),
+            ct);
+
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync(
+            $"/admin/audit-log?result={Uri.EscapeDataString(AdminAuditLog.Results.Failure)}",
+            ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("result-failure-user", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("result-success-user", html, StringComparison.Ordinal);
+        Assert.Contains("name=\"result\"", html, StringComparison.Ordinal);
+        Assert.Contains($"value=\"{AdminAuditLog.Results.Failure}\" selected", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Invalid_result_filter_returns_bad_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        using var client = CreateClient(fixture.Factory);
+        await LoginAsync(client, ct);
+
+        using var response = await client.GetAsync("/admin/audit-log?result=anything", ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public void BuildListUrl_preserves_result_with_other_filters_and_cursor()
+    {
+        var url = AdminAuditLogPage.BuildListUrl(
+            selectedEventType: AdminAuditLog.EventTypes.Logout,
+            actorInput: "pager-actor",
+            selectedResult: AdminAuditLog.Results.Failure,
+            selectedFrom: "2026-07-01",
+            selectedTo: "2026-07-31",
+            cursor: "cursor-token");
+
+        Assert.Equal(
+            "/admin/audit-log?event_type=auth.logout&actor=pager-actor&result=failure&from=2026-07-01&to=2026-07-31&cursor=cursor-token",
+            url);
+    }
+
+    [Fact]
+    public async Task Scope_note_matches_current_authorization_contract()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var scopedUsername = "audit-scope-note-" + Guid.NewGuid().ToString("N");
+        var breakGlassUsername = "audit-break-glass-note-" + Guid.NewGuid().ToString("N");
+        const string breakGlassPassword = "break-glass-password-not-real";
+        await CreateScopedUserAsync(scopedUsername, [MailerWebApplicationFixtureBase.TenantId], ct);
+        await fixture.Factory.Services.GetRequiredService<AdminUserRepository>()
+            .CreateBreakGlassUserAsync(
+                breakGlassUsername,
+                AdminPasswordHasher.Hash(breakGlassPassword),
+                ct);
+
+        using var scopedClient = CreateClient(fixture.Factory);
+        await LoginAsync(scopedClient, scopedUsername, TenantAdminPassword(scopedUsername), ct);
+        using var scopedResponse = await scopedClient.GetAsync("/admin/audit-log", ct);
+        var scopedHtml = await scopedResponse.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.OK, scopedResponse.StatusCode);
+        Assert.Contains(
+            "scoped 管理者: <code>mail_request</code> / <code>mail_suppressions</code> 対象イベントは許可 tenant のみ表示します。",
+            scopedHtml,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "break-glass 管理者: 全監査イベントを閲覧できます。",
+            scopedHtml,
+            StringComparison.Ordinal);
+
+        using var breakGlassClient = CreateClient(fixture.Factory);
+        await LoginAsync(breakGlassClient, breakGlassUsername, breakGlassPassword, ct);
+        using var breakGlassResponse = await breakGlassClient.GetAsync("/admin/audit-log", ct);
+        var breakGlassHtml = await breakGlassResponse.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.OK, breakGlassResponse.StatusCode);
+        Assert.Contains(
+            "break-glass 管理者: Managed configuration（<code>sender</code> / <code>api_key</code> / <code>instance_configuration</code> / <code>admin_user</code>）対象イベントは表示しません（instance owner のみ）。それ以外の監査イベントは閲覧できます。",
+            breakGlassHtml,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "break-glass 管理者: 全監査イベントを閲覧できます。",
+            breakGlassHtml,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Audit_detail_returns_not_found_for_out_of_scope_mail_request_event()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -299,14 +406,15 @@ public sealed class AdminAuditLogPageTests(MailerAdminFixture fixture)
     private static AdminAuditEvent NewAuthAuditEvent(
         string eventType,
         string actor,
-        DateTimeOffset occurredAt) =>
+        DateTimeOffset occurredAt,
+        string result = AdminAuditLog.Results.Success) =>
         new()
         {
             EventType = eventType,
             Actor = actor,
             OccurredAt = occurredAt,
             TargetType = AdminAuditLog.TargetTypes.AdminSession,
-            Result = AdminAuditLog.Results.Success,
+            Result = result,
         };
 
     private async Task CreateScopedUserAsync(

@@ -441,6 +441,42 @@ public sealed class AdminAuditRepositoryTests
         Assert.Equal("alpha", row.Actor);
     }
 
+    [Fact]
+    public async Task List_for_admin_applies_result_filter()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var db = await AuditTestDatabase.CreateAsync(ct);
+        var repository = new AdminAuditRepository(db.Factory);
+
+        var occurredAt = new DateTimeOffset(2026, 6, 27, 13, 30, 0, TimeSpan.Zero);
+        await repository.WriteAsync(
+            NewAuthAuditEvent(
+                AdminAuditLog.EventTypes.LoginSucceeded,
+                "result-success",
+                occurredAt,
+                AdminAuditLog.Results.Success),
+            ct);
+        await repository.WriteAsync(
+            NewAuthAuditEvent(
+                AdminAuditLog.EventTypes.LoginFailed,
+                "result-failure",
+                occurredAt.AddMinutes(1),
+                AdminAuditLog.Results.Failure),
+            ct);
+
+        var page = await repository.ListForAdminAsync(
+            new AdminAuditListQuery
+            {
+                Result = AdminAuditLog.Results.Failure,
+                PageSize = 50,
+            },
+            ct);
+
+        var row = Assert.Single(page.Items);
+        Assert.Equal("result-failure", row.Actor);
+        Assert.Equal(AdminAuditLog.Results.Failure, row.Result);
+    }
+
     private static AdminAuditEvent NewSuppressionsListUnmaskedEvent(
         Guid tenantId,
         DateTimeOffset occurredAt,
@@ -507,14 +543,15 @@ public sealed class AdminAuditRepositoryTests
     private static AdminAuditEvent NewAuthAuditEvent(
         string eventType,
         string actor,
-        DateTimeOffset occurredAt) =>
+        DateTimeOffset occurredAt,
+        string result = AdminAuditLog.Results.Success) =>
         new()
         {
             EventType = eventType,
             Actor = actor,
             OccurredAt = occurredAt,
             TargetType = AdminAuditLog.TargetTypes.AdminSession,
-            Result = AdminAuditLog.Results.Success,
+            Result = result,
         };
 
     private static async Task SeedMailRequestAsync(

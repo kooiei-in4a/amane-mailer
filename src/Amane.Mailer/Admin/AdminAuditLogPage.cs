@@ -49,6 +49,17 @@ public static class AdminAuditLogPage
                 return Results.Text("Invalid actor filter.", statusCode: StatusCodes.Status400BadRequest);
         }
 
+        var selectedResult = queryParams["result"].ToString();
+        if (!string.IsNullOrWhiteSpace(selectedResult)
+            && !string.Equals(selectedResult, AdminAuditLog.Results.Success, StringComparison.Ordinal)
+            && !string.Equals(selectedResult, AdminAuditLog.Results.Failure, StringComparison.Ordinal))
+        {
+            return Results.Text("Invalid result filter.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (string.IsNullOrWhiteSpace(selectedResult))
+            selectedResult = string.Empty;
+
         if (!TryParseDateFilter(queryParams["from"].ToString(), out var occurredFrom, out var selectedFrom))
             return Results.Text("Invalid from filter.", statusCode: StatusCodes.Status400BadRequest);
 
@@ -74,6 +85,7 @@ public static class AdminAuditLogPage
             {
                 EventType = string.IsNullOrWhiteSpace(selectedEventType) ? null : selectedEventType,
                 Actor = selectedActor,
+                Result = string.IsNullOrWhiteSpace(selectedResult) ? null : selectedResult,
                 OccurredFrom = occurredFrom,
                 OccurredToExclusive = occurredToExclusive,
                 AllowedTenantIds = access.AllowedTenantIdsForQuery,
@@ -96,6 +108,7 @@ public static class AdminAuditLogPage
                 access,
                 selectedEventType,
                 actorInput,
+                selectedResult,
                 selectedFrom,
                 selectedTo,
                 cursorValue,
@@ -109,6 +122,7 @@ public static class AdminAuditLogPage
         AdminTenantAccess access,
         string selectedEventType,
         string actorInput,
+        string selectedResult,
         string selectedFrom,
         string selectedTo,
         string? currentCursor,
@@ -134,6 +148,7 @@ public static class AdminAuditLogPage
 
         AppendEventTypeFilter(html, selectedEventType);
         AppendActorFilter(html, actorInput);
+        AppendResultFilter(html, selectedResult);
         AppendDateFilter(html, "from", "開始日", selectedFrom);
         AppendDateFilter(html, "to", "終了日", selectedTo);
 
@@ -183,6 +198,7 @@ public static class AdminAuditLogPage
             html,
             selectedEventType,
             actorInput,
+            selectedResult,
             selectedFrom,
             selectedTo,
             currentCursor,
@@ -202,11 +218,11 @@ public static class AdminAuditLogPage
         }
         else if (access.IsBreakGlass)
         {
-            html.AppendLine("                    break-glass 管理者: 全監査イベントを閲覧できます。");
+            html.AppendLine("                    break-glass 管理者: Managed configuration（<code>sender</code> / <code>api_key</code> / <code>instance_configuration</code> / <code>admin_user</code>）対象イベントは表示しません（instance owner のみ）。それ以外の監査イベントは閲覧できます。");
         }
         else
         {
-            html.AppendLine("                    scoped 管理者: <code>mail_request</code> 対象イベントは許可 tenant のみ表示します。");
+            html.AppendLine("                    scoped 管理者: <code>mail_request</code> / <code>mail_suppressions</code> 対象イベントは許可 tenant のみ表示します。");
             html.AppendLine("                    認証・セッションイベントは tenant 非依存のため service-wide で表示します（PII は含みません）。");
         }
 
@@ -259,6 +275,24 @@ public static class AdminAuditLogPage
         html.Append(Html(actorInput));
         html.AppendLine("\">");
         html.AppendLine("                    </label>");
+    }
+
+    private static void AppendResultFilter(StringBuilder html, string selectedResult)
+    {
+        html.AppendLine("""
+                    <label>
+                      <span>結果</span>
+                      <select name="result">
+            """);
+
+        AppendOption(html, string.Empty, "全", selectedResult);
+        AppendOption(html, AdminAuditLog.Results.Success, AdminAuditLog.Results.Success, selectedResult);
+        AppendOption(html, AdminAuditLog.Results.Failure, AdminAuditLog.Results.Failure, selectedResult);
+
+        html.AppendLine("""
+                      </select>
+                    </label>
+            """);
     }
 
     private static void AppendDateFilter(StringBuilder html, string name, string label, string value)
@@ -330,6 +364,7 @@ public static class AdminAuditLogPage
         StringBuilder html,
         string selectedEventType,
         string actorInput,
+        string selectedResult,
         string selectedFrom,
         string selectedTo,
         string? currentCursor,
@@ -352,7 +387,13 @@ public static class AdminAuditLogPage
         else
         {
             html.Append("                  <a class=\"pager-link\" href=\"");
-            html.Append(Html(BuildListUrl(selectedEventType, actorInput, selectedFrom, selectedTo, nextCursor)));
+            html.Append(Html(BuildListUrl(
+                selectedEventType,
+                actorInput,
+                selectedResult,
+                selectedFrom,
+                selectedTo,
+                nextCursor)));
             html.AppendLine("\">次へ</a>");
         }
 
@@ -362,6 +403,7 @@ public static class AdminAuditLogPage
     internal static string BuildListUrl(
         string selectedEventType,
         string actorInput,
+        string selectedResult,
         string selectedFrom,
         string selectedTo,
         string? cursor)
@@ -371,6 +413,8 @@ public static class AdminAuditLogPage
             query.Add(new("event_type", selectedEventType));
         if (!string.IsNullOrWhiteSpace(actorInput))
             query.Add(new("actor", actorInput));
+        if (!string.IsNullOrWhiteSpace(selectedResult))
+            query.Add(new("result", selectedResult));
         if (!string.IsNullOrWhiteSpace(selectedFrom))
             query.Add(new("from", selectedFrom));
         if (!string.IsNullOrWhiteSpace(selectedTo))
