@@ -393,37 +393,16 @@ if (instanceState.IsUninitialized)
 }
 
 app.MapGet("/readyz", async (
-    InstanceRuntimeState runtimeState,
-    SqlMigrationRunner migrationRunner,
-    WorkerServiceStatus serviceStatus,
-    MailRequestRepository repository,
-    MailerHealthcheckOptions healthcheckOptions,
-    MailerReadinessEvaluator readinessEvaluator,
-    IConfiguration configuration,
+    MailerRuntimeReadinessProbe readinessProbe,
     CancellationToken cancellationToken) =>
 {
-    if (runtimeState.IsInitialized
-        && string.Equals(runtimeState.ProviderType, "acs", StringComparison.Ordinal)
-        && (string.IsNullOrWhiteSpace(runtimeState.ProviderSecretRef)
-            || !FirstRunSetupStorage.TryReadValidAcsSecret(runtimeState.ProviderSecretRef, out _)))
-    {
-        return MailerJsonResults.Ready(
-            false,
-            StatusCodes.Status503ServiceUnavailable,
-            MailerReadinessReasons.ProviderSecretMissing);
-    }
+    var result = await readinessProbe.ProbeAsync(cancellationToken);
 
-    var workerEnabled = MailerWorkerOptions.IsEnabled(configuration);
-    var result = await readinessEvaluator.EvaluateAsync(
-        migrationRunner,
-        serviceStatus,
-        repository,
-        healthcheckOptions,
-        workerEnabled,
-        cancellationToken);
+    if (result.IsReady)
+        return MailerJsonResults.Ready(true);
 
-    return result.IsReady
-        ? MailerJsonResults.Ready(true)
+    return result.FailureReason == MailerReadinessReasons.ProviderSecretMissing
+        ? MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable, result.FailureReason)
         : MailerJsonResults.Ready(false, StatusCodes.Status503ServiceUnavailable);
 });
 

@@ -114,6 +114,7 @@ public static class AmaneMailerServiceCollectionExtensions
 
         services.AddSingleton<MailerRuntimeMetrics>();
         services.AddSingleton<MailerReadinessEvaluator>();
+        services.AddSingleton<MailerRuntimeReadinessProbe>();
 
         services.AddSingleton<SenderRepository>();
         services.AddSingleton<SenderDeliveryConfigurationAdapter>();

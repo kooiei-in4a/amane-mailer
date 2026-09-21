@@ -62,13 +62,16 @@ public static class AdminSecretsPage
 
         var managedAcs = IsManagedAcs(instanceConfiguration);
         var acsPath = managedAcs ? instanceConfiguration!.ProviderSecretRef : null;
-        var currentAcsSecret = string.Empty;
-        var acsConfigured = managedAcs
-            && FirstRunSetupStorage.TryReadValidAcsSecret(acsPath!, out currentAcsSecret);
-        currentAcsSecret = acsConfigured ? currentAcsSecret : string.Empty;
-        var acsRuntime = acsConfigured
-            ? ResolveAcsRuntimeDisplay(mailerOptions.AcsConnectionString, currentAcsSecret)
-            : RuntimeUnavailable;
+        var acsStatus = AdminAcsRuntimeStatusReader.Evaluate(
+            instanceConfiguration,
+            mailerOptions.AcsConnectionString);
+        var acsConfigured = acsStatus.Configured;
+        var acsRuntime = acsStatus.RuntimeState switch
+        {
+            AdminAcsRuntimeState.Applied => RuntimeApplied,
+            AdminAcsRuntimeState.RestartPending => RuntimeRestartPending,
+            _ => RuntimeUnavailable,
+        };
         var acsUpdated = acsConfigured ? GetAcsFileUpdatedUtc(acsPath) : null;
 
         var googleStatus = AdminGoogleSettingsStatus.Evaluate(
@@ -217,38 +220,18 @@ public static class AdminSecretsPage
     }
 
     internal static bool IsManagedAcs(InstanceConfigurationRow? instanceConfiguration) =>
-        instanceConfiguration?.InitializedAt is not null
-        && string.Equals(instanceConfiguration.ProviderType, "acs", StringComparison.Ordinal)
-        && !string.IsNullOrWhiteSpace(instanceConfiguration.ProviderSecretRef);
+        AdminAcsRuntimeStatusReader.IsManagedAcs(instanceConfiguration);
 
-    internal static string ResolveAcsRuntimeDisplay(string startupSecret, string currentSecret)
-    {
-        if (string.IsNullOrWhiteSpace(startupSecret) || string.IsNullOrWhiteSpace(currentSecret))
-            return RuntimeUnavailable;
-
-        return SecretsMatch(startupSecret, currentSecret)
-            ? RuntimeApplied
-            : RuntimeRestartPending;
-    }
-
-    internal static bool SecretsMatch(string startupSecret, string currentSecret)
-    {
-        var startupBytes = Encoding.UTF8.GetBytes(startupSecret.Trim());
-        var currentBytes = Encoding.UTF8.GetBytes(currentSecret.Trim());
-        var startupDigest = SHA256.HashData(startupBytes);
-        var currentDigest = SHA256.HashData(currentBytes);
-        try
+    internal static string ResolveAcsRuntimeDisplay(string startupSecret, string currentSecret) =>
+        AdminAcsRuntimeStatusReader.Classify(startupSecret, currentSecret) switch
         {
-            return CryptographicOperations.FixedTimeEquals(startupDigest, currentDigest);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(startupBytes);
-            CryptographicOperations.ZeroMemory(currentBytes);
-            CryptographicOperations.ZeroMemory(startupDigest);
-            CryptographicOperations.ZeroMemory(currentDigest);
-        }
-    }
+            AdminAcsRuntimeState.Applied => RuntimeApplied,
+            AdminAcsRuntimeState.RestartPending => RuntimeRestartPending,
+            _ => RuntimeUnavailable,
+        };
+
+    internal static bool SecretsMatch(string startupSecret, string currentSecret) =>
+        AdminAcsRuntimeStatusReader.SecretsMatch(startupSecret, currentSecret);
 
     internal static string ResolveAcsBackupDisplay(string? secretPath, bool managedAcs) =>
         managedAcs && IsCanonicalPath(secretPath, FirstRunSetupConstants.DefaultAcsSecretPath)

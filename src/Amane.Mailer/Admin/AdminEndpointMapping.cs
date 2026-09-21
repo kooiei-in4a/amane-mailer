@@ -23,6 +23,7 @@ internal static class AdminEndpointMapping
                 AdminGoogleAuthenticationHandlers.LinkAsync)
             .AllowAnonymous();
         app.MapGet("/admin/mail-requests", AdminMailRequestsPage.RenderAsync).RequireAuthorization();
+        app.MapGet(AdminOverviewPage.PagePath, AdminOverviewPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/senders", AdminSendersPage.RenderAsync).RequireAuthorization();
         app.MapGet("/admin/senders/{senderId:guid}", AdminSendersPage.RenderDetailAsync).RequireAuthorization();
         app.MapGet("/admin/dead-letters", AdminDeadLettersPage.RenderAsync).RequireAuthorization();
