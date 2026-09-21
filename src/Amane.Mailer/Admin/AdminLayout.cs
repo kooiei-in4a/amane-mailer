@@ -8,6 +8,7 @@ namespace Amane.Mailer.Admin;
 public enum AdminNavItem
 {
     MailRequests,
+    Overview,
     Senders,
     DeadLetters,
     Suppressions,
@@ -116,6 +117,17 @@ public static class AdminLayout
             Icons.Warning,
             activeNav == AdminNavItem.DeadLetters,
             badgeCount: deadLetterCount);
+        if (access?.IsInstanceOwner == true)
+        {
+            AppendNavItem(
+                html,
+                AdminOverviewPage.PagePath,
+                "システム状態",
+                Icons.Activity,
+                activeNav == AdminNavItem.Overview,
+                badgeCount: null);
+        }
+
         AppendNavItem(
             html,
             "/admin/suppressions",

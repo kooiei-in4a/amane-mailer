@@ -685,6 +685,36 @@ body {
   font-size: 0.9rem;
 }
 
+.admin-overview-status {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.admin-overview-status--ok {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.admin-overview-status--attention {
+  color: #8a4b00;
+  background: #fff1d6;
+}
+
+.admin-overview-status--action-required {
+  color: #9f1239;
+  background: #ffe4e6;
+}
+
+.admin-overview-status--info,
+.admin-overview-status--unavailable {
+  color: #475569;
+  background: #edf1f5;
+}
+
 .ops-table {
   min-width: 480px;
 }
