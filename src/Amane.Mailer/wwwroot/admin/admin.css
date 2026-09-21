@@ -854,6 +854,7 @@ body {
 
 .stack-form input[type="text"],
 .stack-form input[type="email"],
+.stack-form input[type="password"],
 .stack-form input:not([type]) {
   min-height: 38px;
   padding: 0 10px;

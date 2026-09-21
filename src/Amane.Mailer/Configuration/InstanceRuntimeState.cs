@@ -21,7 +21,11 @@ public sealed record InstanceRuntimeState(
     string? ProviderType,
     string? ProviderSecretRef,
     string? ProviderConfiguredAt,
-    bool HasInstanceOwner)
+    bool HasInstanceOwner,
+    bool GoogleLoginEnabled = false,
+    string? GoogleClientId = null,
+    string? GoogleClientSecretRef = null,
+    string? GoogleConfiguredAt = null)
 {
     public bool IsUninitialized => Kind == InstanceRuntimeStateKind.Uninitialized;
 
@@ -52,20 +56,36 @@ public static class InstanceRuntimeStateProbe
                 return InstanceRuntimeState.Unknown;
             }
 
+            var hasGoogleColumns = await HasGoogleLoginSettingsColumnsAsync(connection, cancellationToken);
+
             await using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT initialized_at, live_sending, provider_type,
-                       provider_secret_ref, provider_configured_at
-                FROM instance_configuration
-                WHERE id = 1
-                LIMIT 1;
-                """;
+            command.CommandText = hasGoogleColumns
+                ? """
+                    SELECT initialized_at, live_sending, provider_type,
+                           provider_secret_ref, provider_configured_at,
+                           google_login_enabled, google_client_id,
+                           google_client_secret_ref, google_configured_at
+                    FROM instance_configuration
+                    WHERE id = 1
+                    LIMIT 1;
+                    """
+                : """
+                    SELECT initialized_at, live_sending, provider_type,
+                           provider_secret_ref, provider_configured_at
+                    FROM instance_configuration
+                    WHERE id = 1
+                    LIMIT 1;
+                    """;
 
             string? initializedAt;
             bool liveSending;
             string? providerType;
             string? providerSecretRef;
             string? providerConfiguredAt;
+            var googleLoginEnabled = false;
+            string? googleClientId = null;
+            string? googleClientSecretRef = null;
+            string? googleConfiguredAt = null;
             await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
             {
                 if (!await reader.ReadAsync(cancellationToken))
@@ -78,6 +98,13 @@ public static class InstanceRuntimeStateProbe
                 providerType = reader.IsDBNull(2) ? null : reader.GetString(2);
                 providerSecretRef = reader.IsDBNull(3) ? null : reader.GetString(3);
                 providerConfiguredAt = reader.IsDBNull(4) ? null : reader.GetString(4);
+                if (hasGoogleColumns)
+                {
+                    googleLoginEnabled = reader.GetInt32(5) == 1;
+                    googleClientId = reader.IsDBNull(6) ? null : reader.GetString(6);
+                    googleClientSecretRef = reader.IsDBNull(7) ? null : reader.GetString(7);
+                    googleConfiguredAt = reader.IsDBNull(8) ? null : reader.GetString(8);
+                }
             }
 
             var hasInstanceOwner = initializedAt is not null
@@ -92,7 +119,11 @@ public static class InstanceRuntimeStateProbe
                 providerType,
                 providerSecretRef,
                 providerConfiguredAt,
-                hasInstanceOwner);
+                hasInstanceOwner,
+                googleLoginEnabled,
+                googleClientId,
+                googleClientSecretRef,
+                googleConfiguredAt);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -134,6 +165,22 @@ public static class InstanceRuntimeStateProbe
             // A database stopped before migration 020 is not an initialized v2 runtime.
             return false;
         }
+    }
+
+    private static async Task<bool> HasGoogleLoginSettingsColumnsAsync(
+        SqliteConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA table_info(instance_configuration);";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(reader.GetString(1), "google_configured_at", StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     private static async Task<bool> HasTableAsync(

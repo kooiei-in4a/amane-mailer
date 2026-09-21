@@ -43,7 +43,9 @@ internal static class AdminServiceRegistration
         services.AddSingleton<AdminUserRepository>();
         services.AddSingleton<AdminGoogleIdentityRepository>();
         services.AddStartupValidatedSingleton(provider =>
-            AdminGoogleOptions.Load(provider.GetRequiredService<IConfiguration>()));
+            AdminGoogleOptions.Load(
+                provider.GetRequiredService<IConfiguration>(),
+                instanceState));
         services.AddSingleton<AdminLoginThrottleRepository>();
         services.AddSingleton<AdminDeadLetterCountCache>();
         services.AddStartupValidatedSingleton(provider =>
@@ -135,12 +137,13 @@ internal static class AdminServiceRegistration
                 cookie.Cookie.SecurePolicy = transport.SecurePolicy;
             });
         services.AddOptions<GoogleOptions>(AdminGoogleAuthenticationConstants.AuthenticationScheme)
-            .Configure<IHostEnvironment, IConfiguration, MailerAdminOptions>((google, environment, resolvedConfiguration, adminOptions) =>
+            .Configure<IHostEnvironment, IConfiguration, MailerAdminOptions>(
+                (google, environment, resolvedConfiguration, adminOptions) =>
             {
-                var loaded = AdminGoogleOptions.Load(resolvedConfiguration);
+                var loaded = AdminGoogleOptions.Load(resolvedConfiguration, instanceState);
                 google.ClientId = loaded.Enabled ? loaded.ClientId : DisabledGoogleClientPlaceholder;
                 google.ClientSecret = loaded.Enabled
-                    ? AdminGoogleOptions.ReadClientSecret(resolvedConfiguration)
+                    ? AdminGoogleOptions.ReadClientSecret(resolvedConfiguration, instanceState)
                     : DisabledGoogleClientPlaceholder;
                 var transport = AdminCookieTransportPolicy.Resolve(
                     AdminCookieTransportPolicy.IsAllowHttpRequested(resolvedConfiguration, adminOptions.Enabled),

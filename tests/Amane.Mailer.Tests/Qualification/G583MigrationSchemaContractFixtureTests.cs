@@ -19,6 +19,7 @@ public sealed class G583MigrationSchemaContractFixtureTests
             ["019_sender_api_key_identity.sql"] = "3bc715bed02f186101e8a580a7410198a8ceeed6407a6ed773c7397200ec7d76",
             ["020_instance_configuration.sql"] = "5fe5a19ecf265d4a5d67a7f1c67bc360ac5885bb961c3ef35d92c5f0499a033b",
             ["021_admin_google_identities.sql"] = "608c53695fcd8163e31e6d62c8416b333bd1818ff06970c8d9f8f3aebf10e89c",
+            ["022_admin_google_login_settings.sql"] = "0f5557dd2996acba271e4ec394e17a6b7606e2b82ce70611089156ffc9b25bdf",
         };
 
     [Fact]
@@ -45,8 +46,8 @@ public sealed class G583MigrationSchemaContractFixtureTests
                     .Build());
             var runner = new SqlMigrationRunner(factory);
             var applied = await runner.ApplyPendingAsync(cancellationToken);
-            Assert.Equal(21, applied.Count);
-            Assert.Equal("021_admin_google_identities.sql", applied[^1]);
+            Assert.Equal(22, applied.Count);
+            Assert.Equal("022_admin_google_login_settings.sql", applied[^1]);
             Assert.True(await runner.IsCurrentSchemaReadyAsync(cancellationToken));
 
             await using var connection = await factory.OpenConnectionAsync(cancellationToken);
@@ -168,6 +169,12 @@ public sealed class G583MigrationSchemaContractFixtureTests
         var capabilities = await ReadTableSqlAsync(connection, "admin_user_capabilities", cancellationToken);
         Assert.Contains("PRIMARY KEY (admin_user_id, capability)", capabilities, StringComparison.Ordinal);
         Assert.Contains("CHECK (length(capability) > 0)", capabilities, StringComparison.Ordinal);
+
+        var instanceConfiguration = await ReadTableSqlAsync(connection, "instance_configuration", cancellationToken);
+        Assert.Contains("google_login_enabled", instanceConfiguration, StringComparison.Ordinal);
+        Assert.Contains("google_client_id", instanceConfiguration, StringComparison.Ordinal);
+        Assert.Contains("google_client_secret_ref", instanceConfiguration, StringComparison.Ordinal);
+        Assert.Contains("google_configured_at", instanceConfiguration, StringComparison.Ordinal);
     }
 
     private static async Task<HashSet<string>> ReadNamesAsync(

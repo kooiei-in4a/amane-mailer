@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Restore a cold managed Mailer archive into a fresh, empty data directory.
 # This script never stops/starts Compose services and never overwrites a non-empty target.
+# secrets/admin_google/client_secret is optional managed state: archives that
+# contain it are restored with owner-only permissions, and older archives that
+# omit it remain valid.
 set -Eeuo pipefail
 umask 077
 
@@ -146,7 +149,7 @@ while IFS= read -r entry; do
   esac
 
   case "$entry" in
-    mailer.db|secrets/acs/acs_connection_string|attachment-spool/committed)
+    mailer.db|secrets/acs/acs_connection_string|attachment-spool/committed|secrets/admin_google/client_secret)
       ;;
     attachment-spool/committed/*)
       spool_entry="${entry#attachment-spool/committed/}"
@@ -196,6 +199,17 @@ tar --extract --file "$PLAINTEXT" --directory "$TARGET" \
 
 chmod 600 -- "$TARGET/mailer.db" "$TARGET/secrets/acs/acs_connection_string"
 chmod 700 -- "$TARGET/secrets" "$TARGET/secrets/acs" "$TARGET/attachment-spool" "$TARGET/attachment-spool/committed"
+
+google_secret="$TARGET/secrets/admin_google/client_secret"
+if [ -n "${seen_entries[secrets/admin_google/client_secret]+set}" ] \
+  || [ -e "$google_secret" ] || [ -L "$google_secret" ]; then
+  [ ! -L "$google_secret" ] && [ -f "$google_secret" ] \
+    || fail "restored Google Client Secret is missing or unsafe"
+  [ ! -L "$TARGET/secrets/admin_google" ] && [ -d "$TARGET/secrets/admin_google" ] \
+    || fail "restored Google Client Secret directory is missing or unsafe"
+  chmod 600 -- "$google_secret"
+  chmod 700 -- "$TARGET/secrets/admin_google"
+fi
 while IFS= read -r -d '' directory; do
   chmod 700 -- "$directory"
 done < <(find -P "$TARGET/attachment-spool/committed" -type d -print0)

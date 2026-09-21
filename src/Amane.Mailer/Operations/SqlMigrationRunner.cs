@@ -467,6 +467,12 @@ public sealed class SqlMigrationRunner
             return false;
         }
 
+        if (File.Exists(Path.Combine(_migrationDirectory, "022_admin_google_login_settings.sql"))
+            && !await HasColumnAsync(connection, "instance_configuration", "google_configured_at", cancellationToken))
+        {
+            return false;
+        }
+
         await using var columns = connection.CreateCommand();
         columns.CommandText = "PRAGMA table_info(mail_requests);";
         var hasScheduledAt = false;
@@ -600,6 +606,25 @@ public sealed class SqlMigrationRunner
                 await command.ExecuteScalarAsync(cancellationToken),
                 System.Globalization.CultureInfo.InvariantCulture)
             == 1;
+    }
+
+    private static async Task<bool> HasColumnAsync(
+        SqliteConnection connection,
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        // tableName is an internal allowlisted identifier, never caller-supplied SQL.
+        command.CommandText = $"PRAGMA table_info({tableName});";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     private static async Task<bool> HasMissingChecksumAsync(

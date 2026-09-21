@@ -41,6 +41,10 @@ The full archive has this fixed restore unit:
   /app/data/secrets/acs/acs_connection_string)
 - attachment-spool/committed/ and its opaque files for accepted requests still
   requiring delivery
+- secrets/admin_google/client_secret (optional; only when a managed Google
+  Client Secret existed at backup time; container
+  /app/data/secrets/admin_google/client_secret). Older archives that omit it
+  still restore.
 
 The archive excludes attachment-spool/staging, bootstrap tokens, logs,
 data/backups, tenant JSON, .env, platform-sender.json, the age private key,
@@ -117,7 +121,10 @@ bash /path/to/amane-mailer/infra/deploy/restore-instance-state.sh \
 The 1654 values are placeholders only. Replace them with the UID/GID confirmed
 from the image/runtime. The helper decrypts into a private temporary path,
 checks the archive against the fixed boundary, extracts it, and applies mode
-600 to the database and provider secret plus owner-only directory modes. It
+600 to the database and provider secret plus owner-only directory modes. When
+the archive contains a managed Google Client Secret, that file is mode 600 and
+`secrets/admin_google` is owner-only. Older archives that omit the file are
+still accepted. The helper does not print Google Client Secret contents. It
 does not run migrations, start services, or operate Caddy.
 
 ## Migration and readiness

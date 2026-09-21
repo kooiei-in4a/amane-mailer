@@ -13,6 +13,7 @@ public enum AdminNavItem
     Suppressions,
     AuditLog,
     Ops,
+    AuthSettings,
     SetupStatus,
 }
 
@@ -117,6 +118,13 @@ public static class AdminLayout
             badgeCount: null);
         AppendNavItem(html, "/admin/audit-log", "監査ログ", Icons.Clock, activeNav == AdminNavItem.AuditLog, badgeCount: null);
         AppendNavItem(html, "/admin/ops", "運用状況", Icons.Activity, activeNav == AdminNavItem.Ops, badgeCount: null);
+        AppendNavItem(
+            html,
+            AdminGoogleSettingsPage.PagePath,
+            "認証設定",
+            Icons.Settings,
+            activeNav == AdminNavItem.AuthSettings,
+            badgeCount: null);
         AppendNavItem(
             html,
             "/admin/setup-status",

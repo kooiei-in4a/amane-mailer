@@ -83,6 +83,10 @@ grep -Fx 'secrets/acs/acs_connection_string' "$tar_entries" >/dev/null
 grep -Fx 'attachment-spool/committed/' "$tar_entries" >/dev/null
 grep -Fx "attachment-spool/committed/$request_id/" "$tar_entries" >/dev/null
 grep -Fx "attachment-spool/committed/$request_id/$spool_key.bin" "$tar_entries" >/dev/null
+if grep -Fx 'secrets/admin_google/client_secret' "$tar_entries" >/dev/null; then
+  echo "unset Google Client Secret was included in the archive" >&2
+  exit 1
+fi
 if grep -E '(^|/)(staging|bootstrap|logs)(/|$)' "$tar_entries" >/dev/null; then
   echo "transient or log state leaked into the archive" >&2
   exit 1
@@ -133,6 +137,7 @@ cmp -- \
 [ ! -e "$restore_target/attachment-spool/staging" ]
 [ ! -e "$restore_target/bootstrap" ]
 [ ! -e "$restore_target/logs" ]
+[ ! -e "$restore_target/secrets/admin_google/client_secret" ]
 python3 -c 'import sqlite3, sys; db = sqlite3.connect(sys.argv[1]); assert db.execute("SELECT value FROM fixture_state").fetchone() == ("cold-backup-fixture",); db.close()' "$restore_target/mailer.db"
 
 # Non-empty-target safety tooth: a restore must be RED and must preserve the
@@ -151,5 +156,62 @@ if bash "$RESTORE_SCRIPT" \
   exit 1
 fi
 grep -Fx 'must survive refusal' "$nonempty_target/sentinel" >/dev/null
+
+# Optional managed Google Client Secret: present secrets are archived and
+# restored with owner-only permissions. Logs must not contain the secret.
+google_secret_dir="$data_dir/secrets/admin_google"
+google_secret_path="$google_secret_dir/client_secret"
+google_secret_value='google-client-secret-fixture-not-real'
+mkdir -p -- "$google_secret_dir"
+chmod 700 -- "$google_secret_dir"
+printf '%s\n' "$google_secret_value" > "$google_secret_path"
+chmod 600 -- "$google_secret_path"
+rm -f -- "$data_dir/backups"/*.age
+run_backup
+google_archive="$(find -P "$data_dir/backups" -maxdepth 1 -type f -name 'mailer-state-*.tar.age' -print -quit)"
+[ -n "$google_archive" ] || { echo "encrypted fixture archive was not created" >&2; exit 1; }
+google_entries="$tmp_root/google-archive.entries"
+tar --list --file "$google_archive" > "$google_entries"
+grep -Fx 'secrets/admin_google/client_secret' "$google_entries" >/dev/null
+grep -Fx 'mailer.db' "$google_entries" >/dev/null
+grep -Fx 'secrets/acs/acs_connection_string' "$google_entries" >/dev/null
+if grep -E '(^|/)(staging|bootstrap|logs)(/|$)' "$google_entries" >/dev/null; then
+  echo "transient or log state leaked into the Google secret archive" >&2
+  exit 1
+fi
+google_restore="$tmp_root/restored-google"
+bash "$RESTORE_SCRIPT" \
+  --archive "$google_archive" \
+  --identity "$identity" \
+  --target "$google_restore" \
+  --runtime-uid "$(id -u)" \
+  --runtime-gid "$(id -g)" \
+  > "$tmp_root/restore-google.out" 2> "$tmp_root/restore-google.err"
+cmp -- "$google_secret_path" "$google_restore/secrets/admin_google/client_secret"
+cmp -- "$data_dir/mailer.db" "$google_restore/mailer.db"
+cmp -- "$secret_path" "$google_restore/secrets/acs/acs_connection_string"
+[ "$(stat -c '%a' "$google_restore/secrets/admin_google/client_secret")" = 600 ]
+[ "$(stat -c '%a' "$google_restore/secrets/admin_google")" = 700 ]
+[ "$(stat -c '%u:%g' "$google_restore/secrets/admin_google/client_secret")" = "$(id -u):$(id -g)" ]
+if grep -F "$google_secret_value" \
+  "$tmp_root/backup.out" "$tmp_root/backup.err" \
+  "$tmp_root/restore-google.out" "$tmp_root/restore-google.err" >/dev/null; then
+  echo "Google Client Secret leaked into backup or restore logs" >&2
+  exit 1
+fi
+
+# A non-owner-only Google secret must fail closed and must not be echoed.
+rm -f -- "$data_dir/backups"/*.age
+chmod 644 -- "$google_secret_path"
+if run_backup; then
+  echo "expected backup to reject a Google Client Secret that is not owner-only" >&2
+  exit 1
+fi
+if grep -F "$google_secret_value" "$tmp_root/backup.out" "$tmp_root/backup.err" >/dev/null; then
+  echo "Google Client Secret leaked into backup failure logs" >&2
+  exit 1
+fi
+[ -z "$(find -P "$data_dir/backups" -maxdepth 1 -type f -name 'mailer-state-*.age' -print -quit)" ]
+chmod 600 -- "$google_secret_path"
 
 echo "instance-state-backup-self-test: ok"
