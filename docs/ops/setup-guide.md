@@ -92,6 +92,18 @@ Setup finalize後はMailer側の初期化gateにより `/setup` は利用でき�
 `instance_configuration`、protected ACS secret、Sender、`live_sending` という既存canonical
 stateを表示に使います。secret値やprovider secret reference自体は表示しません。
 
+#### Secret inventory（Managed v2）
+
+| Secret | Classification | Authority / management | Backup |
+|---|---|---|---|
+| managed ACS provider connection string | product-managed | `/admin/secrets` で状態確認・rotation | canonical `/app/data/secrets/acs/acs_connection_string` は full-instance backup 対象。custom path は operator responsibility |
+| managed Google Client Secret | product-managed | `/admin/auth-settings` で管理 | canonical `/app/data/secrets/admin_google/client_secret` は full-instance backup 対象。custom path は operator responsibility |
+| Bounce Queue connection string | operator-owned | host / Compose file secret | この画面では管理しない |
+| backup external credentials、rclone credential / config、age identity / private key | operator-owned | host operations | この画面では管理しない |
+| legacy `ACS_CONNECTION_STRING` / `ACS_CONNECTION_STRING_FILE`、`AMANE_ADMIN_GOOGLE_CLIENT_SECRET` / legacy Google env | compatibility | operator-owned legacy configuration | managed storage へ自動移行しない |
+
+Admin password、Mailer API Key、bootstrap token、session、service token、metrics bearer tokenは別credential domainの専用contractで管理します。
+
 既存staging hostがhistorical `compose.shared-staging.yml` を使用している場合、通常の
 image-only updateで暗黙に `compose.shared-edge.yml` へ差し替えません。新規構築または
 明示的なreconciliation時だけRepository標準profileをauthorityとして扱います。

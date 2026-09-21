@@ -14,6 +14,7 @@ public enum AdminNavItem
     AuditLog,
     Ops,
     AuthSettings,
+    Secrets,
     AdminUsers,
     SetupStatus,
 }
@@ -53,7 +54,7 @@ public static class AdminLayout
         AppendTopbarEnd(html, access);
         html.AppendLine("  </header>");
         html.AppendLine("  <div class=\"admin-shell\">");
-        AppendSideNav(html, activeNav, deadLetterCount);
+        AppendSideNav(html, activeNav, deadLetterCount, access);
         html.AppendLine("    <main class=\"admin-main\">");
     }
 
@@ -91,7 +92,11 @@ public static class AdminLayout
         html.AppendLine("    </div>");
     }
 
-    private static void AppendSideNav(StringBuilder html, AdminNavItem activeNav, int deadLetterCount)
+    private static void AppendSideNav(
+        StringBuilder html,
+        AdminNavItem activeNav,
+        int deadLetterCount,
+        AdminTenantAccess? access)
     {
         html.AppendLine("    <nav class=\"admin-sidenav\" aria-label=\"管理メニュー\">");
         html.AppendLine("      <ul class=\"admin-sidenav-list\">");
@@ -126,6 +131,17 @@ public static class AdminLayout
             Icons.Settings,
             activeNav == AdminNavItem.AuthSettings,
             badgeCount: null);
+        if (access?.IsInstanceOwner == true)
+        {
+            AppendNavItem(
+                html,
+                AdminSecretsPage.PagePath,
+                "Secret管理",
+                Icons.Settings,
+                activeNav == AdminNavItem.Secrets,
+                badgeCount: null);
+        }
+
         AppendNavItem(
             html,
             AdminUsersPage.PagePath,

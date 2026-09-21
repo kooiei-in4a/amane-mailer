@@ -59,6 +59,7 @@ public static class AdminAuditLog
         public const string InstanceLiveSendingEnabled = "instance.live_sending_enabled";
         public const string InstanceLiveSendingDisabled = "instance.live_sending_disabled";
         public const string InstanceGoogleLoginSettingsUpdated = "instance.google_login_settings_updated";
+        public const string InstanceProviderSecretRotated = "instance.provider_secret_rotated";
         public const string AdminUserEnabled = "admin_user.enabled";
         public const string AdminUserDisabled = "admin_user.disabled";
 
@@ -97,6 +98,7 @@ public static class AdminAuditLog
             InstanceLiveSendingEnabled,
             InstanceLiveSendingDisabled,
             InstanceGoogleLoginSettingsUpdated,
+            InstanceProviderSecretRotated,
             AdminUserEnabled,
             AdminUserDisabled,
         ];

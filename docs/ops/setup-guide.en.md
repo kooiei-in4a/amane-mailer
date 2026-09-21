@@ -95,6 +95,18 @@ display from the existing canonical `instance_configuration`, protected ACS secr
 Sender, and `live_sending` state. It does not expose secret values or the provider
 secret reference itself.
 
+#### Secret inventory (Managed v2)
+
+| Secret | Classification | Authority / management | Backup |
+|---|---|---|---|
+| managed ACS provider connection string | product-managed | View status and rotate at `/admin/secrets` | Canonical `/app/data/secrets/acs/acs_connection_string` is included in full-instance backups. Custom paths are the operator's responsibility |
+| managed Google Client Secret | product-managed | Manage at `/admin/auth-settings` | Canonical `/app/data/secrets/admin_google/client_secret` is included in full-instance backups. Custom paths are the operator's responsibility |
+| Bounce Queue connection string | operator-owned | Host / Compose file secret | Not managed here |
+| Backup external credentials, rclone credential / config, age identity / private key | operator-owned | Host operations | Not managed here |
+| Legacy `ACS_CONNECTION_STRING` / `ACS_CONNECTION_STRING_FILE`, `AMANE_ADMIN_GOOGLE_CLIENT_SECRET` / legacy Google env | compatibility | Operator-owned legacy configuration | Never migrated automatically to managed storage |
+
+Admin password, Mailer API Key, bootstrap token, session, service token, and metrics bearer token remain in their separate credential domains and dedicated contracts.
+
 If an existing staging host still uses historical `compose.shared-staging.yml`, a
 routine image-only update must not silently replace it with `compose.shared-edge.yml`.
 Use the repository-owned profile as authority only for a new deployment or an explicit

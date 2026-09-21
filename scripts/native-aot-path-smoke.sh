@@ -12,6 +12,7 @@
 #   http:admin-login-get     — initialized fixture; GET /admin/login
 #   http:admin-login-post    — DB-owned Admin cookie sign-in (CSRF + password hash)
 #   http:admin-google-challenge — dummy Google config; POST challenge 302 + correlation cookie
+#   http:admin-secrets       — instance-owner managed-secret inventory GET
 #   http:admin-ready         — initialized fixture starts; /readyz 200
 #   cli:setup-core-self-check — Setup Core dry-run fingerprint smoke (#448)
 #   cli:setup-inspect-effective — Manual + Managed mount attestation JSON smoke (#447)
@@ -315,9 +316,11 @@ write_backup_status_fixture() {
   local now_utc
   now_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   mkdir -p "$status_directory"
+  chmod 700 "$status_directory"
   cat > "$status_directory/db-only.attempt.json" <<JSON
 {"schemaVersion":1,"backupType":"database-only","recordType":"attempt","status":"failed","startedAtUtc":"$now_utc","completedAtUtc":"$now_utc","stage":"upload","offsiteStatus":"failed","artifactName":null}
 JSON
+  chmod 600 "$status_directory/db-only.attempt.json"
 }
 
 stop_mailer() {
@@ -481,6 +484,7 @@ fi
     fail "http:admin-login-get" "skipped; no password hash from admin hash-password"
     fail "http:admin-login-post" "skipped; no password hash from admin hash-password"
     fail "http:admin-google-challenge" "skipped; no password hash from admin hash-password"
+    fail "http:admin-secrets" "skipped; no password hash from admin hash-password"
     fail "http:admin-ready" "skipped; no password hash from admin hash-password"
     finish
   fi
@@ -524,6 +528,7 @@ fi
     fail "http:admin-login-get" "skipped; no database"
     fail "http:admin-login-post" "skipped; no database"
     fail "http:admin-google-challenge" "skipped; no database"
+    fail "http:admin-secrets" "skipped; no database"
     fail "http:admin-ready" "skipped; no database"
     finish
   fi
@@ -539,6 +544,7 @@ fi
     fail "http:admin-login-get" "skipped; pre-host migrate failed"
     fail "http:admin-login-post" "skipped; pre-host migrate failed"
     fail "http:admin-google-challenge" "skipped; pre-host migrate failed"
+    fail "http:admin-secrets" "skipped; pre-host migrate failed"
     finish
   fi
 
@@ -547,6 +553,7 @@ fi
     fail "http:admin-login-get" "skipped; initialized fixture seed failed"
     fail "http:admin-login-post" "skipped; initialized fixture seed failed"
     fail "http:admin-google-challenge" "skipped; initialized fixture seed failed"
+    fail "http:admin-secrets" "skipped; initialized fixture seed failed"
     finish
   fi
   write_backup_status_fixture "$WORK_DIR"
@@ -636,6 +643,25 @@ fi
     fi
   else
     fail "http:admin-ops-backup-status" "skipped; Admin login did not establish an auth cookie"
+  fi
+
+  if [ "$auth_cookie_ready" -eq 1 ]; then
+    local secrets_code
+    secrets_code="$(
+      curl -sS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -o "$WORK_DIR/admin-secrets.out" -w '%{http_code}' \
+        --max-time 10 "$base_url/admin/secrets" || true
+    )"
+    if [ "$secrets_code" = "200" ] \
+      && grep -Fq 'ACS provider connection string' "$WORK_DIR/admin-secrets.out" \
+      && grep -Fq '設定済み' "$WORK_DIR/admin-secrets.out" \
+      && ! grep -Fq 'aot-path-smoke-key' "$WORK_DIR/admin-secrets.out" \
+      && ! grep -Fq "$WORK_DIR/acs_connection_string" "$WORK_DIR/admin-secrets.out"; then
+      pass "http:admin-secrets"
+    else
+      fail "http:admin-secrets" "GET /admin/secrets status=${secrets_code:-none} or secret/path was exposed"
+    fi
+  else
+    fail "http:admin-secrets" "skipped; Admin login did not establish an auth cookie"
   fi
 
   stop_mailer
