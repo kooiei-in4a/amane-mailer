@@ -361,6 +361,58 @@ internal static class FirstRunSetupStorage
         }
     }
 
+    /// <summary>
+    /// Replaces the managed ACS connection string with an owner-only same-directory file.
+    /// This is intentionally ACS-specific; the persisted instance reference remains the authority.
+    /// </summary>
+    public static bool TryReplaceAcsSecret(string path, string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(value);
+
+        var replacement = value.Trim();
+        if (!IsValidAcsConnectionString(replacement))
+        {
+            return false;
+        }
+
+        var fullPath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(fullPath)
+            ?? throw new InvalidOperationException("ACS secret path is invalid.");
+        var fileSystem = new HostSetupFileSystem();
+        FileSystemSafetyGuard.EnsureDirectoryIsSafe(directory);
+        FileSystemSafetyGuard.EnsureTargetFileIsSafeIfExists(fullPath);
+
+        var temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(fullPath)}.tmp-{Guid.NewGuid():N}");
+        try
+        {
+            SecureFileCreate.WriteAllTextCreateNew(temporaryPath, replacement);
+            if (!TryReadValidAcsSecret(temporaryPath, out _))
+            {
+                return false;
+            }
+
+            FileSystemSafetyGuard.EnsureDirectoryIsSafe(directory);
+            FileSystemSafetyGuard.EnsureTargetFileIsSafeIfExists(fullPath);
+            fileSystem.MoveReplace(temporaryPath, fullPath);
+            fileSystem.FlushDirectory(directory);
+            return TryReadValidAcsSecret(fullPath, out _);
+        }
+        finally
+        {
+            try
+            {
+                fileSystem.DeleteFile(temporaryPath);
+            }
+            catch
+            {
+                // Best effort cleanup after a failed write or atomic replace.
+            }
+        }
+    }
+
     public static bool IsValidAcsConnectionString(string value)
     {
         if (string.IsNullOrWhiteSpace(value))

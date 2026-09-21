@@ -34,6 +34,8 @@ internal static class AdminEndpointMapping
         app.MapGet("/admin/setup-status", AdminSetupStatusPage.RenderAsync).RequireAuthorization();
         app.MapGet(AdminGoogleSettingsPage.PagePath, AdminGoogleSettingsPage.RenderAsync).RequireAuthorization();
         app.MapPost(AdminGoogleSettingsPage.PagePath, AdminGoogleSettingsPage.SaveAsync).RequireAuthorization();
+        app.MapGet(AdminSecretsPage.PagePath, AdminSecretsPage.RenderAsync).RequireAuthorization();
+        app.MapPost(AdminSecretsPage.AcsRotationPath, AdminSecretsPage.RotateAcsAsync).RequireAuthorization();
         app.MapGet(AdminUsersPage.PagePath, AdminUsersPage.RenderAsync).RequireAuthorization();
         app.MapPost(AdminUsersPage.EnablePath, AdminUsersPage.EnableAsync).RequireAuthorization();
         app.MapPost(AdminUsersPage.DisablePath, AdminUsersPage.DisableAsync).RequireAuthorization();
