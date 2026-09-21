@@ -17,6 +17,7 @@ public enum AdminNavItem
     Secrets,
     AdminUsers,
     SetupStatus,
+    SettingsBackup,
 }
 
 public static class AdminLayout
@@ -139,6 +140,13 @@ public static class AdminLayout
                 "Secret管理",
                 Icons.Settings,
                 activeNav == AdminNavItem.Secrets,
+                badgeCount: null);
+            AppendNavItem(
+                html,
+                AdminSettingsBackupPage.PagePath,
+                "設定backup",
+                Icons.Settings,
+                activeNav == AdminNavItem.SettingsBackup,
                 badgeCount: null);
         }
 

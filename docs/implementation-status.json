@@ -25,6 +25,30 @@
       "notes": "Instance-owner /admin/secrets reports managed ACS and existing Google secret status; ACS rotation atomically replaces only the current provider_secret_ref and remains restart-pending until process restart. Operator-owned and legacy credentials remain outside this UI."
     },
     {
+      "id": "admin-encrypted-settings-backup",
+      "status": "implemented",
+      "trackingIssue": 816,
+      "lastVerified": "2026-09-21",
+      "relatedAdrs": [
+        "0013",
+        "0014"
+      ],
+      "notes": "Instance-owner /admin/settings-backup exports the versioned allowlist as a passphrase-encrypted age v1 file and restores it through Preview plus explicit confirmation. Restore uses target managed secret authorities, merges Senders by normalized email, preserves target-only Senders, and leaves Live Sending OFF. Full-instance backup semantics are unchanged.",
+      "evidence": {
+        "files": [
+          "src/Amane.Mailer/Admin/AdminSettingsBackupPage.cs",
+          "src/Amane.Mailer/Admin/SettingsBackupCrypto.cs",
+          "src/Amane.Mailer/Admin/SettingsBackupPayload.cs"
+        ],
+        "tests": [
+          "tests/Amane.Mailer.Tests/Admin/AdminSettingsBackupTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/SettingsBackupCryptoTests.cs",
+          "tests/Amane.Mailer.Tests/Admin/SettingsBackupFormatTests.cs",
+          "tests/Amane.Mailer.Tests/AgeSharpRoundTripTests.cs"
+        ]
+      }
+    },
+    {
       "id": "admin-google-login",
       "status": "implemented",
       "trackingIssue": 798,

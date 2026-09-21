@@ -502,13 +502,17 @@ internal static class MailerAdminFixtureHelpers
         string tenantConfigPath,
         string passwordHash,
         IReadOnlyDictionary<string, string?>? extraConfiguration = null,
-        bool useEarlyInstanceProbe = false) =>
+        bool useEarlyInstanceProbe = false,
+        AdminSettingsBackupCanonicalSecretPaths? backupCanonicalSecretPaths = null,
+        ILoggerProvider? loggerProvider = null) =>
         new AdminTestFactory(
             connectionString,
             tenantConfigPath,
             passwordHash,
             extraConfiguration,
-            useEarlyInstanceProbe);
+            useEarlyInstanceProbe,
+            backupCanonicalSecretPaths,
+            loggerProvider);
 
     internal static string TenantConfigJson =>
         $$"""
@@ -543,11 +547,16 @@ internal static class MailerAdminFixtureHelpers
         string tenantConfigPath,
         string passwordHash,
         IReadOnlyDictionary<string, string?>? extraConfiguration,
-        bool useEarlyInstanceProbe) : WebApplicationFactory<global::Program>
+        bool useEarlyInstanceProbe,
+        AdminSettingsBackupCanonicalSecretPaths? backupCanonicalSecretPaths,
+        ILoggerProvider? loggerProvider) : WebApplicationFactory<global::Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Testing");
+            if (loggerProvider is not null)
+                builder.ConfigureLogging(logging => logging.AddProvider(loggerProvider));
+
             if (useEarlyInstanceProbe)
             {
                 // Top-level Program probes the instance gate before ConfigureAppConfiguration
@@ -581,6 +590,12 @@ internal static class MailerAdminFixtureHelpers
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<IHostedService>();
+                if (backupCanonicalSecretPaths is not null)
+                {
+                    services.RemoveAll<AdminSettingsBackupCanonicalSecretPaths>();
+                    services.AddSingleton(backupCanonicalSecretPaths);
+                }
+
                 services.AddSingleton<IStartupFilter>(new LoopbackLocalAddressStartupFilter());
             });
         }

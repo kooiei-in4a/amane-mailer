@@ -47,6 +47,30 @@ public sealed class SenderRepository(
     public Task DisableAsync(Guid senderId, CancellationToken cancellationToken = default) =>
         SetEnabledAsync(senderId, enabled: false, cancellationToken);
 
+    internal async Task<bool> UpdateDisplayNameAsync(
+        Guid senderId,
+        string? displayName,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedDisplayName = string.IsNullOrWhiteSpace(displayName) ? null : displayName.Trim();
+        if (normalizedDisplayName is { Length: > 200 }
+            || (normalizedDisplayName?.Any(char.IsControl) ?? false))
+        {
+            return false;
+        }
+
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE senders
+            SET display_name = @DisplayName
+            WHERE sender_id = @SenderId;
+            """;
+        command.Parameters.AddWithValue("@SenderId", senderId.ToString("D"));
+        command.Parameters.AddWithValue("@DisplayName", (object?)normalizedDisplayName ?? DBNull.Value);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     public async Task<SenderIdentity?> FindAsync(
         Guid senderId,
         CancellationToken cancellationToken = default)

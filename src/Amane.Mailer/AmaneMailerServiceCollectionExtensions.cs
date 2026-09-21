@@ -25,6 +25,7 @@ public static class AmaneMailerServiceCollectionExtensions
         services.AddSingleton(instanceState ?? InstanceRuntimeState.Unknown);
         services.AddSingleton<SqliteConnectionFactory>();
         services.AddSingleton<SqlMigrationRunner>();
+        services.AddSingleton(AdminSettingsBackupCanonicalSecretPaths.Default);
 
         if (instanceState?.IsUninitialized == true)
         {

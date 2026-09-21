@@ -2,6 +2,15 @@
   "version": 2,
   "dependencies": {
     "net10.0": {
+      "AgeSharp": {
+        "type": "Direct",
+        "requested": "[0.2.0-preview.4, )",
+        "resolved": "0.2.0-preview.4",
+        "contentHash": "WM9wh3GHalyzg7OsCiIJQt/dJIcjqj8cuxnNqGngbTcZmYpCgNFVa638XySvQqPXSJdE4PtbW3OH7GkUhGceRw==",
+        "dependencies": {
+          "BouncyCastle.Cryptography": "2.6.2"
+        }
+      },
       "Azure.Communication.Email": {
         "type": "Direct",
         "requested": "[1.1.0, )",
@@ -95,6 +104,11 @@
           "Azure.Core": "1.55.0",
           "System.IO.Hashing": "10.0.3"
         }
+      },
+      "BouncyCastle.Cryptography": {
+        "type": "Transitive",
+        "resolved": "2.6.2",
+        "contentHash": "7oWOcvnntmMKNzDLsdxAYqApt+AjpRpP2CShjMfIa3umZ42UQMvH0tl1qAliYPNYO6vTdcGMqnRrCPmsfzTI1w=="
       },
       "Microsoft.Bcl.AsyncInterfaces": {
         "type": "Transitive",
