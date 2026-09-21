@@ -42,8 +42,14 @@ public static class AdminGoogleSettingsPage
             antiforgery.GetAndStoreTokens(context).RequestToken ?? string.Empty);
         var redirectUri = BuildRedirectUri(context);
         var secretPath = AdminGoogleSecretStore.ResolveSecretPath(configuration);
+        var status = AdminGoogleSettingsStatus.Evaluate(
+            instanceConfiguration,
+            googleOptions,
+            configuration);
         var flash = context.Request.Query["saved"].ToString() is "1"
-            ? "設定を保存しました。変更を有効にするには Mailer を再起動してください。"
+            ? status.RestartRequired
+                ? "設定を保存しました。変更を有効にするには Mailer を再起動してください。"
+                : "設定を保存しました。"
             : null;
 
         context.Response.Headers.CacheControl = "no-store";
@@ -53,6 +59,7 @@ public static class AdminGoogleSettingsPage
                 deadLetterCount,
                 instanceConfiguration,
                 googleOptions,
+                status,
                 secretPath,
                 redirectUri,
                 csrfToken,
@@ -205,6 +212,7 @@ public static class AdminGoogleSettingsPage
         int deadLetterCount,
         InstanceConfigurationRow? instanceConfiguration,
         AdminGoogleOptions runtimeOptions,
+        AdminGoogleSettingsStatus status,
         string secretPath,
         string redirectUri,
         string csrfToken,
@@ -223,8 +231,9 @@ public static class AdminGoogleSettingsPage
         html.AppendLine("                  <p class=\"ops-description\">Admin の認証方法を管理します。Password Login は常に利用可能です。Google Login は追加の認証方法です。</p>");
         if (flash is not null)
         {
+            // Flash text is a compile-time constant (not user input).
             html.Append("                  <p class=\"ops-meta\" role=\"status\">");
-            html.Append(Html(flash));
+            html.Append(flash);
             html.AppendLine("</p>");
         }
 
@@ -250,7 +259,7 @@ public static class AdminGoogleSettingsPage
             return html.ToString();
         }
 
-        var managedClaimed = !string.IsNullOrWhiteSpace(instanceConfiguration.GoogleConfiguredAt);
+        var managedClaimed = status.SavedUsesManaged;
         var secretConfigured = AdminGoogleSecretStore.IsSecretConfigured(
             instanceConfiguration.GoogleClientSecretRef)
             || AdminGoogleSecretStore.IsSecretConfigured(secretPath);
@@ -262,16 +271,10 @@ public static class AdminGoogleSettingsPage
             : runtimeOptions.ClientId;
 
         html.AppendLine("                  <dl class=\"ops-dl\">");
-        AppendDefinition(
-            html,
-            "Runtime status",
-            runtimeOptions.Enabled ? "enabled (active)" : "disabled / incomplete");
-        AppendDefinition(
-            html,
-            "Configuration authority",
-            managedClaimed
-                ? "Admin UI managed configuration"
-                : "legacy env (until first save)");
+        AppendTrustedDefinition(html, "保存済み設定", status.SavedEnabledDisplay);
+        AppendTrustedDefinition(html, "現在の稼働状態", status.RuntimeEnabledDisplay);
+        AppendTrustedDefinition(html, "状態", status.ReflectionDisplay);
+        AppendDefinition(html, "Configuration authority", status.SavedAuthorityDisplay);
         AppendDefinition(
             html,
             "Client Secret",
@@ -284,6 +287,10 @@ public static class AdminGoogleSettingsPage
         if (!managedClaimed)
         {
             html.AppendLine("                  <p class=\"ops-meta\">この保存で managed configuration が authority になります。再起動後は legacy env の Google 設定は使われません。legacy env の Client Secret は表示せず、ファイルへもコピーしません。Google Login を有効なまま切り替えるには新しい Client Secret が必要です。無効への切り替えは Client Secret なしで保存できます。</p>");
+        }
+        else if (status.RestartRequired)
+        {
+            html.AppendLine("                  <p class=\"ops-meta\">保存済み設定と現在の稼働状態が異なります。Mailer container / process を再起動するまで稼働状態は変わりません。</p>");
         }
 
         html.AppendLine("                  <form method=\"post\" action=\"/admin/auth-settings\" class=\"stack-form\">");
@@ -327,7 +334,6 @@ public static class AdminGoogleSettingsPage
         html.AppendLine("                    <label><input type=\"checkbox\" name=\"confirmation\" value=\"confirm\" required> Google Login 設定を保存することを確認します。</label>");
         html.AppendLine("                    <button type=\"submit\">保存</button>");
         html.AppendLine("                  </form>");
-        html.AppendLine("                  <p class=\"ops-meta\">保存後は Mailer container / process の再起動が必要です。再起動までは Runtime status は変わりません。</p>");
         html.AppendLine("                </section>");
 
         AdminLayout.AppendDocumentEnd(html);
@@ -441,6 +447,20 @@ public static class AdminGoogleSettingsPage
         html.AppendLine("</dt>");
         html.Append("                    <dd><code>");
         html.Append(Html(value));
+        html.AppendLine("</code></dd>");
+    }
+
+    /// <summary>
+    /// Appends a definition whose term/value are compile-time UI constants.
+    /// HtmlEncoder.Default would otherwise entity-encode Japanese labels.
+    /// </summary>
+    private static void AppendTrustedDefinition(StringBuilder html, string term, string value)
+    {
+        html.Append("                    <dt>");
+        html.Append(term);
+        html.AppendLine("</dt>");
+        html.Append("                    <dd><code>");
+        html.Append(value);
         html.AppendLine("</code></dd>");
     }
 

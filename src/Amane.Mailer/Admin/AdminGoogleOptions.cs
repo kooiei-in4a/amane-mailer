@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Amane.Mailer.Configuration;
 
 namespace Amane.Mailer.Admin;
@@ -12,6 +14,10 @@ namespace Amane.Mailer.Admin;
 /// been saved at least once (<c>google_configured_at</c>), Admin UI managed
 /// configuration is exclusive authority and env Google keys are ignored.
 /// Otherwise the legacy env path remains the compatibility authority.
+/// </para>
+/// <para>
+/// Startup retains only an internal Client Secret fingerprint so Admin UI can
+/// detect rotation without keeping or exposing plaintext.
 /// </para>
 /// </summary>
 public sealed class AdminGoogleOptions
@@ -28,11 +34,18 @@ public sealed class AdminGoogleOptions
     /// </summary>
     public bool UsesManagedConfiguration { get; }
 
-    private AdminGoogleOptions(bool enabled, string clientId, bool usesManagedConfiguration)
+    private readonly byte[]? _clientSecretFingerprint;
+
+    private AdminGoogleOptions(
+        bool enabled,
+        string clientId,
+        bool usesManagedConfiguration,
+        byte[]? clientSecretFingerprint)
     {
         Enabled = enabled;
         ClientId = clientId;
         UsesManagedConfiguration = usesManagedConfiguration;
+        _clientSecretFingerprint = clientSecretFingerprint;
     }
 
     public static AdminGoogleOptions Load(IConfiguration configuration) =>
@@ -45,15 +58,16 @@ public sealed class AdminGoogleOptions
         if (UsesManagedAuthority(instanceState))
         {
             var clientId = instanceState!.GoogleClientId?.Trim() ?? string.Empty;
-            var secretConfigured = AdminGoogleSecretStore.IsSecretConfigured(
-                instanceState.GoogleClientSecretRef);
+            var secret = ReadManagedSecret(instanceState.GoogleClientSecretRef);
+            var secretConfigured = secret.Length > 0;
             var enabled = instanceState.GoogleLoginEnabled
                 && clientId.Length > 0
                 && secretConfigured;
             return new AdminGoogleOptions(
                 enabled,
                 enabled ? clientId : string.Empty,
-                usesManagedConfiguration: true);
+                usesManagedConfiguration: true,
+                enabled ? ComputeSecretFingerprint(secret) : null);
         }
 
         var envClientId = ReadTrimmed(configuration, ClientIdKey);
@@ -62,7 +76,8 @@ public sealed class AdminGoogleOptions
         return new AdminGoogleOptions(
             envEnabled,
             envEnabled ? envClientId : string.Empty,
-            usesManagedConfiguration: false);
+            usesManagedConfiguration: false,
+            envEnabled ? ComputeSecretFingerprint(envClientSecret) : null);
     }
 
     public static string ReadClientSecret(
@@ -70,12 +85,7 @@ public sealed class AdminGoogleOptions
         InstanceRuntimeState? instanceState = null)
     {
         if (UsesManagedAuthority(instanceState))
-        {
-            var path = instanceState!.GoogleClientSecretRef;
-            return AdminGoogleSecretStore.TryReadSecret(path ?? string.Empty, out var secret)
-                ? secret
-                : string.Empty;
-        }
+            return ReadManagedSecret(instanceState!.GoogleClientSecretRef);
 
         return ReadTrimmed(configuration, ClientSecretKey);
     }
@@ -83,6 +93,30 @@ public sealed class AdminGoogleOptions
     public static bool UsesManagedAuthority(InstanceRuntimeState? instanceState) =>
         instanceState?.IsInitialized == true
         && !string.IsNullOrWhiteSpace(instanceState.GoogleConfiguredAt);
+
+    /// <summary>
+    /// Compares <paramref name="plaintextSecret"/> to the startup fingerprint.
+    /// Never logs or returns the fingerprint.
+    /// </summary>
+    internal bool MatchesCurrentSecret(string? plaintextSecret)
+    {
+        if (_clientSecretFingerprint is null)
+            return string.IsNullOrWhiteSpace(plaintextSecret);
+
+        if (string.IsNullOrWhiteSpace(plaintextSecret))
+            return false;
+
+        var candidate = ComputeSecretFingerprint(plaintextSecret.Trim());
+        return CryptographicOperations.FixedTimeEquals(_clientSecretFingerprint, candidate);
+    }
+
+    private static string ReadManagedSecret(string? path) =>
+        AdminGoogleSecretStore.TryReadSecret(path ?? string.Empty, out var secret)
+            ? secret
+            : string.Empty;
+
+    private static byte[] ComputeSecretFingerprint(string secret) =>
+        SHA256.HashData(Encoding.UTF8.GetBytes(secret));
 
     private static string ReadTrimmed(IConfiguration configuration, string key)
     {

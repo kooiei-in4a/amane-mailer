@@ -4,14 +4,14 @@
   "features": [
     {
       "id": "admin-google-login-settings-ui",
-      "status": "partial",
+      "status": "implemented",
       "trackingIssue": 806,
       "lastVerified": "2026-09-21",
       "relatedAdrs": [
         "0013",
         "0014"
       ],
-      "notes": "Admin UI /admin/auth-settings manages Google Login enabled/Client ID/Client Secret for initialized managed-v2. Client Secret uses protected file under /app/data/secrets/admin_google (migration 022 columns on instance_configuration). Password login always remains. Restart required after save. Legacy env Google keys remain authority until first managed save."
+      "notes": "Admin UI /admin/auth-settings manages Google Login enabled/Client ID/Client Secret for initialized managed-v2. Client Secret uses protected file under /app/data/secrets/admin_google (migration 022 columns on instance_configuration). Password login always remains. #809: page shows 保存済み設定 / 現在の稼働状態 / 状態 (反映済み|再起動待ち|設定不完全) by comparing startup AdminGoogleOptions (incl. internal Client Secret fingerprint) with current DB/secret; named GoogleOptions for the Google authentication scheme are eagerly materialized on the same MailerStartupValidator boundary so same-path secret rotation before the first challenge stays restart-pending until process restart. Legacy→managed authority cutover and secret rotation (same path) are restart-pending. Save flash mentions restart only when pending. Legacy env Google keys remain authority until first managed save."
     },
     {
       "id": "admin-google-login",

@@ -23,6 +23,17 @@ public sealed class MailerStartupValidationCatalog
         _resolvers.Add(static services => _ = services.GetRequiredService<TService>());
     }
 
+    /// <summary>
+    /// Registers a one-off startup resolve action that is not a DI service type.
+    /// Used for pinning named authentication options that share the startup
+    /// credential snapshot (not a generic options framework).
+    /// </summary>
+    internal void RegisterAction(Action<IServiceProvider> resolve)
+    {
+        ArgumentNullException.ThrowIfNull(resolve);
+        _resolvers.Add(resolve);
+    }
+
     internal void ResolveAll(IServiceProvider services)
     {
         foreach (var resolve in _resolvers)
