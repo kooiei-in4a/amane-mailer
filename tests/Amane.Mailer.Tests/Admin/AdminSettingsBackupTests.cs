@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -403,6 +404,156 @@ public sealed class AdminSettingsBackupTests
         Assert.Null(payload.Secrets.GoogleClientSecret);
     }
 
+    [Fact]
+    public async Task Export_rejects_noncanonical_acs_without_exposing_operator_secret()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var logs = new CapturingLoggerProvider();
+        await using var operatorManaged = await ManagedBackupHarness.CreateAsync(
+            "operator-acs",
+            SourceAcsSecret,
+            googleEnabled: false,
+            SourceGoogleClientId,
+            googleSecret: null,
+            cancellationToken,
+            acsSecretCanonical: false,
+            loggerProvider: logs);
+        using var owner = CreateClient(operatorManaged.Factory);
+        await LoginAsync(owner, OwnerUsername, OwnerPassword, cancellationToken);
+        var token = await ReadCsrfTokenAsync(owner, cancellationToken);
+
+        using var response = await owner.PostAsync(
+            AdminSettingsBackupPage.ExportPath,
+            Form(token,
+                ("passphrase", Passphrase),
+                ("passphrase_confirmation", Passphrase)),
+            cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var auditMaterial = await ReadAuditMaterialAsync(operatorManaged, cancellationToken);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.DoesNotContain(SourceAcsSecret, body, StringComparison.Ordinal);
+        Assert.DoesNotContain(SourceAcsSecret, auditMaterial, StringComparison.Ordinal);
+        Assert.DoesNotContain(SourceAcsSecret, logs.Text, StringComparison.Ordinal);
+        Assert.Contains(AdminAuditLog.EventTypes.SettingsBackupExported, auditMaterial, StringComparison.Ordinal);
+        Assert.Contains(AdminAuditLog.Results.Failure, auditMaterial, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Export_excludes_noncanonical_managed_google_secret_without_reading_or_exposing_it()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var logs = new CapturingLoggerProvider();
+        await using var operatorManaged = await ManagedBackupHarness.CreateAsync(
+            "operator-google",
+            SourceAcsSecret,
+            googleEnabled: true,
+            SourceGoogleClientId,
+            SourceGoogleSecret,
+            cancellationToken,
+            googleSecretCanonical: false,
+            loggerProvider: logs);
+        using var owner = CreateClient(operatorManaged.Factory);
+        await LoginAsync(owner, OwnerUsername, OwnerPassword, cancellationToken);
+        var token = await ReadCsrfTokenAsync(owner, cancellationToken);
+
+        using var response = await owner.PostAsync(
+            AdminSettingsBackupPage.ExportPath,
+            Form(token,
+                ("passphrase", Passphrase),
+                ("passphrase_confirmation", Passphrase)),
+            cancellationToken);
+        var encrypted = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        var auditMaterial = await ReadAuditMaterialAsync(operatorManaged, cancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.DoesNotContain(SourceGoogleSecret, Encoding.UTF8.GetString(encrypted), StringComparison.Ordinal);
+        Assert.True(SettingsBackupCrypto.TryDecryptAndValidate(encrypted, Passphrase, out var payload));
+        Assert.NotNull(payload);
+        Assert.False(payload.Settings.GoogleLogin.Included);
+        Assert.False(payload.Settings.GoogleLogin.Enabled);
+        Assert.Null(payload.Settings.GoogleLogin.ClientId);
+        Assert.Null(payload.Secrets.GoogleClientSecret);
+        Assert.DoesNotContain(SourceGoogleSecret, auditMaterial, StringComparison.Ordinal);
+        Assert.DoesNotContain(SourceGoogleSecret, logs.Text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Restore_without_google_secret_preserves_current_secret_ref_and_preview_matches()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        await using var source = await ManagedBackupHarness.CreateAsync(
+            "source-no-google-secret",
+            SourceAcsSecret,
+            googleEnabled: false,
+            TargetGoogleClientId,
+            googleSecret: null,
+            cancellationToken);
+        var resolvedTargetPath = Path.Combine(
+            Path.GetDirectoryName(source.GoogleSecretPath)!,
+            "configured-resolved-secret");
+        await using var target = await ManagedBackupHarness.CreateAsync(
+            "target-custom-google-secret-ref",
+            TargetAcsSecret,
+            googleEnabled: false,
+            TargetGoogleClientId,
+            TargetGoogleSecret,
+            cancellationToken,
+            configuredGoogleSecretPath: resolvedTargetPath);
+
+        using var sourceOwner = CreateClient(source.Factory);
+        await LoginAsync(sourceOwner, OwnerUsername, OwnerPassword, cancellationToken);
+        var sourceToken = await ReadCsrfTokenAsync(sourceOwner, cancellationToken);
+        using var export = await sourceOwner.PostAsync(
+            AdminSettingsBackupPage.ExportPath,
+            Form(sourceToken,
+                ("passphrase", Passphrase),
+                ("passphrase_confirmation", Passphrase)),
+            cancellationToken);
+        var encrypted = await export.Content.ReadAsByteArrayAsync(cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, export.StatusCode);
+        Assert.True(SettingsBackupCrypto.TryDecryptAndValidate(encrypted, Passphrase, out var exportedPayload));
+        Assert.NotNull(exportedPayload);
+        Assert.True(exportedPayload.Settings.GoogleLogin.Included);
+        Assert.False(exportedPayload.Settings.GoogleLogin.Enabled);
+        Assert.Null(exportedPayload.Secrets.GoogleClientSecret);
+
+        using var owner = CreateClient(target.Factory);
+        await LoginAsync(owner, OwnerUsername, OwnerPassword, cancellationToken);
+        var token = await ReadCsrfTokenAsync(owner, cancellationToken);
+        using var previewResponse = await owner.PostAsync(
+            AdminSettingsBackupPage.PreviewPath,
+            UploadForm(token, encrypted, Passphrase),
+            cancellationToken);
+        var previewHtml = await previewResponse.Content.ReadAsStringAsync(cancellationToken);
+        Assert.Equal(HttpStatusCode.OK, previewResponse.StatusCode);
+        Assert.Contains("Google Client Secret</dt><dd>unchanged", previewHtml, StringComparison.Ordinal);
+        Assert.Contains("既存のtarget secret/refを保持", previewHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain(TargetGoogleSecret, previewHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain(target.GoogleSecretPath, previewHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain(target.ResolvedGoogleSecretPath, previewHtml, StringComparison.Ordinal);
+        var hiddenCiphertext = ReadInputValue(previewHtml, "encrypted_ciphertext");
+        token = ReadCsrf(previewHtml);
+
+        using var restore = await owner.PostAsync(
+            AdminSettingsBackupPage.RestorePath,
+            Form(token,
+                ("encrypted_ciphertext", hiddenCiphertext),
+                ("passphrase", Passphrase),
+                ("confirmation", "restore")),
+            cancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, restore.StatusCode);
+        var restoredConfiguration = await target.Instance.GetAsync(cancellationToken);
+        Assert.NotNull(restoredConfiguration);
+        Assert.Equal(target.GoogleSecretPath, restoredConfiguration.GoogleClientSecretRef);
+        Assert.NotEqual(target.ResolvedGoogleSecretPath, restoredConfiguration.GoogleClientSecretRef);
+        Assert.True(AdminGoogleSecretStore.TryReadSecret(target.GoogleSecretPath, out var preservedSecret));
+        Assert.Equal(TargetGoogleSecret, preservedSecret);
+        Assert.False(File.Exists(target.ResolvedGoogleSecretPath));
+    }
+
     private static async Task AssertAuditsContainNoBackupSecretsAsync(
         ManagedBackupHarness source,
         ManagedBackupHarness target,
@@ -455,6 +606,23 @@ public sealed class AdminSettingsBackupTests
         {
             Assert.DoesNotContain(secret, auditMaterial, StringComparison.Ordinal);
         }
+    }
+
+    private static async Task<string> ReadAuditMaterialAsync(
+        ManagedBackupHarness harness,
+        CancellationToken cancellationToken)
+    {
+        var audits = await harness.Factory.Services.GetRequiredService<AdminAuditRepository>()
+            .ListRecentAsync(50, cancellationToken);
+        return string.Join('\n', audits.SelectMany(audit => new[]
+        {
+            audit.EventType,
+            audit.Result,
+            audit.TargetType,
+            audit.TargetId,
+            audit.FieldName,
+            audit.ErrorCode,
+        }));
     }
 
     private static async Task<(string PasswordHash, bool IsInstanceOwner, bool IsBreakGlass)> ReadOwnerCredentialsAsync(
@@ -569,6 +737,7 @@ public sealed class AdminSettingsBackupTests
             AdminGoogleIdentityRepository googleIdentities,
             SenderIdentity sharedSender,
             bool useManagedGoogleAuthority,
+            string resolvedGoogleSecretPath,
             WebApplicationFactory<global::Program> factory)
         {
             _root = root;
@@ -584,6 +753,7 @@ public sealed class AdminSettingsBackupTests
             _factory = factory;
             AcsSecretPath = Path.Combine(root, "secrets", "acs", "acs_connection_string");
             GoogleSecretPath = Path.Combine(root, "secrets", "admin_google", "client_secret");
+            ResolvedGoogleSecretPath = resolvedGoogleSecretPath;
         }
 
         public string ConnectionString { get; }
@@ -593,6 +763,8 @@ public sealed class AdminSettingsBackupTests
         public string AcsSecretPath { get; }
 
         public string GoogleSecretPath { get; }
+
+        public string ResolvedGoogleSecretPath { get; }
 
         public SqliteConnectionFactory Connections { get; }
 
@@ -615,9 +787,13 @@ public sealed class AdminSettingsBackupTests
             string acsSecret,
             bool googleEnabled,
             string googleClientId,
-            string googleSecret,
+            string? googleSecret,
             CancellationToken cancellationToken,
-            bool useManagedGoogleAuthority = true)
+            bool useManagedGoogleAuthority = true,
+            bool acsSecretCanonical = true,
+            bool googleSecretCanonical = true,
+            string? configuredGoogleSecretPath = null,
+            ILoggerProvider? loggerProvider = null)
         {
             var root = Path.Combine(
                 Path.GetTempPath(),
@@ -632,6 +808,7 @@ public sealed class AdminSettingsBackupTests
                 cancellationToken);
             var acsSecretPath = Path.Combine(root, "secrets", "acs", "acs_connection_string");
             var googleSecretPath = Path.Combine(root, "secrets", "admin_google", "client_secret");
+            var resolvedGoogleSecretPath = configuredGoogleSecretPath ?? googleSecretPath;
 
             var configuration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
@@ -671,7 +848,8 @@ public sealed class AdminSettingsBackupTests
 
             if (useManagedGoogleAuthority)
             {
-                AdminGoogleSecretStore.WriteSecret(googleSecretPath, googleSecret);
+                if (googleSecret is not null)
+                    AdminGoogleSecretStore.WriteSecret(googleSecretPath, googleSecret);
                 Assert.True(await instance.SetGoogleLoginSettingsAsync(
                     googleEnabled,
                     googleClientId,
@@ -684,7 +862,7 @@ public sealed class AdminSettingsBackupTests
             {
                 ["AMANE_ADMIN_ENABLED"] = "false",
                 ["AMANE_ADMIN_USERNAME"] = "legacy-admin",
-                [AdminGoogleSecretStore.SecretPathEnvKey] = googleSecretPath,
+                [AdminGoogleSecretStore.SecretPathEnvKey] = resolvedGoogleSecretPath,
             };
             if (!useManagedGoogleAuthority)
             {
@@ -696,7 +874,11 @@ public sealed class AdminSettingsBackupTests
                 tenantConfigPath,
                 AdminPasswordHasher.Hash("legacy-password"),
                 extras,
-                useEarlyInstanceProbe: true);
+                useEarlyInstanceProbe: true,
+                backupCanonicalSecretPaths: new AdminSettingsBackupCanonicalSecretPaths(
+                    acsSecretCanonical ? acsSecretPath : Path.Combine(root, "operator-acs-canonical"),
+                    googleSecretCanonical ? googleSecretPath : Path.Combine(root, "operator-google-canonical")),
+                loggerProvider: loggerProvider);
 
             return new ManagedBackupHarness(
                 root,
@@ -709,6 +891,7 @@ public sealed class AdminSettingsBackupTests
                 new AdminGoogleIdentityRepository(connections),
                 sharedSender,
                 useManagedGoogleAuthority,
+                resolvedGoogleSecretPath,
                 factory);
         }
 
@@ -719,6 +902,42 @@ public sealed class AdminSettingsBackupTests
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(_root))
                 Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    private sealed class CapturingLoggerProvider : ILoggerProvider
+    {
+        private readonly ConcurrentQueue<string> _entries = new();
+
+        public string Text => string.Join(Environment.NewLine, _entries);
+
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(this, categoryName);
+
+        public void Dispose()
+        {
+        }
+
+        private sealed class CapturingLogger(
+            CapturingLoggerProvider owner,
+            string categoryName) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state)
+                where TState : notnull => null;
+
+            public bool IsEnabled(LogLevel logLevel) => true;
+
+            public void Log<TState>(
+                LogLevel logLevel,
+                EventId eventId,
+                TState state,
+                Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                var message = formatter(state, exception);
+                owner._entries.Enqueue(exception is null
+                    ? $"{categoryName}: {message}"
+                    : $"{categoryName}: {message}{Environment.NewLine}{exception}");
+            }
         }
     }
 }

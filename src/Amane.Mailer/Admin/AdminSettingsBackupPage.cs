@@ -11,6 +11,7 @@ using Amane.Mailer.Operations;
 using Amane.Mailer.Setup;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Amane.Mailer.Admin;
 
@@ -102,18 +103,26 @@ public static class AdminSettingsBackupPage
         byte[]? encrypted = null;
         try
         {
+            var canonicalSecretPaths = context.RequestServices
+                .GetRequiredService<AdminSettingsBackupCanonicalSecretPaths>();
             var current = await instanceConfigurationRepository.GetAsync(cancellationToken);
             if (!AdminSecretsPage.IsManagedAcs(current)
+                || !AdminSecretsPage.IsCanonicalPath(
+                    current!.ProviderSecretRef,
+                    canonicalSecretPaths.AcsSecretPath)
                 || !FirstRunSetupStorage.TryReadValidAcsSecret(current!.ProviderSecretRef!, out var acsSecret))
             {
                 return await ExportFailureAsync(context, auditRepository, adminOptions, loggerFactory, timeProvider, cancellationToken);
             }
 
-            var googleStatus = AdminGoogleSettingsStatus.Evaluate(current, googleOptions, configuration);
-            var googleIncluded = googleStatus.SavedUsesManaged;
+            var googleIncluded = !string.IsNullOrWhiteSpace(current!.GoogleConfiguredAt)
+                && AdminSecretsPage.IsCanonicalPath(
+                    current.GoogleClientSecretRef,
+                    canonicalSecretPaths.GoogleSecretPath);
             string? googleSecret = null;
             if (googleIncluded)
             {
+                var googleStatus = AdminGoogleSettingsStatus.Evaluate(current, googleOptions, configuration);
                 if (!string.IsNullOrWhiteSpace(current.GoogleClientSecretRef)
                     && AdminGoogleSecretStore.TryReadSecret(current.GoogleClientSecretRef, out var storedGoogleSecret))
                 {
@@ -428,12 +437,12 @@ public static class AdminSettingsBackupPage
             if (payload.Settings.GoogleLogin.Included)
             {
                 if (payload.Secrets.GoogleClientSecret is { } googleSecret)
-                    AdminGoogleSecretStore.WriteSecret(target.GoogleSecretPath!, googleSecret);
+                    AdminGoogleSecretStore.WriteSecret(target.GoogleSecretRefForRestore!, googleSecret);
 
                 if (!await instanceConfigurationRepository.SetGoogleLoginSettingsAsync(
                         payload.Settings.GoogleLogin.Enabled,
                         payload.Settings.GoogleLogin.ClientId,
-                        target.GoogleSecretPath,
+                        target.GoogleSecretRefForRestore,
                         cancellationToken))
                 {
                     return await ImportFailureAsync(
@@ -509,19 +518,33 @@ public static class AdminSettingsBackupPage
         }
 
         var googleStatus = AdminGoogleSettingsStatus.Evaluate(current, googleOptions, configuration);
-        string? googleSecretPath = null;
+        var googleRestoreSecretRef = current.GoogleClientSecretRef;
         string? googleTargetSecret = null;
         var googleTargetConfigured = false;
         if (payload.Settings.GoogleLogin.Included)
         {
-            googleSecretPath = AdminGoogleSecretStore.ResolveSecretPath(configuration);
-            if (!IsSafeGoogleTargetPath(googleSecretPath)
-                || PathsEqual(current.ProviderSecretRef, googleSecretPath))
+            var googleSecretPath = AdminGoogleSecretStore.ResolveSecretPath(configuration);
+            googleRestoreSecretRef = payload.Secrets.GoogleClientSecret is null
+                ? AdminGoogleSettingsPage.ResolveSecretRefForUpdate(
+                    secretWasWritten: false,
+                    secretPath: googleSecretPath,
+                    currentSecretRef: current.GoogleClientSecretRef) ?? current.GoogleClientSecretRef
+                : googleSecretPath;
+            var effectiveSecretPath = payload.Secrets.GoogleClientSecret is null
+                ? googleRestoreSecretRef
+                : googleSecretPath;
+            if (!string.IsNullOrWhiteSpace(effectiveSecretPath)
+                && (!IsSafeGoogleTargetPath(effectiveSecretPath)
+                    || PathsEqual(current.ProviderSecretRef, effectiveSecretPath)))
             {
                 return null;
             }
 
-            if (File.Exists(googleSecretPath))
+            if (payload.Secrets.GoogleClientSecret is null)
+            {
+                googleTargetConfigured = AdminGoogleSecretStore.IsSecretConfigured(googleRestoreSecretRef);
+            }
+            else if (File.Exists(googleSecretPath))
             {
                 if (!AdminGoogleSecretStore.TryReadSecret(googleSecretPath, out googleTargetSecret))
                     return null;
@@ -535,7 +558,7 @@ public static class AdminSettingsBackupPage
             current,
             acsSecret,
             googleStatus,
-            googleSecretPath,
+            googleRestoreSecretRef,
             googleTargetSecret,
             googleTargetConfigured,
             senders);
@@ -570,7 +593,10 @@ public static class AdminSettingsBackupPage
                     NormalizeOptional(target.Configuration.GoogleClientId),
                     importedGoogle.ClientId,
                     StringComparison.Ordinal)
-                || googleSecretChanged;
+                || googleSecretChanged
+                || !SecretRefsEqual(
+                    target.Configuration.GoogleClientSecretRef,
+                    target.GoogleSecretRefForRestore);
         }
 
         var acsRuntimeMatchesImported = !string.IsNullOrWhiteSpace(mailerOptions.AcsConnectionString)
@@ -612,6 +638,7 @@ public static class AdminSettingsBackupPage
             googleSecretStatus,
             senderPreviews,
             localOnlySenderCount,
+            ImportedGoogleSecretPresent: payload.Secrets.GoogleClientSecret is not null,
             RestartRequired: !acsRuntimeMatchesImported
                 || !acsUnchanged
                 || googleSettingsChanged);
@@ -625,7 +652,7 @@ public static class AdminSettingsBackupPage
             return "preserved";
 
         if (payload.Secrets.GoogleClientSecret is not { } importedSecret)
-            return "missing";
+            return target.GoogleTargetConfigured ? "unchanged" : "missing";
 
         if (!target.GoogleTargetConfigured || target.GoogleTargetSecret is null)
             return "configured";
@@ -633,6 +660,14 @@ public static class AdminSettingsBackupPage
         return AdminSecretsPage.SecretsMatch(target.GoogleTargetSecret, importedSecret)
             ? "unchanged"
             : "different";
+    }
+
+    private static bool SecretRefsEqual(string? first, string? second)
+    {
+        if (string.IsNullOrWhiteSpace(first) || string.IsNullOrWhiteSpace(second))
+            return string.IsNullOrWhiteSpace(first) && string.IsNullOrWhiteSpace(second);
+
+        return PathsEqual(first, second);
     }
 
     private static async Task<bool> MergeSendersAsync(
@@ -1036,9 +1071,9 @@ public static class AdminSettingsBackupPage
         AppendDefinition(html, "Live Sending applied", "OFF");
         AppendDefinition(html, "Restart", preview.RestartRequired ? "required" : "not required");
         html.AppendLine("                  </dl>");
-        if (preview.GoogleIncluded && preview.GoogleSecretStatus == "missing")
+        if (preview.GoogleIncluded && !preview.ImportedGoogleSecretPresent)
         {
-            html.AppendLine("                  <p class=\"ops-meta\">BackupにGoogle Client Secretがありません。復元時は既存のtarget secretを保持します。</p>");
+            html.AppendLine("                  <p class=\"ops-meta\">BackupにGoogle Client Secretがありません。復元時は既存のtarget secret/refを保持します。</p>");
         }
 
         html.AppendLine("                  <h2 class=\"ops-heading\">Senders</h2>");
@@ -1153,7 +1188,7 @@ public static class AdminSettingsBackupPage
         InstanceConfigurationRow Configuration,
         string AcsSecret,
         AdminGoogleSettingsStatus GoogleStatus,
-        string? GoogleSecretPath,
+        string? GoogleSecretRefForRestore,
         string? GoogleTargetSecret,
         bool GoogleTargetConfigured,
         IReadOnlyList<SenderSummary> Senders);
@@ -1177,5 +1212,6 @@ public static class AdminSettingsBackupPage
         string GoogleSecretStatus,
         IReadOnlyList<SenderPreview> Senders,
         int LocalOnlySenderCount,
+        bool ImportedGoogleSecretPresent,
         bool RestartRequired);
 }
