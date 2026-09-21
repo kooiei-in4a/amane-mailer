@@ -65,6 +65,8 @@ public sealed class MailerAdminOpsTests(MailerAdminFixture fixture)
         Assert.Contains("外部メールProviderへ渡す処理", html, StringComparison.Ordinal);
         Assert.Contains("Database storage", html, StringComparison.Ordinal);
         Assert.Contains("Mailer DBの状態・サイズ・WAL", html, StringComparison.Ordinal);
+        Assert.Contains("Backup and restore status", html, StringComparison.Ordinal);
+        Assert.Contains("freshness interval is not configured", html, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -43,20 +43,10 @@ esac
 [ -f "$ENV_FILE" ] || fail "Compose env file does not exist"
 _parse_env "$ENV_FILE"
 
-: "${MAILER_BACKUP_ENCRYPTION_PUBLIC_KEY:?MAILER_BACKUP_ENCRYPTION_PUBLIC_KEY is not set in .env}"
 MAILER_BACKUP_REQUIRE_OFFSITE="${MAILER_BACKUP_REQUIRE_OFFSITE:-true}"
 MAILER_BACKUP_RCLONE_REMOTE="${MAILER_BACKUP_RCLONE_REMOTE:-}"
 MAILER_BACKUP_RCLONE_CONFIG_PATH="${MAILER_BACKUP_RCLONE_CONFIG_PATH:-./rclone/rclone.conf}"
 MAILER_BACKUP_PING_URL="${MAILER_BACKUP_PING_URL:-}"
-
-case "$MAILER_BACKUP_REQUIRE_OFFSITE" in
-  true|false) ;;
-  *) fail "MAILER_BACKUP_REQUIRE_OFFSITE must be true or false" ;;
-esac
-
-if [ "$MAILER_BACKUP_REQUIRE_OFFSITE" = "true" ] && [ -z "$MAILER_BACKUP_RCLONE_REMOTE" ]; then
-  fail "MAILER_BACKUP_REQUIRE_OFFSITE=true but MAILER_BACKUP_RCLONE_REMOTE is not set"
-fi
 
 COMPOSE_FILE_VALUE="${MAILER_COMPOSE_FILE:-${COMPOSE_FILE:-compose.yml}}"
 IFS=: read -r -a COMPOSE_FILE_NAMES <<< "$COMPOSE_FILE_VALUE"
@@ -87,6 +77,103 @@ GOOGLE_SECRET_PATH="$DATA_DIR/$GOOGLE_SECRET_RELATIVE"
 GOOGLE_SECRET_DIR="$(dirname -- "$GOOGLE_SECRET_PATH")"
 COMMITTED_SPOOL_PATH="$DATA_DIR/attachment-spool/committed"
 BACKUP_DIR="$DATA_DIR/backups"
+STATUS_DIR="$DATA_DIR/.mailer-backup-status"
+
+TEMP_DIR=""
+PLAINTEXT=""
+ENCRYPTED_PARTIAL=""
+ENCRYPTED=""
+ENCRYPTED_PUBLISHED=0
+DONE=0
+STATUS_READY=0
+STATUS_STARTED_AT=""
+STATUS_STAGE="preflight"
+STATUS_OFFSITE="not-attempted"
+STATUS_ARTIFACT=""
+
+utc_now() {
+  date -u +'%Y-%m-%dT%H:%M:%SZ'
+}
+
+write_status_receipt() {
+  local file_name="$1" record_type="$2" status="$3" completed_at="$4"
+  local stage="$5" offsite_status="$6" artifact_name="$7"
+  [ "$STATUS_READY" -eq 1 ] || return 0
+  [ ! -L "$STATUS_DIR" ] && [ -d "$STATUS_DIR" ] || return 0
+
+  local completed_json=null artifact_json=null temp_path
+  [ -z "$completed_at" ] || completed_json="\"$completed_at\""
+  [ -z "$artifact_name" ] || artifact_json="\"$artifact_name\""
+  temp_path="$STATUS_DIR/.${file_name}.tmp.$$"
+  if ! {
+    printf '{"schemaVersion":1,"backupType":"full-instance","recordType":"%s","status":"%s","startedAtUtc":"%s","completedAtUtc":%s,"stage":"%s","offsiteStatus":"%s","artifactName":%s}\n' \
+      "$record_type" "$status" "$STATUS_STARTED_AT" "$completed_json" "$stage" "$offsite_status" "$artifact_json" > "$temp_path"
+    chmod 644 -- "$temp_path"
+    mv -f -- "$temp_path" "$STATUS_DIR/$file_name"
+  } 2>/dev/null; then
+    rm -f -- "$temp_path" 2>/dev/null || true
+    echo "WARNING: backup status receipt could not be updated" >&2
+  fi
+}
+
+write_attempt_receipt() {
+  write_status_receipt \
+    "full-instance.attempt.json" "attempt" "$1" "$2" \
+    "$STATUS_STAGE" "$STATUS_OFFSITE" "$STATUS_ARTIFACT"
+}
+
+if [ ! -L "$STATUS_DIR" ] && mkdir -p -- "$STATUS_DIR" 2>/dev/null; then
+  if chmod 755 -- "$STATUS_DIR" 2>/dev/null \
+    && [ ! -L "$STATUS_DIR" ] \
+    && [ -d "$STATUS_DIR" ]; then
+    STATUS_READY=1
+    STATUS_STARTED_AT="$(utc_now)"
+    write_attempt_receipt "running" ""
+  fi
+fi
+
+cleanup() {
+  local status=$?
+  set +e
+  if [ -n "${PLAINTEXT:-}" ]; then
+    rm -f -- "$PLAINTEXT"
+  fi
+  if [ -n "${ENCRYPTED_PARTIAL:-}" ]; then
+    rm -f -- "$ENCRYPTED_PARTIAL"
+  fi
+  if [ "${DONE:-0}" -eq 0 ]; then
+    if [ "${ENCRYPTED_PUBLISHED:-0}" -eq 1 ] && [ -n "${ENCRYPTED:-}" ]; then
+      rm -f -- "$ENCRYPTED"
+    fi
+    if [ "${STATUS_READY:-0}" -eq 1 ]; then
+      if [ "$STATUS_OFFSITE" = "pending" ]; then
+        STATUS_OFFSITE="failed"
+      fi
+      STATUS_ARTIFACT=""
+      write_attempt_receipt "failed" "$(utc_now)"
+    fi
+    if [ -n "${MAILER_BACKUP_PING_URL:-}" ]; then
+      curl -fsS --max-time 10 "${MAILER_BACKUP_PING_URL}/fail" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [ -n "${TEMP_DIR:-}" ]; then
+    rm -rf -- "$TEMP_DIR"
+  fi
+  trap - EXIT
+  exit "$status"
+}
+trap cleanup EXIT
+
+: "${MAILER_BACKUP_ENCRYPTION_PUBLIC_KEY:?MAILER_BACKUP_ENCRYPTION_PUBLIC_KEY is not set in .env}"
+
+case "$MAILER_BACKUP_REQUIRE_OFFSITE" in
+  true|false) ;;
+  *) fail "MAILER_BACKUP_REQUIRE_OFFSITE must be true or false" ;;
+esac
+
+if [ "$MAILER_BACKUP_REQUIRE_OFFSITE" = "true" ] && [ -z "$MAILER_BACKUP_RCLONE_REMOTE" ]; then
+  fail "MAILER_BACKUP_REQUIRE_OFFSITE=true but MAILER_BACKUP_RCLONE_REMOTE is not set"
+fi
 
 require_command docker
 require_command age
@@ -107,35 +194,6 @@ if [ -L "$BACKUP_DIR" ]; then
 fi
 mkdir -p -- "$BACKUP_DIR"
 chmod 700 -- "$BACKUP_DIR"
-
-TEMP_DIR=""
-PLAINTEXT=""
-ENCRYPTED_PARTIAL=""
-ENCRYPTED=""
-DONE=0
-
-cleanup() {
-  local status=$?
-  set +e
-  if [ -n "${PLAINTEXT:-}" ]; then
-    rm -f -- "$PLAINTEXT"
-  fi
-  if [ -n "${ENCRYPTED_PARTIAL:-}" ]; then
-    rm -f -- "$ENCRYPTED_PARTIAL"
-  fi
-  if [ "${DONE:-0}" -eq 0 ] && [ -n "${ENCRYPTED:-}" ]; then
-    rm -f -- "$ENCRYPTED"
-    if [ -n "${MAILER_BACKUP_PING_URL:-}" ]; then
-      curl -fsS --max-time 10 "${MAILER_BACKUP_PING_URL}/fail" >/dev/null 2>&1 || true
-    fi
-  fi
-  if [ -n "${TEMP_DIR:-}" ]; then
-    rm -rf -- "$TEMP_DIR"
-  fi
-  trap - EXIT
-  exit "$status"
-}
-trap cleanup EXIT
 
 verify_mailer_stopped() {
   local running_services service
@@ -244,6 +302,8 @@ ENCRYPTED="$BACKUP_DIR/$ENCRYPTED_BASENAME"
 [ ! -e "$ENCRYPTED" ] || fail "encrypted backup already exists for this timestamp"
 [ ! -e "$ENCRYPTED_PARTIAL" ] || fail "encrypted backup temporary path already exists"
 
+STATUS_STAGE="archive"
+write_attempt_receipt "running" ""
 echo "[1/4] Creating cold Mailer instance archive..."
 tar --create --file "$PLAINTEXT" --directory "$DATA_DIR" \
   --format=posix --numeric-owner --owner=0 --group=0 \
@@ -256,13 +316,20 @@ age --encrypt \
   --output "$ENCRYPTED_PARTIAL" \
   "$PLAINTEXT"
 [ -s "$ENCRYPTED_PARTIAL" ] || fail "encrypted backup is missing or empty"
+STATUS_STAGE="encrypt"
+write_attempt_receipt "running" ""
 mv -- "$ENCRYPTED_PARTIAL" "$ENCRYPTED"
 ENCRYPTED_PARTIAL=""
+ENCRYPTED_PUBLISHED=1
+STATUS_ARTIFACT="$ENCRYPTED_BASENAME"
 rm -f -- "$PLAINTEXT"
 PLAINTEXT=""
 
+STATUS_STAGE="upload"
 echo "[3/4] Uploading encrypted instance backup..."
 if [ -n "$MAILER_BACKUP_RCLONE_REMOTE" ]; then
+  STATUS_OFFSITE="pending"
+  write_attempt_receipt "running" ""
   case "$MAILER_BACKUP_RCLONE_CONFIG_PATH" in
     /*) rclone copy --config "$MAILER_BACKUP_RCLONE_CONFIG_PATH" "$ENCRYPTED" "$MAILER_BACKUP_RCLONE_REMOTE" ;;
     *)
@@ -274,13 +341,27 @@ if [ -n "$MAILER_BACKUP_RCLONE_REMOTE" ]; then
       fi
       ;;
   esac
+  STATUS_OFFSITE="succeeded"
+  write_status_receipt \
+    "full-instance.offsite-success.json" "offsite-success" "succeeded" \
+    "$(utc_now)" "upload" "succeeded" "$ENCRYPTED_BASENAME"
 else
   echo "Skipping offsite upload (MAILER_BACKUP_REQUIRE_OFFSITE=false)"
+  STATUS_OFFSITE="skipped"
 fi
 
+STATUS_STAGE="cleanup"
+write_attempt_receipt "running" ""
 echo "[4/4] Confirming plaintext cleanup..."
 [ ! -e "$PLAINTEXT" ] || fail "plaintext instance archive was not removed"
 DONE=1
+STATUS_STAGE="complete"
+STATUS_ARTIFACT="$ENCRYPTED_BASENAME"
+completed_at="$(utc_now)"
+write_status_receipt \
+  "full-instance.success.json" "success" "succeeded" \
+  "$completed_at" "complete" "$STATUS_OFFSITE" "$ENCRYPTED_BASENAME"
+write_attempt_receipt "succeeded" "$completed_at"
 echo "Instance backup complete: $ENCRYPTED_BASENAME"
 
 if [ -n "$MAILER_BACKUP_PING_URL" ]; then

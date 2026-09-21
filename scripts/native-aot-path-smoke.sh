@@ -309,6 +309,17 @@ finally:
 PY
 }
 
+write_backup_status_fixture() {
+  local data_directory="$1"
+  local status_directory="$data_directory/.mailer-backup-status"
+  local now_utc
+  now_utc="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  mkdir -p "$status_directory"
+  cat > "$status_directory/db-only.attempt.json" <<JSON
+{"schemaVersion":1,"backupType":"database-only","recordType":"attempt","status":"failed","startedAtUtc":"$now_utc","completedAtUtc":"$now_utc","stage":"upload","offsiteStatus":"failed","artifactName":null}
+JSON
+}
+
 stop_mailer() {
   if [ -n "${MAILER_PID:-}" ] && kill -0 "$MAILER_PID" >/dev/null 2>&1; then
     kill "$MAILER_PID" >/dev/null 2>&1 || true
@@ -335,6 +346,7 @@ main() {
   local password="aot-path-smoke-password"
   local base_url="http://127.0.0.1:${HTTP_PORT}"
   local hash=""
+  local auth_cookie_ready=0
 
   mkdir -p "$WORK_DIR/backups"
   write_tenants_json "$tenants_plain"
@@ -537,6 +549,7 @@ fi
     fail "http:admin-google-challenge" "skipped; initialized fixture seed failed"
     finish
   fi
+  write_backup_status_fixture "$WORK_DIR"
 
   start_mailer "$tenants_host" "$db_path" "$hash" "$server_log"
 
@@ -595,6 +608,7 @@ fi
     )"
     if [ "$post_code" = "302" ] || [ "$post_code" = "303" ]; then
       if grep -qiE 'amane-admin-auth|__Host-amane-admin-auth' "$COOKIE_JAR"; then
+        auth_cookie_ready=1
         pass "http:admin-login-post"
       else
         fail "http:admin-login-post" "redirect ${post_code} but auth cookie missing"
@@ -605,6 +619,23 @@ fi
   else
     fail "http:admin-google-challenge" "CSRF token not found on login page"
     fail "http:admin-login-post" "CSRF token not found on login page"
+  fi
+
+  if [ "$auth_cookie_ready" -eq 1 ]; then
+    local ops_code
+    ops_code="$(
+      curl -sS -c "$COOKIE_JAR" -b "$COOKIE_JAR" -o "$WORK_DIR/admin-ops.out" -w '%{http_code}' \
+        --max-time 10 "$base_url/admin/ops" || true
+    )"
+    if [ "$ops_code" = "200" ] \
+      && grep -Fq 'Backup and restore status' "$WORK_DIR/admin-ops.out" \
+      && grep -Fq 'Upload failed' "$WORK_DIR/admin-ops.out"; then
+      pass "http:admin-ops-backup-status"
+    else
+      fail "http:admin-ops-backup-status" "GET /admin/ops status=${ops_code:-none} or sanitized failure receipt was not rendered"
+    fi
+  else
+    fail "http:admin-ops-backup-status" "skipped; Admin login did not establish an auth cookie"
   fi
 
   stop_mailer

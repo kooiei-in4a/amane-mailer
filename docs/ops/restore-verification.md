@@ -7,6 +7,10 @@ operator が決めた周期で、使い捨て環境に full instance archive を
 このドリルは実 ACS 送信、実 recipient、実 provider secret を使いません。検証用の
 fake SQLite／fake secret／fake committed spool を使う自動 fixture は次で実行できます:
 
+このrunbookは現在durableなrestore-verification receiptを作成しません。実施結果は
+privateなops noteへ記録してください。`/admin/ops` が未記録と表示する状態は、検証が
+成功した証拠として扱わないでください。
+
 ~~~bash
 bash /path/to/amane-mailer/scripts/backup-instance-state-self-test.sh
 ~~~

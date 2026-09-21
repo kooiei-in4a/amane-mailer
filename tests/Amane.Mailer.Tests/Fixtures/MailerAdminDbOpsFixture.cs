@@ -17,6 +17,9 @@ public sealed class MailerAdminDbOpsFixture() : MailerWebApplicationFixtureBase(
     public string BackupDirectory =>
         Path.Combine(Path.GetDirectoryName(DatabaseFilePath)!, "backups");
 
+    public string BackupStatusDirectory =>
+        Path.Combine(Path.GetDirectoryName(DatabaseFilePath)!, ".mailer-backup-status");
+
     private string DatabaseFilePath =>
         ConnectionString["Data Source=".Length..];
 

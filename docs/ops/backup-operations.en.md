@@ -361,6 +361,25 @@ At minimum, the operator should monitor:
 
 The ping URL, alert routing, and log destination stay outside this repository.
 
+## Admin Backup Status
+
+Admins allowed to run service-wide backups (instance owner, break-glass, or an admin with all tenant scopes) see **Backup and restore status** on `/admin/ops`. This is a read-only view; it does not run backups or restores.
+
+The two host scripts write fixed-schema receipts under `MAILER_DATA_PATH/.mailer-backup-status/`. A receipt contains only the backup kind, start/completion time, latest attempt result, encrypted artifact filename, and the script-reported offsite upload result. It contains no secret, PII, remote name, arbitrary path, or script log. The status directory and receipt files are made non-writable by group and other users; a script skips receipts if it cannot enforce those modes, and Mailer treats group/other-writable status evidence as invalid. The receipt is atomically replaced from a temporary file. A receipt write failure does not change the backup result.
+
+These receipts are not cryptographically authenticated. Mailer does not authenticate the status directory owner, so its owner, root, and any host account that can replace the sidecar through a writable data-root parent can forge receipts. Treat those accounts as trusted host operators.
+
+This directory is excluded from backup archives and is not part of full-instance restore input. A receipt alone does not establish restoreability. Admin checks whether the last successfully encrypted staging artifact is currently present locally and shows the last reported successful rclone upload time. It does not verify that an artifact currently exists on the remote. Restore verification currently has no durable receipt and is shown as unrecorded.
+
+For stale classification, pass thresholds that match the host's chosen schedule to the Mailer runtime. DB-only and full-instance thresholds are independent:
+
+```dotenv
+MAILER_BACKUP_STATUS_DB_STALE_AFTER_HOURS=<chosen-positive-hours>
+MAILER_BACKUP_STATUS_FULL_INSTANCE_STALE_AFTER_HOURS=<chosen-positive-hours>
+```
+
+Values from 1 through 87600 hours are accepted. When unset, Admin does not infer freshness and shows the success time, elapsed time, and latest failure. These settings do not schedule backups or replace the monitoring handoff.
+
 ## Restore Verification
 
 After the first offsite backup, run

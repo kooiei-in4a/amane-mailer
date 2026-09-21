@@ -65,6 +65,31 @@ public sealed class AdminAuditRepository(SqliteConnectionFactory connections)
         return page.Items;
     }
 
+    public async Task<AdminAuditEventRow?> GetLatestDatabaseBackupOperationAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await connections.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT
+                id, event_type, actor, occurred_at,
+                source_ip, user_agent_summary,
+                target_type, target_id, field_name,
+                result, error_code
+            FROM admin_audit_events
+            WHERE event_type IN (@CompletedEvent, @FailedEvent)
+            ORDER BY occurred_at DESC, id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@CompletedEvent", AdminAuditLog.EventTypes.DbBackupCompleted);
+        command.Parameters.AddWithValue("@FailedEvent", AdminAuditLog.EventTypes.DbBackupFailed);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? ReadAuditEventRow(reader)
+            : null;
+    }
+
     public async Task<AdminAuditListPage> ListForAdminAsync(
         AdminAuditListQuery query,
         CancellationToken cancellationToken = default)

@@ -301,6 +301,25 @@ unit パス、ユーザー、rclone バイナリパス、ログ先、タイム�
 
 ping URL、アラートルーティング、ログ先は本リポジトリ外です。
 
+## Admin のbackup状態表示
+
+service-wide backupを実行できるAdmin（instance owner、break-glass、または全tenant scope）には、`/admin/ops` の Backup and restore status が表示されます。これは状態を確認するread-only表示であり、backupやrestoreは実行しません。
+
+二つのhost scriptは、`MAILER_DATA_PATH/.mailer-backup-status/` に固定形式のreceiptを書きます。receiptはbackup種別、開始／完了時刻、最終attempt結果、暗号化ファイル名、スクリプトが報告したoffsite upload結果だけを含みます。secret、PII、remote名、任意のpath、script logは含みません。status directoryとreceipt fileはgroup/otherから書き込めないmodeにし、scriptがそのmodeを設定できない場合はreceiptを記録しません。Mailerもgroup/other writableなstatus directoryまたはreceiptを無効な証拠として扱います。receiptは一時ファイルからatomic renameで更新し、書込み失敗はbackup自体の成否を変えません。
+
+このreceiptは暗号学的に認証された証跡ではありません。Mailerはstatus directoryのowner identityを認証しないため、directoryのowner/root、および書込み可能なdata-rootからsidecar directoryを置き換えられるhost accountはreceiptを偽造できます。これらのaccountは信頼されたhost operatorとして扱ってください。
+
+このディレクトリはbackup archiveに含めません。full-instance archiveの復元対象にもならず、receiptだけでrestore可能とは判断しません。Admin UIは最後に成功したencrypted staging artifactが現在ローカルにあるかを確認し、offsiteについては最後のrclone upload成功時刻を表示します。remote上の現在のartifact存在は検証しません。リストア検証は現在durableなreceiptを持たず、未記録として表示します。
+
+stale判定には、hostが選んだ実行周期に合わせてMailer runtimeへ次の設定を渡します。DB-onlyとfull-instanceは別々に設定します。
+
+```dotenv
+MAILER_BACKUP_STATUS_DB_STALE_AFTER_HOURS=<chosen-positive-hours>
+MAILER_BACKUP_STATUS_FULL_INSTANCE_STALE_AFTER_HOURS=<chosen-positive-hours>
+```
+
+設定可能な値は1〜87600時間です。未設定の場合、UIは鮮度を判定せず、成功時刻・経過時間・最新failureを表示します。これらの設定はbackupをscheduleせず、runbookのmonitoring handoffを置き換えません。
+
 ## リストア検証
 
 初回オフサイトバックアップ後、使い捨て環境で
