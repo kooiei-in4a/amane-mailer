@@ -105,6 +105,9 @@ jobs:
       - name: Managed instance backup/restore fixture self-test
         run: bash scripts/backup-instance-state-self-test.sh
 
+      - name: DB-only encrypted backup status receipt self-test
+        run: bash scripts/backup-mailer-self-test.sh
+
       - name: Qualified Git promotion validator self-test
         run: python3 scripts/validate-qualified-git-promotion-self-test.py
 

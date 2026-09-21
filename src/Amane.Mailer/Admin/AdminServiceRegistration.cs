@@ -61,6 +61,16 @@ internal static class AdminServiceRegistration
             options.Validate(adminOptions.Enabled, connections);
             return options;
         });
+        services.AddStartupValidatedSingleton(provider =>
+        {
+            var resolvedConfiguration = provider.GetRequiredService<IConfiguration>();
+            var connections = provider.GetRequiredService<SqliteConnectionFactory>();
+            var adminOptions = provider.GetRequiredService<MailerAdminOptions>();
+            return MailerAdminBackupStatusOptions.Load(
+                resolvedConfiguration,
+                connections.ConnectionString,
+                adminOptions.Enabled);
+        });
         // Keep this factory after any .Load( registration body so the startup-inventory
         // AddSingleton+Load heuristic does not false-positive across adjacent registrations.
         services.AddSingleton(provider => new AdminCredentialSync(
@@ -71,6 +81,7 @@ internal static class AdminServiceRegistration
             provider.GetRequiredService<IConfiguration>(),
             provider.GetRequiredService<AdminBootstrapDatabase>()));
         services.AddSingleton<AdminDbOpsService>();
+        services.AddSingleton<AdminBackupStatusReader>();
 
         // Cookie transport is resolved from IHostEnvironment at options configure time so
         // WebApplicationFactory UseEnvironment and Production/Staging fail-closed agree.

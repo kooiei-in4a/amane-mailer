@@ -25,6 +25,7 @@ public static class AdminOpsPage
         InstanceConfigurationRepository instanceConfigurationRepository,
         WorkerServiceStatus serviceStatus,
         MailerAdminDbOpsOptions dbOpsOptions,
+        AdminBackupStatusReader backupStatusReader,
         MailerTenantRegistry tenantRegistry,
         IAntiforgery antiforgery,
         IConfiguration configuration,
@@ -37,11 +38,11 @@ public static class AdminOpsPage
         if (access is null)
             return Results.StatusCode(StatusCodes.Status403Forbidden);
 
-        var canRunServiceWideDbOps = dbOpsOptions.Enabled
-            && await userRepository.CanRunServiceWideBackupAsync(
-                access.Username,
-                tenantRegistry.ListTenants().Select(tenant => tenant.TenantId),
-                cancellationToken);
+        var canViewServiceWideBackupStatus = await userRepository.CanRunServiceWideBackupAsync(
+            access.Username,
+            tenantRegistry.ListTenants().Select(tenant => tenant.TenantId),
+            cancellationToken);
+        var canRunServiceWideDbOps = dbOpsOptions.Enabled && canViewServiceWideBackupStatus;
 
         var deadLetterCount = await deadLetterCountCache.GetCountAsync(
             mailRequestRepository,
@@ -49,6 +50,9 @@ public static class AdminOpsPage
             cancellationToken);
 
         var now = timeProvider.GetUtcNow();
+        var backupStatus = canViewServiceWideBackupStatus
+            ? await backupStatusReader.LoadAsync(now, cancellationToken)
+            : null;
         var statsQuery = new MailerDbStatsQuery(access.AllowedTenantIdsForQuery);
         var stats = await statsReader.LoadStatsAsync(statsQuery, now, cancellationToken);
         var providerStats = await statsReader.LoadProviderAttemptStatsAsync(
@@ -89,6 +93,7 @@ public static class AdminOpsPage
                 providerPreflightSafe,
                 dbOpsOptions,
                 canRunServiceWideDbOps,
+                backupStatus,
                 csrfToken,
                 now),
             "text/html; charset=utf-8");
@@ -126,6 +131,7 @@ public static class AdminOpsPage
         bool providerPreflightSafe,
         MailerAdminDbOpsOptions dbOpsOptions,
         bool canRunServiceWideDbOps,
+        AdminBackupStatusReadModel? backupStatus,
         string? csrfToken,
         DateTimeOffset asOfUtc)
     {
@@ -325,6 +331,11 @@ public static class AdminOpsPage
 
         html.AppendLine("                </section>");
 
+        if (backupStatus is not null)
+        {
+            AppendBackupStatusSection(html, backupStatus);
+        }
+
         if (dbOpsOptions.Enabled)
         {
             html.AppendLine("                <section class=\"ops-section\" aria-label=\"Database operations\">");
@@ -362,6 +373,141 @@ public static class AdminOpsPage
 
         AdminLayout.AppendDocumentEnd(html);
         return html.ToString();
+    }
+
+    private static void AppendBackupStatusSection(
+        StringBuilder html,
+        AdminBackupStatusReadModel status)
+    {
+        html.AppendLine("                <section class=\"ops-section\" aria-label=\"Backup and restore status\">");
+        html.AppendLine("                  <h2 class=\"ops-heading\">Backup and restore status</h2>");
+        html.AppendLine("                  <p class=\"ops-description\">DB-onlyとfull-instanceの実行証跡、ローカル暗号化成果物、offsite upload、restore verificationを別々に表示します。ローカル成果物やupload成功の記録だけではrestore可能とは判断できません。</p>");
+        html.AppendLine("                  <p class=\"ops-meta\">offsiteはスクリプトが記録した最終upload結果です。remote上の現在の存在確認ではありません。</p>");
+        html.AppendLine("                  <dl class=\"ops-dl\">");
+        AppendDefinition(
+            html,
+            "Admin online DB snapshot (unencrypted, DB-only)",
+            FormatAdminDatabaseBackup(status.AdminOnlineDatabaseBackup));
+        AppendDefinition(
+            html,
+            "Admin online DB snapshot latest operation at (UTC)",
+            FormatUtcOrNa(status.AdminOnlineDatabaseBackup.LatestAtUtc));
+        AppendBackupScriptStatus(html, "Encrypted DB-only script", status.DatabaseOnly, status.AsOfUtc);
+        AppendBackupScriptStatus(html, "Encrypted full-instance script", status.FullInstance, status.AsOfUtc);
+        AppendDefinition(
+            html,
+            "Restore verification",
+            status.RestoreVerificationRecorded
+                ? "Recorded"
+                : "n/a (no durable verification evidence is recorded)");
+        html.AppendLine("                  </dl>");
+        html.Append("                  <p class=\"ops-meta\">As of ");
+        html.Append(Html(FormatUtc(status.AsOfUtc)));
+        html.AppendLine(" (UTC) · read-only</p>");
+        html.AppendLine("                </section>");
+    }
+
+    private static void AppendBackupScriptStatus(
+        StringBuilder html,
+        string label,
+        AdminBackupScriptStatus status,
+        DateTimeOffset asOfUtc)
+    {
+        AppendDefinition(html, $"{label} latest attempt", FormatBackupOutcome(status.AttemptEvidenceState, status.LatestOutcome));
+        AppendDefinition(html, $"{label} latest attempt at (UTC)", FormatUtcOrNa(status.LatestAttemptAtUtc));
+        AppendDefinition(html, $"{label} latest attempt stage", status.LatestAttemptStage ?? "n/a");
+        AppendDefinition(html, $"{label} last success at (UTC)", FormatUtcOrNa(status.LastSuccessAtUtc));
+        AppendDefinition(html, $"{label} age since last success", FormatAge(status.LastSuccessAtUtc, asOfUtc));
+        AppendDefinition(html, $"{label} last local encrypted artifact", FormatArtifactPresence(status));
+        AppendDefinition(html, $"{label} latest offsite upload result", FormatOffsiteState(status.LatestAttemptOffsiteState));
+        AppendDefinition(html, $"{label} last reported offsite upload success (UTC)", FormatUtcOrNa(status.LastOffsiteUploadAtUtc));
+        AppendDefinition(html, $"{label} freshness", FormatFreshness(status));
+    }
+
+    private static string FormatAdminDatabaseBackup(AdminOnlineDatabaseBackupStatus status) =>
+        status.EvidenceState switch
+        {
+            AdminBackupEvidenceState.NotRecorded => "Not recorded",
+            AdminBackupEvidenceState.Invalid => "Invalid audit evidence",
+            _ => status.LatestOutcome switch
+            {
+                AdminBackupOutcome.Succeeded => "Success (plaintext DB-only snapshot)",
+                AdminBackupOutcome.Failed => "Failure",
+                _ => "Unknown",
+            },
+        };
+
+    private static string FormatBackupOutcome(
+        AdminBackupEvidenceState evidenceState,
+        AdminBackupOutcome outcome) => evidenceState switch
+        {
+            AdminBackupEvidenceState.NotRecorded => "Not recorded",
+            AdminBackupEvidenceState.Invalid => "Invalid status record",
+            _ => outcome switch
+            {
+                AdminBackupOutcome.Running => "Running",
+                AdminBackupOutcome.Succeeded => "Success",
+                AdminBackupOutcome.Failed => "Failure",
+                _ => "Unknown",
+            },
+        };
+
+    private static string FormatArtifactPresence(AdminBackupScriptStatus status)
+    {
+        if (status.SuccessEvidenceState == AdminBackupEvidenceState.NotRecorded)
+            return "n/a (no successful artifact record)";
+        if (status.SuccessEvidenceState == AdminBackupEvidenceState.Invalid)
+            return "n/a (invalid status record)";
+
+        return status.LastSuccessArtifactPresent switch
+        {
+            true => "Present in local staging",
+            false => "Absent from local staging",
+            null => "n/a (local staging is not readable)",
+        };
+    }
+
+    private static string FormatOffsiteState(AdminBackupOffsiteState status) => status switch
+    {
+        AdminBackupOffsiteState.NotAttempted => "Not attempted",
+        AdminBackupOffsiteState.Pending => "Pending",
+        AdminBackupOffsiteState.Succeeded => "Upload succeeded",
+        AdminBackupOffsiteState.Failed => "Upload failed",
+        AdminBackupOffsiteState.Skipped => "Skipped",
+        _ => "Not recorded",
+    };
+
+    private static string FormatFreshness(AdminBackupScriptStatus status)
+    {
+        if (!status.FreshnessPolicyConfigured)
+            return "Unknown (freshness interval is not configured)";
+
+        return status.Freshness switch
+        {
+            AdminBackupFreshness.Fresh => "Current",
+            AdminBackupFreshness.Stale => "Stale",
+            _ => "Unknown",
+        };
+    }
+
+    private static string FormatUtcOrNa(DateTimeOffset? value) =>
+        value is DateTimeOffset timestamp ? FormatUtc(timestamp) : "n/a";
+
+    private static string FormatAge(DateTimeOffset? timestamp, DateTimeOffset asOfUtc)
+    {
+        if (timestamp is null)
+            return "n/a";
+
+        var age = asOfUtc - timestamp.Value;
+        if (age < TimeSpan.Zero)
+            return "n/a (future timestamp)";
+        if (age.TotalDays >= 1)
+            return $"{(int)age.TotalDays} days";
+        if (age.TotalHours >= 1)
+            return $"{(int)age.TotalHours} hours";
+        if (age.TotalMinutes >= 1)
+            return $"{(int)age.TotalMinutes} minutes";
+        return "less than 1 minute";
     }
 
     public static async Task<IResult> SetLiveSendingAsync(

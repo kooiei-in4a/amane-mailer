@@ -1,6 +1,7 @@
 using System.Net;
 using System.Reflection;
 using Amane.Mailer.Admin;
+using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
 using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Tests.Fixtures;
@@ -36,6 +37,9 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
                 File.Delete(file);
             }
         }
+
+        if (Directory.Exists(dbOpsFixture.BackupStatusDirectory))
+            Directory.Delete(dbOpsFixture.BackupStatusDirectory, recursive: true);
 
         SqliteConnection.ClearAllPools();
     }
@@ -80,6 +84,7 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
 
         Assert.Equal(HttpStatusCode.OK, page.StatusCode);
         Assert.Contains("Service-wide DB operations require break-glass access", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("Backup and restore status", html, StringComparison.Ordinal);
         Assert.DoesNotContain("/admin/ops/backup", html, StringComparison.Ordinal);
 
         var internalId = await SeedDeadLetterForTenantAsync(MailerWebApplicationFixtureBase.TenantId, ct);
@@ -126,6 +131,162 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
         Assert.StartsWith("mailer-", completed.Value.TargetId, StringComparison.Ordinal);
         Assert.DoesNotContain(dbOpsFixture.BackupDirectory, completed.Value.TargetId, StringComparison.Ordinal);
         Assert.Equal(AdminAuditLog.FieldNames.ConfiguredBackupDirectory, completed.Value.FieldName);
+
+        using var refreshedPage = await client.GetAsync("/admin/ops", ct);
+        var refreshedHtml = await refreshedPage.Content.ReadAsStringAsync(ct);
+        Assert.Contains("Success (plaintext DB-only snapshot)", refreshedHtml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Backup_status_separates_database_full_instance_offsite_and_restore_evidence()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var asOf = new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero);
+        var lastSuccess = asOf.AddHours(-48);
+        var artifactName = "mailer-20260919T120000Z.db.age";
+        Directory.CreateDirectory(dbOpsFixture.BackupStatusDirectory);
+        File.WriteAllText(
+            Path.Combine(dbOpsFixture.BackupStatusDirectory, "db-only.attempt.json"),
+            """
+            {"schemaVersion":1,"backupType":"database-only","recordType":"attempt","status":"failed","startedAtUtc":"2026-09-21T11:55:00Z","completedAtUtc":"2026-09-21T11:55:02Z","stage":"upload","offsiteStatus":"failed","artifactName":null,"unexpectedSecret":"receipt-secret-must-not-render"}
+            """);
+        File.WriteAllText(
+            Path.Combine(dbOpsFixture.BackupStatusDirectory, "db-only.success.json"),
+            $$"""
+            {"schemaVersion":1,"backupType":"database-only","recordType":"success","status":"succeeded","startedAtUtc":"{{lastSuccess:yyyy-MM-ddTHH:mm:ssZ}}","completedAtUtc":"{{lastSuccess:yyyy-MM-ddTHH:mm:ssZ}}","stage":"complete","offsiteStatus":"succeeded","artifactName":"{{artifactName}}"}
+            """);
+        File.WriteAllText(
+            Path.Combine(dbOpsFixture.BackupStatusDirectory, "db-only.offsite-success.json"),
+            $$"""
+            {"schemaVersion":1,"backupType":"database-only","recordType":"offsite-success","status":"succeeded","startedAtUtc":"{{lastSuccess:yyyy-MM-ddTHH:mm:ssZ}}","completedAtUtc":"{{lastSuccess:yyyy-MM-ddTHH:mm:ssZ}}","stage":"upload","offsiteStatus":"succeeded","artifactName":"{{artifactName}}"}
+            """);
+        File.WriteAllText(
+            Path.Combine(dbOpsFixture.BackupStatusDirectory, "full-instance.attempt.json"),
+            """
+            {"schemaVersion":1,"backupType":"full-instance","recordType":"attempt","status":"failed","startedAtUtc":"2026-09-21T11:50:00Z","completedAtUtc":"2026-09-21T11:50:01Z","stage":"preflight","offsiteStatus":"not-attempted","artifactName":null}
+            """);
+        File.WriteAllText(Path.Combine(dbOpsFixture.BackupDirectory, artifactName), "encrypted-fixture");
+        SetSafeBackupStatusPermissions(dbOpsFixture.BackupStatusDirectory);
+
+        var reader = new AdminBackupStatusReader(
+            new MailerAdminBackupStatusOptions
+            {
+                StatusDirectory = dbOpsFixture.BackupStatusDirectory,
+                DatabaseOnlyStaleAfter = TimeSpan.FromHours(24),
+                FullInstanceStaleAfter = TimeSpan.FromHours(12),
+            },
+            dbOpsFixture.Factory.Services.GetRequiredService<AdminAuditRepository>(),
+            TimeProvider.System);
+        var model = await reader.LoadAsync(asOf, ct);
+
+        Assert.Equal(AdminBackupEvidenceState.Available, model.DatabaseOnly.AttemptEvidenceState);
+        Assert.Equal(AdminBackupOutcome.Failed, model.DatabaseOnly.LatestOutcome);
+        Assert.Equal(lastSuccess, model.DatabaseOnly.LastSuccessAtUtc);
+        Assert.Equal(true, model.DatabaseOnly.LastSuccessArtifactPresent);
+        Assert.Equal(AdminBackupOffsiteState.Failed, model.DatabaseOnly.LatestAttemptOffsiteState);
+        Assert.Equal(AdminBackupFreshness.Stale, model.DatabaseOnly.Freshness);
+        Assert.Equal(AdminBackupOutcome.Failed, model.FullInstance.LatestOutcome);
+        Assert.Equal(AdminBackupFreshness.Stale, model.FullInstance.Freshness);
+        Assert.False(model.RestoreVerificationRecorded);
+
+        var username = "backup-status-" + Guid.NewGuid().ToString("N");
+        await dbOpsFixture.Factory.Services.GetRequiredService<AdminUserRepository>()
+            .CreateBreakGlassUserAsync(
+                username,
+                AdminPasswordHasher.Hash(TenantAdminPassword(username)),
+                ct);
+        using var client = CreateClient(dbOpsFixture.Factory);
+        await LoginAsync(client, username, TenantAdminPassword(username), ct);
+        using var page = await client.GetAsync("/admin/ops", ct);
+        var html = await page.Content.ReadAsStringAsync(ct);
+
+        Assert.Equal(HttpStatusCode.OK, page.StatusCode);
+        Assert.Contains("Backup and restore status", html, StringComparison.Ordinal);
+        Assert.Contains("Encrypted DB-only script", html, StringComparison.Ordinal);
+        Assert.Contains("Encrypted full-instance script", html, StringComparison.Ordinal);
+        Assert.Contains("Upload failed", html, StringComparison.Ordinal);
+        Assert.Contains("no durable verification evidence is recorded", html, StringComparison.Ordinal);
+        Assert.DoesNotContain(artifactName, html, StringComparison.Ordinal);
+        Assert.DoesNotContain(dbOpsFixture.BackupDirectory, html, StringComparison.Ordinal);
+        Assert.DoesNotContain("receipt-secret-must-not-render", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Invalid_success_receipt_has_unknown_freshness_and_rejects_artifact_path()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var asOf = new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero);
+        Directory.CreateDirectory(dbOpsFixture.BackupStatusDirectory);
+        File.WriteAllText(
+            Path.Combine(dbOpsFixture.BackupStatusDirectory, "db-only.success.json"),
+            """
+            {"schemaVersion":1,"backupType":"database-only","recordType":"success","status":"succeeded","startedAtUtc":"2026-09-21T11:00:00Z","completedAtUtc":"2026-09-21T11:00:01Z","stage":"complete","offsiteStatus":"succeeded","artifactName":"../../secrets/backup.db.age"}
+            """);
+        SetSafeBackupStatusPermissions(dbOpsFixture.BackupStatusDirectory);
+
+        var reader = new AdminBackupStatusReader(
+            new MailerAdminBackupStatusOptions
+            {
+                StatusDirectory = dbOpsFixture.BackupStatusDirectory,
+                DatabaseOnlyStaleAfter = TimeSpan.FromHours(24),
+            },
+            dbOpsFixture.Factory.Services.GetRequiredService<AdminAuditRepository>(),
+            TimeProvider.System);
+        var model = await reader.LoadAsync(asOf, ct);
+
+        Assert.Equal(AdminBackupEvidenceState.Invalid, model.DatabaseOnly.SuccessEvidenceState);
+        Assert.Equal(AdminBackupFreshness.Unknown, model.DatabaseOnly.Freshness);
+        Assert.Null(model.DatabaseOnly.LastSuccessAtUtc);
+        Assert.Null(model.DatabaseOnly.LastSuccessArtifactPresent);
+    }
+
+    [Fact]
+    public async Task Group_or_other_writable_status_evidence_is_rejected()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+            return;
+
+        var ct = TestContext.Current.CancellationToken;
+        var asOf = new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero);
+        Directory.CreateDirectory(dbOpsFixture.BackupStatusDirectory);
+        var receiptPath = Path.Combine(dbOpsFixture.BackupStatusDirectory, "db-only.success.json");
+        File.WriteAllText(
+            receiptPath,
+            """
+            {"schemaVersion":1,"backupType":"database-only","recordType":"success","status":"succeeded","startedAtUtc":"2026-09-21T11:00:00Z","completedAtUtc":"2026-09-21T11:00:01Z","stage":"complete","offsiteStatus":"succeeded","artifactName":"mailer-20260921T110000Z.db.age"}
+            """);
+        SetSafeBackupStatusPermissions(dbOpsFixture.BackupStatusDirectory);
+
+        var reader = new AdminBackupStatusReader(
+            new MailerAdminBackupStatusOptions
+            {
+                StatusDirectory = dbOpsFixture.BackupStatusDirectory,
+                DatabaseOnlyStaleAfter = TimeSpan.FromHours(24),
+            },
+            dbOpsFixture.Factory.Services.GetRequiredService<AdminAuditRepository>(),
+            TimeProvider.System);
+
+        File.SetUnixFileMode(
+            receiptPath,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite
+                | UnixFileMode.GroupRead | UnixFileMode.GroupWrite
+                | UnixFileMode.OtherRead);
+        var writableReceipt = await reader.LoadAsync(asOf, ct);
+        Assert.Equal(AdminBackupEvidenceState.Invalid, writableReceipt.DatabaseOnly.SuccessEvidenceState);
+        Assert.Equal(AdminBackupFreshness.Unknown, writableReceipt.DatabaseOnly.Freshness);
+
+        File.SetUnixFileMode(
+            receiptPath,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite
+                | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        File.SetUnixFileMode(
+            dbOpsFixture.BackupStatusDirectory,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+        var writableDirectory = await reader.LoadAsync(asOf, ct);
+        Assert.Equal(AdminBackupEvidenceState.Invalid, writableDirectory.DatabaseOnly.SuccessEvidenceState);
+        Assert.Equal(AdminBackupFreshness.Unknown, writableDirectory.DatabaseOnly.Freshness);
     }
 
     [Fact]
@@ -503,6 +664,25 @@ public sealed class MailerAdminDbOpsTests(MailerAdminDbOpsFixture dbOpsFixture, 
             ["username"] = username,
             ["password"] = password,
         });
+
+    private static void SetSafeBackupStatusPermissions(string directory)
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+            return;
+
+        File.SetUnixFileMode(
+            directory,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        foreach (var receiptPath in Directory.EnumerateFiles(directory))
+        {
+            File.SetUnixFileMode(
+                receiptPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite
+                    | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+    }
 
     private static SemaphoreSlim GetOperationLock(AdminDbOpsService service)
     {

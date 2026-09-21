@@ -69,6 +69,44 @@ expect_backup_failure() {
 }
 
 run_backup
+status_dir="$data_dir/.mailer-backup-status"
+python3 - "$status_dir" "$data_dir/backups" <<'PY'
+import json
+import pathlib
+import re
+import stat
+import sys
+
+status_dir = pathlib.Path(sys.argv[1])
+backup_dir = pathlib.Path(sys.argv[2])
+attempt_path = status_dir / "full-instance.attempt.json"
+success_path = status_dir / "full-instance.success.json"
+offsite_path = status_dir / "full-instance.offsite-success.json"
+attempt = json.loads(attempt_path.read_text())
+success = json.loads(success_path.read_text())
+offsite = json.loads(offsite_path.read_text())
+expected_keys = {
+    "schemaVersion", "backupType", "recordType", "status", "startedAtUtc",
+    "completedAtUtc", "stage", "offsiteStatus", "artifactName",
+}
+assert set(attempt) == expected_keys
+assert set(success) == expected_keys
+assert set(offsite) == expected_keys
+assert attempt["backupType"] == success["backupType"] == offsite["backupType"] == "full-instance"
+assert attempt["recordType"] == "attempt" and attempt["status"] == "succeeded"
+assert success["recordType"] == "success" and success["status"] == "succeeded"
+assert offsite["recordType"] == "offsite-success" and offsite["status"] == "succeeded"
+assert stat.S_IMODE(status_dir.stat().st_mode) & 0o022 == 0
+assert stat.S_IMODE(attempt_path.stat().st_mode) & 0o022 == 0
+assert stat.S_IMODE(success_path.stat().st_mode) & 0o022 == 0
+assert stat.S_IMODE(offsite_path.stat().st_mode) & 0o022 == 0
+assert re.fullmatch(r"mailer-state-\d{8}T\d{6}Z\.tar\.age", success["artifactName"])
+assert (backup_dir / success["artifactName"]).is_file()
+receipt_text = attempt_path.read_text() + success_path.read_text() + offsite_path.read_text()
+assert "fixture-age-recipient" not in receipt_text
+assert "fixture:encrypted-only" not in receipt_text
+assert "google-client-secret-fixture-not-real" not in receipt_text
+PY
 archive="$(find -P "$data_dir/backups" -maxdepth 1 -type f -name 'mailer-state-*.tar.age' -print -quit)"
 [ -n "$archive" ] || { echo "encrypted fixture archive was not created" >&2; exit 1; }
 baseline_archive="$tmp_root/mailer-state-baseline.tar.age"
@@ -89,6 +127,10 @@ if grep -Fx 'secrets/admin_google/client_secret' "$tar_entries" >/dev/null; then
 fi
 if grep -E '(^|/)(staging|bootstrap|logs)(/|$)' "$tar_entries" >/dev/null; then
   echo "transient or log state leaked into the archive" >&2
+  exit 1
+fi
+if grep -F '.mailer-backup-status' "$tar_entries" >/dev/null; then
+  echo "backup status receipts were included in the full-instance archive" >&2
   exit 1
 fi
 
@@ -137,6 +179,7 @@ cmp -- \
 [ ! -e "$restore_target/attachment-spool/staging" ]
 [ ! -e "$restore_target/bootstrap" ]
 [ ! -e "$restore_target/logs" ]
+[ ! -e "$restore_target/.mailer-backup-status" ]
 [ ! -e "$restore_target/secrets/admin_google/client_secret" ]
 python3 -c 'import sqlite3, sys; db = sqlite3.connect(sys.argv[1]); assert db.execute("SELECT value FROM fixture_state").fetchone() == ("cold-backup-fixture",); db.close()' "$restore_target/mailer.db"
 

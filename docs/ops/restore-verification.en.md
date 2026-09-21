@@ -8,6 +8,10 @@ archive in a disposable environment. This drill does not send through real ACS,
 use a real recipient, or expose a real provider secret. The automated fixture
 uses fake SQLite, a fake secret, and a fake committed spool:
 
+This runbook does not create a durable restore-verification receipt. Record the
+result in private operations notes. An unrecorded status on `/admin/ops` is not
+evidence that verification passed.
+
 ~~~bash
 bash /path/to/amane-mailer/scripts/backup-instance-state-self-test.sh
 ~~~

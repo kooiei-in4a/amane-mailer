@@ -30,3 +30,4 @@ case "$source_path" in
   *) exit 1 ;;
 esac
 [ -s "$source_path" ]
+[ "${BACKUP_TEST_RCLONE_FAIL:-false}" != "true" ] || exit 11

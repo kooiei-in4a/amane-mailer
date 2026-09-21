@@ -99,6 +99,16 @@
       "notes": "Auth audit follow-up events (logout, session expired, account locked, login rate limited) delivered via #90."
     },
     {
+      "id": "admin-backup-status-read-model",
+      "status": "implemented",
+      "trackingIssue": 811,
+      "lastVerified": "2026-09-21",
+      "relatedAdrs": [
+        "0013"
+      ],
+      "notes": "Service-wide Admin /admin/ops backup status read model separates audited plaintext Admin DB snapshots, DB-only encrypted script runs, full-instance runs, local staging presence, script-reported offsite upload, and restore verification. Host scripts write atomic, sanitized receipts outside the archive. Stale classification is opt-in per backup kind because hosts own the schedule; without a threshold the UI shows freshness as unknown plus success age. No restore verification receipt is recorded yet."
+    },
+    {
       "id": "admin-audit-network-identifier-hash",
       "status": "implemented",
       "trackingIssue": 55,
