@@ -67,6 +67,10 @@ public sealed class AdminOverviewPageTests
         Assert.Contains("href=\"/admin/setup-status\"", decodedHtml, StringComparison.Ordinal);
         Assert.Contains("href=\"/admin/secrets\"", decodedHtml, StringComparison.Ordinal);
         Assert.Contains("href=\"/admin/auth-settings\"", decodedHtml, StringComparison.Ordinal);
+        Assert.Contains(
+            $"href=\"{AdminDiagnosticReportPage.PagePath}\"",
+            decodedHtml,
+            StringComparison.Ordinal);
         Assert.DoesNotContain("<form", decodedHtml, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("<button", decodedHtml, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("method=\"post\"", decodedHtml, StringComparison.OrdinalIgnoreCase);
@@ -80,9 +84,67 @@ public sealed class AdminOverviewPageTests
         Assert.DoesNotContain("overview-body-canary", decodedHtml, StringComparison.Ordinal);
         Assert.Equal(auditBefore.Select(static item => item.EventType), auditAfter.Select(static item => item.EventType));
 
+        var diagnosticAuditBefore = auditAfter;
+        using var diagnostic = await owner.GetAsync(AdminDiagnosticReportPage.PagePath, ct);
+        var report = await diagnostic.Content.ReadAsStringAsync(ct);
+        var diagnosticAuditAfter = await harness.Factory.Services.GetRequiredService<AdminAuditRepository>()
+            .ListRecentAsync(20, ct);
+
+        Assert.Equal(HttpStatusCode.OK, diagnostic.StatusCode);
+        Assert.Equal("text/plain", diagnostic.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("utf-8", diagnostic.Content.Headers.ContentType?.CharSet);
+        Assert.True(diagnostic.Headers.CacheControl?.NoStore);
+        Assert.Equal("no-cache", diagnostic.Headers.Pragma.ToString());
+        Assert.StartsWith(
+            "Amane Mailer sanitized diagnostic report\nformat_version: 1\n\n[application]\n",
+            report,
+            StringComparison.Ordinal);
+        foreach (var requiredKey in new[]
+        {
+            "mailer_version:",
+            "build_identity:",
+            "health:",
+            "readiness:",
+            "schema_classification:",
+            "current_applied_migration:",
+            "migration_action:",
+            "setup:",
+            "configuration_authority:",
+            "provider:",
+            "provider_credential:",
+            "live_sending:",
+            "acs_secret_configuration:",
+            "acs_runtime:",
+            "google_login_saved_state:",
+            "google_login_runtime_state:",
+            "google_login_reflection_state:",
+            "google_login_authority:",
+            "restart_required:",
+            "full_instance_latest_outcome:",
+            "full_instance_last_success_utc:",
+            "full_instance_freshness:",
+            "latest_offsite_result:",
+            "db_only_last_success:",
+            "restore_verification:",
+        })
+        {
+            Assert.Contains(requiredKey, report, StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain(AcsSecret, report, StringComparison.Ordinal);
+        Assert.DoesNotContain(RotatedAcsSecret, report, StringComparison.Ordinal);
+        Assert.DoesNotContain(harness.AcsSecretPath, report, StringComparison.Ordinal);
+        Assert.DoesNotContain(SenderEmail, report, StringComparison.Ordinal);
+        Assert.DoesNotContain(ClientId, report, StringComparison.Ordinal);
+        Assert.Equal(
+            diagnosticAuditBefore.Select(static item => item.EventType),
+            diagnosticAuditAfter.Select(static item => item.EventType));
+
         using var scoped = CreateClient(harness.Factory);
         await LoginAsync(scoped, ScopedUsername, ScopedPassword, ct);
         using (var denied = await scoped.GetAsync(AdminOverviewPage.PagePath, ct))
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        using (var denied = await scoped.GetAsync(AdminDiagnosticReportPage.PagePath, ct))
             Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
         using (var home = await scoped.GetAsync("/admin/mail-requests", ct))
         {
@@ -94,9 +156,16 @@ public sealed class AdminOverviewPageTests
         await LoginAsync(breakGlass, BreakGlassUsername, BreakGlassPassword, ct);
         using (var denied = await breakGlass.GetAsync(AdminOverviewPage.PagePath, ct))
             Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
+        using (var denied = await breakGlass.GetAsync(AdminDiagnosticReportPage.PagePath, ct))
+            Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
 
         using var unauthenticated = CreateClient(harness.Factory);
         using (var redirect = await unauthenticated.GetAsync(AdminOverviewPage.PagePath, ct))
+        {
+            Assert.Equal(HttpStatusCode.Redirect, redirect.StatusCode);
+            Assert.StartsWith("/admin/login", redirect.Headers.Location?.PathAndQuery, StringComparison.Ordinal);
+        }
+        using (var redirect = await unauthenticated.GetAsync(AdminDiagnosticReportPage.PagePath, ct))
         {
             Assert.Equal(HttpStatusCode.Redirect, redirect.StatusCode);
             Assert.StartsWith("/admin/login", redirect.Headers.Location?.PathAndQuery, StringComparison.Ordinal);
@@ -111,6 +180,107 @@ public sealed class AdminOverviewPageTests
             await ownerHome.Content.ReadAsStringAsync(ct),
             StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Diagnostic_report_uses_a_fixed_allowlist_and_deterministic_lf_output()
+    {
+        const string futureCanaries =
+            "SECRET-CANARY API-KEY-CANARY recipient-canary@example.invalid "
+            + "sender-canary@example.invalid subject-canary body-canary "
+            + "raw-provider-error-canary /private/secret/path "
+            + "google-client-id-canary.apps.googleusercontent.com";
+        var presentation = new AdminOverviewPresentation(
+        [
+            new("Backup",
+            [
+                ReportItem("Restore verification", "restore-value"),
+                ReportItem("DB-only last success", "db-only-value"),
+                ReportItem("Latest offsite result", "offsite-value"),
+                ReportItem("Full-instance freshness", "freshness-value"),
+                ReportItem("Full-instance last success UTC", "last-success-value"),
+                ReportItem("Full-instance latest outcome", "outcome-value"),
+            ]),
+            new("Setup / Provider",
+            [
+                ReportItem("Restart required", "restart-value"),
+                ReportItem("Google Login authority", "google-authority-value"),
+                ReportItem("Google Login reflection state", "google-reflection-value"),
+                ReportItem("Google Login runtime state", "google-runtime-value"),
+                ReportItem("Google Login saved state", "google-saved-value"),
+                ReportItem("ACS runtime", "acs-runtime-value"),
+                ReportItem("ACS secret configuration", "acs-config-value"),
+                ReportItem("Live Sending", "live-sending-value"),
+                ReportItem("Provider credential", "credential-value"),
+                ReportItem("Provider", "provider-value"),
+                ReportItem("Configuration authority", "authority-value"),
+                ReportItem("Setup", "setup-value"),
+            ]),
+            new("Database",
+            [
+                ReportItem("Migration action", "migration-action-value"),
+                ReportItem("Current applied migration", "migration-value"),
+                ReportItem("Schema classification", "schema-value"),
+            ]),
+            new("Application",
+            [
+                ReportItem("Future unsafe field", futureCanaries),
+                ReportItem("Readiness", "readiness-value"),
+                ReportItem("Health", "health-value"),
+                ReportItem("Build identity", "build-value"),
+                ReportItem("Mailer version", "version-value"),
+            ]),
+        ]);
+
+        const string expected =
+            "Amane Mailer sanitized diagnostic report\n"
+            + "format_version: 1\n\n"
+            + "[application]\n"
+            + "mailer_version: version-value\n"
+            + "build_identity: build-value\n"
+            + "health: health-value\n"
+            + "readiness: readiness-value\n\n"
+            + "[database]\n"
+            + "schema_classification: schema-value\n"
+            + "current_applied_migration: migration-value\n"
+            + "migration_action: migration-action-value\n\n"
+            + "[setup_provider]\n"
+            + "setup: setup-value\n"
+            + "configuration_authority: authority-value\n"
+            + "provider: provider-value\n"
+            + "provider_credential: credential-value\n"
+            + "live_sending: live-sending-value\n"
+            + "acs_secret_configuration: acs-config-value\n"
+            + "acs_runtime: acs-runtime-value\n"
+            + "google_login_saved_state: google-saved-value\n"
+            + "google_login_runtime_state: google-runtime-value\n"
+            + "google_login_reflection_state: google-reflection-value\n"
+            + "google_login_authority: google-authority-value\n"
+            + "restart_required: restart-value\n\n"
+            + "[backup]\n"
+            + "full_instance_latest_outcome: outcome-value\n"
+            + "full_instance_last_success_utc: last-success-value\n"
+            + "full_instance_freshness: freshness-value\n"
+            + "latest_offsite_result: offsite-value\n"
+            + "db_only_last_success: db-only-value\n"
+            + "restore_verification: restore-value\n";
+
+        var report = AdminDiagnosticReportPage.RenderReport(presentation);
+
+        Assert.Equal(expected, report);
+        Assert.Equal(report, AdminDiagnosticReportPage.RenderReport(presentation));
+        Assert.DoesNotContain("\r", report, StringComparison.Ordinal);
+        Assert.DoesNotContain("Future unsafe field", report, StringComparison.Ordinal);
+        foreach (var canary in futureCanaries.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            Assert.DoesNotContain(canary, report, StringComparison.Ordinal);
+        }
+
+        var emptyReport = AdminDiagnosticReportPage.RenderReport(new AdminOverviewPresentation([]));
+        Assert.Contains("mailer_version: 取得不可\n", emptyReport, StringComparison.Ordinal);
+    }
+
+    private static AdminOverviewStatusItem ReportItem(string label, string value) =>
+        new(label, new(value, AdminOverviewStatusKind.Info));
 
     [Fact]
     public async Task Overview_shares_acs_restart_state_and_readyz_provider_secret_behavior()
@@ -149,6 +319,14 @@ public sealed class AdminOverviewPageTests
         Assert.DoesNotContain(AcsSecret, unavailableHtml, StringComparison.Ordinal);
         Assert.DoesNotContain(RotatedAcsSecret, unavailableHtml, StringComparison.Ordinal);
         Assert.DoesNotContain(harness.AcsSecretPath, unavailableHtml, StringComparison.Ordinal);
+
+        using var unavailableReportResponse = await owner.GetAsync(AdminDiagnosticReportPage.PagePath, ct);
+        var unavailableReport = await unavailableReportResponse.Content.ReadAsStringAsync(ct);
+        Assert.Equal(HttpStatusCode.OK, unavailableReportResponse.StatusCode);
+        Assert.Contains("readiness: Not Ready\n", unavailableReport, StringComparison.Ordinal);
+        Assert.DoesNotContain(MailerReadinessReasons.ProviderSecretMissing, unavailableReport, StringComparison.Ordinal);
+        Assert.DoesNotContain(AcsSecret, unavailableReport, StringComparison.Ordinal);
+        Assert.DoesNotContain(harness.AcsSecretPath, unavailableReport, StringComparison.Ordinal);
     }
 
     [Theory]
