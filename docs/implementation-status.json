@@ -3,6 +3,17 @@
   "description": "Canonical current implementation status. ADRs record design rationale; this file records present-day status (#246 / #250). Allowed status values: planned, partial, implemented, deferred, removed. Rollout: Phase 1 (#250) manifest + ADR links; Phase 2 (#252) CI format check; Phase 3+ (GitHub Issue state / evidence) deferred until staleness recurs or maintainer reopens #246.",
   "features": [
     {
+      "id": "admin-google-login-settings-ui",
+      "status": "partial",
+      "trackingIssue": 806,
+      "lastVerified": "2026-09-21",
+      "relatedAdrs": [
+        "0013",
+        "0014"
+      ],
+      "notes": "Admin UI /admin/auth-settings manages Google Login enabled/Client ID/Client Secret for initialized managed-v2. Client Secret uses protected file under /app/data/secrets/admin_google (migration 022 columns on instance_configuration). Password login always remains. Restart required after save. Legacy env Google keys remain authority until first managed save."
+    },
+    {
       "id": "admin-google-login",
       "status": "implemented",
       "trackingIssue": 798,
@@ -11,7 +22,7 @@
         "0013",
         "0014"
       ],
-      "notes": "Optional Google Admin login beside password login. Explicit password re-proof linking to admin_google_identities (migration 021). Identity authority is Google issuer + userinfo sub only; missing sub fails closed. Operator recovery is admin google unlink --username, which deletes that Admin mapping and revokes their active sessions. Break-glass remains password-only. Google handler never signs into AmaneAdmin; existing admin_sessions remain the session authority."
+      "notes": "Optional Google Admin login beside password login. Explicit password re-proof linking to admin_google_identities (migration 021). Identity authority is Google issuer + userinfo sub only; missing sub fails closed. Operator recovery is admin google unlink --username, which deletes that Admin mapping and revokes their active sessions. Break-glass remains password-only. Google handler never signs into AmaneAdmin; existing admin_sessions remain the session authority. Managed UI settings: #806."
     },
     {
       "id": "admin-audit-retention-sweep",

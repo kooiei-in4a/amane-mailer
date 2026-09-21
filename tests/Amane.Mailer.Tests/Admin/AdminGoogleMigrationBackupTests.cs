@@ -9,7 +9,7 @@ namespace Amane.Mailer.Tests.Admin;
 public sealed class AdminGoogleMigrationBackupTests
 {
     [Fact]
-    public async Task Fresh_database_applies_migration_021()
+    public async Task Fresh_database_applies_migration_021_and_022()
     {
         var ct = TestContext.Current.CancellationToken;
         var root = Path.Combine(Path.GetTempPath(), "amane-mailer-google-mig-fresh", Guid.NewGuid().ToString("N"));
@@ -20,10 +20,12 @@ public sealed class AdminGoogleMigrationBackupTests
             var factory = CreateFactory(databasePath);
             var applied = await new SqlMigrationRunner(factory).ApplyPendingAsync(ct);
             Assert.Contains("021_admin_google_identities.sql", applied);
+            Assert.Contains("022_admin_google_login_settings.sql", applied);
             Assert.True(await new SqlMigrationRunner(factory).IsCurrentSchemaReadyAsync(ct));
             await using var connection = new SqliteConnection($"Data Source={databasePath}");
             await connection.OpenAsync(ct);
             Assert.True(await TableExistsAsync(connection, "admin_google_identities", ct));
+            Assert.True(await ColumnExistsAsync(connection, "instance_configuration", "google_configured_at", ct));
         }
         finally
         {
@@ -33,7 +35,7 @@ public sealed class AdminGoogleMigrationBackupTests
     }
 
     [Fact]
-    public async Task V21_database_upgrades_by_applying_021()
+    public async Task V21_database_upgrades_by_applying_021_and_022()
     {
         var ct = TestContext.Current.CancellationToken;
         var root = Path.Combine(Path.GetTempPath(), "amane-mailer-google-mig-upgrade", Guid.NewGuid().ToString("N"));
@@ -45,7 +47,32 @@ public sealed class AdminGoogleMigrationBackupTests
             await ApplyMigrationsThroughAsync(databasePath, migrationDirectory, "020_instance_configuration.sql", ct);
             var factory = CreateFactory(databasePath);
             var applied = await new SqlMigrationRunner(factory).ApplyPendingAsync(ct);
-            Assert.Equal(["021_admin_google_identities.sql"], applied);
+            Assert.Equal(
+                ["021_admin_google_identities.sql", "022_admin_google_login_settings.sql"],
+                applied);
+            Assert.True(await new SqlMigrationRunner(factory).IsCurrentSchemaReadyAsync(ct));
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task V22_database_upgrades_by_applying_022()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var root = Path.Combine(Path.GetTempPath(), "amane-mailer-google-mig-upgrade-022", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "mailer.db");
+        var migrationDirectory = Path.Combine(root, "migrations");
+        try
+        {
+            await ApplyMigrationsThroughAsync(databasePath, migrationDirectory, "021_admin_google_identities.sql", ct);
+            var factory = CreateFactory(databasePath);
+            var applied = await new SqlMigrationRunner(factory).ApplyPendingAsync(ct);
+            Assert.Equal(["022_admin_google_login_settings.sql"], applied);
             Assert.True(await new SqlMigrationRunner(factory).IsCurrentSchemaReadyAsync(ct));
         }
         finally
@@ -185,6 +212,24 @@ public sealed class AdminGoogleMigrationBackupTests
         command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = @Name LIMIT 1;";
         command.Parameters.AddWithValue("@Name", tableName);
         return await command.ExecuteScalarAsync(cancellationToken) is not null;
+    }
+
+    private static async Task<bool> ColumnExistsAsync(
+        SqliteConnection connection,
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({tableName});";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     private static async Task<long> InsertAdminAsync(

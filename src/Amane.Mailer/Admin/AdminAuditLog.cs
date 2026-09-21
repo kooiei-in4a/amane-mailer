@@ -57,6 +57,7 @@ public static class AdminAuditLog
         public const string ApiKeyRevoked = "api_key.revoked";
         public const string InstanceLiveSendingEnabled = "instance.live_sending_enabled";
         public const string InstanceLiveSendingDisabled = "instance.live_sending_disabled";
+        public const string InstanceGoogleLoginSettingsUpdated = "instance.google_login_settings_updated";
 
         public static IReadOnlyList<string> All { get; } =
         [
@@ -91,6 +92,7 @@ public static class AdminAuditLog
             ApiKeyRevoked,
             InstanceLiveSendingEnabled,
             InstanceLiveSendingDisabled,
+            InstanceGoogleLoginSettingsUpdated,
         ];
     }
 
