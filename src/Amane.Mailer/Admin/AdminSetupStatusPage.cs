@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Encodings.Web;
 using Amane.Mailer.Configuration;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Identity;
 using Amane.Mailer.Setup;
 using Microsoft.Extensions.Hosting;
@@ -70,7 +71,7 @@ public static class AdminSetupStatusPage
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
-            RenderHtml(model, options, deadLetterCount, asOfUtc),
+            RenderHtml(model, options, deadLetterCount, asOfUtc, access),
             "text/html; charset=utf-8");
     }
 
@@ -78,13 +79,19 @@ public static class AdminSetupStatusPage
         AdminSetupStatusReadModel model,
         MailerAdminOptions options,
         int deadLetterCount,
-        DateTimeOffset asOfUtc)
+        DateTimeOffset asOfUtc,
+        AdminTenantAccess? access = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(options);
 
         var html = new StringBuilder();
-        AdminLayout.AppendDocumentStart(html, "Setup status - Amane Admin", AdminNavItem.SetupStatus, deadLetterCount);
+        AdminLayout.AppendDocumentStart(
+            html,
+            "Setup status - Amane Admin",
+            AdminNavItem.SetupStatus,
+            deadLetterCount,
+            access);
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Setup status\">");
         html.AppendLine("                  <h1 class=\"ops-heading\">Setup status</h1>");

@@ -130,7 +130,7 @@ public static class AdminAuditLogPage
         MailerAdminAuditRetentionOptions retentionOptions)
     {
         var html = new StringBuilder();
-        AdminLayout.AppendDocumentStart(html, "監査ログ - Amane Admin", AdminNavItem.AuditLog, deadLetterCount);
+        AdminLayout.AppendDocumentStart(html, "監査ログ - Amane Admin", AdminNavItem.AuditLog, deadLetterCount, access);
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"監査ログの説明\">");
         html.AppendLine("                  <h1 class=\"ops-heading\">監査ログ</h1>");
