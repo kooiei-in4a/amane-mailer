@@ -415,59 +415,9 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         var internalId = Guid.CreateVersion7(now);
         var expiredLockToken = Guid.CreateVersion7(now);
 
-        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
-        {
-            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
-            await repository.InsertAcceptedAsync(
-                new AcceptedMailRequestInsert
-                {
-                    Id = internalId,
-                    TenantId = request.TenantId,
-                    SourceService = request.SourceService,
-                    MailRequestId = request.MailRequestId,
-                    Purpose = request.Purpose,
-                    PayloadJson = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
-                    PayloadHash = request.PayloadHash,
-                    Subject = request.Subject,
-                    HtmlBody = request.HtmlBody,
-                    TextBody = request.TextBody,
-                    ReplyTo = request.ReplyTo,
-                    RecipientEmail = request.To[0].Email,
-                    RecipientDisplayName = request.To[0].DisplayName,
-                    MaxAttempts = 3,
-                    AcceptedAt = now,
-                },
-                ct);
-        }
-
-        // Simulate a crash after Started durably committed but before the provider was ever
-        // called or finalized: request stuck in Processing with an expired lease, a Started
-        // plain evidence row, and no mail_attempts row yet.
-        await using (var connection = new SqliteConnection(fixture.ConnectionString))
-        {
-            await connection.OpenAsync(ct);
-            await using (var update = connection.CreateCommand())
-            {
-                update.CommandText = """
-                    UPDATE mail_requests
-                    SET
-                        status = @ProcessingStatus,
-                        attempt_count = 1,
-                        lock_token = @LockToken,
-                        lock_expires_at = @LockExpiresAt,
-                        updated_at = @UpdatedAt
-                    WHERE id = @Id;
-                    """;
-                update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
-                update.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
-                update.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
-                update.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
-                update.Parameters.AddWithValue("@Id", internalId.ToString("D"));
-                await update.ExecuteNonQueryAsync(ct);
-            }
-
-            await InsertStartedPlainEvidenceAsync(connection, internalId, expiredLockToken, now, ct);
-        }
+        // Seed the complete crash-recovery state in one transaction so the Worker cannot claim
+        // a partially prepared request between the accepted row and its Started evidence.
+        await SeedStartedPlainEvidenceAsync(request, internalId, expiredLockToken, now, ct);
 
         SignalWorker();
 
@@ -498,56 +448,7 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
         var metrics = fixture.Factory.Services.GetRequiredService<MailerRuntimeMetrics>();
         metrics.ClearForTests();
 
-        await using (var scope = fixture.Factory.Services.CreateAsyncScope())
-        {
-            var repository = scope.ServiceProvider.GetRequiredService<MailRequestRepository>();
-            await repository.InsertAcceptedAsync(
-                new AcceptedMailRequestInsert
-                {
-                    Id = internalId,
-                    TenantId = request.TenantId,
-                    SourceService = request.SourceService,
-                    MailRequestId = request.MailRequestId,
-                    Purpose = request.Purpose,
-                    PayloadJson = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
-                    PayloadHash = request.PayloadHash,
-                    Subject = request.Subject,
-                    HtmlBody = request.HtmlBody,
-                    TextBody = request.TextBody,
-                    ReplyTo = request.ReplyTo,
-                    RecipientEmail = request.To[0].Email,
-                    RecipientDisplayName = request.To[0].DisplayName,
-                    MaxAttempts = 3,
-                    AcceptedAt = now,
-                },
-                ct);
-        }
-
-        await using (var connection = new SqliteConnection(fixture.ConnectionString))
-        {
-            await connection.OpenAsync(ct);
-            await using (var update = connection.CreateCommand())
-            {
-                update.CommandText = """
-                    UPDATE mail_requests
-                    SET
-                        status = @ProcessingStatus,
-                        attempt_count = 1,
-                        lock_token = @LockToken,
-                        lock_expires_at = @LockExpiresAt,
-                        updated_at = @UpdatedAt
-                    WHERE id = @Id;
-                    """;
-                update.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
-                update.Parameters.AddWithValue("@LockToken", expiredLockToken.ToString("D"));
-                update.Parameters.AddWithValue("@LockExpiresAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
-                update.Parameters.AddWithValue("@UpdatedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-1)));
-                update.Parameters.AddWithValue("@Id", internalId.ToString("D"));
-                await update.ExecuteNonQueryAsync(ct);
-            }
-
-            await InsertStartedPlainEvidenceAsync(connection, internalId, expiredLockToken, now, ct);
-        }
+        await SeedStartedPlainEvidenceAsync(request, internalId, expiredLockToken, now, ct);
 
         SignalWorker();
 
@@ -566,29 +467,107 @@ public sealed class MailRequestWorkerTests(MailerWorkerFixture fixture)
                 && attempt.ErrorCode == MailDeliveryErrorCodes.DeliveryUnknown);
     }
 
-    private static async Task InsertStartedPlainEvidenceAsync(
-        SqliteConnection connection,
+    private async Task SeedStartedPlainEvidenceAsync(
+        MailRequestCreateRequest request,
         Guid requestId,
         Guid claimToken,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        await using var insertEvidence = connection.CreateCommand();
-        insertEvidence.CommandText = """
-            INSERT INTO mail_plain_submissions (
-                request_id, evidence_state, evidence_origin, provider, claim_token, started_at,
-                provider_message_id, resolved_at, created_at, updated_at)
-            VALUES (
-                @RequestId, @Started, @Runtime, 'mailpit', @ClaimToken, @StartedAt,
-                NULL, NULL, @Now, @Now);
-            """;
-        insertEvidence.Parameters.AddWithValue("@RequestId", requestId.ToString("D"));
-        insertEvidence.Parameters.AddWithValue("@Started", (int)MailPlainSubmissionEvidenceState.Started);
-        insertEvidence.Parameters.AddWithValue("@Runtime", (int)MailPlainSubmissionEvidenceOrigin.Runtime);
-        insertEvidence.Parameters.AddWithValue("@ClaimToken", claimToken.ToString("D"));
-        insertEvidence.Parameters.AddWithValue("@StartedAt", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
-        insertEvidence.Parameters.AddWithValue("@Now", SqliteTime.ToStorageUtc(now.AddMinutes(-2)));
-        await insertEvidence.ExecuteNonQueryAsync(cancellationToken);
+        var payloadJson = JsonSerializer.Serialize(request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var acceptedAt = SqliteTime.ToStorageUtc(now);
+        var expiredAt = SqliteTime.ToStorageUtc(now.AddMinutes(-1));
+        var startedAt = SqliteTime.ToStorageUtc(now.AddMinutes(-2));
+        var requestIdStorage = requestId.ToString("D");
+        var claimTokenStorage = claimToken.ToString("D");
+
+        await using var connection = new SqliteConnection(fixture.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await SqliteImmediateTransaction.BeginAsync(connection, cancellationToken);
+        try
+        {
+            await using (var insertRequest = connection.CreateCommand())
+            {
+                insertRequest.CommandText = """
+                    INSERT INTO mail_requests (
+                        id, tenant_id, source_service, mail_request_id, purpose,
+                        payload_json, payload_hash, subject, html_body, text_body, reply_to,
+                        recipient_email, recipient_display_name, metadata_json,
+                        status, attempt_count, max_attempts, lock_token, lock_expires_at,
+                        accepted_at, created_at, updated_at)
+                    VALUES (
+                        @Id, @TenantId, @SourceService, @MailRequestId, @Purpose,
+                        @PayloadJson, @PayloadHash, @Subject, @HtmlBody, @TextBody, @ReplyTo,
+                        @RecipientEmail, @RecipientDisplayName, NULL,
+                        @ProcessingStatus, 1, 3, @LockToken, @LockExpiresAt,
+                        @AcceptedAt, @AcceptedAt, @UpdatedAt);
+                    """;
+                insertRequest.Parameters.AddWithValue("@Id", requestIdStorage);
+                insertRequest.Parameters.AddWithValue("@TenantId", request.TenantId.ToString("D"));
+                insertRequest.Parameters.AddWithValue("@SourceService", request.SourceService);
+                insertRequest.Parameters.AddWithValue("@MailRequestId", request.MailRequestId.ToString("D"));
+                insertRequest.Parameters.AddWithValue("@Purpose", request.Purpose);
+                insertRequest.Parameters.AddWithValue("@PayloadJson", payloadJson);
+                insertRequest.Parameters.AddWithValue("@PayloadHash", request.PayloadHash);
+                insertRequest.Parameters.AddWithValue("@Subject", request.Subject);
+                insertRequest.Parameters.AddWithValue("@HtmlBody", (object?)request.HtmlBody ?? DBNull.Value);
+                insertRequest.Parameters.AddWithValue("@TextBody", (object?)request.TextBody ?? DBNull.Value);
+                insertRequest.Parameters.AddWithValue("@ReplyTo", (object?)request.ReplyTo ?? DBNull.Value);
+                insertRequest.Parameters.AddWithValue("@RecipientEmail", request.To[0].Email);
+                insertRequest.Parameters.AddWithValue("@RecipientDisplayName", (object?)request.To[0].DisplayName ?? DBNull.Value);
+                insertRequest.Parameters.AddWithValue("@ProcessingStatus", (int)MailRequestState.Processing);
+                insertRequest.Parameters.AddWithValue("@LockToken", claimTokenStorage);
+                insertRequest.Parameters.AddWithValue("@LockExpiresAt", expiredAt);
+                insertRequest.Parameters.AddWithValue("@AcceptedAt", acceptedAt);
+                insertRequest.Parameters.AddWithValue("@UpdatedAt", expiredAt);
+                await insertRequest.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var insertRecipient = connection.CreateCommand())
+            {
+                insertRecipient.CommandText = """
+                    INSERT INTO mail_request_recipients (
+                        request_id, recipient_role, ordinal, address, address_key, display_name,
+                        delivery_state, provider_message_id, provider_status_detail, created_at, updated_at)
+                    VALUES (
+                        @RequestId, @RecipientRole, 0, @Address, @AddressKey, @DisplayName,
+                        @NotSent, NULL, NULL, @CreatedAt, @CreatedAt);
+                    """;
+                insertRecipient.Parameters.AddWithValue("@RequestId", requestIdStorage);
+                insertRecipient.Parameters.AddWithValue("@RecipientRole", (int)MailRecipientRole.To);
+                insertRecipient.Parameters.AddWithValue("@Address", request.To[0].Email);
+                insertRecipient.Parameters.AddWithValue("@AddressKey", RecipientEmailNormalizer.Normalize(request.To[0].Email));
+                insertRecipient.Parameters.AddWithValue("@DisplayName", (object?)request.To[0].DisplayName ?? DBNull.Value);
+                insertRecipient.Parameters.AddWithValue("@NotSent", (int)MailRecipientDeliveryState.NotSent);
+                insertRecipient.Parameters.AddWithValue("@CreatedAt", acceptedAt);
+                await insertRecipient.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var insertEvidence = connection.CreateCommand())
+            {
+                insertEvidence.CommandText = """
+                    INSERT INTO mail_plain_submissions (
+                        request_id, evidence_state, evidence_origin, provider, claim_token, started_at,
+                        provider_message_id, resolved_at, created_at, updated_at)
+                    VALUES (
+                        @RequestId, @Started, @Runtime, 'mailpit', @ClaimToken, @StartedAt,
+                        NULL, NULL, @StartedAt, @StartedAt);
+                    """;
+                insertEvidence.Parameters.AddWithValue("@RequestId", requestIdStorage);
+                insertEvidence.Parameters.AddWithValue("@Started", (int)MailPlainSubmissionEvidenceState.Started);
+                insertEvidence.Parameters.AddWithValue("@Runtime", (int)MailPlainSubmissionEvidenceOrigin.Runtime);
+                insertEvidence.Parameters.AddWithValue("@ClaimToken", claimTokenStorage);
+                insertEvidence.Parameters.AddWithValue("@StartedAt", startedAt);
+                await insertEvidence.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
+        }
     }
 
     [Fact]
