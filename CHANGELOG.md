@@ -15,6 +15,42 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [2.3.0]
+
+Minor release focused on browser-accessible Admin / operations workflows and
+reducing routine SSH dependency. There is no breaking change to the public
+Consumer HTTP contract. Migration `022_admin_google_login_settings.sql` is
+applied through the normal migration path.
+
+### Added
+
+- Instance Owner can manage Google Login settings from Admin UI, including
+  Client ID / protected Client Secret configuration while password login remains
+  available (#807).
+- Instance Owner can list, enable / disable, and Google-unlink Admin users from
+  Admin UI (#817).
+- Managed secret inventory and ACS credential rotation from Admin UI (#821).
+- Encrypted settings Export / Preview / Restore for managed configuration,
+  Senders, and supported managed secrets (#822).
+- Admin visibility for backup / restore status and evidence (#820).
+- Owner-only system Overview for readiness, schema, configuration, provider,
+  restart, and backup state (#823).
+- Sanitized plain-text diagnostic report for support / troubleshooting (#824).
+
+### Changed
+
+- Google Login settings distinguish saved configuration, current runtime state,
+  incomplete configuration, and restart-pending state (#818).
+- Admin audit log supports success / failure result filtering (#819).
+- Backup scripts, receipts, restore guidance, and status integration were
+  hardened to support the Admin operational views (#820).
+
+### Migration
+
+- Adds migration `022_admin_google_login_settings.sql`.
+- Normal startup / database migration applies migration 022.
+- No breaking change to the public Consumer HTTP contract.
+
 ## [2.2.0]
 
 ### Added
