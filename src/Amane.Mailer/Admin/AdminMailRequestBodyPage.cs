@@ -122,11 +122,16 @@ public static class AdminMailRequestBodyPage
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
-            RenderHtml(requestId, field, body, deadLetterCount),
+            RenderHtml(requestId, field, body, deadLetterCount, access),
             "text/html; charset=utf-8");
     }
 
-    internal static string RenderHtml(Guid requestId, string field, string body, int deadLetterCount = 0)
+    internal static string RenderHtml(
+        Guid requestId,
+        string field,
+        string body,
+        int deadLetterCount = 0,
+        AdminTenantAccess? access = null)
     {
         var enc = HtmlEncoder.Default;
         var idStr = requestId.ToString("D");
@@ -137,7 +142,8 @@ public static class AdminMailRequestBodyPage
             html,
             $"{field} - Amane Admin",
             AdminNavItem.MailRequests,
-            deadLetterCount);
+            deadLetterCount,
+            access);
 
         html.AppendLine("      <nav class=\"admin-breadcrumb\">");
         html.AppendLine("        <a href=\"/admin/mail-requests\">送信依頼一覧</a> &rsaquo;");

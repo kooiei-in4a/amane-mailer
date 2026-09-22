@@ -28,7 +28,7 @@ public static class AdminLayout
         string title,
         AdminNavItem activeNav,
         int deadLetterCount,
-        AdminTenantAccess? access = null)
+        AdminTenantAccess? access)
     {
         html.AppendLine("""
             <!doctype html>

@@ -90,7 +90,8 @@ public static class AdminSuppressionsPage
                     currentCursor: null,
                     visibleTenants,
                     options,
-                    awaitingTenantSelection: true),
+                    awaitingTenantSelection: true,
+                    access: access),
                 "text/html; charset=utf-8");
         }
 
@@ -144,7 +145,7 @@ public static class AdminSuppressionsPage
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
-            RenderHtml(page, deadLetterCount, selectedTenantId, cursorValue, visibleTenants, options),
+            RenderHtml(page, deadLetterCount, selectedTenantId, cursorValue, visibleTenants, options, access: access),
             "text/html; charset=utf-8");
     }
 
@@ -155,11 +156,17 @@ public static class AdminSuppressionsPage
         string? currentCursor,
         IReadOnlyList<MailerTenant> visibleTenants,
         MailerAdminOptions options,
-        bool awaitingTenantSelection = false)
+        bool awaitingTenantSelection = false,
+        AdminTenantAccess? access = null)
     {
         var requireTenantFilter = AdminCapabilities.Has(options, AdminCapabilities.ViewUnmaskedListPii);
         var html = new StringBuilder();
-        AdminLayout.AppendDocumentStart(html, "抑制リスト - Amane Admin", AdminNavItem.Suppressions, deadLetterCount);
+        AdminLayout.AppendDocumentStart(
+            html,
+            "抑制リスト - Amane Admin",
+            AdminNavItem.Suppressions,
+            deadLetterCount,
+            access);
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"抑制リストの説明\">");
         html.AppendLine("                  <h1 class=\"ops-heading\">抑制リスト</h1>");

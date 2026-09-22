@@ -54,7 +54,7 @@ public static class AdminDeadLettersPage
         context.Response.Headers.CacheControl = "no-store";
         var csrfToken = antiforgery.GetAndStoreTokens(context).RequestToken ?? string.Empty;
         return Results.Content(
-            RenderHtml(page, deadLetterCount, cursorValue, options, csrfToken),
+            RenderHtml(page, deadLetterCount, cursorValue, options, csrfToken, access),
             "text/html; charset=utf-8");
     }
 
@@ -63,10 +63,16 @@ public static class AdminDeadLettersPage
         int deadLetterCount,
         string? currentCursor,
         MailerAdminOptions options,
-        string csrfToken)
+        string csrfToken,
+        AdminTenantAccess access)
     {
         var html = new StringBuilder();
-        AdminLayout.AppendDocumentStart(html, "Dead Letters - Amane Admin", AdminNavItem.DeadLetters, deadLetterCount);
+        AdminLayout.AppendDocumentStart(
+            html,
+            "Dead Letters - Amane Admin",
+            AdminNavItem.DeadLetters,
+            deadLetterCount,
+            access);
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"Dead Lettersの説明\">");
         html.AppendLine("                  <h1 class=\"ops-heading\">Dead Letters</h1>");

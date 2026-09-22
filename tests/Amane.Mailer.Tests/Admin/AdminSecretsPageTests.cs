@@ -94,6 +94,37 @@ public sealed class AdminSecretsPageTests
     }
 
     [Fact]
+    public async Task Instance_owner_navigation_is_consistent_across_admin_pages()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await ManagedSecretsHarness.CreateAsync(ct);
+        using var owner = CreateClient(harness.Factory);
+        await LoginAsync(owner, OwnerUsername, OwnerPassword, ct);
+
+        string[] paths =
+        [
+            "/admin/mail-requests",
+            "/admin/dead-letters",
+            "/admin/webhook-dead-letters",
+            "/admin/ops",
+            "/admin/audit-log",
+            "/admin/suppressions",
+            "/admin/setup-status",
+        ];
+
+        foreach (var path in paths)
+        {
+            using var response = await owner.GetAsync(path, ct);
+            var html = await response.Content.ReadAsStringAsync(ct);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains($"href=\"{AdminOverviewPage.PagePath}\"", html, StringComparison.Ordinal);
+            Assert.Contains($"href=\"{AdminSecretsPage.PagePath}\"", html, StringComparison.Ordinal);
+            Assert.Contains($"href=\"{AdminSettingsBackupPage.PagePath}\"", html, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public async Task Acs_rotation_replaces_protected_file_and_waits_for_process_restart()
     {
         var ct = TestContext.Current.CancellationToken;

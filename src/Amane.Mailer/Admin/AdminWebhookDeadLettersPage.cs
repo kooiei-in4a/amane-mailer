@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
 using Amane.Mailer.Data.Sqlite;
+using Amane.Mailer.Data.Sqlite.Models;
 using Amane.Mailer.Webhooks;
 using Amane.Mailer.Webhooks.Models;
 using Microsoft.AspNetCore.Antiforgery;
@@ -54,21 +55,23 @@ public static class AdminWebhookDeadLettersPage
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
-            RenderHtml(page, deadLetterCount, cursorValue),
+            RenderHtml(page, deadLetterCount, cursorValue, access),
             "text/html; charset=utf-8");
     }
 
     private static string RenderHtml(
         AdminWebhookDeadLetterListPage page,
         int deadLetterCount,
-        string? currentCursor)
+        string? currentCursor,
+        AdminTenantAccess access)
     {
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(
             html,
             "Webhook Dead Letters - Amane Admin",
             AdminNavItem.Ops,
-            deadLetterCount);
+            deadLetterCount,
+            access);
 
         html.AppendLine("""
                 <section class="ops-section" aria-label="Webhook Dead Letter 一覧">
