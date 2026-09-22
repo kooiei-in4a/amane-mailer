@@ -15,6 +15,26 @@ kept in sync under the same `X.Y.Z`. See the Versioning Policy section in
 
 ## [Unreleased]
 
+## [2.3.1]
+
+Patch release. There is no breaking change to the public Consumer HTTP
+contract.
+
+### Fixed
+
+- Fixed missing navigation items when the Instance Owner navigates Admin
+  screens (#828).
+
+### Changed
+
+- Aligned the .NET SDK baseline used by Development, CI, and release builds to
+  10.0.401.
+
+### Test infrastructure
+
+- Removed the nondeterministic setup race from the Worker Started-evidence
+  recovery test (#830).
+
 ## [2.3.0]
 
 Minor release focused on browser-accessible Admin / operations workflows and
