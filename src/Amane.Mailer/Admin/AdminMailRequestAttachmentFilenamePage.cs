@@ -99,11 +99,16 @@ public static class AdminMailRequestAttachmentFilenamePage
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
-            RenderHtml(requestId, order, attachment.FileName, deadLetterCount),
+            RenderHtml(requestId, order, attachment.FileName, deadLetterCount, access),
             "text/html; charset=utf-8");
     }
 
-    internal static string RenderHtml(Guid requestId, int order, string fileName, int deadLetterCount = 0)
+    internal static string RenderHtml(
+        Guid requestId,
+        int order,
+        string fileName,
+        int deadLetterCount = 0,
+        AdminTenantAccess? access = null)
     {
         var enc = HtmlEncoder.Default;
         var idStr = requestId.ToString("D");
@@ -113,7 +118,8 @@ public static class AdminMailRequestAttachmentFilenamePage
             html,
             "添付ファイル名 - Amane Admin",
             AdminNavItem.MailRequests,
-            deadLetterCount);
+            deadLetterCount,
+            access);
 
         html.AppendLine("      <nav class=\"admin-breadcrumb\">");
         html.AppendLine("        <a href=\"/admin/mail-requests\">送信依頼一覧</a> &rsaquo;");

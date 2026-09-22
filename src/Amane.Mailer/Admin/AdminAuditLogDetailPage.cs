@@ -37,17 +37,21 @@ public static class AdminAuditLogDetailPage
             cancellationToken);
 
         context.Response.Headers.CacheControl = "no-store";
-        return Results.Content(RenderHtml(row, deadLetterCount), "text/html; charset=utf-8");
+        return Results.Content(RenderHtml(row, deadLetterCount, access), "text/html; charset=utf-8");
     }
 
-    private static string RenderHtml(AdminAuditEventRow row, int deadLetterCount)
+    private static string RenderHtml(
+        AdminAuditEventRow row,
+        int deadLetterCount,
+        AdminTenantAccess access)
     {
         var html = new StringBuilder();
         AdminLayout.AppendDocumentStart(
             html,
             $"監査ログ #{row.Id} - Amane Admin",
             AdminNavItem.AuditLog,
-            deadLetterCount);
+            deadLetterCount,
+            access);
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"監査イベント詳細\">");
         html.AppendLine("                  <p class=\"ops-meta\"><a href=\"/admin/audit-log\">← 監査ログ一覧</a></p>");

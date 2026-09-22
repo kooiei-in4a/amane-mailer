@@ -96,7 +96,7 @@ public static class AdminBccRecipientRevealPage
 
         context.Response.Headers.CacheControl = "no-store";
         return Results.Content(
-            RenderHtml(detail.Id, ordinal, recipient.Address, recipient.DisplayName),
+            RenderHtml(detail.Id, ordinal, recipient.Address, recipient.DisplayName, access),
             "text/html; charset=utf-8");
     }
 
@@ -104,7 +104,8 @@ public static class AdminBccRecipientRevealPage
         Guid requestId,
         int ordinal,
         string address,
-        string? displayName)
+        string? displayName,
+        AdminTenantAccess? access = null)
     {
         var html = new StringBuilder();
         var enc = HtmlEncoder.Default;
@@ -114,7 +115,8 @@ public static class AdminBccRecipientRevealPage
             html,
             "BCC宛先 - Amane Admin",
             AdminNavItem.MailRequests,
-            0);
+            0,
+            access);
         html.AppendLine("      <nav class=\"admin-breadcrumb\">");
         html.AppendLine("        <a href=\"/admin/mail-requests\">送信依頼一覧</a> &rsaquo;");
         html.Append("        <a href=\"/admin/mail-requests/");

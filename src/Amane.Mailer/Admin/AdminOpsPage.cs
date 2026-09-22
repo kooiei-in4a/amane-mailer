@@ -136,7 +136,7 @@ public static class AdminOpsPage
         DateTimeOffset asOfUtc)
     {
         var html = new StringBuilder();
-        AdminLayout.AppendDocumentStart(html, "運用状況 - Amane Admin", AdminNavItem.Ops, deadLetterCount);
+        AdminLayout.AppendDocumentStart(html, "運用状況 - Amane Admin", AdminNavItem.Ops, deadLetterCount, access);
 
         html.AppendLine("                <section class=\"ops-section\" aria-label=\"運用状況の説明\">");
         html.AppendLine("                  <h1 class=\"ops-heading\">運用状況</h1>");
