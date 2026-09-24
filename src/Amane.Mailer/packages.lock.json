@@ -70,9 +70,9 @@
       },
       "MimeKitLite": {
         "type": "Direct",
-        "requested": "[4.18.0, )",
-        "resolved": "4.18.0",
-        "contentHash": "zo/BAscwcl6pdgBIAN+QEKV53TWtyNTFLusaNrXhLZaSlD7FLPXVx4m/nyr99k4CLzazt+r8/2b7Z9Y2hHbh8g=="
+        "requested": "[4.18.1, )",
+        "resolved": "4.18.1",
+        "contentHash": "lZdJDlHonEeObqHx64+FOl2BoPeSpfzT9GyuRZ4KF0SUS8chMarrk9we6K1pR3SiRVe8TwGGbGh7yvEXFyfUMw=="
       },
       "SQLitePCLRaw.bundle_e_sqlite3": {
         "type": "Direct",
