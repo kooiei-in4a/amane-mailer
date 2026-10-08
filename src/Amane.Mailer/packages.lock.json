@@ -22,9 +22,9 @@
       },
       "Azure.Storage.Queues": {
         "type": "Direct",
-        "requested": "[12.28.0, )",
-        "resolved": "12.28.0",
-        "contentHash": "1316Rn7eXU+m63McxZ+9E7Y4Ad7uHFr/Dom+CGXS4c+Pcv3arr7N9YKBQny4AFcDkmn7lQLKHagI8GzzOe3xnA==",
+        "requested": "[12.28.1, )",
+        "resolved": "12.28.1",
+        "contentHash": "n6WL9zIvfNBQgUbjYugJBhf0fttdIScK89mSNVvF1iKKHvZleN0Y7V+u4e3K38D64PwHTTwEtqVzn8/3nvHTEg==",
         "dependencies": {
           "Azure.Core": "1.60.0",
           "Azure.Storage.Common": "12.29.0"
