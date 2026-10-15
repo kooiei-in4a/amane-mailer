@@ -104,7 +104,7 @@ jobs:
             "linux/amd64"
 
       - name: Upload native amd64 OCI layout
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: setup-release-candidate-oci-linux-amd64
           path: |
@@ -154,7 +154,7 @@ jobs:
             "linux/arm64"
 
       - name: Upload native arm64 OCI layout
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: setup-release-candidate-oci-linux-arm64
           path: |
@@ -215,7 +215,7 @@ jobs:
             "${OUT_ROOT}"
 
       - name: Upload OCI layout + image identity
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: setup-release-candidate-oci
           path: |
@@ -264,7 +264,7 @@ jobs:
           bash scripts/generate-setup-release-bundle.sh linux-x64
 
       - name: Upload linux-x64 archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: setup-release-candidate-linux-x64
           path: |
@@ -312,7 +312,7 @@ jobs:
           bash scripts/generate-setup-release-bundle.sh linux-arm64
 
       - name: Upload linux-arm64 archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: setup-release-candidate-linux-arm64
           path: |
@@ -357,7 +357,7 @@ jobs:
           bash scripts/generate-setup-release-bundle.sh win-x64
 
       - name: Upload win-x64 archive
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: setup-release-candidate-win-x64
           path: |
@@ -422,7 +422,7 @@ jobs:
           bash scripts/handoff-setup-release-candidate.sh "${OUT_ROOT}"
 
       - name: Upload handoff package
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: setup-release-candidate-handoff
           path: |
